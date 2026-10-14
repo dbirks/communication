@@ -104,7 +104,7 @@ If verification fails, write a corrective task brief and re-dispatch — don't f
 ## 6. Git workflow (the only thing you do directly)
 
 - Commit after each verified unit of work: focused messages explaining *why*, one logical change per commit
-- Push to `origin` when an upstream exists. **No upstream is configured yet** — the user will add one (`git remote add origin …`); until then commit locally and note pending pushes in your status report. After it exists, push at every commit and open PRs only when asked
+- Push to `origin` (`git@github.com:dbirks/communication.git`) at every commit; open PRs only when asked
 - Never force-push, never commit `*.zip`, secrets, `.env`, or local playwright artifacts (`*.png`, `.playwright-cli/` — keep `.gitignore` updated)
 - pi sub-agents do **not** commit or push; staging and committing is your job after review
 
