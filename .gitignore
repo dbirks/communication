@@ -1,1 +1,15 @@
 *.zip
+
+# Browser verification output (Playwright CLI)
+.playwright-cli/
+verify-*.png
+*.webp
+*.jpeg
+
+# Local secrets
+.env
+
+# Build and test output
+coverage/
+dist/
+bin/
