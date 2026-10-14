@@ -164,7 +164,12 @@ func TestClaudeAdapterIntegrationRoundTrip(t *testing.T) {
 		prompts <- promptResult{r, err}
 	}()
 
-	time.Sleep(5 * time.Second)
+	// 2 s, not 5 s: at a 5 s delay Claude Code sometimes auto-backgrounds
+	// the `sleep 60` Bash call and closes the turn end_turn before the cancel
+	// lands (0/5 at 5 s vs 5/5 at 2 s in docs/compatibility/ACP.md, "Cancel"
+	// under Known limits). Cancel is only reliable while a tool call is
+	// genuinely in flight.
+	time.Sleep(2 * time.Second)
 	if err := h.Cancel(ctx); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
