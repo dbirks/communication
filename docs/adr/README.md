@@ -26,3 +26,6 @@ exercised — an ADR is not Accepted on the strength of a written intention.
 | ADR-0005 | Frontend toolchain: Vite + React + TypeScript, Tailwind, pnpm, oxlint/oxfmt | Proposed | [`ADR-0005-frontend-toolchain.md`](ADR-0005-frontend-toolchain.md) |
 | ADR-0006 | Browser verification of UI work with Playwright | Proposed | [`ADR-0006-browser-verification-playwright.md`](ADR-0006-browser-verification-playwright.md) |
 | ADR-0007 | Repository layout: `api/`, `worker/`, `ui/` within one Go module | Proposed | [`ADR-0007-repository-layout.md`](ADR-0007-repository-layout.md) |
+| ADR-0008 | APM profile staging: pinned CLI, per-run checkout, isolated HOME | Proposed | [`ADR-0008-apm-profile-staging.md`](ADR-0008-apm-profile-staging.md) |
+| ADR-0009 | nono `required` mode is verify-then-run, never policy delegation | Proposed | [`ADR-0009-nono-required-mode-verification.md`](ADR-0009-nono-required-mode-verification.md) |
+| ADR-0010 | Worker-managed mirrors are per-project; runs get linked worktrees | Proposed | [`ADR-0010-workspace-mirrors-and-worktrees.md`](ADR-0010-workspace-mirrors-and-worktrees.md) |
