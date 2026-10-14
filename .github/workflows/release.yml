@@ -1,0 +1,56 @@
+# Tag-triggered release: archives + checksums + changelog to GitHub Releases,
+# multi-arch image to ghcr.io (ADR-0004). Tags are semver v* and are the only
+# trigger for publishable artefacts.
+#
+# Pinned versions — looked up 2026-10-14, actions on exact major tags, tools on
+# exact versions:
+#   actions/checkout@v7                     latest release v7.0.1
+#   actions/setup-go@v7                     latest release v7.0.0
+#   docker/login-action@v4                  latest release v4.6.0
+#   docker/setup-buildx-action@v4           latest release v4.4.1
+#   docker/setup-qemu-action@v4             latest release v4.4.0
+#   goreleaser/goreleaser-action@v7         latest release v7.3.0
+#   GoReleaser                v2.18.3       (config schema version: 2)
+# Go itself is NOT pinned here: it comes from go.mod via go-version-file.
+#
+# Sole credential is the workflow-scoped GITHUB_TOKEN; no PAT, no other secret.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so GoReleaser's git changelog sees the full history and
+      # the previous tag.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # linux/arm64 image layers are built on an amd64 runner, so they need qemu.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Release
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

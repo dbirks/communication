@@ -1,0 +1,10 @@
+# Build context hygiene for the runtime image (Dockerfile copies one binary).
+.git
+.env
+*.zip
+.playwright-cli/
+node_modules/
+communication-spec/
+communication-ui-brief/
+COMMUNICATION_MASTER_SPEC.md
+docs/

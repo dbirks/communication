@@ -1,0 +1,158 @@
+# CI for the Communication monorepo (ADR-0004: GitHub Actions; ADR-0007: one Go
+# module at the repo root, ui/ holds the Vite + React SPA).
+#
+# Pinned versions — looked up 2026-10-14, actions on exact major tags, tools on
+# exact versions:
+#   actions/checkout@v7                     latest release v7.0.1
+#   actions/setup-go@v7                     latest release v7.0.0
+#   actions/setup-node@v7                   latest release v7.1.0
+#   pnpm/action-setup@v6                    latest release v6.1.0
+#   docker/login-action@v4                  latest release v4.6.0
+#   docker/setup-buildx-action@v4           latest release v4.4.1
+#   docker/setup-qemu-action@v4             latest release v4.4.0
+#   goreleaser/goreleaser-action@v7         latest release v7.3.0
+#   GoReleaser                v2.18.3       (config schema version: 2)
+#   golang.org/x/vuln/cmd/govulncheck       v1.9.0
+#   github.com/google/go-licenses           v1.6.0
+#   pnpm                                      12.11.2
+#   Node.js                                   24.22.0 (current LTS line)
+# Go itself is NOT pinned here: it comes from go.mod via go-version-file.
+#
+# Only GITHUB_TOKEN is used anywhere in this repository's workflows. Publish
+# steps are the only ones granted packages: write (ADR-0004 Security/privacy).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go build
+        run: go build ./...
+      - name: go test -race
+        run: go test -race ./...
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: go-licenses
+        run: go run github.com/google/go-licenses@v1.6.0 check ./... --disallowed_types=forbidden,restricted,unknown
+
+  detect:
+    name: detect
+    runs-on: ubuntu-latest
+    outputs:
+      # Job-level expressions may not call hashFiles (GitHub restricts it to
+      # step contexts), so it is evaluated in a step and republished as an
+      # output.
+      ui: ${{ steps.ui-package.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: ui-package
+        if: hashFiles('ui/package.json') != ''
+        run: echo "ui=true" >> "$GITHUB_OUTPUT"
+
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    needs: [detect]
+    # Skipped until ui/package.json lands (ADR-0005, ADR-0007).
+    if: needs.detect.outputs.ui == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: install
+        run: pnpm --dir ui install --frozen-lockfile
+      - name: lint
+        run: pnpm --dir ui exec oxlint
+      - name: format
+        run: pnpm --dir ui exec oxfmt --check
+      - name: typecheck
+        run: pnpm --dir ui exec tsc --noEmit
+      - name: build
+        run: pnpm --dir ui build
+      - name: test
+        run: pnpm --dir ui test
+
+  image-main:
+    name: image (main)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [go, audit]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # The image is built for linux/amd64 and linux/arm64 in one snapshot run,
+      # so the arm64 layers need qemu user emulation.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Snapshot build: GoReleaser compiles both architectures and builds (but
+      # never pushes) the per-platform images, tagged
+      # ghcr.io/dbirks/communication:main-linux-{amd64,arm64}.
+      - name: Build snapshot image
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.18.3
+          args: release --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Push the arch images, then compose the multi-arch manifests ADR-0004
+      # promises for the main branch: :main and :sha-<short sha>.
+      - name: Publish main and sha tags
+        run: |
+          set -euo pipefail
+          repo=ghcr.io/dbirks/communication
+          short="$(git rev-parse --short=7 HEAD)"
+          docker push "${repo}:main-linux-amd64"
+          docker push "${repo}:main-linux-arm64"
+          docker buildx imagetools create \
+            -t "${repo}:main" \
+            "${repo}:main-linux-amd64" "${repo}:main-linux-arm64"
+          docker buildx imagetools create \
+            -t "${repo}:sha-${short}" \
+            "${repo}:main-linux-amd64" "${repo}:main-linux-arm64"

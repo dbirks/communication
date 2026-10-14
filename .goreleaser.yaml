@@ -1,0 +1,120 @@
+# GoReleaser config for the single `communication` binary (ADR-0004, D-002).
+#
+# Pinned toolchain (looked up 2026-10-14):
+#   GoReleaser v2.18.3  — schema `version: 2`; invoked by
+#                         goreleaser/goreleaser-action@v7 with `version: v2.18.3`
+#   Go module           — github.com/dbirks/communication, go.mod at repo root
+#                         (ADR-0007 option A: one module, one binary)
+#
+# Image layout note: `dockers` + `docker_manifests` are used instead of
+# `dockers_v2` on purpose. A multi-platform `dockers_v2` bake puts each
+# binary in a `<os>/<arch>/` subdirectory of one shared build context, so the
+# runtime Dockerfile would need a per-platform COPY path. GoReleaser's
+# `dockers` pipe builds one context per platform and copies the binary to the
+# context root, which keeps `Dockerfile` the trivially auditable
+# `COPY communication /usr/local/bin/communication`. `dockers` is marked
+# deprecated in GoReleaser v2 in favour of `dockers_v2`; revisit when the
+# multi-arch context story changes (recorded in the task report).
+
+version: 2
+project_name: communication
+
+# before:
+#   hooks:
+#     # Activate once ui/ exists (ADR-0005 + ADR-0007, both Proposed): the
+#     # built SPA is embedded by ui/embed.go, so it must precede `go build`.
+#     - pnpm --dir ui install --frozen-lockfile
+#     - pnpm --dir ui build
+
+builds:
+  - id: communication
+    main: ./cmd/communication
+    binary: communication
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      # main.version is the package-level var in cmd/communication/main.go.
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: communication
+    ids: [communication]
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: true
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^spec:"
+
+snapshot:
+  # Tag-independent so `--snapshot` works before the first release tag exists.
+  version_template: "0.0.0-SNAPSHOT-{{ .ShortCommit }}"
+
+# docker_manifests only accepts `use: docker` (the default), so it is omitted.
+#
+# One entry per platform: each gets its own build context with the binary at
+# the root. `--load` (added by the buildx imager) keeps snapshot builds local,
+# so `goreleaser release --snapshot` never pushes; publishing is the tag
+# release workflow's job (.github/workflows/release.yml).
+dockers:
+  - id: linux-amd64
+    ids: [communication]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/dbirks/communication:{{ if .IsSnapshot }}main{{ else }}{{ .Version }}{{ end }}-linux-amd64"
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title=communication"
+      - "--label=org.opencontainers.image.description=Communication control plane and execution worker"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+  - id: linux-arm64
+    ids: [communication]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    use: buildx
+    image_templates:
+      - "ghcr.io/dbirks/communication:{{ if .IsSnapshot }}main{{ else }}{{ .Version }}{{ end }}-linux-arm64"
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+      - "--label=org.opencontainers.image.title=communication"
+      - "--label=org.opencontainers.image.description=Communication control plane and execution worker"
+      - "--label=org.opencontainers.image.source={{ .GitURL }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+
+docker_manifests:
+  - name_template: "ghcr.io/dbirks/communication:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/dbirks/communication:{{ .Version }}-linux-amd64"
+      - "ghcr.io/dbirks/communication:{{ .Version }}-linux-arm64"
+  - name_template: "ghcr.io/dbirks/communication:latest"
+    image_templates:
+      - "ghcr.io/dbirks/communication:{{ .Version }}-linux-amd64"
+      - "ghcr.io/dbirks/communication:{{ .Version }}-linux-arm64"
+
+release:
+  prerelease: auto
