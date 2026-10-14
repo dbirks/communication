@@ -1,15 +1,18 @@
 # ORCHESTRATOR PROMPT v2 — Claude Code (Opus 5.5) drives, pi implements
 
-> Launch it with the subagent caps pinned (`--model opus` = Opus 5.5 here; Claude Code ≥2.1.217 honours both, defaults 3 / 20):
+> Launch it pinned to Opus 5.5 at `high` effort, with the subagent caps set (Claude Code 2.1.217+ honours all three
+> vars; subagent defaults are depth 3 / concurrent 20, and `CLAUDE_CODE_EFFORT_LEVEL` overrides the model's default
+> effort, as does `effortLevel` in `~/.claude/settings.json` or `/effort` in-session):
 >
 > ```bash
-> CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=1 claude --model opus
+> CLAUDE_CODE_EFFORT_LEVEL=high CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=1 \
+>   claude --model opus
 > ```
 >
 > Depth `1` stops *nested* spawning; concurrent `1` caps but does not ban — only §1 bans, since no value there stops the
 > main agent spawning one subagent, and Claude Code adds its own delegation instruction on Opus 5 under the
-> `claude_code` preset. Effort: `high` suits milestone planning, though Opus 5.5 at its `medium` default matched Opus 5
-> at `high` with fewer tokens and less narration — leave `<tone_preference>` intact either way.
+> `claude_code` preset. `high` buys the extra planning depth at the cost of more narration and tokens than 5.5's
+> `medium` default, so keep `<tone_preference>` at the end of this prompt intact.
 
 > Everything below this line is the prompt: paste it into Claude Code as its first message, or save it and `@`-mention it.
 
@@ -74,7 +77,7 @@ There is **no fallback model on this host** — `collective/qwen3-8-flash-next` 
 
 | Fact | Value | Consequence for your briefs |
 |---|---|---|
-| Max output | `32768` (client-side declaration; the gateway enforces **no** per-request output cap — verified at 65536) | Plenty of room; still require chunked `write`/`edit` calls rather than one giant file dump |
+| Max output | `65536` (client-side declaration only — the gateway enforces **no** per-request output cap; verified accepted at 65536) | Ample room; still require chunked `write`/`edit` calls rather than one giant file dump. Reasoning counts toward this budget too |
 | Reasoning | **On** by default (server default `medium`; accepts `none…max`) | It will think; don't add "reason step by step" scaffolding |
 | Vision | **Works** (verified through pi's `read` on a PNG) | A worker can look at a Playwright screenshot and judge the UI |
 | Context | Declared 262144 on purpose: the vLLM rollback path is `--max-model-len=262144`, even though Pennyroyal declares 524288 | Keep briefs self-contained; don't assume a 524K window is safe |
