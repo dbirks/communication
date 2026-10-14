@@ -13,3 +13,6 @@ verify-*.png
 coverage/
 dist/
 bin/
+
+# Python bytecode
+__pycache__/
