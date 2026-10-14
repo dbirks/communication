@@ -1,7 +1,7 @@
 # ADR-0007 — Repository layout: api/, worker/, ui/ within one Go module
 
 - **Date:** 2026-10-14
-- **Status:** Proposed (awaiting project-owner sign-off)
+- **Status:** Accepted (project owner sign-off, 2026-10-14)
 - **Owners:** project owner
 - **Related decisions / contracts:** D-002, ADR-0001, `communication-spec/02-system-architecture.md`
 
@@ -96,3 +96,11 @@ the `//go:embed all:dist` package location, and the GoReleaser hook path. `api/`
 contents are inert to the Go build, so removing or merging them changes no compiled code and no
 runtime behaviour. No data migration, no wire-format change, no DB migration. Superseded by a
 future ADR only if D-002 itself is revisited.
+
+## Acceptance
+
+Accepted 2026-10-14 by project owner sign-off on Option A as written above.
+In the same change, `communication-spec/02-system-architecture.md` § "Go package boundaries —
+proposal" was amended: `web/` now reads `ui/`, and the roles of `ui/`, `api/` and `worker/`
+(asset/contract directories, not Go modules) are stated. The consolidated copy
+`COMMUNICATION_MASTER_SPEC.md` and `AGENTS.md` were updated to match.

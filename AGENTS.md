@@ -65,9 +65,9 @@ internal/
   api/                      HTTP/typed API
   assistant/                app-operating assistant
   artifacts/                artifact store
-api/                        role pending ADR in docs/adr/ (single Go module per D-002)
-worker/                     role pending ADR in docs/adr/ (single Go module per D-002)
-ui/                         role pending ADR in docs/adr/ (single Go module per D-002)
+api/                        OpenAPI + event JSON Schemas, serve compose fragment (ADR-0007)
+worker/                     worker image, sandbox policies, launcher registry, worker compose (ADR-0007)
+ui/                         Vite + React + TS app, embedded via ui/embed.go (ADR-0007)
 docs/adr/                   Architecture Decision Records
 docs/compatibility/         ACP/APM/sandbox matrices
 communication-spec/         specification (read-only)

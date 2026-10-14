@@ -234,7 +234,9 @@ flowchart TB
 
 ## Go package boundaries — proposal
 
-`cmd/communication`, `internal/domain`, `internal/authz`, `internal/pipelines/schema`, `internal/pipelines/compiler`, `internal/pipelines/runtime`, `internal/scheduler`, `internal/worker`, `internal/agent/acp`, `internal/agent/apm`, `internal/sandbox`, `internal/workspace/git`, `internal/secrets`, `internal/integrations`, `internal/events`, `internal/api`, `internal/assistant`, `internal/artifacts`, `web/`.
+`cmd/communication`, `internal/domain`, `internal/authz`, `internal/pipelines/schema`, `internal/pipelines/compiler`, `internal/pipelines/runtime`, `internal/scheduler`, `internal/worker`, `internal/agent/acp`, `internal/agent/apm`, `internal/sandbox`, `internal/workspace/git`, `internal/secrets`, `internal/integrations`, `internal/events`, `internal/api`, `internal/assistant`, `internal/artifacts`, `ui/`.
+
+Repository layout (ADR-0007, accepted 2026-10-14): one Go module at the repository root. Go code lives only in `cmd/communication` and `internal/…`. `ui/` is the Vite + React + TypeScript SPA, embedded into the binary via a small `ui` Go package; `api/` holds the OpenAPI document and the event JSON Schemas from 09 plus the `serve`-mode compose fragment, with Go request handlers staying in `internal/api`; `worker/` holds the worker container image, sandbox policy files, the agent launcher registry and the worker compose fragment, with Go worker code staying in `internal/worker`. `api/` and `worker/` are not Go modules.
 
 Enforce dependency direction: domain and public interfaces contain no runtime SDK types; adapters depend on those interfaces. Avoid direct database calls from React action handlers or ACP callbacks without transactional application services.
 
