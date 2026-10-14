@@ -37,7 +37,7 @@ timeout 1800 pi -p \
   --approve --no-session \
   --name task-<slug> \
   --exclude-tools subagent,bg_wait,subagent_supervisor,subagents_enable \
-  @/tmp/pi-tasks/<slug>.md > /tmp/pi-logs/<slug>.log 2>&1
+  @/tmp/pi-tasks/<slug>.md < /dev/null > /tmp/pi-logs/<slug>.log 2>&1
 ```
 
 - `-p` — print mode: process the brief and exit
@@ -47,6 +47,7 @@ timeout 1800 pi -p \
 - `--exclude-tools …` — belt-and-braces so no worker spawns its own children (the extension is also disabled machine-wide)
 - **Pass the brief as `@file` or piped stdin — never `"$(cat …)"`.** Briefs containing backticks or `$()` get expanded by your shell and the worker receives garbage.
 - Run each pi from the repo root. Reference spec files by path inside the brief.
+- **`< /dev/null` is mandatory** — with an inherited open stdin pipe, `pi -p` blocks before the first model call and prints nothing, even with `--mode json`.
 
 ### Concurrency
 
@@ -58,7 +59,7 @@ Launch as background jobs and `wait`. Partition work by directory/module so para
 for s in a b c d e f; do
   timeout 1800 pi -p --model collective/qwen3-8-flash-next --approve --no-session \
     --name "task-$s" --exclude-tools subagent,bg_wait,subagent_supervisor,subagents_enable \
-    @/tmp/pi-tasks/$s.md > /tmp/pi-logs/$s.log 2>&1 &
+    @/tmp/pi-tasks/$s.md < /dev/null > /tmp/pi-logs/$s.log 2>&1 &
 done
 wait
 ```
@@ -70,6 +71,7 @@ Read the logs before judging the work. These are **infrastructure**: back off an
 - HTTP 429 / 5xx / quota / timeout on the provider
 - `404: model "…" is not currently available` — pi only *warns* about a bad `--model`, then dies at request time
 - The gateway being down entirely
+- pi exits **0** even when the provider errors (`502 … contributor is unavailable`, `404 … not currently available`): exit status is not success. Scan the log (or `--mode json` events) for provider errors before judging the work.
 
 There is **no fallback model on this host** — `collective/qwen3-8-flash-next` is the only configured model. An outage halts all dispatches; wait it out rather than inventing a substitute.
 
