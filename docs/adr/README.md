@@ -1,0 +1,28 @@
+# Architecture Decision Records
+
+ADRs record decisions that change a protocol version, persistence schema, security boundary,
+deployment model, public API contract, licensing or change-recovery semantics; small local refactors
+do not need one. The process is defined in
+[`communication-spec/13-decisions-and-adrs.md`](../../communication-spec/13-decisions-and-adrs.md)
+("ADR process"): identifiers are `ADR-NNNN-<slug>.md`, statuses move
+**Proposed → Accepted → Superseded**, and the required section layout comes from
+[`communication-spec/adr/ADR-TEMPLATE.md`](../../communication-spec/adr/ADR-TEMPLATE.md). A new
+contradiction with the decision register (D-001…D-0xx) requires both an ADR and an explicit register
+update. The spec's own seed records (ADR-0001…ADR-0003) live in `communication-spec/adr/`; records
+written by implementers live in this directory and start at ADR-0004.
+
+Where an ADR below records a toolchain choice that the spec does not mandate, it is the **project
+owner's preference** and is deliberately left at `Proposed` until the verification section has been
+exercised — an ADR is not Accepted on the strength of a written intention.
+
+## Index
+
+| ID | Title | Status | Location |
+|---|---|---|---|
+| ADR-0001 | Separate control and execution modes in one Go program | Accepted (architecture intent, implementation unverified) | [`../../communication-spec/adr/ADR-0001-control-and-worker-modes.md`](../../communication-spec/adr/ADR-0001-control-and-worker-modes.md) |
+| ADR-0002 | Published pipeline definitions are immutable and run-pinned | Accepted (architecture intent) | [`../../communication-spec/adr/ADR-0002-pipeline-revisions.md`](../../communication-spec/adr/ADR-0002-pipeline-revisions.md) |
+| ADR-0003 | Prototype nono behind a fail-closed sandbox adapter | Proposed; acceptance requires M0 security testing | [`../../communication-spec/adr/ADR-0003-sandbox-prototype.md`](../../communication-spec/adr/ADR-0003-sandbox-prototype.md) |
+| ADR-0004 | GoReleaser, GitHub Actions and ghcr.io for release and distribution | Proposed | [`ADR-0004-release-and-distribution.md`](ADR-0004-release-and-distribution.md) |
+| ADR-0005 | Frontend toolchain: Vite + React + TypeScript, Tailwind, pnpm, oxlint/oxfmt | Proposed | [`ADR-0005-frontend-toolchain.md`](ADR-0005-frontend-toolchain.md) |
+| ADR-0006 | Browser verification of UI work with Playwright | Proposed | [`ADR-0006-browser-verification-playwright.md`](ADR-0006-browser-verification-playwright.md) |
+| ADR-0007 | Repository layout: `api/`, `worker/`, `ui/` within one Go module | Proposed | [`ADR-0007-repository-layout.md`](ADR-0007-repository-layout.md) |
