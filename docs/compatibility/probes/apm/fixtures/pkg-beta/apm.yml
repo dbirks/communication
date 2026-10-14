@@ -1,0 +1,4 @@
+name: pkg-beta
+version: 0.1.0
+description: M0 APM probe package carrying the BETA-MARKER token
+includes: auto

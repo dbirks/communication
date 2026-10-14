@@ -1,0 +1,7 @@
+name: consumer-a
+version: 0.1.0
+description: M0 APM probe consumer depending only on pkg-alpha
+includes: auto
+dependencies:
+  apm:
+    - ../pkg-alpha

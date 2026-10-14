@@ -1,0 +1,56 @@
+== apm version ==
+Agent Package Manager (APM) CLI version 0.33.0 (18c4c43)
+CHECK claude T1 PASS install ok; files created under consumer-a:
+    ./apm.lock.yaml
+    ./apm_modules
+    ./apm_modules/_local
+    ./apm_modules/_local/pkg-alpha
+    ./apm_modules/_local/pkg-alpha/.apm
+    ./apm_modules/_local/pkg-alpha/.apm/instructions
+    ./apm_modules/_local/pkg-alpha/.apm/instructions/alpha-instructions.md
+    ./apm_modules/_local/pkg-alpha/.apm/skills
+    ./apm_modules/_local/pkg-alpha/.apm/skills/alpha-skill
+    ./apm_modules/_local/pkg-alpha/.apm/skills/alpha-skill/SKILL.md
+    ./apm_modules/_local/pkg-alpha/apm.yml
+    ./.claude
+    ./.claude/skills
+    ./.claude/skills/alpha-skill
+    ./.claude/skills/alpha-skill/SKILL.md
+    ./.gitignore
+CHECK claude T2 PASS frozen reinstall reproduced lockfile + all generated files byte-identically (5 files incl. apm.lock.yaml)
+CHECK claude T3 PASS no ALPHA-MARKER under consumer-b and no BETA-MARKER under consumer-a
+CHECK claude T4 FAIL APM wrote into HOME (shared HOME would leak between sessions); paths:
+    ./.apm/config.json
+    ./.cache/apm/last_version_check
+    af76cc1d46749590db87fc3686b633163492c010aaf15278b7ec2cb8d1e91ad7  ./.apm/config.json
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./.cache/apm/last_version_check
+CHECK claude T5 PASS apm_lock_digest(sha256 of consumer-a/apm.lock.yaml)=80afa7590f4ebaa2125ecfa040ce5ae6ef3bc98f925e683bf6a34fbea99c984e
+CHECK claude T6 PASS claude reported alpha-skill; see /home/david/.cache/communication-lab/m0-apm/logs/claude-t6.log
+CHECK codex T1 PASS install ok; files created under consumer-a:
+    ./.agents
+    ./.agents/skills
+    ./.agents/skills/alpha-skill
+    ./.agents/skills/alpha-skill/SKILL.md
+    ./apm.lock.yaml
+    ./apm_modules
+    ./apm_modules/_local
+    ./apm_modules/_local/pkg-alpha
+    ./apm_modules/_local/pkg-alpha/.apm
+    ./apm_modules/_local/pkg-alpha/.apm/instructions
+    ./apm_modules/_local/pkg-alpha/.apm/instructions/alpha-instructions.md
+    ./apm_modules/_local/pkg-alpha/.apm/skills
+    ./apm_modules/_local/pkg-alpha/.apm/skills/alpha-skill
+    ./apm_modules/_local/pkg-alpha/.apm/skills/alpha-skill/SKILL.md
+    ./apm_modules/_local/pkg-alpha/apm.yml
+    ./.codex
+    ./.gitignore
+CHECK codex T2 PASS frozen reinstall reproduced lockfile + all generated files byte-identically (5 files incl. apm.lock.yaml)
+CHECK codex T3 PASS no ALPHA-MARKER under consumer-b and no BETA-MARKER under consumer-a
+CHECK codex T4 FAIL APM wrote into HOME (shared HOME would leak between sessions); paths:
+    ./.apm/config.json
+    ./.cache/apm/last_version_check
+    af76cc1d46749590db87fc3686b633163492c010aaf15278b7ec2cb8d1e91ad7  ./.apm/config.json
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./.cache/apm/last_version_check
+CHECK codex T5 PASS apm_lock_digest(sha256 of consumer-a/apm.lock.yaml)=086829a2829e98dc750c7fd47ac4083c6904f0a70e5af7973f9ddcee83d27601
+CHECK codex T6 PASS codex reported alpha-skill; see /home/david/.cache/communication-lab/m0-apm/logs/codex-t6.log
+== done ==

@@ -1,0 +1,7 @@
+name: consumer-b
+version: 0.1.0
+description: M0 APM probe consumer depending only on pkg-beta
+includes: auto
+dependencies:
+  apm:
+    - ../pkg-beta

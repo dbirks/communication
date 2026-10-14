@@ -1,0 +1,4 @@
+name: pkg-alpha
+version: 0.1.0
+description: M0 APM probe package carrying the ALPHA-MARKER token
+includes: auto
