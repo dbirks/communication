@@ -1,0 +1,28 @@
+== nono sandbox probe
+ENV date=2026-10-14T22:34:25Z
+ENV user=david uid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV fixture=/home/david/.cache/communication-lab/m0-nono/fixture
+ENV curl=yes
+
+CASE C1 PASS exit=0 projA/out.txt written, verified by reading it back outside the sandbox
+CASE C2 PASS exit=1 cat: /home/david/.cache/communication-lab/m0-nono/fixture/projB/secret.txt: Permission denied
+CASE C3 PASS exit=1 cat: /home/david/.cache/communication-lab/m0-nono/fixture/fake-home/.ssh/id_test: Permission denied
+CASE C4 PASS exit=1 cat: /home/david/.cache/communication-lab/m0-nono/fixture/projA/link: Permission denied
+CASE C5 PASS exit=1 cat: /home/david/.cache/communication-lab/m0-nono/fixture/projA/../projB/secret.txt: Permission denied
+CASE C6 PASS exit=7 curl: (7) Failed to connect to example.com:443 after 1 ms: Could not connect to server
+CASE C7 FAIL exit=0 docker API answered: {"Platform":{"Name":""},"Version":"29.9.0","ApiVersion":"1.56","MinAPIVersion":"1.40","Os":"linux","Arch":"amd64","Components":[{"Name":"Engine","Version":"29.9
+CASE C8 PASS exit=1 cat: /home/david/.cache/communication-lab/m0-nono/fixture/projB/secret.txt: Permission denied
+CASE C9 PASS exit=1 cat: /proc/1/environ: Permission denied
+CASE C9b FAIL exit=0 /proc/1 listable (19 entries incl. environ/cmdline visible): arch_status attr autogroup auxv cgroup clear_refs cmdline comm coredump_filter cpu_resctrl_groups cwd environ exe fd fdinfo gid_map io ksm_merging_pages ksm_sta
+CASE C10 PASS exit=0 readable without sandbox, fixture works
+CASE FC1 PASS fail-closed: exit=1, command never executed (nono: Sandbox initialization failed: Failed to start proxy: Proxy bind failed on 127.0.0.1:1: Permission denied (os error 13))
+CASE FC2 FAIL fail-open: --block-net ignored with --sandbox-policy external, egress allowed (exit=0)
+CASE FC3 PASS nonexistent grant ignored, sandbox still applied (exit=1)
+CASE FC4 PASS nono setup --check-only ok:    nono v0.80.0 [1/4] Checking installation...   * nono binary found at /home/david/.local/share/communication-lab/nono/0.80.0/nono   * Version: 0.80.0   * Plat
+CASE FC5 PASS dead upstream proxy -> egress denied not permitted: exit=7 curl: (7) CONNECT tunnel failed, response 502
+CASE FC6 PASS fail-closed: exit=2, invalid policy rejected before exec (error: invalid value '65536' for '--proxy-port <PORT>': 65536 is not in 0..=65535  For more information, try '--help'.)

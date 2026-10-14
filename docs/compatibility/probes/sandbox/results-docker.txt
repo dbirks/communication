@@ -1,0 +1,37 @@
+debconf: unable to initialize frontend: Dialog
+debconf: (TERM is not set, so the dialog frontend is not usable.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC entries checked: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.40.1 /usr/local/share/perl/5.40.1 /usr/lib/x86_64-linux-gnu/perl5/5.40 /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl-base /usr/lib/x86_64-linux-gnu/perl/5.40 /usr/share/perl/5.40 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 8, <STDIN> line 30.)
+debconf: falling back to frontend: Teletype
+debconf: unable to initialize frontend: Teletype
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Noninteractive
+== nono sandbox probe
+ENV date=2026-10-14T22:34:35Z
+ENV user=root uid=0
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=unreadable
+ENV nono_bin=/opt/nono/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV fixture=/root/fixture
+ENV curl=yes
+
+CASE C1 PASS exit=0 projA/out.txt written, verified by reading it back outside the sandbox
+CASE C2 PASS exit=1 cat: /root/fixture/projB/secret.txt: Permission denied
+CASE C3 PASS exit=1 cat: /root/fixture/fake-home/.ssh/id_test: Permission denied
+CASE C4 PASS exit=1 cat: /root/fixture/projA/link: Permission denied
+CASE C5 PASS exit=1 cat: /root/fixture/projA/../projB/secret.txt: Permission denied
+CASE C6 PASS exit=6 curl: (6) Could not resolve host: example.com
+CASE C7 GAP socket /var/run/docker.sock not present in this environment
+CASE C8 PASS exit=1 cat: /root/fixture/projB/secret.txt: Permission denied
+CASE C9 PASS exit=1 cat: /proc/1/environ: Permission denied
+CASE C9b FAIL exit=0 /proc/1 listable (19 entries incl. environ/cmdline visible): arch_status attr autogroup auxv cgroup clear_refs cmdline comm coredump_filter cpu_resctrl_groups cwd environ exe fd fdinfo gid_map io ksm_merging_pages ksm_sta
+CASE C10 PASS exit=0 readable without sandbox, fixture works
+CASE FC1 N/A precondition not met: uid=0 could bind proxy port 1, so bind failure could not be induced (exit=0)
+CASE FC2 FAIL fail-open: --block-net ignored with --sandbox-policy external, egress allowed (exit=0)
+CASE FC3 PASS nonexistent grant ignored, sandbox still applied (exit=1)
+CASE FC4 PASS nono setup --check-only ok:    nono v0.80.0 [1/4] Checking installation...   * nono binary found at /opt/nono/nono   * Version: 0.80.0   * Platform: Linux (Landlock sandbox)  [2/4] Testing
+CASE FC5 PASS dead upstream proxy -> egress denied not permitted: exit=56 curl: (56) CONNECT tunnel failed, response 502
+CASE FC6 PASS fail-closed: exit=2, invalid policy rejected before exec (error: invalid value '65536' for '--proxy-port <PORT>': 65536 is not in 0..=65535  For more information, try '--help'.)
