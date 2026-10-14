@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/communication/v1alpha1/pipeline.schema.json",
+  "title": "Communication Pipeline (provisional)",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "communication.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "Pipeline"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "inputs",
+        "nodes"
+      ],
+      "properties": {
+        "inputs": {
+          "type": "object"
+        },
+        "outputs": {
+          "type": "object"
+        },
+        "policies": {
+          "type": "object"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "resultBindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "config"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "kind": {
+          "enum": [
+            "agent.acp",
+            "model.chat",
+            "process.exec",
+            "condition",
+            "gate",
+            "human.approval",
+            "until",
+            "for_each",
+            "parallel",
+            "join",
+            "pipeline.invoke",
+            "artifact.publish",
+            "git.commit",
+            "git.publish",
+            "integration.query",
+            "integration.action"
+          ]
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "config": {
+          "type": "object"
+        },
+        "outputs": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "description": "Structural draft only; semantic compiler MUST validate node-specific config, composite scopes, references, schemas, secret policies, error routes and graph topology before publishing."
+}

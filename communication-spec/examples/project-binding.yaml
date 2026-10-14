@@ -1,0 +1,26 @@
+# ILLUSTRATIVE draft Project assignment, not an already implemented API.
+apiVersion: communication.dev/v1alpha1
+kind: PipelineAssignment
+metadata:
+  name: acme-ready-issues
+spec:
+  project: acme-customer-platform
+  pipeline: feature-development
+  revision: sha256:REPLACE_WITH_PUBLISHED_REVISION
+  promotionPolicy: explicit
+  triggers:
+    - kind: schedule
+      cron: '*/15 * * * *'
+      timezone: UTC
+    - kind: github.issue_filter
+      repository: acme/frontend
+      labels: [agent-ready]
+  parameters:
+    maxParallelIssues: 5
+    requireHumanApproval: true
+  concurrency:
+    maxRunningInvocations: 5
+  limits:
+    timeoutSeconds: 14400
+  secretRefs:
+    - project/github-installation-token

@@ -1,0 +1,146 @@
+{
+  "product": "Communication",
+  "baseline_date": "2026-10-14",
+  "files": [
+    {
+      "path": "00-product-vision.md",
+      "sha256": "7de4be68201c746f1618db28399e14935d14aa4d9bcc47f62c5badf975f7c1eb",
+      "bytes": 7406
+    },
+    {
+      "path": "01-domain-model.md",
+      "sha256": "a937bd585b0a14f7ff66501b5d1cdf25e5ed372117bce8cf98f73c7194fbb79b",
+      "bytes": 7606
+    },
+    {
+      "path": "02-system-architecture.md",
+      "sha256": "1331e64e9ea6642c682f4fb5521133a11592f1f10022a4a2a85465f353e1f304",
+      "bytes": 7355
+    },
+    {
+      "path": "03-pipeline-engine.md",
+      "sha256": "e49aa7f53389f8bab0e38dff60916f5197509725898e547e2618000b3e255276",
+      "bytes": 8983
+    },
+    {
+      "path": "04-agent-runtime.md",
+      "sha256": "98860225cdcf230ecc5dedf22ef3c5113e18ec4646c5c89ce59cb40c5a760f34",
+      "bytes": 6038
+    },
+    {
+      "path": "05-workspaces-security-secrets.md",
+      "sha256": "23cacec7018879312e46f5d4f2430ac4d4a6dc3feacce046b2870be8b888e5dd",
+      "bytes": 7274
+    },
+    {
+      "path": "06-collaboration-identity.md",
+      "sha256": "a152049bbb39faecb91e57ecebb0ffc82b9636d7296d862555e4a9bc8c0b7304",
+      "bytes": 4795
+    },
+    {
+      "path": "07-config-integrations.md",
+      "sha256": "06db2386f5d4d89a518c1615c732821185040846ca093f9552e633f53f769d9a",
+      "bytes": 5150
+    },
+    {
+      "path": "08-assistant.md",
+      "sha256": "a768a3271a40857f8764fe3fd36a0dbe1209624da108f654b8c3bd8a9b70533c",
+      "bytes": 5013
+    },
+    {
+      "path": "09-api-events-data.md",
+      "sha256": "bf091628bb3eaad1d6c7821958f6aa801b831a6943583e946c310b1f6039b025",
+      "bytes": 5875
+    },
+    {
+      "path": "10-ui-design-handoff.md",
+      "sha256": "8fd725d6f89f1664ec5eef36049ba480a19e6f9e190fea74408b65fb4ec300a7",
+      "bytes": 7668
+    },
+    {
+      "path": "11-build-roadmap.md",
+      "sha256": "64bfbb63bdf91c2c9352679d75cf6693971621364e591b51ef014c155d6b21fb",
+      "bytes": 7275
+    },
+    {
+      "path": "12-test-strategy.md",
+      "sha256": "f1ed00b2382fd736125516ccf24796d346aabf8746fb2eda27029a651d23cda3",
+      "bytes": 5361
+    },
+    {
+      "path": "13-decisions-and-adrs.md",
+      "sha256": "67e48822be79e68d354738ad9ba8170cd7845b853e94922e3191d61f7dc3d598",
+      "bytes": 4873
+    },
+    {
+      "path": "14-research-notes.md",
+      "sha256": "f939474505d6d73a06262d2bf726ef5b2976d407b02ea248ba2f6b0d921a3cdf",
+      "bytes": 6807
+    },
+    {
+      "path": "DESIGN_AGENT_BRIEF.md",
+      "sha256": "801c4b894ed817553d37b00fbc8c94a84889796cfc937abf357103f887274c66",
+      "bytes": 2631
+    },
+    {
+      "path": "IMPLEMENTATION_AGENT_BRIEF.md",
+      "sha256": "feb1b0ef7986e8894d7ef0db7aca29698f4e543fba090c9619345312fb7cc027",
+      "bytes": 4063
+    },
+    {
+      "path": "README.md",
+      "sha256": "c29759ac7b65a74bcd1b16830d1b7af7df1755daa22609b9a71d71aa567b9710",
+      "bytes": 5160
+    },
+    {
+      "path": "adr/ADR-0001-control-and-worker-modes.md",
+      "sha256": "2b907130706efe955fe23bc2b8a7df582be0a30bf9d176c85a3dd2a0add0d9b1",
+      "bytes": 1282
+    },
+    {
+      "path": "adr/ADR-0002-pipeline-revisions.md",
+      "sha256": "102da107ce27aca5d4dec45d8dc53767edce02407a729fede4b3adacb87c8732",
+      "bytes": 1089
+    },
+    {
+      "path": "adr/ADR-0003-sandbox-prototype.md",
+      "sha256": "64c0229fa7cc982bf4a9b44bede801be1ca59bb26a2e6d8e6a2d1fe7e770e7ba",
+      "bytes": 1558
+    },
+    {
+      "path": "adr/ADR-TEMPLATE.md",
+      "sha256": "dfbfe5836f891a4261c0f05a7b64a7c895797e58898e9677c47523334fa9fdca",
+      "bytes": 919
+    },
+    {
+      "path": "examples/feature-development.yaml",
+      "sha256": "5ea96a44c79c949e1b2c501e2ceb7f21659e01f08710769b5d49bba016dd2fb6",
+      "bytes": 2617
+    },
+    {
+      "path": "examples/node-template-reviewer.yaml",
+      "sha256": "a9432e46a671c1de656358e226f2b956efffcf62cfa79962a11acca6e8d6d702",
+      "bytes": 850
+    },
+    {
+      "path": "examples/process-ready-issues.yaml",
+      "sha256": "8ee480839bd27cb2a99974afdc19f9c237f143fd58079cad52ad0142988ce02d",
+      "bytes": 1642
+    },
+    {
+      "path": "examples/project-binding.yaml",
+      "sha256": "4885384f33d7d466c65496e2ce8dbf3eb27ef236889ca266bd3091503d63d3ed",
+      "bytes": 700
+    },
+    {
+      "path": "examples/secret-mounts.yaml",
+      "sha256": "5e5d898a56edaab81eddd571985f0bbd1ba1c9d5888c198ff62bdd8b8f190a3a",
+      "bytes": 639
+    },
+    {
+      "path": "schemas/pipeline.schema.json",
+      "sha256": "e99e4205e19b23b346e3531bab5287b084ebc91d00ce0d20ea896e3bd7ec204a",
+      "bytes": 2682
+    }
+  ]
+}

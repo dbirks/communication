@@ -1,0 +1,67 @@
+# ILLUSTRATIVE draft: fetch issues, invoke implementation pipeline in bounded parallel.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: process-ready-issues
+  description: Lightweight work backlog, not an internal issue tracker.
+spec:
+  inputs:
+    type: object
+    required:
+    - repository
+    - label
+    - max_concurrency
+    properties:
+      repository:
+        type: string
+      label:
+        type: string
+        default: agent-ready
+      max_concurrency:
+        type: integer
+        minimum: 1
+        maximum: 20
+  nodes:
+  - id: get_issues
+    kind: integration.query
+    config:
+      provider: github
+      operation: issues.list
+      repository: ${{ inputs.repository }}
+      label: ${{ inputs.label }}
+      state: open
+    outputs:
+      type: object
+      properties:
+        issues:
+          type: array
+          items:
+            type: object
+  - id: fan_out
+    kind: for_each
+    dependsOn:
+    - get_issues
+    config:
+      items: ${{ nodes.get_issues.outputs.issues }}
+      maxConcurrency: ${{ inputs.max_concurrency }}
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: implement_one
+          kind: pipeline.invoke
+          config:
+            pipeline: issue-implementation
+            revisionPolicy: pinned_by_assignment
+            inputs:
+              issue: ${{ item }}
+              repository: ${{ inputs.repository }}
+            waitFor: completion
+  resultBindings:
+    results: ${{ nodes.fan_out.outputs.children }}
+  outputs:
+    type: object
+    properties:
+      results:
+        type: array
+        items:
+          type: object

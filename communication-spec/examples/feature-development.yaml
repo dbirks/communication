@@ -1,0 +1,104 @@
+# ILLUSTRATIVE draft Communication spec. Not a currently deployed API.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: feature-development
+  description: Plan, approve, implement, test, review, retry and prepare PR.
+spec:
+  inputs:
+    type: object
+    required:
+    - goal
+    - repository
+    properties:
+      goal:
+        type: string
+        minLength: 1
+      repository:
+        type: string
+      acceptance_criteria:
+        type: string
+  outputs:
+    type: object
+    properties:
+      implementation_summary:
+        type: string
+  policies:
+    maxConcurrentNodes: 3
+    timeoutSeconds: 14400
+  nodes:
+  - id: plan
+    kind: agent.acp
+    config:
+      profile: org/planner@3
+      prompt: 'Produce a plan for: ${{ inputs.goal }}'
+      sessionMode: new
+    outputs:
+      type: object
+      required:
+      - plan
+      properties:
+        plan:
+          type: string
+  - id: approve
+    kind: human.approval
+    dependsOn:
+    - plan
+    config:
+      summary: 'Approve plan: ${{ nodes.plan.outputs.plan }}'
+      timeoutSeconds: 86400
+      onTimeout: fail
+  - id: build_until_verified
+    kind: until
+    dependsOn:
+    - approve
+    config:
+      maxIterations: 4
+      passWhen: nodes.review.outputs.approved == true
+      body:
+        nodes:
+        - id: implement
+          kind: agent.acp
+          config:
+            profile: org/implementer@4
+            sessionMode: resume_if_supported
+            fallback: new
+            prompt: 'Implement goal and address previous review feedback. Goal: ${{ inputs.goal }}'
+        - id: test
+          kind: process.exec
+          dependsOn:
+          - implement
+          config:
+            executable: go
+            args:
+            - test
+            - ./...
+            cwd: ${{ workspace.repo.root }}
+        - id: review
+          kind: agent.acp
+          dependsOn:
+          - test
+          config:
+            profile: org/reviewer@2
+            prompt: Determine whether acceptance criteria are met. Return approved and evidence.
+          outputs:
+            type: object
+            required:
+            - approved
+            - evidence
+            properties:
+              approved:
+                type: boolean
+              evidence:
+                type: string
+      resultBindings:
+        summary: ${{ nodes.review.outputs.evidence }}
+  - id: publish
+    kind: git.publish
+    dependsOn:
+    - build_until_verified
+    config:
+      mode: draft_pr
+      targetRepository: ${{ inputs.repository }}
+  resultBindings:
+    implementation_summary: ${{ nodes.build_until_verified.outputs.summary }}

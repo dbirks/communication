@@ -1,0 +1,29 @@
+# ILLUSTRATIVE draft Communication spec. Versioned reusable node template.
+apiVersion: communication.dev/v1alpha1
+kind: NodeTemplate
+metadata:
+  name: code-reviewer
+  version: 2.0.0
+  description: Read-only review using a managed ACP agent profile.
+spec:
+  implements: agent.acp
+  parameters:
+    type: object
+    required: [profile]
+    properties:
+      profile: {type: string}
+      review_instructions: {type: string, default: 'Check correctness, tests and acceptance criteria.'}
+  config:
+    profile: '${{ parameters.profile }}'
+    sessionMode: new
+    workspaceMode: read_only
+    prompt: '${{ parameters.review_instructions }}'
+  outputSchema:
+    type: object
+    required: [approved, evidence]
+    properties:
+      approved: {type: boolean}
+      evidence: {type: string}
+      findings:
+        type: array
+        items: {type: string}
