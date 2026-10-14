@@ -1,0 +1,29 @@
+CHECK W1 PASS all 4 run worktrees exist on their run branches (run-N/name from mirror main)
+W3PATH repos/backend.git
+W3PATH repos/backend.git/logs
+W3PATH repos/backend.git/logs/refs
+W3PATH repos/backend.git/logs/refs/heads
+W3PATH repos/backend.git/logs/refs/heads/run-1
+W3PATH repos/backend.git/logs/refs/heads/run-1/backend
+W3PATH repos/backend.git/objects
+W3PATH repos/backend.git/objects/5a
+W3PATH repos/backend.git/objects/5a/a2045d71da402b05dd86de563e104a1914e95d
+W3PATH repos/backend.git/objects/8d
+W3PATH repos/backend.git/objects/8d/406ff99ba86c047925ee5bb3f18acd20e370f6
+W3PATH repos/backend.git/objects/c2
+W3PATH repos/backend.git/objects/c2/cbd3e2ca5b5f6a88bcbbefd69f740f36be321b
+W3PATH repos/backend.git/refs/heads/run-1
+W3PATH repos/backend.git/refs/heads/run-1/backend
+W3PATH repos/backend.git/worktrees/backend
+W3PATH repos/backend.git/worktrees/backend/COMMIT_EDITMSG
+W3PATH repos/backend.git/worktrees/backend/index
+W3PATH repos/backend.git/worktrees/backend/logs/HEAD
+CHECK W3 PASS 19 paths inside shared mirror repos/backend.git changed during the run-1 commit (listed as W3PATH lines above): objects + refs + worktrees/<id>/ metadata; an agent allowed to commit needs write access to the SHARED mirror
+CHECK W2 PASS run-1 committed app.txt; run-2/repos/backend/app.txt unchanged and status --porcelain empty
+CHECK W4 PASS run-2 CAN read run-1's branch via shared mirror: git log --oneline run-1/backend -> c2cbd3e run-1 backend change;c2a2c8f seed backend
+CHECK W5 PASS copied worktree broken without mirror (git status exit 128: fatal: gitfile does not point to a valid repository: /home/david/.cache/communication-lab/m0-worktree/copied/backend/.git;) — confirms 05 'a copied worktree alone is not portable'
+CHECK W6 PASS worktree remove+prune dropped run-2 entry; run-1/backend intact; remaining: /home/david/.cache/communication-lab/m0-worktree/repos/backend.git              (bare);/home/david/.cache/communication-lab/m0-worktree/workspaces/run-1/repos/backend c2cbd3e [run-1/backend]
+CMD H1 (cwd /home/david/.cache/communication-lab/m0-worktree/workspaces/run-3): claude -p --permission-mode acceptEdits "<PROMPT>"
+CHECK H1 PASS claude 2.1.300 -p --permission-mode acceptEdits from run root (cwd not a git repo): both app.txt gained exactly the required line, statuses show only app.txt, run-1 untouched
+CMD H2: codex exec --skip-git-repo-check --sandbox workspace-write -C /home/david/.cache/communication-lab/m0-worktree/workspaces/run-4 Append the line FRONTEND-EDIT to repos/frontend/app.txt and the line BACKEND-EDIT to repos/backend/app.txt. Do not modify any other file. Reply DONE.
+CHECK H2 PASS codex 0.162.1 exec --skip-git-repo-check --sandbox workspace-write -C <run root>: both app.txt gained exactly the required line, statuses show only app.txt, run-1 untouched (exact cmd in results log header)
