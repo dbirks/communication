@@ -21,20 +21,13 @@ usage: communication <mode> [flags]
 
 modes:
   serve     run the control plane API server
-  worker    run the execution worker
-  dev       run the full local development stack
+  worker    run the execution worker (register, heartbeat, drain on SIGTERM)
+  dev       run serve and one worker in one process (dev only, not HA)
   migrate   apply database migrations
   doctor    report on the local environment and supported agent tools
   version   print the binary version
   help      show this help
 `
-
-// unimplementedModes are planned for milestone M1 and later
-// (communication-spec/11-build-roadmap.md).
-var unimplementedModes = map[string]bool{
-	"worker": true,
-	"dev":    true,
-}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -62,11 +55,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		ctx := context.Background()
 		return runServe(ctx, args[1:], stdout, stderr)
-	}
-
-	if unimplementedModes[args[0]] {
-		fmt.Fprintf(stderr, "communication %s: not implemented yet (planned for M1)\n", args[0])
-		return 2
+	case "worker":
+		ctx := context.Background()
+		return runWorker(ctx, args[1:], stdout, stderr)
+	case "dev":
+		ctx := context.Background()
+		return runDev(ctx, args[1:], stdout, stderr)
 	}
 
 	fmt.Fprintf(stderr, "unknown mode %q\n", args[0])

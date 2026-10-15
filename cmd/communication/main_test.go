@@ -12,6 +12,8 @@ func TestRunModes(t *testing.T) {
 	// trying to reach a database.
 	t.Setenv("COMMUNICATION_DATABASE_URL", "")
 	t.Setenv("COMMUNICATION_PUBLIC_URL", "")
+	t.Setenv("COMMUNICATION_WORKER_NAME", "")
+	t.Setenv("COMMUNICATION_WORKER_HEARTBEAT", "")
 
 	tests := []struct {
 		name       string
@@ -32,8 +34,23 @@ func TestRunModes(t *testing.T) {
 			wantCode:   2,
 			wantStderr: "COMMUNICATION_DATABASE_URL is not set",
 		},
-		{name: "worker", args: []string{"worker"}, wantCode: 2, wantStderr: "not implemented"},
-		{name: "dev", args: []string{"dev"}, wantCode: 2, wantStderr: "not implemented"},
+		{
+			name:       "worker",
+			args:       []string{"worker"},
+			wantCode:   2,
+			wantStderr: "COMMUNICATION_DATABASE_URL is not set",
+		},
+		{
+			// dev fans out to both components, so a missing database URL is
+			// reported by each of them and the mode still exits 2.
+			name:       "dev",
+			args:       []string{"dev"},
+			wantCode:   2,
+			wantStderr: "COMMUNICATION_DATABASE_URL is not set",
+			wantStdout: "NOT an HA runtime",
+		},
+		{name: "worker help", args: []string{"worker", "--help"}, wantCode: 0, wantStdout: "usage: communication worker"},
+		{name: "dev help", args: []string{"dev", "--help"}, wantCode: 0, wantStdout: "usage: communication dev"},
 		{name: "migrate", args: []string{"migrate"}, wantCode: 2, wantStderr: "usage"},
 		{name: "unknown mode", args: []string{"frobnicate"}, wantCode: 2, wantStderr: `unknown mode "frobnicate"`},
 		{name: "no args", args: nil, wantCode: 2, wantStderr: "usage"},

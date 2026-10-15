@@ -10,8 +10,8 @@
 #   migrate  one-shot `communication migrate up`           -> completes before the APIs start
 #   oidc     mock-oauth2-server (dev IdP, no committed credentials) -> 127.0.0.1:18090
 #   postgres authoritative store (ADR-0013), named volume
-#
-# A worker service joins this file in a later milestone task.
+#   worker   one `communication worker`: registers, heartbeats, drains on
+#            SIGTERM; claims no work yet (M2) and publishes no ports
 #
 # Port choice: 18080-18090 are used instead of the documented 8080/8090 because
 # this lab host already runs a model gateway on 8080/8081/8090; every published
@@ -133,6 +133,25 @@ services:
         condition: service_healthy
       api-b:
         condition: service_healthy
+
+  # Execution worker: registers, heartbeats and drains (02-system-architecture.md,
+  # D-002). Separate process from the API on purpose — independent rollout and
+  # lifetime — and it needs no inbound port, only the database.
+  worker:
+    image: communication:dev
+    # The image is produced by the `migrate` build above; never pull it.
+    pull_policy: never
+    command: ["worker"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_WORKER_NAME: worker-1
+      COMMUNICATION_WORKER_HEARTBEAT: "10s"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Heartbeat is 10s and the worker's own drain deadline is 15s, so give it
+    # room to write `offline` before docker sends SIGKILL.
+    stop_grace_period: 20s
 
 volumes:
   pgdata:
