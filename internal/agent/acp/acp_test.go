@@ -39,6 +39,10 @@ type fakeAgent struct {
 
 	mu            sync.Mutex
 	lastNew       acp.NewSessionRequest
+	lastMode      string
+	lastLoad      string
+	modeErr       error
+	loadErr       error
 	permResponses []acp.RequestPermissionResponse
 	promptFn      func(ctx context.Context, f *fakeAgent) (acp.PromptResponse, error)
 
@@ -121,11 +125,23 @@ func (f *fakeAgent) ResumeSession(_ context.Context, _ acp.ResumeSessionRequest)
 func (f *fakeAgent) SetSessionConfigOption(_ context.Context, _ acp.SetSessionConfigOptionRequest) (acp.SetSessionConfigOptionResponse, error) {
 	return acp.SetSessionConfigOptionResponse{}, acp.NewMethodNotFound("session/set_config_option")
 }
-func (f *fakeAgent) SetSessionMode(_ context.Context, _ acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
-	return acp.SetSessionModeResponse{}, acp.NewMethodNotFound("session/set_mode")
+func (f *fakeAgent) SetSessionMode(_ context.Context, p acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.modeErr != nil {
+		return acp.SetSessionModeResponse{}, f.modeErr
+	}
+	f.lastMode = string(p.ModeId)
+	return acp.SetSessionModeResponse{}, nil
 }
-func (f *fakeAgent) LoadSession(_ context.Context, _ acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
-	return acp.LoadSessionResponse{}, acp.NewMethodNotFound("session/load")
+func (f *fakeAgent) LoadSession(_ context.Context, p acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return acp.LoadSessionResponse{}, f.loadErr
+	}
+	f.lastLoad = string(p.SessionId)
+	return acp.LoadSessionResponse{}, nil
 }
 func (f *fakeAgent) UnstableDidChangeDocument(_ context.Context, _ acp.UnstableDidChangeDocumentNotification) error {
 	return acp.NewMethodNotFound("text_document/did_change")
@@ -176,10 +192,21 @@ func (f *fakeAgent) UnstableForkSession(_ context.Context, _ acp.UnstableForkSes
 // startInProcess wires our client handle to a fakeAgent over io.Pipes.
 func startInProcess(t *testing.T, fake *fakeAgent, policy PermissionPolicy) *handle {
 	t.Helper()
+	h, err := startInProcessOpts(t, fake, policy, StartOptions{})
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	return h
+}
+
+// startInProcessOpts is startInProcess with real session-setup options —
+// the in-process proof surface for set_mode and session/load.
+func startInProcessOpts(t *testing.T, fake *fakeAgent, policy PermissionPolicy, opts StartOptions) (*handle, error) {
+	t.Helper()
 	clientToAgentR, clientToAgentW := io.Pipe()
 	agentToClientR, agentToClientW := io.Pipe()
 
-	h := &handle{policy: policy, stderr: newRingBuffer(maxStderrBytes)}
+	h := &handle{policy: policy, decider: opts.Decider, stderr: newRingBuffer(maxStderrBytes)}
 	h.conn = acp.NewClientSideConnection(h, clientToAgentW, agentToClientR)
 	h.initLive()
 
@@ -190,10 +217,10 @@ func startInProcess(t *testing.T, fake *fakeAgent, policy PermissionPolicy) *han
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := h.handshake(ctx, domain.AgentLaunchSpec{WorkDir: t.TempDir()}); err != nil {
-		t.Fatalf("handshake: %v", err)
+	if err := h.handshake(ctx, domain.AgentLaunchSpec{WorkDir: t.TempDir(), LauncherID: "claude"}, opts); err != nil {
+		return h, err
 	}
-	return h
+	return h, nil
 }
 
 func textBlock(s string) acp.ContentBlock {
@@ -243,7 +270,7 @@ func TestHandshakePassesAdditionalDirsWhenAdvertised(t *testing.T) {
 	if err := h.handshake(ctx, domain.AgentLaunchSpec{
 		WorkDir:        t.TempDir(),
 		AdditionalDirs: []string{"/tmp/cache"},
-	}); err != nil {
+	}, StartOptions{}); err != nil {
 		t.Fatalf("second handshake: %v", err)
 	}
 	fake.mu.Lock()

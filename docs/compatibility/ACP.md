@@ -77,3 +77,20 @@ Observed from `session/new` and confirmed by `session/set_mode` /
 - This probe speaks raw ACP with no SDK. It is the baseline the Go SDK adapter (`github.com/coder/acp-go-sdk`, evaluated in a later M0 task) must reproduce message-for-message; SDK results are only credible when they match `results-*.json` here.
 - Single-run results for the permission rounds; the 5× cancel repeat is the first reliability sample and it already shows timing sensitivity on Claude — the matrix needs repeated nightly runs (per 12-test-strategy CI note) before sign-off.
 - Both adapters accept `session/set_mode` **and** `session/set_config_option mode=…` with the same effect; neither sent a `current_mode_update` or `config_option_update` notification afterwards, so a client must read the mode from the call result rather than wait for a notification.
+
+## Worker container (M2, observed 2026-10-14)
+
+Image `communication-worker:dev` (worker/Dockerfile: golang:1.27.2-trixie build, node:22-bookworm-slim runtime, pinned `@agentclientprotocol/claude-agent-acp@0.90.0`, `@agentclientprotocol/codex-acp@2.2.2`, `@anthropic-ai/claude-code@2.1.300`, `@openai/codex@0.162.1`). Run under compose project `m2wrk` with the credential override `compose.harness.yml` (host uid; the image itself carries no credentials).
+
+- `communication doctor --acp claude --acp-timeout 120s` **inside the worker container** against the real account:
+  `acp:claude ok @agentclientprotocol/claude-agent-acp@0.90.0 protocol=1 loadSession=true session=81fe7d87 events=message_chunk:2,tool_call:1,tool_call_update:4,unknown:10 elapsed=8.3s` → **PASS** (the first claude row ever observed from a container, not just the host).
+- Full worker turn loop against real Claude Code in the container, journal-verified in `domain_events`:
+  - plain answer turn: `turn.started → message.user → message.agent(×2, final=true) → turn.completed`, `stop_reason=end_turn` → **PASS**;
+  - session reuse across turns in one process (magic-word recall, one live binding, no second `agent.session.connected`) → **PASS**;
+  - permission bridge in `ask` mode (worker selected Claude mode `default`): `tool.call → tool.update → permission.requested` (durable row `pending`) → decision written as plain SQL → tool `completed` → `turn.completed` → **PASS**;
+  - cancel mid-stream: 16 coalesced chunks then `turn.cancelled`, `stop_reason=cancelled` → **PASS**;
+  - SIGTERM mid-stream: 19 chunks flushed, `turn.interrupted` + `agent.session.disconnected` + worker `offline` — never a false `completed` → **PASS**;
+  - hard kill (`docker kill`, no drain) then restart: live `connected` binding with `loadSession=true` was resumed via `session/load` (`session_origin=resumed`) and the agent recalled a phrase taught in the killed process → **PASS**.
+- Observed failure honesty: when credentials were unreachable (worker recreated without `HOST_UID`, so uid 10001 could not read the 0600 host config), the turn closed `turn.failed` with the adapter's own JSON-RPC error text (`Authentication required`) in the event payload and the session was disconnected — the loop did not pretend, and the same conversation succeeded once the uid was fixed.
+- Codex in-container was **not** exercised in this run (single worker, Claude account mounted); the image installs and smokes the codex adapter binaries, but its E2E row stays UNVERIFIED for containers until run.
+

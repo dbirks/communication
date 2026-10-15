@@ -22,3 +22,6 @@ ui/dist/*
 
 # Python bytecode
 __pycache__/
+
+# M2 real-credential harness state (lab only, never commit)
+.harness/

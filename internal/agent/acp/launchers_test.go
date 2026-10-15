@@ -3,9 +3,9 @@ package acp
 import "testing"
 
 func TestLookupLauncherHit(t *testing.T) {
-	want := map[string][2]string{
-		"claude": {"claude-agent-acp", "0.90.0"},
-		"codex":  {"codex-acp", "2.2.2"},
+	want := map[string][3]string{
+		"claude": {"claude-agent-acp", "0.90.0", "default"},
+		"codex":  {"codex-acp", "2.2.2", "read-only"},
 	}
 	for id, w := range want {
 		l, ok := LookupLauncher(id)
@@ -14,6 +14,11 @@ func TestLookupLauncherHit(t *testing.T) {
 		}
 		if l.Executable != w[0] || l.Version != w[1] {
 			t.Errorf("LookupLauncher(%q) = %q@%q, want %q@%q", id, l.Executable, l.Version, w[0], w[1])
+		}
+		// The ask-mode ids are the observed prompting modes; a change here
+		// is a compatibility-matrix event, not a refactor (ACP.md).
+		if l.AskModeID != w[2] {
+			t.Errorf("LookupLauncher(%q).AskModeID = %q, want %q", id, l.AskModeID, w[2])
 		}
 		if l.ID != id {
 			t.Errorf("ID = %q, want %q", l.ID, id)

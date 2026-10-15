@@ -130,6 +130,12 @@ type Worker struct {
 	// default. M2 sets it to the lease-releasing walk (02 §"Worker graceful
 	// rollout": stop claiming; drain or cancel per deadline).
 	Drain func(context.Context) error
+
+	// Registered, when set, runs on a goroutine owned by Run immediately
+	// after Register succeeds — M2 starts the turn loop here so claiming can
+	// never begin before the worker row (and with it the id claims are keyed
+	// by) exists.
+	Registered func(ctx context.Context, workerID string)
 }
 
 // Option customises a Worker.
@@ -201,6 +207,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		slog.String("version", w.cfg.Version),
 		slog.String("heartbeat", w.cfg.Heartbeat.String()),
 	)
+	if w.Registered != nil {
+		go w.Registered(ctx, id)
+	}
 
 	for {
 		select {

@@ -12,31 +12,39 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/internal/worker"
 )
 
 const workerUsage = `usage: communication worker
 
-runs the execution worker: registers itself in Postgres, heartbeats, and marks
-itself draining then offline on SIGTERM/SIGINT
-(communication-spec/02-system-architecture.md, ADR-0001).
-
-Claiming execution attempts arrives with milestone M2; until then a worker is
-registered but idle.
+runs the execution worker: registers itself in Postgres, heartbeats, marks
+itself draining then offline on SIGTERM/SIGINT, and (from M2) claims
+conversation turns — leasing them with a fencing token, driving live ACP
+agent sessions, streaming the transcript into the journal, and writing honest
+terminal states before exit
+(communication-spec/02-system-architecture.md, ADR-0001, ADR-0016).
 
 environment:
   COMMUNICATION_DATABASE_URL     required, postgres connection string
   COMMUNICATION_WORKER_NAME      worker identity (default: hostname)
   COMMUNICATION_WORKER_HEARTBEAT heartbeat interval (default "10s")
+  COMMUNICATION_WORKSPACE_ROOT   per-conversation workspace root
+                                 (default "/var/lib/communication/workspaces")
 
 migrations are applied separately: communication migrate up
 `
 
+// defaultWorkspaceRoot is where per-conversation workspaces live; the
+// compose worker mounts a volume there (communication-spec/05 layout).
+const defaultWorkspaceRoot = "/var/lib/communication/workspaces"
+
 // workerOptions is the resolved worker configuration.
 type workerOptions struct {
-	databaseURL string
-	cfg         worker.Config
+	databaseURL   string
+	workspaceRoot string
+	cfg           worker.Config
 }
 
 // workerOptionsFromEnv reads and validates the worker environment. getenv is
@@ -50,6 +58,11 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 	o.databaseURL = getenv("COMMUNICATION_DATABASE_URL")
 	if o.databaseURL == "" {
 		return o, errors.New("COMMUNICATION_DATABASE_URL is not set")
+	}
+
+	o.workspaceRoot = strings.TrimSpace(getenv("COMMUNICATION_WORKSPACE_ROOT"))
+	if o.workspaceRoot == "" {
+		o.workspaceRoot = defaultWorkspaceRoot
 	}
 
 	hostname, hostErr := os.Hostname()
@@ -158,6 +171,35 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 
+	// M2 turn execution (ADR-0016): claims fenced leases, drives one live
+	// ACP session per conversation, streams the coalesced transcript, and
+	// bridges permission prompts to the durable controller decision. The
+	// loop starts only after registration produced a worker id, and Drain
+	// runs inside the M1 shutdown path (stop claiming → cancel in-flight
+	// turns → honest terminal states) before the offline write.
+	wakes := postgres.NewEventWake(opts.databaseURL, log)
+	defer wakes.Close()
+	loop, err := worker.NewTurnLoop(
+		worker.TurnConfig{AskModeID: acpAskModeID},
+		&postgres.TurnStore{Pool: pool},
+		&acp.Factory{Runtime: &acp.Runtime{Logger: log}},
+		&worker.Workspace{Root: opts.workspaceRoot},
+		w.ID,
+		worker.WithTurnLogger(log),
+		worker.WithJournalWake(wakes.Watch),
+	)
+	if err != nil {
+		stop()
+		log.Error("invalid turn loop configuration", slog.String("error", err.Error()))
+		return 2
+	}
+	w.Registered = func(ctx context.Context, _ string) {
+		if err := loop.Start(ctx); err != nil {
+			log.Warn("turn loop stopped", slog.String("error", err.Error()))
+		}
+	}
+	w.Drain = loop.Drain
+
 	log.Info("worker starting",
 		slog.String("hostname", opts.cfg.Hostname),
 		slog.String("version", version),
@@ -169,4 +211,15 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return 1
 	}
 	return 0
+}
+
+// acpAskModeID resolves the prompting mode for the launcher registry's
+// ask-capable launchers (docs/compatibility/ACP.md "Permission modes"); an
+// unknown launcher yields "" and the loop refuses the ask mode on it.
+func acpAskModeID(launcherID string) string {
+	l, ok := acp.LookupLauncher(launcherID)
+	if !ok {
+		return ""
+	}
+	return l.AskModeID
 }

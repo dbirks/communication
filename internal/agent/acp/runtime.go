@@ -31,6 +31,13 @@ var _ domain.AgentRuntime = (*Runtime)(nil)
 // Start launches spec.Executable (no shell), performs initialize and
 // session/new, and returns a live handle.
 func (r *Runtime) Start(ctx context.Context, spec domain.AgentLaunchSpec) (domain.AgentHandle, error) {
+	return r.StartWithOptions(ctx, spec, StartOptions{})
+}
+
+// StartWithOptions is Start plus session setup options: a prompting mode,
+// a session to restore via session/load, and the per-session permission
+// decider that overrides the Runtime's static policy.
+func (r *Runtime) StartWithOptions(ctx context.Context, spec domain.AgentLaunchSpec, opts StartOptions) (domain.AgentSession, error) {
 	if spec.Executable == "" {
 		return nil, errors.New("acp: AgentLaunchSpec.Executable is required")
 	}
@@ -67,16 +74,17 @@ func (r *Runtime) Start(ctx context.Context, spec domain.AgentLaunchSpec) (domai
 	}
 
 	h := &handle{
-		policy: policy,
-		logger: r.Logger,
-		stderr: stderr,
-		cmd:    cmd,
-		stdin:  stdin,
+		policy:  policy,
+		decider: opts.Decider,
+		logger:  r.Logger,
+		stderr:  stderr,
+		cmd:     cmd,
+		stdin:   stdin,
 	}
 	h.conn = acp.NewClientSideConnection(h, stdin, stdout)
 	h.attachProcess(cmd, stdout)
 
-	if err := h.handshake(ctx, spec); err != nil {
+	if err := h.handshake(ctx, spec, opts); err != nil {
 		// Reap the process before reporting failure.
 		_ = h.Close()
 		return nil, err

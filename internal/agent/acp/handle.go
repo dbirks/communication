@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,12 +33,25 @@ type handle struct {
 	protocolVersion int
 	loadSession     bool
 
+	// decider, when set, answers session/request_permission by callback
+	// (the worker's durable human bridge) instead of the static policy.
+	decider domain.PermissionDecider
+	// info records the observed handshake for the session binding row.
+	info domain.SessionInfo
+
 	events chan domain.ConversationEvent
 	seq    atomic.Int64
 
 	// ctx is canceled when Close begins; it unblocks emit and pending waits.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// turnCtxMu guards turnCtx: the context of the Prompt currently in
+	// flight. Permission deciders hang off it so a turn ending (or being
+	// cancelled) unblocks a pending human decision, while the session
+	// itself survives across turns.
+	turnCtxMu sync.Mutex
+	turnCtx   context.Context
 
 	// mu guards event emission against send-on-closed-channel races.
 	mu        sync.RWMutex
@@ -65,8 +79,23 @@ var (
 // SessionID returns the ACP session identifier from session/new.
 func (h *handle) SessionID() string { return h.sessionID }
 
+// deciderBase returns the context a permission decision runs under: the
+// in-flight turn's context when one exists, the handle's otherwise.
+func (h *handle) deciderBase() context.Context {
+	h.turnCtxMu.Lock()
+	defer h.turnCtxMu.Unlock()
+	if h.turnCtx != nil {
+		return h.turnCtx
+	}
+	return h.ctx
+}
+
 // LoadSessionSupported reports whether the agent advertised loadSession.
 func (h *handle) LoadSessionSupported() bool { return h.loadSession }
+
+// Info reports the observed session handshake (session id, negotiated
+// protocol version, agent capabilities as seen, launcher and mode).
+func (h *handle) Info() domain.SessionInfo { return h.info }
 
 // ProtocolVersion reports the negotiated ACP protocol version.
 func (h *handle) ProtocolVersion() int { return h.protocolVersion }
@@ -77,9 +106,28 @@ func (h *handle) Stderr() string { return h.stderr.String() }
 // Events returns the normalized event stream (buffered, capacity 1024).
 func (h *handle) Events() <-chan domain.ConversationEvent { return h.events }
 
-// handshake performs initialize + session/new and records the negotiated
-// protocol version, agent capabilities and session identifier.
-func (h *handle) handshake(ctx context.Context, spec domain.AgentLaunchSpec) error {
+// StartOptions customises one session launch beyond the process spec.
+type StartOptions struct {
+	// ModeID switches the session into a prompting mode via session/set_mode
+	// after the session exists. An empty ModeID keeps the adapter default.
+	ModeID string
+	// LoadSessionID restores this session id via session/load when the agent
+	// advertised loadSession; a failed load falls back to session/new and
+	// Info().Origin records which happened (ADR-0016 §6 — never a silent
+	// resume).
+	LoadSessionID string
+	// Decider answers permission prompts for this session's lifetime; nil
+	// keeps the Runtime's static PermissionPolicy.
+	Decider domain.PermissionDecider
+	// LauncherVersion is recorded verbatim into Info for the binding row;
+	// the caller resolved it from the launcher registry.
+	LauncherVersion string
+}
+
+// handshake performs initialize + session/new (or session/load) and records
+// the negotiated protocol version, agent capabilities and session
+// identifier.
+func (h *handle) handshake(ctx context.Context, spec domain.AgentLaunchSpec, opts StartOptions) error {
 	initResp, err := h.conn.Initialize(ctx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		ClientCapabilities: acp.ClientCapabilities{
@@ -104,12 +152,80 @@ func (h *handle) handshake(ctx context.Context, spec domain.AgentLaunchSpec) err
 	if len(spec.AdditionalDirs) > 0 && initResp.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil {
 		newReq.AdditionalDirectories = append([]string(nil), spec.AdditionalDirs...)
 	}
-	sessionResp, err := h.conn.NewSession(ctx, newReq)
-	if err != nil {
-		return fmt.Errorf("acp: session/new: %w", err)
+
+	origin := "new"
+	switch {
+	case opts.LoadSessionID != "" && h.loadSession:
+		_, err := h.conn.LoadSession(ctx, acp.LoadSessionRequest{
+			Cwd:        spec.WorkDir,
+			McpServers: []acp.McpServer{},
+			SessionId:  acp.SessionId(opts.LoadSessionID),
+		})
+		if err == nil {
+			h.sessionID = opts.LoadSessionID
+			origin = "resumed"
+		} else {
+			// A failed resume is a new session, visibly — never a silent
+			// claim of restoration (ADR-0016 §6).
+			if h.logger != nil {
+				h.logger.Warn("acp: session/load failed; starting a new session",
+					"session_id", opts.LoadSessionID, "err", err)
+			}
+			resp, err := h.conn.NewSession(ctx, newReq)
+			if err != nil {
+				return fmt.Errorf("acp: session/new (after failed session/load): %w", err)
+			}
+			h.sessionID = string(resp.SessionId)
+		}
+	default:
+		sessionResp, err := h.conn.NewSession(ctx, newReq)
+		if err != nil {
+			return fmt.Errorf("acp: session/new: %w", err)
+		}
+		h.sessionID = string(sessionResp.SessionId)
 	}
-	h.sessionID = string(sessionResp.SessionId)
+
+	if opts.ModeID != "" {
+		// Prompting is a mode property on both probed adapters
+		// (docs/compatibility/ACP.md "Permission modes"): failing to enter
+		// the asking mode under an ask policy must fail closed, because the
+		// adapter default silently auto-approves every tool call.
+		if _, err := h.conn.SetSessionMode(ctx, acp.SetSessionModeRequest{
+			SessionId: acp.SessionId(h.sessionID),
+			ModeId:    acp.SessionModeId(opts.ModeID),
+		}); err != nil {
+			return fmt.Errorf("acp: session/set_mode %q: %w", opts.ModeID, err)
+		}
+	}
+
+	h.info = domain.SessionInfo{
+		ACPSessionID:      h.sessionID,
+		ProtocolVersion:   h.protocolVersion,
+		AgentCapabilities: capabilitiesMap(initResp),
+		LauncherID:        spec.LauncherID,
+		LauncherVersion:   opts.LauncherVersion,
+		Origin:            origin,
+		ModeID:            opts.ModeID,
+	}
 	return nil
+}
+
+// capabilitiesMap renders the agent's own initialize answer as plain data
+// for the session-binding row. It is stored as observed and is never a
+// capability claim (04).
+func capabilitiesMap(resp acp.InitializeResponse) map[string]any {
+	raw, err := json.Marshal(resp.AgentCapabilities)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	if resp.AgentInfo != nil {
+		out["agentInfo"] = map[string]any{"name": resp.AgentInfo.Name, "version": resp.AgentInfo.Version}
+	}
+	return out
 }
 
 // initLive wires the runtime fields shared by process and in-test handles.
@@ -175,6 +291,15 @@ func (h *handle) Prompt(ctx context.Context, text string) (domain.StopReason, er
 	h.turnCancelled = false
 	h.permMu.Unlock()
 
+	h.turnCtxMu.Lock()
+	h.turnCtx = ctx
+	h.turnCtxMu.Unlock()
+	defer func() {
+		h.turnCtxMu.Lock()
+		h.turnCtx = nil
+		h.turnCtxMu.Unlock()
+	}()
+
 	resp, err := h.conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(h.sessionID),
 		Prompt: []acp.ContentBlock{{
@@ -214,6 +339,14 @@ func (h *handle) Cancel(ctx context.Context) error {
 	// returns; its handler must already observe turnCancelled and resolve
 	// with the cancelled outcome. Setting the flag after the write races
 	// that window and lets the permission be answered "selected".
+	h.markTurnCancelled()
+	return h.conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(h.sessionID)})
+}
+
+// markTurnCancelled flips the turn flag and releases every pending
+// permission waiter. Cancel does it before writing session/cancel; it is
+// split out so in-process tests can drive the cancel race directly.
+func (h *handle) markTurnCancelled() {
 	h.permMu.Lock()
 	h.turnCancelled = true
 	waiters := h.permWaiters
@@ -222,7 +355,6 @@ func (h *handle) Cancel(ctx context.Context) error {
 	for w := range waiters {
 		close(w)
 	}
-	return h.conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(h.sessionID)})
 }
 
 // Close terminates the agent process and closes the event stream exactly
@@ -290,20 +422,39 @@ func (h *handle) SessionUpdate(_ context.Context, n acp.SessionNotification) err
 			Text: contentText(u.AgentThoughtChunk.Content),
 		})
 	case u.ToolCall != nil:
+		input, _ := previewValue(u.ToolCall.RawInput, maxToolPreviewBytes)
 		h.emit(domain.ConversationEvent{
 			Kind:       "tool_call",
 			ToolCallID: string(u.ToolCall.ToolCallId),
 			Text:       u.ToolCall.Title,
+			ToolKind:   string(u.ToolCall.Kind),
+			ToolStatus: string(u.ToolCall.Status),
+			Input:      input,
 		})
 	case u.ToolCallUpdate != nil:
 		text := ""
 		if u.ToolCallUpdate.Title != nil {
 			text = *u.ToolCallUpdate.Title
 		}
+		status := ""
+		if u.ToolCallUpdate.Status != nil {
+			status = string(*u.ToolCallUpdate.Status)
+		}
+		kind := ""
+		if u.ToolCallUpdate.Kind != nil {
+			kind = string(*u.ToolCallUpdate.Kind)
+		}
+		output := toolContentText(u.ToolCallUpdate.Content, maxToolPreviewBytes)
+		if output == "" {
+			output, _ = previewValue(u.ToolCallUpdate.RawOutput, maxToolPreviewBytes)
+		}
 		h.emit(domain.ConversationEvent{
 			Kind:       "tool_call_update",
 			ToolCallID: string(u.ToolCallUpdate.ToolCallId),
 			Text:       text,
+			ToolKind:   kind,
+			ToolStatus: status,
+			Output:     output,
 		})
 	case u.Plan != nil:
 		h.emit(domain.ConversationEvent{Kind: "plan"})
@@ -324,9 +475,11 @@ func contentText(c acp.ContentBlock) string {
 	return ""
 }
 
-// RequestPermission emits a permission_request event and answers per the
-// handle's policy. A cancelled turn always resolves with the cancelled
-// outcome.
+// RequestPermission answers a session/request_permission either by the
+// session's callback decider (the worker's durable human bridge) or by the
+// handle's static policy. A cancelled turn always resolves with the
+// cancelled outcome, and an answer naming an option the agent never offered
+// is discarded rather than echoed back.
 func (h *handle) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	permText := ""
 	if params.ToolCall.Title != nil {
@@ -345,13 +498,46 @@ func (h *handle) RequestPermission(ctx context.Context, params acp.RequestPermis
 		return cancelledPermission(), nil
 	}
 	h.permWaiters[waiter] = struct{}{}
+	decider := h.decider
 	h.permMu.Unlock()
 
-	selected, ok := h.selectPermissionOption(params)
+	var selected acp.PermissionOptionId
+	var ok bool
+	if decider != nil {
+		// The decider runs under a context that ends with the turn: the
+		// in-flight Prompt's context (worker cancel/drain) or the handle
+		// itself. A pending human decision must never outlive its turn.
+		dctx, dcancel := context.WithCancel(h.deciderBase())
+		defer dcancel()
+		go func() {
+			select {
+			case <-waiter:
+				dcancel()
+			case <-dctx.Done():
+			}
+		}()
+		choice, err := decider(dctx, permissionPrompt(params))
+		if err != nil {
+			if h.logger != nil {
+				h.logger.Warn("acp: permission decider failed; answering cancelled",
+					"tool_call_id", string(params.ToolCall.ToolCallId), "err", err)
+			}
+			return cancelledPermission(), nil
+		}
+		selected, ok = findOptionID(params.Options, acp.PermissionOptionId(choice.OptionID))
+		if !ok && choice.OptionID != "" {
+			if h.logger != nil {
+				h.logger.Warn("acp: permission decider named an option the agent did not offer; answering cancelled",
+					"option_id", choice.OptionID, "tool_call_id", string(params.ToolCall.ToolCallId))
+			}
+		}
+	} else {
+		selected, ok = h.selectPermissionOption(params)
+	}
 
 	select {
 	case <-waiter:
-		// The turn was cancelled while the policy decision was being made;
+		// The turn was cancelled while the decision was being made;
 		// the cancelled outcome wins per protocol.
 		return cancelledPermission(), nil
 	default:
@@ -374,6 +560,39 @@ func (h *handle) RequestPermission(ctx context.Context, params acp.RequestPermis
 		return cancelledPermission(), nil
 	}
 	return *resp, nil
+}
+
+// permissionPrompt normalises an ACP permission request into the domain
+// shape the worker bridges to a human.
+func permissionPrompt(params acp.RequestPermissionRequest) domain.PermissionPrompt {
+	title := ""
+	if params.ToolCall.Title != nil {
+		title = *params.ToolCall.Title
+	}
+	p := domain.PermissionPrompt{
+		ToolCallID: string(params.ToolCall.ToolCallId),
+		Title:      title,
+	}
+	if params.ToolCall.Kind != nil {
+		p.Kind = string(*params.ToolCall.Kind)
+	}
+	for _, o := range params.Options {
+		p.Options = append(p.Options, domain.PermissionOption{
+			OptionID: string(o.OptionId),
+			Label:    o.Name,
+			Kind:     string(o.Kind),
+		})
+	}
+	return p
+}
+
+func findOptionID(options []acp.PermissionOption, id acp.PermissionOptionId) (acp.PermissionOptionId, bool) {
+	for _, o := range options {
+		if o.OptionId == id {
+			return o.OptionId, true
+		}
+	}
+	return "", false
 }
 
 func cancelledPermission() acp.RequestPermissionResponse {

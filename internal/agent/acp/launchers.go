@@ -25,6 +25,13 @@ type Launcher struct {
 	Version string
 	// Args are passed to Executable verbatim.
 	Args []string
+	// AskModeID is the session mode that makes this adapter send
+	// session/request_permission for human review, observed in
+	// docs/compatibility/ACP.md ("Permission modes"). Empty means the
+	// launcher has no observed prompting mode, so a profile with
+	// permission_mode 'ask' cannot be honoured on it and the worker must
+	// fail closed rather than run in the adapter's permissive default.
+	AskModeID string
 	// Notes records observed caveats; never a capability guarantee.
 	Notes string
 }
@@ -38,6 +45,7 @@ var knownLaunchers = []Launcher{
 		Executable:  "claude-agent-acp",
 		Package:     "@agentclientprotocol/claude-agent-acp",
 		Version:     "0.90.0",
+		AskModeID:   "default",
 		Notes: "probed at protocolVersion 1 with loadSession advertised; auth rides the " +
 			"ambient claude CLI login; adapter default mode auto never sends " +
 			"session/request_permission (docs/compatibility/ACP.md)",
@@ -48,6 +56,7 @@ var knownLaunchers = []Launcher{
 		Executable:  "codex-acp",
 		Package:     "@agentclientprotocol/codex-acp",
 		Version:     "2.2.2",
+		AskModeID:   "read-only",
 		Notes: "probed at protocolVersion 1 with loadSession advertised; auth rode the " +
 			"existing codex-cli login; adapter default mode agent never sends " +
 			"session/request_permission (docs/compatibility/ACP.md)",

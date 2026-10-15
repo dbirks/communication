@@ -52,6 +52,16 @@ type ConversationEvent struct {
 	Text string
 	// At is when the event was observed.
 	At time.Time
+
+	// ToolKind, ToolStatus, Input and Output describe tool_call /
+	// tool_call_update events (empty elsewhere). They are adapter-normalised,
+	// already-bounded previews: the raw protocol object never travels past
+	// the adapter (ADR-0013 Security: full tool inputs are not transcript
+	// material).
+	ToolKind   string
+	ToolStatus string
+	Input      string
+	Output     string
 }
 
 // AgentHandle is a live conversation with one running agent.
