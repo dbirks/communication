@@ -16,6 +16,11 @@
 #   github.com/google/go-licenses           v1.6.0
 #   pnpm                                      12.11.2
 #   Node.js                                   24.22.0 (current LTS line)
+#   @redocly/cli                            2.63.0 (API contract lint, api/README.md)
+# Container images for the go job's integration services (12-test-strategy:
+# real Postgres/OIDC, never mocks):
+#   postgres                                18.6
+#   ghcr.io/navikt/mock-oauth2-server       6.0.7 (ADR-0012 dev/CI IdP)
 # Go itself is NOT pinned here: it comes from go.mod via go-version-file.
 #
 # Only GITHUB_TOKEN is used anywhere in this repository's workflows. Publish
@@ -38,6 +43,30 @@ jobs:
   go:
     name: go
     runs-on: ubuntu-latest
+    # Integration tests (internal/store/postgres today, the OIDC login path as
+    # it lands) skip unless these point at the services below, so CI runs them
+    # for real rather than as mocks (12-test-strategy).
+    env:
+      COMMUNICATION_TEST_DATABASE_URL: postgres://ci@localhost:5432/ci?sslmode=disable
+      COMMUNICATION_TEST_OIDC_ISSUER: http://localhost:18091/default
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: --health-cmd "pg_isready -U ci" --health-interval 2s --health-timeout 5s --health-retries 20
+      oidc:
+        # ADR-0012: real OIDC (discovery, JWKS, signed ID tokens), interactive
+        # login only — no credentials exist to commit.
+        image: ghcr.io/navikt/mock-oauth2-server:6.0.7
+        env:
+          JSON_CONFIG: '{"interactiveLogin":true}'
+        ports:
+          - 18091:8080
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -49,8 +78,44 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: go build
         run: go build ./...
+      # -p 1: several packages migrate the same database, so package test
+      # binaries must not run concurrently against it.
       - name: go test -race
-        run: go test -race ./...
+        run: go test -race -p 1 ./...
+
+  contract:
+    name: contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+      - name: Enable corepack
+        run: corepack enable
+      # api/README.md documents pnpm --package=@redocly/cli@2.63.0 dlx redocly
+      # lint locally (pnpm dlx alone fails: the package ships both `redocly`
+      # and `openapi` binaries). In CI the npm exec equivalent below needs no
+      # lockfile and no packageManager field; npm resolves the package's
+      # `openapi` bin, which is the same CLI.
+      # Warnings are reviewed, errors are not merged (see api/README.md).
+      - name: Lint OpenAPI contract
+        run: npx --yes @redocly/cli@2.63.0 lint api/openapi.yaml
+
+  compose:
+    name: compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # compose.yml lands with the M1 compose task; the guard keeps this job
+      # green until then and strict (config -q) once it exists.
+      - name: Validate compose configuration
+        run: |
+          if [ -f compose.yml ]; then
+            docker compose -p communication config -q
+          else
+            echo "compose.yml not present yet — skipping"
+          fi
 
   audit:
     name: audit
