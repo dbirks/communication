@@ -126,9 +126,17 @@ func (s *Server) accessLogMiddleware(next http.Handler) http.Handler {
 }
 
 func logAccess(log *slog.Logger, r *http.Request, rec *statusRecorder, dur time.Duration) {
+	path := r.URL.Path
+	// A preview token authorizes a fetch with no session behind it, and it
+	// lives in the path, so the path is logged as the route and never as the
+	// credential (ADR-0020 Security: the token "never appears in an access log
+	// line for the preview origin", which `12-test-strategy` case 16 asserts).
+	if path == "/preview" || strings.HasPrefix(path, "/preview/") {
+		path = "/preview/:token"
+	}
 	attrs := []any{
 		"method", r.Method,
-		"path", r.URL.Path,
+		"path", path,
 		"status", rec.status,
 		"duration_ms", float64(dur.Microseconds()) / 1000,
 		"bytes", rec.bytes,

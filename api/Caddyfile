@@ -48,3 +48,30 @@
 		# replica label set by internal/api survives the proxy hop.
 	}
 }
+
+# ── Sandboxed artifact preview origin (ADR-0020 D6) ───────────────────────
+#
+# A second site on its own published port, because isolation here is *origin*
+# isolation: http://localhost:18084 is a different origin from
+# http://localhost:18080, so a previewed artifact document can read neither the
+# app's cookies nor the app's DOM. In a multi-host deployment this becomes a
+# distinct hostname under the deployment's domain and the block is unchanged.
+#
+# Every header that matters is set by the Go handler
+# (internal/api/artifact_preview.go), not here. Caddy contributes exactly two
+# things, both by omission:
+#
+#   * it forwards nothing that carries the session — and the handler deletes a
+#     Cookie header even if a proxy added one;
+#   * there is no `reverse_proxy /api/*` and no static file server in this
+#     block, so the SPA shell cannot be reached on this origin. The control
+#     plane refuses non-/preview paths on this host too (api.PreviewHostOnly);
+#     this line is the second of the two layers, not the only one.
+#
+# The round-robin and health-check tuning of the API block above is deliberately
+# absent: one previewed document per navigation, and a wedged preview must fail
+# visibly rather than be re-served by a second replica with a different signing
+# key (ADR-0020's single-key config note).
+:8084 {
+	reverse_proxy api-a:8080
+}
