@@ -6,6 +6,12 @@
 # exact versions:
 #   actions/checkout@v7                     latest release v7.0.1
 #   actions/setup-go@v7                     latest release v7.0.0
+#   actions/setup-node@v7                   latest release v7.1.0
+#   pnpm/action-setup@v6                    latest release v6.1.0
+#   pnpm                                      pinned by ui/package.json
+#                                                   packageManager field
+#                                                   (pnpm/action-setup)
+#   Node.js                                   24.22.0 (current LTS line)
 #   docker/login-action@v4                  latest release v4.6.0
 #   docker/setup-buildx-action@v4           latest release v4.4.1
 #   docker/setup-qemu-action@v4             latest release v4.4.0
@@ -38,6 +44,17 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # .goreleaser.yaml before.hooks run pnpm to build the embedded ui/dist
+      # (ADR-0007), so this job needs the same pinned Node/pnpm setup as the
+      # ui job in ci.yml.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
       # linux/arm64 image layers are built on an amd64 runner, so they need qemu.
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4

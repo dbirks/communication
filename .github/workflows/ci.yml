@@ -186,6 +186,17 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # .goreleaser.yaml before.hooks run pnpm to build the embedded ui/dist
+      # (ADR-0007), so this job needs the same pinned Node/pnpm setup as the
+      # ui job before GoReleaser runs.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.0
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
       # The image is built for linux/amd64 and linux/arm64 in one snapshot run,
       # so the arm64 layers need qemu user emulation.
       - uses: docker/setup-qemu-action@v4
