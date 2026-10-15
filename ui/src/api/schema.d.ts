@@ -332,7 +332,11 @@ export interface paths {
      *     `LISTEN communication_events` (the journal's `AFTER INSERT` trigger emits
      *     `pg_notify` of `global_seq`) purely as a wake-up, and always re-queries by
      *     sequence — so a notification delivered by another replica, or none at all,
-     *     cannot cause gaps or duplicates. A `: heartbeat` comment line is written
+     *     cannot cause gaps or duplicates. Because `global_seq` is consumed at insert
+     *     time while commits may land out of that order, a row can be held back until
+     *     the transaction holding the next-lower sequence has settled: delivery is
+     *     gap-free and duplicate-free, but never promised instantaneous (ADR-0014 §9).
+     *     A `: heartbeat` comment line is written
      *     every 15 seconds to keep proxies from closing the stream. When both
      *     `Last-Event-ID` and `after` are supplied, the header wins (it is what the
      *     browser set automatically). The stream is scoped to this project and
@@ -363,6 +367,224 @@ export interface paths {
     get: operations["listWorkers"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-profiles": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the agent profiles this organization may launch
+     * @description Agent profiles in `display_name`/`name` order. M2 seeds exactly two in the `default` organization — "Claude Code" (launcher `claude`) and "Codex" (launcher `codex`) — both with `permission_mode: ask`, because no launcher has a verified enforced sandbox yet (`04-agent-runtime.md`: auto-approving ACP prompts is not a substitute for sandbox isolation). A profile is a launch descriptor, not a capability claim: whether a launcher actually works here is answered by `docs/compatibility/ACP.md` and `communication doctor --acp`, never by this route returning a row. Profiles are read-only in M2; creating and publishing them (with APM refs and pinned revisions) is a later milestone, which is why `version`/`updated_at` are not exposed yet.
+     */
+    get: operations["listAgentProfiles"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/conversations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's conversations
+     * @description Newest first (`created_at` descending). Visibility is project membership: a caller who is not a member — and is not an organization admin — gets `404`, the same answer every other project-scoped route gives, and no list. M2 has no pagination; the list is capped at 100 items ordered by `created_at DESC, id DESC`.
+     */
+    get: operations["listConversations"];
+    put?: never;
+    /**
+     * Start a conversation against a project
+     * @description Creates the conversation, its controller row (caller becomes the controller, `version` 1) and — when `prompt` is present — its first queued turn, all in one transaction, and appends `conversation.created` (plus `conversation.message.user` when a prompt was supplied). Nothing is launched here: a worker claims the turn, starts the agent and attaches a session (ADR-0016).
+     *     `agent_profile_id` must be a profile of the caller's organization (`422` otherwise). `contributor` or `maintainer` required; a `viewer` gets `403`. M2 does not honour `Idempotency-Key`, so a retried create makes a second conversation (ADR-0014 §Consequences).
+     */
+    post: operations["createConversation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one conversation, its controller and its agent session
+     * @description The conversation, its control row (`control.kind`, `control.user_id`, `control.version`) and — when an agent instance is attached — the ACP session binding with the capabilities the agent actually reported. `control.version` is the token the UI must send to `take-control` and `return-control`; it changes on every control mutation, so this is the read that makes a control race visible before the user loses it.
+     *     `404` for a conversation the caller cannot see (not a member of its project and not an organization admin), never `403`.
+     */
+    get: operations["getConversation"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/messages": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Prompt the agent (controller only)
+     * @description Enqueues a turn carrying `prompt` and appends `conversation.message.user` in the same transaction. The turn is `queued`; a worker claims it, sends it over ACP and streams the answer back as `conversation.message.agent` events — this call does not wait for the agent, and the reply arrives on `GET /api/v1/conversations/{conversationId}/events`, not here.
+     *     Controller only, and at most one unfinished turn per conversation (`01` invariant 2, `06` "Do not send competing prompts to a running turn"):
+     *     * caller is not the current controller -> `409` whose problem detail
+     *       carries the current `control`.
+     *     * a turn is already `queued`, `leased` or `running` -> `409`
+     *       whose problem detail carries that `active_turn`.
+     *
+     *     `contributor` or `maintainer` role is still required (`403` for a `viewer`), and the CSRF/origin rules of every mutation apply.
+     */
+    post: operations["postConversationMessage"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Stream one conversation's transcript and state (SSE)
+     * @description `text/event-stream` of this conversation's rows from the `domain_events` journal — the transcript *is* the journal, scoped by `conversation_id`, so an API replica restarting (or the browser disconnecting) loses nothing that was committed. Framing, resume, gap-safety and the 15 s heartbeat are identical to `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): `id: <global_seq>`, `event: <type>`, `data: <envelope JSON>`, replayed from `Last-Event-ID` or `?after=`.
+     *     Rows are selected by `conversation_id`, and the resume cursor is resolved *through* that scope, so a cursor copied from another conversation replays nothing it should not. Every event also carries `project_id`, so the project stream remains a superset of this one. Authorization is the owning project's membership, checked at connect time and again before each delivery and heartbeat: a removed member stops receiving events (`06` edge case) and a non-member gets `404`.
+     *     M2 event types on this stream, and the `payload` members of each (the envelope itself is `EventEnvelope`; payloads never carry secrets, and tool input/output are bounded previews the worker truncated, flagged by `truncated`):
+     *     | `type` | `payload` members | |---|---| | `conversation.created` | `conversation_id`, `project_id`, `title`, `agent_profile_id`, `agent_profile_name`, `launcher_id`, `controller_user_id`, `control_version` | | `conversation.message.user` | `conversation_id`, `turn_id`, `submitted_by`, `text` | | `conversation.message.agent` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated`, `final` | | `conversation.thought` | `conversation_id`, `turn_id`, `chunk_seq`, `text`, `truncated` | | `conversation.tool.call` | `conversation_id`, `turn_id`, `tool_call_id`, `title`, `kind`, `status`, `input_preview`, `truncated` | | `conversation.tool.update` | `conversation_id`, `turn_id`, `tool_call_id`, `status`, `title`, `output_preview`, `truncated`, `update_seq` | | `conversation.permission.requested` | `conversation_id`, `turn_id`, `permission_request_id`, `tool_call_id`, `title`, `kind`, `options`, `deadline_at` | | `conversation.permission.decided` | `conversation_id`, `turn_id`, `permission_request_id`, `status`, `decision_option_id`, `decided_by` | | `conversation.turn.started` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `binding_id`, `acp_session_id`, `session_origin` | | `conversation.turn.completed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason` | | `conversation.turn.cancelled` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `requested_by` | | `conversation.turn.failed` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `stop_reason`, `message` | | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` | | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` | | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` | | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason` |
+     *     Enumerated values, spelled exactly: `permission.decided`'s `status` is `decided`, `expired` or `cancelled`; `turn.interrupted`'s `reason` is `lease_expired`, `worker_gone` or `shutdown` (it always has a reason and never a `stop_reason` — nothing reported one); `control.transferred`'s `reason` is `taken`, `returned` or `lost_lease`; `session_origin` is `new` or `resumed`; controller `kind` is `human`, `run_attempt` or `none`.
+     *     `options` is an array of `{option_id, label, kind}` objects as the agent offered them (`kind` = the observed ACP option kind, e.g. `allow_once`); `agent.session.connected`'s `agent_capabilities` is the agent's own capability object, verbatim.
+     *     `conversation.message.agent` is the worker's coalesced, readable chunk (`09` "worker may batch/coalesce to reduce DB costs, while preserving readable transcript order"), not a token stream: `chunk_seq` orders chunks within a turn and `final` marks the last one. The Go structs for these payloads are in `internal/events/events.go` — the control plane and the worker emit them from the same package, so a shape cannot drift between writer and reader.
+     */
+    get: operations["streamConversationEvents"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/take-control": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Take the controller lock (compare-and-swap)
+     * @description The only way a second human starts driving a session, and it is optimistic concurrency, not a claim (ADR-0016, `06` "Human takeover sequence"):
+     *     1. `version` must equal `conversation_control.version` as the caller
+     *        last read it. A mismatch is `409` carrying the current `control` —
+     *        exactly one of two simultaneous callers wins, the loser sees who won
+     *        (`06` edge case).
+     *     2. If a turn is `leased` or `running`, its `cancel_requested_at` is set
+     *        in the same transaction: the worker sends ACP `session/cancel` and
+     *        closes the turn with `conversation.turn.cancelled`. Control transfers
+     *        immediately; the turn finishes when the harness acknowledges, so the
+     *        new controller must not send a prompt until it sees the terminal turn
+     *        event (`06`: "Do not send competing prompts to a running turn").
+     *     3. Control becomes the caller atomically, `version` increments, and
+     *        `conversation.control.transferred` is appended with `{from_kind,
+     *        from_user_id, to_kind, to_user_id, reason: "taken"}`.
+     *
+     *     Taking control while already the controller is an idempotent `200`: no `version` increment, no event. Caller must be a project `contributor` or `maintainer` (`403` for a `viewer`); an outsider gets `404`.
+     */
+    post: operations["takeConversationControl"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/return-control": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Return the controller lock to the previous controller
+     * @description Releases the caller's lock. Control goes to `control.previous_user_id` when that user is still a project contributor or maintainer; otherwise it goes to `none`, and any contributor can take it afterwards. A running turn is **not** cancelled by returning control — the agent keeps working under whoever holds the lock, and only `cancel` stops it.
+     *     Same CAS rules as `take-control`: `version` must match, a stale `version` is `409` with the current `control`, and the transition emits `conversation.control.transferred` with `reason: "returned"`. Only the current controller may return it (`409` otherwise, so a UI cannot release a lock it never held).
+     */
+    post: operations["returnConversationControl"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Ask the agent to stop the current turn (controller only)
+     * @description Sets `cancel_requested_at` on the conversation's active `leased` or `running` turn and returns `202` immediately; the worker sends ACP `session/cancel` and the turn ends with `conversation.turn.cancelled` (or `interrupted`, if the worker never gets to report it — the API does not pretend otherwise). Cancellation is a *request*: this response is not proof that the agent stopped, and the turn stays non-terminal until somebody with a valid fencing token says otherwise.
+     *     Controller only (`409` with the current `control` otherwise); no active turn is `409` with `type: https://communication.dev/errors/no-active-turn`. A `queued` turn has not started, so cancelling it *is* terminal: it goes straight to `cancelled` with `conversation.turn.cancelled` appended by this call.
+     */
+    post: operations["cancelConversationTurn"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations/{conversationId}/permissions/{requestId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Answer a permission prompt (controller only)
+     * @description Answers the prompt whose id is `requestId` — the id from `conversation.permission.requested`'s `permission_request_id` (the `permission_requests` row id), *not* the ACP JSON-RPC id. `option_id` must be one of the prompt's offered `options`; anything else is `422` (a client may not invent a permission the agent did not offer).
+     *     The answer is durable before it is live: the row moves to `decided` and `conversation.permission.decided` is appended in one transaction, and the worker — which owns the ACP connection and is the only process that can answer the harness — reads the decision and replies. A prompt that is already `decided` is `409` (no double-spend); one that expired or was cancelled with its turn is `409` too, and `404` never leaks a prompt of another project.
+     *     Controller only (`409` with the current `control` otherwise), `contributor`+ and CSRF as everywhere. The default remains `ask`: no M2 profile pre-approves anything (`04` "Permission policy").
+     */
+    post: operations["decideConversationPermission"];
     delete?: never;
     options?: never;
     head?: never;
@@ -439,7 +661,9 @@ export interface components {
     Project: {
       /** Format: uuid */
       id: string;
+      /** @description Lowercase `[a-z0-9-]`, at most 40 characters, starting and ending with an alphanumeric character. `createProject` enforces the same rule for an explicit slug and for the one it derives from `name`. */
       slug: string;
+      /** @description As supplied to `createProject`, which accepts at most 200 characters (longer is `422`). */
       name: string;
       description: string;
       /** Format: date-time */
@@ -456,8 +680,9 @@ export interface components {
      * @description Request body for creating a project.
      */
     ProjectCreate: {
+      /** @description At most 200 characters; longer is `422`. An all-whitespace name is `422` as well, because it is stored trimmed of surrounding space. */
       name: string;
-      /** @description Optional; derived from `name` when absent (lowercase, `[a-z0-9-]`). Duplicate slugs in the organization are `409`. */
+      /** @description Optional; derived from `name` when absent (lowercase, `[a-z0-9-]`, collapsed and trimmed to at most 40 characters). A slug is at most 40 characters and never begins or ends with a hyphen; anything else is `422`. Duplicate slugs in the organization are `409`. */
       slug?: string;
       description?: string;
     };
@@ -477,7 +702,7 @@ export interface components {
       id: string;
       /** Format: uuid */
       project_id: string;
-      /** @description Unique within the project. */
+      /** @description Unique within the project. It also names the repository's checkout directory under a run workspace (`repos/<name>`, communication-spec/05-workspaces-security-secrets.md), so it is a single filename-safe path component: `[A-Za-z0-9._-]`, at most 100 characters, and never `.` or `..`. */
       name: string;
       /** @description Remote URL as stored; see `RepositoryCreate.git_url` for the accepted forms. */
       git_url: string;
@@ -490,7 +715,7 @@ export interface components {
      * @description Request body for adding a repository to a project.
      */
     RepositoryCreate: {
-      /** @description Unique within the project; a duplicate is `409`. */
+      /** @description Unique within the project; a duplicate is `409`. Filename-safe (`[A-Za-z0-9._-]`) because it names a workspace directory; anything else, including `.` and `..`, is `422`. */
       name: string;
       /** @description One of `https://host/path`, `ssh://[user@]host[:port]/path`, `git@host:path` or `file:///absolute/path`. Anything else is `422`. */
       git_url: string;
@@ -579,6 +804,325 @@ export interface components {
     WorkerList: {
       items: components["schemas"]["Worker"][];
     };
+    /**
+     * AgentProfile
+     * @description A launchable agent configuration (`agent_profiles`). `launcher_id` is a key into the agent launcher registry, not a promise that the harness works on this host — capability evidence lives in `docs/compatibility/ACP.md`.
+     * @example {
+     *       "id": "01987a71-2222-7000-8000-abcdef012345",
+     *       "name": "Claude Code",
+     *       "launcher_id": "claude",
+     *       "permission_mode": "ask",
+     *       "created_at": "2026-10-14T18:00:00Z"
+     *     }
+     */
+    AgentProfile: {
+      /** Format: uuid */
+      id: string;
+      /** @description Unique within the organization. */
+      name: string;
+      /** @description Registry id (M2 seeds `claude` and `codex`) — the executable argv the worker spawns, no shell expansion. */
+      launcher_id: string;
+      /**
+       * @description `ask` sends every ACP permission prompt to the current controller. `preapproved_within_sandbox` may only be set once an enforced sandbox is verified for that launcher (`04` "Permission policy", ADR-0009); both M2 seeds are `ask`. `deny` rejects prompts outright.
+       * @enum {string}
+       */
+      permission_mode: "ask" | "preapproved_within_sandbox" | "deny";
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** AgentProfileList */
+    AgentProfileList: {
+      items: components["schemas"]["AgentProfile"][];
+    };
+    /**
+     * ConversationControl
+     * @description The conversation's single-controller lock (`conversation_control`, ADR-0016). Exactly one holder, always: `kind` is `human` with `user_id` set, or `none` with `user_id` null. `run_attempt` is the M4 shape — reserved in the schema and never emitted by M2. `version` is the compare-and-swap token every control mutation must echo.
+     */
+    ConversationControl: {
+      /** @enum {string} */
+      kind: "none" | "human" | "run_attempt";
+      /**
+       * Format: uuid
+       * @description Current controller; null when `kind` is `none`.
+       */
+      user_id?: string | null;
+      /** @description Resolved name of `user_id` for the UI badge; null when uncontrolled. */
+      display_name?: string | null;
+      /**
+       * Format: uuid
+       * @description Who held control before the current holder — `return-control` hands it back to this user if they still may, otherwise control goes to `none`.
+       */
+      previous_user_id?: string | null;
+      /** @description `conversation_control.version`. Increments on every successful take/return; a mutation carrying anything other than this value is `409`. */
+      version: number;
+    };
+    /**
+     * AgentSessionBinding
+     * @description The agent instance currently attached to a conversation (`acp_session_bindings`), as observed. Present only while a worker holds a live ACP session; its absence means the next prompt will start a fresh session. `agent_capabilities` is what the agent itself reported at `initialize` — data, not a support claim.
+     */
+    AgentSessionBinding: {
+      /** Format: uuid */
+      binding_id: string;
+      /** Format: uuid */
+      worker_id: string;
+      /** @description Worker display name (`workers.name`) for the UI; null if unresolvable. */
+      worker_name?: string | null;
+      launcher_id: string;
+      /** @description Adapter version as observed at connect time; `""` when unknown. */
+      launcher_version?: string;
+      /** @description Session id the harness itself issued. */
+      acp_session_id: string;
+      /** @description Negotiated ACP protocol version (M2 targets v1). */
+      protocol_version: number;
+      /**
+       * @description `new` = `session/new` on a freshly launched process; `resumed` = `session/load` succeeded against a capability the agent advertised. A failed resume is recorded as `new`, never as a silent resume.
+       * @enum {string}
+       */
+      session_origin: "new" | "resumed";
+      /** @description Agent-reported capability object, verbatim. */
+      agent_capabilities?: {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      connected_at: string;
+      /** Format: date-time */
+      last_seen_at: string;
+    };
+    /**
+     * ConversationTurn
+     * @description One prompt and the agent's whole response for it (`conversation_turns`) — the unit of work a worker claims. Internal lease machinery (`lease_expires_at`, `fencing_token`) is persisted and asserted server-side but deliberately not exposed: a browser cannot and must not participate in lease arbitration (ADR-0016).
+     */
+    ConversationTurn: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      conversation_id: string;
+      /**
+       * @description `queued` → `leased` → `running` is the only forward path; the four terminals are final. `interrupted` means nobody reported an outcome (expired lease, vanished worker, worker shutdown) — it is never rendered as "resumed without loss".
+       * @enum {string}
+       */
+      status:
+        | "queued"
+        | "leased"
+        | "running"
+        | "completed"
+        | "cancelled"
+        | "failed"
+        | "interrupted";
+      /** @description The prompt text as stored. Echoed only by `POST .../messages` and `getConversation`'s `active_turn`; never part of a list response. */
+      prompt?: string;
+      /**
+       * Format: uuid
+       * @description User who submitted the prompt (always a human in M2).
+       */
+      submitted_by: string;
+      submitted_by_display_name?: string | null;
+      /**
+       * Format: uuid
+       * @description Worker that claimed the turn; null while `queued`.
+       */
+      worker_id?: string | null;
+      /**
+       * Format: date-time
+       * @description Set by `POST .../cancel` or by a takeover; the worker sends ACP `session/cancel` and the turn ends `cancelled`. A request, not a stop.
+       */
+      cancel_requested_at?: string | null;
+      /** @description Harness `stopReason` verbatim (`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`); null for `interrupted` turns, because nothing reported one. */
+      stop_reason?: string | null;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      started_at?: string | null;
+      /** Format: date-time */
+      finished_at?: string | null;
+    };
+    /**
+     * Conversation
+     * @description A durable, project-scoped agent conversation. The agent process is not part of this identity: `status` describes the conversation, the (nullable) `agent_session` describes what is attached right now.
+     */
+    Conversation: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      agent_profile_id: string;
+      /** @description Resolved profile name for display (`"Claude Code"`). */
+      agent_profile_name?: string;
+      /** @description Launcher the profile resolves to, repeated for display convenience. */
+      launcher_id?: string;
+      title: string;
+      /**
+       * @description `active` = an agent session is attached; `idle` = history, nothing attached; `disconnected` = the session went away with a turn still open (recovery is honest — the next prompt starts or resumes a session and records which); `archived` = read-only.
+       * @enum {string}
+       */
+      status: "active" | "idle" | "disconnected" | "archived";
+      /** Format: uuid */
+      created_by: string;
+      created_by_display_name?: string | null;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+      control: components["schemas"]["ConversationControl"];
+      /** @description The conversation's non-terminal turn (`queued`/`leased`/`running`), or null when none. At most one can exist — the DB enforces it (ADR-0016). */
+      active_turn?: components["schemas"]["ConversationTurn"];
+      /** @description The live agent instance attached to this conversation, or null. */
+      agent_session?: components["schemas"]["AgentSessionBinding"];
+      /** @description Prompts awaiting a decision (`permission_requests` rows in `pending`), oldest first. Only the current controller may answer. */
+      pending_permissions?: components["schemas"]["PermissionRequest"][];
+    };
+    /**
+     * ConversationSummary
+     * @description List row for `listConversations`. Carries the controller (a project timeline shows who is driving) but not the transcript, binding or pending prompts — fetch the conversation for those.
+     */
+    ConversationSummary: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      agent_profile_id: string;
+      title: string;
+      /** @enum {string} */
+      status: "active" | "idle" | "disconnected" | "archived";
+      /** Format: uuid */
+      created_by: string;
+      created_by_display_name?: string | null;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+      control: components["schemas"]["ConversationControl"];
+      /** @description Cheap "someone is prompting now" flag; the turn itself is on the detail route and the transcript stream. */
+      has_active_turn?: boolean;
+      /** @description Whether a live ACP session is attached to this conversation. */
+      agent_connected?: boolean;
+    };
+    /** ConversationSummaryList */
+    ConversationSummaryList: {
+      items: components["schemas"]["ConversationSummary"][];
+    };
+    /**
+     * ConversationCreate
+     * @description Request body for `createConversation`. `prompt` is optional: when present it becomes the first queued turn (and the `conversation.message.user` event) exactly as if it had been POSTed to `.../messages` afterwards.
+     */
+    ConversationCreate: {
+      /**
+       * Format: uuid
+       * @description Must be a profile of the caller's organization (`422` otherwise).
+       */
+      agent_profile_id: string;
+      title: string;
+      /** @description First prompt to enqueue for the controller. */
+      prompt?: string;
+    };
+    /**
+     * ConversationMessageCreate
+     * @description Request body for `postConversationMessage`. The conversation's transcript is append-only: editing a submitted prompt is not an M2 operation.
+     */
+    ConversationMessageCreate: {
+      /** @description Stored verbatim (surrounding whitespace aside) and delivered to the harness as one `session/prompt`. */
+      prompt: string;
+    };
+    /**
+     * ControlVersionRequest
+     * @description Compare-and-swap token for `takeConversationControl` and `returnConversationControl`: the `control.version` the caller last read.
+     */
+    ControlVersionRequest: {
+      version: number;
+    };
+    /**
+     * PermissionOption
+     * @description One choice the agent offered for a permission prompt.
+     */
+    PermissionOption: {
+      /** @description Opaque id issued by the harness; echo it in `PermissionDecision.option_id`. */
+      option_id: string;
+      /** @description Human-facing label as offered (`"Allow once"`, ...). */
+      label: string;
+      /** @description ACP option kind as observed (`allow_once`, `allow_always`, `reject_once`, `reject_always`); empty when the harness did not label it. */
+      kind?: string;
+    };
+    /**
+     * PermissionRequest
+     * @description A durable ACP permission prompt (`permission_requests`) surfaced to the controller. `tool_call_id` links it to the `conversation.tool.call` row that describes the work; the prompt's tool input is never repeated here.
+     * @example {
+     *       "id": "01987a72-3333-7000-8000-abcdef012345",
+     *       "conversation_id": "01987a70-1111-7000-8000-abcdef012345",
+     *       "turn_id": "01987a73-4444-7000-8000-abcdef012345",
+     *       "status": "pending",
+     *       "tool_title": "Write to internal/api/projects.go",
+     *       "tool_kind": "edit",
+     *       "tool_call_id": "toolu_01",
+     *       "options": [
+     *         {
+     *           "option_id": "allow_once",
+     *           "label": "Allow once",
+     *           "kind": "allow_once"
+     *         },
+     *         {
+     *           "option_id": "reject_once",
+     *           "label": "Reject",
+     *           "kind": "reject_once"
+     *         }
+     *       ],
+     *       "requested_at": "2026-10-14T18:02:00Z"
+     *     }
+     */
+    PermissionRequest: {
+      /**
+       * Format: uuid
+       * @description This row's id — the `requestId` path parameter of the decision route.
+       */
+      id: string;
+      /** Format: uuid */
+      conversation_id: string;
+      /** Format: uuid */
+      turn_id: string;
+      /** @enum {string} */
+      status: "pending" | "decided" | "expired" | "cancelled";
+      /** @description Human-readable summary of what the agent wants to do. */
+      tool_title: string;
+      /** @description ACP tool kind (`edit`, `execute`, ...); empty when unlabelled. */
+      tool_kind?: string;
+      tool_call_id?: string | null;
+      options: components["schemas"]["PermissionOption"][];
+      /**
+       * Format: uuid
+       * @description Controller who answered; null while `pending`.
+       */
+      decided_by?: string | null;
+      /** @description The `option_id` chosen; null unless `status` is `decided`. */
+      decision_option_id?: string | null;
+      /** Format: date-time */
+      requested_at: string;
+      /**
+       * Format: date-time
+       * @description When the offer stops being actionable (`04`: no hanging forever). A prompt past its deadline is moved to `expired` by the reconciler.
+       */
+      deadline_at?: string | null;
+      /** Format: date-time */
+      decided_at?: string | null;
+    };
+    /**
+     * PermissionDecision
+     * @description The controller's answer. `option_id` must be one of the prompt's offered options — anything else is `422`, because a client may not invent a permission the agent did not offer.
+     */
+    PermissionDecision: {
+      option_id: string;
+    };
+    /**
+     * ConversationConflictProblem
+     * @description `409` for a conversation route: the `Problem` shape plus the current control row (and, for a turn conflict, the turn that is in the way), so the client can re-read and re-decide instead of guessing.
+     */
+    ConversationConflictProblem: components["schemas"]["Problem"] & {
+      /** Format: uuid */
+      conversation_id: string;
+      control: components["schemas"]["ConversationControl"];
+      /** @description The non-terminal turn that blocked this request, when that is the conflict. */
+      active_turn?: components["schemas"]["ConversationTurn"];
+    };
     EventEnvelope: components["schemas"]["event-envelope.schema"];
     /**
      * Communication durable event envelope
@@ -633,7 +1177,7 @@ export interface components {
       project_id?: string | null;
       /**
        * Format: uuid
-       * @description Conversation the event belongs to, when it is conversation-scoped. Null otherwise (added in a later milestone).
+       * @description Conversation the event belongs to, when it is conversation-scoped (M2, ADR-0016: the transcript is this journal read through `conversation_id`). Null otherwise. A conversation-scoped row always carries `project_id` too, so the project stream remains a superset and one gap-safe cursor serves both.
        */
       conversation_id?: string | null;
       /** @description Who caused the transition. `id` is the internal id for humans/agents/workers, an integration key for integrations, and the literal `system` for system actions. */
@@ -723,6 +1267,32 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
+    /** @description The request conflicts with the conversation's current state, and the body says what that state is so the client can recover without guessing: a stale CAS `version` (`https://communication.dev/errors/control-version- stale`), a caller who is not the controller (`.../not-controller`), a turn already in flight (`.../turn-in-progress`), no active turn to cancel (`.../no-active-turn`), or a prompt that is no longer pending (`.../permission-not-pending`). `control` is always the current control row, so exactly one of two racing `take-control` callers sees the winner instead of a bare failure (communication-spec/06 edge cases, ADR-0016). */
+    ConversationConflict: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/control-version-stale",
+         *       "title": "Control version stale",
+         *       "status": 409,
+         *       "detail": "conversation_control.version is 7, not 5.",
+         *       "conversation_id": "01987a70-1111-7000-8000-abcdef012345",
+         *       "control": {
+         *         "kind": "human",
+         *         "user_id": "01987a62-2345-7000-8000-abcdef012345",
+         *         "display_name": "Dana Observer",
+         *         "previous_user_id": "01987a61-2345-7000-8000-abcdef012345",
+         *         "version": 7
+         *       }
+         *     }
+         */
+        "application/problem+json": components["schemas"]["ConversationConflictProblem"];
+      };
+    };
     /** @description The request body is well-formed JSON but fails validation: missing or empty required field, an invalid slug, an unsupported `git_url` scheme, or an unknown role. */
     UnprocessableEntity: {
       headers: {
@@ -767,6 +1337,10 @@ export interface components {
     ProjectId: string;
     /** @description Target user id (`uuid`), which must belong to the caller's organization. */
     UserId: string;
+    /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+    ConversationId: string;
+    /** @description Permission prompt id (`uuid`) — the `permission_request_id` from `conversation.permission.requested`, i.e. the `permission_requests` row id. Not the ACP JSON-RPC request id, which never leaves the worker. */
+    PermissionRequestId: string;
     /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
     LastEventId: number;
     /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
@@ -1182,6 +1756,7 @@ export interface operations {
       };
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
     };
   };
   listWorkers: {
@@ -1204,6 +1779,309 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+    };
+  };
+  listAgentProfiles: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's organization's profiles, ordered by `name`. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfileList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  listConversations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Conversations in this project. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConversationSummaryList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createConversation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ConversationCreate"];
+      };
+    };
+    responses: {
+      /** @description Conversation created; the caller holds control. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Conversation"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getConversation: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The conversation. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Conversation"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  postConversationMessage: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ConversationMessageCreate"];
+      };
+    };
+    responses: {
+      /** @description Turn queued. `Location` points at the conversation; the prompt text is durable from this response on. */
+      202: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/conversations/{conversationId}` of the conversation this turn belongs to. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConversationTurn"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  streamConversationEvents: {
+    parameters: {
+      query?: {
+        /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
+        after?: components["parameters"]["After"];
+      };
+      header?: {
+        /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
+        "Last-Event-ID"?: components["parameters"]["LastEventId"];
+      };
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description An open `text/event-stream` of conversation event envelopes; the stream does not terminate on its own. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["event-envelope.schema"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  takeConversationControl: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ControlVersionRequest"];
+      };
+    };
+    responses: {
+      /** @description Caller holds control; the body carries the new `control.version`. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Conversation"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  returnConversationControl: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ControlVersionRequest"];
+      };
+    };
+    responses: {
+      /** @description Control released; body carries the new `control.version`. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Conversation"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  cancelConversationTurn: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Cancellation requested on the active turn (or the queued turn was cancelled outright). The turn is reported as it stands after this request. */
+      202: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ConversationTurn"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
+    };
+  };
+  decideConversationPermission: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Conversation id (`uuid`). Conversation routes are not nested under a project: the conversation's own project membership is the authorization scope, checked on every request, and a caller outside that project gets `404` so existence is not disclosed. */
+        conversationId: components["parameters"]["ConversationId"];
+        /** @description Permission prompt id (`uuid`) — the `permission_request_id` from `conversation.permission.requested`, i.e. the `permission_requests` row id. Not the ACP JSON-RPC request id, which never leaves the worker. */
+        requestId: components["parameters"]["PermissionRequestId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PermissionDecision"];
+      };
+    };
+    responses: {
+      /** @description Decision recorded and queued for the worker. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PermissionRequest"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ConversationConflict"];
+      422: components["responses"]["UnprocessableEntity"];
     };
   };
 }

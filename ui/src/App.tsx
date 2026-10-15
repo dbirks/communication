@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router";
 import Shell from "./components/Shell";
 import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
+import ConversationPage from "./pages/Conversation";
 import NotFound from "./pages/NotFound";
 import Operations from "./pages/Operations";
 import Project from "./pages/Project";
@@ -25,6 +26,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Project />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/projects/:projectId/conversations/:conversationId"
+          element={
+            <RequireAuth>
+              <ConversationPage />
             </RequireAuth>
           }
         />

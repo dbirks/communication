@@ -26,3 +26,24 @@ export type Readiness = components["schemas"]["Readiness"];
 export type Problem = components["schemas"]["Problem"];
 export type EventEnvelope = components["schemas"]["EventEnvelope"];
 export type EventActorKind = EventEnvelope["actor"]["kind"];
+
+/* --------------------------------------------------------------- M2 */
+
+export type AgentProfile = components["schemas"]["AgentProfile"];
+export type AgentProfileList = components["schemas"]["AgentProfileList"];
+export type AgentProfilePermissionMode = AgentProfile["permission_mode"];
+export type Conversation = components["schemas"]["Conversation"];
+export type ConversationSummary = components["schemas"]["ConversationSummary"];
+export type ConversationSummaryList = components["schemas"]["ConversationSummaryList"];
+export type ConversationStatus = Conversation["status"];
+export type ConversationCreate = components["schemas"]["ConversationCreate"];
+export type ConversationMessageCreate = components["schemas"]["ConversationMessageCreate"];
+export type ConversationControl = components["schemas"]["ConversationControl"];
+export type ConversationControllerKind = ConversationControl["kind"];
+export type ConversationTurn = components["schemas"]["ConversationTurn"];
+export type ConversationTurnStatus = ConversationTurn["status"];
+export type AgentSessionBinding = components["schemas"]["AgentSessionBinding"];
+export type PermissionRequest = components["schemas"]["PermissionRequest"];
+export type PermissionRequestStatus = PermissionRequest["status"];
+export type PermissionOption = components["schemas"]["PermissionOption"];
+export type PermissionDecision = components["schemas"]["PermissionDecision"];

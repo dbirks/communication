@@ -24,15 +24,38 @@ export class ApiError extends Error {
   readonly title: string;
   readonly detail: string;
   readonly type: string;
+  /**
+   * The parsed body as it arrived. RFC 9457 members aside, a conversation `409`
+   * carries the live `control` (and sometimes `active_turn`) — see
+   * `ConversationConflictProblem` in `api/openapi.yaml` — and ADR-0016 §9
+   * obliges the UI to *adopt* that state instead of retrying blindly.
+   */
+  readonly body: unknown;
 
-  constructor(body: components["schemas"]["Problem"]) {
+  constructor(body: components["schemas"]["Problem"], rawBody: unknown) {
     super(body.detail ? `${body.title}: ${body.detail}` : body.title);
     this.name = "ApiError";
     this.status = body.status;
     this.title = body.title;
     this.detail = body.detail ?? "";
     this.type = body.type;
+    this.body = rawBody;
   }
+}
+
+/**
+ * The extra members a conversation conflict `409` carries, or `null` when the
+ * error is anything else (or a body-less network failure).
+ */
+export function conversationConflictOf(
+  error: unknown,
+): components["schemas"]["ConversationConflictProblem"] | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const body = error.body as Partial<components["schemas"]["ConversationConflictProblem"]> | null;
+  if (!body || typeof body !== "object") return null;
+  const control = body.control as components["schemas"]["ConversationControl"] | undefined;
+  if (!control || typeof control.version !== "number") return null;
+  return body as components["schemas"]["ConversationConflictProblem"];
 }
 
 /** `title` is stable per error type, so it makes a good fallback heading. */
@@ -114,7 +137,7 @@ export async function apiFetch<T = unknown>(path: string, init: ApiRequestInit =
     }
   }
 
-  if (!response.ok) throw new ApiError(asProblem(response.status, parsed));
+  if (!response.ok) throw new ApiError(asProblem(response.status, parsed), parsed);
 
   return parsed as T;
 }

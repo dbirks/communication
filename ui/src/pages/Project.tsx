@@ -11,6 +11,7 @@ import {
 } from "../api/queries";
 import type { MemberRole, Project } from "../api/types";
 import ActivityFeed from "../components/ActivityFeed";
+import Conversations from "../components/Conversations";
 import {
   FormError,
   ProblemBanner,
@@ -329,6 +330,7 @@ export default function Project() {
       </header>
       <Repositories project={projectData} />
       <Members project={projectData} />
+      <Conversations project={projectData} />
       <ActivityFeed projectId={projectData.id} />
     </div>
   );

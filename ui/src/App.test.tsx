@@ -70,6 +70,12 @@ describe("auth", () => {
           replica: "replica-b",
         },
         { path: "/api/v1/users", body: { items: [] }, replica: "replica-b" },
+        { path: "/api/v1/agent-profiles", body: { items: [] }, replica: "replica-b" },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/conversations`,
+          body: { items: [] },
+          replica: "replica-b",
+        },
       ],
     });
 

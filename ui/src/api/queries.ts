@@ -1,16 +1,29 @@
 /**
- * TanStack Query access to the M1 read endpoints and mutations. Every read in
- * the app goes through one of these hooks so the SSE feed can invalidate a whole
- * project subtree by key.
+ * TanStack Query access to the read endpoints and mutations. Every read in the
+ * app goes through one of these hooks so the SSE feeds can invalidate a whole
+ * project (or conversation) subtree by key.
+ *
+ * M2 additions follow one rule from ADR-0016 §9: the browser never carries a
+ * fencing token and never invents a `control.version` — it reads the version off
+ * `getConversation` and echoes it, and when the server answers `409` the
+ * returned `control` replaces the cached one rather than being retried over.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, setCsrfToken } from "./client";
+import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
 import type {
+  AgentProfileList,
+  Conversation,
+  ConversationCreate,
+  ConversationMessageCreate,
+  ConversationSummaryList,
+  ConversationTurn,
   Health,
   Member,
   MemberList,
   Me,
   MemberRole,
+  PermissionDecision,
+  PermissionRequest,
   Project,
   ProjectCreate,
   ProjectList,
@@ -29,6 +42,9 @@ export const queryKeys = {
   project: (projectId: string) => ["project", projectId] as const,
   repos: (projectId: string) => ["project", projectId, "repos"] as const,
   members: (projectId: string) => ["project", projectId, "members"] as const,
+  agentProfiles: ["agent-profiles"] as const,
+  conversations: (projectId: string) => ["project", projectId, "conversations"] as const,
+  conversation: (conversationId: string) => ["conversation", conversationId] as const,
   health: ["system", "health"] as const,
   readiness: ["system", "readiness"] as const,
   workers: ["workers"] as const,
@@ -82,6 +98,30 @@ export function useMembers(projectId: string) {
     queryKey: queryKeys.members(projectId),
     queryFn: () => apiFetch<MemberList>(`/api/v1/projects/${projectId}/members`),
     enabled: projectId.length > 0,
+  });
+}
+
+export function useAgentProfiles() {
+  return useQuery({
+    queryKey: queryKeys.agentProfiles,
+    queryFn: () => apiFetch<AgentProfileList>("/api/v1/agent-profiles"),
+    staleTime: 60_000,
+  });
+}
+
+export function useConversations(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.conversations(projectId),
+    queryFn: () => apiFetch<ConversationSummaryList>(`/api/v1/projects/${projectId}/conversations`),
+    enabled: projectId.length > 0,
+  });
+}
+
+export function useConversation(conversationId: string) {
+  return useQuery({
+    queryKey: queryKeys.conversation(conversationId),
+    queryFn: () => apiFetch<Conversation>(`/api/v1/conversations/${conversationId}`),
+    enabled: conversationId.length > 0,
   });
 }
 
@@ -158,6 +198,146 @@ export function invalidateProject(
   projectId: string,
 ) {
   return queryClient.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+}
+
+/**
+ * Forget one conversation and the project list that shows its controller.
+ * Called for every conversation SSE frame (ADR-0016: the transcript itself is
+ * rendered from the stream, so this covers control/turn/permission state).
+ */
+export function invalidateConversation(
+  queryClient: ReturnType<typeof useQueryClient>,
+  conversationId: string,
+  projectId?: string | null,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId) });
+  if (projectId) {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(projectId) });
+  }
+}
+
+/** Write a fresh `Conversation` into the cache (control mutations return one). */
+export function cacheConversation(
+  queryClient: ReturnType<typeof useQueryClient>,
+  conversation: Conversation,
+) {
+  queryClient.setQueryData(queryKeys.conversation(conversation.id), conversation);
+}
+
+/**
+ * Adopt the `control` a `409` returned instead of retrying the mutation
+ * (ADR-0016 §9 obligation 3). Returns true when the error carried a control row.
+ */
+export function adoptConflict(
+  queryClient: ReturnType<typeof useQueryClient>,
+  conversationId: string,
+  error: unknown,
+): boolean {
+  const conflict = conversationConflictOf(error);
+  if (!conflict) return false;
+  queryClient.setQueryData<Conversation>(queryKeys.conversation(conversationId), (current) =>
+    current
+      ? {
+          ...current,
+          control: conflict.control,
+          ...(conflict.active_turn ? { active_turn: conflict.active_turn } : {}),
+        }
+      : current,
+  );
+  return true;
+}
+
+/** Adopt the returned `control` instead of retrying (ADR-0016 §9 obligation 3). */
+function useControlWrites(conversationId: string) {
+  const queryClient = useQueryClient();
+  return {
+    queryClient,
+    cache: (conversation: Conversation) => cacheConversation(queryClient, conversation),
+    adopt: (error: unknown) => adoptConflict(queryClient, conversationId, error),
+  };
+}
+
+export function useCreateConversation(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ConversationCreate) =>
+      apiFetch<Conversation>(`/api/v1/projects/${projectId}/conversations`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: async (conversation) => {
+      // The caller holds control from this response on (`control.version` 1),
+      // so the cached row already carries a usable CAS token.
+      cacheConversation(queryClient, conversation);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.conversations(projectId) });
+    },
+  });
+}
+
+export function usePostConversationMessage(conversationId: string) {
+  const { queryClient, adopt } = useControlWrites(conversationId);
+  return useMutation({
+    mutationFn: (body: ConversationMessageCreate) =>
+      apiFetch<ConversationTurn>(`/api/v1/conversations/${conversationId}/messages`, {
+        method: "POST",
+        json: body,
+      }),
+    // The turn is queued, not answered: the reply arrives on the SSE stream.
+    onSuccess: () => invalidateConversation(queryClient, conversationId),
+    onError: adopt,
+  });
+}
+
+export function useTakeConversationControl(conversationId: string) {
+  const { cache, adopt } = useControlWrites(conversationId);
+  return useMutation({
+    mutationFn: (body: { version: number }) =>
+      apiFetch<Conversation>(`/api/v1/conversations/${conversationId}/take-control`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: cache,
+    // A 409 already carries the winner's control row: adopt it, do not retry.
+    onError: adopt,
+  });
+}
+
+export function useReturnConversationControl(conversationId: string) {
+  const { cache, adopt } = useControlWrites(conversationId);
+  return useMutation({
+    mutationFn: (body: { version: number }) =>
+      apiFetch<Conversation>(`/api/v1/conversations/${conversationId}/return-control`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: cache,
+    onError: adopt,
+  });
+}
+
+export function useCancelConversationTurn(conversationId: string) {
+  const { queryClient, adopt } = useControlWrites(conversationId);
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<ConversationTurn>(`/api/v1/conversations/${conversationId}/cancel`, {
+        method: "POST",
+      }),
+    onSuccess: () => invalidateConversation(queryClient, conversationId),
+    onError: adopt,
+  });
+}
+
+export function useDecideConversationPermission(conversationId: string) {
+  const { queryClient, adopt } = useControlWrites(conversationId);
+  return useMutation({
+    mutationFn: ({ requestId, body }: { requestId: string; body: PermissionDecision }) =>
+      apiFetch<PermissionRequest>(
+        `/api/v1/conversations/${conversationId}/permissions/${requestId}`,
+        { method: "POST", json: body },
+      ),
+    onSuccess: () => invalidateConversation(queryClient, conversationId),
+    onError: adopt,
+  });
 }
 
 /** Sign out: delete the session server-side, then forget everything cached. */

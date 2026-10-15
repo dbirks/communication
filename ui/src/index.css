@@ -1,1 +1,18 @@
 @import "tailwindcss";
+
+/*
+ * Accessibility floor for the whole app (`communication-spec/10-ui-design-handoff.md`
+ * "statuses never color-only, reduced-motion assistant highlighting"): anything
+ * that animates — now or later — stops animating when the visitor asks for
+ * reduced motion, and a focus ring is never allowed to be hidden.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

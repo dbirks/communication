@@ -3,7 +3,15 @@
  * `EventSource` the tests can push frames into. No network access in tests.
  */
 import { vi } from "vitest";
-import type { EventEnvelope, Me, Project } from "../api/types";
+import type {
+  AgentProfile,
+  Conversation,
+  ConversationSummary,
+  EventEnvelope,
+  Me,
+  PermissionRequest,
+  Project,
+} from "../api/types";
 
 export type FetchMock = ReturnType<typeof vi.fn>;
 
@@ -206,4 +214,114 @@ export function envelopeFixture(overrides: Partial<EventEnvelope> = {}): EventEn
     },
     ...overrides,
   };
+}
+
+/* -------------------------------------------------------------- M2 fixtures */
+
+export const otherUserId = "01987a62-2345-7000-8000-abcdef012345";
+export const conversationId = "01987a70-1111-7000-8000-abcdef012345";
+export const turnId = "01987a73-4444-7000-8000-abcdef012345";
+export const workerId = "01987a74-5555-7000-8000-abcdef012345";
+
+export const claudeProfile: AgentProfile = {
+  id: "01987a71-2222-7000-8000-abcdef012345",
+  name: "Claude Code",
+  launcher_id: "claude",
+  permission_mode: "ask",
+  created_at: "2026-10-14T18:00:00Z",
+};
+
+export const codexProfile: AgentProfile = {
+  id: "01987a71-2222-7000-8000-abcdef0123ff",
+  name: "Codex",
+  launcher_id: "codex",
+  permission_mode: "ask",
+  created_at: "2026-10-14T18:00:00Z",
+};
+
+/** A conversation the signed-in user (`meFixture`) controls. */
+export const conversationFixture: Conversation = {
+  id: conversationId,
+  project_id: projectFixture.id,
+  agent_profile_id: claudeProfile.id,
+  agent_profile_name: claudeProfile.name,
+  launcher_id: claudeProfile.launcher_id,
+  title: "Refactor billing",
+  status: "active",
+  created_by: meFixture.id,
+  created_by_display_name: meFixture.display_name,
+  created_at: "2026-10-14T18:00:00Z",
+  updated_at: "2026-10-14T18:05:00Z",
+  control: {
+    kind: "human",
+    user_id: meFixture.id,
+    display_name: meFixture.display_name,
+    previous_user_id: null,
+    version: 1,
+  },
+  pending_permissions: [],
+};
+
+/** The same conversation controlled by somebody else. */
+export const controlledByOther: Conversation = {
+  ...conversationFixture,
+  control: {
+    kind: "human",
+    user_id: otherUserId,
+    display_name: "Dana Observer",
+    previous_user_id: meFixture.id,
+    version: 7,
+  },
+};
+
+export const conversationSummaryFixture: ConversationSummary = {
+  id: conversationId,
+  project_id: projectFixture.id,
+  agent_profile_id: claudeProfile.id,
+  title: "Refactor billing",
+  status: "active",
+  created_by: meFixture.id,
+  created_by_display_name: meFixture.display_name,
+  created_at: "2026-10-14T18:00:00Z",
+  updated_at: "2026-10-14T18:05:00Z",
+  control: conversationFixture.control,
+  has_active_turn: false,
+  agent_connected: true,
+};
+
+export const permissionRequestFixture: PermissionRequest = {
+  id: "01987a72-3333-7000-8000-abcdef012345",
+  conversation_id: conversationId,
+  turn_id: turnId,
+  status: "pending",
+  tool_title: "Write to internal/api/projects.go",
+  tool_kind: "edit",
+  tool_call_id: "toolu_01",
+  options: [
+    { option_id: "allow_once", label: "Allow once", kind: "allow_once" },
+    { option_id: "reject_once", label: "Reject", kind: "reject_once" },
+  ],
+  requested_at: "2026-10-14T18:02:00Z",
+};
+
+/** A conversation-scoped journal frame, payload left to the caller. */
+let conversationSeq = 4000;
+
+export function conversationEvent(
+  type: string,
+  payload: Record<string, unknown>,
+  overrides: Partial<EventEnvelope> = {},
+): EventEnvelope {
+  // Unique per frame: `event_id` keys the transcript list, and `global_seq` is
+  // the dedupe cursor, so a fixture that reuses either would hide real bugs.
+  const seq = typeof overrides.global_seq === "number" ? overrides.global_seq : ++conversationSeq;
+  return envelopeFixture({
+    event_id: `01987a7e-2f3a-7c1d-9a2e-${String(seq).padStart(12, "0")}`,
+    type,
+    global_seq: seq,
+    conversation_id: conversationId,
+    project_id: projectFixture.id,
+    payload: { conversation_id: conversationId, turn_id: turnId, ...payload },
+    ...overrides,
+  });
 }
