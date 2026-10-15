@@ -134,10 +134,12 @@ function systemLine(event: EventEnvelope, payload: Record<string, unknown>): str
       if (reason === "taken") return `Control taken (by ${to})`;
       return `Control transferred to ${to} (${reason})`;
     }
-    case "conversation.turn.started":
-      return str(payload, "session_origin") === "resumed"
-        ? "Turn started on a resumed agent session"
-        : "Turn started on a new agent session";
+    case "conversation.turn.started": {
+      const origin = str(payload, "session_origin");
+      if (origin === "resumed") return "Turn started on a resumed agent session";
+      if (origin === "reused") return "Turn continued on the live agent session";
+      return "Turn started on a new agent session";
+    }
     case "conversation.turn.completed":
       return `Turn completed${str(payload, "stop_reason") ? ` (${str(payload, "stop_reason")})` : ""}`;
     case "conversation.turn.cancelled":

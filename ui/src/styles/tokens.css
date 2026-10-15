@@ -1,0 +1,315 @@
+/*
+ * Design-system tokens — transcribed from
+ * `docs/design/handoff/design-system-handoff.dc.html` (see the README next to
+ * it for the full tables). This file is the single visual authority for the
+ * app; components in `ui/src/components/ds/` consume these tokens only.
+ *
+ * Fonts are self-hosted (all SIL OFL) through pinned @fontsource packages —
+ * the app never makes a runtime request to Google Fonts or any other origin.
+ */
+@import "@fontsource/red-hat-text/latin-400.css";
+@import "@fontsource/red-hat-text/latin-500.css";
+@import "@fontsource/red-hat-text/latin-600.css";
+@import "@fontsource/red-hat-text/latin-700.css";
+@import "@fontsource/red-hat-mono/latin-400.css";
+@import "@fontsource/red-hat-mono/latin-500.css";
+@import "@fontsource/red-hat-mono/latin-600.css";
+@import "@fontsource/kaisei-opti/latin-500.css";
+
+@theme {
+  /* Families (02 Type): Red Hat Text for anything a person reads or acts on,
+     Red Hat Mono for anything a machine produced, Kaisei Opti 500 only in the
+     Mark. */
+  --font-ui: "Red Hat Text", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Red Hat Mono", ui-monospace, "SF Mono", monospace;
+  --font-mark: "Kaisei Opti", serif;
+
+  /* 01 Color — neutrals */
+  --color-paper: #f8f7f3;
+  --color-surface: #ffffff;
+  --color-ink: #1e1d1a;
+  --color-ink-2: #3a3833;
+  --color-muted: #6b675e;
+  --color-faint: #8f8a80;
+  --color-line-strong: #cfcac0;
+  --color-line: #e6e2d9;
+  --color-line-soft: #f0ede6;
+  --color-fill: #efede7;
+  /* BTN-I secondary border/shadow tone and the disabled button pair */
+  --color-fill-edge: #cfc9bd;
+  --color-disabled-bg: #f3f1ec;
+  --color-disabled-fg: #b3ada2;
+
+  /* 01 Color — accent · royal (ACCENT-I) */
+  --color-accent: #2f4bd6;
+  --color-accent-edge: #2238a8;
+  --color-accent-shadow: #1a2d8f;
+  --color-accent-text: #2a43b8;
+  --color-accent-mid: #8fa0e6;
+  --color-accent-tint: #eef0fc;
+  --color-accent-wash: #f6f7fe;
+  /* INPUT-A focus ring */
+  --color-accent-ring: #dfe4fa;
+
+  /* 01 Color — state sets (STATES-J). Each state = tag bg/fg, strong bar
+     bg/fg, pale (alert) bar/body/edge/fg, and a fixed glyph. Color never
+     carries meaning alone: the glyph and the word always come with it. */
+  --color-st-running-tag: #d9eefa;
+  --color-st-running-tag-fg: #0f5e96;
+  --color-st-running-strong: #2a8bd0;
+  --color-st-running-strong-fg: #ffffff;
+  --color-st-running-pale-bar: #cfe8f7;
+  --color-st-running-pale-body: #f3f9fd;
+  --color-st-running-pale-edge: #8cc8ec;
+  --color-st-running-pale-fg: #0f4c78;
+
+  --color-st-waiting-tag: #ffecc2;
+  --color-st-waiting-tag-fg: #7a4a00;
+  --color-st-waiting-strong: #f0a93a;
+  --color-st-waiting-strong-fg: #2a1a00;
+  --color-st-waiting-pale-bar: #fbe7b4;
+  --color-st-waiting-pale-body: #fdf6e4;
+  --color-st-waiting-pale-edge: #e8cf94;
+  --color-st-waiting-pale-fg: #5c3d00;
+
+  --color-st-failed-tag: #fdd8d2;
+  --color-st-failed-tag-fg: #b0281a;
+  --color-st-failed-strong: #d0402f;
+  --color-st-failed-strong-fg: #ffffff;
+  --color-st-failed-pale-bar: #f3c4b9;
+  --color-st-failed-pale-body: #fbefec;
+  --color-st-failed-pale-edge: #e5b2a8;
+  --color-st-failed-pale-fg: #7f2215;
+  /* BTN-I danger border/shadow tone */
+  --color-st-failed-btn-edge: #e5a99c;
+
+  --color-st-interrupted-tag: #fde3d6;
+  --color-st-interrupted-tag-fg: #a5431c;
+  --color-st-interrupted-strong: #e8763f;
+  --color-st-interrupted-strong-fg: #ffffff;
+  --color-st-interrupted-pale-bar: #f2d6cc;
+  --color-st-interrupted-pale-body: #faf2ef;
+  --color-st-interrupted-pale-edge: #e6c3b8;
+  --color-st-interrupted-pale-fg: #7a3424;
+
+  --color-st-retrying-tag: #fff1cf;
+  --color-st-retrying-tag-fg: #7a5200;
+  --color-st-retrying-strong: #ffe3a0;
+  --color-st-retrying-strong-fg: #5a3c00;
+  --color-st-retrying-pale-bar: #fbefcf;
+  --color-st-retrying-pale-body: #fdf9ee;
+  --color-st-retrying-pale-edge: #ecd9a6;
+  --color-st-retrying-pale-fg: #5a3c00;
+
+  --color-st-done-tag: #d9f0de;
+  --color-st-done-tag-fg: #1f6b37;
+  --color-st-done-strong: #3a9a5b;
+  --color-st-done-strong-fg: #ffffff;
+  --color-st-done-pale-bar: #d3e9d9;
+  --color-st-done-pale-body: #f1f7f2;
+  --color-st-done-pale-edge: #b9d3bf;
+  --color-st-done-pale-fg: #1f5a33;
+
+  --color-st-queued-tag: #eeece6;
+  --color-st-queued-tag-fg: #5e5a52;
+  --color-st-queued-strong: #e2dfd7;
+  --color-st-queued-strong-fg: #4a4740;
+  --color-st-queued-pale-bar: #efede7;
+  --color-st-queued-pale-body: #faf9f6;
+  --color-st-queued-pale-edge: #dcd8ce;
+  --color-st-queued-pale-fg: #4a4740;
+
+  --color-st-info-tag: #e3f1fb;
+  --color-st-info-tag-fg: #135f96;
+  --color-st-info-strong: #8cc8ec;
+  --color-st-info-strong-fg: #0f3c5e;
+  --color-st-info-pale-bar: #e6f3fb;
+  --color-st-info-pale-body: #f6fafd;
+  --color-st-info-pale-edge: #cfe3f2;
+  --color-st-info-pale-fg: #0f4c78;
+
+  /* Progress segments (PROGRESS-J/K): flat colors, no texture. "done" counts
+     are neutral dark ink-grey, not green — green would shout on every bar. */
+  --color-seg-done: #4a4740;
+  --color-seg-running: var(--color-st-running-strong);
+  --color-seg-waiting: var(--color-st-waiting-strong);
+  --color-seg-failed: var(--color-st-failed-strong);
+  --color-seg-open: #ffffff;
+
+  /* 03 Shape — radii: 2 tags/bars, 3 panels/inputs/cards, 4 buttons */
+  --radius-tag: 2px;
+  --radius-panel: 3px;
+  --radius-btn: 4px;
+
+  /* 03 Depth — one shadow style: 2px 2px 0, no blur. Pressed =
+     translate(2px,2px) + no shadow (see .ds-btn in the component layer). */
+  --shadow-raised: 2px 2px 0 var(--color-ink);
+
+  /* Type scale (02). Use ds-text-* classes below rather than raw sizes. */
+  --text-title-xl: 22px;
+  --text-title-l: 19px;
+  --text-title-m: 15px;
+  --text-body: 13.5px;
+  --text-ui: 13px;
+  --text-small: 12.5px;
+  --text-meta: 11px;
+  --text-label: 10.5px;
+  --text-bar: 10px;
+}
+
+@layer base {
+  body {
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-size: var(--text-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: var(--color-accent-text);
+  }
+  a:hover {
+    color: var(--color-ink);
+  }
+}
+
+/*
+ * Texture (TEXTURE-G / 03): a 4px grid of 1px lines — neutral or accent
+ * tinted — used *sparingly*: sub-nav "active" and highlighted areas only.
+ * The diagonal hatch belongs to the Mark's offset shadow alone. Never on
+ * progress bars or behind text.
+ */
+.ds-texture-neutral {
+  background-image:
+    repeating-linear-gradient(0deg, #e8e5dd 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(90deg, #e8e5dd 0 1px, transparent 1px 4px);
+}
+.ds-texture-accent {
+  background-image:
+    repeating-linear-gradient(0deg, #e4e8fa 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(90deg, #e4e8fa 0 1px, transparent 1px 4px);
+}
+.ds-hatch-mark {
+  background: repeating-linear-gradient(135deg, var(--color-accent) 0 1px, transparent 1px 3px);
+}
+
+/*
+ * BTN-I — buttons, 30px tall, radius 4. Border and shadow use a darker tone
+ * of the fill; hover is 4% darker; pressed moves into the shadow; focus adds
+ * a paper gap and a royal ring on top of the tonal shadow.
+ */
+@layer components {
+  .ds-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 13px;
+    border-radius: var(--radius-btn);
+    border: 1px solid transparent;
+    font-family: var(--font-ui);
+    font-size: var(--text-small);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .ds-btn:hover:not(:disabled, .ds-btn--static) {
+    filter: brightness(0.96);
+  }
+  .ds-btn:active:not(:disabled) {
+    transform: translate(2px, 2px);
+    box-shadow: none;
+  }
+  .ds-btn--primary {
+    border-color: var(--color-accent-edge);
+    background: var(--color-accent);
+    color: #fff;
+    box-shadow: 2px 2px 0 var(--color-accent-shadow);
+  }
+  .ds-btn--secondary {
+    border-color: var(--color-fill-edge);
+    background: var(--color-fill);
+    color: var(--color-ink);
+    box-shadow: 2px 2px 0 var(--color-fill-edge);
+  }
+  .ds-btn--secondary-plain {
+    border-color: var(--color-fill-edge);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    box-shadow: 2px 2px 0 var(--color-fill-edge);
+  }
+  .ds-btn--ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--color-accent-text);
+    box-shadow: none;
+  }
+  .ds-btn--danger {
+    border-color: var(--color-st-failed-btn-edge);
+    background: var(--color-st-failed-tag);
+    color: var(--color-st-failed-tag-fg);
+    box-shadow: 2px 2px 0 var(--color-st-failed-btn-edge);
+  }
+  .ds-btn:disabled,
+  .ds-btn--disabled {
+    border-color: var(--color-line);
+    background: var(--color-disabled-bg);
+    color: var(--color-disabled-fg);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+  /* Focus ring: keep the button's own tonal shadow, then a paper gap and a
+     royal ring (MARK/BTN-I "focus ring" sample). */
+  .ds-btn--primary:focus-visible {
+    outline: none;
+    box-shadow:
+      2px 2px 0 var(--color-accent-shadow),
+      0 0 0 3px var(--color-paper),
+      0 0 0 4.5px var(--color-accent);
+  }
+  .ds-btn--secondary:focus-visible,
+  .ds-btn--secondary-plain:focus-visible {
+    outline: none;
+    box-shadow:
+      2px 2px 0 var(--color-fill-edge),
+      0 0 0 3px var(--color-paper),
+      0 0 0 4.5px var(--color-accent);
+  }
+  .ds-btn--danger:focus-visible {
+    outline: none;
+    box-shadow:
+      2px 2px 0 var(--color-st-failed-btn-edge),
+      0 0 0 3px var(--color-paper),
+      0 0 0 4.5px var(--color-accent);
+  }
+  .ds-btn--ghost:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 3px var(--color-paper),
+      0 0 0 4.5px var(--color-accent);
+  }
+
+  /* Links styled as buttons keep the variant color (the global a:hover rule
+     would otherwise win on specificity). */
+  a.ds-btn--primary:hover {
+    color: #fff;
+  }
+  a.ds-btn--secondary:hover,
+  a.ds-btn--secondary-plain:hover {
+    color: var(--color-ink);
+  }
+  a.ds-btn--danger:hover {
+    color: var(--color-st-failed-tag-fg);
+  }
+  a.ds-btn--ghost:hover {
+    color: var(--color-accent-text);
+  }
+
+  /* Compact 26px button inside alerts (ALERT-K carries emphasis). */
+  .ds-btn--compact {
+    height: 26px;
+    padding: 0 10px;
+    font-size: var(--text-ui);
+  }
+}

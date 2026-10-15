@@ -1,34 +1,26 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { ApiError } from "../api/client";
 import { useCreateProject, useProjects } from "../api/queries";
 import type { Project } from "../api/types";
-import {
-  FormError,
-  ProblemBanner,
-  Spinner,
-  fieldClass,
-  labelClass,
-  submitClass,
-} from "../components/Feedback";
-
-const linkClass =
-  "block rounded border border-gray-200 px-3 py-2 hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700";
+import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
+import { Button } from "../components/ds/Button";
+import { Field, Textarea, Input } from "../components/ds/Field";
+import { Panel } from "../components/ds/Panel";
+import { Row } from "../components/ds/Row";
 
 function ProjectRow({ project }: { project: Project }) {
   return (
     <li>
-      <Link
-        to={`/projects/${project.id}`}
-        className={linkClass}
-        data-testid={`project-link-${project.slug}`}
-      >
-        <span className="font-medium">{project.name}</span>
-        <span className="ml-2 text-sm text-gray-600">role: {project.my_role}</span>
+      <Row to={`/projects/${project.id}`} data-testid={`project-link-${project.slug}`}>
+        <span className="truncate text-[12.5px] font-semibold">{project.name}</span>
+        <span className="font-mono text-[10.5px] text-muted">role: {project.my_role}</span>
         {project.description ? (
-          <span className="block text-sm text-gray-600">{project.description}</span>
+          <span className="hidden truncate text-[12.5px] text-muted sm:inline">
+            {project.description}
+          </span>
         ) : null}
-      </Link>
+      </Row>
     </li>
   );
 }
@@ -56,72 +48,69 @@ export default function Projects() {
     );
   };
 
+  const count = projects.data ? String(projects.data.items.length) : undefined;
+
   return (
-    <section aria-labelledby="projects-heading" className="grid gap-8 md:grid-cols-[1fr_20rem]">
-      <div>
-        <h1 id="projects-heading" className="text-2xl font-semibold">
-          Projects
-        </h1>
-        {projects.isPending ? <Spinner label="Loading projects" /> : null}
-        {projects.error ? (
-          <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
-        ) : null}
-        {projects.data ? (
-          projects.data.items.length === 0 ? (
-            <p className="mt-2 text-gray-700">No projects yet</p>
-          ) : (
-            <ul className="mt-2 space-y-2" data-testid="project-list">
-              {projects.data.items.map((project) => (
-                <ProjectRow key={project.id} project={project} />
-              ))}
-            </ul>
-          )
-        ) : null}
+    <div className="grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="space-y-2">
+        <h1 className="sr-only">Projects</h1>
+        <Panel title="PROJECTS" meta={count ? `${count} total` : undefined}>
+          <div className="p-[10px]">
+            {projects.isPending ? <Spinner label="Loading projects" /> : null}
+            {projects.error ? (
+              <ProblemBanner error={projects.error} fallback="Projects could not be loaded." />
+            ) : null}
+            {projects.data ? (
+              projects.data.items.length === 0 ? (
+                <p className="text-body text-muted">No projects yet</p>
+              ) : (
+                <ul className="space-y-[4px]" data-testid="project-list">
+                  {projects.data.items.map((project) => (
+                    <ProjectRow key={project.id} project={project} />
+                  ))}
+                </ul>
+              )
+            ) : null}
+          </div>
+        </Panel>
       </div>
 
-      <form onSubmit={onSubmit} aria-labelledby="create-heading" className="space-y-3">
-        <h2 id="create-heading" className="text-lg font-semibold">
-          New project
-        </h2>
-        <div>
-          <label className={labelClass} htmlFor="create-project-name">
-            Name
-          </label>
-          <input
-            id="create-project-name"
-            className={fieldClass}
-            data-testid="create-project-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-          />
-        </div>
-        <div>
-          <label className={labelClass} htmlFor="create-project-description">
-            Description (optional)
-          </label>
-          <textarea
-            id="create-project-description"
-            className={fieldClass}
-            data-testid="create-project-description"
-            rows={3}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </div>
-        <button
-          type="submit"
-          className={submitClass}
-          data-testid="create-project-submit"
-          disabled={create.isPending || !name.trim()}
-        >
-          {create.isPending ? "Creating…" : "Create project"}
-        </button>
-        {create.error instanceof ApiError && create.error.status === 409 ? (
-          <p className="text-sm text-gray-700">Pick a different name — the slug is taken.</p>
-        ) : null}
-        <FormError error={create.error} />
+      <form onSubmit={onSubmit} aria-labelledby="create-heading">
+        <Panel title="NEW PROJECT" headingId="create-heading">
+          <div className="space-y-3 p-[10px]">
+            <Field id="create-project-name" label="Name">
+              <Input
+                id="create-project-name"
+                data-testid="create-project-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+              />
+            </Field>
+            <Field id="create-project-description" label="Description (optional)">
+              <Textarea
+                id="create-project-description"
+                data-testid="create-project-description"
+                rows={3}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </Field>
+            <Button
+              type="submit"
+              variant="primary"
+              data-testid="create-project-submit"
+              disabled={create.isPending || !name.trim()}
+            >
+              {create.isPending ? "Creating…" : "Create project"}
+            </Button>
+            {create.error instanceof ApiError && create.error.status === 409 ? (
+              <p className="text-[12.5px] text-muted">Pick a different name — the slug is taken.</p>
+            ) : null}
+            <FormError error={create.error} />
+          </div>
+        </Panel>
       </form>
-    </section>
+    </div>
   );
 }

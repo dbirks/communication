@@ -45,7 +45,9 @@ describe("/projects/:projectId conversations", () => {
     expect(row.textContent).toContain("Refactor billing");
     // The list row carries only the profile id, so the UI resolves the name.
     expect(row.textContent).toContain("profile: Claude Code");
-    expect(row.textContent).toContain("status: active");
+    // STATUS-E: the status rides a glyph+word chip ("● active"; the word is
+    // the DOM text, CSS uppercases it visually only).
+    expect(row.textContent).toContain("●active");
     expect(row.textContent).toContain("controller: Ada Lovelace");
     expect(row.textContent).toContain("updated: 2026-10-14T18:05:00Z");
     expect(row.getAttribute("href")).toBe(

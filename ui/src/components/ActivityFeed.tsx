@@ -1,5 +1,9 @@
+import { useActorNames } from "../api/actors";
 import { useProjectEvents } from "../api/events";
 import type { EventEnvelope } from "../api/types";
+import { Panel } from "./ds/Panel";
+import { StatusChip } from "./ds/Row";
+import { STREAM_STATE, stateOf } from "./ds/states";
 
 /** One-line human summary of an event payload (M1 event types). */
 export function summarizeEvent(event: EventEnvelope): string {
@@ -30,41 +34,64 @@ export interface ActivityFeedProps {
 /**
  * Live activity: the project's durable event stream (SSE). Frames from any API
  * replica are identical because they are replayed from the shared journal, so
- * this list is also the proof that replicas agree.
+ * this list is also the proof that replicas agree. The actor is written as a
+ * person's name — the journal's id is an implementation detail a reader of an
+ * activity feed cannot use.
  */
 export default function ActivityFeed({ projectId }: ActivityFeedProps) {
   const { events, status } = useProjectEvents(projectId);
+  const { actorLabel } = useActorNames(projectId);
 
   return (
-    <section aria-labelledby="activity-heading" className="space-y-2">
-      <div className="flex items-baseline gap-3">
-        <h2 id="activity-heading" className="text-lg font-semibold">
-          Activity
-        </h2>
-        <p className="text-sm text-gray-700" role="status" aria-live="polite">
-          feed: <span data-testid="activity-status">{status}</span>
-        </p>
+    <Panel
+      id="activity"
+      title="ACTIVITY"
+      headingId="activity-heading"
+      headingLevel={2}
+      meta={
+        <StatusChip
+          state={stateOf(STREAM_STATE[status])}
+          label={status}
+          className="h-[15px]"
+          labelProps={{ "data-testid": "activity-status", role: "status" }}
+        />
+      }
+    >
+      <div className="p-[10px]">
+        {events.length === 0 ? (
+          <p className="pb-2 text-[12.5px] text-muted">No events yet.</p>
+        ) : null}
+        <ol className="divide-y divide-line-soft" data-testid="activity-list" aria-live="polite">
+          {events.map((event) => (
+            <li
+              key={event.global_seq}
+              data-testid="activity-item"
+              className="flex flex-wrap items-baseline gap-x-2 py-[5px] text-[12.5px]"
+            >
+              <span className="font-mono text-[11px] font-medium text-ink">{event.type}</span>
+              <span aria-hidden="true" className="text-faint">
+                ·
+              </span>
+              <span>{summarizeEvent(event)}</span>
+              <span aria-hidden="true" className="text-faint">
+                ·
+              </span>
+              <span>
+                by <span data-testid="activity-actor">{actorLabel(event.actor)}</span>
+              </span>
+              <span aria-hidden="true" className="text-faint">
+                ·
+              </span>
+              <time
+                dateTime={event.occurred_at}
+                className="ml-auto font-mono text-[10.5px] text-faint"
+              >
+                {formatTime(event.occurred_at)}
+              </time>
+            </li>
+          ))}
+        </ol>
       </div>
-      {events.length === 0 ? <p className="text-sm text-gray-600">No events yet.</p> : null}
-      <ol className="space-y-1" data-testid="activity-list" aria-live="polite">
-        {events.map((event) => (
-          <li
-            key={event.global_seq}
-            data-testid="activity-item"
-            className="flex flex-wrap gap-x-2 text-sm"
-          >
-            <span className="font-medium">{event.type}</span>
-            <span aria-hidden="true">·</span>
-            <span>{summarizeEvent(event)}</span>
-            <span aria-hidden="true">·</span>
-            <span>
-              {event.actor.kind}: {event.actor.id.slice(0, 8)}
-            </span>
-            <span aria-hidden="true">·</span>
-            <time dateTime={event.occurred_at}>{formatTime(event.occurred_at)}</time>
-          </li>
-        ))}
-      </ol>
-    </section>
+    </Panel>
   );
 }

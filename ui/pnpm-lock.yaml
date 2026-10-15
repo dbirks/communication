@@ -11,6 +11,15 @@ importers:
 
   .:
     dependencies:
+      '@fontsource/kaisei-opti':
+        specifier: 5.3.1
+        version: 5.3.1
+      '@fontsource/red-hat-mono':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@fontsource/red-hat-text':
+        specifier: 5.3.0
+        version: 5.3.0
       '@tanstack/react-query':
         specifier: 5.104.2
         version: 5.104.2(react@19.3.1)
@@ -137,6 +146,15 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@fontsource/kaisei-opti@5.3.1':
+    resolution: {integrity: sha512-71MPFMyXvVCnxDot5RfSvWFyH1lZPs8kNqU4lsFnDSxSRFXgtOK1WmJP23X8PRRif11oKLMMKSHQo6SwB7Lc+g==}
+
+  '@fontsource/red-hat-mono@5.3.0':
+    resolution: {integrity: sha512-rXSQpg6TLRd+WLhcN9qGIarP9/HVouhmdKJcCv1R3+c2mznJ2GUUaTpkKhFN6LO2Sg7lRvb8CIaXYQqvqY6aPw==}
+
+  '@fontsource/red-hat-text@5.3.0':
+    resolution: {integrity: sha512-/kgNIUqdoc9uyd4zK+T7gEwY6bYF+hSCZeQTl8Ni/oKtv+a7YeCyQwAE94BeLwud6UfLqn90gBFKa3gCpiZnRA==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1303,11 +1321,6 @@ packages:
     resolution: {integrity: sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==}
     engines: {node: '>=16'}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
-    engines: {node: '>=14.17'}
-    hasBin: true
-
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -1495,6 +1508,12 @@ snapshots:
   '@csstools/css-tokenizer@4.0.2': {}
 
   '@exodus/bytes@1.16.0': {}
+
+  '@fontsource/kaisei-opti@5.3.1': {}
+
+  '@fontsource/red-hat-mono@5.3.0': {}
+
+  '@fontsource/red-hat-text@5.3.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
@@ -2165,7 +2184,7 @@ snapshots:
       change-case: 5.4.4
       parse-json: 8.3.0
       supports-color: 10.2.2
-      typescript: 5.9.3
+      typescript: 7.0.2
       yargs-parser: 21.1.1
 
   oxfmt@0.73.0:
@@ -2326,8 +2345,6 @@ snapshots:
       punycode: 2.3.1
 
   type-fest@4.41.0: {}
-
-  typescript@5.9.3: {}
 
   typescript@7.0.2:
     optionalDependencies:

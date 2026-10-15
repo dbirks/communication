@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router";
+import { useActorNames, mergeLookups, nameLookup } from "../api/actors";
 import { ApiError } from "../api/client";
 import { useConversationEvents } from "../api/events";
 import {
@@ -11,7 +12,6 @@ import {
   useReturnConversationControl,
   useTakeConversationControl,
   usePostConversationMessage,
-  useUsers,
 } from "../api/queries";
 import {
   describeTurn,
@@ -21,13 +21,12 @@ import {
 } from "../api/transcript";
 import type { ConversationControl, PermissionOption } from "../api/types";
 import Transcript from "../components/Transcript";
-import { FormError, ProblemBanner, Spinner, fieldClass, submitClass } from "../components/Feedback";
-
-const controlButtonClass =
-  "rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-900 hover:bg-gray-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 disabled:opacity-50";
-
-const stopButtonClass =
-  "rounded border border-red-300 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-900 hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800 disabled:opacity-50";
+import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
+import { Alert } from "../components/ds/Alert";
+import { Button } from "../components/ds/Button";
+import { Textarea } from "../components/ds/Field";
+import { StatusChip } from "../components/ds/Row";
+import { STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
 
 /** Copy for the controller badge — ownership is always written in words. */
 export function controllerCopy(control: ConversationControl, isController: boolean): string {
@@ -39,10 +38,6 @@ export function controllerCopy(control: ConversationControl, isController: boole
   return "No controller — take control to drive";
 }
 
-function shortId(id: string): string {
-  return id ? `user ${id.slice(0, 8)}` : "unknown";
-}
-
 export default function ConversationPage() {
   const { projectId = "", conversationId = "" } = useParams<{
     projectId: string;
@@ -50,7 +45,6 @@ export default function ConversationPage() {
   }>();
   const conversation = useConversation(conversationId);
   const me = useMe();
-  const users = useUsers();
   const { events, status } = useConversationEvents(conversationId);
   const sendMessage = usePostConversationMessage(conversationId);
   const takeControl = useTakeConversationControl(conversationId);
@@ -75,18 +69,22 @@ export default function ConversationPage() {
   const roleKnown = project.data !== undefined;
   const canRequestControl = roleKnown ? project.data.my_role !== "viewer" : true;
 
-  const names = useMemo(() => {
-    const map = new Map<string, string>();
-    if (me.data) map.set(me.data.id, me.data.display_name);
-    for (const user of users.data?.items ?? []) map.set(user.id, user.display_name);
-    if (data?.created_by_display_name) map.set(data.created_by, data.created_by_display_name);
-    if (data?.control.display_name && data.control.user_id) {
-      map.set(data.control.user_id, data.control.display_name);
-    }
-    return map;
-  }, [me.data, users.data, data]);
-
-  const nameOf = (userId: string) => names.get(userId) ?? shortId(userId);
+  // Names come from the shared actor directory (me, users, members) merged
+  // with the hints this page holds locally (creator, controller). The last
+  // resort is "someone (short-id)", never a bare uuid.
+  const actors = useActorNames(projectId);
+  const nameOf = useMemo(() => {
+    const local = nameLookup([
+      ...(data?.created_by_display_name
+        ? ([[data.created_by, data.created_by_display_name]] as const)
+        : []),
+      ...(data?.control.display_name && data.control.user_id
+        ? ([[data.control.user_id, data.control.display_name]] as const)
+        : []),
+    ]);
+    const merged = mergeLookups(local, actors.lookup);
+    return (userId: string) => merged(userId) ?? actors.nameOf(userId);
+  }, [actors, data]);
 
   const onSend = (event: FormEvent) => {
     event.preventDefault();
@@ -116,11 +114,14 @@ export default function ConversationPage() {
   if (conversation.error instanceof ApiError && conversation.error.status === 404) {
     return (
       <section aria-labelledby="conversation-missing-heading">
-        <h1 id="conversation-missing-heading" className="text-2xl font-semibold">
+        <h1 id="conversation-missing-heading" className="text-title-l font-bold">
           Conversation
         </h1>
-        <p className="mt-2 text-red-900" role="alert" data-testid="conversation-not-found">
-          Conversation not found or you do not have access
+        <p className="mt-2 text-st-failed-tag-fg" role="alert">
+          <span aria-hidden="true">× </span>
+          <span data-testid="conversation-not-found">
+            Conversation not found or you do not have access
+          </span>
         </p>
       </section>
     );
@@ -129,7 +130,7 @@ export default function ConversationPage() {
   if (conversation.error || !data) {
     return (
       <section aria-labelledby="conversation-error-heading">
-        <h1 id="conversation-error-heading" className="text-2xl font-semibold">
+        <h1 id="conversation-error-heading" className="text-title-l font-bold">
           Conversation
         </h1>
         <ProblemBanner
@@ -154,27 +155,27 @@ export default function ConversationPage() {
   const controlError = takeControl.error ?? returnControl.error ?? null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <header className="space-y-2">
-        <p className="text-sm text-gray-600">
-          <Link to={`/projects/${projectId}`} className="text-blue-800 hover:underline">
+        <p className="font-mono text-[11px] text-muted">
+          <Link to={`/projects/${projectId}`} className="text-accent-text hover:text-ink">
             Project
           </Link>
           <span aria-hidden="true"> / </span>
           <span>Conversations</span>
         </p>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 data-testid="conversation-title" className="text-2xl font-semibold">
+          <h1 data-testid="conversation-title" className="text-title-l font-bold">
             {data.title}
           </h1>
           <span
             data-testid="controller-badge"
-            className="rounded border border-gray-300 px-2 py-0.5 text-sm"
+            className="inline-flex h-[22px] items-center rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[10.5px] font-medium text-ink-2"
           >
             {badgeText}
           </span>
         </div>
-        <p className="text-sm text-gray-600" data-testid="conversation-meta">
+        <p className="font-mono text-[11px] text-muted" data-testid="conversation-meta">
           <span>profile: {data.agent_profile_name ?? data.agent_profile_id}</span>
           <span className="px-2" aria-hidden="true">
             ·
@@ -183,17 +184,24 @@ export default function ConversationPage() {
           <span className="px-2" aria-hidden="true">
             ·
           </span>
-          <span>
-            stream:{" "}
-            <span data-testid="stream-status" role="status" aria-live="polite">
-              {status}
-            </span>
+          <span className="inline-flex items-center gap-1.5">
+            stream:
+            <StatusChip
+              state={stateOf(STREAM_STATE[status])}
+              label={status}
+              labelProps={{ "data-testid": "stream-status", role: "status" }}
+            />
           </span>
           <span className="px-2" aria-hidden="true">
             ·
           </span>
-          <span>
-            turn: <span data-testid="turn-status">{turnStatus}</span>
+          <span className="inline-flex items-center gap-1.5">
+            turn:
+            <StatusChip
+              state={stateOf(TURN_STATE[described.status])}
+              label={turnStatus}
+              labelProps={{ "data-testid": "turn-status" }}
+            />
           </span>
           {data.agent_session ? (
             <>
@@ -214,19 +222,17 @@ export default function ConversationPage() {
         <div className="flex flex-wrap items-center gap-2">
           {isController ? (
             <>
-              <button
-                type="button"
-                className={controlButtonClass}
+              <Button
+                variant="secondaryPlain"
                 data-testid="return-control"
                 disabled={returnControl.isPending || control.kind !== "human"}
                 onClick={() => returnControl.mutate({ version: control.version })}
               >
                 {returnControl.isPending ? "Returning…" : "Return control"}
-              </button>
+              </Button>
               {turnInProgress ? (
-                <button
-                  type="button"
-                  className={stopButtonClass}
+                <Button
+                  variant="danger"
                   data-testid="stop-turn"
                   disabled={cancelTurn.isPending || Boolean(activeTurn?.cancel_requested_at)}
                   onClick={() => cancelTurn.mutate()}
@@ -236,42 +242,39 @@ export default function ConversationPage() {
                     : activeTurn?.cancel_requested_at
                       ? "Stop requested"
                       : "Stop"}
-                </button>
+                </Button>
               ) : null}
             </>
           ) : (
             canRequestControl && (
-              <button
-                type="button"
-                className={submitClass}
+              <Button
+                variant="primary"
                 data-testid="take-control"
                 disabled={takeControl.isPending || !roleKnown}
                 // The version we last read; a stale one is a 409 we adopt (§9).
                 onClick={() => takeControl.mutate({ version: control.version })}
               >
                 {takeControl.isPending ? "Taking…" : "Take control"}
-              </button>
+              </Button>
             )
           )}
-          <span className="text-sm text-gray-600">control version: {control.version}</span>
+          <span className="font-mono text-[11px] text-faint">
+            control version: {control.version}
+          </span>
         </div>
         {controlError ? <FormError error={controlError} /> : null}
         {cancelTurn.error ? <FormError error={cancelTurn.error} /> : null}
         {isController && takeControl.isSuccess ? (
-          <p className="text-sm text-gray-700" role="status">
+          <p className="text-[12.5px] text-muted" role="status">
             You are driving this conversation.
           </p>
         ) : null}
       </header>
 
       {interrupted ? (
-        <p
-          data-testid="interrupted-notice"
-          role="status"
-          className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
-        >
+        <Alert state="interrupted" testid="interrupted-notice" meta="you can send a new prompt">
           {interruptedCopy(described.record?.interruptReason ?? null)}
-        </p>
+        </Alert>
       ) : null}
 
       <Transcript
@@ -286,17 +289,19 @@ export default function ConversationPage() {
       />
 
       <section aria-labelledby="composer-heading" className="space-y-2">
-        <h2 id="composer-heading" className="text-lg font-semibold">
+        <h2
+          id="composer-heading"
+          className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+        >
           Prompt
         </h2>
         <form onSubmit={onSend} className="space-y-2">
           <label className="sr-only" htmlFor="conversation-prompt">
             Prompt for the agent
           </label>
-          <textarea
+          <Textarea
             id="conversation-prompt"
             data-testid="composer-input"
-            className={fieldClass}
             rows={3}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
@@ -306,9 +311,9 @@ export default function ConversationPage() {
               isController ? "Ask the agent for something…" : "Only the controller can prompt."
             }
           />
-          <button
+          <Button
             type="submit"
-            className={submitClass}
+            variant="primary"
             data-testid="composer-send"
             // Enabled for the controller only, and never while a turn is open:
             // the API refuses a second prompt into a running turn (01 invariant,
@@ -316,12 +321,12 @@ export default function ConversationPage() {
             disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
           >
             {sendMessage.isPending ? "Sending…" : "Send"}
-          </button>
+          </Button>
         </form>
         {!isController ? (
           <p
             id="composer-explainer"
-            className="text-sm text-gray-700"
+            className="text-[12.5px] text-muted"
             data-testid="composer-explainer"
           >
             {!canRequestControl
@@ -333,7 +338,7 @@ export default function ConversationPage() {
         ) : turnInProgress ? (
           <p
             id="composer-explainer"
-            className="text-sm text-gray-700"
+            className="text-[12.5px] text-muted"
             data-testid="composer-explainer"
           >
             A turn is already open (status: {activeTurn?.status}). Wait for it to finish, or press

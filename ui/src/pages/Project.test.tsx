@@ -178,7 +178,10 @@ describe("/projects/:projectId", () => {
     const item = await screen.findByTestId("activity-item");
     expect(item.textContent).toContain("repository.added");
     expect(item.textContent).toContain("repository communication");
-    expect(item.textContent).toContain("human:");
+    // The actor is written as a person's name, never a raw kind + uuid
+    // (uncommitted polish finished here: `ui/src/api/actors.ts`).
+    expect(item.textContent).toContain("by Ada Lovelace");
+    expect(within(item).getByTestId("activity-actor").textContent).toBe("Ada Lovelace");
     expect(
       within(screen.getByTestId("activity-list")).getAllByTestId("activity-item"),
     ).toHaveLength(1);

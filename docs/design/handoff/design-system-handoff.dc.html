@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Text:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Kaisei+Opti:wght@500&display=swap&text=COMMUNICATION" rel="stylesheet">
+<style>
+body{margin:0;background:#f8f7f3;-webkit-font-smoothing:antialiased}
+a{color:#2a43b8}a:hover{color:#1e1d1a}
+button{margin:0}
+</style>
+</helmet>
+<div style="max-width:1240px;margin:0 auto;box-sizing:border-box;display:flex;flex-direction:column;gap:48px;padding:56px 40px 80px;font-family:'Red Hat Text',sans-serif;color:#1e1d1a">
+
+<header style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:center;gap:16px"><span style="position:relative;width:44px;height:44px;flex:none"><span style="position:absolute;inset:4px -4px -4px 4px;border-radius:3px;background:repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px)"></span><span style="position:relative;width:44px;height:44px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font:500 27px/1 'Kaisei Opti',serif;text-box:trim-both cap alphabetic">C</span></span>
+<div style="display:flex;flex-direction:column;gap:2px"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80;letter-spacing:.06em">COMMUNICATION · VISUAL IDENTITY v0.1 · 2026-10-14</span><span style="font-weight:700;font-size:28px">Design system handoff</span></div></div>
+<p style="margin:0;max-width:820px;font-size:15px;line-height:1.6;color:#3a3833;text-wrap:pretty">The decisions from component lab rounds 1–3, written down so a coding agent can build them. The base is the 5f Hairline Flat direction: warm paper, ink hairlines, small corners, soft tactile buttons with a bottom-right shadow, a very light crosshatch for texture, and color used mainly to signal state. Reference screens are in Screens Turn 6 and Run View Turn 5 (5f).</p>
+<div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{ picks }}" as="p" hint-placeholder-count="14"><span style="height:24px;display:flex;align-items:center;gap:6px;padding:0 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font:500 11px 'Red Hat Mono',monospace"><span style="color:#1e1d1a">{{ p.id }}</span><span style="color:#8f8a80">{{ p.what }}</span></span></sc-for></div>
+</header>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid #1e1d1a"><span style="font:600 12px 'Red Hat Mono',monospace;color:#8f8a80">01</span><span style="font-weight:700;font-size:20px">Color</span></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px">
+<sc-for list="{{ neutrals }}" as="c" hint-placeholder-count="10"><div style="display:flex;flex-direction:column;border:1px solid #e6e2d9;border-radius:3px;background:#fff;overflow:hidden"><span style="height:48px;background:{{ c.hex }};border-bottom:1px solid #e6e2d9"></span><div style="display:flex;flex-direction:column;gap:2px;padding:8px 10px"><span style="font:600 12px 'Red Hat Mono',monospace">{{ c.token }}</span><span style="font:11px 'Red Hat Mono',monospace;color:#6b675e">{{ c.hex }}</span><span style="font-size:11.5px;color:#8f8a80">{{ c.use }}</span></div></div></sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px"><span style="font:600 11px 'Red Hat Mono',monospace;color:#6b675e;letter-spacing:.04em">ACCENT · ROYAL (ACCENT-I)</span>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px"><sc-for list="{{ accent }}" as="c" hint-placeholder-count="7"><div style="display:flex;flex-direction:column;border:1px solid #e6e2d9;border-radius:3px;background:#fff;overflow:hidden"><span style="height:48px;background:{{ c.hex }};border-bottom:1px solid #e6e2d9"></span><div style="display:flex;flex-direction:column;gap:2px;padding:8px 10px"><span style="font:600 12px 'Red Hat Mono',monospace">{{ c.token }}</span><span style="font:11px 'Red Hat Mono',monospace;color:#6b675e">{{ c.hex }}</span><span style="font-size:11.5px;color:#8f8a80">{{ c.use }}</span></div></div></sc-for></div></div>
+<div style="display:flex;flex-direction:column;gap:8px"><span style="font:600 11px 'Red Hat Mono',monospace;color:#6b675e;letter-spacing:.04em">STATE COLORS (STATES-J) · TAG / STRONG BAR / PALE ALERT</span>
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:grid;grid-template-columns:140px 150px 170px 220px minmax(0,1fr);gap:12px;padding:8px 14px;border-bottom:1px solid #e6e2d9;font:500 10px 'Red Hat Mono',monospace;color:#8f8a80;letter-spacing:.04em"><span>STATE</span><span>TAG</span><span>STRONG</span><span>PALE (ALERTS)</span><span>HEX · TAG BG / FG · STRONG · PALE BAR / BODY / EDGE</span></div>
+<sc-for list="{{ states }}" as="s" hint-placeholder-count="8"><div style="display:grid;grid-template-columns:140px 150px 170px 220px minmax(0,1fr);gap:12px;align-items:center;padding:8px 14px;border-bottom:1px solid #f0ede6">
+<span style="font-weight:600;font-size:13px">{{ s.n }}</span>
+<span style="justify-self:start;padding:2px 7px;border-radius:3px;background:{{ s.tagBg }};color:{{ s.tagFg }};font:600 11px 'Red Hat Mono',monospace">{{ s.g }} {{ s.n }}</span>
+<span style="display:flex;align-items:center;height:20px;padding:0 8px;border-radius:2px;background:{{ s.strong }};color:{{ s.strongFg }};font:600 9.5px 'Red Hat Mono',monospace;letter-spacing:.04em;text-transform:uppercase">{{ s.g }} {{ s.n }}</span>
+<div style="display:flex;flex-direction:column;border:1px solid {{ s.paleEdge }};border-radius:3px;overflow:hidden"><span style="padding:2px 8px;background:{{ s.paleBar }};color:{{ s.paleFg }};border-bottom:1px solid {{ s.paleEdge }};font:600 9.5px 'Red Hat Mono',monospace;letter-spacing:.04em">{{ s.g }} {{ s.bar }}</span><span style="height:10px;background:{{ s.paleBody }}"></span></div>
+<span style="font:10.5px 'Red Hat Mono',monospace;color:#6b675e">{{ s.tagBg }} / {{ s.tagFg }} · {{ s.strong }} · {{ s.paleBar }} / {{ s.paleBody }} / {{ s.paleEdge }}</span>
+</div></sc-for>
+</div>
+<span style="font-size:12.5px;line-height:1.5;color:#6b675e">Running uses cerulean on purpose: royal means “you can act”, cerulean means “work in progress”. A state is never shown by color alone; it always has its glyph (● ! × ⊘ ↻ ✓ · i) and its word.</span>
+</div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid #1e1d1a"><span style="font:600 12px 'Red Hat Mono',monospace;color:#8f8a80">02</span><span style="font-weight:700;font-size:20px">Type</span></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+<div style="display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">UI · Red Hat Text</span><span style="font-weight:700;font-size:26px">Run #482</span><span style="font-size:13px;color:#6b675e">400 · 500 · 600 · 700. All interface text, titles, and buttons.</span></div>
+<div style="display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">META · Red Hat Mono</span><span style="font:500 18px 'Red Hat Mono',monospace">ws-482-14 · att 2</span><span style="font-size:13px;color:#6b675e">400 · 500 · 600. IDs, timestamps, counts, labels, tags, title bars, code.</span></div>
+<div style="display:flex;flex-direction:column;gap:6px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">MARK ONLY · Kaisei Opti 500</span><span style="font:500 26px 'Kaisei Opti',serif;color:#1e1d1a">COMMUNICATION</span><span style="font-size:13px;color:#6b675e">Only the C and the boxed wordmark. Use line-height 1 and text-box trim (cap / alphabetic) so the C sits optically centered.</span></div>
+</div>
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff"><sc-for list="{{ typeScale }}" as="t" hint-placeholder-count="9"><div style="display:grid;grid-template-columns:150px 120px minmax(0,1fr);gap:12px;align-items:baseline;padding:8px 14px;border-bottom:1px solid #f0ede6"><span style="font:600 11.5px 'Red Hat Mono',monospace">{{ t.token }}</span><span style="font:11px 'Red Hat Mono',monospace;color:#6b675e">{{ t.spec }}</span><span style="font-family:{{ t.family }};font-size:{{ t.size }};font-weight:{{ t.weight }}">{{ t.sample }}</span></div></sc-for></div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid #1e1d1a"><span style="font:600 12px 'Red Hat Mono',monospace;color:#8f8a80">03</span><span style="font-weight:700;font-size:20px">Shape, depth, texture</span></div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">RADIUS</span><div style="display:flex;gap:10px;align-items:flex-end"><span style="width:36px;height:36px;border:1px solid #1e1d1a;border-radius:2px"></span><span style="width:36px;height:36px;border:1px solid #1e1d1a;border-radius:3px"></span><span style="width:36px;height:36px;border:1px solid #1e1d1a;border-radius:4px"></span></div><span style="font:11px/1.5 'Red Hat Mono',monospace;color:#6b675e">2 tags, bars<br>3 panels, inputs, cards<br>4 buttons</span></div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">LINES</span><div style="display:flex;flex-direction:column;gap:8px"><span style="height:1px;background:#1e1d1a"></span><span style="height:1px;background:#cfcac0"></span><span style="height:1px;background:#e6e2d9"></span><span style="height:1px;background:#f0ede6"></span></div><span style="font:11px/1.5 'Red Hat Mono',monospace;color:#6b675e">1px only. Ink for structure (bars, panel edges); gray for inputs and dividers.</span></div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">DEPTH</span><div style="display:flex;gap:14px;align-items:center;padding:4px 0"><span style="width:44px;height:28px;border:1px solid #2238a8;border-radius:4px;background:#2f4bd6;box-shadow:2px 2px 0 #1a2d8f"></span><span style="width:44px;height:28px;border:1px solid #1e1d1a;border-radius:3px;background:#fff;box-shadow:2px 2px 0 #1e1d1a"></span></div><span style="font:11px/1.5 'Red Hat Mono',monospace;color:#6b675e">One shadow: 2px 2px 0, no blur. Tonal on buttons, ink on raised selection. Pressed = translate(2px,2px) and no shadow.</span></div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #cfcac0;border-radius:3px;background:#fff"><span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80">TEXTURE · LIGHT CROSSHATCH</span><div style="display:flex;gap:8px"><span style="flex:1;height:36px;border:1px solid #cfcac0;border-radius:3px;background:repeating-linear-gradient(0deg, #e8e5dd 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, #e8e5dd 0 1px, transparent 1px 4px), #fff"></span><span style="flex:1;height:36px;border:1px solid #cfcac0;border-radius:3px;background:repeating-linear-gradient(0deg, #e4e8fa 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, #e4e8fa 0 1px, transparent 1px 4px), #fff"></span><span style="flex:1;height:36px;border:1px solid #cfcac0;border-radius:3px;background:repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px)"></span></div><span style="font:11px/1.5 'Red Hat Mono',monospace;color:#6b675e">4px grid, 1px lines, gray or royal tint. Diagonal hatch only for the mark's shadow.</span></div>
+</div>
+<div style="padding:12px 14px;border:1px solid #e6e2d9;border-radius:3px;background:#fff;font:11.5px/1.6 'Red Hat Mono',monospace;color:#3a3833;white-space:pre-wrap">--texture-grid: repeating-linear-gradient(0deg, var(--tex) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, var(--tex) 0 1px, transparent 1px 4px);   /* --tex: #e8e5dd neutral · #e4e8fa accent */
+--hatch-mark:   repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px);
+--shadow-btn:   2px 2px 0 var(--tone-dark);   --shadow-raised: 2px 2px 0 #1e1d1a;   spacing: 4 · 8 · 12 · 16 · 24 · 32</div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid #1e1d1a"><span style="font:600 12px 'Red Hat Mono',monospace;color:#8f8a80">04</span><span style="font-weight:700;font-size:20px">Components</span><span style="font-size:13px;color:#6b675e">Locked variants with their states. Interactive: hover and press.</span></div>
+
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">Mark</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">MARK-E</span></div>
+<div style="display:flex;align-items:center;gap:22px;padding:20px 16px;flex-wrap:wrap">
+<span style="position:relative;width:40px;height:40px;flex:none"><span style="position:absolute;inset:4px -4px -4px 4px;border-radius:3px;background:repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px)"></span><span style="position:relative;width:40px;height:40px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font:500 25px/1 'Kaisei Opti',serif;text-box:trim-both cap alphabetic">C</span></span>
+<span style="position:relative;width:28px;height:28px;flex:none"><span style="position:absolute;inset:3px -3px -3px 3px;border-radius:3px;background:repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px)"></span><span style="position:relative;width:28px;height:28px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font:500 17px/1 'Kaisei Opti',serif;text-box:trim-both cap alphabetic">C</span></span>
+<div style="display:flex;gap:3px"><sc-for list="{{ letters }}" as="l" hint-placeholder-count="13"><span style="width:16px;height:16px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;box-shadow:1.5px 1.5px 0 #8fa0e6;font:500 11px/1 'Kaisei Opti',serif;text-box:trim-both cap alphabetic">{{ l }}</span></sc-for></div>
+</div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">C alone in the app bar (28px). Wordmark for sign-in, empty states, and the expanded nav. Offset = 1/10 of size.</span>
+</div>
+
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">Buttons</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">BTN-I · 30px tall · radius 4</span></div>
+<div style="display:flex;flex-direction:column;gap:12px;padding:18px 16px">
+<div style="display:flex;flex-wrap:wrap;gap:12px"><sc-for list="{{ buttons }}" as="b" hint-placeholder-count="5"><button style="height:30px;padding:0 13px;border:1px solid {{ b.bd }};border-radius:4px;background:{{ b.bg }};box-shadow:{{ b.sh }};font:600 12.5px 'Red Hat Text',sans-serif;color:{{ b.fg }};cursor:{{ b.cur }}" style-hover="filter:brightness(0.96)" style-active="transform:translate(2px,2px);box-shadow:none">{{ b.t }}</button></sc-for></div>
+<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;font:10.5px 'Red Hat Mono',monospace;color:#6b675e"><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button style="height:28px;padding:0 12px;border:1px solid #2238a8;border-radius:4px;background:#2f4bd6;box-shadow:2px 2px 0 #1a2d8f;font:600 12px 'Red Hat Text',sans-serif;color:#fff">Primary</button>default</div><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button style="height:28px;padding:0 12px;border:1px solid #2238a8;border-radius:4px;background:#2a44c8;box-shadow:2px 2px 0 #1a2d8f;font:600 12px 'Red Hat Text',sans-serif;color:#fff">Primary</button>hover · 4% darker</div><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button style="height:28px;padding:0 12px;border:1px solid #2238a8;border-radius:4px;background:#2f4bd6;transform:translate(2px,2px);font:600 12px 'Red Hat Text',sans-serif;color:#fff">Primary</button>pressed</div><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start"><button style="height:28px;padding:0 12px;border:1px solid #2f4bd6;border-radius:4px;background:#2f4bd6;box-shadow:2px 2px 0 #1a2d8f, 0 0 0 3px #f8f7f3, 0 0 0 4.5px #2f4bd6;font:600 12px 'Red Hat Text',sans-serif;color:#fff">Primary</button>focus ring</div></div>
+</div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">Border and shadow use a darker tone of the fill. One primary per area.</span>
+</div>
+</div>
+
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">App bar + sub-nav</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">NAV-I · SIDE-F · INPUT-A (Ask)</span></div>
+<div style="display:grid;grid-template-columns:200px minmax(0,1fr);background:#f8f7f3">
+<div style="grid-column:1 / -1;height:52px;box-sizing:border-box;display:flex;align-items:center;gap:14px;padding:0 16px;background:#fff;border-bottom:1px solid #1e1d1a">
+<span style="position:relative;width:28px;height:28px;flex:none"><span style="position:absolute;inset:3px -3px -3px 3px;border-radius:3px;background:repeating-linear-gradient(135deg, #2f4bd6 0 1px, transparent 1px 3px)"></span><span style="position:relative;width:28px;height:28px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font:500 17px/1 'Kaisei Opti',serif;text-box:trim-both cap alphabetic">C</span></span>
+<button style="flex:none;display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border:1px solid #cfc9bd;border-radius:4px;background:#fff;box-shadow:2px 2px 0 #cfc9bd;font:600 13px 'Red Hat Text',sans-serif;color:#1e1d1a;cursor:pointer" style-active="transform:translate(2px,2px);box-shadow:none">Storefront ▾</button>
+<div style="flex:none;display:flex;gap:2px;padding:3px;border-radius:4px;background:#efede7;font-size:12.5px;color:#6b675e"><span style="padding:4px 10px;border:1px solid transparent;border-radius:3px" style-hover="color:#1e1d1a">Overview</span><span style="padding:4px 10px;border:1px solid transparent;border-radius:3px" style-hover="color:#1e1d1a">Work</span><span style="padding:4px 10px;border:1px solid transparent;border-radius:3px" style-hover="color:#1e1d1a">Runs</span><span style="padding:4px 10px;border:1px solid transparent;border-radius:3px" style-hover="color:#1e1d1a">Pipelines</span><span style="padding:4px 10px;border:1px solid #cfc9bd;border-radius:3px;background:#fff;color:#1e1d1a;font-weight:600">Settings</span></div>
+<div style="margin-left:auto;flex:none;width:200px;white-space:nowrap;height:30px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 8px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font-size:12.5px;color:#8f8a80;overflow:hidden"><span style="flex:none;padding:1px 6px;border-radius:2px;background:#eef0fc;color:#2a43b8;font:500 10.5px 'Red Hat Mono',monospace">secrets</span>Ask…<span style="margin-left:auto;font:10.5px 'Red Hat Mono',monospace;color:#1e1d1a">Ctrl K</span></div>
+<span style="flex:none;width:28px;height:28px;box-sizing:border-box;border-radius:3px;display:grid;place-items:center;border:1px solid #1e1d1a;font:500 10.5px 'Red Hat Mono',monospace">DB</span>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px;padding:14px 12px;border-right:1px solid #e6e2d9;font-size:13px;color:#6b675e"><span style="padding:6px 8px">General</span><span style="padding:6px 8px">Members</span><span style="display:flex;padding:5px 8px;border:1px solid #1e1d1a;border-radius:3px;background:repeating-linear-gradient(0deg, #e4e8fa 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, #e4e8fa 0 1px, transparent 1px 4px), #fff;color:#1e1d1a;font-weight:600">Secrets<span style="margin-left:auto;font:600 10.5px 'Red Hat Mono',monospace;color:#b0281a">1</span></span><span style="display:flex;padding:6px 8px">Sandbox<span style="margin-left:auto;font:600 10.5px 'Red Hat Mono',monospace;color:#7a4a00">!</span></span><span style="padding:6px 8px">Agent profiles</span></div>
+<div style="display:flex;flex-direction:column;gap:12px;padding:16px 20px;max-width:420px">
+<span style="font:600 11px 'Red Hat Mono',monospace;color:#8f8a80;letter-spacing:.04em">INPUT-A</span>
+<div style="height:32px;box-sizing:border-box;display:flex;align-items:center;padding:0 10px;border:1px solid #cfcac0;border-radius:3px;background:#fff;font:12.5px 'Red Hat Mono',monospace;color:#8f8a80">vault://org/kite/…</div>
+<div style="height:32px;box-sizing:border-box;display:flex;align-items:center;padding:0 10px;border:1px solid #1e1d1a;border-radius:3px;background:#fff;box-shadow:0 0 0 2px #dfe4fa;font:12.5px 'Red Hat Mono',monospace">GITHUB_TOKEN<span style="width:1px;height:15px;background:#1e1d1a;margin-left:1px"></span></div>
+<div style="height:32px;box-sizing:border-box;display:flex;align-items:center;padding:0 10px;border:1px solid #d0402f;border-radius:3px;background:#fff;font:12.5px 'Red Hat Mono',monospace;color:#1e1d1a">backend/.env<span style="margin-left:auto;font:11px 'Red Hat Text',sans-serif;color:#b0281a">path not in workspace</span></div>
+</div>
+</div>
+<span style="padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">App bar: C · project dropdown · section track (active = flat white tab) · Ask with current context · you. Sub-nav active = ink box with the accent grid texture. Inputs: gray at rest, ink + pale ring on focus, red edge + message on error.</span>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">Panels</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">CARD-L · title bar by meaning</span></div>
+<div style="display:flex;flex-direction:column;gap:10px;padding:16px;background:#f8f7f3">
+<div style="border:1px solid #cfcac0;border-radius:3px;background:#fff;overflow:hidden"><div style="display:flex;align-items:center;padding:4px 10px;background:#efede7;color:#3a3833;border-bottom:1px solid #cfcac0;font:600 10px 'Red Hat Mono',monospace;letter-spacing:.04em">WORKSPACE<span style="margin-left:auto;font-weight:400;color:#8f8a80">ws-482-14</span></div><div style="display:flex;flex-direction:column;padding:2px 10px 6px;font-size:12.5px"><span style="padding:5px 0;border-bottom:1px solid #f0ede6">frontend @main · clean</span><span style="padding:5px 0">backend · 2 files changed</span></div></div>
+<div style="border:1px solid #d0402f;border-radius:3px;background:#fff;overflow:hidden"><div style="display:flex;align-items:center;padding:4px 10px;background:#d0402f;color:#fff;font:600 10px 'Red Hat Mono',monospace;letter-spacing:.04em">× SETUP HEALTH<span style="margin-left:auto;font-weight:400">needs you</span></div><div style="display:flex;flex-direction:column;padding:2px 10px 6px;font-size:12.5px"><span style="padding:5px 0;border-bottom:1px solid #f0ede6">GITHUB_TOKEN missing · blocks run #31</span><span style="padding:5px 0">Sandbox unavailable on w-2</span></div></div>
+<div style="border:1px solid #f0a93a;border-radius:3px;background:#fff;overflow:hidden"><div style="display:flex;align-items:center;padding:4px 10px;background:#f0a93a;color:#2a1a00;font:600 10px 'Red Hat Mono',monospace;letter-spacing:.04em">! APPROVALS<span style="margin-left:auto;font-weight:400">1 waiting</span></div><div style="display:flex;flex-direction:column;padding:2px 10px 6px;font-size:12.5px"><span style="padding:5px 0">Approve spec: Claims export v2</span></div></div>
+</div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">Gray bar by default. The bar takes a state's strong color only when the panel needs action.</span>
+</div>
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">List rows</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">ROW-I · compact, raised selection · STATUS-E chips</span></div>
+<div style="display:flex;flex-direction:column;gap:4px;padding:16px 19px 16px 16px;background:#f8f7f3"><sc-for list="{{ rows }}" as="r" hint-placeholder-count="5"><div onClick="{{ r.onClick }}" style="display:flex;align-items:center;gap:9px;height:34px;box-sizing:border-box;padding:0 10px;border:1px solid {{ r.bd }};border-radius:3px;background:#fff;box-shadow:{{ r.sh }};cursor:pointer" style-hover="border-color:#cfcac0"><span style="flex:none;padding:1px 6px;border-radius:3px;background:{{ r.chipBg }};color:{{ r.chipFg }};font:600 9.5px 'Red Hat Mono',monospace;letter-spacing:.03em">{{ r.g }} {{ r.chip }}</span><span style="font:600 10px 'Red Hat Mono',monospace;color:#6b675e;width:20px;flex:none">{{ r.proj }}</span><span style="flex:1;min-width:0;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="font:10.5px 'Red Hat Mono',monospace;color:#8f8a80">{{ r.age }}</span></div></sc-for></div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">34px rows, 4px gaps. Selected = ink edge + 2px ink shadow. Click a row.</span>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px">
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">Progress</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">PROGRESS-J run header · PROGRESS-K run detail</span></div>
+<div style="display:flex;flex-direction:column;gap:18px;padding:18px 16px">
+<div style="display:flex;align-items:stretch;border:1px solid #1e1d1a;border-radius:3px;overflow:hidden"><div style="flex:none;padding:7px 11px;display:flex;flex-direction:column;gap:2px;border-right:1px solid #e6e2d9"><span style="font:10px 'Red Hat Mono',monospace;color:#8f8a80">plan</span><span style="font-weight:600;font-size:12.5px">✓</span></div><div style="flex:none;padding:7px 11px;display:flex;flex-direction:column;gap:2px;border-right:1px solid #e6e2d9"><span style="font:10px 'Red Hat Mono',monospace;color:#8f8a80">approve</span><span style="font-weight:600;font-size:12.5px">✓</span></div><div style="flex:1;padding:7px 11px;display:flex;flex-direction:column;gap:5px;border-right:1px solid #e6e2d9;background:#f6f7fe"><div style="display:flex;justify-content:space-between;font:10px 'Red Hat Mono',monospace;color:#2a43b8"><span>implement ×214</span><span>150 ✓ · 38 ● · 15 need you</span></div><div style="display:flex;height:7px;border-radius:1px;overflow:hidden;box-shadow:inset 0 0 0 0.5px #1e1d1a"><span style="flex:150;background:#4a4740"></span><span style="flex:38;background:#2a8bd0"></span><span style="flex:6;background:#f0a93a"></span><span style="flex:9;background:#d0402f"></span><span style="flex:11;background:#fff"></span></div></div><div style="flex:none;padding:7px 11px;display:flex;flex-direction:column;gap:2px"><span style="font:10px 'Red Hat Mono',monospace;color:#8f8a80">draft pr</span><span style="font-weight:600;font-size:12.5px;color:#8f8a80">–</span></div></div>
+<div style="display:grid;grid-template-columns:80px minmax(0,1fr) 90px;gap:8px 12px;align-items:center;font:11px 'Red Hat Mono',monospace;color:#3a3833">
+<span>implement</span><div style="display:flex;height:10px;border:1px solid #1e1d1a;border-radius:2px;overflow:hidden"><span style="flex:196;background:#4a4740"></span><span style="flex:12;background:#2a8bd0"></span><span style="flex:6;background:#fff"></span></div><span>196 / 214</span>
+<span>checks</span><div style="display:flex;height:10px;border:1px solid #1e1d1a;border-radius:2px;overflow:hidden"><span style="flex:170;background:#4a4740"></span><span style="flex:14;background:#2a8bd0"></span><span style="flex:9;background:#d0402f"></span><span style="flex:21;background:#fff"></span></div><span>170 <span style="color:#b0281a">· 9 ×</span></span>
+<span>review</span><div style="display:flex;height:10px;border:1px solid #1e1d1a;border-radius:2px;overflow:hidden"><span style="flex:150;background:#4a4740"></span><span style="flex:12;background:#2a8bd0"></span><span style="flex:6;background:#f0a93a"></span><span style="flex:46;background:#fff"></span></div><span>150 <span style="color:#7a4a00">· 6 !</span></span>
+</div>
+</div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">Flat state colors, no texture. Segments are clickable filters. Works for any number of branches.</span>
+</div>
+<div style="display:flex;flex-direction:column;border:1px solid #cfcac0;border-radius:3px;background:#fff">
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid #e6e2d9"><span style="font-weight:700;font-size:13.5px">Alerts</span><span style="font:500 10.5px 'Red Hat Mono',monospace;color:#8f8a80">ALERT-K · all pale</span></div>
+<div style="display:flex;flex-direction:column;gap:8px;padding:16px 18px 18px 16px"><sc-for list="{{ alerts }}" as="a" hint-placeholder-count="5"><div style="display:flex;flex-direction:column;border:1px solid {{ a.edge }};border-radius:3px;background:{{ a.body }};overflow:hidden"><div style="display:flex;align-items:center;gap:8px;padding:3px 10px;background:{{ a.bar }};color:{{ a.fg }};border-bottom:1px solid {{ a.edge }};font:600 10px 'Red Hat Mono',monospace;letter-spacing:.04em">{{ a.g }} {{ a.label }}<span style="margin-left:auto;font-weight:400;opacity:.75">{{ a.meta }}</span></div><div style="display:flex;align-items:center;gap:10px;padding:7px 10px"><span style="flex:1;font-size:12.5px">{{ a.text }}</span><sc-if value="{{ a.hasBtn }}" hint-placeholder-val="{{ true }}"><button style="height:26px;padding:0 10px;border:1px solid {{ a.bBd }};border-radius:4px;background:{{ a.bBg }};box-shadow:2px 2px 0 {{ a.bSh }};font:600 12px 'Red Hat Text',sans-serif;color:{{ a.bFg }};cursor:pointer" style-active="transform:translate(2px,2px);box-shadow:none">{{ a.btn }}</button></sc-if></div></div></sc-for></div>
+<span style="margin-top:auto;padding:8px 12px;border-top:1px solid #f0ede6;font-size:12px;color:#6b675e">Bar + body in the state's pale hue; tonal edge. The action button carries the emphasis.</span>
+</div>
+</div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid #1e1d1a"><span style="font:600 12px 'Red Hat Mono',monospace;color:#8f8a80">05</span><span style="font-weight:700;font-size:20px">Rules of use</span></div>
+<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 28px"><sc-for list="{{ rules }}" as="r" hint-placeholder-count="8"><div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #e6e2d9"><span style="flex:none;font:600 11px 'Red Hat Mono',monospace;color:#8f8a80;width:22px">{{ r.n }}</span><span style="font-size:13.5px;line-height:1.55;color:#3a3833;text-wrap:pretty">{{ r.t }}</span></div></sc-for></div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:12px;padding:16px 18px;border:1px solid #e8cf94;border-radius:3px;background:#fdf6e4">
+<span style="font:600 11px 'Red Hat Mono',monospace;color:#7a4a00;letter-spacing:.04em">STILL OPEN</span>
+<span style="font-size:13.5px;line-height:1.6;color:#3a3833;text-wrap:pretty">Royal vs. light cerulean for the accent: royal is the pick, but light cerulean as the primary (ACCENT-K) was close. Both live in R3, so swapping later only changes the accent tokens. Not yet designed: dark theme (every token has a slot for it), toggles and checkboxes, avatars and presence, toasts, empty states, graph-editor nodes.</span>
+</section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { sel: 2 };
+  renderVals() {
+    const picks = [
+      ['TEXTURE-G','light crosshatch'],['MARK-E','hatch offset'],['ACCENT-I','royal'],['STATES-J','clear, brighter'],['NAV-I','track + flat tab'],['SIDE-F','box + grid'],
+      ['BTN-I','tonal border + shadow'],['INPUT-A','hairline'],['STATUS-E','tint + glyph'],['CARD-L','bar by meaning'],['ROW-I','compact + raised'],['PROGRESS-J','stage strip'],['PROGRESS-K','per stage'],['ALERT-K','all pale'],
+    ].map(([id, what]) => ({ id, what }));
+    const neutrals = [
+      ['paper','#f8f7f3','app background'],['surface','#ffffff','panels, cards, inputs'],['ink','#1e1d1a','text, structural lines, raised shadow'],['ink-2','#3a3833','body copy'],
+      ['muted','#6b675e','secondary text'],['faint','#8f8a80','meta, placeholders'],['line-strong','#cfcac0','inputs, gray edges'],['line','#e6e2d9','dividers'],['line-soft','#f0ede6','row rules'],['fill','#efede7','secondary buttons, nav track, gray bars'],
+    ].map(([token, hex, use]) => ({ token, hex, use }));
+    const accent = [
+      ['accent','#2f4bd6','primary fill, mark hatch'],['accent-edge','#2238a8','primary border'],['accent-shadow','#1a2d8f','primary shadow'],['accent-text','#2a43b8','links, context chips'],
+      ['accent-mid','#8fa0e6','wordmark offset'],['accent-tint','#eef0fc','chips, selected wash'],['accent-wash','#f6f7fe','highlighted areas'],
+    ].map(([token, hex, use]) => ({ token, hex, use }));
+    const states = [
+      { g:'●', n:'running', bar:'RUNNING', tagBg:'#d9eefa', tagFg:'#0f5e96', strong:'#2a8bd0', strongFg:'#fff', paleBar:'#cfe8f7', paleBody:'#f3f9fd', paleEdge:'#8cc8ec', paleFg:'#0f4c78' },
+      { g:'!', n:'waiting', bar:'NEEDS YOUR DECISION', tagBg:'#ffecc2', tagFg:'#7a4a00', strong:'#f0a93a', strongFg:'#2a1a00', paleBar:'#fbe7b4', paleBody:'#fdf6e4', paleEdge:'#e8cf94', paleFg:'#5c3d00' },
+      { g:'×', n:'failed', bar:'FAILED', tagBg:'#fdd8d2', tagFg:'#b0281a', strong:'#d0402f', strongFg:'#fff', paleBar:'#f3c4b9', paleBody:'#fbefec', paleEdge:'#e5b2a8', paleFg:'#7f2215' },
+      { g:'⊘', n:'interrupted', bar:'INTERRUPTED', tagBg:'#fde3d6', tagFg:'#a5431c', strong:'#e8763f', strongFg:'#fff', paleBar:'#f2d6cc', paleBody:'#faf2ef', paleEdge:'#e6c3b8', paleFg:'#7a3424' },
+      { g:'↻', n:'retrying', bar:'RETRYING 2/4', tagBg:'#fff1cf', tagFg:'#7a5200', strong:'#ffe3a0', strongFg:'#5a3c00', paleBar:'#fbefcf', paleBody:'#fdf9ee', paleEdge:'#ecd9a6', paleFg:'#5a3c00' },
+      { g:'✓', n:'done', bar:'PUBLISHED', tagBg:'#d9f0de', tagFg:'#1f6b37', strong:'#3a9a5b', strongFg:'#fff', paleBar:'#d3e9d9', paleBody:'#f1f7f2', paleEdge:'#b9d3bf', paleFg:'#1f5a33' },
+      { g:'·', n:'queued', bar:'QUEUED', tagBg:'#eeece6', tagFg:'#5e5a52', strong:'#e2dfd7', strongFg:'#4a4740', paleBar:'#efede7', paleBody:'#faf9f6', paleEdge:'#dcd8ce', paleFg:'#4a4740' },
+      { g:'i', n:'info', bar:'NOTE', tagBg:'#e3f1fb', tagFg:'#135f96', strong:'#8cc8ec', strongFg:'#0f3c5e', paleBar:'#e6f3fb', paleBody:'#f6fafd', paleEdge:'#cfe3f2', paleFg:'#0f4c78' },
+    ];
+    const T = "'Red Hat Text', sans-serif", M = "'Red Hat Mono', monospace";
+    const typeScale = [
+      ['title-xl','22 / 700',T,'22px',700,'Good afternoon, David'],['title-l','19 / 700',T,'19px',700,'Run #482'],['title-m','15 / 700',T,'15px',700,'Saved-cart endpoint'],
+      ['body','13.5 / 400',T,'13.5px',400,'Review on attempt 1 flagged a missing test for expired carts.'],['ui','13 / 500–600',T,'13px',600,'Pause pipeline · Overview · Runs'],['small','12.5 / 400',T,'12.5px',400,'Sandbox denies network by default.'],
+      ['meta','11 / 400 mono',M,'11px',400,'run #212 · approve gate · 1h'],['label','10.5 / 600 mono',M,'10.5px',600,'PERMISSION · NETWORK'],['bar','10 / 600 mono +4%',M,'10px',600,'! NEEDS YOUR DECISION'],
+    ].map(([token, spec, family, size, weight, sample]) => ({ token, spec, family, size, weight, sample }));
+    const buttons = [
+      { t:'Take control', bd:'#2238a8', bg:'#2f4bd6', fg:'#fff', sh:'2px 2px 0 #1a2d8f', cur:'pointer' },
+      { t:'Pause', bd:'#cfc9bd', bg:'#efede7', fg:'#1e1d1a', sh:'2px 2px 0 #cfc9bd', cur:'pointer' },
+      { t:'View YAML', bd:'transparent', bg:'transparent', fg:'#2a43b8', sh:'none', cur:'pointer' },
+      { t:'Stop run', bd:'#e5a99c', bg:'#fdd8d2', fg:'#b0281a', sh:'2px 2px 0 #e5a99c', cur:'pointer' },
+      { t:'Send', bd:'#e6e2d9', bg:'#f3f1ec', fg:'#b3ada2', sh:'none', cur:'not-allowed' },
+    ];
+    const R = [
+      { proj:'NV', s:1, chip:'APPROVAL', title:'Approve spec: Claims export v2', age:'1h' },
+      { proj:'BL', s:2, chip:'FAILED', title:'Review loop hit 4/4 on “Invoice rounding”', age:'2h' },
+      { proj:'OR', s:3, chip:'INTERRUPTED', title:'Run #97 interrupted: worker lost', age:'38m' },
+      { proj:'AC', s:0, chip:'RUNNING', title:'#482 Feature Delivery · 17/25', age:'38m' },
+      { proj:'KT', s:7, chip:'MENTION', title:'Mira mentioned you in “Flaky e2e”', age:'25m' },
+    ];
+    const rows = R.map((r, i) => ({ ...r, g: states[r.s].g, chipBg: states[r.s].tagBg, chipFg: states[r.s].tagFg,
+      bd: i === this.state.sel ? '#1e1d1a' : '#e6e2d9', sh: i === this.state.sel ? '2px 2px 0 #1e1d1a' : 'none', onClick: () => this.setState({ sel: i }) }));
+    const pri = { bBd:'#2238a8', bBg:'#2f4bd6', bSh:'#1a2d8f', bFg:'#fff' }, sec = { bBd:'#cfc9bd', bBg:'#fff', bSh:'#cfc9bd', bFg:'#1e1d1a' };
+    const A = [
+      [1,'NEEDS YOUR DECISION','claude-impl · 14:03','Allow proxy.golang.org for this attempt?','Allow once',pri],
+      [2,'FAILED','checks · 14:11','Checks failed 4/4 on “Invoice rounding”.','Take control',sec],
+      [3,'INTERRUPTED','w-3 · 13:41','Worker lost. Task 5 repeats from its 13:32 checkpoint.','Retry',sec],
+      [7,'NOTE','r4 · 12:20','r4 promoted to Acme only. Running attempts stay on r3.','',sec],
+      [5,'PUBLISHED','draft pr · 15:02','Draft PR #318 opened on backend.','Open PR',sec],
+    ];
+    const alerts = A.map(([s, label, meta, text, btn, b]) => ({ g: states[s].g, label, meta, text, btn, hasBtn: !!btn, bar: states[s].paleBar, body: states[s].paleBody, edge: states[s].paleEdge, fg: states[s].paleFg, ...b }));
+    const rules = [
+      'Ink is for structure and emphasis: app bar rule, panel edges, raised selection. Everything else uses gray lines.',
+      'Color means state. Royal = something you can do. Cerulean = work in progress. Amber, red, orange, green = waiting, failed, interrupted, done.',
+      'One shadow style everywhere: 2px 2px 0, no blur. Pressing moves the element into its shadow.',
+      'Texture is rare: the light crosshatch marks “active” in sub-nav and highlighted areas; diagonal hatch is only the mark’s shadow. Never on progress or text.',
+      'Panel title bars stay gray unless the panel needs action; then they take the state’s strong color.',
+      'Every state has a glyph and a word. Never rely on color alone, including in progress bars (always show counts).',
+      'Mono for anything a machine produced (IDs, times, counts, paths, labels); Red Hat Text for anything a person reads as prose or acts on.',
+      'Density: 34px rows, 30px buttons, 52px app bar, 4px gaps between cards. Prefer compact; add space around groups, not inside them.',
+    ].map((t, i) => ({ n: String(i + 1).padStart(2, '0'), t }));
+    return { picks, neutrals, accent, states, typeScale, buttons, rows, alerts, rules, letters: 'COMMUNICATION'.split('') };
+  }
+}
+</script>
+</body>
+</html>

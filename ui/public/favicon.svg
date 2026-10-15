@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- MARK-E: the C mark, incl. its diagonal-hatch offset shadow (1/10 of the size). -->
+  <defs>
+    <pattern id="hatch" width="3" height="3" patternUnits="userSpaceOnUse" patternTransform="rotate(135)">
+      <line x1="0" y1="0" x2="0" y2="3" stroke="#2f4bd6" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect x="4" y="4" width="44" height="44" rx="3" fill="url(#hatch)"/>
+  <rect x="0.5" y="0.5" width="43" height="43" rx="3" fill="#ffffff" stroke="#1e1d1a" stroke-width="1"/>
+  <text
+    x="22"
+    y="22"
+    text-anchor="middle"
+    dominant-baseline="central"
+    font-family="'Kaisei Opti', Georgia, serif"
+    font-weight="500"
+    font-size="27"
+    fill="#1e1d1a"
+  >C</text>
+</svg>

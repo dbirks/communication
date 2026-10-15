@@ -130,6 +130,21 @@ describe("projectTranscript", () => {
     expect(JSON.stringify(transcript.items)).not.toContain("fencing");
   });
 
+  it("says how each turn met its session — new, reused and resumed are distinct copy", () => {
+    const copies: Record<string, string> = {
+      new: "Turn started on a new agent session",
+      reused: "Turn continued on the live agent session",
+      resumed: "Turn started on a resumed agent session",
+    };
+    for (const [origin, copy] of Object.entries(copies)) {
+      const transcript = projectTranscript(
+        frames(["conversation.turn.started", { session_origin: origin }]),
+      );
+      const system = transcript.items.find((item) => item.kind === "system");
+      expect(system?.kind === "system" && system.text).toBe(copy);
+    }
+  });
+
   it("describes the active turn from the API row, which outranks the journal", () => {
     const transcript = projectTranscript(
       frames(["conversation.turn.started", { session_origin: "new" }]),

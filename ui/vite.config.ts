@@ -19,6 +19,15 @@ export default defineConfig({
         changeOrigin: true,
         // SSE streams must not be buffered; websocket upgrade is not used.
         ws: false,
+        // The CSRF middleware applies strict origin checks (06-collaboration
+        // -identity), and behind this proxy the browser's origin (the dev
+        // server) is not the API's own. Rewrite it to the target — dev-only
+        // behavior, production embeds the SPA on the same origin (ADR-0007).
+        configure: (proxy) => {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.setHeader("origin", apiTarget);
+          });
+        },
       },
       "/auth": {
         target: apiTarget,

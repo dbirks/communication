@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router";
 import { ApiError } from "../api/client";
 import { useMe } from "../api/queries";
 import { Spinner } from "./Feedback";
+import { Alert } from "./ds/Alert";
 
 export interface RequireAuthProps {
   children: ReactNode;
@@ -28,11 +29,11 @@ export default function RequireAuth({ children }: RequireAuthProps) {
 
   if (error || !me.data) {
     return (
-      <section>
-        <h1 className="text-2xl font-semibold">Cannot load your session</h1>
-        <p className="mt-2 text-red-800" role="alert">
+      <section className="max-w-[34rem] space-y-2">
+        <h1 className="text-title-l font-bold">Cannot load your session</h1>
+        <Alert state="failed" label="FAILED" role="alert">
           {error instanceof ApiError ? `${error.title}: ${error.detail}` : "Unknown error."}
-        </p>
+        </Alert>
       </section>
     );
   }

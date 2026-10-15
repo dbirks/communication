@@ -25,6 +25,7 @@ export type Health = components["schemas"]["Health"];
 export type Readiness = components["schemas"]["Readiness"];
 export type Problem = components["schemas"]["Problem"];
 export type EventEnvelope = components["schemas"]["EventEnvelope"];
+export type EventActor = EventEnvelope["actor"];
 export type EventActorKind = EventEnvelope["actor"]["kind"];
 
 /* --------------------------------------------------------------- M2 */
