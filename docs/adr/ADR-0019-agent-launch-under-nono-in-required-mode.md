@@ -338,7 +338,8 @@ those are indistinguishable from nono's own `extends: default` contributions —
 Exact-match assertion is only expressible over `[user]`-tagged lines, so grants go
 in as `--allow`/`--read` and the static profile carries only what flags cannot
 express: mediation settings, the Landlock pin, the `system_write_linux` exclusion,
-and the device re-grants that exclusion breaks (probe C-TMP3).
+the host-conditional group exclusions (D19 follow-up below), and the device
+re-grants that exclusion breaks (probe C-TMP3).
 
 **N-d asserts set *equality*, and that is load-bearing** (deviation D19). Comparison
 in the "did we get at least what we asked for" direction would pass on a superset,
@@ -360,6 +361,22 @@ resolved temp path is refused on sight. The second observation: with no `-p` fla
 (`cannot create /tmp/m3-b: Permission denied`). Omission is not a deny under a
 layered default profile, and this record's D4 said so — the note is that the
 *assertion* has to be as strict as that statement.
+
+**Set equality is only portable if the inherited layer is** (D19 follow-up,
+probe C-HOSTGRP, CI run 38755314927). nono's `default` profile composes
+groups whose rules exist only on hosts carrying the paths, and the assertion
+correctly refused: on ubuntu-latest, `group:homebrew_linux` resolved
+`r /home/linuxbrew/.linuxbrew` and every `required`-mode launch died at
+`grant_assert (grant_mismatch)`; on the lab host, `group:user_tools` resolves
+`~/.local/*` whenever nono's HOME has one (reproduced as a negative control).
+The remedy is at the profile, not the assertion: the shipped policy now
+excludes every host/platform-conditional default group
+(`homebrew_*`, `user_tools`, `system_write_*`, `system_read_macos`,
+`dangerous_commands_macos` — the `deny_*` groups are required by nono and
+cannot be excluded, and are denies rather than grants), so the resolved
+sources are exactly `group:system_read_linux_core`, `[profile]` and `[user]`
+on any host. The N-d source allowlist was **not** widened; a stray grant is
+still refused, it just no longer arrives.
 
 **The agent needs a temp directory inside its grants** (deviation D23). Refusing
 `/tmp` is correct and unchanged; what was missing is a place for the harness to

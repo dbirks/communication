@@ -116,11 +116,13 @@ const policyExternal = "external"
 // file therefore carries the static shape — mediation, policy, temp-group
 // exclusion and the device re-grants that exclusion requires — and every
 // per-workspace path is a flag.
-const GrantModelNote = "static policy in the profile file; per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
+const GrantModelNote = "static policy in the profile file (mediation, the Landlock pin, the /tmp and host-conditional group exclusions, and the device re-grants); per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
 
 // profileVersion is bumped when the body below changes, so a recorded
 // policy_digest identifies a policy revision and not just a filename.
-const profileVersion = "3.0.0"
+// 3.1.0 adds the host-conditional group exclusions CI run 38755314927 proved
+// necessary (probe C-HOSTGRP).
+const profileVersion = "3.1.0"
 
 // deviceWrites are the paths the excluded group would otherwise have granted.
 //
@@ -129,6 +131,47 @@ const profileVersion = "3.0.0"
 // rule — and `/dev/null` stopped being writable, which breaks nearly every
 // CLI. So the devices are re-granted explicitly and /tmp is not.
 var deviceWrites = []string{"/dev/null", "/dev/zero", "/dev/tty", "/dev/stdout", "/dev/stderr"}
+
+// hostConditionalGroups are nono's default-layer groups whose rules
+// materialize only on hosts that happen to carry the paths — and N-d's set
+// equality then refuses every launch on those hosts and nobody else's.
+// Observed twice, on two different hosts, from the same root cause:
+//
+//   - CI run 38755314927 (ubuntu-latest): `group:homebrew_linux` resolved
+//     `r /home/linuxbrew/.linuxbrew` — Linuxbrew is preinstalled on the
+//     runner image — and `grant_assert (grant_mismatch)` refused every launch.
+//   - this lab host: `group:user_tools` resolves `r ~/.local/bin`
+//     (applications, man, completions) whenever nono's HOME has a ~/.local —
+//     reproduced by running the old profile's dry-run with the developer HOME.
+//
+// The remedy is at the source, not in the assertion: exclude the groups, so
+// the resolved list equals exactly what we asked for on ANY host. The deny_*
+// groups cannot be excluded (nono marks them required — `profile validate`
+// refuses), and deny rules cannot widen a grant anyway. macOS variants are
+// excluded so the profile's host independence does not depend on the kernel.
+// system_read_linux_core is deliberately NOT excluded: it is the group that
+// makes any binary run, it is asserted by name in the allowlist, and its
+// rules are system paths, not host userland. The other macOS groups
+// (system_read_macos, dangerous_commands_macos) are excluded because this
+// product's only claim is the pinned Linux gnu build (docs/compatibility/
+// SANDBOX.md), so nothing macOS-shaped is allowed to appear in a resolved
+// grant list anywhere; the deny_*_macos groups cannot be excluded (nono
+// requires them) but contribute denies, never grants.
+var hostConditionalGroups = []string{
+	"dangerous_commands_macos",
+	"homebrew_linux",
+	"homebrew_macos",
+	"system_read_macos",
+	"system_write_linux",
+	"system_write_macos",
+	"user_tools",
+}
+
+// ExcludedGroups returns the group names the shipped profile removes from the
+// default layer. Exported because the portability test asserts the resolved
+// grant list against this list, and a test that restated it inline would
+// assert a copy rather than the contract.
+func ExcludedGroups() []string { return append([]string(nil), hostConditionalGroups...) }
 
 // profileAllows are the read-write system paths the toolchain needs that are
 // not covered by the read-only system groups. /proc/self/fd is what a process
@@ -154,7 +197,7 @@ func profileBody(kind string) (profileSource, error) {
 			// strongest setting nono offers, not a claim of invisibility.
 			ProcessInfoMode: "isolated",
 		},
-		Groups: profileGroups{Exclude: []string{"system_write_linux"}},
+		Groups: profileGroups{Exclude: ExcludedGroups()},
 		FS:     profileFS{WriteFile: append([]string(nil), deviceWrites...), Allow: append([]string(nil), profileAllows...)},
 	}, nil
 }
@@ -271,6 +314,16 @@ func (p *Profile) AssertOwnBytes() error {
 	}
 	if !containsString(body.Groups.Exclude, "system_write_linux") {
 		return fmt.Errorf("sandbox: profile %s does not exclude system_write_linux, which is the group that hands every sandboxed child write access to /tmp (probe C-TMP1/C-TMP3)", p.Path)
+	}
+	for _, group := range hostConditionalGroups {
+		if !containsString(body.Groups.Exclude, group) {
+			return fmt.Errorf("sandbox: profile %s does not exclude the host-conditional group %s: its rules materialize only on hosts carrying the paths (CI observed group:homebrew_linux granting /home/linuxbrew/.linuxbrew on ubuntu-latest), and N-d's set equality then refuses every launch on those hosts (probe C-HOSTGRP)", p.Path, group)
+		}
+	}
+	for _, group := range body.Groups.Exclude {
+		if !containsString(hostConditionalGroups, group) {
+			return fmt.Errorf("sandbox: profile %s excludes group %q, which is not on this adapter's exclusion contract: the exclude list is pinned, so an exclusion nobody reviewed cannot silently narrow the sandbox", p.Path, group)
+		}
 	}
 	for _, dev := range deviceWrites {
 		if !containsString(body.FS.WriteFile, dev) {

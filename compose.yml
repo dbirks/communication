@@ -100,6 +100,16 @@ services:
         if [ ! -s "$$f" ]; then
           head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$f.tmp"
           mv "$$f.tmp" "$$f"
+          # The umask decides the MODE; only chown decides the OWNER, and a
+          # stock `up` runs this one-shot as the image's user (root on
+          # postgres:18.6) while the readers run as 10001. The chown above
+          # only covers an *already-populated* volume: keys generated in this
+          # very run would otherwise stay root-owned 0600 and serve would
+          # exit 2 ("keyring is unreadable") — observed on a clean e2e stack
+          # in CI run 38755314927 and reproduced locally with -p
+          # communication-e2e. Under the dev harness this chown is the
+          # owner changing the file's own ids, which always succeeds.
+          chown "$$KEY_UID:$$KEY_GID" "$$f"
           echo "keyring: generated master-key-v1"
         else
           echo "keyring: master-key-v1 already present"
@@ -113,6 +123,7 @@ services:
         if [ ! -s "$$t" ]; then
           head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$t.tmp"
           mv "$$t.tmp" "$$t"
+          chown "$$KEY_UID:$$KEY_GID" "$$t"
           echo "keyring: generated preview token key"
         else
           echo "keyring: preview token key already present"

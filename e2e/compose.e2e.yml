@@ -13,7 +13,15 @@
 # untouched.
 #
 # Host-only safety note: this lab also runs a model gateway on 8080/8081/8090
-# and a dev stack on 18080-18090; 28080/28081/28082/28090 overlap with neither.
+# and a dev stack on 18080-18090; 28080/28081/28082/28084/28090 overlap with
+# neither.
+#
+# The preview origin (ADR-0020 D6) moves with everything else: compose.yml
+# names preview.localhost:18084 and maps the lb to 18084, so an override that
+# remapped only the app ports would leave the e2e stack minting preview URLs
+# at a port it does not publish (and 18084 would collide with the *dev* stack
+# whenever both are up). Hence the 28084 below on both sides — the published
+# port and the two baked URLs.
 name: communication-e2e
 
 services:
@@ -27,6 +35,10 @@ services:
     environment:
       COMMUNICATION_PUBLIC_URL: http://localhost:28080
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:28090/default
+      # The minted preview URLs have to name a port this stack publishes
+      # (see the header), and the origin rule has to match it.
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:28084
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:28084
     ports: !override
       - "127.0.0.1:28081:8080"
 
@@ -34,12 +46,18 @@ services:
     environment:
       COMMUNICATION_PUBLIC_URL: http://localhost:28080
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:28090/default
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:28084
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:28084
     ports: !override
       - "127.0.0.1:28082:8080"
 
   lb:
     ports: !override
       - "127.0.0.1:28080:80"
+      # 8084 is the preview listener inside the lb (ADR-0020 D6); without
+      # this mapping the e2e suite's preview assertions would hit the *dev*
+      # stack's 18084 or nothing at all.
+      - "127.0.0.1:28084:8084"
 
   worker:
     # The M1 journey exercises control plane + UI only. Give the worker a

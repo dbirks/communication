@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dbirks/communication/internal/sandbox"
@@ -274,6 +275,14 @@ func normalizeLevel(in string) string {
 // profile; system_read_linux_core is the one that makes any binary run. A new
 // group appearing in the resolved list is a signal to look at it, not something
 // to pass through.
+//
+// Host-conditional groups (homebrew_*, user_tools, the system_write groups)
+// are deliberately absent: probe C-HOSTGRP measured that their rules appear
+// only on hosts carrying the paths — the CI runner's
+// `group:homebrew_linux r /home/linuxbrew/.linuxbrew` — so allowlisting them
+// would make the sandbox depend on the host. They are excluded in the profile
+// instead (profile.go hostConditionalGroups), and this allowlist stays exactly
+// the sources that resolve on every host. See DeclaredGrantSources.
 var allowedGroups = map[string]bool{
 	"group:system_read_linux_core":   true,
 	"group:deny_credentials":         true,
@@ -297,6 +306,20 @@ func init() {
 	}
 	// /proc/self/fd resolves to the child's own numbered directory.
 	deviceGrants["/proc/self/fd"] = true
+}
+
+// DeclaredGrantSources is the N-d source allowlist in sorted, printable form:
+// every non-`[user]` rule source the resolved grant list may legitimately
+// contain (`group:…` names plus the `[profile]` layer). Exported so the
+// portability test can assert the *observed* sources against the declared
+// ones rather than restating the list inline.
+func DeclaredGrantSources() []string {
+	out := make([]string, 0, len(allowedGroups))
+	for s := range allowedGroups {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // nonoInjectedGrants are rules tagged `[profile]` that nono adds itself, which

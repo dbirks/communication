@@ -181,7 +181,7 @@ jobs:
             chrislusf/seaweedfs:4.48 \
             server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json \
             -s3.iam=false -dir=/data -master.volumeSizeLimitMB=64
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -s -o /dev/null http://127.0.0.1:8333/ && break
             sleep 1
           done
@@ -336,6 +336,19 @@ jobs:
       # never skips (ADR-0006 Verification).
       - name: run e2e suite
         run: pnpm --dir e2e test
+      # The first failed run of this job left only "api-b exited (2)" as
+      # evidence — compose up -d does not print container logs, and a config
+      # refusal dies in half a second with its whole message inside the
+      # container. Dump status and logs on any failure of the job (including
+      # "start stack", which skips the later steps but leaves the job red),
+      # so the next failure is diagnosable from the run log alone. Logs are
+      # not secret material here: this stack has no credentials, and session
+      # cookies live in the browser, not in serve's access log fields.
+      - name: dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -p communication-e2e -f compose.yml -f e2e/compose.e2e.yml ps -a
+          docker compose -p communication-e2e -f compose.yml -f e2e/compose.e2e.yml logs
       # HTML report plus per-test traces/screenshots (retained on failure by
       # playwright.config.ts). Short retention: traces can capture session
       # cookies (ADR-0006 Security/privacy).

@@ -219,6 +219,12 @@ func TestProfileTamperIsRefused(t *testing.T) {
 		{"external policy", func(p map[string]any) { p["linux"].(map[string]any)["sandbox_policy"] = "external" }, "external"},
 		{"no af_unix", func(p map[string]any) { p["linux"].(map[string]any)["af_unix_mediation"] = "off" }, "af_unix"},
 		{"temp group back in", func(p map[string]any) { p["groups"] = map[string]any{"exclude": []any{}} }, "system_write_linux"},
+		{"host-conditional group back in", func(p map[string]any) {
+			p["groups"] = map[string]any{"exclude": []any{"system_write_linux", "system_write_macos", "homebrew_linux", "homebrew_macos"}}
+		}, "host-conditional"},
+		{"undeclared exclusion added", func(p map[string]any) {
+			p["groups"] = map[string]any{"exclude": append(nono.ExcludedGroups(), "system_read_linux_core")}
+		}, "pinned"},
 		{"device re-grant dropped", func(p map[string]any) { p["filesystem"].(map[string]any)["write_file"] = []any{"/dev/not-there"} }, "/dev/null"},
 		{"wrong profile name", func(p map[string]any) { p["meta"].(map[string]any)["name"] = "someone-elses-profile" }, "name"},
 		{"no default layer", func(p map[string]any) { p["extends"] = "" }, "extends"},
@@ -241,11 +247,17 @@ func TestProfileTamperIsRefused(t *testing.T) {
 		if err := os.WriteFile(path, bad, 0o444); err != nil {
 			t.Fatal(err)
 		}
-		tampered := &nono.Profile{Kind: prof.Kind, Path: path, Digest: prof.Digest, NetworkEnforced: prof.NetworkEnforced}
+		// The tampered file carries its own digest: with the *original* digest,
+		// every tamper is caught by the digest check alone and the specific
+		// semantic assertion below never runs. WriteProfile already proves the
+		// digest check fires on a changed file; here we want the reason.
+		tampered := &nono.Profile{Kind: prof.Kind, Path: path, Digest: nono.DigestProfile(bad), NetworkEnforced: prof.NetworkEnforced}
 		if err := tampered.AssertOwnBytes(); err == nil {
 			t.Errorf("tampering %s was not refused", tamper.name)
 		} else if !strings.Contains(err.Error(), "sandbox:") {
 			t.Errorf("tamper %s produced an unexpected error shape: %v", tamper.name, err)
+		} else if !strings.Contains(err.Error(), tamper.expect) {
+			t.Errorf("tamper %s was refused for the wrong reason (%q not in: %v)", tamper.name, tamper.expect, err)
 		}
 		// And nono itself must not be trusted to notice: C-FC2b measured that it
 		// does not. This assertion records that fact against the current binary.
