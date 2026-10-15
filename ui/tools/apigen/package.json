@@ -1,0 +1,13 @@
+{
+  "name": "@communication/apigen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned OpenAPI -> TypeScript generator runner. openapi-typescript 7.13 declares `typescript: ^5.x` as a peer and uses the TypeScript 5 JS API (`ts.factory`), which the TypeScript 7 native port does not expose; the app itself builds on TypeScript 7. Isolating the generator in its own workspace package pins both sides without downgrading the app.",
+  "type": "module",
+  "dependencies": {
+    "openapi-typescript": "7.13.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

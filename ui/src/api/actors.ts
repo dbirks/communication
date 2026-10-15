@@ -6,9 +6,8 @@
  * permission), and a uuid is unreadable in a feed. Resolution therefore runs
  * through the read endpoints the app already has — `GET /api/v1/me`,
  * `GET /api/v1/users` and `GET /api/v1/projects/{id}/members`, whose `Member`
- * rows carry a server-resolved `display_name` — and a bare id appears only
- * when the directory genuinely does not know the person, truncated so two of
- * them can still be told apart.
+ * rows carry a server-resolved `display_name` — and the pure id-to-words rules
+ * live in `names.ts` so a fold with no query layer can use them too.
  *
  * Non-human actors get words rather than ids: the system, an agent, a worker
  * and an integration are kinds the journal records (`internal/events/events.go`
@@ -18,56 +17,11 @@
 import { useMemo } from "react";
 import { useMe, useMembers, useUsers } from "./queries";
 import type { EventActor, EventActorKind } from "./types";
+import { nameLookup, resolveName, shortId } from "./names";
+import type { NameHint, NameLookup } from "./names";
 
-/** An `(id, name)` pair a page already holds, e.g. a server-resolved display name. */
-export type NameHint = readonly [
-  userId: string | null | undefined,
-  name: string | null | undefined,
-];
-
-/** Resolves a user id to a display name, or null when unknown. */
-export type NameLookup = (userId: string) => string | null;
-
-/**
- * Shorten an id for display. A uuid is opaque, so its first eight characters
- * distinguish it from its neighbours; a human-written key (`"worker_a"`,
- * `"github"`, `"system"`) is short already and is shown whole.
- */
-export function shortId(id: string): string {
-  const value = (id ?? "").trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ? value.slice(0, 8) : value;
-}
-
-/** A lookup built from names the caller has already read; later hints win. */
-export function nameLookup(hints: Iterable<NameHint>): NameLookup {
-  const names = new Map<string, string>();
-  for (const [userId, name] of hints) {
-    if (userId && name) names.set(userId, name);
-  }
-  return (userId) => names.get(userId) ?? null;
-}
-
-/** Try lookups in order and return the first name found. */
-export function mergeLookups(...lookups: NameLookup[]): NameLookup {
-  return (userId) => {
-    for (const lookup of lookups) {
-      const name = lookup(userId);
-      if (name) return name;
-    }
-    return null;
-  };
-}
-
-/** Last resort for a person nobody can name — never a bare uuid. */
-export function fallbackName(userId: string): string {
-  const id = shortId(userId);
-  return id ? `someone (${id})` : "someone";
-}
-
-/** Display name for a user id, falling back to {@link fallbackName}. */
-export function resolveName(userId: string, lookup: NameLookup): string {
-  return lookup(userId) ?? fallbackName(userId);
-}
+export type { NameHint, NameLookup } from "./names";
+export { fallbackName, mergeLookups, nameLookup, resolveName, shortId } from "./names";
 
 /** Written-out label for each non-human actor kind. */
 const NON_HUMAN_LABELS: Record<EventActorKind, string> = {

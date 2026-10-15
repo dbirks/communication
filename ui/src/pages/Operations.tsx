@@ -1,5 +1,6 @@
 import { problemOf } from "../api/client";
 import { useHealth, useReadiness, useWorkers } from "../api/queries";
+import { SandboxHealthPanel } from "../components/Sandbox";
 import { Spinner } from "../components/Feedback";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
@@ -56,6 +57,11 @@ export default function Operations() {
   const health = useHealth();
   const readiness = useReadiness();
   const workers = useWorkers();
+  // Worker rows are keyed by name in `workers-table`; the sandbox panel registers
+  // by id, so the two surfaces agree on one label instead of one of them showing
+  // a uuid.
+  const nameOfWorker = (workerId: string) =>
+    workers.data?.items.find((worker) => worker.id === workerId)?.name ?? workerId.slice(0, 8);
 
   const healthProblem = health.error ? problemOf(health.error) : null;
   const readinessProblem = readiness.error ? problemOf(readiness.error) : null;
@@ -188,6 +194,11 @@ export default function Operations() {
           ) : null}
         </div>
       </Panel>
+
+      {/* M3: the fleet's sandbox verdict. A worker that never verified, or that
+          registered `permissive-dev`/`disabled`, is a finding an operator must
+          see without reading worker logs (`05`, ADR-0019 D5). */}
+      <SandboxHealthPanel nameOf={nameOfWorker} />
     </section>
   );
 }

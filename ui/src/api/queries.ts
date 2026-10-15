@@ -12,6 +12,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
 import type {
   AgentProfileList,
+  Artifact,
+  ArtifactList,
   Conversation,
   ConversationCreate,
   ConversationMessageCreate,
@@ -24,6 +26,7 @@ import type {
   MemberRole,
   PermissionDecision,
   PermissionRequest,
+  PreviewToken,
   Project,
   ProjectCreate,
   ProjectList,
@@ -31,8 +34,22 @@ import type {
   Repository,
   RepositoryCreate,
   RepositoryList,
+  Secret,
+  SecretCreate,
+  SecretList,
+  SecretMaterializationList,
+  SecretMount,
+  SecretMountCreate,
+  SecretMountList,
+  SecretUpdate,
+  SecretVersionCreate,
+  SecretVersionInfo,
+  SystemSandbox,
+  TurnSandbox,
   UserList,
   WorkerList,
+  WorkspaceList,
+  WorkspaceRepoStatus,
 } from "./types";
 
 export const queryKeys = {
@@ -48,6 +65,21 @@ export const queryKeys = {
   health: ["system", "health"] as const,
   readiness: ["system", "readiness"] as const,
   workers: ["workers"] as const,
+  /* M3. Everything project-scoped is keyed under `["project", projectId]`
+   * so the one `invalidateProject` call the SSE feed already makes covers it
+   * (`docs/design/data-dependencies.md` "Cache-key map"). */
+  secrets: (projectId: string) => ["project", projectId, "secrets"] as const,
+  secretMounts: (projectId: string) => ["project", projectId, "secret-mounts"] as const,
+  materializations: (projectId: string, secretId: string) =>
+    ["project", projectId, "secrets", secretId, "materializations"] as const,
+  workspaces: (projectId: string) => ["project", projectId, "workspaces"] as const,
+  workspace: (workspaceId: string) => ["workspace", workspaceId] as const,
+  workspaceRepoStatus: (workspaceId: string, repositoryId: string) =>
+    ["workspace", workspaceId, "repos", repositoryId] as const,
+  artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
+  artifact: (artifactId: string) => ["artifact", artifactId] as const,
+  systemSandbox: ["system", "sandbox"] as const,
+  turnSandbox: (turnId: string) => ["turn", turnId, "sandbox"] as const,
 };
 
 export function useMe() {
@@ -147,6 +179,207 @@ export function useWorkers() {
   return useQuery({
     queryKey: queryKeys.workers,
     queryFn: () => apiFetch<WorkerList>("/api/v1/workers"),
+  });
+}
+
+/* ------------------------------------------------------------------ M3 */
+
+/**
+ * Secret *references*: metadata only. There is deliberately no hook that could
+ * return a value — the contract has no such route (`docs/m3-contract.md` §2:
+ * "any route returning a secret value (including 'masked', 'last-4' or an admin
+ * override" is on the deliberately-absent list), so no component state can hold
+ * one and nothing can accidentally render it.
+ */
+export function useSecrets(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.secrets(projectId),
+    queryFn: () => apiFetch<SecretList>(`/api/v1/projects/${projectId}/secrets`),
+    enabled: projectId.length > 0,
+  });
+}
+
+export function useCreateSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SecretCreate) =>
+      apiFetch<Secret>(`/api/v1/projects/${projectId}/secrets`, { method: "POST", json: body }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
+    },
+  });
+}
+
+/** Metadata/policy only. A body carrying `value` is a `400` by contract. */
+export function useUpdateSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ secretId, body }: { secretId: string; body: SecretUpdate }) =>
+      apiFetch<Secret>(`/api/v1/projects/${projectId}/secrets/${secretId}`, {
+        method: "PUT",
+        json: body,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
+    },
+  });
+}
+
+/**
+ * Rotation: append an immutable version. The response is version *metadata*
+ * (`secret_id`, `version`, `key_id`, `created_at`) — never the value written.
+ */
+export function useAddSecretVersion(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ secretId, body }: { secretId: string; body: SecretVersionCreate }) =>
+      apiFetch<SecretVersionInfo>(`/api/v1/projects/${projectId}/secrets/${secretId}/versions`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
+    },
+  });
+}
+
+export function useRevokeSecret(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (secretId: string) =>
+      apiFetch<Secret>(`/api/v1/projects/${projectId}/secrets/${secretId}:revoke`, {
+        method: "POST",
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
+    },
+  });
+}
+
+/** The audit view: which unit had this secret, at which target, when cleaned. */
+export function useSecretMaterializations(projectId: string, secretId: string) {
+  return useQuery({
+    queryKey: queryKeys.materializations(projectId, secretId),
+    queryFn: () =>
+      apiFetch<SecretMaterializationList>(
+        `/api/v1/projects/${projectId}/secrets/${secretId}/materializations`,
+      ),
+    enabled: projectId.length > 0 && secretId.length > 0,
+  });
+}
+
+export function useSecretMounts(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.secretMounts(projectId),
+    queryFn: () => apiFetch<SecretMountList>(`/api/v1/projects/${projectId}/secret-mounts`),
+    enabled: projectId.length > 0,
+  });
+}
+
+export function useCreateSecretMount(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SecretMountCreate) =>
+      apiFetch<SecretMount>(`/api/v1/projects/${projectId}/secret-mounts`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secretMounts(projectId) });
+    },
+  });
+}
+
+/** Removes a *declaration*; it does not revoke the secret (contract §2). */
+export function useDeleteSecretMount(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mountId: string) =>
+      apiFetch<void>(`/api/v1/projects/${projectId}/secret-mounts/${mountId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secretMounts(projectId) });
+    },
+  });
+}
+
+/** Live + recent workspaces of a project — refs and ids, never host paths. */
+export function useWorkspaces(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.workspaces(projectId),
+    queryFn: () => apiFetch<WorkspaceList>(`/api/v1/projects/${projectId}/workspaces`),
+    enabled: projectId.length > 0,
+  });
+}
+
+/**
+ * One checkout's dirty manifest, read from the row the worker wrote at a unit
+ * boundary. `staleTime` matters: this is *not* a live `git status`, and polling
+ * it would imply one (`docs/m3-contract.md` §2).
+ */
+export function useWorkspaceRepoStatus(workspaceId: string, repositoryId: string) {
+  return useQuery({
+    queryKey: queryKeys.workspaceRepoStatus(workspaceId, repositoryId),
+    queryFn: () =>
+      apiFetch<WorkspaceRepoStatus>(
+        `/api/v1/workspaces/${workspaceId}/repos/${repositoryId}/status`,
+      ),
+    enabled: workspaceId.length > 0 && repositoryId.length > 0,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * What enforcement one launched unit actually ran under. `retry: false`: a
+ * turn that never launched has no record, and a `404` is the honest answer
+ * (ADR-0019: no process, no verdict) rather than something to hammer.
+ */
+export function useTurnSandbox(turnId: string) {
+  return useQuery({
+    queryKey: queryKeys.turnSandbox(turnId),
+    queryFn: () => apiFetch<TurnSandbox>(`/api/v1/turns/${turnId}/sandbox`),
+    enabled: turnId.length > 0,
+    retry: false,
+  });
+}
+
+/** Fleet sandbox health: backend, enforcement mode, verified, volumes per root. */
+export function useSystemSandbox() {
+  return useQuery({
+    queryKey: queryKeys.systemSandbox,
+    queryFn: () => apiFetch<SystemSandbox>("/api/v1/system/sandbox"),
+  });
+}
+
+/** Artifacts the caller's role may see (the sensitivity filter runs in SQL). */
+export function useArtifacts(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.artifacts(projectId),
+    queryFn: () => apiFetch<ArtifactList>(`/api/v1/projects/${projectId}/artifacts`),
+    enabled: projectId.length > 0,
+  });
+}
+
+export function useArtifact(artifactId: string) {
+  return useQuery({
+    queryKey: queryKeys.artifact(artifactId),
+    queryFn: () => apiFetch<Artifact>(`/api/v1/artifacts/${artifactId}`),
+    enabled: artifactId.length > 0,
+  });
+}
+
+/**
+ * Mint a single-artifact preview token. The returned `token`/`preview_url` are
+ * a credential: they live in this component's state only, are never written to
+ * the cache, and are dropped as soon as the frame is closed (ADR-0020 D5).
+ */
+export function useCreatePreviewToken() {
+  return useMutation({
+    mutationFn: (artifactId: string) =>
+      apiFetch<PreviewToken>(`/api/v1/artifacts/${artifactId}/preview-token`, {
+        method: "POST",
+      }),
   });
 }
 

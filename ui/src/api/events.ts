@@ -50,6 +50,38 @@ export type ProjectEventType = (typeof M1_EVENT_TYPES)[number];
 export type ConversationEventType = (typeof M2_EVENT_TYPES)[number];
 
 /**
+ * M3 project-stream types, spelled exactly as `internal/events/events.go`
+ * emits them (`TypeWorkspacePrepared`…`TypeRepositoryMirrorUpdated`). They are
+ * subscribed so a workspace that got quarantined, a secret that failed to
+ * materialize, or an artifact that just landed reaches an open project screen
+ * without a reload — `docs/design/data-dependencies.md` §4.
+ */
+export const M3_EVENT_TYPES = [
+  "workspace.prepared",
+  "workspace.committed",
+  "workspace.quarantined",
+  "workspace.released",
+  "workspace.recovery_lost",
+  "sandbox.verified",
+  "sandbox.enforcement_failed",
+  "secret.created",
+  "secret.version.added",
+  "secret.policy.updated",
+  "secret.revoked",
+  "secret.materialized",
+  "secret.removed",
+  "secret.materialization_failed",
+  "artifact.created",
+  "artifact.deleted",
+  "repository.mirror_updated",
+] as const;
+
+export type ProjectM3EventType = (typeof M3_EVENT_TYPES)[number];
+
+/** Everything the project scope carries from M1 through M3. */
+const PROJECT_EVENT_TYPES = [...M1_EVENT_TYPES, ...M3_EVENT_TYPES] as const;
+
+/**
  * Types that change the `Conversation` resource itself (control, active turn,
  * pending prompts, attached session). Transcript chunks deliberately do not
  * appear here: they are rendered from the stream, and refetching the
@@ -162,7 +194,7 @@ export function useProjectEvents(projectId: string): ProjectEvents {
   const queryClient = useQueryClient();
   const { events, status } = useEventStream({
     url: projectId ? `/api/v1/projects/${projectId}/events` : "",
-    types: M1_EVENT_TYPES,
+    types: PROJECT_EVENT_TYPES,
     keys: [projectId],
     onEvent: (event) => {
       void invalidateProject(queryClient, event.project_id ?? projectId);

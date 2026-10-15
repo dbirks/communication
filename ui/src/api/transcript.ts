@@ -11,6 +11,7 @@
  * `interrupted` is rendered as "stopped, outcome unknown" (`10-ui-design-handoff
  * .md` J7) rather than as a resume.
  */
+import { fallbackName } from "./names";
 import type {
   ConversationTurn,
   ConversationTurnStatus,
@@ -110,6 +111,35 @@ const INTERRUPT_COPY: Record<string, string> = {
   shutdown: "the worker shut down",
 };
 
+/** A tool preview that says nothing: empty, or a JSON container with no members. */
+const EMPTY_PREVIEW = new Set(["{}", "[]", "null", '""', "''"]);
+
+/**
+ * Whether a streamed tool input/output preview is worth a line on screen.
+ *
+ * ACP harnesses send an empty argument object as `{}` for a no-argument tool
+ * call, and the worker forwards it verbatim. Rendering it puts a machine artifact
+ * on a card that a person reads as "the agent did something with this input",
+ * which is not a fact — the fact is that there was no input. The same holds for
+ * `[]`/`null`, and for the empty object in any whitespace arrangement, so a JSON
+ * parse decides, not a string compare against one spelling.
+ */
+export function meaningfulPreview(raw: string): string {
+  const text = (raw ?? "").trim();
+  if (!text || EMPTY_PREVIEW.has(text)) return "";
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        return Object.keys(parsed as Record<string, unknown>).length === 0 ? "" : raw;
+      }
+    } catch {
+      // A truncated preview is still meaningful prose; show it.
+    }
+  }
+  return raw;
+}
+
 /**
  * The honest sentence for an interrupted turn (`10-ui-design-handoff.md` J7:
  * never "resumed without loss"). Exported so the turn-status line and the
@@ -123,16 +153,28 @@ export function interruptedCopy(reason: string | null): string {
 }
 
 /** Plain-language line for the journal rows that are not message content. */
-function systemLine(event: EventEnvelope, payload: Record<string, unknown>): string | null {
+function systemLine(
+  event: EventEnvelope,
+  payload: Record<string, unknown>,
+  nameOf: (userId: string) => string,
+): string | null {
   switch (event.type) {
     case "conversation.created":
       return `Conversation started with ${str(payload, "agent_profile_name") || "an agent"}`;
     case "conversation.control.transferred": {
-      const to = str(payload, "to_kind") === "human" ? str(payload, "to_user_id") : "nobody";
+      // A uuid in a sentence nobody can act on is not information: the journal
+      // identifies principals by id, the transcript names them.
+      const to = str(payload, "to_user_id");
       const reason = str(payload, "reason");
-      if (reason === "returned") return `Control returned (to ${to})`;
-      if (reason === "taken") return `Control taken (by ${to})`;
-      return `Control transferred to ${to} (${reason})`;
+      const toKind = str(payload, "to_kind");
+      // `to_kind` is `human`, `run_attempt` or `none` (`09`). Only a human has a
+      // display name to resolve, so the other two get their own sentence rather
+      // than an empty one.
+      if (toKind === "run_attempt") return "Control passed to a run attempt — no human is driving";
+      if (toKind !== "human" || !to) return "Control returned — nobody is driving";
+      if (reason === "returned") return `Control returned to ${nameOf(to)}`;
+      if (reason === "taken") return `Control taken by ${nameOf(to)}`;
+      return `Control transferred to ${nameOf(to)} (${reason})`;
     }
     case "conversation.turn.started": {
       const origin = str(payload, "session_origin");
@@ -158,7 +200,15 @@ function systemLine(event: EventEnvelope, payload: Record<string, unknown>): str
 }
 
 /** Fold journal frames into transcript items in the order they were committed. */
-export function projectTranscript(events: readonly EventEnvelope[]): Transcript {
+export function projectTranscript(
+  events: readonly EventEnvelope[],
+  /**
+   * Display name for a user id. The journal only ever carries ids, so a page
+   * that wants names (always) passes its actor-directory resolver; the default
+   * is the honest "someone (abc12345)" fallback, never a bare uuid.
+   */
+  nameOf: (userId: string) => string = fallbackName,
+): Transcript {
   const items: TranscriptItem[] = [];
   const turns = new Map<string, TurnRecord>();
   const agentByTurn = new Map<string, Extract<TranscriptItem, { kind: "agent" }>>();
@@ -262,7 +312,7 @@ export function projectTranscript(events: readonly EventEnvelope[]): Transcript 
           title: str(payload, "title"),
           toolKind: str(payload, "kind"),
           status: str(payload, "status") || "pending",
-          inputPreview: str(payload, "input_preview"),
+          inputPreview: meaningfulPreview(str(payload, "input_preview")),
           outputPreview: "",
           truncated: bool(payload, "truncated"),
         };
@@ -292,7 +342,7 @@ export function projectTranscript(events: readonly EventEnvelope[]): Transcript 
           toolKind: "",
           status: str(payload, "status") || "pending",
           inputPreview: "",
-          outputPreview: str(payload, "output_preview"),
+          outputPreview: meaningfulPreview(str(payload, "output_preview")),
           truncated: bool(payload, "truncated"),
         };
         push(item);
@@ -336,7 +386,10 @@ export function projectTranscript(events: readonly EventEnvelope[]): Transcript 
         push({
           kind: "system",
           id: event.event_id,
-          text: `Permission ${status}${decision ? ` (${decision})` : ""}`,
+          text:
+            `Permission ${status}` +
+            (decision ? ` (${decision})` : "") +
+            (decider ? ` — decided by ${nameOf(decider)}` : ""),
           at,
         });
         break;
@@ -377,7 +430,7 @@ export function projectTranscript(events: readonly EventEnvelope[]): Transcript 
             }
           }
         }
-        const line = systemLine(event, payload);
+        const line = systemLine(event, payload, nameOf);
         if (line) push({ kind: "system", id: event.event_id, text: line, at });
         break;
       }

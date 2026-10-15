@@ -21,6 +21,8 @@ import {
 } from "../api/transcript";
 import type { ConversationControl, PermissionOption } from "../api/types";
 import Transcript from "../components/Transcript";
+import { WorkspaceWidget } from "../components/Workspaces";
+import { TurnSandboxPanel } from "../components/Sandbox";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
 import { Button } from "../components/ds/Button";
@@ -28,12 +30,28 @@ import { Textarea } from "../components/ds/Field";
 import { StatusChip } from "../components/ds/Row";
 import { STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
 
-/** Copy for the controller badge — ownership is always written in words. */
-export function controllerCopy(control: ConversationControl, isController: boolean): string {
+/**
+ * Copy for the controller badge — ownership is always written in words.
+ *
+ * `control.display_name` is server-resolved and usually present, but the API may
+ * omit it (an older replica, a member the projection did not name). The page
+ * already holds an actor directory, so a named member is named; "another member"
+ * is the last resort, and a uuid is never offered as a label.
+ */
+export function controllerCopy(
+  control: ConversationControl,
+  isController: boolean,
+  nameOf?: (userId: string) => string,
+): string {
   if (isController) return "You are in control";
   if (control.kind === "run_attempt") return "Controlled by a pipeline run";
   if (control.kind === "human") {
-    return `Controlled by ${control.display_name ?? "another member"}`;
+    const named = control.display_name ?? (control.user_id ? nameOf?.(control.user_id) : undefined);
+    // `nameOf` degrades to "someone (abc12345)", which is not a label a badge
+    // should wear — the directory either knows this person or says it does not.
+    return named && !named.startsWith("someone (")
+      ? `Controlled by ${named}`
+      : "Controlled by another member";
   }
   return "No controller — take control to drive";
 }
@@ -54,7 +72,6 @@ export default function ConversationPage() {
   const [prompt, setPrompt] = useState("");
   const [decidingRequestId, setDecidingRequestId] = useState<string | null>(null);
 
-  const transcript = useMemo(() => projectTranscript(events), [events]);
   const data = conversation.data;
   const activeTurn = data?.active_turn;
   const isController = Boolean(
@@ -85,6 +102,10 @@ export default function ConversationPage() {
     const merged = mergeLookups(local, actors.lookup);
     return (userId: string) => merged(userId) ?? actors.nameOf(userId);
   }, [actors, data]);
+
+  // The fold names the people it mentions, so it re-projects when the actor
+  // directory lands — an id in a sentence nobody can act on is not information.
+  const transcript = useMemo(() => projectTranscript(events, nameOf), [events, nameOf]);
 
   const onSend = (event: FormEvent) => {
     event.preventDefault();
@@ -142,7 +163,7 @@ export default function ConversationPage() {
   }
 
   const control = data.control;
-  const badgeText = controllerCopy(control, isController);
+  const badgeText = controllerCopy(control, isController, nameOf);
   // One description of the turn drives the status line, the interrupted notice
   // and whether the composer may accept a prompt.
   const described = describeTurn(transcript.turns, activeTurn);
@@ -152,6 +173,9 @@ export default function ConversationPage() {
   // journal record clears it immediately (the DB would refuse a competing
   // prompt anyway — one active turn per conversation, migration 00003).
   const turnInProgress = Boolean(described.active);
+  // The unit whose enforcement record is worth showing: the API's active turn if
+  // there is one, else the newest turn the journal reported.
+  const latestTurnId = activeTurn?.id ?? transcript.turns.at(-1)?.turnId ?? "";
   const controlError = takeControl.error ?? returnControl.error ?? null;
 
   return (
@@ -287,6 +311,37 @@ export default function ConversationPage() {
         decisionError={decide.error}
         decisionErrorRequestId={decide.isError ? (decide.variables?.requestId ?? null) : null}
       />
+
+      {/* M3 context rail: what the agent is editing, and what it actually ran
+          under. Both read server state — neither is inferred from the stream. */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <section aria-labelledby="workspace-rail-heading" className="space-y-2">
+          <h2
+            id="workspace-rail-heading"
+            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+          >
+            Workspace
+          </h2>
+          <div data-testid="workspace-widget">
+            <WorkspaceWidget projectId={projectId} conversationId={conversationId} />
+          </div>
+        </section>
+        <section aria-labelledby="sandbox-rail-heading" className="space-y-2">
+          <h2
+            id="sandbox-rail-heading"
+            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+          >
+            Sandbox
+          </h2>
+          {latestTurnId ? (
+            <TurnSandboxPanel turnId={latestTurnId} />
+          ) : (
+            <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
+              No turn yet, so nothing has launched and there is no enforcement to report.
+            </p>
+          )}
+        </section>
+      </div>
 
       <section aria-labelledby="composer-heading" className="space-y-2">
         <h2

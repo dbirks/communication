@@ -76,6 +76,17 @@ describe("auth", () => {
           body: { items: [] },
           replica: "replica-b",
         },
+        // M3 reads the project page also makes, from the same replica.
+        {
+          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+          body: { workspaces: [] },
+          replica: "replica-b",
+        },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+          body: { artifacts: [] },
+          replica: "replica-b",
+        },
       ],
     });
 

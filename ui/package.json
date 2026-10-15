@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "gen:api": "openapi-typescript ../api/openapi.yaml -o src/api/schema.d.ts && oxfmt src/api/schema.d.ts",
+    "gen:api": "node scripts/gen-api.mjs",
+    "gen:api:check": "node scripts/gen-api.mjs --check",
     "build": "tsc -b && vite build",
     "postbuild": "node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
     "test": "vitest run",
@@ -13,7 +14,8 @@
     "check:testids": "node scripts/check-testids.mjs",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm gen:api:check && pnpm lint && pnpm fmt:check && pnpm typecheck && pnpm check:testids && pnpm test && pnpm build"
   },
   "dependencies": {
     "@fontsource/kaisei-opti": "5.3.1",
@@ -32,7 +34,6 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "jsdom": "30.1.2",
-    "openapi-typescript": "7.13.0",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",
     "tailwindcss": "4.3.3",

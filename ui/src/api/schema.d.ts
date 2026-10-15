@@ -324,6 +324,75 @@ export interface paths {
      *       sends it back as the `Last-Event-ID` header.
      *     * `event:` is the envelope `type` (`project.created`,
      *       `project.member.updated`, `repository.added` in M1).
+     *
+     *     M3 adds the workspace, sandbox, secret and artifact vocabulary below
+     *     (`docs/m3-contract.md` § 3, ADR-0017..0020). These are project-scoped and
+     *     arrive here; the turn-scoped ones among them also appear on
+     *     `GET /api/v1/conversations/{conversationId}/events`, and until the envelope
+     *     schema gains an optional `workspace_id` member (a schema-versioned change),
+     *     `workspace_id` lives **inside** `payload` while the journal's id columns
+     *     stay as ADR-0016 left them:
+     *
+     *     | `type` | `payload` members |
+     *     |---|---|
+     *     | `workspace.prepared` | `workspace_id`, `project_id`, `scope_kind`, `conversation_id`, `run_id`, `worker_id`, `volume_id`, `workspace_mode`, `repos`, `base_commits`, `policy_digest` |
+     *     | `workspace.committed` | `workspace_id`, `project_id`, `repository_id`, `run_ref`, `head_commit` |
+     *     | `workspace.quarantined` | `workspace_id`, `project_id`, `reason` |
+     *     | `workspace.released` | `workspace_id`, `project_id`, `repos_pruned` |
+     *     | `workspace.recovery_lost` | `workspace_id`, `project_id`, `expected_volume_id`, `found_volume_id`, `reason` |
+     *     | `sandbox.verified` | `project_id`, `turn_id`, `workspace_id`, `worker_id`, `policy_digest`, `backend`, `backend_version`, `af_unix_mediation`, `network_enforced`, `grants`, `commit_granted`, `verified` |
+     *     | `sandbox.enforcement_failed` | `project_id`, `turn_id`, `workspace_id`, `worker_id`, `stage`, `reason`, `backend`, `backend_version`, `policy_digest`, `verified`, `child_started`, `detail` |
+     *     | `secret.created` | `secret_id`, `project_id`, `slug`, `scope`, `purpose`, `delivery_mode`, `version`, `allowed_agent_profile_ids` |
+     *     | `secret.version.added` | `secret_id`, `project_id`, `version`, `key_id`, `previous_version` |
+     *     | `secret.policy.updated` | `secret_id`, `project_id`, `before`, `after` |
+     *     | `secret.revoked` | `secret_id`, `project_id`, `versions`, `revoked_at`, `revoked_by` |
+     *     | `secret.materialized` | `secret_id`, `project_id`, `slug`, `version`, `delivery_mode`, `repository_name`, `relative_path`, `env_name`, `lifecycle`, `mode`, `workspace_id`, `turn_id`, `policy_digest` |
+     *     | `secret.removed` | `secret_id`, `project_id`, `target`, `workspace_id`, `turn_id`, `cleaned_by` |
+     *     | `secret.materialization_failed` | `secret_id`, `project_id`, `slug`, `delivery_mode`, `target`, `reason`, `workspace_id`, `turn_id`, `child_started` |
+     *     | `artifact.created` | `artifact_id`, `project_id`, `name`, `kind`, `media_type`, `sha256`, `size_bytes`, `sensitivity`, `redaction_count`, `workspace_id`, `turn_id` |
+     *     | `artifact.deleted` | `artifact_id`, `project_id`, `reason` |
+     *     | `repository.mirror_updated` | `project_id`, `repository_id`, `worker_id`, `mirror_kind`, `from_commit`, `to_commit`, `fetch_duration_ms` |
+     *
+     *     No payload below carries a secret value, a `.env` body, an absolute host
+     *     path or a prompt — structurally, not by convention: the member sets above
+     *     are pinned against the Go structs in `internal/events/events.go` by
+     *     `TestM3PayloadFieldNames`, and
+     *     `TestM3PayloadsCarryNoSecretValuesOrHostPaths` refuses a member named
+     *     `value`, `ciphertext`, `env_body`, `prompt`, `root_path`, `mirror_path`,
+     *     `admin_dir`, `checkout_path`, `storage_key` or any other `*_path` but
+     *     `relative_path`. `secret.version.added` therefore has **no**
+     *     `content_sha256`: that digest exists to recognise a retried write, and the
+     *     journal is readable by every project member, so publishing it would hand
+     *     them an offline guessing oracle for a low-entropy secret (contract
+     *     deviation D15).
+     *
+     *     Enumerated values, spelled exactly: `workspace.quarantined`'s `reason` is
+     *     `secret_left_behind`, `exclusion_failed` or `worktree_unusable`;
+     *     `workspace.recovery_lost`'s is `volume_changed`, `path_missing` or
+     *     `different_worker`; `sandbox.enforcement_failed`'s `stage` is `probe`,
+     *     `profile`, `policy_assert`, `grant_assert`, `exec` or `runtime` and its
+     *     `reason` is ADR-0019 D6's enum (`binary_missing`, `landlock_unavailable`,
+     *     `fs_unverified`, `tcp_unverified`, `af_unix_not_mediated`,
+     *     `profile_invalid`, `grant_mismatch`, `temp_path_grant`, `cwd_not_granted`,
+     *     `policy_delegation_refused`, `deny_unsupported`, `egress_check_failed`);
+     *     `secret.materialization_failed`'s `reason` is `path_escape`,
+     *     `absolute_path`, `bad_shape`, `tracked_target`, `exists`, `symlink_parent`,
+     *     `keyring_unreadable`, `revoked_version`, `broker_unsupported` or
+     *     `mirror_writable`; `secret.removed`'s `cleaned_by` is `worker`,
+     *     `reconciler` or `startup_sweep`; `artifact.deleted`'s `reason` is `expired`,
+     *     `swept` or `retention`; `repository.mirror_updated`'s `mirror_kind` is
+     *     `created` or `fetched`.
+     *
+     *     `repos` is an array of `{repository_id, name, run_ref}` objects (no paths),
+     *     `base_commits` maps repository name to the commit the worktree was created
+     *     at, `grants` is an array of `{role, access}` objects naming ADR-0017 D4's
+     *     grant roles (`workspace_repo`, `workspace_scratch`, `workspace_home`,
+     *     `mirror_read`, `mirror_objects`, `mirror_run_refs`, `mirror_run_logs`,
+     *     `mirror_admin_dir`, `harness_credentials`; access is `ro` or `rw`), and
+     *     `before`/`after` in `secret.policy.updated` are `{purpose, audit_policy,
+     *     allowed_agent_profile_ids}` objects. `volume_id` is always
+     *     `sha256:<64 hex>` — the identity of a storage root, derived from
+     *     `(st_dev, st_ino, root path)` and never from `st_dev` alone (probe V3).
      *     * `data:` is the event envelope, validated by
      *       `api/schemas/event-envelope.schema.json` (see `EventEnvelope`).
      *
@@ -585,6 +654,348 @@ export interface paths {
      *     Controller only (`409` with the current `control` otherwise), `contributor`+ and CSRF as everywhere. The default remains `ask`: no M2 profile pre-approves anything (`04` "Permission policy").
      */
     post: operations["decideConversationPermission"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secrets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's secret references (metadata only)
+     * @description `secret_metadata` rows the project can see, ordered by `slug`. Never a value, never a version list beyond `current_version`, never `content_sha256` (it is a retry-comparison digest of a low-entropy secret: publishing it would be an offline guessing oracle for every project viewer — ADR-0018 names it "never API-exposed", and this is an API). `viewer` or above; a non-member gets `404`.
+     */
+    get: operations["listProjectSecrets"];
+    put?: never;
+    /**
+     * Create a secret reference and its first version
+     * @description Creates `secret_metadata` plus `secret_versions` v1 in one transaction and appends `secret.created`. `maintainer` or above.
+     *     `value` is write-only: it is encrypted (AES-256-GCM under a data key derived from a master key held **outside** this database, ADR-0018 D2), stored, and then appears in no response, no event, no log and no audit detail. The response body is the metadata row — the caller cannot read back what it just wrote, which is the property `12` case 15 asserts.
+     *     `allowed_agent_profile_ids` is an allowlist, and **empty means denied to every profile** (`ADR-0018` D3): a secret nobody granted is a secret no agent sees, not a secret every agent in the project sees.
+     */
+    post: operations["createProjectSecret"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secrets/{secretId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Update a secret's metadata and policy (never its value)
+     * @description Replaces `purpose`, the allowlists and `audit_policy`, and appends `secret.policy.updated` carrying the before/after policy. `slug`, `scope`, `delivery_mode` and `current_version` are not editable here: a slug is what a mount names, and a version only moves by appending one.
+     *     A body containing `value` is a **`400`**, not a silent ignore — "I meant to rotate" and "I meant to rename" must not be the same request. Rotation is `POST /secrets/{secretId}/versions`.
+     */
+    put: operations["updateProjectSecret"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secrets/{secretId}/versions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Append an immutable secret version (rotation)
+     * @description Appends `secret_versions` N+1, bumps `current_version`, sets `rotated_at` and appends `secret.version.added`. Old versions are **never** replaced or deleted: a unit that pinned version 3 decrypts version 3 for as long as it lives, which is what makes rotation mid-turn safe (`ADR-0018` D2).
+     */
+    post: operations["addProjectSecretVersion"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secrets/{secretId}:revoke": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Revoke a secret and every one of its versions
+     * @description Sets `revoked_at` on the metadata row and on every version, then appends `secret.revoked`. From that moment the worker refuses to materialize it (`ADR-0018` D2.4) — a unit already running keeps whatever it was launched with, because nothing here can take a file back out of a process's memory. Revocation is not deletion: `06` asks for an auditable history, and a revoked row still shows who could have had it.
+     */
+    post: operations["revokeProjectSecret"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secrets/{secretId}/materializations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Which unit had this secret, where, and when it was cleaned up
+     * @description The audit view over `secret_materializations` — proof that a value was present only during the unit authorized to have it. Metadata only: the target is a relative path or an env name, never a value, and a row with `cleaned_at` null is a live finding (the startup sweep exists to close exactly those rows). `maintainer` or above; `viewer` cannot read another team's materialization map, which is itself a disclosure surface.
+     */
+    get: operations["listProjectSecretMaterializations"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secret-mounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List declared secret placements
+     * @description `secret_mounts` rows — the declarations `05`'s YAML writes (`examples/secret-mounts.yaml`): which secret, delivered how, into which repository at which relative path, for how long. `viewer` or above: a mount's *placement* is not sensitive, its value is, and the value is not here.
+     */
+    get: operations["listProjectSecretMounts"];
+    put?: never;
+    /**
+     * Declare where a secret is placed
+     * @description Validates against the same rules the `mounts_shape` CHECK enforces (`env` needs `env_name` and no path; `env_file` needs a repository of **this project** and a relative path with no `..`, no leading `/` and no empty segment), and against the filesystem only later, at materialization time — "relative to what" has no answer until a workspace exists. `integration_broker` is refused here with `422` until it is implemented (`ADR-0018` clause 8), so a declaration can never silently degrade to env delivery. `maintainer` or above.
+     */
+    post: operations["createProjectSecretMount"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/secret-mounts/{mountId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Remove a placement declaration
+     * @description Stops the mount being honored on the *next* launch. It does not revoke the secret — those are different mistakes, and conflating them means a typo in a path costs a rotation. A unit already running keeps what it was given. `maintainer` or above.
+     */
+    delete: operations["deleteProjectSecretMount"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/workspaces": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's live and recent workspaces
+     * @description Live (`preparing`, `ready`, `quarantined`) first, then recent history, newest first. `volume_id` is included because case 20 is a question about the *disk*: "this workspace was created on a volume this worker can no longer see" is only answerable if the client can watch the two ids disagree. `repos[]` carries `run_ref`, `base_commit` and `head_commit` — the git identity of the scope — and `excluded_paths`, the project-scoped set that git and the artifact scanner both filter again (ADR-0017 D6). `viewer` or above.
+     */
+    get: operations["listProjectWorkspaces"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/workspaces/{workspaceId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one workspace
+     * @description Same field rules as the list route (`workspace_id`, `worker_id`, `volume_id`, refs — no paths), authorized through the workspace's own `project_id`. `404` from outside the project, byte-identical to a `404` for a random uuid.
+     */
+    get: operations["getWorkspace"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/workspaces/{workspaceId}/repos/{repositoryId}/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Dirty summary and modified-path manifest for one checkout
+     * @description Answered from `workspace_repos` (`modified_paths`, `head_commit`, `excluded_paths`) — the row the worker wrote at the unit boundary, not a live `git status`. That distinction is deliberate: `09` forbids the browser API becoming a worker-service surface, so this route reads database rows and never shells into a worker. `contributor` or above, because "what is dirty in the checkout" is work-in-progress information. A stale row says so (`recorded_at`), rather than presenting last-turn state as current.
+     */
+    get: operations["getWorkspaceRepoStatus"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/turns/{turnId}/sandbox": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * What enforcement one launched unit actually ran under
+     * @description The enforcement record for a turn: the stage the chain reached, the reason it stopped there, the pinned policy digest, whether `AF_UNIX` was mediated, whether egress was enforced, which grant roles the unit got, and whether a child was ever exec'd. This is `12-test-strategy` case 13's observable answer ("no process started, and you can see why") and `10`'s run-inspector need — served from the journal plus `sandbox.verified`, so reading it does not require worker logs.
+     *     `network_enforced: false` is an expected value on the `agent-turn` profile and is reported rather than hidden (ADR-0019 D3): a real model turn cannot run with egress denied, and D-021 stays **Proposed** until allowlisted egress is observed through the nono proxy from a real turn.
+     *     Authorized through turn -> conversation -> **project** (`viewer` or above); `404` otherwise. `grants[]` names roles, never host paths.
+     */
+    get: operations["getTurnSandbox"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/system/sandbox": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Sandbox health of the registered workers
+     * @description Per worker: backend, version, the enforcement mode it registered with, whether it has verified a launch, and its notes — plus the pinned nono version and policy digest the deployment ships. Session required, no membership check (this matches `GET /api/v1/workers`: an operator has to be able to see that enforcement is missing before anyone trusts it).
+     *     When `verified` is false the UI must say so in words that do not imply safety: a green check next to `required` on a worker that never verified would be a false guarantee (`05`'s first acceptance gate is honest reporting, not success).
+     */
+    get: operations["getSystemSandbox"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/artifacts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's artifacts, filtered by sensitivity
+     * @description Metadata, newest first. The sensitivity table (ADR-0020 D3) is enforced **in SQL**, not by hiding rows after the fact: a `viewer` never receives a `restricted` row, and a `secret` row has no download path in M3 at all for anyone — the label exists so the policy can be written against it before the mechanism does. `storage_key` is never serialized, and there is no `PUT` anywhere under `/artifacts`: artifact rows are immutable and content-addressed, so a retry is the same row, not a second copy.
+     */
+    get: operations["listProjectArtifacts"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{artifactId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one artifact's metadata
+     * @description Metadata plus `preview_url` when the caller may mint a preview token for it. `preview_url` is a *template* until a token is minted (`POST /artifacts/{artifactId}/preview-token`), because a URL that embeds a token would land in a browser history and a proxy log, and the token is the only thing standing between a stored HTML artifact and the session cookie of whoever opens it.
+     */
+    get: operations["getArtifact"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{artifactId}/content": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Stream an artifact's bytes
+     * @description Streamed from the backend (never a database row). Two header rules are the whole point of this route, and both are asserted in `12-test-strategy` case 16:
+     *     * `text/html` is served as `text/plain; charset=utf-8` with
+     *       `Content-Disposition: attachment`, so navigating to this URL cannot run
+     *       the artifact's script in the app's origin.
+     *     * `X-Content-Type-Options: nosniff` always, and no `Cache-Control` that
+     *       would let a redacted artifact outlive its row.
+     *
+     *     Executing artifact HTML is only ever the preview origin's job — `http://preview.localhost:18084/preview/{token}` behind a host gate on the same binary (ADR-0020 D6). It is deliberately **not** an operation of this API: a path under `/api/v1` would share the app's cookie scope, and a hostname difference is what removes the cookie (a port would not).
+     *     Role gate: `contributor` for `standard`/`internal`, `maintainer` for `restricted`, nothing for `secret`.
+     */
+    get: operations["getArtifactContent"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{artifactId}/preview-token": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Mint a single-artifact preview token
+     * @description An HMAC'd, single-artifact, digest-bound, short-TTL token (ADR-0020 D5), exchanged for a URL on the preview origin. Minting is an **access** and is audited as one, even though the token is what later authorizes the fetch: `06` wants the record to name who looked, not only who was allowed to. `contributor` or above, for `standard` and `internal` sensitivity only. An expired token is `401` on the preview origin; a token re-signed for a different artifact id is refused there too, and this route never reissues one silently.
+     */
+    post: operations["createArtifactPreviewToken"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1123,6 +1534,447 @@ export interface components {
       /** @description The non-terminal turn that blocked this request, when that is the conflict. */
       active_turn?: components["schemas"]["ConversationTurn"];
     };
+    /**
+     * Secret
+     * @description A `secret_metadata` row — the half of a SecretRef that may be shared with a client. There is no field here that could hold a value, and `content_sha256` is absent on purpose (ADR-0018: retry-comparison only, never API-exposed).
+     */
+    Secret: {
+      /** Format: uuid */
+      id: string;
+      /** @description Unique per project (`secret_metadata_project_slug_idx`) or per organization for `scope: org`. A mount names a secret by slug, so this is not renameable through this API. */
+      slug: string;
+      /** @enum {string} */
+      scope: "project" | "org";
+      /** @description Why this exists, for the human reading the list ("integration test database"). Never used for authorization. */
+      purpose: string;
+      /**
+       * @description `integration_broker` is declared in `05` and refused in M3 (`ADR-0018` clause 8) — it can be stored as a policy so the intent survives, but no mount may be created for it yet.
+       * @enum {string}
+       */
+      delivery_mode: "env" | "env_file" | "integration_broker";
+      /** @description The version a new launch materializes. Older versions stay readable to a unit that pinned them; they are never listed here. */
+      current_version: number;
+      /** @description An allowlist. **Empty means denied to every profile** — the profile's own `secret_mount_ids` is the other half, and both must agree. */
+      allowed_agent_profile_ids: string[];
+      /**
+       * @description `materialization_and_access` additionally records preview-style accesses; `materialization` is the default because that is the evidence M3 produces.
+       * @enum {string}
+       */
+      audit_policy: "materialization" | "materialization_and_access";
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      rotated_at?: string | null;
+      /**
+       * Format: date-time
+       * @description Set means every version refuses to materialize from now on.
+       */
+      revoked_at?: string | null;
+    };
+    /** SecretList */
+    SecretList: {
+      secrets: components["schemas"]["Secret"][];
+    };
+    /**
+     * SecretCreate
+     * @description Request body for `createProjectSecret`. `value` exists in exactly one schema in this entire document besides `SecretVersionCreate`, and it is write-only: it is never echoed back, never logged, and never appears in an event.
+     */
+    SecretCreate: {
+      slug: string;
+      purpose?: string;
+      /**
+       * @description `integration_broker` is not acceptable on create either: a secret with no deliverable placement is a secret nobody can use, and refusing it here is what keeps `05`'s "prefer a restricted broker" from silently degrading into env delivery.
+       * @enum {string}
+       */
+      delivery_mode: "env" | "env_file";
+      /**
+       * @description Defaults to `project`. `org` requires organization-level rights, and an org-scoped secret carries no `project_id` (`secrets_scope_pointer`).
+       * @enum {string}
+       */
+      scope?: "project" | "org";
+      allowed_agent_profile_ids?: string[];
+      /** @description Encrypted with a per-version data key (AES-256-GCM, fresh 12-byte nonce, AAD binding `secret_id || version || key_id || sha256(slug)`) and stored in `secret_versions` v1. A retried create compares `content_sha256` server-side instead of writing a second version. */
+      value: string;
+    };
+    /**
+     * SecretUpdate
+     * @description Request body for `updateProjectSecret`. `additionalProperties: false` is load-bearing: `value` in this body is a `400`, not an ignored field, so a request that meant to rotate cannot quietly become a no-op.
+     */
+    SecretUpdate: {
+      purpose: string;
+      allowed_agent_profile_ids: string[];
+      /** @enum {string} */
+      audit_policy: "materialization" | "materialization_and_access";
+    };
+    /**
+     * SecretVersionCreate
+     * @description Request body for `addProjectSecretVersion`.
+     */
+    SecretVersionCreate: {
+      value: string;
+    };
+    /**
+     * SecretVersionInfo
+     * @description The metadata `addProjectSecretVersion` returns. `key_id` names the master-key generation outside this database — an unknown `key_id` is a refused decrypt, never a guess.
+     */
+    SecretVersionInfo: {
+      /** Format: uuid */
+      secret_id: string;
+      version: number;
+      key_id: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /**
+     * SecretMaterialization
+     * @description One `secret_materializations` row: proof that a value was present during one unit, at one target, on one worker — and, when `cleaned_at` is set, who removed it. A null `cleaned_at` is a finding, not a formatting choice: it is what the worker's startup sweep looks for.
+     */
+    SecretMaterialization: {
+      /** Format: int64 */
+      id: number;
+      /** Format: uuid */
+      secret_id: string;
+      slug?: string;
+      secret_version: number;
+      /** Format: uuid */
+      workspace_id?: string | null;
+      /**
+       * Format: uuid
+       * @description M3's unit. `attempt_id` arrives with M4 and nothing is renamed later (contract deviation D1/D9).
+       */
+      turn_id?: string | null;
+      /** Format: uuid */
+      worker_id?: string;
+      /** @enum {string} */
+      delivery_mode: "env" | "env_file";
+      /** @description The env variable name, or the path relative to its repository checkout. Never absolute (`mounts_shape` refuses that, and the materializer refuses it again against the real filesystem). */
+      target: string;
+      /** @description The mode that was actually created, as octal in decimal notation — `384` is `0600`. Recorded rather than asserted, because the whole claim of case 12/C12a is that the file on disk had this mode. */
+      file_mode?: number | null;
+      /** Format: date-time */
+      materialized_at: string;
+      /** Format: date-time */
+      cleaned_at?: string | null;
+      /**
+       * @description The unit's own defer, the reconciler, or the sweep over rows that survived a crash. `null` while the row is uncleaned.
+       * @enum {string|null}
+       */
+      cleaned_by?: "worker" | "reconciler" | "startup_sweep" | null;
+    };
+    /** SecretMaterializationList */
+    SecretMaterializationList: {
+      materializations: components["schemas"]["SecretMaterialization"][];
+    };
+    /**
+     * SecretMount
+     * @description A declared placement (`05`'s `secret_mounts`). The shape is enforced twice: by the `mounts_shape` CHECK and again at materialization time, where `git ls-files`, the mirror's `info/exclude` and the real filesystem get votes that a column constraint cannot cast.
+     */
+    SecretMount: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      secret_id: string;
+      secret_slug?: string;
+      /** @enum {string} */
+      delivery_mode: "env" | "env_file";
+      /**
+       * Format: uuid
+       * @description Required for `env_file`; a repository of another project is `422`.
+       */
+      repository_id?: string | null;
+      /** @description Relative to the repository checkout root: no leading `/`, no `..` segment, no empty segment. */
+      relative_path?: string | null;
+      /** @description Required for `env`; it names a variable, never a path. */
+      env_name?: string | null;
+      /** @description Single-key extraction from a multi-line value (`secret-mounts.yaml` `key`), so one stored blob can serve one variable. */
+      key?: string | null;
+      /**
+       * @description `turn` is removed at the turn's terminal state, `workspace` at `workspace.released`. `node_attempt` is legal in the CHECK and honoured by nothing until M4's attempts exist — accepted, not silently reinterpreted as `turn` (contract deviation D9).
+       * @enum {string}
+       */
+      lifecycle: "turn" | "workspace" | "node_attempt";
+      /** @description `05`'s explicit policy exception. Default false, and a tracked target is refused with `secret.materialization_failed` (`reason=tracked_target`) rather than overwritten. */
+      allow_tracked: boolean;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /**
+     * SecretMountCreate
+     * @description Request body for `createProjectSecretMount`.
+     */
+    SecretMountCreate: {
+      /** Format: uuid */
+      secret_id: string;
+      /** @enum {string} */
+      delivery_mode: "env" | "env_file";
+      /** Format: uuid */
+      repository_id?: string;
+      relative_path?: string;
+      env_name?: string;
+      key?: string;
+      /** @enum {string} */
+      lifecycle?: "turn" | "workspace" | "node_attempt";
+      allow_tracked?: boolean;
+    };
+    /** SecretMountList */
+    SecretMountList: {
+      secret_mounts: components["schemas"]["SecretMount"][];
+    };
+    /**
+     * WorkspaceRepo
+     * @description One repository inside a workspace. Paths are absent by design: `admin_dir` is the path a sandbox grant names, and `mirror_path` is where the shared object store lives — both are worker-side topology. `run_ref` is the client-usable identity: it names the branch this scope owns and nothing else.
+     */
+    WorkspaceRepo: {
+      /** Format: uuid */
+      repository_id: string;
+      name: string;
+      /** @description `<scope-id>/<name>` — the only ref namespace this workspace may write (ADR-0017 D4's commit grant, measured: run-2's sandboxed `update-ref` of run-1's ref was denied with `Permission denied`). */
+      run_ref: string;
+      /** @description The commit the worktree was created at. */
+      base_commit: string;
+      /** @description Set by the worker's post-commit ref read (P8: an exit status is not proof, the ref read afterwards is), null until then. */
+      head_commit?: string | null;
+      /** @enum {string} */
+      workspace_mode: "worktree" | "clone";
+      /** @description The manifest, repository-relative, with `excluded_paths` already subtracted (ADR-0017 D8). A manifest, not a diff. */
+      modified_paths?: string[];
+      /** @description The project-scoped exclusion set (materialized `.env` targets and APM-staged paths). Filtered again by the checkpoint and artifact paths, so a git-level exclusion is never the only thing between a secret and an artifact. */
+      excluded_paths?: string[];
+    };
+    /**
+     * Workspace
+     * @description A scope's workspace on one worker's volume (ADR-0017 D3). `state` is the field that decides whether work may proceed: `quarantined` means a security check failed here (a leftover materialized secret, an exclusion that could not be established, an unresolvable worktree) and reuse is blocked — it is never auto-cleaned, because quietly deleting the evidence of a security failure is worse than the failure.
+     */
+    Workspace: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /**
+       * @description `run` is legal today and unpopulated until M4, so that milestone does not rename the wire (contract deviation D1).
+       * @enum {string}
+       */
+      scope_kind: "conversation" | "run";
+      /** Format: uuid */
+      conversation_id?: string | null;
+      /** Format: uuid */
+      run_id?: string | null;
+      /** Format: uuid */
+      worker_id: string;
+      /** @description Identity of the storage root this workspace was created on, derived from `(st_dev, st_ino, root path)` — **not** from `st_dev` alone. Probe V3 found two different docker named volumes at one path sharing a device number, so an `st_dev`-only identity would reclaim workspaces whose bytes are gone and call it recovery. */
+      volume_id: string;
+      /** @enum {string} */
+      workspace_mode: "worktree" | "clone";
+      /** @enum {string} */
+      state: "preparing" | "ready" | "quarantined" | "released" | "lost";
+      repos: components["schemas"]["WorkspaceRepo"][];
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      ready_at?: string | null;
+      /** Format: date-time */
+      released_at?: string | null;
+      /** Format: date-time */
+      lost_at?: string | null;
+      /**
+       * @description Present when `state` is `lost`, from `workspace.recovery_lost`. The UI renders this as "prior edits lost, rerun required" — never "resumed" (`10` J7's honesty rule; D-024 cross-host rehydration stays **Open**).
+       * @enum {string|null}
+       */
+      lost_reason?: "volume_changed" | "path_missing" | "different_worker" | null;
+    };
+    /** WorkspaceList */
+    WorkspaceList: {
+      workspaces: components["schemas"]["Workspace"][];
+    };
+    /**
+     * WorkspaceRepoStatus
+     * @description The worker's last recorded view of one checkout. `recorded_at` makes staleness explicit: this is a journal of what the worker observed at a unit boundary, not a live `git status`, and saying so is what keeps the UI from implying it watched the filesystem.
+     */
+    WorkspaceRepoStatus: {
+      /** Format: uuid */
+      workspace_id: string;
+      /** Format: uuid */
+      repository_id: string;
+      run_ref: string;
+      base_commit: string;
+      head_commit?: string | null;
+      dirty: boolean;
+      modified_paths: string[];
+      excluded_paths?: string[];
+      /** Format: date-time */
+      recorded_at: string;
+    };
+    /**
+     * SandboxGrant
+     * @description One entry of a launched unit's grant set, named by **role**. A Landlock ruleset is a list of host paths, and this API does not publish host paths (`09`: no accidental worker-service surface; `10` needs to *show* what was enforced, not where the disks are). Roles answer the same question and stay meaningful after the workspace is gone.
+     */
+    SandboxGrant: {
+      /** @enum {string} */
+      role:
+        | "workspace_repo"
+        | "workspace_scratch"
+        | "workspace_home"
+        | "mirror_read"
+        | "mirror_objects"
+        | "mirror_run_refs"
+        | "mirror_run_logs"
+        | "mirror_admin_dir"
+        | "harness_credentials";
+      /** @enum {string} */
+      access: "ro" | "rw";
+    };
+    /**
+     * TurnSandbox
+     * @description What one launched unit actually ran under. Built from the turn's `sandbox.verified` / `sandbox.enforcement_failed` events; `stage` is where the ADR-0019 chain ended, and `child_started` is the one boolean that answers 12-test-strategy's case-13 question — was a process ever exec'd?
+     */
+    TurnSandbox: {
+      /** Format: uuid */
+      turn_id: string;
+      /** Format: uuid */
+      workspace_id?: string | null;
+      /** Format: uuid */
+      worker_id?: string | null;
+      /**
+       * @description `none` means the chain completed (a verified launch) — the failure stages are where it stopped.
+       * @enum {string}
+       */
+      stage: "none" | "probe" | "profile" | "policy_assert" | "grant_assert" | "exec" | "runtime";
+      /** @description ADR-0019 D6's enum when the chain stopped: `binary_missing`, `landlock_unavailable`, `fs_unverified`, `tcp_unverified`, `af_unix_not_mediated`, `profile_invalid`, `grant_mismatch`, `temp_path_grant`, `cwd_not_granted`, `policy_delegation_refused`, `deny_unsupported`, `egress_check_failed`. */
+      reason?: string | null;
+      policy_digest?: string | null;
+      /** @description Sandbox backend name (`nono` in M3; `none` for a labelled run). */
+      backend: string;
+      backend_version?: string | null;
+      /**
+       * @description The mode this unit ran under. `permissive-dev` and `disabled` are configured choices, never recovery paths, and every event from such a launch is labelled `isolation="none"` (`05`).
+       * @enum {string|null}
+       */
+      enforcement?: "required" | "permissive-dev" | "disabled" | null;
+      /** @description True only when N-a..N-d all passed **for this unit** (ADR-0019). A probe is not a proof, so a worker that merely booted reports false. */
+      verified: boolean;
+      /**
+       * @description From `nono profile show`, not from a dry-run grant list (probe N4: the verbose dry-run does not mention `AF_UNIX` at all).
+       * @enum {string|null}
+       */
+      af_unix_mediation?: "pathname" | "none" | null;
+      /** @description False on the `agent-turn` profile — reported, not hidden (ADR-0019 D3, D-021 **Proposed**). True only for the command-only egress profile. */
+      network_enforced?: boolean;
+      child_started: boolean;
+      grants: components["schemas"]["SandboxGrant"][];
+      commit_granted?: boolean;
+      /** @description Which layer denied what (ADR-0009 D3), as roles and reasons — e.g. `mirror_run_refs:rw denied for another scope`. Bounded and redacted. */
+      denied_what: string[];
+    };
+    /**
+     * WorkerSandboxStatus
+     * @description One worker's self-reported sandbox capability, as registration data (ADR-0019 D5). The honest default for a worker that has never probed is `backend: none`, `verified: false` — a default must never read as a capability.
+     */
+    WorkerSandboxStatus: {
+      /** Format: uuid */
+      worker_id: string;
+      backend: string;
+      backend_version?: string | null;
+      /** @enum {string} */
+      enforcement: "required" | "permissive-dev" | "disabled";
+      verified: boolean;
+      /** @description The measured identity of each storage root this worker sees, which is what makes case 20's two arms (same volume, replaced volume) different answers. */
+      volumes?: {
+        /** @enum {string} */
+        root_kind: "workspaces" | "repos";
+        /** @description Per-root on purpose: probe V5b measured /workspaces and /repos as one device with different inodes, so a single identity column could only ever name one of the two trees. */
+        volume_id: string;
+      }[];
+      /** @description Bounded diagnostics, e.g. the forbidden capabilities observed. */
+      notes?: string[];
+    };
+    /**
+     * SystemSandbox
+     * @description Fleet sandbox health for `10`'s ops page, plus what the deployment ships: the pinned nono version and policy digest are the answer to "which ruleset did those grants come from?".
+     */
+    SystemSandbox: {
+      workers: components["schemas"]["WorkerSandboxStatus"][];
+      /** @description The nono version vendored into the worker image (ADR-0019 D1 pins by sha256; `0.80.0` at the time of writing). */
+      pinned_backend_version: string;
+      /** @description Digest of `worker/sandbox/profiles/communication-agent.json`. */
+      policy_digest: string;
+    };
+    /**
+     * Artifact
+     * @description One `artifacts` row. Bytes are never in the database and `storage_key` is never serialized: this object is the index into the backend, not the backend. `preview_url` is a template until a token is minted — the preview origin is a different **hostname**, because cookies are host-scoped and a port would not remove one (ADR-0020 D6).
+     */
+    Artifact: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      run_id?: string | null;
+      /** Format: uuid */
+      node_execution_id?: string | null;
+      /** Format: uuid */
+      attempt_id?: string | null;
+      /** Format: uuid */
+      conversation_id?: string | null;
+      /** Format: uuid */
+      turn_id?: string | null;
+      /** Format: uuid */
+      worker_id?: string | null;
+      name: string;
+      /**
+       * @description `checkpoint` is ADR-0020 D8: ADR-0017's captured diff plus manifest, stored as an artifact rather than through a second mechanism. It is a *capture*: cross-host rehydration (D-024) stays **Open**.
+       * @enum {string}
+       */
+      kind: "markdown" | "image" | "html" | "json" | "patch" | "archive" | "checkpoint";
+      media_type: string;
+      /** @description Content digest; with (project_id, kind) it is the dedupe key, so a retried Put is the same row rather than a second byte-count. */
+      sha256: string;
+      /** Format: int64 */
+      size_bytes: number;
+      /**
+       * @description Gates `/content`: contributor for `standard`/`internal`, maintainer for `restricted`, and `secret` has **no** download path in M3 — the label exists so a policy can be written against it before the mechanism does.
+       * @enum {string}
+       */
+      sensitivity: "standard" | "internal" | "restricted" | "secret";
+      /**
+       * @description `uploading` is never served: a row stuck there is the reconciler's orphan sweep, which is what makes a worker crash leave an artifact unserved instead of half-served.
+       * @enum {string}
+       */
+      state: "uploading" | "ready" | "orphan" | "deleted";
+      /** @description The scanner's own count, which makes "the scanner saw nothing" distinguishable from "the scanner is broken" (ADR-0020 D4). 0 is normal and is not a warning. */
+      redaction_count: number;
+      /** @description `worker`, or the id of the user who uploaded it (`06` wants the actor recorded for both). */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      ready_at?: string | null;
+      /** Format: date-time */
+      expires_at?: string | null;
+      /** Format: date-time */
+      deleted_at?: string | null;
+      /** @description `http://preview.localhost:18084/preview/{token}` with the token left to be minted; null when the caller may not mint one. Absent for anything that is not previewable HTML. */
+      preview_url?: string | null;
+    };
+    /** ArtifactList */
+    ArtifactList: {
+      artifacts: components["schemas"]["Artifact"][];
+    };
+    /**
+     * PreviewToken
+     * @description A single-artifact, digest-bound, short-TTL token plus the URL that consumes it. Treat it like a credential: it is the only thing that authorizes the preview fetch, since the preview origin has no session cookie by design. Minting this is itself audited as an access.
+     */
+    PreviewToken: {
+      /** Format: uuid */
+      artifact_id: string;
+      /** @description Included in the mint response only; it is never stored in plaintext, never appears in an event, and never appears in an access log line for the preview origin (`12` case 16 asserts the log has no `Cookie` for `/preview/`). */
+      token?: string;
+      /** @description Fully qualified, on the preview origin. A URL on the app origin is a bug: the origin difference is what removes the cookie. */
+      preview_url: string;
+      /** Format: date-time */
+      expires_at: string;
+    };
     EventEnvelope: components["schemas"]["event-envelope.schema"];
     /**
      * Communication durable event envelope
@@ -1195,6 +2047,24 @@ export interface components {
     };
   };
   responses: {
+    /** @description The request body is structurally fine JSON but names something this endpoint refuses — the case that matters here is a `PUT` to `/secrets/{secretId}` carrying `value`: rotation is a different verb (`POST /secrets/{secretId}/versions`), and silently ignoring a field that was meant to change a secret would turn a mistaken request into a silent no-op. */
+    BadRequest: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/value-not-updatable",
+         *       "title": "Secret value is not updatable here",
+         *       "status": 400,
+         *       "detail": "Rotate with POST /secrets/{secretId}/versions."
+         *     }
+         */
+        "application/problem+json": components["schemas"]["Problem"];
+      };
+    };
     /** @description No valid `communication_session` cookie (missing, expired, or deleted server-side). The UI redirects to `/login`. */
     Unauthorized: {
       headers: {
@@ -1345,6 +2215,18 @@ export interface components {
     LastEventId: number;
     /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
     After: number;
+    /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
+    SecretId: string;
+    /** @description A `secret_mounts` declaration id, scoped to the project in the path. */
+    SecretMountId: string;
+    /** @description A `workspaces` id. Authorization runs through the workspace's own `project_id`, so a workspace of a project the caller cannot see is `404`. */
+    WorkspaceId: string;
+    /** @description A `repositories` id belonging to the same project as the workspace. */
+    RepositoryId: string;
+    /** @description A `conversation_turns` id. Authorized through turn -> conversation -> project, never through the worker that ran it (`09`: no accidental worker-service surface). */
+    TurnId: string;
+    /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
+    ArtifactId: string;
   };
   requestBodies: never;
   headers: {
@@ -2082,6 +2964,530 @@ export interface operations {
       404: components["responses"]["NotFound"];
       409: components["responses"]["ConversationConflict"];
       422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  listProjectSecrets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Secret references. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SecretList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createProjectSecret: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SecretCreate"];
+      };
+    };
+    responses: {
+      /** @description Secret created; `current_version` is 1. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/projects/{projectId}/secrets/{secretId}` for the new row. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Secret"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  updateProjectSecret: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
+        secretId: components["parameters"]["SecretId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SecretUpdate"];
+      };
+    };
+    responses: {
+      /** @description Updated metadata. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Secret"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  addProjectSecretVersion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
+        secretId: components["parameters"]["SecretId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SecretVersionCreate"];
+      };
+    };
+    responses: {
+      /** @description Version appended. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SecretVersionInfo"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  revokeProjectSecret: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
+        secretId: components["parameters"]["SecretId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Revoked; `revoked_at` is set. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Secret"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  listProjectSecretMaterializations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
+        secretId: components["parameters"]["SecretId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Materialization records, newest first. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SecretMaterializationList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listProjectSecretMounts: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Placements. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SecretMountList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createProjectSecretMount: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SecretMountCreate"];
+      };
+    };
+    responses: {
+      /** @description Placement declared. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/projects/{projectId}/secret-mounts/{mountId}`. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SecretMount"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  deleteProjectSecretMount: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+        /** @description A `secret_mounts` declaration id, scoped to the project in the path. */
+        mountId: components["parameters"]["SecretMountId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Declaration removed. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listProjectWorkspaces: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Workspaces. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WorkspaceList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getWorkspace: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `workspaces` id. Authorization runs through the workspace's own `project_id`, so a workspace of a project the caller cannot see is `404`. */
+        workspaceId: components["parameters"]["WorkspaceId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The workspace. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Workspace"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getWorkspaceRepoStatus: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `workspaces` id. Authorization runs through the workspace's own `project_id`, so a workspace of a project the caller cannot see is `404`. */
+        workspaceId: components["parameters"]["WorkspaceId"];
+        /** @description A `repositories` id belonging to the same project as the workspace. */
+        repositoryId: components["parameters"]["RepositoryId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Status as last recorded by the worker. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WorkspaceRepoStatus"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getTurnSandbox: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `conversation_turns` id. Authorized through turn -> conversation -> project, never through the worker that ran it (`09`: no accidental worker-service surface). */
+        turnId: components["parameters"]["TurnId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The enforcement record. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TurnSandbox"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getSystemSandbox: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Fleet sandbox state. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SystemSandbox"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  listProjectArtifacts: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Artifacts the caller's role may see. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getArtifact: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
+        artifactId: components["parameters"]["ArtifactId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Artifact metadata. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getArtifactContent: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
+        artifactId: components["parameters"]["ArtifactId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The bytes. `Content-Type` is the artifact's `media_type`, except for `text/html`, which is downgraded as described above. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `attachment` for `text/html`; absent otherwise. */
+          "Content-Disposition"?: string;
+          /** @description `nosniff`, always. */
+          "X-Content-Type-Options"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/octet-stream": string;
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createArtifactPreviewToken: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
+        artifactId: components["parameters"]["ArtifactId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description A token and the URL that consumes it. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PreviewToken"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
     };
   };
 }

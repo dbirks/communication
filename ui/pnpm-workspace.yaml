@@ -1,5 +1,11 @@
+packages:
+  # The OpenAPI -> TypeScript generator runs in its own package (see
+  # tools/apigen/package.json) because openapi-typescript 7.13 needs the
+  # TypeScript 5 JS API while the app builds on TypeScript 7. A root-level
+  # `overrides: openapi-typescript>typescript` does *not* help: pnpm resolves a
+  # *peer* dependency from the importer's own tree, so the generator kept being
+  # linked to typescript@7 and crashed in `ts.factory`.
+  - tools/*
 minimumReleaseAgeExclude:
   - react-dom@19.3.1
   - react@19.3.1
-overrides:
-  openapi-typescript>typescript: 5.9.3

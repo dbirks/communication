@@ -48,3 +48,36 @@ export type PermissionRequest = components["schemas"]["PermissionRequest"];
 export type PermissionRequestStatus = PermissionRequest["status"];
 export type PermissionOption = components["schemas"]["PermissionOption"];
 export type PermissionDecision = components["schemas"]["PermissionDecision"];
+
+/* --------------------------------------------------------------- M3 */
+
+export type Secret = components["schemas"]["Secret"];
+export type SecretList = components["schemas"]["SecretList"];
+export type SecretScope = Secret["scope"];
+export type SecretDeliveryMode = SecretCreate["delivery_mode"];
+export type SecretCreate = components["schemas"]["SecretCreate"];
+export type SecretUpdate = components["schemas"]["SecretUpdate"];
+export type SecretAuditPolicy = SecretUpdate["audit_policy"];
+export type SecretVersionCreate = components["schemas"]["SecretVersionCreate"];
+export type SecretVersionInfo = components["schemas"]["SecretVersionInfo"];
+export type SecretMaterialization = components["schemas"]["SecretMaterialization"];
+export type SecretMaterializationList = components["schemas"]["SecretMaterializationList"];
+export type SecretMount = components["schemas"]["SecretMount"];
+export type SecretMountCreate = components["schemas"]["SecretMountCreate"];
+export type SecretMountLifecycle = SecretMount["lifecycle"];
+export type SecretMountList = components["schemas"]["SecretMountList"];
+export type Workspace = components["schemas"]["Workspace"];
+export type WorkspaceState = Workspace["state"];
+export type WorkspaceList = components["schemas"]["WorkspaceList"];
+export type WorkspaceRepo = components["schemas"]["WorkspaceRepo"];
+export type WorkspaceRepoStatus = components["schemas"]["WorkspaceRepoStatus"];
+export type SandboxGrant = components["schemas"]["SandboxGrant"];
+export type TurnSandbox = components["schemas"]["TurnSandbox"];
+export type SandboxEnforcement = NonNullable<TurnSandbox["enforcement"]>;
+export type WorkerSandboxStatus = components["schemas"]["WorkerSandboxStatus"];
+export type SystemSandbox = components["schemas"]["SystemSandbox"];
+export type Artifact = components["schemas"]["Artifact"];
+export type ArtifactKind = Artifact["kind"];
+export type ArtifactSensitivity = Artifact["sensitivity"];
+export type ArtifactList = components["schemas"]["ArtifactList"];
+export type PreviewToken = components["schemas"]["PreviewToken"];

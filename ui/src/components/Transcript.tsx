@@ -2,11 +2,32 @@ import { problemOf } from "../api/client";
 import type { TranscriptItem } from "../api/transcript";
 import type { PermissionOption } from "../api/types";
 
+import { Alert } from "./ds/Alert";
 import { Button } from "./ds/Button";
 import { StatusChip } from "./ds/Row";
 import { PERMISSION_STATE, STATES, TOOL_STATE, stateOf } from "./ds/states";
 
 const itemClass = "rounded-[3px] border border-line-strong bg-surface px-[10px] py-2 text-[12.5px]";
+
+/** A tool call's streamed preview, shown only when it says something. */
+function ToolPreview({ label, text }: { label: string; text: string }) {
+  if (!text) return null;
+  return (
+    <div className="mt-1">
+      <div className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-faint">
+        {label}
+      </div>
+      {/* Mono (rule 07: machine-produced) and scrollable: a 4 KB diff must not
+          push the transcript off the screen. */}
+      <pre
+        className="max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted"
+        data-testid={`tool-preview-${label}`}
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
 
 export interface TranscriptProps {
   items: TranscriptItem[];
@@ -64,87 +85,97 @@ function PermissionCard({
   });
   const open = item.status === "pending";
   const chosen = item.options.find((option) => option.option_id === item.decisionOptionId);
-  const spec = STATES[stateOf(PERMISSION_STATE[item.status])];
+  const state = stateOf(PERMISSION_STATE[item.status]);
 
   return (
     <li data-testid="transcript-item">
-      {/* ALERT-K with the title bar in the state's *strong* color: an open
-          permission request is the panel-needs-action case. */}
-      <div
-        data-testid="permission-card"
-        className={`overflow-hidden rounded-[3px] border ${spec.paleEdge}`}
+      {/* Handoff rule 05: a title bar is the state's strong color only while the
+          panel needs action, i.e. only for an open request. A decided, expired
+          or cancelled prompt is a closed record — gray bar, state as a chip. */}
+      <Alert
+        state={state}
+        label="PERMISSION REQUEST"
+        barTone={open ? "strong" : "neutral"}
+        testid="permission-card"
+        role="status"
+        meta={
+          open ? (
+            item.deadlineAt ? (
+              <span data-testid="permission-deadline">
+                expires: {item.deadlineAt.slice(11, 19)} UTC
+              </span>
+            ) : undefined
+          ) : (
+            <StatusChip
+              state={state}
+              label={item.status}
+              className="h-[15px] normal-case"
+              labelProps={{ "data-testid": `permission-status-${item.requestId}` }}
+            />
+          )
+        }
       >
-        <div
-          className={`flex items-center gap-2 border-b px-[10px] py-1 font-mono text-[10px] font-semibold tracking-[.04em] ${spec.strongBg} ${spec.strongFg} ${spec.strongEdge}`}
-        >
-          <span aria-hidden="true">{spec.glyph} PERMISSION REQUEST</span>
-          <span className="ml-auto font-normal opacity-75">
-            {item.deadlineAt ? `expires: ${item.deadlineAt.slice(11, 19)} UTC` : ""}
-          </span>
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-semibold">{item.title}</span>
+          {item.toolKind ? (
+            <span className="font-mono text-[10.5px] text-muted">kind: {item.toolKind}</span>
+          ) : null}
         </div>
-        <div className={`px-[10px] py-[7px] ${spec.paleBodyBg}`}>
-          <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-semibold">{item.title}</span>
-            {item.toolKind ? (
-              <span className="font-mono text-[10.5px] text-muted">kind: {item.toolKind}</span>
-            ) : null}
+        {/* Status is written out, never implied by the border colour. */}
+        <p className="mt-1 text-[12.5px] text-ink" role="status">
+          status: {item.status === "pending" ? "awaiting a decision" : item.status}
+          {item.status === "decided" && item.decisionOptionId
+            ? ` — answered "${chosen?.label || item.decisionOptionId}"${
+                item.decidedBy ? ` by ${nameOf(item.decidedBy)}` : ""
+              }`
+            : ""}
+        </p>
+
+        {open && canDecide ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {item.options.map((option, index) => {
+              // Royal = something you can do (rule 02); a reject option is
+              // the danger variant; anything else is a plain secondary.
+              const kind = (option.kind ?? "").toLowerCase();
+              const label = option.label.toLowerCase();
+              const isAllow = kind.startsWith("allow") || /approve/.test(kind + label);
+              const isReject = kind.startsWith("reject") || /reject|deny/.test(kind + label);
+              return (
+                <Button
+                  key={option.option_id}
+                  data-testid={testids[index]}
+                  variant={isAllow ? "primary" : isReject ? "danger" : "secondary"}
+                  compact
+                  disabled={deciding}
+                  onClick={() => onDecide(item.requestId, option)}
+                >
+                  {option.label || option.option_id}
+                </Button>
+              );
+            })}
+            <p className="sr-only" data-testid="permission-deciding" aria-live="polite">
+              {deciding ? "Sending your decision…" : ""}
+            </p>
           </div>
-          {/* Status is written out, never implied by the border colour. */}
-          <p className="mt-1 text-[12.5px] text-ink" role="status">
-            status: {item.status === "pending" ? "awaiting a decision" : item.status}
-            {item.status === "decided" && item.decisionOptionId
-              ? ` — answered "${chosen?.label || item.decisionOptionId}"${
-                  item.decidedBy ? ` by ${nameOf(item.decidedBy)}` : ""
-                }`
-              : ""}
+        ) : null}
+
+        {open && !canDecide ? (
+          <p className="mt-1 text-[12.5px] text-muted" data-testid="permission-readonly">
+            Only the controller{controllerName ? ` (${controllerName})` : ""} can answer this. Take
+            control to decide.
           </p>
+        ) : null}
 
-          {open && canDecide ? (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {item.options.map((option, index) => {
-                // Royal = something you can do (rule 02); a reject option is
-                // the danger variant; anything else is a plain secondary.
-                const kind = (option.kind ?? "").toLowerCase();
-                const label = option.label.toLowerCase();
-                const isAllow = kind.startsWith("allow") || /approve/.test(kind + label);
-                const isReject = kind.startsWith("reject") || /reject|deny/.test(kind + label);
-                return (
-                  <Button
-                    key={option.option_id}
-                    data-testid={testids[index]}
-                    variant={isAllow ? "primary" : isReject ? "danger" : "secondary"}
-                    compact
-                    disabled={deciding}
-                    onClick={() => onDecide(item.requestId, option)}
-                  >
-                    {option.label || option.option_id}
-                  </Button>
-                );
-              })}
-              <p className="sr-only" data-testid="permission-deciding" aria-live="polite">
-                {deciding ? "Sending your decision…" : ""}
-              </p>
-            </div>
-          ) : null}
-
-          {open && !canDecide ? (
-            <p className="mt-1 text-[12.5px] text-muted" data-testid="permission-readonly">
-              Only the controller{controllerName ? ` (${controllerName})` : ""} can answer this.
-              Take control to decide.
-            </p>
-          ) : null}
-
-          {error ? (
-            <p
-              role="alert"
-              className="mt-1 text-[12.5px] text-st-failed-tag-fg"
-              data-testid="permission-error"
-            >
-              × {problemOf(error).detail || "Your decision could not be recorded."}
-            </p>
-          ) : null}
-        </div>
-      </div>
+        {error ? (
+          <p
+            role="alert"
+            className="mt-1 text-[12.5px] text-st-failed-tag-fg"
+            data-testid="permission-error"
+          >
+            × {problemOf(error).detail || "Your decision could not be recorded."}
+          </p>
+        ) : null}
+      </Alert>
     </li>
   );
 }
@@ -243,16 +274,10 @@ export default function Transcript({
                 {item.toolKind ? (
                   <span className="ml-2 text-[10.5px] text-muted">{item.toolKind}</span>
                 ) : null}
-                {item.inputPreview ? (
-                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-muted">
-                    {item.inputPreview}
-                  </pre>
-                ) : null}
-                {item.outputPreview ? (
-                  <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-muted">
-                    {item.outputPreview}
-                    {item.truncated ? "…" : ""}
-                  </pre>
+                <ToolPreview label="input" text={item.inputPreview} />
+                <ToolPreview label="output" text={item.outputPreview} />
+                {item.truncated ? (
+                  <span className="font-mono text-[10.5px] text-muted">(truncated)</span>
                 ) : null}
               </li>
             );

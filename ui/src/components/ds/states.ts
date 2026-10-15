@@ -206,6 +206,41 @@ export const TOOL_STATE: Record<string, StateName> = {
   failed: "failed",
 };
 
+/**
+ * Workspace state (`Workspace.state`) → state set. `quarantined` is a security
+ * finding (a leftover materialized secret, an unestablishable exclusion), so it
+ * takes the failed set; `lost` is ADR-017's honest arm — edits are gone — so it
+ * is interrupted, never "resumed".
+ */
+export const WORKSPACE_STATE: Record<string, StateName> = {
+  preparing: "queued",
+  ready: "running",
+  quarantined: "failed",
+  released: "info",
+  lost: "interrupted",
+};
+
+/** Artifact state (`Artifact.state`) → state set. `uploading` is never served. */
+export const ARTIFACT_STATE: Record<string, StateName> = {
+  uploading: "queued",
+  ready: "done",
+  orphan: "failed",
+  deleted: "interrupted",
+};
+
+/**
+ * Sensitivity label → state set. This is an *access* fact, not a status, so the
+ * mapping exists only to keep `restricted`/`secret` from reading as ordinary:
+ * standard/internal are informational, restricted needs attention, secret is a
+ * row with no download path at all in M3.
+ */
+export const SENSITIVITY_STATE: Record<string, StateName> = {
+  standard: "info",
+  internal: "info",
+  restricted: "waiting",
+  secret: "failed",
+};
+
 /** SSE connection state (stream / activity feed) → state set. */
 export const STREAM_STATE: Record<string, StateName> = {
   live: "running",

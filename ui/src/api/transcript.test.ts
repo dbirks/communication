@@ -5,7 +5,12 @@
  * says "outcome unknown" instead of pretending nothing happened (J7).
  */
 import { describe, expect, it } from "vitest";
-import { interruptedCopy, projectTranscript, turnStatusText } from "./transcript";
+import {
+  interruptedCopy,
+  meaningfulPreview,
+  projectTranscript,
+  turnStatusText,
+} from "./transcript";
 import { conversationEvent, turnId } from "../test/fakes";
 import type { EventEnvelope } from "./types";
 
@@ -179,5 +184,131 @@ describe("projectTranscript", () => {
         },
       ]),
     ).toBe("stopped — outcome unknown");
+  });
+
+  it("names the humans in a control transfer instead of printing uuids", () => {
+    const nameOf = (userId: string) => (userId === "u-ada" ? "Ada" : userId);
+    const line = (payload: Record<string, unknown>) => {
+      const transcript = projectTranscript(
+        frames(["conversation.control.transferred", payload]),
+        nameOf,
+      );
+      const system = transcript.items.find((item) => item.kind === "system");
+      return system?.kind === "system" ? system.text : "";
+    };
+
+    expect(line({ to_kind: "human", to_user_id: "u-ada", reason: "taken" })).toBe(
+      "Control taken by Ada",
+    );
+    expect(line({ to_kind: "human", to_user_id: "u-ada", reason: "returned" })).toBe(
+      "Control returned to Ada",
+    );
+    expect(line({ to_kind: "human", to_user_id: "u-ada", reason: "claimed" })).toContain("Ada");
+    // A run attempt is not a person, so no name is invented for it (`to_kind` is
+    // `human`, `run_attempt` or `none` in `api/openapi.yaml`).
+    expect(line({ to_kind: "run_attempt", to_user_id: "u-ada", reason: "taken" })).not.toContain(
+      "Ada",
+    );
+    expect(line({ to_kind: "run_attempt", reason: "taken" })).toContain("run attempt");
+    // Nobody holding control is its own sentence, not an empty name.
+    expect(line({ to_kind: "none", reason: "released" })).toContain("nobody is driving");
+    // Without a directory entry, the id is shown rather than a guess.
+    const raw = projectTranscript(
+      frames([
+        "conversation.control.transferred",
+        { to_kind: "human", to_user_id: "u-zoe", reason: "taken" },
+      ]),
+    );
+    const sys = raw.items.find((item) => item.kind === "system");
+    expect(sys?.kind === "system" && sys.text).toContain("u-zoe");
+  });
+
+  it("suppresses an empty tool input rather than rendering raw braces", () => {
+    const spellings = ["{}", " { } ", "[]", "null", "", '{"a":1}'];
+    const transcript = projectTranscript(
+      spellings.map((input, index) =>
+        conversationEvent(
+          "conversation.tool.call",
+          {
+            tool_call_id: `tc-${index}`,
+            title: "run tests",
+            kind: "execute",
+            status: "completed",
+            input_preview: input,
+            output_preview: input,
+          },
+          { global_seq: 100 + index },
+        ),
+      ),
+    );
+    const tools = transcript.items.filter((item) => item.kind === "tool");
+    expect(tools).toHaveLength(spellings.length);
+    // A JSON container with no members is no content, in any whitespace spelling.
+    for (const tool of tools.slice(0, 4)) {
+      expect(tool.kind === "tool" && tool.inputPreview).toBe("");
+      expect(tool.kind === "tool" && tool.outputPreview).toBe("");
+    }
+    expect(tools[5]?.kind === "tool" && tools[5]?.inputPreview).toContain('"a":1');
+  });
+
+  it("names whoever decided a permission, and says so once the card closes", () => {
+    const transcript = projectTranscript(
+      frames(
+        [
+          "conversation.permission.requested",
+          {
+            permission_request_id: "req-1",
+            tool_call_id: "tc-1",
+            title: "write file",
+            kind: "edit",
+            options: [{ option_id: "allow_once", label: "Allow once", kind: "allow_once" }],
+            deadline_at: "2026-10-14T18:05:00Z",
+          },
+        ],
+        [
+          "conversation.permission.decided",
+          {
+            permission_request_id: "req-1",
+            status: "decided",
+            decision_option_id: "allow_once",
+            decided_by: "u-ada",
+          },
+        ],
+      ),
+      (userId) => (userId === "u-ada" ? "Ada" : userId),
+    );
+    const card = transcript.items.find((item) => item.kind === "permission");
+    expect(card?.kind === "permission" && card.status).toBe("decided");
+    expect(card?.kind === "permission" && card.decidedBy).toBe("u-ada");
+    // The card keeps the id; `Transcript` is what turns it into "decided by Ada".
+    expect(card?.kind === "permission" && card.decidedBy).toBe("u-ada");
+
+    // A decision whose request scrolled out of the retained window is still
+    // named, because that system line is the only trace of who closed it.
+    const orphan = projectTranscript(
+      frames([
+        "conversation.permission.decided",
+        { permission_request_id: "gone", status: "expired", decided_by: "u-ada" },
+      ]),
+      (userId) => (userId === "u-ada" ? "Ada" : userId),
+    );
+    const line = orphan.items.find((item) => item.kind === "system");
+    expect(line?.kind === "system" && line.text).toContain("decided by Ada");
+    expect(line?.kind === "system" && line.text).not.toMatch(/u-ada|[0-9a-f]{8}-/);
+  });
+});
+
+describe("meaningfulPreview", () => {
+  it("keeps real content and drops empty containers", () => {
+    expect(meaningfulPreview('{"path":"a.go"}')).toContain("a.go");
+    expect(meaningfulPreview("plain text")).toBe("plain text");
+    for (const empty of ["", "   ", "{}", "{ }", "[]", "null", '""']) {
+      expect(meaningfulPreview(empty)).toBe("");
+    }
+  });
+
+  it("survives input that is not valid JSON", () => {
+    expect(meaningfulPreview("{oops")).toBe("{oops");
+    expect(meaningfulPreview(undefined as unknown as string)).toBe("");
   });
 });

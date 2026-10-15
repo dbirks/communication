@@ -5,12 +5,18 @@
 import { vi } from "vitest";
 import type {
   AgentProfile,
+  Artifact,
   Conversation,
   ConversationSummary,
   EventEnvelope,
   Me,
   PermissionRequest,
   Project,
+  Secret,
+  SecretMount,
+  SystemSandbox,
+  TurnSandbox,
+  Workspace,
 } from "../api/types";
 
 export type FetchMock = ReturnType<typeof vi.fn>;
@@ -222,6 +228,11 @@ export const otherUserId = "01987a62-2345-7000-8000-abcdef012345";
 export const conversationId = "01987a70-1111-7000-8000-abcdef012345";
 export const turnId = "01987a73-4444-7000-8000-abcdef012345";
 export const workerId = "01987a74-5555-7000-8000-abcdef012345";
+export const workspaceId = "01987a75-6666-7000-8000-abcdef012345";
+export const secretId = "01987a76-7777-7000-8000-abcdef012345";
+export const mountId = "01987a77-8888-7000-8000-abcdef012345";
+export const artifactId = "01987a78-9999-7000-8000-abcdef012345";
+export const repositoryId = "01987a79-aaaa-7000-8000-abcdef012345";
 
 export const claudeProfile: AgentProfile = {
   id: "01987a71-2222-7000-8000-abcdef012345",
@@ -304,9 +315,10 @@ export const permissionRequestFixture: PermissionRequest = {
   requested_at: "2026-10-14T18:02:00Z",
 };
 
-/** A conversation-scoped journal frame, payload left to the caller. */
+/**
+ * A conversation-scoped journal frame, payload left to the caller.
+ */
 let conversationSeq = 4000;
-
 export function conversationEvent(
   type: string,
   payload: Record<string, unknown>,
@@ -324,4 +336,151 @@ export function conversationEvent(
     payload: { conversation_id: conversationId, turn_id: turnId, ...payload },
     ...overrides,
   });
+}
+
+/* -------------------------------------------------------------- M3 fixtures */
+
+export const secretFixture: Secret = {
+  id: secretId,
+  slug: "test-database-url",
+  scope: "project",
+  purpose: "integration test database",
+  delivery_mode: "env_file",
+  current_version: 3,
+  allowed_agent_profile_ids: [claudeProfile.id],
+  audit_policy: "materialization",
+  created_at: "2026-10-14T18:00:00Z",
+};
+
+export const revokedSecretFixture: Secret = {
+  ...secretFixture,
+  id: "01987a76-7778-7000-8000-abcdef012345",
+  slug: "legacy-token",
+  delivery_mode: "env",
+  allowed_agent_profile_ids: [],
+  revoked_at: "2026-10-15T09:00:00Z",
+};
+
+export const secretMountFixture: SecretMount = {
+  id: mountId,
+  project_id: projectFixture.id,
+  secret_id: secretId,
+  secret_slug: secretFixture.slug,
+  delivery_mode: "env_file",
+  repository_id: repositoryId,
+  relative_path: "backend/.env.test.local",
+  lifecycle: "turn",
+  allow_tracked: false,
+  created_at: "2026-10-14T18:10:00Z",
+};
+
+export const workspaceFixture: Workspace = {
+  id: workspaceId,
+  project_id: projectFixture.id,
+  scope_kind: "conversation",
+  conversation_id: conversationId,
+  worker_id: workerId,
+  volume_id: `sha256:${"7c1f".repeat(16)}`,
+  workspace_mode: "worktree",
+  state: "ready",
+  created_at: "2026-10-14T18:12:00Z",
+  ready_at: "2026-10-14T18:13:00Z",
+  repos: [
+    {
+      repository_id: repositoryId,
+      name: "backend",
+      run_ref: `${conversationId}/backend`,
+      base_commit: "a91f2c0d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8090",
+      head_commit: null,
+      workspace_mode: "worktree",
+      modified_paths: ["internal/api/secrets.go", "internal/api/secrets_test.go"],
+      excluded_paths: ["backend/.env.test.local"],
+    },
+  ],
+};
+
+export const turnSandboxFixture: TurnSandbox = {
+  turn_id: turnId,
+  workspace_id: workspaceId,
+  worker_id: workerId,
+  stage: "none",
+  reason: null,
+  policy_digest: `sha256:${"2b71".repeat(16)}`,
+  backend: "nono",
+  backend_version: "0.80.0",
+  enforcement: "required",
+  verified: true,
+  af_unix_mediation: "pathname",
+  network_enforced: false,
+  child_started: true,
+  grants: [
+    { role: "workspace_repo", access: "rw" },
+    { role: "mirror_read", access: "ro" },
+  ],
+  commit_granted: true,
+  denied_what: ["mirror_run_refs:rw denied for another scope"],
+};
+
+export const systemSandboxFixture: SystemSandbox = {
+  workers: [
+    {
+      worker_id: workerId,
+      backend: "nono",
+      backend_version: "0.80.0",
+      enforcement: "required",
+      verified: true,
+      volumes: [{ root_kind: "workspaces", volume_id: `sha256:${"7c1f".repeat(16)}` }],
+      notes: [],
+    },
+    {
+      worker_id: "01987a74-5556-7000-8000-abcdef012345",
+      backend: "none",
+      backend_version: null,
+      enforcement: "permissive-dev",
+      verified: false,
+      volumes: [],
+      notes: ["landlock: unavailable on this kernel"],
+    },
+  ],
+  pinned_backend_version: "0.80.0",
+  policy_digest: `sha256:${"2b71".repeat(16)}`,
+};
+
+export const artifactFixture: Artifact = {
+  id: artifactId,
+  project_id: projectFixture.id,
+  conversation_id: conversationId,
+  turn_id: turnId,
+  worker_id: workerId,
+  name: "report.html",
+  kind: "html",
+  media_type: "text/html",
+  sha256: "7c1f".repeat(16),
+  size_bytes: 86016,
+  sensitivity: "internal",
+  state: "ready",
+  redaction_count: 0,
+  created_by: "worker",
+  created_at: "2026-10-14T18:19:00Z",
+  ready_at: "2026-10-14T18:19:00Z",
+  preview_url: "http://preview.localhost:18084/preview/{token}",
+};
+
+/** The `me`/`users`/`members`/project routes every authenticated screen reads. */
+export function baseRoutes(extra: RouteStub[] = []): RouteStub[] {
+  return [
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/users", body: { items: [] } },
+    { path: `/api/v1/projects/${projectFixture.id}`, method: "GET", body: projectFixture },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/members`,
+      method: "GET",
+      body: {
+        items: [
+          { user_id: meFixture.id, display_name: meFixture.display_name, role: "maintainer" },
+        ],
+      },
+    },
+    ...extra,
+  ];
 }

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import {
   useAddRepository,
@@ -12,6 +12,9 @@ import {
 import type { MemberRole, Project } from "../api/types";
 import ActivityFeed from "../components/ActivityFeed";
 import Conversations from "../components/Conversations";
+import { ArtifactsPanel } from "../components/Artifacts";
+import { WorkspacesPanel } from "../components/Workspaces";
+import { useArtifacts } from "../api/queries";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { Button } from "../components/ds/Button";
 import { Field, Input, Select } from "../components/ds/Field";
@@ -278,6 +281,20 @@ function Members({ project }: { project: Project }) {
   );
 }
 
+function ProjectArtifacts({ project }: { project: Project }) {
+  const artifacts = useArtifacts(project.id);
+  if (artifacts.isPending) return <Spinner label="Loading artifacts" />;
+  if (artifacts.error)
+    return <ProblemBanner error={artifacts.error} fallback="Artifacts could not be loaded." />;
+  return (
+    <ArtifactsPanel
+      title="RECENT ARTIFACTS"
+      headingId="artifacts-heading"
+      artifacts={(artifacts.data?.artifacts ?? []).slice(0, 5)}
+    />
+  );
+}
+
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
@@ -316,9 +333,27 @@ export default function Project() {
   return (
     <div className="space-y-4">
       <header className="space-y-1">
-        <h1 data-testid="project-name" className="text-title-l font-bold">
-          {projectData.name}
-        </h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 data-testid="project-name" className="text-title-l font-bold">
+            {projectData.name}
+          </h1>
+          {/* Deep links to the two screens this page cannot hold: J8's secret
+              settings and the artifact index. */}
+          <Link
+            to={`/projects/${projectData.id}/artifacts`}
+            className="font-mono text-[11px] text-accent-text hover:text-ink"
+            data-testid="project-artifacts-link"
+          >
+            Artifacts
+          </Link>
+          <Link
+            to={`/projects/${projectData.id}/settings`}
+            className="font-mono text-[11px] text-accent-text hover:text-ink"
+            data-testid="project-settings-link"
+          >
+            Settings
+          </Link>
+        </div>
         <p className="font-mono text-[11px] text-muted">
           <span>role: {projectData.my_role}</span>
           <span className="px-2" aria-hidden="true">
@@ -344,6 +379,8 @@ export default function Project() {
             { href: "#repos", label: "Repositories" },
             { href: "#members", label: "Members" },
             { href: "#conversations", label: "Conversations" },
+            { href: "#workspaces", label: "Workspaces" },
+            { href: "#artifacts", label: "Artifacts" },
             { href: "#activity", label: "Activity" },
           ]}
         />
@@ -351,6 +388,8 @@ export default function Project() {
           <Repositories project={projectData} />
           <Members project={projectData} />
           <Conversations project={projectData} />
+          <WorkspacesPanel projectId={projectData.id} />
+          <ProjectArtifacts project={projectData} />
           <ActivityFeed projectId={projectData.id} />
         </div>
       </div>
