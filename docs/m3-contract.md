@@ -646,6 +646,60 @@ same conversation *with* an APM-pinned profile — no profile in this stack pins
 package, so `apm install` never ran against a real checkout; and the S3 artifact
 conformance gate (case 19) is a different worker's slice.
 
+### 7.1 The strengthened exit proof: **ENOENT is not a denial**, and X5 closed
+
+The integrated run on the harness stack (`-p communication`, HEAD `4c0f6ca`,
+`run17-FINAL.log`) passed X1–X4, but that X2 accepted "permission **or
+no-such-file**" wording, and project A's probe actually printed
+`No such file or directory`: B's `.env.test.local` exists only during B's own
+turn, and one worker serializes turns, so by the time A's probe ran the file
+had already been cleaned up. A denial of a path that does not exist is
+observationally identical to no sandbox at all and does not satisfy the exit
+criterion. The rule now, enforced in code:
+
+> **A cross-project probe passes only on `Permission denied` (EACCES) naming
+> the exact target — for reads and writes. `No such file or directory` on a
+> probed target is a FAIL, not a denial.**
+
+The committed exit script — **`e2e/m3/e2e_m3_exit.py`** (+ `e2e/m3/README.md`
+for the exact command and prerequisites: the built `compose.yml +
+compose.harness.yml` stack, real agent logins, the `.harness` fixtures) —
+therefore probes only paths host-verified to exist at the instant of the
+probe: B's persistent mirror objects (`/repos/<B>/backend-b.git/HEAD`, `cat`
+and `touch`) and B's **live** materialized `.env`, held in place by a
+deliberately long B turn and sampled once a second from the host
+(`StatWatch`). Co-existence is proven twice over — the wall-clock stat window
+and journal interleaving (`conversation.turn.started` < the probe's
+`conversation.tool.update` < B's `turn.completed`) — and the probe turns run
+on a throwaway *second* `required` worker so the main worker is provably
+still holding B's turn at that moment; B's bytes are shown unchanged after
+(sha256 of HEAD, directory listing, ref set, and a single file sha across
+every live sample).
+
+X5 is no longer a GAP. A throwaway worker container configured
+`COMMUNICATION_SANDBOX_ENFORCEMENT=permissive-dev` (its own scratch dirs and
+artifact root, removed afterwards; the main stack's worker keeps `required`
+and is never reconfigured) runs the same paths, same uid, same image, and
+**reads them** — proven with a content-extracted `md5sum < path` equal to the
+host-computed md5, so no arm ever puts secret bytes into a journal (SENTINEL-B
+is asserted absent from every payload globally, in every arm). One
+§ 6 correction this forces: X5's parenthetical "(Landlock still applied)"
+does **not** match the implementation — `Unit.Verify` (`internal/worker/unit.go`)
+hands `permissive-dev`/`disabled` units a plain plan that bypasses nono
+entirely. The mode's honesty is its labelling, not best-effort sandboxing:
+the registration row says `permissive-dev`/unverified, the turn's sandbox
+view answers `backend=none, verified=false`, and the worker log prints the
+mode-ceiling warning. That is exactly what makes the throwaway a valid
+negative control, and it changes nothing about `required`, which is where
+M3's security claims live (ADR-0019 D6).
+
+Two lab lessons are encoded in the script rather than hidden: probes must
+target persistent or host-watched-live paths (see above), and probe prompts
+must be plain single commands ("run exactly `cat <path>`, report the FULL
+outcome") — exfil-shaped prompts (`echo PWNED >`, "don't look it up another
+way", "self-diagnostic harness" framing) get refused by the real model, and
+a refused probe FAILs visibly instead of counting as a denial.
+
 ## 8. Deviations this contract forces on the spec text
 
 Each of these is caused by M0 evidence, not preference; the ADR that carries it is named.
