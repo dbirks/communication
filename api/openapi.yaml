@@ -1,0 +1,1052 @@
+openapi: 3.1.0
+info:
+  title: Communication API
+  version: 0.1.0-m1
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: |
+    HTTP contract for the Communication control plane, milestone **M1** (log in,
+    create a project, add two repositories, see consistent state across two API
+    replicas). Authority for behaviour is `communication-spec/09-api-events-data.md`
+    and the M1 design contract; this document is the shared freeze point that the
+    Go handlers (`internal/api`) and the React UI (`ui/`) are both written against.
+
+    Conventions (09):
+
+    * All resources live under `/api/v1`, except the browser login flow under `/auth`.
+    * JSON bodies; identifiers are Postgres `uuid` values (`uuidv7()`) exposed as
+      strings; timestamps are RFC 3339 in UTC.
+    * Errors are `application/problem+json` (`{type, title, status, detail}`).
+    * A project-scoped route returns **404**, not 403, to a caller who is not a
+      member of that project, so that existence is not leaked to other tenants.
+      A denied attempt writes an `audit_events` row with outcome `denied`.
+    * Mutations (`POST`/`PUT`/`DELETE`) require the session cookie **and** the
+      `X-CSRF-Token` header; a missing or wrong token is `403`. If an `Origin`
+      header is present it must match `COMMUNICATION_PUBLIC_URL`'s origin or the
+      request's own scheme+host.
+    * Every state change writes authoritative state, one `domain_events` row and
+      one `outbox` row in a single SQL transaction, so the SSE stream below is a
+      faithful, replayable view of what any replica committed.
+
+    This is the M1 slice of a larger surface (pipelines, runs, conversations,
+    artifacts and the assistant are later milestones) and is frozen after the
+    first vertical slice (09).
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: system
+    description: Liveness, readiness and replica identity. Unauthenticated.
+  - name: auth
+    description: Browser OIDC login flow (Authorization Code + PKCE). Unauthenticated.
+  - name: identity
+    description: The signed-in caller and the organization's user directory.
+  - name: projects
+    description: Projects, the unit of membership and authorization.
+  - name: repositories
+    description: Git repositories attached to a project.
+  - name: members
+    description: Project memberships and roles.
+  - name: events
+    description: Durable journal streamed to the browser over SSE.
+  - name: workers
+    description: Execution workers registered with the control plane.
+paths:
+  /api/v1/system/health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness and replica identity
+      description: |
+        Never touches the database, so it stays green while readiness is red.
+        The response also carries the `X-Communication-Replica` header, which every
+        response from `serve` sets; the UI's `/ops` page uses it to prove that two
+        API replicas are serving the same state behind the round-robin load balancer.
+      security: []
+      responses:
+        "200":
+          description: Process is alive.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              example:
+                status: ok
+                replica: replica-a
+                version: 0.1.0-m1
+  /api/v1/system/readiness:
+    get:
+      operationId: getReadiness
+      tags: [system]
+      summary: Database and schema readiness
+      description: |
+        `200` when the replica can reach Postgres and its migration version is at
+        least the version the binary expects; `503` otherwise. A load balancer
+        should stop sending traffic to a replica that returns `503`.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+              example:
+                status: ready
+                schema_version: 1
+                expected_schema_version: 1
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /auth/login:
+    get:
+      operationId: login
+      tags: [auth]
+      summary: Start OIDC login
+      description: |
+        Redirects the browser to the configured identity provider using
+        Authorization Code + PKCE (`S256`) with `state` and `nonce`, requesting
+        the `openid profile email` scopes.
+
+        The login state (`state`, `code_verifier`, `nonce`, `return_to`) is stored
+        in Postgres, not in the browser or in process memory, so a login started on
+        replica A may complete on replica B.
+
+        `return_to` must be a same-origin relative path (it must start with `/` and
+        must not start with `//`); anything else is replaced with `/`.
+
+        The redirect URI registered with the provider is
+        `COMMUNICATION_PUBLIC_URL` + `/auth/callback`. When
+        `COMMUNICATION_OIDC_BROWSER_ISSUER` is set, only the issuer prefix of the
+        discovered `authorization_endpoint` is rewritten for this browser redirect.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ReturnTo"
+      responses:
+        "302":
+          description: Redirect to the identity provider's authorization endpoint.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /auth/callback:
+    get:
+      operationId: authCallback
+      tags: [auth]
+      summary: Complete OIDC login
+      description: |
+        Exchange `code` for tokens and establish a session:
+
+        1. Look up `state` in `oidc_login_states`; it must be unused and at most
+           10 minutes old, and is consumed in the same transaction (single use).
+        2. Exchange the code (verifying `code_verifier`), then verify the ID token
+           issuer, audience and `nonce`.
+        3. Upsert the user by `(issuer, subject)`. Display name is the first of
+           `name`, `preferred_username`, `subject`; `email` is optional. Subjects
+           listed in `COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS` become org admins.
+        4. Create a session: random 32-byte token stored only as its SHA-256 in
+           `sessions.token_hash`, plus a fresh `csrf_token`; set the
+           `communication_session` cookie (HttpOnly, SameSite=Lax, Path=/,
+           `Secure` per `COMMUNICATION_COOKIE_SECURE`, 12 h).
+        5. `302` to the stored `return_to`.
+
+        Any failure in steps 1–3 is `401` and creates no session; the UI sends the
+        user back to `/login`.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: Authorization code from the identity provider.
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          description: Opaque anti-CSRF state generated by `/auth/login`.
+          schema:
+            type: string
+      responses:
+        "302":
+          description: >
+            Login complete; redirects to the original `return_to` path. Sets the
+            `communication_session` cookie.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End the current session
+      description: |
+        Deletes the session row and clears the `communication_session` cookie.
+
+        `POST /auth/logout` is a mutation: when a session cookie is present the
+        server applies the same `X-CSRF-Token` (and `Origin`) check as `/api/v1`
+        mutations, rejecting failures with `403`. With no session there is nothing
+        to check, and the call is an idempotent `204`.
+      security: []
+      responses:
+        "204":
+          description: Session deleted and cookie cleared.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [identity]
+      summary: Who am I
+      description: |
+        The signed-in user, their organization, and the CSRF token the UI must
+        echo in `X-CSRF-Token` on every mutation. This is the UI's startup
+        bootstrap and its 401 signal to redirect to `/login`.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Current principal.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      tags: [identity]
+      summary: List organization users
+      description: >
+        Users of the caller's organization, in `display_name` order. Used by the
+        add-member picker. M1 has no pagination on this route; everyone in the
+        organization is returned.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Organization users.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      summary: List projects the caller can see
+      description: |
+        Projects in the caller's organization where the caller holds a membership;
+        organization admins see every project in the organization. The permission
+        predicate is evaluated server-side, never from a client-supplied header.
+        Ordered by `created_at` descending. M1 has no pagination.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Visible projects.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createProject
+      tags: [projects]
+      summary: Create a project
+      description: |
+        Creates the project, makes the creator a `maintainer`, and appends the
+        `project.created` event — all in one transaction. `slug` is derived from
+        `name` when absent: lowercased, non-`[a-z0-9-]` runs collapsed to `-`,
+        trimmed of leading/trailing `-`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectCreate"
+      responses:
+        "201":
+          description: Project created.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/projects/{projectId}:
+    get:
+      operationId: getProject
+      tags: [projects]
+      summary: Read one project
+      description: |
+        Returns the project with the caller's role in it. A caller who is not a
+        member (and not an organization admin) gets `404`, not `403`, so project
+        existence is not leaked across tenants.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: The project.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/projects/{projectId}/repos:
+    get:
+      operationId: listRepositories
+      tags: [repositories]
+      summary: List a project's repositories
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Repositories ordered by `name`.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepositoryList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: addRepository
+      tags: [repositories]
+      summary: Add a repository to a project
+      description: |
+        Maintainer only; contributors and viewers get `403`. Appends the
+        `repository.added` event in the same transaction as the insert.
+        Duplicate `name` within the project is `409`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepositoryCreate"
+      responses:
+        "201":
+          description: Repository added.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Repository"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/projects/{projectId}/members:
+    get:
+      operationId: listMembers
+      tags: [members]
+      summary: List a project's members
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Members ordered by `display_name`.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/projects/{projectId}/members/{userId}:
+    put:
+      operationId: putMember
+      tags: [members]
+      summary: Add or change a member's role
+      description: |
+        Maintainer only; upserts the `(projectId, userId)` membership with the
+        given role and appends the `project.member.updated` event. The target user
+        must belong to the same organization, otherwise `404`. In M1 a membership
+        is never removed — the only roles settable here are the three below.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberPut"
+      responses:
+        "200":
+          description: The resulting membership.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/projects/{projectId}/events:
+    get:
+      operationId: streamProjectEvents
+      tags: [events]
+      summary: Stream a project's durable events (SSE)
+      description: |
+        `text/event-stream` of the project's rows from the `domain_events` journal.
+        One frame per event:
+
+        ```text
+        id: <global_seq>
+        event: <type>
+        data: <event envelope JSON, one line>
+        \n
+        ```
+
+        * `id:` is the durable `global_seq`, so the browser's automatic reconnect
+          sends it back as the `Last-Event-ID` header.
+        * `event:` is the envelope `type` (`project.created`,
+          `project.member.updated`, `repository.added` in M1).
+        * `data:` is the event envelope, validated by
+          `api/schemas/event-envelope.schema.json` (see `EventEnvelope`).
+
+        Behaviour: on connect the replica replays every event with `global_seq`
+        greater than the resume cursor, then follows new ones. It subscribes with
+        `LISTEN communication_events` (the journal's `AFTER INSERT` trigger emits
+        `pg_notify` of `global_seq`) purely as a wake-up, and always re-queries by
+        sequence — so a notification delivered by another replica, or none at all,
+        cannot cause gaps or duplicates. A `: heartbeat` comment line is written
+        every 15 seconds to keep proxies from closing the stream. When both
+        `Last-Event-ID` and `after` are supplied, the header wins (it is what the
+        browser set automatically). The stream is scoped to this project and
+        to the caller's permission — a non-member gets `404` and no events.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/LastEventId"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: >
+            An open `text/event-stream`. Frames are event envelopes; the stream
+            does not terminate on its own.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/EventEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/workers:
+    get:
+      operationId: listWorkers
+      tags: [workers]
+      summary: List registered workers
+      description: |
+        Workers registered with the control plane, ordered by `name`. M1 workers are
+        read-only here (the UI's `/ops` page); registration itself happens through
+        the database, not this API.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Workers.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: communication_session
+      description: |
+        Session cookie issued by `GET /auth/callback`: a random 32-byte token, of
+        which Postgres stores only the SHA-256 (`sessions.token_hash`). HttpOnly,
+        SameSite=Lax, Path=/, `Secure` per `COMMUNICATION_COOKIE_SECURE`, 12 h
+        expiry, renewed on use. Reads require this cookie only.
+    csrfHeader:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: |
+        Double-submit token: the `csrf_token` from `GET /api/v1/me`, echoed by the
+        UI on every `POST`/`PUT`/`DELETE`. Required together with `sessionCookie`
+        for all mutations; a missing or mismatched token is `403`. If the request
+        carries an `Origin` header it must match `COMMUNICATION_PUBLIC_URL`'s origin
+        or the request's own scheme+host.
+  headers:
+    XCommunicationReplica:
+      description: |
+        Name of the `serve` replica that produced this response
+        (`COMMUNICATION_REPLICA_NAME`, defaulting to the hostname). Present on
+        every response; the M1 acceptance check and the UI's `/ops` page use it to
+        confirm that state is consistent across replicas behind the load balancer.
+      required: false
+      schema:
+        type: string
+  parameters:
+    ReturnTo:
+      name: return_to
+      in: query
+      required: false
+      description: >
+        Same-origin relative path to resume after login (must start with `/` and
+        not with `//`). Anything else is treated as `/`.
+      schema:
+        type: string
+        default: /
+        examples:
+          - /
+          - /projects/01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      description: >
+        Project id (`uuid`). Project-scoped access is checked server-side on every
+        request; a non-member who is not an organization admin receives `404`.
+      schema:
+        type: string
+        format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: >
+        Target user id (`uuid`), which must belong to the caller's organization.
+      schema:
+        type: string
+        format: uuid
+        pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    LastEventId:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: >
+        Last event `global_seq` the client processed, sent automatically by
+        `EventSource` on reconnect. Events with `global_seq` strictly greater than
+        this are replayed before the stream goes live.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+    After:
+      name: after
+      in: query
+      required: false
+      description: >
+        Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI
+        records the last `global_seq` it rendered). Events with `global_seq`
+        strictly greater than this are replayed.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+  responses:
+    Unauthorized:
+      description: >
+        No valid `communication_session` cookie (missing, expired, or deleted
+        server-side). The UI redirects to `/login`.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/unauthenticated
+            title: Unauthenticated
+            status: 401
+            detail: No valid session cookie.
+    Forbidden:
+      description: >
+        Authenticated but not allowed to perform this operation: `X-CSRF-Token`
+        missing or wrong, a mismatched `Origin`, or a role that is too low for a
+        maintainer-only mutation. Note that being *outside* a project is `404`, not
+        `403`, to avoid leaking project existence.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/csrf-token-invalid
+            title: CSRF token invalid
+            status: 403
+            detail: X-CSRF-Token does not match the session.
+    NotFound:
+      description: >
+        The resource does not exist, or the caller is not a member of the project
+        (returned as `404` so that project existence is not disclosed to
+        non-members). A denied attempt writes an `audit_events` row with outcome
+        `denied`.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/not-found
+            title: Not found
+            status: 404
+            detail: No such project.
+    Conflict:
+      description: >
+        The request collides with an existing unique constraint — a duplicate
+        project `slug` within the organization, or a duplicate repository `name`
+        within the project.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/slug-taken
+            title: Slug already taken
+            status: 409
+            detail: An organization project with slug "widgets" already exists.
+    UnprocessableEntity:
+      description: >
+        The request body is well-formed JSON but fails validation: missing or empty
+        required field, an invalid slug, an unsupported `git_url` scheme, or an
+        unknown role.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/validation-failed
+            title: Validation failed
+            status: 422
+            detail: "git_url must be https://, ssh://, git@host:path or file://."
+    ServiceUnavailable:
+      description: >
+        The replica cannot serve the request: Postgres is unreachable, or its
+        schema version is older than the binary expects. Retrying a different
+        replica may succeed.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://communication.dev/errors/not-ready
+            title: Not ready
+            status: 503
+            detail: "schema version 0 is older than expected 1."
+  schemas:
+    Problem:
+      title: Problem
+      description: >
+        Error body in the `application/problem+json` shape (RFC 9457-compatible).
+        `type` is a stable URI that clients may switch on; `title` is a short
+        constant summary; `detail` is human-readable and may change.
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Stable error identifier, e.g. `https://communication.dev/errors/not-found`.
+        title:
+          type: string
+          description: Short human-readable summary, stable per error type.
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: HTTP status code, identical to the response status.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+    Me:
+      title: Me
+      description: The signed-in principal plus the CSRF token required by mutations.
+      type: object
+      required: [id, display_name, email, is_org_admin, organization, csrf_token]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        email:
+          type: ["string", "null"]
+          description: From the OIDC `email` claim; null when the provider did not supply it.
+        is_org_admin:
+          type: boolean
+        organization:
+          $ref: "#/components/schemas/Organization"
+        csrf_token:
+          type: string
+          description: Send back as the `X-CSRF-Token` header on every mutation.
+    Organization:
+      title: Organization
+      type: object
+      required: [id, slug, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          description: M1 seeds a single organization with slug `default`.
+        name:
+          type: string
+    User:
+      title: User
+      description: An organization member as listed in the user directory.
+      type: object
+      required: [id, display_name, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        email:
+          type: ["string", "null"]
+    Project:
+      title: Project
+      description: >
+        A project. `version` increments on every project mutation and is the
+        conditional-update token for later milestones.
+      type: object
+      required: [id, slug, name, description, created_at, version, my_role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+        name:
+          type: string
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 1
+        my_role:
+          type: string
+          enum: [maintainer, contributor, viewer]
+          description: >
+            The caller's role in this project. Organization admins who hold no
+            explicit membership are reported as `maintainer`.
+      example:
+        id: 01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80
+        slug: widgets
+        name: Widgets
+        description: Widget incubator
+        created_at: "2026-10-14T18:00:00Z"
+        version: 1
+        my_role: maintainer
+    ProjectCreate:
+      title: ProjectCreate
+      description: Request body for creating a project.
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        slug:
+          type: string
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          description: >
+            Optional; derived from `name` when absent (lowercase, `[a-z0-9-]`).
+            Duplicate slugs in the organization are `409`.
+        description:
+          type: string
+          maxLength: 2000
+    Repository:
+      title: Repository
+      type: object
+      required: [id, project_id, name, git_url, default_branch, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Unique within the project.
+        git_url:
+          type: string
+          description: Remote URL as stored; see `RepositoryCreate.git_url` for the accepted forms.
+        default_branch:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      example:
+        id: 01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0
+        project_id: 01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80
+        name: communication
+        git_url: https://github.com/example/communication.git
+        default_branch: main
+        created_at: "2026-10-14T18:00:00Z"
+    RepositoryCreate:
+      title: RepositoryCreate
+      description: Request body for adding a repository to a project.
+      type: object
+      required: [name, git_url]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Unique within the project; a duplicate is `409`.
+        git_url:
+          type: string
+          pattern: "^((https|ssh)://[^/\\s]+/.+|file:///[^\\s]+|git@[^:/\\s]+:.+)$"
+          description: >
+            One of `https://host/path`, `ssh://[user@]host[:port]/path`,
+            `git@host:path` or `file:///absolute/path`. Anything else is `422`.
+        default_branch:
+          type: string
+          minLength: 1
+          maxLength: 200
+          default: main
+    Member:
+      title: Member
+      description: A project membership with the member's display name resolved.
+      type: object
+      required: [user_id, display_name, role]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        role:
+          type: string
+          enum: [maintainer, contributor, viewer]
+          description: >
+            maintainer = everything in M1 (including adding repositories and
+            members); contributor and viewer are read-only.
+    MemberPut:
+      title: MemberPut
+      description: Request body for setting a member's role.
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [maintainer, contributor, viewer]
+    Worker:
+      title: Worker
+      type: object
+      required: [id, name, hostname, version, status, started_at, last_heartbeat_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Unique worker name.
+        hostname:
+          type: string
+        version:
+          type: string
+          description: Worker build version.
+        status:
+          type: string
+          enum: [online, draining, offline]
+        started_at:
+          type: string
+          format: date-time
+        last_heartbeat_at:
+          type: string
+          format: date-time
+    Health:
+      title: Health
+      description: Liveness plus replica identity; does not touch the database.
+      type: object
+      required: [status, replica, version]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        replica:
+          type: string
+          description: >
+            `COMMUNICATION_REPLICA_NAME` (default hostname); same value as the
+            `X-Communication-Replica` response header.
+        version:
+          type: string
+          description: Build version of this replica.
+    Readiness:
+      title: Readiness
+      description: >
+        Database reachability and migration currency. `503` (a `Problem`, not this
+        schema) when Postgres is unreachable or `schema_version` is below
+        `expected_schema_version`.
+      type: object
+      required: [status, schema_version, expected_schema_version]
+      properties:
+        status:
+          type: string
+          enum: [ready]
+        schema_version:
+          type: integer
+          minimum: 0
+          description: Highest applied migration version in this database.
+        expected_schema_version:
+          type: integer
+          minimum: 0
+          description: Migration version this binary requires.
+    ProjectList:
+      title: ProjectList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+    RepositoryList:
+      title: RepositoryList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Repository"
+    MemberList:
+      title: MemberList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
+    UserList:
+      title: UserList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+    WorkerList:
+      title: WorkerList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Worker"
+    EventEnvelope:
+      $ref: ./schemas/event-envelope.schema.json

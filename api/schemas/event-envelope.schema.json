@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://communication.dev/schemas/event-envelope.schema.json",
+  "title": "Communication durable event envelope",
+  "description": "Envelope for every row of the `domain_events` journal and every `data:` frame of the project SSE stream (communication-spec/09-api-events-data.md, 'Durable event envelope'). Identifiers are Postgres `uuid` values rendered as strings; timestamps are RFC 3339 in UTC. `global_seq` is the monotonic replay cursor used for SSE `Last-Event-ID` / `?after=`. The envelope is stable; the shape of `payload` is defined per event `type` and per `schema_version` by the event type's own schema.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "global_seq",
+    "type",
+    "schema_version",
+    "occurred_at",
+    "organization_id",
+    "actor",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Stable unique id of this event (`uuidv7()` at insert time). Distinct from `global_seq`, which is the ordering cursor."
+    },
+    "global_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Database-generated global sequence (`bigint GENERATED ALWAYS AS IDENTITY`). Monotonic; the SSE event `id:` and the reconnect cursor."
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z]+(\\.[a-z_]+)+$",
+      "description": "Dotted lowercase event type, e.g. `project.created`, `repository.added`, `node.attempt.completed`."
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version of the payload schema for this `type`. Consumers must ignore payload fields they do not know."
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp of the state transition."
+    },
+    "organization_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Owning organization. Every journal row is organization scoped."
+    },
+    "project_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Project the event belongs to; null for organization-wide events. Gates the per-project SSE subscription."
+    },
+    "conversation_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Conversation the event belongs to, when it is conversation-scoped. Null otherwise (added in a later milestone)."
+    },
+    "actor": {
+      "type": "object",
+      "description": "Who caused the transition. `id` is the internal id for humans/agents/workers, an integration key for integrations, and the literal `system` for system actions.",
+      "required": ["kind", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["human", "system", "agent", "integration", "worker"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Optional distributed-trace id correlating the request, event and any downstream agent work. Omitted when absent."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event-specific detail, validated by the schema registered for (`type`, `schema_version`). Secrets appear here as metadata only (id/version/scope), never as material values.",
+      "additionalProperties": true
+    }
+  },
+  "examples": [
+    {
+      "event_id": "01987a6e-2f3a-7c1d-9a2e-4f6b8c0d1e2f",
+      "global_seq": 152003,
+      "type": "repository.added",
+      "schema_version": 1,
+      "occurred_at": "2026-10-14T18:00:00Z",
+      "organization_id": "01987a6b-9c1d-7e5f-8a0b-1c2d3e4f5a60",
+      "project_id": "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
+      "actor": {
+        "kind": "human",
+        "id": "01987a61-2345-7000-8000-abcdef012345"
+      },
+      "trace_id": "0af7651916cd43dd8448eb211c80319c",
+      "payload": {
+        "repository_id": "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0",
+        "name": "communication",
+        "git_url": "https://github.com/example/communication.git",
+        "default_branch": "main"
+      }
+    }
+  ]
+}
