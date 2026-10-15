@@ -8,34 +8,17 @@
 // Runs against the isolated compose stack (e2e/compose.e2e.yml, project
 // `communication-e2e`, ports 28080-28082/28090). Serial by design: every step
 // mutates the one shared stack.
-import { execFileSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { API_A_URL, API_B_URL, BASE_URL } from "./env.js";
-import { ADMIN_SUBJECT, OUTSIDER_SUBJECT, addRepository, rowFor, signIn } from "./helpers.js";
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const composeProject = process.env.E2E_COMPOSE_PROJECT ?? "communication-e2e";
-
-/** Restart api-a through the same compose invocation the suite runs against. */
-function restartApiA(): void {
-  execFileSync(
-    "docker",
-    [
-      "compose",
-      "-p",
-      composeProject,
-      "-f",
-      "compose.yml",
-      "-f",
-      "e2e/compose.e2e.yml",
-      "restart",
-      "api-a",
-    ],
-    { cwd: repoRoot, stdio: "pipe", timeout: 120_000 },
-  );
-}
+import {
+  ADMIN_SUBJECT,
+  OUTSIDER_SUBJECT,
+  addRepository,
+  gotoApp,
+  restartComposeServices,
+  rowFor,
+  signIn,
+} from "./helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -121,7 +104,7 @@ test("restarting api-a keeps the session and the data", async ({ request }) => {
   const pageA = context.pages().find((p) => p.url().startsWith(API_A_URL));
   expect(pageA, "pageA from the SSE step is still open").toBeDefined();
 
-  restartApiA();
+  restartComposeServices("api-a");
 
   // Readiness (schema current + datastore reachable), not just liveness.
   await expect
@@ -152,7 +135,7 @@ test("a non-member gets not found for the project", async ({ browser }) => {
   await signIn(outsider, OUTSIDER_SUBJECT);
   await expect(outsider.getByTestId("project-list")).toHaveCount(0);
   await expect(outsider.getByText("No projects yet")).toBeVisible();
-  await outsider.goto(`${BASE_URL}${projectPath}`);
+  await gotoApp(outsider, projectPath);
   await expect(outsider.getByTestId("project-not-found")).toBeVisible();
   await outsiderContext.close();
 });

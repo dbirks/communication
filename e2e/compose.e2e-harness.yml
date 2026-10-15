@@ -1,0 +1,34 @@
+# e2e/compose.e2e-harness.yml — the e2e stack WITH a real agent harness (M2).
+#
+# CI never uses this file: the M2 journey needs a real Claude session, and CI
+# carries no agent credentials (see the `e2e` job in .github/workflows/ci.yml).
+# It exists so the same suite can be run locally, for real, against the same
+# isolated 2808x ports the M1 suite uses:
+#
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     docker compose -p communication-e2e \
+#       -f compose.yml -f compose.harness.yml \
+#       -f e2e/compose.e2e.yml -f e2e/compose.e2e-harness.yml \
+#       up -d
+#
+# Layer order matters: `compose.harness.yml` supplies the developer's own agent
+# logins (.harness bind mounts + CLAUDE_CONFIG_DIR/CODEX_HOME) and this file
+# then un-hides the worker that `compose.e2e.yml` had profile-gated, so a plain
+# `up` of the e2e project starts it. Nothing here adds a credential: the
+# harness file owns those, and this one owns only the e2e-specific deltas.
+#
+# Teardown: the same command with `down -v`.
+name: communication-e2e
+
+services:
+  worker:
+    # `!override` replaces the `["worker"]` profile list from
+    # e2e/compose.e2e.yml with an empty one, so this project's `up` starts the
+    # worker (and only this project — CI's default `up` still skips it).
+    profiles: !override []
+    environment:
+      # Distinct from the dev stack's `worker-1` so /ops names the right one,
+      # and a workspace root *under* the harness bind so an e2e run's
+      # conversation directories never mix with the dev stack's.
+      COMMUNICATION_WORKER_NAME: worker-e2e
+      COMMUNICATION_WORKSPACE_ROOT: /workspaces/e2e
