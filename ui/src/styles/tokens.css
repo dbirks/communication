@@ -145,6 +145,34 @@
      translate(2px,2px) + no shadow (see .ds-btn in the component layer). */
   --shadow-raised: 2px 2px 0 var(--color-ink);
 
+  /* M4/M5 application roles — transcribed from docs/design/design-system.md,
+     "Token extensions M5 needs (additive; identity-neutral)", which says of
+     itself: "Adds ROLES only: no new hue, no restyled primitive. Apply in a
+     ui/ brief, not here." This is that application: every value below is a
+     pointer at a primitive above, so no new colour enters the product.
+     The surfaces that consume them are the pipeline graph, the YAML viewer and
+     the run inspector (`ui/src/components/m4/`, ADR-0025). */
+
+  /* Run inspector: tree and stage strip */
+  --color-tree-guide: var(--color-line); /* indent guides, 1px */
+  --color-tree-active: var(--color-accent-wash); /* focused row inside a tree */
+
+  /* Pipeline graph */
+  --color-canvas-bg: var(--color-paper);
+  --color-node-border: var(--color-line-strong);
+  --color-node-border-selected: var(--color-ink);
+  --color-node-scope-fill: var(--color-accent-wash); /* until / for_each / parallel */
+  --color-node-error-route: var(--color-st-failed-tag-fg);
+
+  /* Evidence and safety surfaces */
+  --color-redacted-fill: var(--color-line-soft); /* "value never shown" block */
+
+  /* Layout: the row density the execution tree is specified at (26rem/22rem
+     pane widths are written as literals at the call sites, in the grid
+     templates, because they are structural rather than colour roles). */
+  --row-condensed: 28px; /* tree/timeline rows: identity 34px, dense lists 28px */
+  --indent-step: 14px; /* execution-tree indent per level */
+
   /* Type scale (02). Use ds-text-* classes below rather than raw sizes. */
   --text-title-xl: 22px;
   --text-title-l: 19px;

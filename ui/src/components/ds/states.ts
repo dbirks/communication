@@ -39,6 +39,27 @@ export interface StateSpec {
   paleFg: string;
 }
 
+/**
+ * The compact word a chip, a segment or a graph node can carry. `STATES[].word`
+ * is the sentence-form default; this is the same state in the fewest characters
+ * that still reads ("need you" for waiting, "stopped" for interrupted — a state
+ * whose meaning is "we do not know", which must not be spelled as a failure).
+ *
+ * One table on purpose: a stage cell, a tree row and a graph node that disagree
+ * about what a colour means break identity rule 06 at the only place a person
+ * can check it.
+ */
+export const SHORT_WORD: Record<StateName, string> = {
+  running: "running",
+  waiting: "need you",
+  failed: "failed",
+  interrupted: "stopped",
+  retrying: "retrying",
+  done: "done",
+  queued: "pending",
+  info: "noted",
+};
+
 export const STATES: Record<StateName, StateSpec> = {
   running: {
     glyph: "●",
@@ -245,6 +266,94 @@ export const SENSITIVITY_STATE: Record<string, StateName> = {
 export const STREAM_STATE: Record<string, StateName> = {
   live: "running",
   reconnecting: "retrying",
+};
+
+/* ---------------------------------------------------------------- M4 run
+ * The pipeline mappings below follow `docs/design/design-system.md`'s
+ * "Status → state set" table, which extends *this* table rather than adding a
+ * ninth state set. Where two domain states share a set the **word** carries the
+ * difference (identity rule 06), so each of these is paired with the literal
+ * status at the call site — a `skipped` node and a `queued` node are the same
+ * colour and different words. */
+
+/** Run status (`01`, contract § 1) → state set. */
+export const RUN_STATE: Record<string, StateName> = {
+  queued: "queued",
+  preparing: "running",
+  running: "running",
+  waiting_human: "waiting",
+  paused: "waiting",
+  completed: "done",
+  failed: "failed",
+  cancelled: "interrupted",
+  interrupted: "interrupted",
+};
+
+/** Node execution status → state set. `skipped` is neutral (nothing needs
+ * anyone); `leased` is already claimed work, so it reads as running. */
+export const NODE_EXECUTION_STATE: Record<string, StateName> = {
+  pending: "queued",
+  ready: "running",
+  leased: "running",
+  running: "running",
+  succeeded: "done",
+  failed: "failed",
+  skipped: "queued",
+  waiting: "waiting",
+  cancelled: "interrupted",
+  interrupted: "interrupted",
+};
+
+/** Attempt status → state set. An `interrupted` attempt is "stopped, outcome
+ * unknown" — the same set a cancelled turn uses, never `failed`. */
+export const ATTEMPT_STATE: Record<string, StateName> = {
+  queued: "queued",
+  leased: "running",
+  running: "running",
+  succeeded: "done",
+  failed: "failed",
+  cancelled: "interrupted",
+  interrupted: "interrupted",
+};
+
+/** Approval state → state set. Pending is the one panel where royal means
+ * "you can act"; `denied` (approver lost access) is a failure, not a decision. */
+export const APPROVAL_STATE: Record<string, StateName> = {
+  pending: "waiting",
+  decided: "done",
+  expired: "failed",
+  cancelled: "interrupted",
+  denied: "failed",
+};
+
+/** Draft status (`pipeline_drafts_status`, contract § 1) → state set. */
+export const DRAFT_STATE: Record<string, StateName> = {
+  draft: "queued",
+  validating: "running",
+  valid: "info",
+  invalid: "failed",
+  published: "done",
+};
+
+/** Revision status → state set (`· DEPRECATED` / `✓ PUBLISHED 8f2c1a…`). */
+export const REVISION_STATE: Record<string, StateName> = {
+  published: "done",
+  deprecated: "queued",
+};
+
+/** Validation source → state set. Loader findings gate everything else, so they
+ * read as failed; a schema finding is a failure of shape; a compiler finding may
+ * be only a deferral, so it is info — the `hint` and code carry the weight. */
+export const VALIDATION_SOURCE_STATE: Record<string, StateName> = {
+  loader: "failed",
+  schema: "failed",
+  compiler: "info",
+};
+
+/** Assignment channel label → state set: royal beta means *you* chose it. */
+export const CHANNEL_STATE: Record<string, StateName> = {
+  stable: "info",
+  beta: "waiting",
 };
 
 /** Color for a PROGRESS-J/K segment: flat colors, never texture. */

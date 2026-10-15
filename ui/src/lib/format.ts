@@ -78,3 +78,23 @@ export function testidOf(id: string | null | undefined): string {
   if (!id) return "none";
   return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
 }
+
+/**
+ * A countdown: how much time is left until a deadline (`approvals.deadline_at`).
+ * `formatAge` deliberately refuses the future, so the future gets its own
+ * formatter rather than a reused one — a deadline shown as `unknown` is a
+ * deadline nobody can act on, and one shown as `-20h` is a lie about direction.
+ */
+export function formatRemaining(value: string | null | undefined, now = Date.now()): string {
+  if (!value) return "unknown";
+  const at = new Date(value).valueOf();
+  if (Number.isNaN(at)) return "unknown";
+  const seconds = Math.round((at - now) / 1000);
+  if (seconds <= 0) return "passed";
+  if (seconds < 60) return `${seconds}s left`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m left`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h left`;
+  return `${Math.round(hours / 24)}d left`;
+}

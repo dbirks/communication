@@ -1,4 +1,5 @@
-import { Route, Routes } from "react-router";
+import { lazy, Suspense } from "react";
+import { Route, Routes, useLocation } from "react-router";
 import Shell from "./components/Shell";
 import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
@@ -11,7 +12,27 @@ import Project from "./pages/Project";
 import ProjectSettings from "./pages/ProjectSettings";
 import Projects from "./pages/Projects";
 
+// Dev-only, and folded away at build time: `import.meta.env.DEV` is statically
+// false in a production build, so the condition below collapses and the dynamic
+// import — the fixtures, the blocks, everything — never becomes a chunk. An
+// unauthenticated M4 surface must not exist in what ships, not even as bytes.
+const M4PreviewPage = import.meta.env.DEV ? lazy(() => import("./pages/M4Preview")) : null;
+
 export default function App() {
+  const { pathname } = useLocation();
+
+  // The preview renders *outside* Shell, deliberately: Shell checks the session,
+  // and a fixture page that needs a signed-in backend to render cleanly is not a
+  // fixture page. It also returns early rather than mounting a second `<Routes>`,
+  // because the catch-all below would otherwise render NotFound underneath it.
+  if (M4PreviewPage && pathname === "/__m4-preview") {
+    return (
+      <Suspense fallback={null}>
+        <M4PreviewPage />
+      </Suspense>
+    );
+  }
+
   return (
     <Shell>
       <Routes>
