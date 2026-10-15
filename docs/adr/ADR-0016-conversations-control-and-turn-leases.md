@@ -185,3 +185,122 @@ Forward-only (ADR-0013). `communication migrate up` applies `00003_m2_conversati
 Deploy order: `migrate` → `worker` (must not claim turns it cannot fence) → `serve` replicas. Because the API handlers can be rolled independently and nothing in `00003` alters an existing column, replicas running `0.1.0-m1` code keep working against schema 3 (the new tables are simply unread); the reverse (new code against schema 2) is refused by readiness.
 
 There is no down-migration. If the M2 conversation surface had to be abandoned, the recovery is a *forward* `00004` that drops the new tables and sequence — data loss by explicit choice, reviewed like any other migration; the transcript rows themselves stay in `domain_events`, which is exactly why the journal was reused rather than duplicated. The `-- +goose Down` block exists solely so the test suite can reset a scratch database.
+
+## 6. Implementation notes (M2 control plane, 2026-10-15)
+
+Landed in `internal/api/conversations.go`, `internal/store/postgres/conversations*.go`,
+`internal/store/postgres/reconciler.go` and `cmd/communication/serve.go`, against
+the rows of `00003_m2_conversations.sql`. The §2 table, the §3 conflict shapes,
+the §4 reconciliation rules and the §5 authz model are implemented as written.
+What follows records details that text leaves open, and states which cancel
+behaviour has actually been observed.
+
+### What repeated `return-control` actually settles — recorded because §2 and §5 compose
+
+§5: control goes to `previous_controller_user_id` **if** that user is still a
+contributor/maintainer, else to `none`. §2: a successful mutation sets
+`previous_controller_user_id` from *the holder it displaced* — which for a return
+is the returning controller. Composed, a hand-back is reversible in the worst
+sense: A holds, B takes (previous=A), B returns (control→A, previous=B), A returns
+(control→**B**). Two people returning the lock to each other ping-pong it
+indefinitely rather than ever reaching `none`, and both readings of "the previous
+controller" are defensible.
+
+This implementation follows the letter of both clauses, because it is the letter
+of an Accepted record and because the alternative (return also clears
+`previous`) quietly deletes the audit-relevant fact of who just gave it up. Every
+leg is a one-hop CAS with a `conversation.control.transferred` event naming both
+ends, so the transcript never claims something it did not do — the lock just does
+not come to rest on its own. Two consequences for whoever builds J6 next:
+
+- The UI must render `control.kind`/`user_id` as delivered, never "the person who
+  last clicked Return" — the two differ one step after a hand-back.
+- If the ping-pong turns out to be wrong in practice, the fix is one line in the
+  return target (clear `previous` on `returned`) plus an ADR amendment. It is not
+  a data-model problem, and nothing else has to move.
+
+The `none` branch is reached and proven: `previous` is NULL for a creator who
+never lost the lock, so a first `return-control` on a fresh conversation lands on
+`kind='none'`, `controller_user_id` NULL — not "the creator owns it again", which
+would be a fabricated holder. A take from `none` clears `previous` again, so a
+chain that has once gone empty cannot refill itself.
+
+### A cancel request is not a cancelled turn
+
+There is no `conversation.turn.cancel_requested` event type and none is added:
+appending one would reserve the journal for an outcome the server cannot yet
+know. A cancel that stops at a queue (a `queued` turn) is terminal *here*, so
+this implementation moves the row to `cancelled` and appends
+`conversation.turn.cancelled` itself; one that lands on a `leased`/`running` turn
+with a worker still standing only sets `cancel_requested_at` and appends nothing,
+because the worker's `cancelled` or `failed` is the event. An API response
+therefore cannot be read as a turn outcome, and the turn body is a snapshot, not
+a receipt. `cancel_requested_at` is the field the UI polls.
+
+### Reconciler facts are written as `actor_kind = 'system'`
+
+The §4 `interrupted` fact is a determination the control plane makes about a
+worker it has stopped trusting — so the journal names its author as `system`
+(`domain_events.actor_kind = 'system'`, `actor_id = 'system'`, the one place
+`actor_id` is not a UUID — the only actor constraint the column family carries
+is `domain_events_actor_kind_check`, which checks the kind alone),
+never as the human who last touched the conversation, and never as the dead
+worker. Attribution is what makes "why did my turn die" answerable from the
+transcript alone. §5's audit trail is unchanged: it has no row for a reconcile.
+
+### The lock is one pass, the queue is bounded, the tick is not one pass
+
+`Run` is deliberately not a loop that owns the advisory lock: `Pass` takes the
+session-scoped lock with `pg_try_advisory_lock`, runs its three passes and
+releases it, every tick. Per expired turn, the row update, the
+`conversation.turn.interrupted` append and the conversation's
+`active → disconnected` move share one transaction on one connection, so they are
+atomic against a claim landing beside them; closing the *session binding* is the
+separate stale-binding pass (§4.2), not part of that transaction, because the
+binding is proved dead by the worker's heartbeat, not by the lease deadline. The
+batch cap (`Batch`, default 50) bounds
+one pass's work; the tick is not, so a backlog drains over consecutive ticks and
+one pass never holds Postgres or the lock across the whole set.
+
+`Run` does **not** exit on a failed pass. An expired lease is a permanent
+condition: a pass that fails on a connection blip would otherwise leave turns
+undeathable until the process restarts, so the tick retries and the log counts
+consecutive failures rather than pretending silence means health. It does not
+count a *shutdown* as a failure either: a pass cut short because its context was
+cancelled, or because the pool closed under it, returns the reconciler's exit
+status rather than a failing-pass report. That distinction is not cosmetic — the
+first whole-suite `-race` run of the M2 integrated lab failed
+`TestReconcilerTickInterruptsWhatTheClockFound` with "gave up after 1 failing
+passes" for nothing but its own `cancel()`, while the same test focused and
+re-run passed; `TestReconcilerShutdownIsNotAFailingPass` now pins both halves
+(a stopped reconciler reports nothing, a reconciler with a live context and a
+dead pool still reports the count).
+
+### Cancel evidence: what has actually been observed, and where
+
+§4 justifies `interrupted` over `failed` partly with "M0's probe found both
+adapters answer cancel, so a lost worker is not a cancelled turn." That premise
+stands as recorded: `docs/compatibility/ACP.md` shows both adapters answering
+`session/cancel` with `stopReason=cancelled` (5/5 at a 2 s delay), and the M2
+worker row of the same file shows a live Claude turn closing
+`conversation.turn.cancelled` / `stop_reason=cancelled` from inside the container.
+The *timing-dependent* caveat is recorded there too — Claude sometimes
+auto-backgrounds a long shell call and closes the turn `end_turn` before a later
+cancel lands — which is exactly why cancel is a request rather than an outcome
+above. What this record does **not** claim is any behaviour it has not seen: no
+cancel row is asserted here, and `docs/compatibility/ACP.md` stays the only place
+capability evidence lives.
+
+### Who appends `conversation.message.user` is not optional (integrated run, 2026-10-15)
+
+§3 assigns the user-message append to the *control plane's* enqueue transaction,
+and `internal/store/postgres/conversations.go` `PostMessage` does exactly that.
+The worker's `BeginTurn` appended a second copy of the same event, and the
+transcript proved it: every prompt reached the stream twice, the duplicate last,
+so a client replaying `Last-Event-ID: 0` saw the user say the same thing out of
+order. The worker sends the prompt to the agent, it does not journal it. Nothing
+in the schema or a constraint makes a double append impossible — the journal is
+append-only and has no idempotency key on prompt text — so the ordering rule in
+§3 is the only thing holding the transcript together, and the integrated lab run
+(`e2e_m2_integrate.py`, step b: "the user's message arrives once") is now the test
+that says so.

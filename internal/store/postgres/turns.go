@@ -193,8 +193,16 @@ func (s *TurnStore) RenewLease(ctx context.Context, c worker.Claim) error {
 }
 
 // BeginTurn moves the claimed turn leased→running and appends
-// conversation.turn.started plus conversation.message.user atomically under
-// the fence (the turn's prompt is transcript material, ADR-0016 §7).
+// conversation.turn.started under the fence.
+//
+// It deliberately does NOT append conversation.message.user. That row belongs
+// to the enqueue transaction in the control plane
+// (CnvStore.PostMessage/CreateConversation), which is what makes ADR-0016 §7's
+// "the transcript and the queued work can never disagree" literally true: one
+// prompt, one user row, written with the turn itself. An append here produced
+// a second copy of every prompt in the transcript, and in the wrong order —
+// turn.started landed before the user's own message (observed in the integrated
+// M2 lab run, 2026-10-15).
 func (s *TurnStore) BeginTurn(ctx context.Context, c worker.Claim, bindingID string, sess domain.SessionInfo) error {
 	return s.trnWithFencedTx(ctx, c, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
@@ -208,7 +216,7 @@ func (s *TurnStore) BeginTurn(ctx context.Context, c worker.Claim, bindingID str
 			WHERE id = $1 AND status <> 'archived'`, c.ConversationID); err != nil {
 			return fmt.Errorf("postgres: activate conversation %s: %w", c.ConversationID, err)
 		}
-		if _, err := trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, worker.TurnEvent{
+		_, err := trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, worker.TurnEvent{
 			Type:      events.TypeConversationTurnStarted,
 			ActorKind: events.ActorKindWorker,
 			ActorID:   c.WorkerID,
@@ -220,19 +228,6 @@ func (s *TurnStore) BeginTurn(ctx context.Context, c worker.Claim, bindingID str
 				BindingID:      bindingID,
 				ACPSessionID:   sess.ACPSessionID,
 				SessionOrigin:  orDefaultStr(sess.Origin, events.SessionOriginNew),
-			},
-		}); err != nil {
-			return err
-		}
-		_, err := trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, worker.TurnEvent{
-			Type:      events.TypeConversationMessageUser,
-			ActorKind: events.ActorKindHuman,
-			ActorID:   c.SubmittedBy,
-			Payload: events.MessageUserPayload{
-				ConversationID: c.ConversationID,
-				TurnID:         c.TurnID,
-				SubmittedBy:    c.SubmittedBy,
-				Text:           c.Prompt,
 			},
 		})
 		return err

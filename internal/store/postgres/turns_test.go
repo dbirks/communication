@@ -250,8 +250,9 @@ func trnCountEvents(ctx context.Context, t *testing.T, pool *pgxpool.Pool, convI
 }
 
 // TestTurnsTranscriptAndBindingsRoundtrip proves the worker writes the
-// contract's rows: begin appends turn.started + message.user under the
-// conversation scope, RecordBinding closes a stale live binding, the
+// contract's rows: begin appends turn.started under the conversation scope
+// (and only turn.started — conversation.message.user belongs to the control
+// plane's enqueue transaction), RecordBinding closes a stale live binding, the
 // permission open→decide→read flow works, cancel is visible to the owner,
 // and the transcript order matches the turn lifecycle.
 func TestTurnsTranscriptAndBindingsRoundtrip(t *testing.T) {
@@ -370,9 +371,11 @@ func TestTurnsTranscriptAndBindingsRoundtrip(t *testing.T) {
 		t.Errorf("turn row = (%q,%q,%v)", status, stop, finished)
 	}
 
-	// The transcript is the journal, conversation-scoped and in order.
+	// The transcript is the journal, conversation-scoped and in order. No
+	// message.user: the prompt row is written by the API when it enqueues the
+	// turn, so a worker appending it too would show every prompt twice.
 	want := []string{
-		events.TypeConversationTurnStarted, events.TypeConversationMessageUser,
+		events.TypeConversationTurnStarted,
 		events.TypeConversationMessageAgent, events.TypeConversationPermissionRequested,
 		events.TypeConversationTurnCancelled,
 	}

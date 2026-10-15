@@ -1,27 +1,56 @@
 # compose.harness.yml — real-credential dev override for the M2 lab only.
 #
 #     HOST_UID=$(id -u) HOST_GID=$(id -g) \
-#       docker compose -p m2wrk -f compose.yml -f compose.harness.yml up --build
+#       docker compose -p communication -f compose.yml -f compose.harness.yml up -d --build
 #
-# HOST_UID/HOST_GID are NOT optional: without them the worker runs as the
-# image's uid 10001, cannot read the host user's 0600 agent credentials, and
-# every Claude turn fails "Authentication required" (observed in lab). The
-# agents authenticate as their own owner; the platform stores nothing.
+# What this is for: communication-spec/05 "Secrets / credentials design"
+# separates the three credential kinds and names the third one explicitly —
+# "Harness authentication — credentials needed to start Claude/Codex/etc. under
+# organization-approved terms. These can be sensitive directory trees, not
+# necessarily a single environment variable." The shipped worker image carries
+# none of them (worker/Dockerfile installs only binaries; the API image has no
+# Node at all), so a real end-to-end run has to supply the developer's own
+# harness login at runtime. The owner of this machine authorised using their
+# personal agent logins for local development; nothing here is committed and
+# every host path below is a runtime bind.
 #
-# Why this exists: the shipped worker image is deliberately credential-free
-# (verified in lab: unknown container users get "Anypod created for user
-# [redacted] that does not exist"), so a real end-to-end run must mount the
-# host user's own agent config at runtime, per communication-spec/05
-# ("credentials are the client/user's own; the platform stores and manages
-# nothing inside the session request").
+# HOST_UID/HOST_GID are NOT optional. The image's user is uid 10001; the host
+# agent configs are mode 0600/0700 and owned by the developer. Running as that
+# uid is the difference between reading them and not, and the failure mode was
+# observed rather than theorised: docs/compatibility/ACP.md, "Observed failure
+# honesty" — a worker recreated without HOST_UID closed its turn
+# `conversation.turn.failed` carrying the adapter's own "Authentication required"
+# error text, and the same conversation succeeded once the uid was fixed.
+#
+# Verified on this host against the pins in worker/Dockerfile
+# (claude-code 2.1.300, codex 0.162.1), using the agents' own no-network status
+# commands inside this image:
+#
+#   CLAUDE_CONFIG_DIR=/harness/claude  claude auth status --json
+#     -> "loggedIn": true, "configDirectory": "/harness/claude"
+#   (same, variable unset)             claude auth status --json
+#     -> "loggedIn": false
+#   CODEX_HOME=/harness/codex          codex login status
+#     -> "Logged in using ChatGPT"
+#   (same, variable unset)             codex login status
+#     -> "Not logged in"
+#
+# So the two variables below are the whole mechanism, and HOME is set because a
+# numeric --user has no passwd entry: without a writable home the agents cannot
+# write their own caches. A third variable this file used to set,
+# CLAUDE_CODE_OAUTH_TOKEN_FILE, does not exist in Claude Code 2.1.300 (the real
+# one is CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR and takes a numeric file
+# descriptor), and a `claude auth status --json` run with it set and
+# CLAUDE_CONFIG_DIR unset reported "loggedIn": false — it was dead config and is
+# gone, along with the ~/.claude.json bind and the symlink/copy dance that went
+# with it, none of which the agents turned out to need.
 #
 # Host preparation (lab only): mkdir -p .harness/workspaces .harness/home
-# Nothing here is ever a committed secret: every host path is a runtime bind.
 services:
   worker:
     # The image's uid is 10001; run as the host user so the mounted configs
-    # (owned by that user, group-readable) are also readable by the agent
-    # child processes, and workspace files land owned by the developer.
+    # (owned by that user) are readable by the worker and by the agent child
+    # processes it spawns, and so workspace files land owned by the developer.
     user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
     volumes:
       # Replaces the named volume from compose.yml (bind wins on the same
@@ -29,33 +58,28 @@ services:
       - .harness/workspaces:/workspaces
       # Writable agent home (host-owned, uid matches the `user:` override).
       - .harness/home:/harness/home
-      # rw on purpose: the agents keep live session state inside these dirs
-      # (project history, todos); a read-only mount wedges them mid-turn.
-      # They remain the host user's own directories — the platform image
-      # never contains a copy.
+      # rw on purpose: these are the agents' live state directories — Claude
+      # writes projects/history and codex writes its session logs *inside*
+      # them, so a read-only mount wedges the agent mid-turn. They remain the
+      # host user's own directories; the platform image never contains a copy.
       - ${HOME}/.claude:/harness/claude
-      - ${HOME}/.claude.json:/harness/claude.json:ro
       - ${HOME}/.codex:/harness/codex
     environment:
-      # Home for agent state; the real credentials are symlinked in by the
-      # harness entrypoint below (HOME itself is an overlay tmpfs the worker
-      # owns, so agents can write their caches without touching the host).
+      # A numeric `user:` has no passwd entry, so HOME must be stated. Claude
+      # and codex both fall back to $HOME for caches when nothing else is set.
       HOME: /harness/home
-      # Codex reads its auth/config from $CODEX_HOME, Claude from
-      # $CLAUDE_CONFIG_DIR; both point at the read-only mounts.
-      CODEX_HOME: /harness/codex
+      # The two variables the status checks above proved: Claude Code reads its
+      # login from $CLAUDE_CONFIG_DIR, Codex from $CODEX_HOME.
       CLAUDE_CONFIG_DIR: /harness/claude
-      # The claude.json sidecar must sit next to the config dir's parent for
-      # Claude Code's own discovery; adapters also honour the explicit vars.
-      CLAUDE_CODE_OAUTH_TOKEN_FILE: /harness/claude.json
+      CODEX_HOME: /harness/codex
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        mkdir -p /harness/home/.claude /harness/home/.codex
-        # Claude Code discovers its oauth cache as <config>/../../.claude.json;
-        # keep a private copy inside the writable home so nothing is written
-        # back to the host mount.
-        cp /harness/claude.json /harness/home/.claude.json 2>/dev/null || true
-        ln -sfn /harness/claude /harness/home/.claude/config-mount 2>/dev/null || true
-        ln -sfn /harness/codex /harness/home/.codex/config-mount 2>/dev/null || true
+        mkdir -p /harness/home
         exec communication worker
+# Which agent programs the worker starts is not configured here: it is the
+# launcher registry in internal/agent/acp/launchers.go (claude-agent-acp, which
+# needs Node and reads CLAUDE_CONFIG_DIR; codex-acp, which needs the codex
+# binary on PATH and reads CODEX_HOME). Both are on PATH in the worker image,
+# and the worker's sandbox runs the agent as root inside its own user namespace,
+# so it can rewrite $HOME/.claude.json even though this file no longer binds it.

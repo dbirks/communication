@@ -49,6 +49,29 @@ const evtJournalSQL = `
 	ORDER BY e.global_seq
 	LIMIT $3`
 
+// cnvConversationEventsSQL is the conversation-scoped journal read behind
+// GET /api/v1/conversations/{conversationId}/events (ADR-0016). It is the
+// project read narrowed by conversation_id, with the gap-safety clause kept
+// verbatim: the transcript and the project timeline share one journal, one
+// global_seq cursor and one commit-order argument (ADR-0014 §9), so the
+// conversation stream may not weaken any part of it — dropping the tx_id
+// filter would make a late committer invisible to the transcript forever.
+//
+// The cursor is resolved *through* the conversation scope, so a
+// Last-Event-ID copied from another conversation or project replays nothing it
+// should not. project_id is repeated in the predicate because the conversation
+// route's authorization scope is the owning project: a row that somehow names
+// another project is never delivered on this stream.
+const cnvConversationEventsSQL = `
+	SELECT ` + prjEventColumns + `
+	FROM domain_events e
+	WHERE e.conversation_id = $1::uuid
+	  AND e.project_id = $2::uuid
+	  AND e.global_seq > $3
+	  AND e.tx_id < pg_snapshot_xmin(pg_current_snapshot())
+	ORDER BY e.global_seq
+	LIMIT $4`
+
 // LockEventJournal acquires the transaction-scoped advisory lock that orders
 // journal appends, holding it to COMMIT. ADOPT IT AS THE FIRST statement of any
 // transaction that will AppendEvent when the project id is already known.
@@ -119,11 +142,21 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 
 	var env events.Envelope
 	var payloadRaw []byte
+	conversationID, err := cnvCleanConversationID(e.ConversationID)
+	if err != nil {
+		return events.Envelope{}, err
+	}
+	// conversation_id is listed deliberately (ADR-0016 §9 obligation 1): the
+	// column has existed since 00001 but no writer populated it, so an append
+	// that set events.New.ConversationID without it produced a transcript row
+	// that was invisible to the conversation stream while looking correct in
+	// every other read.
 	err = tx.QueryRow(ctx, `
-		INSERT INTO domain_events (type, organization_id, project_id, actor_kind, actor_id, payload)
-		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, $4, $5, $6::jsonb)
+		INSERT INTO domain_events (type, organization_id, project_id, conversation_id, actor_kind, actor_id, payload)
+		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7::jsonb)
 		RETURNING `+prjEventColumns,
-		e.Type, e.OrganizationID, prjCleanUUID(e.ProjectID), e.Actor.Kind, e.Actor.ID, payload).
+		e.Type, e.OrganizationID, prjCleanUUID(e.ProjectID), conversationID,
+		e.Actor.Kind, e.Actor.ID, payload).
 		Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion, &env.OccurredAt,
 			&env.OrganizationID, &env.ProjectID, &env.ConversationID,
 			&env.Actor.Kind, &env.Actor.ID, &env.TraceID, &payloadRaw)
@@ -140,6 +173,65 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 		return events.Envelope{}, fmt.Errorf("postgres: append outbox row: %w", err)
 	}
 	return env, nil
+}
+
+// cnvCleanConversationID validates a conversation scope id the same way
+// prjCleanUUID does a project id, so a malformed id lands as a null scope
+// (an ordinary project event) rather than a driver syntax error in the middle
+// of a committed transaction. It reports an error only for an id that is
+// neither empty nor a uuid, which can only be a programming mistake.
+func cnvCleanConversationID(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	if !prjValidUUID(s) {
+		return "", fmt.Errorf("postgres: conversation id %q is not a uuid", s)
+	}
+	return strings.ToLower(s), nil
+}
+
+// ConversationEventsAfter returns up to limit journal rows of one
+// conversation's transcript with global_seq strictly greater than afterSeq,
+// oldest first — the replay path behind the conversation SSE stream.
+//
+// It is a journal read only: visibility is the caller's decision, made by the
+// authorized wrapper below and re-made by the handler on every delivery and
+// heartbeat, exactly as the project stream does.
+func (s *ProjectStore) ConversationEventsAfter(ctx context.Context, conversationID, projectID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: project store has no pool")
+	}
+	if !prjValidUUID(conversationID) || !prjValidUUID(projectID) {
+		return nil, ErrConversationNotFound
+	}
+	if limit <= 0 {
+		limit = prjDefaultEventLimit
+	}
+	if limit > prjMaxEventLimit {
+		limit = prjMaxEventLimit
+	}
+	rows, err := s.Pool.Query(ctx, cnvConversationEventsSQL, conversationID, projectID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query conversation events: %w", err)
+	}
+	return evtScanEvents(rows, limit)
+}
+
+// VisibleConversationEventsAfter is ConversationEventsAfter behind the
+// caller's membership of the conversation's project: an invisible conversation
+// (unknown id, or a project the caller is not a member of) is
+// ErrConversationNotFound — the same answer the rest of the conversation
+// surface gives — so neither the stream nor a forged cursor can probe it.
+func (s *ProjectStore) VisibleConversationEventsAfter(ctx context.Context, c Caller, conversationID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return nil, err
+	}
+	projectID, _, _, err := cnvResolveProject(ctx, s.Pool, c, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return s.ConversationEventsAfter(ctx, conversationID, projectID, afterSeq, limit)
 }
 
 // EventsAfter returns up to limit journal rows for one project with

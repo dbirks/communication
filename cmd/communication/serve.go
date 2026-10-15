@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -299,15 +300,21 @@ func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
 // serveStack builds the HTTP handler for one replica and returns it with a
 // function that releases its background resources.
 //
-// Every route in the M1 contract is registered here, and the session store is
-// the Authenticator — there is no placeholder left to fail closed behind:
+// Every route in the M1 and M2 contracts is registered here, and the session
+// store is the Authenticator — there is no placeholder left to fail closed
+// behind:
 //
-//	auth.Service          /auth/login, /auth/callback, /auth/logout,
-//	                      /api/v1/me, /api/v1/users (and the cookie
-//	                      session Authenticator)
-//	api.RegisterProjects  projects, repositories, members
-//	api.RegisterEvents    GET /api/v1/projects/{projectId}/events (SSE)
-//	api.RegisterWorkers   GET /api/v1/workers
+//	auth.Service              /auth/login, /auth/callback, /auth/logout,
+//	                          /api/v1/me, /api/v1/users (and the cookie
+//	                          session Authenticator)
+//	api.RegisterProjects      projects, repositories, members
+//	api.RegisterEvents        GET /api/v1/projects/{projectId}/events (SSE)
+//	api.RegisterConversations agent profiles, conversations, messages, control,
+//	                          cancel, permission decisions and
+//	                          GET /api/v1/conversations/{id}/events (SSE)
+//	api.RegisterWorkers       GET /api/v1/workers
+//	postgres.Reconciler       turn-lease reconciliation, one replica at a time
+//	                          under a Postgres advisory lock (ADR-0016 §4)
 //
 // No database work happens while building: a replica whose database is briefly
 // unreachable still serves health and readiness, and the first request that
@@ -331,17 +338,50 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	apiProjects := postgres.APIProjectStore{S: projectStore}
 	wakes := postgres.NewEventWake(d.DatabaseURL, log)
 
+	conversationStore := &postgres.CnvStore{Pool: d.Pool}
+	apiConversations := postgres.APIConversationStore{S: conversationStore}
+
 	handler := api.New(d.API, d.Readiness, authenticator, d.UI)
 	authenticator.Register(handler)
 	api.RegisterProjects(handler, apiProjects)
 	api.RegisterEvents(handler, apiProjects,
 		postgres.APIEventStream{S: projectStore, Wakes: wakes})
+	api.RegisterConversations(handler, apiConversations, apiConversations,
+		postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes})
 	api.RegisterWorkers(handler, postgres.APIWorkerStore{
 		R:                 &postgres.WorkerRegistry{Pool: d.Pool},
 		HeartbeatInterval: d.WorkerHeartbeat,
 	})
 
-	return handler, wakes.Close, nil
+	// The turn-lease reconciler runs on every replica and does work on one: the
+	// advisory lock in postgres.Reconciler decides which (ADR-0016 §4). It is
+	// started here rather than in a cron container because the deadlines it
+	// enforces are this deployment's, and a replica that cannot take the lock
+	// simply skips the tick.
+	reconcileCtx, stopReconciler := context.WithCancel(context.Background())
+	reconciler := postgres.NewReconciler(d.Pool, postgres.ReconcilerConfig{
+		Logger:          log.With(slog.String("component", "reconciler")),
+		WorkerHeartbeat: d.WorkerHeartbeat,
+	})
+	go func() {
+		ran, err := reconciler.Run(reconcileCtx)
+		if err != nil {
+			log.Error("turn-lease reconciler stopped",
+				slog.Int("passes", ran), slog.String("error", err.Error()))
+			return
+		}
+		log.Info("turn-lease reconciler stopped", slog.Int("passes", ran))
+	}()
+
+	var closeOnce sync.Once
+	closeStack := func() {
+		closeOnce.Do(func() {
+			stopReconciler()
+			wakes.Close()
+		})
+	}
+
+	return handler, closeStack, nil
 }
 
 // compile-time proof that the OIDC service is usable as the API's

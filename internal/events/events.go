@@ -85,12 +85,18 @@ type New struct {
 	// authorization scope and the ordering lock; ConversationID narrows the
 	// stream, it never replaces it.
 	//
-	// OBLIGATION (ADR-0016 section 9, "Obligations this contract places on the
-	// three M2 implementations"): the writer in
-	// internal/store/postgres/events.go must persist this column. The journal
-	// INSERT does not list conversation_id today, so an append that sets only
-	// this field lands with a null scope and disappears from the conversation
-	// stream.
+	// The writer in internal/store/postgres/events.go lists this column in the
+	// journal INSERT, so an append that sets it is readable by the conversation
+	// stream; an append that leaves it empty stays out of every conversation
+	// stream — correct for project-level events, a silent bug for conversation
+	// ones (TestConversationAppendPersistsScopeIsTheObligation).
+	//
+	// Wake-ups are *not* scoped here: the domain_events_notify trigger from
+	// migration 00001 emits pg_notify('communication_events', <global_seq>) for
+	// every inserted row, and postgres.EventWake turns that one channel into
+	// wake-ups for both the project and the conversation streams. Narrowing the
+	// notification would be an optimization, never a correctness requirement —
+	// every consumer re-queries the journal by sequence (ADR-0014 §9).
 	ConversationID string
 	Actor          Actor
 	Payload        any
