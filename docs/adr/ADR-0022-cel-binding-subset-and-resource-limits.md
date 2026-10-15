@@ -2,6 +2,13 @@
 
 - **Date:** 2026-10-15
 - **Status:** Proposed
+- **Amendment (2026-10-15):** § 2 and § 5 rename the prior-iteration root `loop` to two roots,
+  `previous` (object) + `iteration` (int). cel-go v0.31.0's parser **reserves** `loop`, so the
+  original spelling compiles no expression at all — the env builds, every use fails
+  ([`results-contract-probes.txt`](../compatibility/m4-spike/results-contract-probes.txt),
+  `module/contractprobe/probes_test.go::TestLoopRootIsReserved`; contract
+  `docs/m4-contract.md` § 9.1 row 17 and D16). Semantics are unchanged — the same two members are
+  now two roots. Status stays **Proposed**; the owner's acceptance question is unchanged (contract § 11.1).
 - **Owners:** M4 contract implementers (compiler, worker runtime)
 - **Related decisions / contracts:** D-013 (Proposed — this record is the spike that validates it),
   D-019, D-007; `communication-spec/03-pipeline-engine.md` § "Bindings and expressions",
@@ -70,9 +77,10 @@ is a deliberate limitation, not an omission.
 | `inputs` | the run's validated input object | pipeline `spec.inputs` JSON Schema |
 | `nodes.<id>` | the **node result envelope**: `{status, outcome, outputs, artifact_refs}` | see § 3; `<id>` must be a declared node in scope, checked at compile time (invariant 6) |
 | `item`, `items` | inside a `for_each` body: the element, and the full list with `{index, item}` elements | only legal in a `for_each`/`parallel` scope |
-| `loop` | inside an `until` body: `{iteration, previous}` (`previous` = prior iteration's `resultBindings`, or an empty object on iteration 1) | `carryForward` |
+| `previous` | inside an `until` body: the prior iteration's `resultBindings` — an **empty object on iteration 1** | `carryForward`'s data half; see the rename note under this table |
+| `iteration` | inside an `until` body: the 1-based iteration counter, an `int` | `carryForward`'s companion root; with `previous`, this replaces the single root this ADR first named `loop` |
 | `run` | `{id, project_id, revision_digest, triggered_by, started_at, attempt_count}` — never budget internals | |
-| `parameters` | inside a `NodeTemplate` expansion only, and only the template's declared parameters | resolved at compile time; a template may not read `run` or another node |
+| `parameters` | inside a `NodeTemplate` expansion only, and only the template's declared parameters | resolved at compile time; a template may not read `run` or another node. Declared but **unreachable in M4**: `NodeTemplate` documents validate and are not publishable (ADR-0024 § 2, contract § 9.1 row 12), so no M4 revision binds this root |
 
 No `secrets`, no `workspace`, no `env`, no filesystem or HTTP root. The spike's
 `${{ workspace.repo.root }}` (present in the spec's own example) is **not** a legal root: workspace
@@ -80,10 +88,33 @@ placement is node config (`config.workspace.repositories` + a relative `cwd`), w
 per-run layout can actually honour. Unknown roots fail at validate-time
 (`undeclared reference to 'unknown_root'`).
 
+**Why `previous` + `iteration` and not one root named `loop`.** The original spelling of this pair
+was `loop` = `{iteration, previous}`. cel-go v0.31.0 reserves `loop` as an *identifier*: the env
+builds happily with `cel.Variable("loop", cel.DynType)` (or `cel.MapType(...)`) declared and then
+refuses every expression that reaches it — `loop.previous.review_feedback` and `has(loop.previous)`
+both → `reserved identifier: loop`, declared or undeclared, restricted env or default. The
+reservation is identifier-level only: `nodes.loop` and `run.loop.previous` compile, and
+`nodes['loop']` is refused by § 5's function allowlist (`_[_]` is not in it), not by the parser —
+two distinct publish-time refusals the compiler's messages must keep apart. All observed in
+[`results-contract-probes.txt`](../compatibility/m4-spike/results-contract-probes.txt); the
+contract logs the same finding as § 9.1 row 17 / D16 and the § 9.3 sample already uses the renamed
+roots. A root the pinned engine cannot name is worse than a rename, because the failure surfaces at
+expression-compile time in a milestone whose whole point is publish-time refusals. Two guards keep
+it from recurring: the compiler refuses **any** root name on a reserved-identifier list (cel-go's
+parser keywords; `loop` is the observed member) with `undeclared_root` quoting the engine's own
+reason, and contract § 7 C13d / § 8's unit-CEL layer compile one `<root>.x` per root declared here
+and fail the build on `reserved identifier`. `01`'s `carryForward` and `03`'s loop prose keep their
+meaning (their *text* is spec-owner register work, contract § 9.1 rows 17–18); an unguarded
+prior-iteration reference is still a first-iteration failure, because `previous` starts empty, so it
+must be written `has(previous.x) ? previous.x : …`.
+
 Node ids are constrained to `^[a-z][a-z0-9_]{0,62}$` precisely so every id is a legal single CEL
 selector — the provisional schema's `^[a-zA-Z][a-zA-Z0-9_-]*$` admits `my-step`, which turns
-`${{ nodes.my-step.outputs.x }}` into a subtraction. That is a **reserved-word-free** namespace with
-one exception: an id may not be `in`, `as`, or `_`.
+`${{ nodes.my-step.outputs.x }}` into a subtraction. That is a **reserved-word-free** namespace:
+an id may not be `in`, `as` or `_`, and may not be any name on the compiler's reserved-identifier
+list above (contract § 9.1 row 2). The `in`/`as`/`_` refusals are spelling necessities; refusing
+parser-reserved names such as `loop` is hygiene rather than necessity — `nodes.loop` compiles — but
+it keeps a name the author cannot use as a root out of documents entirely.
 
 ### 3. Absence, skipping, and the totality rule
 
@@ -113,8 +144,9 @@ object. Consequences:
 
 ### 4. Types, `dyn`, and stringification
 
-Roots are declared `dyn` because node outputs are arbitrary JSON. Three rules recover the type
-discipline that costs:
+Roots are declared `dyn` because node outputs are arbitrary JSON — with one exception, `iteration`
+(§ 5), which is `cel.IntType` because the engine authors that value rather than receiving it as
+produced JSON. Three rules recover the type discipline that costs:
 
 1. **Declared output schemas are compiled, not trusted**: every node's `outputs` JSON Schema is
    compiled into a *reference table* the compiler uses to (a) reject an expression that selects a
@@ -145,12 +177,18 @@ cel.NewEnv(
     cel.ASTValidators(allowlistValidator),      // by name, incl. CEL's internal spellings
     cel.Variable("inputs", cel.DynType), cel.Variable("nodes", cel.DynType),
     cel.Variable("item", cel.DynType),   cel.Variable("items", cel.DynType),
-    cel.Variable("run", cel.DynType),    cel.Variable("loop", cel.DynType),
+    cel.Variable("run", cel.DynType),    cel.Variable("previous", cel.DynType),
+    cel.Variable("iteration", cel.IntType),
     cel.Variable("parameters", cel.DynType),
 )
 // evaluation only ever: env.Program(ast, cel.CostLimit(200))
 ```
 
+- **Root names are the env's blind spot, so a test owns them.** `cel.NewEnv` accepts a reserved
+  name (`cel.Variable("loop", cel.DynType)` builds, observed) and only the parser knows; therefore
+  the unit-CEL layer (§ 2's guard, contract § 8) declares every root § 2 names and compiles
+  `<root>.x` through it, failing the build if the pinned engine answers `reserved identifier`. This
+  is the two-line test the spike's `cmd/celprobe` lacked.
 - Allowed functions, by **observed** name — the operator spellings are CEL's, not ours
   (`_&&_`, `_||_`, `!_`, `_==_`, `_!=_`, `_<_`, `_<=_`, `_>_`, `_>=_`, `_+_`, `_-_`, `_*_`, `/_`,
   `_%_`, `_?_:_`, `@in`): plus `has`, `size`, `contains`, `startsWith`, `endsWith`, `string`, `int`,
@@ -161,6 +199,10 @@ cel.NewEnv(
   budget), `now`/`timestamp` (nondeterminism inside a pinned revision), `type`, and all
   comprehensions. New functions are added by ADR-shaped PRs with a cost measurement, never by
   "it's in the stdlib".
+- Types of the roots: every root that resolves to author- or agent-produced JSON is `dyn` (§ 4).
+  `previous` is `dyn` even though the engine places it, because its key set is the same document's
+  `resultBindings`; `iteration` is the one non-`dyn` root, `cel.IntType`, because the counter is the
+  engine's own value. Both probe clean.
 - Budgets: `200` actual cost per evaluation (observed: a 4-clause equality chain costs 20; a
   single comparison costs 5), plus per-run aggregate caps — ≤ 64 compiled expressions per
   revision, ≤ 10 000 evaluations per run (the `for_each`/`until` fan-out is what this bounds, and
@@ -244,6 +286,14 @@ Observed 2026-10-15 in the spike module (`cmd/celprobe`, `cel-go v0.31.0`, budge
 - Normalization: `nodes.review.outputs.approved==true`, `(nodes.review.outputs.approved) == true`
   and `nodes.review.outputs.approved == true` all canonicalize to the same AST text; `!= false`
   does **not** collapse to `== true`.
+- Contract-phase probes in the same module (`go test ./contractprobe -v` →
+  [`results-contract-probes.txt`](../compatibility/m4-spike/results-contract-probes.txt),
+  cel-go v0.31.0): the `loop` reservation (`TestLoopRootIsReserved`), `nodes.loop` /
+  `run.loop.previous` compiling while `nodes['loop']` is an allowlist refusal,
+  `iteration > 1 && has(previous.review_feedback) ? previous.review_feedback : 'first'` compiling,
+  every § 2 root compiling except `loop` (`TestEveryDeclaredRootCompiles`), and all 16 distinct
+  expressions of contract § 9.3's sample compiling *and* normalizing
+  (`TestContractSampleExpressionsCompile`) — the evidence for § 2's rename.
 - Interpolation splitter probes: multi-binding text → 3 segments correctly;
   `unterminated ${{ inputs.goal` and `${{ }}` → named errors; `$${{ escaped-looking }}` → 2
   segments (hence "no escapes" in § 1).
@@ -259,6 +309,9 @@ revision's meaning, because a run pins `plan_digest` as well as `revision_digest
 a revision that would compile differently under a new rule is revalidated, not reinterpreted.
 
 Adding an allowed function or root is additive (new expressions validate; old ones are unaffected).
+The 2026-10-15 rename is that rule exercised on a name nothing could ever compile: no published
+revision can contain a `loop` expression, so replacing the root pair changes no revision's meaning
+and re-digests nothing.
 Removing one requires a converter pass with an ADR (D-013's "explicit converter functions across
 v1alpha1 → v1beta1"), and until then `validate` refuses the affected drafts while existing
 revisions keep running.

@@ -393,9 +393,10 @@ CREATE INDEX approvals_pending_idx ON approval_requests (deadline_at, id) WHERE 
 CREATE INDEX approvals_project_idx ON approval_requests (project_id, created_at DESC, id DESC);
 
 -- Child-run bookkeeping: a child is a run, this row is the relationship (ADR-0023 § 10).
--- NOTE: ADR-0023 § 1's summary table says `UNIQUE (attempt_id)`; its § 3 and § 10 both make
--- `pipeline.invoke` a control-plane node with **no attempt row**, so `attempt_id` cannot be the key.
--- This DDL follows § 3/§ 10 (the substance) rather than § 1's table cell — see § 9.1 row 20.
+-- NOTE: the key is the *node execution*, never an attempt — ADR-0023 § 3 and § 10 make
+-- `pipeline.invoke` control-plane work that creates no attempt row, so an `attempt_id` column could
+-- not be populated for the only rows this table holds. ADR-0023 § 1's summary table was amended
+-- (2026-10-15) to match; see § 9.1 row 20. Do not "correct" this back to `attempt_id`.
 CREATE TABLE pipeline_invocations (
     id                   uuid        PRIMARY KEY DEFAULT uuidv7(),
     run_id               uuid        NOT NULL REFERENCES runs (id),
@@ -864,7 +865,7 @@ error; nothing here is a comment in a schema.
 | Node `timeoutSeconds` | 1 … 604 800 | schema bound; reconciler pass 3/4 |
 | Run `maxDurationSeconds` | ≥ 60; enforced by reconciler pass 4 | `run_duration_exceeded` |
 | `maxNodeExecutions` | schema bound 100 000; counted per run | advancer; `node_execution_budget_exceeded` (this is the loop/fan-out runaway guard) |
-| `maxChildDepth` | **engine ceiling 2** (schema bound also 2 — see § 9 fix 9) | compiler `child_depth_exceeded` + `runs_depth_check` |
+| `maxChildDepth` | **engine ceiling 2** (schema bound also 2 — see § 9.1 row 14) | compiler `child_depth_exceeded` + `runs_depth_check` |
 | `for_each.items` length | ≤ 1 000 (and `maxConcurrency` ≤ 20 by schema) | advancer at scope start; `fanout_items_exceeded` |
 | `until.maxIterations` | 1 … 32 (mandatory) | schema bound; `until_exhausted` at the bound |
 | `retry.maxAttempts` | 1 … 10, clamped to the assignment ceiling | schema + compiler clamp (recorded in `node_executions.attempt_limit`) |
@@ -1140,7 +1141,8 @@ C7c  indeterminate is NOT false (ADR-0022 § 3): point passWhen at a field no it
      → predicate_error (unknown_field at validate-time when the schema declares it, or an eval error
      when it does not), failing the SCOPE at once: node.scope.failed{failed_cause:'predicate_error'},
      iterations_stopped=1, and NO run.completed
-C7d  carryForward observed: loop.previous was non-empty on iteration 2 and empty on iteration 1 —
+C7d  carryForward observed: the `previous` root was non-empty on iteration 2 and an empty object on
+     iteration 1 (ADR-0022 § 2 as amended — it is not named `loop`, which the engine reserves), and
      the twin's prompt echoes it, and the transcript line proves it (`03`'s "address previous review
      feedback" with no back-edge in the graph)
 ```
@@ -1376,7 +1378,11 @@ too, and the mocked layer never substitutes for § 7.
 
 M4 does not edit `communication-spec/` (AGENTS.md). These are the corrections the spec owner should
 apply, each caused by the spike's evidence, and each already honoured by the § 9.3 sample so M4 can
-build without waiting.
+build without waiting. Rows **17, 20 and 21 are corrections to the M4 ADRs rather than to
+`communication-spec/`**, so they sit inside this repository's own authority: they were applied to
+ADR-0022 / ADR-0023 / ADR-0024 on 2026-10-15 (each ADR carries an *Amendment* note; all three stay
+**Proposed**), and are recorded here as the evidence and the reasoning. The remaining rows stay
+spec-owner register work (§ 11.1).
 
 ### 9.1 Proposed spec corrections
 
@@ -1398,12 +1404,11 @@ build without waiting.
 | 14 | `policies.maxChildDepth: maximum 8` in the spike's candidate schema | ADR-0023 § 7 fixes the engine ceiling at 2 and `runs.depth` CHECKs 0–2, so a document can be valid at publish and unschedulable at run time | schema `maximum: 2` to match the engine; the sample sets `maxChildDepth: 0` |
 | 15 | `12-test-strategy.md` case 8 read as "`for_each` of 25 `agent.acp` children" | with ADR-0024's catalogue, the case is satisfied by `for_each` → `pipeline.invoke` (children are *runs*), which is what `07`'s example library item 2 describes | record the reading in the spec so the case is not re-litigated by the next worker (C8 implements it that way) |
 | 16 | `11-build-roadmap.md` M4 lists thirteen node capabilities but the exit sentence names six | ADR-0024 resolves the gap by scoping the *executors*; the roadmap text still reads as a promise of thirteen | add the milestone/executor split (and ADR-0024's `kind_not_implemented` rule) to the roadmap text when it is next touched |
-| 17 | ADR-0022 § 2's `loop` root (`{iteration, previous}`) and § 5's `cel.Variable("loop", cel.DynType)` | **`loop` is a parser-reserved identifier in cel-go v0.31.0.** The env *builds* with a `loop` variable and then refuses every use of it — `loop.previous.x`, `has(loop.previous)` → `reserved identifier: loop` — with default macros or with the restricted env, declared or not. All sixteen other root names in ADR-0022 § 2 and § 5 compile (`item`, `items`, `run`, `parameters`, `nodes`, `inputs`, `attempt`, `artifact`, `matrix`, `environment`, `config`, `vars`, `secrets`, `node`, `previous`, `iteration`). The spike missed it because `cmd/celprobe` never compiled a `loop.*` expression ([`results-contract-probes.txt`](compatibility/m4-spike/results-contract-probes.txt), `module/contractprobe/probes_test.go`) | rename the root pair to two roots, `iteration` (int) and `previous` (object) — both probe-clean, and the ADR's shape is preserved exactly (`previous` = prior iteration's `resultBindings`, empty object on iteration 1). A `NodeTemplate`/`attempt`-style root named `loop` would hit the same wall, so the compiler additionally refuses **any** root name on a reserved-identifier list (§ 8). ADR-0022 § 2 and § 5 need this one-line amendment before the CEL package is written |
+| 17 | ADR-0022 § 2's `loop` root (`{iteration, previous}`) and § 5's `cel.Variable("loop", cel.DynType)` | **`loop` is a parser-reserved identifier in cel-go v0.31.0.** The env *builds* with a `loop` variable and then refuses every use of it — `loop.previous.x`, `has(loop.previous)` → `reserved identifier: loop` — with default macros or with the restricted env, declared or not. The eight roots ADR-0022 § 2 declares after the rename (`inputs`, `nodes`, `item`, `items`, `run`, `parameters`, `previous`, `iteration`) each compile under the restricted env (`TestEveryDeclaredRootCompiles`). The 16 in that transcript is the sample's distinct **expressions** (`TestContractSampleExpressionsCompile`), not a root inventory: an earlier draft of this row listed `attempt`, `artifact`, `matrix`, `environment`, `config`, `vars`, `secrets` and `node` as roots that "compile", and no probe in `module/` compiles expressions through them, so the invented coverage is removed rather than inherited — the real claim is eight declared roots, one reserved name. The spike missed it because `cmd/celprobe` never compiled a `loop.*` expression ([`results-contract-probes.txt`](compatibility/m4-spike/results-contract-probes.txt), `module/contractprobe/probes_test.go`) | rename the root pair to two roots, `iteration` (int) and `previous` (object) — both probe-clean, and the ADR's shape is preserved exactly (`previous` = prior iteration's `resultBindings`, empty object on iteration 1). A `NodeTemplate`/`attempt`-style root named `loop` would hit the same wall, so the compiler additionally refuses **any** root name on a reserved-identifier list (§ 8). **Applied 2026-10-15:** ADR-0022 § 2 and § 5 carry the rename (with this citation and a root-type note — `iteration` is `cel.IntType`, the one non-`dyn` root), so the ADR, this contract and the § 9.3 sample spell the roots `previous` + `iteration`; § 7 C13d and § 8's root-compiles test keep it from recurring |
 | 18 | `03`'s `carryForward` prose ("the previous iteration's results are available") | CEL errors on a missing key (ADR-0022 § 4: observed `no such key: review`), and on iteration 1 `previous` is an **empty object** — so an unguarded prior-iteration reference in an `until` body is a guaranteed first-iteration failure of the *sample*, not of an edge case | the spec should say a prior-iteration reference must be guarded (`has(previous.x) ? previous.x : …`), and the sample does it; the compiler cannot check it, because `previous` is `dyn` and its key set is authored in the same document's `resultBindings` |
 | 19 | ADR-0021 § 6 / ADR-0022 § 5: `plan_digest` covers the normalized AST **text** | `cel.AstToString` in v0.31.0 **line-wraps** its own output: an 86-character `&&` chain comes back with a raw `\n` in it (observed at exactly that width; a 406-char expression returned five of them). Digesting the raw text would bake an engine formatter's column width into a value that pins runs for their lifetime, and a cel-go formatting change would silently re-cut every `plan_digest` | digest `strings.ReplaceAll(AstToString(ast), "\n", " ")` (the engine emits raw newlines *only* as wraps — literals are escaped, so no raw newline can come from a string), and stamp the pinned cel-go version into the digest-scope version that ADR-0021 § 4 already carries. `doctor`'s `cel_env_digest` (§ 6.2) makes a version change visible before any digest is compared |
-
-| 20 | ADR-0023 § 1's table row: `pipeline_invocations` … `UNIQUE (attempt_id)` | the same ADR's § 3 and § 10 make `pipeline.invoke` a **control-plane** node that never creates an attempt, so the column its own table declares unique does not exist for the only rows the table holds. The ADR disagrees with itself, and a worker reading § 1 would build an unschedulable schema | amend § 1's row to `UNIQUE (node_execution_id)` (+ `UNIQUE (child_run_id)`); the contract's § 1 DDL already follows § 3/§ 10 and carries a comment pointing here so nobody "corrects" it back |
-| 21 | ADR-0024 Option A ("the eight kinds"), Consequences ("the six deferred kinds"), Compatibility ("the eight executing kinds") | its own tables enumerate **nine** executed kinds (§ 1) and **seven** deferred ones (§ 2) out of the sixteen-name catalogue — the prose is one short in both directions, and "six deferred" is the number a reader would quote for C13a's expected error count | fix the three prose mentions to nine/seven; this contract's § 7 C13a asserts seven `kind_not_implemented` errors, which is the observable version of the same arithmetic |
+| 20 | ADR-0023 § 1's table row: `pipeline_invocations` … `UNIQUE (attempt_id)` | the same ADR's § 3 and § 10 make `pipeline.invoke` a **control-plane** node that never creates an attempt, so the column its own table declares unique does not exist for the only rows the table holds. The ADR disagrees with itself, and a worker reading § 1 would build an unschedulable schema | **Applied 2026-10-15:** ADR-0023 § 1's row now reads `UNIQUE (node_execution_id)` + `UNIQUE (child_run_id)`, which is what this contract's § 1 DDL already built; the DDL comment now points at the amended row so nobody "corrects" it back |
+| 21 | ADR-0024 Option A ("the eight kinds"), Consequences ("the six deferred kinds"), Verification ("the eight executing kinds") — there is no "Compatibility" heading in a 7-heading ADR | its own tables enumerate **nine** executed kinds (§ 1) and **seven** deferred ones (§ 2) out of the sixteen-name catalogue — the prose is one short in both directions, and "six deferred" is the number a reader would quote for C13a's expected error count | **Applied 2026-10-15:** ADR-0024's three prose mentions now read nine executed / seven deferred, and § 2's heading names the seven; this contract's § 7 C13a asserts seven `kind_not_implemented` errors, which is the observable version of the same arithmetic |
 
 ### 9.2 What the canonical schema adds over the provisional one
 
@@ -1442,13 +1447,14 @@ where `go test ./contractprobe` compiles all sixteen of its expressions and `cmd
 against the candidate schema ([transcript](compatibility/m4-spike/results-contract-probes.txt));
 M4's first task copies it to the § 7 C1/C5 fixture path `docs/compatibility/probes/m4/pipeline.yaml`.
 It supersedes the spike's
-`module/candidate/feature-development-corrected.yaml`, which had four defects this contract fixes:
-`${{ loop.previous.outputs.review_feedback }}` (ADR-0022 § 2 defines the prior-iteration object as the
-iteration's **`resultBindings`**, so the `outputs.` hop is wrong), `retriableErrors: […, workspace_lost]`
+`module/candidate/feature-development-corrected.yaml`, which had four defects this contract fixes: a
+prior-iteration reference written through the root ADR-0022 § 2 formerly named and with an extra
+`outputs.` hop (that object is the root `previous` and holds the iteration's **`resultBindings`**
+directly, so the hop is wrong), `retriableErrors: […, workspace_lost]`
 (ADR-0023 § 7 makes `workspace_lost` non-retriable), no `condition` node at all (which left the
 milestone's routing unexercised by its own sample), and — found by this contract's own CEL probe,
-because the spike never compiled a `loop.*` expression — **`loop` cannot be an expression root at
-all**: cel-go v0.31.0 rejects it as a reserved identifier (§ 9.1 row 17). The sample therefore reads
+because the spike never compiled an expression through that root — **the name itself cannot be an
+expression root at all**: cel-go v0.31.0 rejects it as a reserved identifier (§ 9.1 row 17). The sample therefore reads
 `previous.review_feedback`, guarded for iteration 1 (§ 9.1 row 18).
 
 ```yaml
@@ -1708,46 +1714,68 @@ it is named.
 | D13 | `11` M4's thirteen node capabilities, `12` case 8 read as 25 concurrent agents | nine executors (ADR-0024 § 1), and case 8's children are child **runs** via `for_each` → `pipeline.invoke` with `maxConcurrency` bounding in-flight children | 0024 § 1, § 8 |
 | D14 | `12` case 5's "redo incomplete node from prior valid checkpoint" | proven **same-volume only**. Cross-host/cross-volume rehydration is D-024 **Open**, and C6e proves the honest-loss branch instead of pretending | D-024, 0023 § 6 |
 | D15 | ADR-0007: Go code lives only in `cmd/communication` and `internal/…`; `api/` and `worker/` are not Go modules | the spike module is checked in at `docs/compatibility/m4-spike/module/` with its own `go.mod`, so it is a *third* non-root module, outside every build path (a nested module is excluded from the root module's `./...` patterns; `go build ./...`, `go vet ./...` and `go test ./...` are verified unaffected from the repository root). Evidence has to live where the decision cites it, and this is the smallest exception that keeps CI blind to it | 0007 |
-| D16 | ADR-0022 § 2/§ 5 name a `loop` root | cel-go v0.31.0's parser reserves `loop` outright (every use is a compile error, § 9.1 row 17), so M4 compiles prior-iteration data as the roots `previous` + `iteration`, which the same ADR describes as that object's two members. The contract *cannot* build the ADR's spelling: `cel.Variables` succeeds and every expression then fails, which is worse than a rename — it is a runtime surprise in a milestone whose whole point is publish-time refusals. The ADR needs a one-line amendment, and § 8's root-compiles test makes any recurrence loud | 0022 (amendment needed) |
+| D16 | ADR-0022 § 2/§ 5 named a `loop` root | cel-go v0.31.0's parser reserves `loop` outright (every use is a compile error, § 9.1 row 17), so M4 compiles prior-iteration data as the roots `previous` + `iteration`, which the same ADR described as that object's two members. The contract *cannot* build the ADR's original spelling: `cel.Variables` succeeds and every expression then fails, which is worse than a rename — it is a runtime surprise in a milestone whose whole point is publish-time refusals. **ADR-0022 § 2/§ 5 were amended 2026-10-15, so D16 is a record of why, not an open conflict**; § 8's root-compiles test makes any recurrence loud | 0022 (amended) |
 
 ## 11. Open questions for the project owner
 
-1. **Acceptance of the four M4 records, and D-013's status.** D-013 (CEL + JSON Schema + YAML) is
+Six items were recorded here while the contract was being written. Two of them (§ 11.2, § 11.6) turned
+out to be engineering corrections with a right answer provable from the pinned engine and from the
+ADRs' own tables, so they were **closed inside this repository on 2026-10-15** rather than asked.
+Four remain open because they are owner calls — acceptance of a **Proposed** record and the Accepted
+decisions it touches, a dependency-policy question, lab **spending**, and an **egress/identity
+policy** — and none of those is answerable by a worker. Numbering is unchanged so the ADRs' citations
+stay valid.
+
+1. **OPEN (owner — acceptance of a Proposed record).** **Acceptance of the four M4 records, and
+   D-013's status.** D-013 (CEL + JSON Schema + YAML) is
    **Proposed**; ADR-0021/0022 are the build that validates it, and both stay `Proposed` until § 7 has
    run. `13-decisions-and-adrs.md`'s rule — an ADR is not Accepted on the strength of a written
    intention — means the owner's Accept/Reject of ADR-0021…0024 is also the moment D-013 moves, and
    that ADR-0023's `00005` migration is the first persistence change since M3's. The register update
-   (`09`'s envelope columns, `03`'s § 9 correction list, `11`'s M4 node list) is spec-owner work that
-   this contract deliberately does not perform.
-2. **ADR-0022's `loop` root.** § 9.1 row 17 is not a preference: the root as named cannot be compiled
-   by the engine the ADR chose, and the fix is a rename (`previous` + `iteration`) that changes no
-   semantics. It touches an Accepted-shape decision (`01`'s `carryForward`, `03`'s loop prose), so it
-   needs the owner's one-line amendment to ADR-0022 § 2/§ 5 and to `03`'s carry-forward text. M4's
-   § 9.3 sample already uses the renamed roots, so implementation is unblocked either way — but if the
-   owner would rather keep the *name* `loop`, the alternative is a compiler-side rewrite of the
-   `loop` root before digesting, which puts a source-to-AST translation step inside `plan_digest`
-   territory and costs the "the AST text is the document" property ADR-0022 § 6 is built on.
-3. **`cel-go`'s import path.** v0.31.0 is the last release under `github.com/google/cel-go`; v0.32+
-   lives at `cel.dev/cel-go`. Pinning v0.31.0 is viable for one milestone, but the migration (or the
-   decision not to migrate) is a dependency-policy call that also gates `plan_digest` stability across
-   a cel-go upgrade — ADR-0022 Verification names it, and no implementation worker should resolve it
-   by silently running `go get -u`.
-4. **May the lab add a second worker and a second named volume?** `12` case 2 (two workers, one
+   (`09`'s envelope columns, `03`'s § 9 correction list **including the carry-forward prose that
+   names the renamed roots**, `11`'s M4 node list) is spec-owner work that
+   this contract deliberately does not perform. The three ADR corrections (§ 9.1 rows 17/20/21) were
+   made in the ADRs themselves, which this repository owns, so nothing here edits
+   `communication-spec/`.
+2. **CLOSED 2026-10-15 (engineering, not preference).** **ADR-0022's `loop` root — renamed, the ADR
+   amended.** § 9.1 row 17 is not a judgement call: the root as named compiles **no** expression in
+   the engine the same ADR chose (observed: `reserved identifier: loop`, declared or not, guarded by
+   `has()` or not), and the fix is a rename to `previous` + `iteration` that changes no semantics —
+   the ADR's own § 2 had already defined the object as exactly those two members. ADR-0022 § 2/§ 5 now
+   carry the rename with the citation, and § 9.3's sample, § 7 C7d/C13d and § 8's root-compiles test
+   are written against it, so implementation was never blocked. What remains is *register* work, not
+   a decision: `03`'s carry-forward text names the old root and is part of § 11.1's list. If the owner
+   would still prefer the *name* `loop`, the only alternative is a compiler-side rewrite of the root
+   before digesting, which puts a source-to-AST translation step inside `plan_digest` territory and
+   costs the "the AST text is the document" property ADR-0022 § 6 is built on — recorded so the
+   trade-off is not re-litigated by a worker at the keyboard.
+3. **OPEN (owner — dependency policy).** **`cel-go`'s import path.** v0.31.0 is the last release under `github.com/google/cel-go`; v0.32+
+   lives at `cel.dev/cel-go`. Pinning v0.31.0 is viable for one milestone, and M4's half is already
+   settled technically: the pin is declared (§ 6.1), § 9.1 row 19 stamps the pinned version into the
+   digest scope, `doctor`'s `cel_env_digest` (§ 6.2) makes a change visible before any digest is
+   compared, and no implementation worker may resolve this by silently running `go get -u`. The
+   migration (or the decision not to migrate) is a dependency-policy call that also gates
+   `plan_digest` stability across a cel-go upgrade — ADR-0022 Verification names it.
+4. **OPEN (owner — spending).** **May the lab add a second worker and a second named volume?** `12` case 2 (two workers, one
    attempt), the stale-write arm of case 3, and C6e's cross-volume loss have no other honest host:
    they cannot be proven with one worker or with mocks, and they are the two claims most likely to be
    quietly inferred. It costs one container, one named volume and a port slot in this plan's own block.
-5. **Which projects may send node content off-host?** `model.chat` is M4's one new egress path, and
+5. **OPEN (owner — egress/identity policy).** **Which projects may send node content off-host?** `model.chat` is M4's one new egress path, and
    ADR-0024 requires the ops page to state plainly that a project using it is shipping node outputs
    (which may contain another node's produced text) to a model endpoint. Whether that is
    installation-wide, per-project, or gated behind the same conversation as harness credential custody
    (M3's open question 1) is a policy decision with a licensing shape to it, not a scheduler flag.
-6. **Two ADR self-conflicts to settle at Accept time.** § 9.1 rows 20–21 are not disagreements *between*
-   documents: ADR-0023's § 1 summary table (`pipeline_invocations UNIQUE (attempt_id)`) contradicts its
-   own § 3/§ 10 (a control-plane `pipeline.invoke` has no attempt), and ADR-0024's prose undercounts its
-   own tables (eight vs nine executed, six vs seven deferred). Each is a one-line amendment, and each is
-   something an implementation worker will otherwise resolve by coin-flip — the first changes a
+6. **CLOSED 2026-10-15 (engineering, arithmetic from the ADRs' own tables).** **Two ADR self-conflicts.** § 9.1 rows 20–21 were not disagreements *between*
+   documents: ADR-0023's § 1 summary table (`pipeline_invocations UNIQUE (attempt_id)`) contradicted its
+   own § 3/§ 10 (a control-plane `pipeline.invoke` has no attempt), and ADR-0024's prose undercounted its
+   own tables (eight vs nine executed, six vs seven deferred). Both have a right answer that is not a
+   preference — a column no writer can populate is not a constraint, and a count is checkable against
+   the table it summarizes — and each is something an implementation worker would otherwise resolve by
+   coin-flip: the first changes a
    uniqueness constraint in migration `00005`, the second changes the expected error count in `12` case
-   13's genre. AGENTS.md's rule (an Accepted decision is never deviated from without an ADR) makes the
-   ambiguity expensive the moment these four records are Accepted, so it is cheaper to fix the prose now.
-   This contract implements § 3/§ 10 and the § 1/§ 2 tables, marks the choice with a DDL comment and
-   asserts seven refusals in C13a, so the reading is visible rather than implicit.
+   13's genre. AGENTS.md's rule (an Accepted decision is never deviated from without an ADR) would make
+   the ambiguity expensive the moment these four records are Accepted, so the prose was fixed now: ADR-0023
+   § 1 carries the composite uniques, ADR-0024 says nine/seven in three places and names the seven in
+   § 2's heading. This contract implements § 3/§ 10 and the § 1/§ 2 tables, marks the choice with a DDL
+   comment and asserts seven refusals in C13a, so the reading stays visible rather than implicit even
+   after the amendment.

@@ -2,6 +2,13 @@
 
 - **Date:** 2026-10-15
 - **Status:** Proposed
+- **Amendment (2026-10-15):** two engineering corrections, no semantics changed. (a) § 1's
+  `pipeline_invocations` row keyed `UNIQUE (attempt_id)` contradicted this record's own § 3/§ 10
+  (a control-plane `pipeline.invoke` never creates an attempt) — the row now reads
+  `UNIQUE (node_execution_id)` + `UNIQUE (child_run_id)`, which is what contract `00005` DDL
+  already built (contract § 9.1 row 20, § 11.6). (b) This record spelled action routes in the
+  spec's colon form (`/runs/{id}:retry`); they are restated in the path-segment form ADR-0014's mux
+  supports and the contract ships (contract D1). Status stays **Proposed**.
 - **Owners:** M4 contract implementers (control plane scheduler, worker runtime, UI)
 - **Related decisions / contracts:** D-009 (Accepted: node-boundary checkpoints, honest worker
   restart), D-018 (Accepted: publication is explicit), D-019 (Accepted), D-024 (**Open**: portable
@@ -69,7 +76,7 @@ make it non-trivial are all Accepted or measured:
 | `attempts` | `id`; `UNIQUE (node_execution_id, attempt_number)`; index on `(status, scheduled_at, id) WHERE status='queued'` | `09`'s `UNIQUE (run_id, node_instance_key, attempt_number)` is enforced transitively through the two uniques; `worker_id`, `lease_expires_at`, `fencing_token` (from `attempt_fencing_seq`), `deadline_at`, `error_class`, `conversation_id`, `turn_id`, `overrides` jsonb |
 | `run_checkpoints` | `(run_id, node_execution_id)` | the durable boundary record (§ 6) |
 | `approval_requests` | `id`, `UNIQUE (node_execution_id)` | pipeline gates (§ 9); **not** `permission_requests` — see § 9 for why both exist |
-| `pipeline_invocations` | `id`, `UNIQUE (attempt_id)`, child `run_id` | child-run bookkeeping (§ 10) |
+| `pipeline_invocations` | `id`; `UNIQUE (node_execution_id)`, `UNIQUE (child_run_id)` | child-run bookkeeping (§ 10) — **not** `attempt_id`: § 3 and § 10 make `pipeline.invoke` control-plane work with no attempt row, so the invocation is keyed by the node execution that owns it (contract § 9.1 row 20; contract § 1's DDL comment points here) |
 | `run_idempotency_keys` | `UNIQUE (project_id, key)` → `run_id`, `created_at`, `request_sha256` | case 1 (§ 12) |
 | `attempt_fencing_seq` | bigint sequence | drawn at claim time only, never per row (ADR-0016's rule) |
 
@@ -80,7 +87,7 @@ insufficient alone to identify a row (hence the composite uniques), so it satisf
 
 ### 2. Planning happens once, at publish; the run stores the plan
 
-`POST /drafts/{id}:publish` compiles the graph into a **plan**: scopes, entry/exit nodes, per-node
+`POST /drafts/{id}/publish` compiles the graph into a **plan**: scopes, entry/exit nodes, per-node
 reference lists (ADR-0022 § 5), compiled `when`/`passWhen` predicates, budget ceilings, topological
 order and cycle results, output-schema validators. The plan's canonical bytes are stored with the
 revision (`compiled_plan` jsonb) and digested as `plan_digest`; a run copies both into
@@ -203,7 +210,7 @@ Retry policy, one column on the node (`retry.workspacePolicy`), default `continu
   implements it because the exit test must show the engine *knows* the difference; D-024 stays
   **Open** since neither mode is portable across volumes.
 - A retry after `interrupted` never re-runs a node that succeeded; a retry of a *run*
-  (`POST /runs/{id}:retry`) targets failed/interrupted node executions and re-queues them with the
+  (`POST /runs/{id}/retry`) targets failed/interrupted node executions and re-queues them with the
   scope bookkeeping recomputed, so an `until` whose iteration 2 died restarts iteration 2, not the
   loop.
 
@@ -236,14 +243,18 @@ Budgets enforced, with named causes of failure: `maxDurationSeconds` (run), per-
 ### 8. `until`, `for_each`, and their outputs
 
 - `until`: iteration `i` runs the body as a fresh set of node executions keyed
-  `/loop[i]/<child>`; after the body's terminal nodes settle, the control plane evaluates
+  `/<until-node-id>[i]/<child>` (the `until` node's own id — § 1's key grammar, not a literal
+  `loop` segment; contract § 1's constraint table shows `/build_until_verified[2]/review`); after the body's terminal nodes settle, the control plane evaluates
   `passWhen` over the iteration envelope. `true` → scope succeeded with `resultBindings` evaluated
   over that iteration; `false` → next iteration if `i < maxIterations`, else the scope **fails**
   with `failed_cause = "until_exhausted"` and the full per-iteration evidence preserved (case 7:
   "no infinite loop", and the bound is mandatory in the schema); an eval error →
-  `predicate_error`, failing the scope at once rather than counting as false. `loop.previous`
-  exposes the prior iteration's `resultBindings` (`carryForward`), which is how the spec's
-  "address previous review feedback" works without a back-edge. `iterations` and the child keys are
+  `predicate_error`, failing the scope at once rather than counting as false. `previous` (an object,
+  empty on iteration 1) exposes the prior iteration's `resultBindings` and `iteration` (an `int`) is
+  the counter — `carryForward`, which is how the spec's "address previous review feedback" works
+  without a back-edge. These are two roots, not one `loop` object: cel-go v0.31.0 reserves `loop` as
+  an identifier and compiles no expression through it (ADR-0022 § 2's amendment; observed in
+  `docs/compatibility/m4-spike/results-contract-probes.txt`). `iterations` and the child keys are
   engine-provided outputs.
 - `for_each`: `items` must evaluate to an array; `0` items ⇒ the scope succeeds immediately with an
   empty result list and one `node.scope.completed {scope, items: 0}` event (`03`'s zero-item edge
@@ -260,7 +271,7 @@ Budgets enforced, with named causes of failure: `maxDurationSeconds` (run), per-
 (`{scope: project, kind: 'pipeline_gate', node_execution_id, summary, artifact_refs, approver_roles,
 approver_user_ids, deadline_at, state: pending|decided|expired|cancelled|denied, decided_by,
 decision, comments, version}`) and the run flips to `waiting_human`. A decision comes from
-`POST /api/v1/approvals/{id}:decide` (or the UI's button) and is authorized **at decision time**
+`POST /api/v1/approvals/{id}/decide` (or the UI's button) and is authorized **at decision time**
 against the project role and the approver set — `12` case 9 (approver lost access between request
 and decision) is a `403`/`409` + `approval.denied` event, not a silent accept. `onTimeout` is
 `fail | cancel_run | expire` (expire re-requests once, then fails), evaluated by the reconciler's
@@ -292,7 +303,7 @@ attempts; the parent's node execution polls in the advancer (no worker) and expo
 `outputs.child_run_id`/`status`/`outputs`. Bookkeeping is `pipeline_invocations` — not a hidden
 second run.
 
-Cancellation is a cascade, and only a cascade: `POST /runs/{id}:cancel` sets
+Cancellation is a cascade, and only a cascade: `POST /runs/{id}/cancel` sets
 `cancel_requested_at`; the advancer (i) moves `queued`/`ready` rows to `cancelled`, (ii) marks live
 worker attempts `cancel_requested` — the worker sends ACP `session/cancel` and, on timeout,
 terminates the **process group** (ADR-0019's launch owns it), then writes the honest terminal
