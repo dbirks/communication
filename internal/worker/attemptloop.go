@@ -486,14 +486,18 @@ func (l *AttemptLoop) closeAttempt(base context.Context, rt *runningAttempt, res
 	case res.Status == AttemptStatusCancelled:
 		l.cancelOwn(base, rt, res.CancelReason)
 
+	case res.Status == AttemptStatusInterrupted:
+		// The executor's protocol word outranks the loop's flags: when the
+		// ACP cancel never came back acked, § 4 step 11 names the honest
+		// terminal interrupted{process_group_kill_timeout}, not a cancelled
+		// claiming an ack nobody received.
+		l.interruptOwn(base, rt, res.InterruptReason)
+
 	case rt.cancelRequested.Load():
 		// The cancel is why the body stopped; the reason naming belongs to
 		// the executor's protocol knowledge (§ 4 step 11), defaulting to the
 		// ack we did receive: the body stopped.
 		l.cancelOwn(base, rt, res.CancelReason)
-
-	case res.Status == AttemptStatusInterrupted:
-		l.interruptOwn(base, rt, res.InterruptReason)
 
 	case rt.shutdown.Load():
 		// We are leaving; the body could not finish inside the grace. The
