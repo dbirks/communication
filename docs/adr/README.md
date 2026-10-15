@@ -35,3 +35,10 @@ exercised — an ADR is not Accepted on the strength of a written intention.
 | ADR-0014 | HTTP /api/v1, problem+json, SSE event stream conventions | Accepted (M1) | [`ADR-0014-http-api-and-event-stream-conventions.md`](ADR-0014-http-api-and-event-stream-conventions.md) |
 | ADR-0015 | ACP Go SDK: coder/acp-go-sdk v0.13.5 | Accepted | [`ADR-0015-acp-go-sdk.md`](ADR-0015-acp-go-sdk.md) |
 | ADR-0016 | Conversations, controller lock, turn leases and fencing tokens | Accepted (M2) | [`ADR-0016-conversations-control-and-turn-leases.md`](ADR-0016-conversations-control-and-turn-leases.md) |
+| ADR-0017 | Run workspaces: per-project mirrors, per-run worktrees, proven commit grants, worker volume identity | Proposed | [`ADR-0017-run-workspaces-mirrors-worktrees-and-volume-identity.md`](ADR-0017-run-workspaces-mirrors-worktrees-and-volume-identity.md) |
+| ADR-0018 | SecretRef: envelope encryption outside the API surface, `.env` materialization | Proposed | [`ADR-0018-secretref-materialization-and-envelope-encryption.md`](ADR-0018-secretref-materialization-and-envelope-encryption.md) |
+| ADR-0019 | Launching the agent under nono in `required` mode from inside the worker container | Proposed | [`ADR-0019-agent-launch-under-nono-in-required-mode.md`](ADR-0019-agent-launch-under-nono-in-required-mode.md) |
+| ADR-0020 | Artifact store: local backend, S3 contract, sandboxed HTML preview origin | Proposed | [`ADR-0020-artifact-store-and-sandboxed-html-preview.md`](ADR-0020-artifact-store-and-sandboxed-html-preview.md) |
+
+The M3 build contract that these four records share — tables, routes, events, worker duties and the
+exit test — is [`docs/m3-contract.md`](../m3-contract.md).
