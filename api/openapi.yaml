@@ -491,7 +491,11 @@ paths:
         `LISTEN communication_events` (the journal's `AFTER INSERT` trigger emits
         `pg_notify` of `global_seq`) purely as a wake-up, and always re-queries by
         sequence — so a notification delivered by another replica, or none at all,
-        cannot cause gaps or duplicates. A `: heartbeat` comment line is written
+        cannot cause gaps or duplicates. Because `global_seq` is consumed at insert
+        time while commits may land out of that order, a row can be held back until
+        the transaction holding the next-lower sequence has settled: delivery is
+        gap-free and duplicate-free, but never promised instantaneous (ADR-0014 §9).
+        A `: heartbeat` comment line is written
         every 15 seconds to keep proxies from closing the stream. When both
         `Last-Event-ID` and `after` are supplied, the header wins (it is what the
         browser set automatically). The stream is scoped to this project and
@@ -518,6 +522,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/workers:
     get:
       operationId: listWorkers
@@ -820,9 +826,18 @@ components:
           format: uuid
         slug:
           type: string
-          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          pattern: "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+          maxLength: 40
+          description: >
+            Lowercase `[a-z0-9-]`, at most 40 characters, starting and ending
+            with an alphanumeric character. `createProject` enforces the same
+            rule for an explicit slug and for the one it derives from `name`.
         name:
           type: string
+          maxLength: 200
+          description: >
+            As supplied to `createProject`, which accepts at most 200 characters
+            (longer is `422`).
         description:
           type: string
         created_at:
@@ -855,12 +870,18 @@ components:
           type: string
           minLength: 1
           maxLength: 200
+          description: >
+            At most 200 characters; longer is `422`. An all-whitespace name is
+            `422` as well, because it is stored trimmed of surrounding space.
         slug:
           type: string
-          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          pattern: "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+          maxLength: 40
           description: >
-            Optional; derived from `name` when absent (lowercase, `[a-z0-9-]`).
-            Duplicate slugs in the organization are `409`.
+            Optional; derived from `name` when absent (lowercase, `[a-z0-9-]`,
+            collapsed and trimmed to at most 40 characters). A slug is at most
+            40 characters and never begins or ends with a hyphen; anything
+            else is `422`. Duplicate slugs in the organization are `409`.
         description:
           type: string
           maxLength: 2000
@@ -877,7 +898,14 @@ components:
           format: uuid
         name:
           type: string
-          description: Unique within the project.
+          pattern: "^[A-Za-z0-9._-]{1,100}$"
+          maxLength: 100
+          description: >
+            Unique within the project. It also names the repository's checkout
+            directory under a run workspace (`repos/<name>`,
+            communication-spec/05-workspaces-security-secrets.md), so it is a
+            single filename-safe path component: `[A-Za-z0-9._-]`, at most 100
+            characters, and never `.` or `..`.
         git_url:
           type: string
           description: Remote URL as stored; see `RepositoryCreate.git_url` for the accepted forms.
@@ -903,7 +931,11 @@ components:
           type: string
           minLength: 1
           maxLength: 100
-          description: Unique within the project; a duplicate is `409`.
+          pattern: "^[A-Za-z0-9._-]{1,100}$"
+          description: >
+            Unique within the project; a duplicate is `409`. Filename-safe
+            (`[A-Za-z0-9._-]`) because it names a workspace directory; anything
+            else, including `.` and `..`, is `422`.
         git_url:
           type: string
           pattern: "^((https|ssh)://[^/\\s]+/.+|file:///[^\\s]+|git@[^:/\\s]+:.+)$"

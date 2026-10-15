@@ -88,18 +88,24 @@ type ProjectStore interface {
 // so the client learns which field was wrong instead of colliding with a
 // database constraint.
 const (
-	prjMaxNameLen        = 80
+	prjMaxNameLen        = 200
 	prjMaxDescriptionLen = 2000
 	prjMaxSlugLen        = 40
 	prjMaxDefaultBranch  = 200
 )
 
 var (
-	// A slug is lowercase alphanumeric, optionally hyphen-separated: the
-	// derived form of a project name, and the only accepted explicit one.
-	prjSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
-	// A repository name is a filename-like token.
-	prjRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	// A slug is lowercase alphanumeric, optionally hyphen-separated, and never
+	// begins or ends with a hyphen: that is the derived form of a project name
+	// and the only accepted explicit one (ProjectCreate.slug, openapi.yaml —
+	// a trailing hyphen here would make a response violate Project.slug).
+	prjSlugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+	// A repository name is a single filename-safe path component: the name
+	// becomes repos/<name> inside a run workspace
+	// (communication-spec/05-workspaces-security-secrets.md), so it may not
+	// contain a separator, and "." and ".." are rejected as traversal by the
+	// rule quoted there even though the charset alone would allow them.
+	prjRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 	// Accepted git remotes, verbatim from RepositoryCreate.git_url in
 	// api/openapi.yaml: https/ssh URLs, an absolute file:// path, or an scp-style
 	// git@host:path.
@@ -198,7 +204,7 @@ func (h *prjHandlers) createProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if !prjSlugPattern.MatchString(slug) {
-		prjInvalid(w, "slug must match ^[a-z0-9][a-z0-9-]{0,39}$.")
+		prjInvalid(w, "slug must match "+prjSlugPattern.String()+" (at most 40 characters, no leading or trailing hyphen).")
 		return
 	}
 
@@ -256,7 +262,11 @@ func (h *prjHandlers) addRepository(w http.ResponseWriter, r *http.Request) {
 	// Validation runs before the visibility check: an invalid body is the
 	// client's mistake and says nothing about whether the project exists.
 	if !prjRepoNamePattern.MatchString(body.Name) {
-		prjInvalid(w, "repository name must match ^[A-Za-z0-9._-]{1,64}$.")
+		prjInvalid(w, "repository name must match "+prjRepoNamePattern.String()+".")
+		return
+	}
+	if body.Name == "." || body.Name == ".." {
+		prjInvalid(w, "repository name must not be . or ..")
 		return
 	}
 	if !prjGitURLPattern.MatchString(body.GitURL) {

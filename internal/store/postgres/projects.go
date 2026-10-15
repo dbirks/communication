@@ -322,7 +322,15 @@ func (s *ProjectStore) AddRepository(ctx context.Context, c Caller, projectID, n
 		OrganizationID: project.OrganizationID,
 		ProjectID:      projectID,
 		Actor:          events.Human(c.UserID),
-		Payload:        map[string]any{"repository_id": repo.ID, "name": repo.Name, "git_url": repo.GitURL},
+		// The payload carries everything a browser needs to render the addition
+		// without refetching, which is what the envelope schema's
+		// repository.added example shows (api/schemas/event-envelope.schema.json).
+		Payload: map[string]any{
+			"repository_id":  repo.ID,
+			"name":           repo.Name,
+			"git_url":        repo.GitURL,
+			"default_branch": repo.DefaultBranch,
+		},
 	}); err != nil {
 		return Repository{}, err
 	}

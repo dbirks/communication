@@ -339,12 +339,13 @@ func TestCreateProjectValidation(t *testing.T) {
 	}{
 		{"missing name", `{"slug":"x"}`, "name is required"},
 		{"blank name", `{"name":"   "}`, "name is required"},
-		{"name too long", `{"name":"` + strings.Repeat("a", 81) + `"}`, "at most 80 characters"},
+		{"name too long", `{"name":"` + strings.Repeat("a", 201) + `"}`, "at most 200 characters"},
 		{"description too long", `{"name":"W","description":"` + strings.Repeat("d", 2001) + `"}`, "at most 2000 characters"},
 		{"uppercase slug", `{"name":"W","slug":"Widgets"}`, "slug must match"},
 		{"slug with space", `{"name":"W","slug":"bad slug"}`, "slug must match"},
 		{"slug too long", `{"name":"W","slug":"` + strings.Repeat("a", 41) + `"}`, "slug must match"},
 		{"slug leading hyphen", `{"name":"W","slug":"-widgets"}`, "slug must match"},
+		{"slug trailing hyphen", `{"name":"W","slug":"widgets-"}`, "slug must match"},
 		{"nothing sluggable", `{"name":"???"}`, "derive a slug"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -570,6 +571,7 @@ func TestAddRepositoryValidationAndConflicts(t *testing.T) {
 	}{
 		{"bad name", `{"name":"bad name","git_url":"https://git/x.git"}`, "repository name must match", http.StatusUnprocessableEntity},
 		{"empty name", `{"name":"","git_url":"https://git/x.git"}`, "repository name must match", http.StatusUnprocessableEntity},
+		{"dot name", `{"name":"..","git_url":"https://git/x.git"}`, "must not be . or ..", http.StatusUnprocessableEntity},
 		{"http scheme", `{"name":"x","git_url":"http://github.com/example/repo.git"}`, "git_url must be https://, ssh://, git@host:path or file://", http.StatusUnprocessableEntity},
 		{"bare host", `{"name":"x","git_url":"https://github.com"}`, "git_url must be https://, ssh://, git@host:path or file://", http.StatusUnprocessableEntity},
 		{"duplicate name", `{"name":"communication","git_url":"https://github.com/example/communication.git"}`, "already exists", http.StatusConflict},

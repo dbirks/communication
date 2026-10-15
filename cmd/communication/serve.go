@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dbirks/communication/internal/api"
+	"github.com/dbirks/communication/internal/api/auth"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/ui"
 )
@@ -27,10 +29,21 @@ runs the control plane HTTP API and the embedded UI on the same origin
 (communication-spec/02-system-architecture.md, ADR-0007, ADR-0012).
 
 environment:
-  COMMUNICATION_DATABASE_URL   required, postgres connection string
-  COMMUNICATION_LISTEN_ADDR    listen address (default ":8080")
-  COMMUNICATION_PUBLIC_URL     required, browser-facing base URL
-  COMMUNICATION_REPLICA_NAME   replica id (default: hostname)
+  COMMUNICATION_DATABASE_URL            required, postgres connection string
+  COMMUNICATION_LISTEN_ADDR             listen address (default ":8080")
+  COMMUNICATION_PUBLIC_URL              required, browser-facing base URL
+  COMMUNICATION_REPLICA_NAME            replica id (default: hostname)
+  COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
+  COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
+  COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
+  COMMUNICATION_OIDC_CLIENT_SECRET      optional; empty means public + PKCE
+  COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS  OIDC subjects that become org admins
+  COMMUNICATION_COOKIE_SECURE           Secure cookie flag (default "true")
+  COMMUNICATION_WORKER_HEARTBEAT        optional; must match the workers' own
+                                        heartbeat interval, because it sets how
+                                        long a worker may be silent before
+                                        GET /api/v1/workers reports it offline
+                                        (default "10s", same as worker mode)
 
 migrations are applied separately: communication migrate up
 `
@@ -64,6 +77,21 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	publicURL := os.Getenv("COMMUNICATION_PUBLIC_URL")
 	if publicURL == "" {
 		fmt.Fprintln(stderr, "COMMUNICATION_PUBLIC_URL is not set")
+		return 2
+	}
+	authCfg, err := auth.ConfigFromEnv()
+	if err != nil {
+		// The login path cannot work without these, and a replica that starts
+		// and then 503s every sign-in is harder to diagnose than one that
+		// refuses to start (ADR-0012 §2).
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	workerHeartbeat, err := serveWorkerHeartbeat(os.Getenv)
+	if err != nil {
+		// A heartbeat the read side cannot parse would silently fall back to the
+		// default window and report live workers as offline.
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	listenAddr := os.Getenv("COMMUNICATION_LISTEN_ADDR")
@@ -106,22 +134,37 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		webUI = ui.Dist()
 	}
 
-	handler := api.New(
-		api.Config{
+	handler, closeStack, err := serveStack(serveStackDeps{
+		Pool:            pool,
+		DatabaseURL:     databaseURL,
+		Auth:            authCfg,
+		WorkerHeartbeat: workerHeartbeat,
+		API: api.Config{
 			ReplicaName: replica,
 			Version:     version,
 			PublicURL:   publicURL,
 			Logger:      log,
 		},
-		dbReadiness{pool: pool, url: databaseURL},
-		serveAuthenticator(),
-		webUI,
-	)
+		Readiness: dbReadiness{pool: pool, url: databaseURL},
+		UI:        webUI,
+		Logger:    log,
+	})
+	if err != nil {
+		stop()
+		log.Error("server configuration failed", slog.String("error", err.Error()))
+		return 2
+	}
+	defer closeStack()
 
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
+	// A graceful shutdown must not wait on SSE streams that only end when their
+	// client leaves: closing the wake-up source ends every open stream, which is
+	// also how a restarting replica hands its browsers to another replica (they
+	// reconnect with Last-Event-ID and lose nothing).
+	srv.RegisterOnShutdown(closeStack)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -215,13 +258,93 @@ func (d dbReadiness) SchemaVersion(ctx context.Context) (int64, error) {
 // ExpectedSchemaVersion returns the schema version this binary requires.
 func (d dbReadiness) ExpectedSchemaVersion() int64 { return postgres.ExpectedSchemaVersion() }
 
-// serveAuthenticator builds this replica's Authenticator.
-//
-// M1 wiring: replaced by internal/api/auth in the next task. Until session
-// lookup exists every request is rejected as unauthenticated, so health and
-// readiness are the only endpoints that answer.
-func serveAuthenticator() api.Authenticator {
-	return api.AuthenticatorFunc(func(*http.Request) (*api.Principal, error) {
-		return nil, api.ErrUnauthenticated
-	})
+// serveStackDeps is everything a serving replica needs: an open pool, the
+// identity configuration and the API/HTTP configuration. It is a struct so a
+// test can build the exact handler production runs without opening a socket.
+type serveStackDeps struct {
+	Pool        *pgxpool.Pool
+	DatabaseURL string
+	Auth        auth.Config
+	API         api.Config
+	Readiness   api.Readiness
+	UI          fs.FS
+	Logger      *slog.Logger
+
+	// WorkerHeartbeat is the workers' heartbeat interval, used only to decide
+	// when GET /api/v1/workers reports a silent worker as offline. Zero uses the
+	// store default, which matches worker mode's own default.
+	WorkerHeartbeat time.Duration
 }
+
+// serveWorkerHeartbeat reads the same environment variable worker mode uses,
+// because the read side's patience has to be derived from the write side's
+// cadence: with a 60s heartbeat and the 10s default here, a perfectly healthy
+// worker is reported offline after 30s of silence. An unset value is not an
+// error — the store default applies.
+func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv("COMMUNICATION_WORKER_HEARTBEAT"))
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("COMMUNICATION_WORKER_HEARTBEAT %q is not a duration: %w", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("COMMUNICATION_WORKER_HEARTBEAT must be positive, got %s", d)
+	}
+	return d, nil
+}
+
+// serveStack builds the HTTP handler for one replica and returns it with a
+// function that releases its background resources.
+//
+// Every route in the M1 contract is registered here, and the session store is
+// the Authenticator — there is no placeholder left to fail closed behind:
+//
+//	auth.Service          /auth/login, /auth/callback, /auth/logout,
+//	                      /api/v1/me, /api/v1/users (and the cookie
+//	                      session Authenticator)
+//	api.RegisterProjects  projects, repositories, members
+//	api.RegisterEvents    GET /api/v1/projects/{projectId}/events (SSE)
+//	api.RegisterWorkers   GET /api/v1/workers
+//
+// No database work happens while building: a replica whose database is briefly
+// unreachable still serves health and readiness, and the first request that
+// needs the identity provider performs discovery (internal/api/auth).
+func serveStack(d serveStackDeps) (http.Handler, func(), error) {
+	if d.Pool == nil {
+		return nil, nil, errors.New("serve: no database pool")
+	}
+	if err := d.Auth.Validate(); err != nil {
+		return nil, nil, err
+	}
+	log := d.Logger
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+
+	identity := &postgres.IdentityStore{Pool: d.Pool}
+	authenticator := auth.New(d.Auth, identity, log)
+
+	projectStore := &postgres.ProjectStore{Pool: d.Pool}
+	apiProjects := postgres.APIProjectStore{S: projectStore}
+	wakes := postgres.NewEventWake(d.DatabaseURL, log)
+
+	handler := api.New(d.API, d.Readiness, authenticator, d.UI)
+	authenticator.Register(handler)
+	api.RegisterProjects(handler, apiProjects)
+	api.RegisterEvents(handler, apiProjects,
+		postgres.APIEventStream{S: projectStore, Wakes: wakes})
+	api.RegisterWorkers(handler, postgres.APIWorkerStore{
+		R:                 &postgres.WorkerRegistry{Pool: d.Pool},
+		HeartbeatInterval: d.WorkerHeartbeat,
+	})
+
+	return handler, wakes.Close, nil
+}
+
+// compile-time proof that the OIDC service is usable as the API's
+// Authenticator: "serve uses the auth service" means this assignment, not a
+// stub that has to be remembered later.
+var _ api.Authenticator = (*auth.Service)(nil)

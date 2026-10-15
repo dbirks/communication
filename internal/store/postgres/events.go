@@ -5,10 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
 )
 
@@ -19,6 +24,58 @@ import (
 const prjEventColumns = `global_seq, event_id, type, schema_version, occurred_at,
 	organization_id, COALESCE(project_id::text, ''), COALESCE(conversation_id::text, ''),
 	actor_kind, actor_id, COALESCE(trace_id, ''), payload`
+
+// evtAppendLockPrefix namespaces the advisory-lock keys that serialize journal
+// appends (ADR-0014 §9). The key is derived from the project (or organization,
+// for project-less events) with hashtextextended, so appends to different
+// projects do not contend with each other. A hash collision across two
+// projects would only cost redundant serialization, never correctness.
+const evtAppendLockPrefix = "communication.domain_events.append/"
+
+// evtJournalSQL is the one statement the SSE reader may use: it filters
+// through the project (so a forged cursor cannot walk another project's
+// journal), resumes above the caller's cursor, and refuses to emit any row
+// whose inserting transaction was not already determined when this statement's
+// snapshot was taken.
+//
+// pg_current_snapshot() inside a READ COMMITTED statement is that statement's
+// own snapshot, so the filter and the scan cannot disagree.
+const evtJournalSQL = `
+	SELECT ` + prjEventColumns + `
+	FROM domain_events e
+	WHERE e.project_id = $1::uuid
+	  AND e.global_seq > $2
+	  AND e.tx_id < pg_snapshot_xmin(pg_current_snapshot())
+	ORDER BY e.global_seq
+	LIMIT $3`
+
+// LockEventJournal acquires the transaction-scoped advisory lock that orders
+// journal appends, holding it to COMMIT. ADOPT IT AS THE FIRST statement of any
+// transaction that will AppendEvent when the project id is already known.
+//
+// The lock is re-acquired inside AppendEvent, so callers that forget are still
+// ordered; acquiring it early additionally keeps the commit order of a
+// project's transactions aligned with the sequence values they consume, which
+// is what makes a naive "global_seq > cursor" reader gap-free (§9).
+func LockEventJournal(ctx context.Context, tx pgx.Tx, projectID, organizationID string) error {
+	if tx == nil {
+		return errors.New("postgres: LockEventJournal requires a transaction")
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, evtLockKey(projectID, organizationID)); err != nil {
+		return fmt.Errorf("postgres: lock event journal: %w", err)
+	}
+	return nil
+}
+
+// evtLockKey is the advisory-lock target for an append: its project, falling
+// back to the organization for project-less (later milestone) events.
+func evtLockKey(projectID, organizationID string) string {
+	if projectID != "" {
+		return evtAppendLockPrefix + projectID
+	}
+	return evtAppendLockPrefix + "org/" + organizationID
+}
 
 // AppendEvent inserts one row into the durable journal and one row into the
 // outbox that will later drive delivery, and must be called inside the same
@@ -31,6 +88,11 @@ const prjEventColumns = `global_seq, event_id, type, schema_version, occurred_at
 // The journal itself assigns event_id, global_seq, schema_version and
 // occurred_at (see migrations/00001_m1_core.sql), which is why events.New
 // carries only the parts the caller knows.
+//
+// AppendEvent first takes the per-project advisory lock described by
+// LockEventJournal, guaranteeing that within one project a row cannot consume
+// a global_seq until every row with a smaller sequence value has already
+// committed or aborted (ADR-0014 §9).
 func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope, error) {
 	if tx == nil {
 		return events.Envelope{}, errors.New("postgres: AppendEvent requires a transaction")
@@ -51,6 +113,9 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 	if err != nil {
 		return events.Envelope{}, err
 	}
+	if err := LockEventJournal(ctx, tx, e.ProjectID, e.OrganizationID); err != nil {
+		return events.Envelope{}, err
+	}
 
 	var env events.Envelope
 	var payloadRaw []byte
@@ -68,6 +133,7 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 	// The payload is carried as raw JSON so an SSE data frame reproduces the
 	// stored bytes exactly rather than a re-encoded approximation.
 	env.Payload = json.RawMessage(payloadRaw)
+	env.OccurredAt = env.OccurredAt.UTC()
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO outbox (global_seq) VALUES ($1)`, env.GlobalSeq); err != nil {
@@ -81,7 +147,16 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 // behind the SSE stream (ADR-0014). It is a journal read only: project
 // visibility is the caller's authorization decision, made before any event is
 // handed to a client.
+//
+// A row is withheld while its inserting transaction might still commit a
+// smaller sequence value later, so a caller that commits out of order can
+// never make this reader skip a row; the cost is that such a row is delivered
+// on a later call once the snapshot has settled
+// (migrations/00002_event_order_guarantee.sql, ADR-0014 §9).
 func (s *ProjectStore) EventsAfter(ctx context.Context, projectID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: project store has no pool")
+	}
 	if !prjValidUUID(projectID) {
 		return nil, ErrProjectNotFound
 	}
@@ -91,15 +166,28 @@ func (s *ProjectStore) EventsAfter(ctx context.Context, projectID string, afterS
 	if limit > prjMaxEventLimit {
 		limit = prjMaxEventLimit
 	}
-	rows, err := s.Pool.Query(ctx, `
-		SELECT `+prjEventColumns+`
-		FROM domain_events
-		WHERE project_id = $1::uuid AND global_seq > $2
-		ORDER BY global_seq
-		LIMIT $3`, projectID, afterSeq, limit)
+	rows, err := s.Pool.Query(ctx, evtJournalSQL, projectID, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: query events: %w", err)
 	}
+	return evtScanEvents(rows, limit)
+}
+
+// VisibleEventsAfter is EventsAfter behind the caller's project visibility: an
+// invisible project is ErrProjectNotFound, the same answer the rest of the
+// project surface gives, so the SSE route cannot be used to probe existence.
+func (s *ProjectStore) VisibleEventsAfter(ctx context.Context, c Caller, projectID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if err := prjRequireCaller(c); err != nil {
+		return nil, err
+	}
+	if _, err := prjGetProject(ctx, s.Pool, c, projectID); err != nil {
+		return nil, err
+	}
+	return s.EventsAfter(ctx, projectID, afterSeq, limit)
+}
+
+// evtScanEvents drains a journal result set into envelopes.
+func evtScanEvents(rows pgx.Rows, limit int) ([]events.Envelope, error) {
 	defer rows.Close()
 
 	out := make([]events.Envelope, 0, min(limit, 64))
@@ -112,6 +200,7 @@ func (s *ProjectStore) EventsAfter(ctx context.Context, projectID string, afterS
 			return nil, fmt.Errorf("postgres: scan event: %w", err)
 		}
 		env.Payload = json.RawMessage(payloadRaw)
+		env.OccurredAt = env.OccurredAt.UTC()
 		out = append(out, env)
 	}
 	if err := rows.Err(); err != nil {
@@ -152,4 +241,265 @@ func prjPayloadJSON(p any) (string, error) {
 		return "{}", nil
 	}
 	return string(encoded), nil
+}
+
+// ---------------------------------------------------------------- wake-ups
+
+// EventWake turns the journal's pg_notify('communication_events') signal into
+// wake-ups for every open SSE stream on this replica. It is a hint and
+// nothing more: the connection it owns exists only to learn "something was
+// inserted", and every consumer re-queries the journal by sequence. If the
+// connection dies, wakes simply stop arriving and the consumers' poll interval
+// takes over, so a lost or duplicated notification cannot make a stream wrong
+// (communication-spec/02: "LISTEN/NOTIFY is only a wake-up optimization").
+//
+// One connection per replica, not per stream: a replica serving hundreds of
+// browsers must not need hundreds of server connections.
+type EventWake struct {
+	databaseURL string
+	log         *slog.Logger
+
+	mu      sync.Mutex
+	subs    map[chan struct{}]struct{}
+	running bool
+	// attached is closed once the current connection has reported LISTEN. Watch
+	// waits for it, so an event inserted immediately after subscribing cannot
+	// slip through before the LISTEN reached the server.
+	attached chan struct{}
+	stop     chan struct{}
+	once     sync.Once
+}
+
+// Wake-up tuning: the listener coalesces notifications into a single pending
+// signal per subscriber, reconnects with bounded backoff after a failure, and
+// wakes every subscriber once after a reconnect so a notification lost across
+// the gap cannot strand a stream.
+const (
+	evtReconnectMin = 250 * time.Millisecond
+	evtReconnectMax = 10 * time.Second
+)
+
+// NewEventWake returns an idle wake-up source; it connects on first use.
+func NewEventWake(databaseURL string, logger *slog.Logger) *EventWake {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	w := &EventWake{
+		databaseURL: databaseURL,
+		log:         logger,
+		subs:        map[chan struct{}]struct{}{},
+		stop:        make(chan struct{}),
+	}
+	return w
+}
+
+// Watch returns a channel signalled (at most once per pending burst) whenever
+// the journal may have gained rows, and a function that ends the
+// subscription. The channel is closed when the passed context is cancelled or
+// Close is called.
+func (w *EventWake) Watch(ctx context.Context) (<-chan struct{}, func(), error) {
+	if w == nil || w.databaseURL == "" {
+		return nil, func() {}, errors.New("postgres: event wake-up source is not configured")
+	}
+	ch := make(chan struct{}, 1)
+
+	w.mu.Lock()
+	w.subs[ch] = struct{}{}
+	first := len(w.subs) == 1
+	w.mu.Unlock()
+
+	if first {
+		w.start(ctx)
+	}
+
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			w.mu.Lock()
+			delete(w.subs, ch)
+			w.mu.Unlock()
+			close(ch)
+		})
+	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			stop()
+		case <-w.stop:
+			stop()
+		}
+	}()
+	return ch, stop, nil
+}
+
+// Close ends the listener and every subscription. Open streams see their
+// channels close, which the API layer treats as "wake up and finish", so a
+// shutdown cannot hang on them.
+func (w *EventWake) Close() {
+	if w == nil {
+		return
+	}
+	w.once.Do(func() { close(w.stop) })
+}
+
+// start launches the listener goroutine once per EventWake and waits (bounded)
+// for the LISTEN to be in place. It returns when the listener is attached, when
+// the source is closed, when the wait times out, or when the *caller's* context
+// ends — a browser that hung up while its stream was being set up must not keep
+// the handler waiting for a connection it no longer needs.
+func (w *EventWake) start(ctx context.Context) {
+	w.mu.Lock()
+	att := w.attached
+	if !w.running {
+		att = make(chan struct{})
+		w.attached = att
+		w.running = true
+		go w.listen(att)
+	}
+	w.mu.Unlock()
+
+	// A listener that cannot attach (the database is briefly unreachable) must
+	// not fail the stream: the caller's poll interval is the fallback, and the
+	// wait is bounded so a slow database cannot stall a connect indefinitely.
+	select {
+	case <-att:
+	case <-w.stop:
+	case <-ctx.Done():
+	case <-time.After(evtAttachTimeout):
+		w.log.WarnContext(ctx, "event listener not attached yet",
+			slog.String("waited", evtAttachTimeout.String()))
+	}
+}
+
+// evtAttachTimeout bounds how long Watch waits for the listener to be live.
+const evtAttachTimeout = 3 * time.Second
+
+// listen keeps one dedicated connection carrying LISTEN communication_events.
+// It never reads the notification payload: the payload is a sequence number,
+// and the journal — not the notification — is the source of truth.
+func (w *EventWake) listen(attached chan struct{}) {
+	var attachOnce sync.Once
+	attach := func() { attachOnce.Do(func() { close(attached) }) }
+	backoff := evtReconnectMin
+	for {
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
+
+		// Cancelling this context is the only way to interrupt a blocked
+		// WaitForNotification, and cancelling it also kills the connection — so it
+		// is created per connection and cancelled only when that connection is
+		// being torn down (Close, or a failed wait that triggers a reconnect).
+		runCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer cancel()
+			select {
+			case <-w.stop:
+			case <-done:
+			}
+		}()
+		err := w.listenOnce(runCtx, attach)
+		close(done)
+		cancel()
+
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
+		w.log.WarnContext(context.Background(), "event listener disconnected",
+			slog.String("error", err.Error()), slog.String("retry_in", backoff.String()))
+		select {
+		case <-w.stop:
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > evtReconnectMax {
+			backoff = evtReconnectMax
+		}
+		// Wake every stream after a reconnect: notifications that arrived while
+		// disconnected were lost, and re-querying by sequence is always safe.
+		w.notifyAll()
+	}
+}
+
+// listenOnce runs one connection's LISTEN loop and returns when it ends.
+func (w *EventWake) listenOnce(ctx context.Context, attach func()) error {
+	conn, err := pgx.Connect(ctx, w.databaseURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+
+	if _, err := conn.Exec(ctx, "LISTEN "+evtNotifyChannel); err != nil {
+		return err
+	}
+	attach()
+	w.log.InfoContext(ctx, "event listener attached",
+		slog.String("channel", evtNotifyChannel))
+
+	for {
+		if _, err := conn.WaitForNotification(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		w.notifyAll()
+	}
+}
+
+// notifyAll signals every subscriber without blocking: a subscriber that has
+// not consumed the previous wake does not need another one, because its next
+// wake re-queries the journal from its own cursor.
+func (w *EventWake) notifyAll() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for ch := range w.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// evtNotifyChannel is the channel named by the journal's AFTER INSERT trigger
+// (migrations/00001_m1_core.sql).
+const evtNotifyChannel = "communication_events"
+
+// -------------------------------------------------------------- api adapter
+
+// APIEventStream exposes the journal and its wake-ups through the interface
+// internal/api's SSE handler depends on. Like APIProjectStore it lives here
+// because package api must not import this one (AGENTS.md dependency rule).
+type APIEventStream struct {
+	S     *ProjectStore
+	Wakes *EventWake
+}
+
+var (
+	_ api.EventStream = APIEventStream{}
+	_ api.EventStream = (*APIEventStream)(nil)
+)
+
+// EventsAfter implements api.EventStream, behind the caller's project
+// visibility.
+func (a APIEventStream) EventsAfter(ctx context.Context, c api.Caller, projectID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if a.S == nil || a.S.Pool == nil {
+		return nil, errors.New("postgres: event stream has no pool")
+	}
+	return a.S.VisibleEventsAfter(ctx, prjAPICaller(c), projectID, afterSeq, limit)
+}
+
+// Watch implements api.EventStream. Without a wake-up source the handler
+// falls back to polling, which is correct but sleepier.
+func (a APIEventStream) Watch(ctx context.Context) (<-chan struct{}, func(), error) {
+	if a.Wakes == nil {
+		return nil, func() {}, nil
+	}
+	return a.Wakes.Watch(ctx)
 }
