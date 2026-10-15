@@ -598,6 +598,94 @@ func testAdvanceIdempotence(t *testing.T, f Factory) {
 	}
 }
 
+// testSkipLedgerLegal is the permanent tripwire for the pending → terminal
+// edge: a node gated false (when: false) and its dependency-skipped
+// dependant go straight from pending to skipped, never visiting ready
+// (contract § 9.1 row 14, § 5.1 step 5 — the sample pipeline's conditional
+// arms). Contract § 1 encodes the row legality as TWO CHECKs:
+// node_executions_terminal_timestamped (a terminal carries finished_at) AND
+// node_executions_ready_timestamped (every NON-pending row carries
+// ready_at). The Postgres adapter mirrors engine rows verbatim into the
+// ledger, so an engine-made skipped row without ready_at is a 23514 CHECK
+// violation on the real database — the engine is the reference
+// implementation and must produce ledger-legal rows itself, stamping
+// ready_at from the store's clock exactly as the pending → ready sibling
+// does. Where MemStore's pre-fix observed behaviour (ReadyAt zero on a
+// skipped row) disagreed with § 1, § 1 wins and the engine was fixed; this
+// pin follows the contract, not the old deviation. The same rule covers
+// pending → cancelled and pending → failed (state.go's Move is the single
+// transition site), so the pins below check both timestamp columns on every
+// row the skip pass terminates.
+func testSkipLedgerLegal(t *testing.T, f Factory) {
+	s := f.Open(t, Config{Pipeline: PipelineSkip})
+	if err := s.Advance(); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	st := s.State(t)
+	skipped := map[string]*runtime.NodeExecution{}
+	for _, key := range []string{"/gated", "/downstream"} {
+		n := st.Node(key)
+		if n == nil {
+			t.Fatalf("%s never materialized", key)
+		}
+		if n.Status != runtime.NodeSkipped {
+			t.Fatalf("%s ended %s, want skipped", key, n.Status)
+		}
+		if n.FinishedAt.IsZero() {
+			t.Errorf("%s: node_executions_terminal_timestamped — skipped row without finished_at", key)
+		}
+		if n.ReadyAt.IsZero() {
+			t.Errorf("%s: node_executions_ready_timestamped — non-pending row without ready_at is a 23514 on the real ledger", key)
+		}
+		skipped[key] = n
+	}
+	if countType(st.Events, string(pevents.TypeNodeExecutionSkipped)) != 2 {
+		t.Fatalf("both skip arms must journal node.execution_skipped (contract § 3): %v", st.Events)
+	}
+	for _, n := range skipped {
+		for _, a := range st.AttemptsFor(n.ID) {
+			t.Fatalf("skipped node %s got an attempt row %s (skipping is control-plane work, ADR-0023 § 3)", n.InstanceKey, a.ID)
+		}
+	}
+	// The rest of the DAG is untouched by the skip: /work arms, claims, and
+	// completes, and the terminal skip rows stay frozen append-only through
+	// the completion — status semantics unchanged apart from the timestamp.
+	work := st.Node("/work")
+	if work == nil || work.Status != runtime.NodeReady {
+		t.Fatalf("/work must be ready while its sibling skipped: %+v", work)
+	}
+	a, err := s.Claim(WorkerA)
+	if err != nil || a == nil {
+		t.Fatalf("claim /work: attempt=%v err=%v", a, err)
+	}
+	if err := s.Start(a.ID, WorkerA, a.FencingToken); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	before := s.Events(t)
+	if err := s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
+		Outputs: map[string]any{"note": "done"}, OutputsDigest: BoundaryDigest,
+		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerA),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	st = s.State(t)
+	if st.Run.Status != runtime.RunCompleted {
+		t.Fatalf("skip plus one success must complete the run, ended %s", st.Run.Status)
+	}
+	if len(st.Events) == len(before) {
+		t.Fatalf("completion appended no journal rows")
+	}
+	for key, was := range map[string]*runtime.NodeExecution{
+		"/gated": skipped["/gated"], "/downstream": skipped["/downstream"],
+	} {
+		now := st.Node(key)
+		if now.Status != runtime.NodeSkipped || !now.ReadyAt.Equal(was.ReadyAt) || !now.FinishedAt.Equal(was.FinishedAt) {
+			t.Fatalf("%s: the completion rewrote the skip terminal (ready_at %s→%s, status %s→%s)",
+				key, was.ReadyAt, now.ReadyAt, was.Status, now.Status)
+		}
+	}
+}
+
 // sameAttempt compares an attempt row by value (Attempt carries slices, so
 // == is not available; DeepEqual is the row-identity check the ledger claims
 // rely on).

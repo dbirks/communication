@@ -390,6 +390,17 @@ func (n *NodeExecution) Move(to string, at time.Time) error {
 			return IllegalTransition{What: "node execution " + n.InstanceKey, From: n.Status, To: to,
 				Why: "node_executions_terminal_timestamped: a terminal node carries finished_at"}
 		}
+		// node_executions_ready_timestamped demands ready_at for EVERY
+		// non-pending row — and pending → terminal edges exist: gated-false
+		// skipping (skipNode), branch/cascade cancellation (cancelNode) and
+		// predicate failure on an undecided node (failPredicate) all move a
+		// row that never visited ready. The engine is the reference
+		// implementation, so it stamps the timestamp here — the same store
+		// clock tick the store's own COALESCE(ready_at, now()) would choose,
+		// never left to the adapter to paper over at the CHECK.
+		if n.ReadyAt.IsZero() {
+			n.ReadyAt = at
+		}
 		n.FinishedAt = at
 		n.Waiting = ""
 	default:

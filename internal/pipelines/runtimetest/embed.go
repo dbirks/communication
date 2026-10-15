@@ -13,6 +13,8 @@ var (
 	retryYAML []byte
 	//go:embed testdata/conform-gate.yaml
 	gateYAML []byte
+	//go:embed testdata/conform-skip.yaml
+	skipYAML []byte
 )
 
 func pipelineYAML(name Pipeline) []byte {
@@ -23,6 +25,8 @@ func pipelineYAML(name Pipeline) []byte {
 		return retryYAML
 	case PipelineGate:
 		return gateYAML
+	case PipelineSkip:
+		return skipYAML
 	}
 	return nil
 }

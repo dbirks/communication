@@ -46,6 +46,11 @@ const (
 	// PipelineGate is one human.approval node: the Decide/CAS shapes
 	// (12 case 9, contract § 5.3, ADR-0023 § 9).
 	PipelineGate Pipeline = "conform-gate"
+	// PipelineSkip has a worker node gated false (when: false for every
+	// admitted input), its dependant, and one plain work node: the
+	// pending → skipped edge that contract § 1's
+	// node_executions_ready_timestamped CHECK exists to police.
+	PipelineSkip Pipeline = "conform-skip"
 )
 
 // Default inputs every fixture admits (spec.inputs requires `goal`).
@@ -226,6 +231,7 @@ func ConformanceTests(t *testing.T, f Factory) {
 	t.Run("Decide_DoubleDecideRefused", func(t *testing.T) { testDecideDouble(t, f) })
 	t.Run("Retry_FailedNode_AppendOnlyNeverRewritesKeys", func(t *testing.T) { testRetryAppendOnly(t, f) })
 	t.Run("Advance_TwiceNoNewInputs_IsJournalNoOp", func(t *testing.T) { testAdvanceIdempotence(t, f) })
+	t.Run("Skip_ConditionFalse_TerminalRowsAreLedgerLegal", func(t *testing.T) { testSkipLedgerLegal(t, f) })
 	// The dual-instance arm is parameterized on the factory: a store whose
 	// run-state lives only in one process cannot implement DualFactory's
 	// OpenPair honestly, and the in-memory reference simply skips.

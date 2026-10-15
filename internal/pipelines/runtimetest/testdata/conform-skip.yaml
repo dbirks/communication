@@ -1,0 +1,45 @@
+# Conformant skip plan: /gated is a worker node whose `when` is false for
+# every admitted input (the sample pipeline's conditional arm, contract § 9.3
+# — here gated on inputs so it fires deterministically), /downstream is its
+# dependant (skipped by dependency_skipped), and /work is plain claimable
+# work. This is the shape that takes the pending → skipped edge straight to
+# a terminal WITHOUT ever visiting ready — the ledger-legality tripwire for
+# node_executions_ready_timestamped (contract § 1); a skipped row with a NULL
+# ready_at is a 23514 on the real database.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-skip
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: gated
+    kind: process.exec
+    when: inputs.goal == 'always'
+    config:
+      executable: gated
+  - id: downstream
+    kind: process.exec
+    dependsOn: [gated]
+    config:
+      executable: downstream
+  - id: work
+    kind: process.exec
+    outputs:
+      type: object
+      required: [note]
+      properties:
+        note: {type: string, minLength: 1}
+    config:
+      executable: work
+  resultBindings:
+    work_status: ${{ nodes.work.status }}
