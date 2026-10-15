@@ -1,0 +1,30 @@
+# Conformant retryable plan: one process.exec with an authored retry budget
+# (ADR-0023 § 7 retriable classes), so a reconciler interrupt makes the
+# advancer queue a replacement attempt whose fencing token must be strictly
+# greater (12 case 3/C4c, contract § 5.4 pass 1).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-retry
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: work
+    kind: process.exec
+    retry:
+      maxAttempts: 3
+      backoff: {baseSeconds: 1, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted, timeout]
+    config:
+      executable: work
+  resultBindings:
+    work_status: ${{ nodes.work.status }}

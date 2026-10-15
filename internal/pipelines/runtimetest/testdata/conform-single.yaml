@@ -1,0 +1,31 @@
+# Conformant single-worker plan: one process.exec with an outputs schema and
+# NO retry block, so the authored default arm makes a failure terminal
+# (contract § 5.1 step 8's stop path) — the shape the run-level Retry
+# (route 31) subtest needs.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-single
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: work
+    kind: process.exec
+    outputs:
+      type: object
+      required: [note]
+      properties:
+        note: {type: string, minLength: 1}
+    config:
+      executable: work
+  resultBindings:
+    work_status: ${{ nodes.work.status }}

@@ -1,0 +1,34 @@
+# Conformant gate plan: one human.approval node (contract § 5.3, ADR-0023 § 9)
+# and a dependant that reads the decision as a business outcome, so the
+# Decide/CAS subtests can watch the run resume after a decision.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-gate
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: gate
+    kind: human.approval
+    config:
+      summary: ${{ inputs.goal }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 60
+      onTimeout: fail
+  - id: after
+    kind: process.exec
+    dependsOn: [gate]
+    when: nodes.gate.outputs.decision == 'approved'
+    config:
+      executable: go_on
+  resultBindings:
+    gate_decision: ${{ nodes.gate.outputs.decision }}
