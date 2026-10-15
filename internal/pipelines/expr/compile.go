@@ -69,7 +69,15 @@ func EnvFingerprint() string {
 	var b strings.Builder
 	b.WriteString("cel-go=" + CELVersion + "\n")
 	b.WriteString("limits=" + itoa(ExpressionSizeLimit) + "," + itoa(ExpressionNodeLimit) + "," + itoa(ExpressionNestingLimit) + "," + itoa(EvalCostLimit) + "," + itoa(ExpressionsPerRevision) + "," + itoa(EvaluationsPerRun) + "\n")
-	b.WriteString("functions=" + strings.Join(AllowedFunctions(), ",") + "\n")
+	// The allowlist is a map, and Go randomizes map iteration order per
+	// call: joining AllowedFunctions() unsorted made the fingerprint — and
+	// therefore every published cel_env_digest — different on every call,
+	// in-process and across processes (observed: doctor's § 6.2 lane
+	// reported two digests for the same build). The digest's whole purpose
+	// is to be stable until the environment moves, so the join is sorted.
+	names := AllowedFunctions()
+	sortStrings(names)
+	b.WriteString("functions=" + strings.Join(names, ",") + "\n")
 	for _, s := range []Scope{ScopePipeline, ScopeForEach, ScopeUntil, ScopeTemplate} {
 		b.WriteString("scope=" + ScopeName(s) + ":" + strings.Join(s.Roots(), ",") + "\n")
 	}
