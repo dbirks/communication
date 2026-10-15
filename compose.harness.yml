@@ -47,6 +47,20 @@
 #
 # Host preparation (lab only): mkdir -p .harness/workspaces .harness/home
 services:
+  api-a:
+    # The keyring is 0600 by LoadKeyring's own rule, so exactly one uid can
+    # read it — this host's user, same as the worker below. The shipped image
+    # user (10001) stays correct for the un-harnessed stack, where api and
+    # worker share it.
+    user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+  api-b:
+    user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+  keyring-init:
+    # chowns the keyring/artifact/workspace volumes to the uid that will read
+    # them, so this override drives that choice too.
+    environment:
+      KEY_UID: "${HOST_UID:-10001}"
+      KEY_GID: "${HOST_GID:-10001}"
   worker:
     # The image's uid is 10001; run as the host user so the mounted configs
     # (owned by that user) are readable by the worker and by the agent child
@@ -66,6 +80,12 @@ services:
       # and every prepare would fail for a reason that is the lab rather than the
       # code (the same reason the harness mounts /workspaces at /workspaces).
       - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
+      # Case 14's APM upstream: a local-path dependency the apm lockfile
+      # resolves at install time. Same host path in and out of the container
+      # for the same reason the git remotes are mounted that way — the lock
+      # commits absolute coords, and a lock generated against one path while
+      # installing against another is a fixture bug wearing a protocol hat.
+      - .harness/apm-upstream:/apm-upstream:ro
       - .harness/sandbox-home:/sandbox-home
       - .harness/sandbox-policy:/sandbox-policy
       - .harness/sandbox-selftest:/sandbox-selftest

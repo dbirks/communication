@@ -176,6 +176,12 @@ type UnitRequest struct {
 	// declared exclusion set, which is why it travels with the axes rather than
 	// with the repositories (ADR-0017 D6 made exclusions project-scoped).
 	Axes ProfileAxes
+	// FencingToken is the claim's lease token. It travels to the capture seam
+	// because the artifact row and its event land in one transaction that proves
+	// the writing worker still owns the turn (ADR-0016 § 9.2), and because
+	// capture runs after the terminal write — the triple check, not a status
+	// check, is what makes that legal.
+	FencingToken int64
 	// Repos are the project's repositories, with identities: workspace_repos has
 	// an FK to repositories(id) and a name cannot fill it.
 	Repos []ProjectRepo
@@ -200,6 +206,10 @@ type Unit struct {
 	ConversationID string
 	TurnID         string
 	WorkerID       string
+	// FencingToken is the claim's lease token, kept so the unit-boundary
+	// capture can publish artifacts under the same fence that wrote the turn's
+	// terminal state (ADR-0016 § 9.2).
+	FencingToken int64
 
 	Layout wsgit.Layout
 	Repos  []wsgit.PreparedRepo
@@ -372,7 +382,8 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 		WorkspaceID: decision.WorkspaceID, OrganizationID: req.OrganizationID,
 		ProjectID: req.ProjectID, ConversationID: req.ConversationID,
 		TurnID: req.TurnID, WorkerID: req.WorkerID,
-		Layout: prep.Layout, Repos: prep.Repos, Staged: map[string]*apm.StagedContext{},
+		FencingToken: req.FencingToken,
+		Layout:       prep.Layout, Repos: prep.Repos, Staged: map[string]*apm.StagedContext{},
 		workspaceVolume: prep.WorkspaceVolume,
 		Profile:         req.Axes,
 		Enforcement:     s.enforcement(), logger: log,
@@ -654,14 +665,16 @@ func (u *Unit) materializeSecrets(ctx context.Context, req UnitRequest) error {
 		return nil
 	}
 	var extra []string
-	repos := map[string]string{}
+	repos := make([]MaterializeRepo, 0, len(u.Repos))
 	for _, r := range u.Repos {
-		repos[r.RepositoryID] = r.CheckoutPath
+		repos = append(repos, MaterializeRepo{ID: r.RepositoryID, Name: r.Name,
+			CheckoutPath: r.CheckoutPath, MirrorPath: r.MirrorPath})
 	}
 	m, err := u.svc.Secrets.Materialize(ctx, MaterializeRequest{
 		OrganizationID: u.OrganizationID, ProjectID: u.ProjectID, WorkspaceID: u.WorkspaceID,
 		ConversationID: u.ConversationID, TurnID: u.TurnID, WorkerID: u.WorkerID,
 		AgentProfileID: u.Profile.AgentProfileID, Repos: repos, ExtraExclusions: &extra,
+		PolicyDigest: u.policyDigest(),
 	})
 	if err != nil {
 		return fmt.Errorf("worker: materialize secrets for workspace %s: %w", u.WorkspaceID, err)

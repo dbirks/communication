@@ -251,8 +251,18 @@ func (s *TurnStore) AppendTurnEvent(ctx context.Context, c worker.Claim, ev work
 // two calls. Both are fenced, because every one of them reports a security fact
 // about a run and an unfenced append is how a stale worker gets to lie about
 // having sandboxed something.
+//
+// The fence is the owner+token pair, not the turn's status: capture-side
+// events (workspace.committed, and the permission stragglers) legitimately
+// arrive *after* the terminal write — that is D9's ordering, so a capture
+// failure can never erase the fact that a turn happened. A lease stolen by a
+// re-claim rotates the token, so the triple-only check still refuses the one
+// writer it exists to refuse; requiring a non-terminal status here would make
+// workspace.committed unjournalable by construction (deviation D24 says these
+// appends "can legitimately be written after the turn has reached its terminal
+// state" — this is that promise, kept).
 func (s *TurnStore) WorkspaceEvent(ctx context.Context, c worker.Claim, ev worker.TurnEvent) error {
-	return s.trnWithFencedTx(ctx, c, func(ctx context.Context, tx pgx.Tx) error {
+	return s.trnWithFenceTripleTx(ctx, c, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, ev)
 		return err
 	})

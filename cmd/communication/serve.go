@@ -20,6 +20,8 @@ import (
 
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/api/auth"
+	"github.com/dbirks/communication/internal/artifacts"
+	"github.com/dbirks/communication/internal/secrets"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/ui"
 )
@@ -45,6 +47,40 @@ environment:
                                         long a worker may be silent before
                                         GET /api/v1/workers reports it offline
                                         (default "10s", same as worker mode)
+  COMMUNICATION_SECRET_KEYRING          envelope-encryption keyring directory
+                                        (ADR-0018 D2.2; default "/keyring"). An
+                                        explicitly configured but unreadable
+                                        keyring is a startup refusal; an absent
+                                        default one disables the secret write
+                                        routes loudly rather than killing the
+                                        replica.
+  COMMUNICATION_ARTIFACT_BACKEND        local (default) | s3
+  COMMUNICATION_ARTIFACT_ROOT           local artifact root (default
+                                        "/var/lib/communication/artifacts");
+                                        mounted read-only on a serving replica
+  COMMUNICATION_ARTIFACT_S3_ENDPOINT /  inert while BACKEND=local; the S3 pair
+  COMMUNICATION_ARTIFACT_S3_BUCKET /    is ADR-0020 D7's conformance backend
+  COMMUNICATION_ARTIFACT_S3_ACCESS_KEY /
+  COMMUNICATION_ARTIFACT_S3_SECRET_KEY /
+  COMMUNICATION_ARTIFACT_S3_REGION /
+  COMMUNICATION_ARTIFACT_SPOOL
+  COMMUNICATION_PREVIEW_HOST            preview origin host[:port] the preview
+                                        routes answer on (any other Host gets
+                                        404 — ADR-0020 D6)
+  COMMUNICATION_PREVIEW_BASE_URL        prefix of a minted preview_url
+  COMMUNICATION_PREVIEW_TOKEN_TTL       requested token lifetime (default 5m,
+                                        clamped to 1h by the signer)
+  COMMUNICATION_PREVIEW_TOKEN_SECRET    /…_SECRET_FILE
+                                        HMAC key for preview and download
+                                        tokens. MUST be identical on every
+                                        replica (the token is minted behind a
+                                        load balancer and verified on any
+                                        origin). Unset is a dev default: a
+                                        random per-process key, loudly warned
+                                        about, so a restart or a second
+                                        replica invalidates tokens rather than
+                                        the stack silently cross-verifying
+                                        nothing.
 
 migrations are applied separately: communication migrate up
 `
@@ -112,6 +148,15 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	// so interleaved compose logs stay attributable.
 	log := slog.New(slog.NewJSONHandler(stderr, nil)).With(slog.String("replica", replica))
 
+	// The M3 surface configuration, resolved before the pool opens so a
+	// misconfigured keyring or artifact backend is a startup refusal rather
+	// than a route that fails its first request (ADR-0018 D2.3, ADR-0020
+	// Consequences: "a mis-mounted artifact root is a readiness failure").
+	m3, code := serveM3Config(stderr, log)
+	if code != 0 {
+		return code
+	}
+
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -149,6 +194,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		Readiness: dbReadiness{pool: pool, url: databaseURL},
 		UI:        webUI,
 		Logger:    log,
+		M3:        m3,
 	})
 	if err != nil {
 		stop()
@@ -259,6 +305,63 @@ func (d dbReadiness) SchemaVersion(ctx context.Context) (int64, error) {
 // ExpectedSchemaVersion returns the schema version this binary requires.
 func (d dbReadiness) ExpectedSchemaVersion() int64 { return postgres.ExpectedSchemaVersion() }
 
+// serveM3 is the resolved M3 configuration for a replica: the keyring (or its
+// documented absence), the artifact byte backend *this* process talks to
+// (read-only: the worker is the only writer), the preview origin wiring, and
+// the pinned policy identity the fleet view reports.
+type serveM3 struct {
+	Keyring        *secrets.Keyring
+	ArtifactBytes  artifacts.Store
+	PreviewHost    string
+	PreviewBaseURL string
+	PreviewTTL     time.Duration
+	PreviewSigner  *artifacts.Signer
+	PinnedVersion  string
+	PolicyDigest   string
+}
+
+// serveM3Config resolves the M3 environment. Exit codes follow runServe's own
+// rule: 2 for a configuration the operator has to fix.
+func serveM3Config(stderr io.Writer, log *slog.Logger) (serveM3, int) {
+	var out serveM3
+	keyring := keyringFromEnvOrDefault(log)
+	if keyring == nil && strings.TrimSpace(os.Getenv(secrets.EnvKeyring)) != "" {
+		// Explicitly configured and unreadable: the operator meant to have
+		// secrets. Starting anyway would let the API accept secret writes it
+		// can never read back — ADR-0018 D2.3 refuses that specifically.
+		fmt.Fprintln(stderr, secrets.EnvKeyring+" is set but the keyring there is unreadable")
+		return out, 2
+	}
+	out.Keyring = keyring
+	bytes, err := artifactBytesFromEnv(true, log)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return out, 2
+	}
+	out.ArtifactBytes = bytes
+	out.PreviewHost, out.PreviewBaseURL, out.PreviewTTL = previewConfigFromEnv()
+	if out.PreviewHost != "" || out.PreviewBaseURL != "" {
+		secret := previewTokenSecret(log)
+		if len(secret) == 0 {
+			fmt.Fprintln(stderr, "preview is configured but its token secret is unreadable")
+			return out, 2
+		}
+		signer, err := artifacts.NewSigner(secret)
+		if err != nil {
+			fmt.Fprintln(stderr, err.Error())
+			return out, 2
+		}
+		out.PreviewSigner = signer
+	}
+	pinned, digest, err := pinnedPolicy()
+	if err != nil {
+		fmt.Fprintln(stderr, "pinned sandbox policy is unreadable:", err)
+		return out, 2
+	}
+	out.PinnedVersion, out.PolicyDigest = pinned, digest
+	return out, 0
+}
+
 // serveStackDeps is everything a serving replica needs: an open pool, the
 // identity configuration and the API/HTTP configuration. It is a struct so a
 // test can build the exact handler production runs without opening a socket.
@@ -275,6 +378,11 @@ type serveStackDeps struct {
 	// when GET /api/v1/workers reports a silent worker as offline. Zero uses the
 	// store default, which matches worker mode's own default.
 	WorkerHeartbeat time.Duration
+
+	// M3 is the resolved secret/artifact/preview configuration. The zero value
+	// keeps every M1/M2 route working: secrets refuse through the absent
+	// keyring, artifacts serve no bytes, and the preview origin stays shut.
+	M3 serveM3
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -353,6 +461,53 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		HeartbeatInterval: d.WorkerHeartbeat,
 	})
 
+	// M3 surfaces (docs/m3-contract.md § 2). The mounts are unconditional and
+	// the *capability* is conditional: with no keyring the secret write routes
+	// refuse through SecretStore.Keys == nil rather than accepting a rotation
+	// the process could never decrypt, and with no artifact bytes mounted the
+	// content route answers 503 instead of pretending a row has no bytes.
+	secretStore := &postgres.SecretStore{Pool: d.Pool, Keys: d.M3.Keyring}
+	api.RegisterSecrets(handler, postgres.APISecretStore{S: secretStore}, apiProjects)
+
+	artifactStore := &postgres.ArtifactStore{Pool: d.Pool}
+	apiArtifacts := postgres.APIArtifactStore{S: artifactStore, Denials: projectStore}
+	preview := api.PreviewConfig{
+		Host:    d.M3.PreviewHost,
+		BaseURL: d.M3.PreviewBaseURL,
+		TTL:     d.M3.PreviewTTL,
+		Bytes:   d.M3.ArtifactBytes,
+	}
+	if d.M3.PreviewSigner != nil {
+		preview.Tokens = d.M3.PreviewSigner
+	}
+	if d.M3.ArtifactBytes == nil {
+		preview.Bytes = nil
+	}
+	preview.Store = apiArtifacts
+	api.RegisterArtifacts(handler, apiArtifacts, d.M3.ArtifactBytes, preview)
+	if d.M3.PreviewHost != "" {
+		api.RegisterPreview(handler, preview)
+	}
+	api.RegisterWorkspaces(handler, postgres.APIWorkspaceStore{
+		S: &postgres.WorkspaceStore{Pool: d.Pool},
+	})
+	api.RegisterSandbox(handler,
+		postgres.APITurnSandboxStore{Pool: d.Pool},
+		postgres.APISystemSandboxStore{
+			Pool:                 d.Pool,
+			PinnedBackendVersion: d.M3.PinnedVersion,
+			PolicyDigest:         d.M3.PolicyDigest,
+		})
+
+	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
+	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled
+	// stack so an unauthenticated /api/v1 request carrying the preview Host
+	// cannot even reach the auth middleware to learn it is being answered.
+	stacked := http.Handler(handler)
+	if d.M3.PreviewHost != "" {
+		stacked = api.PreviewHostOnly(d.M3.PreviewHost)(stacked)
+	}
+
 	// The turn-lease reconciler runs on every replica and does work on one: the
 	// advisory lock in postgres.Reconciler decides which (ADR-0016 §4). It is
 	// started here rather than in a cron container because the deadlines it
@@ -381,7 +536,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		})
 	}
 
-	return handler, closeStack, nil
+	return stacked, closeStack, nil
 }
 
 // compile-time proof that the OIDC service is usable as the API's

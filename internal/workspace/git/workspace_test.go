@@ -279,6 +279,70 @@ func TestPrepareRealGitWorktreeAndMirror(t *testing.T) {
 	})
 }
 
+// TestDeclareExclusionsSkipsTrackedPaths is the apm.lock.yaml case (apm 0.33
+// probe A5): a pinned project *commits* its lockfile, and `install --frozen`
+// rewrites it in place. An exclude file can never hide tracked content, and
+// `check-ignore` honestly says so — declaring such a path used to fail the
+// whole prepare at the confirmation step. Tracked declarations are skipped;
+// untracked generated paths beside them must still be confirmed.
+func TestDeclareExclusionsSkipsTrackedPaths(t *testing.T) {
+	m, root := newTestManager(t)
+	seed := filepath.Join(root, "origins", "apm-app")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "init", "-q", "-b", "main", seed)
+	writeFile(t, filepath.Join(seed, "README.md"), "# apm-app\n")
+	writeFile(t, filepath.Join(seed, "apm.lock.yaml"), "lockfile_version: '1'\n")
+	run(t, seed, "add", "-A")
+	run(t, seed, "commit", "-qm", "seed apm-app")
+	bare := filepath.Join(root, "origins", "apm-app.git")
+	run(t, root, "clone", "--bare", "-q", seed, bare)
+	vols := measure(t, m)
+
+	prep, err := m.Prepare(context.Background(), PrepareRequest{
+		ScopeKind:         "conversation",
+		ScopeID:           testConvA,
+		ProjectID:         testProjectA,
+		WorkspaceVolumeID: vols[RootKindWorkspaces].ID,
+		MirrorVolumeID:    vols[RootKindRepos].ID,
+		Repos:             []RepoSpec{{RepositoryID: testConvC, Name: "apm-app", GitURL: "file://" + bare, DefaultBranch: "main"}},
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	repo := &prep.Repos[0]
+	// What a frozen install leaves behind: the tracked lock rewritten, plus
+	// untracked generated trees.
+	writeFile(t, filepath.Join(repo.CheckoutPath, "apm.lock.yaml"), "lockfile_version: '1'\nrewritten: true\n")
+	if err := os.MkdirAll(filepath.Join(repo.CheckoutPath, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(repo.CheckoutPath, ".claude", "skills", "alpha.md"), "alpha\n")
+
+	declared, err := m.DeclareExclusions(context.Background(), repo, []string{"apm.lock.yaml", ".claude"})
+	if err != nil {
+		t.Fatalf("DeclareExclusions with a tracked path in the set: %v", err)
+	}
+	if len(declared) == 0 {
+		t.Fatal("declared set is empty")
+	}
+	exclude := filepath.Join(repo.MirrorPath, "info", "exclude")
+	data, err := os.ReadFile(exclude)
+	if err != nil {
+		t.Fatalf("read %s: %v", exclude, err)
+	}
+	if !strings.Contains(string(data), ".claude") {
+		t.Errorf("untracked generated path missing from %s: %s", exclude, data)
+	}
+	// The untracked path must be genuinely ignored in the checkout (the same
+	// confirmation the refuse-on-failure path performs).
+	if out, err := exec.Command("git", "-c", "safe.directory=*", "-C", repo.CheckoutPath,
+		"check-ignore", ".claude").Output(); err != nil || strings.TrimSpace(string(out)) != ".claude" {
+		t.Errorf("check-ignore .claude = %q, err %v", out, err)
+	}
+}
+
 // TestPrepareSameRepoTwoScopes is ADR-0017 P1 measured through this package:
 // two worktrees of one repository collide on basename and git auto-suffixes the
 // admin directory, so the two rows must name *different* admin dirs.

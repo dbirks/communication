@@ -19,6 +19,7 @@ import (
 	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/sandbox/nono"
+	"github.com/dbirks/communication/internal/secrets"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/internal/worker"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
@@ -57,6 +58,24 @@ environment:
                                  (default "<workspace root's parent>/sandbox-policy")
   COMMUNICATION_AGENT_GIT_NAME / COMMUNICATION_AGENT_GIT_EMAIL
                                  commit identity seeded into each agent home
+  COMMUNICATION_SECRET_KEYRING   envelope-encryption keyring directory
+                                 (ADR-0018 D2.2; default "/keyring"). The
+                                 worker is the only process that materializes
+                                 values, so it needs the keyring; a project
+                                 with no secrets runs fine without one, and a
+                                 mount whose key is missing refuses its turn
+                                 loudly (secret.materialization_failed).
+  COMMUNICATION_ARTIFACT_BACKEND / COMMUNICATION_ARTIFACT_ROOT /
+  COMMUNICATION_ARTIFACT_S3_* / COMMUNICATION_ARTIFACT_SPOOL
+                                 the artifact byte backend the worker publishes
+                                 to (this process is the single rw writer of
+                                 the volume, ADR-0020 D2); same names as serve
+  COMMUNICATION_APM_BINARY       override for the packaged-context binary
+                                 (default: apm on PATH, else /opt/apm/apm —
+                                 the vendored 0.33.0, ADR-0008 D1). Absent
+                                 means profiles that pin packaged context
+                                 refuse their turns rather than running a
+                                 different agent than configured
 
 migrations are applied separately: communication migrate up
 `
@@ -296,7 +315,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Warn("no agent commit identity configured: a turn whose profile grants commits will fail at the agent's own `git commit`",
 			slog.String("hint", "set COMMUNICATION_AGENT_GIT_NAME and COMMUNICATION_AGENT_GIT_EMAIL"))
 	}
-	units, unitErr := newUnitService(opts, pool, log)
+	units, unitsSecrets, sandboxFacts, unitErr := newUnitService(opts, pool, log)
 	if unitErr != nil {
 		stop()
 		log.Error("invalid execution-unit configuration", slog.String("error", unitErr.Error()))
@@ -325,7 +344,37 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid turn loop configuration", slog.String("error", err.Error()))
 		return 2
 	}
-	w.Registered = func(ctx context.Context, _ string) {
+	registry := &postgres.WorkerRegistry{Pool: pool}
+	w.Registered = func(ctx context.Context, workerID string) {
+		// Registration-time writes, in this order and before any claim:
+		//
+		//  1. the startup sweep over secret_materializations rows this worker
+		//     left uncleaned when it last died (ADR-0018 D1: cleanup has to
+		//     work when nothing crashes, and a claim before the sweep would
+		//     launch a turn next to a value a dead worker left behind);
+		//  2. the sandbox columns migration 0004 added — what this worker
+		//     actually probed/self-tested, so the ops page can say
+		//     "verified" or say so in words that do not (ADR-0019 D5).
+		if unitsSecrets != nil {
+			swept, err := unitsSecrets.SweepUncleaned(ctx, workerID)
+			if err != nil {
+				log.Error("secret startup sweep incomplete; holding claims until it is fixed",
+					slog.Int("swept", swept), slog.String("error", err.Error()))
+				// A failed sweep means a value may still be on disk. Refusing
+				// to claim turns is the only answer that is not a claim.
+				return
+			}
+			if swept > 0 {
+				log.Warn("startup sweep removed secrets a previous death left behind",
+					slog.Int("rows_closed", swept))
+			}
+		}
+		if err := registry.UpdateSandboxState(ctx, workerID, sandboxFacts.Backend,
+			sandboxFacts.Version, sandboxFacts.Enforcement, sandboxFacts.Verified,
+			sandboxFacts.Notes); err != nil {
+			log.Warn("worker sandbox state could not be registered",
+				slog.String("error", err.Error()))
+		}
 		if err := loop.Start(ctx); err != nil {
 			log.Warn("turn loop stopped", slog.String("error", err.Error()))
 		}
@@ -356,27 +405,44 @@ func acpAskModeID(launcherID string) string {
 	return l.AskModeID
 }
 
-// newUnitService assembles the M3 execution-unit service from worker options.
+// sandboxRegistration is what this worker can honestly write into the
+// workers.sandbox_* columns after its startup gate. The zero value ("none",
+// unverified) is the honest default for a mode that probed nothing.
+type sandboxRegistration struct {
+	Backend     string
+	Version     string
+	Enforcement string
+	Verified    bool
+	Notes       []string
+}
+
+// newUnitService assembles the M3 execution-unit service from worker options
+// and reports the secret materializer (so the registration callback can run
+// the startup sweep through the same wiring the units use) and the sandbox
+// facts the gate observed.
 //
 // The two storage roots are validated here rather than by the caller because the
 // refusal has to happen before the worker registers: a worker that comes online
 // and then fails every turn because its mirror root is inside its workspace root
 // (which AssertNothingBut would reject on every prepare) advertises a capability
 // it does not have.
-func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*worker.UnitService, error) {
+func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*worker.UnitService, *postgres.UnitSecrets, sandboxRegistration, error) {
+	facts := sandboxRegistration{
+		Backend: "none", Enforcement: string(opts.sandboxEnforcement), Verified: false,
+	}
 	workMgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
 	if err != nil {
-		return nil, fmt.Errorf("workspace roots: %w", err)
+		return nil, nil, facts, fmt.Errorf("workspace roots: %w", err)
 	}
 	for dir, why := range map[string]string{
 		opts.sandboxLauncherHome: "nono's HOME must exist and be worker-owned",
 		opts.policyDir:           "the profile directory must exist before a policy can be written",
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("%s (%s): %w", why, dir, err)
+			return nil, nil, facts, fmt.Errorf("%s (%s): %w", why, dir, err)
 		}
 		if err := wsgit.CheckGrantPath(dir); err != nil {
-			return nil, fmt.Errorf("%s: %w", why, err)
+			return nil, nil, facts, fmt.Errorf("%s: %w", why, err)
 		}
 	}
 	// The launcher home must not sit under either storage root: a grant covering
@@ -387,7 +453,7 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 	// startup rather than discovered mid-turn.
 	for _, root := range []string{opts.workspaceRoot, opts.reposRoot} {
 		if pathIsUnderRoot(root, opts.sandboxLauncherHome) {
-			return nil, fmt.Errorf("nono's HOME %s is inside the storage root %s: any grant covering the root would be refused permanently (probe C-H1)", opts.sandboxLauncherHome, root)
+			return nil, nil, facts, fmt.Errorf("nono's HOME %s is inside the storage root %s: any grant covering the root would be refused permanently (probe C-H1)", opts.sandboxLauncherHome, root)
 		}
 	}
 	nano := &nono.Launcher{Binary: nonoPath(), Home: opts.sandboxLauncherHome}
@@ -406,26 +472,48 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 	if opts.sandboxEnforcement == domain.EnforceRequired {
 		caps, err := nano.Probe(context.Background())
 		if err != nil {
-			return nil, fmt.Errorf("sandbox probe: %w", err)
+			return nil, nil, facts, fmt.Errorf("sandbox probe: %w", err)
 		}
 		if !caps.Filesystem {
-			return nil, fmt.Errorf("sandbox reports no Landlock filesystem support (%s): required mode refuses to start", strings.Join(caps.Notes, "; "))
+			return nil, nil, facts, fmt.Errorf("sandbox reports no Landlock filesystem support (%s): required mode refuses to start", strings.Join(caps.Notes, "; "))
 		}
 		selfRoot := opts.sandboxSelfTest
 		if err := os.MkdirAll(selfRoot, 0o700); err != nil {
-			return nil, fmt.Errorf("sandbox self-test scratch %s: %w", selfRoot, err)
+			return nil, nil, facts, fmt.Errorf("sandbox self-test scratch %s: %w", selfRoot, err)
 		}
 		observed, err := nano.SelfTest(context.Background(), selfRoot, 30*time.Second)
 		if err != nil {
-			return nil, fmt.Errorf("sandbox enforcement self-test: %w", err)
+			return nil, nil, facts, fmt.Errorf("sandbox enforcement self-test: %w", err)
 		}
 		log.Info("sandbox enforcement observed before serving turns",
 			slog.String("backend", observed.Backend),
 			slog.String("backend_version", observed.Version),
 			slog.Bool("filesystem_live", observed.FilesystemLive))
+		facts = sandboxRegistration{
+			Backend: observed.Backend, Version: observed.Version,
+			Enforcement: string(opts.sandboxEnforcement), Verified: true,
+			Notes: caps.Notes,
+		}
 	}
-	return &worker.UnitService{
-		Store:        &postgres.WorkspaceStore{Pool: pool},
+	// The M3 seams: secrets resolve and materialize through the store-owned
+	// adapter (the worker package never holds plaintext — the seam returns
+	// paths, env entries, and a redaction black box), artifacts publish through
+	// the byte backend this process writes (rw here: the worker is the single
+	// writer of the artifact volume, ADR-0020 D2), and packaged context stages
+	// with the vendored apm binary if the image carries one.
+	keyring := keyringFromEnvOrDefault(log)
+	if keyring == nil && strings.TrimSpace(os.Getenv(secrets.EnvKeyring)) != "" {
+		return nil, nil, facts, fmt.Errorf("%s is set but the keyring there is unreadable", secrets.EnvKeyring)
+	}
+	artifactBytes, err := artifactBytesFromEnv(false, log)
+	if err != nil {
+		return nil, nil, facts, err
+	}
+	unitStore := &postgres.WorkspaceStore{Pool: pool}
+	secretStore := &postgres.SecretStore{Pool: pool, Keys: keyring}
+	unitsSecrets := &postgres.UnitSecrets{Secrets: secretStore, Workspaces: unitStore}
+	svc := &worker.UnitService{
+		Store:        unitStore,
 		Workspaces:   workMgr,
 		Sandbox:      nano,
 		SandboxPath:  nonoPath(),
@@ -436,7 +524,40 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 		Enforcement:  opts.sandboxEnforcement,
 		LauncherAuth: launcherCredentialDirs,
 		Logger:       log,
-	}, nil
+		Secrets:      unitsSecrets,
+		Artifacts: &postgres.UnitArtifacts{
+			Pool:  pool,
+			Bytes: artifactBytes,
+		},
+	}
+	// APM is an interface field: a nil *APMStager assigned to it would make
+	// `svc.APM == nil` false and turn "no binary" into a panic-shaped refusal
+	// instead of the documented one, so it is set only when it exists.
+	if stager := apmStager(log); stager != nil {
+		svc.APM = stager
+	}
+	return svc, unitsSecrets, facts, nil
+}
+
+// apmStager resolves the packaged-context seam. A binary the image does not
+// carry leaves the seam nil — and a profile that then pins a package refuses
+// its turns (unit.stageAPM), because running without the packaged context the
+// profile promises is running a different agent than the one configured.
+func apmStager(log *slog.Logger) worker.APMTyper {
+	binary := strings.TrimSpace(os.Getenv("COMMUNICATION_APM_BINARY"))
+	if binary == "" {
+		if found, err := exec.LookPath("apm"); err == nil {
+			binary = found
+		} else if _, err := os.Stat("/opt/apm/apm"); err == nil {
+			binary = "/opt/apm/apm"
+		}
+	}
+	if binary == "" {
+		log.Warn("no apm binary on PATH or at /opt/apm/apm: profiles that pin packaged context will refuse their turns",
+			slog.Bool("apm_staging_available", false))
+		return nil
+	}
+	return &worker.APMStager{Binary: binary, Timeout: 2 * time.Minute}
 }
 
 // launcherCredentialDirs resolves the credential directories a launcher declares

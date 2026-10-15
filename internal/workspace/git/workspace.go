@@ -502,6 +502,19 @@ func (m *Manager) startPoint(ctx context.Context, mirror Mirror, spec RepoSpec) 
 //
 // Appending is idempotent and the file is sorted-deduped on write, so a
 // million prepares do not grow it.
+// dropTracked removes from `paths` every path the checkout tracks (git's own
+// answer, not our guess: `ls-files --error-unmatch`, exit 0 means tracked).
+func dropTracked(ctx context.Context, r *Runner, checkout string, paths []string) ([]string, error) {
+	keep := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if _, err := r.Run(ctx, checkout, "ls-files", "--error-unmatch", "--", p); err == nil {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	return keep, nil
+}
+
 func declareExclusions(ctx context.Context, r *Runner, mirror Mirror, checkout string, paths []string) error {
 	if len(paths) == 0 {
 		return nil
@@ -518,6 +531,25 @@ func declareExclusions(ctx context.Context, r *Runner, mirror Mirror, checkout s
 		}
 	}
 	sort.Strings(want)
+
+	// A path the repository *tracks* cannot be hidden by an exclude file: git
+	// ignores exclusions for tracked content, and `check-ignore` will honestly
+	// report "not ignored" — so declaring one would fail the whole prepare at
+	// the confirmation step below. APM's apm.lock.yaml is exactly this case: it
+	// must be committed to pin a context, and `install --frozen` rewrites it in
+	// place (apm 0.33 probe A5). The real guarantee for a tracked file — that
+	// the packaged bytes are the pinned bytes — is the profile's lock-digest
+	// gate at staging time, not an exclude; and a rewritten lock lands on the
+	// run ref, the unit's own scratch lineage, never on main. Tracked paths
+	// are therefore dropped from the declaration set.
+	if kept, err := dropTracked(ctx, r, checkout, want); err != nil {
+		return err
+	} else {
+		want = kept
+	}
+	if len(want) == 0 {
+		return nil
+	}
 
 	file := mirror.InfoExclude()
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {

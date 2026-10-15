@@ -24,6 +24,9 @@
 # real Postgres/OIDC, never mocks):
 #   postgres                                18.6
 #   ghcr.io/navikt/mock-oauth2-server       6.0.7 (ADR-0012 dev/CI IdP)
+#   chrislusf/seaweedfs                     4.48 (S3 conformance speaker, ADR-0020;
+#                                             same pin as compose.yml's optional s3
+#                                             profile)
 # Go itself is NOT pinned here: it comes from go.mod via go-version-file.
 #
 # Only GITHUB_TOKEN is used anywhere in this repository's workflows. Publish
@@ -85,6 +88,42 @@ jobs:
       # binaries must not run concurrently against it.
       - name: go test -race
         run: go test -race -p 1 ./...
+      # S3 conformance (ADR-0020 D7 / objective 3): the artifacts package's
+      # suite refuses to run against an S3 speaker that does not actually
+      # verify SigV4 signatures (storeVerifiesSignatures precondition), because
+      # an anonymous-friendly gateway would let the whole suite pass on a
+      # broken signer — an observed fact from this lab, where SeaweedFS's
+      # default accepted unsigned writes. So this speaker is started with an
+      # identities file and the suite runs for real against it. The identity
+      # is generated at run time, never committed, and valid only inside this
+      # ephemeral container (AGENTS.md: no credentials in the repository).
+      # Flags mirror the lab-verified container, which is also compose.yml's
+      # optional `s3` profile.
+      - name: S3 conformance (SeaweedFS)
+        run: |
+          set -euo pipefail
+          access="CI$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n' | tr 'a-f' 'A-F')"
+          secret="$(head -c 30 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          printf '{"identities":[{"name":"ci","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}\n' \
+            "$access" "$secret" > "$RUNNER_TEMP/s3.json"
+          docker run -d --name s3-conformance \
+            -p 127.0.0.1:8333:8333 \
+            -v "$RUNNER_TEMP/s3.json:/etc/seaweedfs/s3.json:ro" \
+            chrislusf/seaweedfs:4.48 \
+            server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json \
+            -s3.iam=false -dir=/data -master.volumeSizeLimitMB=64
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://127.0.0.1:8333/ && break
+            sleep 1
+          done
+          COMMUNICATION_TEST_S3_ENDPOINT=http://127.0.0.1:8333 \
+          COMMUNICATION_TEST_S3_ACCESS_KEY="$access" \
+          COMMUNICATION_TEST_S3_SECRET_KEY="$secret" \
+          COMMUNICATION_TEST_S3_BUCKET=communication-artifacts-ci \
+            go test -race -p 1 -run 'TestS3ConformanceAgainstSeaweedFS' ./internal/artifacts/
+      - name: stop SeaweedFS
+        if: always()
+        run: docker rm -f s3-conformance || true
 
   contract:
     name: contract

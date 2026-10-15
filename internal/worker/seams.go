@@ -38,6 +38,19 @@ type Materialized struct {
 	// (events.QuarantineSecretLeftBehind) and fails the unit: the alternative is
 	// a secret left in a tree the next conversation gets launched into.
 	Files []string
+	// Redact replaces every occurrence of a value this unit materialized with a
+	// marker and reports how many replacements it made. It is a black box: the
+	// materializer knows the values, this package only calls the function, which
+	// is what keeps the seam's "no plaintext here" promise while still letting
+	// the turn sink honour 12-test-strategy case 12's invariant — a materialized
+	// value must never land in the journal, not even when an agent `cat`s the
+	// file it was written into. Nil when nothing was materialized.
+	Redact func(text string) (string, int)
+	// Done runs after cleanup has *asserted* every file gone: it closes the
+	// secret_materializations rows and journals secret.removed. A unit that dies
+	// before Done leaves the rows uncleaned, which is exactly what the worker's
+	// startup sweep reads. Nil when nothing was materialized.
+	Done func(ctx context.Context) error
 }
 
 // MaterializeRequest names the unit and the checkouts a mount may target.
@@ -49,13 +62,31 @@ type MaterializeRequest struct {
 	TurnID         string
 	WorkerID       string
 	AgentProfileID string
-	// Repos maps repository id to its checkout path, so a repository-scoped mount
-	// can be resolved without the materializer knowing the workspace layout.
-	Repos map[string]string
+	// PolicyDigest is the digest of the policy this unit is about to launch
+	// under, recorded on secret.materialized so a reader can tie "the value was
+	// present" to "under this ruleset". Empty means no policy was in play
+	// (`disabled`/`permissive-dev` isolation), which the event reports rather
+	// than hides.
+	PolicyDigest string
+	// Repos names every checkout this unit was prepared with — by id, name and
+	// the two paths a mount needs (checkout to write into, mirror to exclude
+	// through). It is passed in rather than re-read from `workspace_repos`
+	// because those rows are written *after* materialization by design (the
+	// exclusion set they persist must already be complete): a materializer that
+	// queried the table would find nothing and refuse every project.
+	Repos []MaterializeRepo
 	// ExtraExclusions receives every path written, so the caller can extend the
 	// project exclusion set before the first commit (ADR-0017 D6). The
 	// materializer appends; the caller owns de-duplication and ordering.
 	ExtraExclusions *[]string
+}
+
+// MaterializeRepo is one checkout the unit may write a file into.
+type MaterializeRepo struct {
+	ID           string
+	Name         string
+	CheckoutPath string
+	MirrorPath   string
 }
 
 // ArtifactCapturer is the hook into internal/artifacts (ADR-0020).
@@ -72,14 +103,29 @@ type CaptureRequest struct {
 	OrganizationID string
 	ProjectID      string
 	WorkspaceID    string
+	ConversationID string
 	TurnID         string
 	RepositoryID   string
+	WorkerID       string
+	// FencingToken completes the lease triple: the artifact row and its
+	// artifact.created event land in one transaction that proves this worker
+	// still owns the turn (ADR-0016 § 9.2). The check is owner+token against a
+	// turn that may already be terminal — capture runs after the terminal write,
+	// by design (D9), and a stolen lease has a different token either way.
+	FencingToken int64
 	// Kind is checkpoint or diff: the capture ADR-0017 D8 proves. Nothing here
 	// may imply that rehydration works — D-024 stays Open.
 	Kind     string
 	Name     string
 	Summary  string
 	Manifest []string
+	// Content is the artifact's bytes for a file artifact — one agent-produced
+	// report the capture rule declares publishable (contract § 4.7: files the
+	// contract names become artifacts). Empty means the store builds the bytes
+	// from Summary/Manifest itself (the checkpoint capture).
+	Content []byte
+	// MediaType names Content's type when Content is set.
+	MediaType string
 	// ExcludedPaths is re-filtered by the artifact store itself. A git-level
 	// exclusion must never be the only thing standing between a `.env` and an
 	// artifact, which is why this field is load-bearing rather than

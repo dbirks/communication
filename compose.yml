@@ -73,10 +73,29 @@ services:
   # container log cannot become the leak that the whole design avoids.
   keyring-init:
     image: postgres:18.6
+    environment:
+      # Every container that reads these volumes runs as this uid: 10001 is
+      # both images' USER, and the dev harness passes its host uid through
+      # instead (compose.harness.yml) because the same host user must also be
+      # able to read the mounted agent logins. LoadKeyring refuses a keyring
+      # readable by *group or other*, so there is no mode that serves two
+      # distinct uids: one volume, one owner, chosen here.
+      KEY_UID: "${KEY_UID:-10001}"
+      KEY_GID: "${KEY_GID:-10001}"
     entrypoint: ["sh", "-ec"]
     command:
       - |
         umask 077
+        # Named volumes are created root-owned; every reader here is
+        # non-root. Ownership is initialized once, beside the key generation,
+        # rather than left to the first EACCES at runtime.
+        chown -R "$$KEY_UID:$$KEY_GID" /keyring /preview-keys /artifacts /workspaces /repos
+        # ...and the modes LoadKeyring demands: a 0755 keyring directory is
+        # group/other-accessible traversal, which the loader refuses even when
+        # every file inside is 0600. Docker creates named volumes 0755 root,
+        # so this chmod is what makes an *already-populated* volume (keys from
+        # a previous stack) loadable after the ownership fix above.
+        chmod 700 /keyring /preview-keys
         f=/keyring/master-key-v1
         if [ ! -s "$$f" ]; then
           head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$f.tmp"
@@ -85,8 +104,28 @@ services:
         else
           echo "keyring: master-key-v1 already present"
         fi
+        # The preview/download token key lives on its own volume, not inside
+        # the keyring directory: LoadKeyring refuses stray files by design (a
+        # skipped file would be a lost key generation), so the HMAC key that
+        # mints preview tokens — a *capability* secret, not an encryption key —
+        # gets its own mount. Same generate-once, never-print discipline.
+        t=/preview-keys/token-v1
+        if [ ! -s "$$t" ]; then
+          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$t.tmp"
+          mv "$$t.tmp" "$$t"
+          echo "keyring: generated preview token key"
+        else
+          echo "keyring: preview token key already present"
+        fi
     volumes:
       - masterkeys:/keyring
+      - previewkeys:/preview-keys
+      # Not secrets, but the same class of failure (a root-owned named volume
+      # under a non-root reader), so the same one-shot fix. The worker writes
+      # artifact bytes and workspace trees; an API replica reads neither.
+      - artifacts:/artifacts
+      - workspaces:/workspaces
+      - repos:/repos
     restart: "no"
 
   # One-shot migrator: the API replicas never run migrations themselves
@@ -132,9 +171,23 @@ services:
       # `local`: the S3 backend is a contract in M3, not an implementation.
       COMMUNICATION_ARTIFACT_S3_ENDPOINT: http://seaweedfs:8333
       COMMUNICATION_ARTIFACT_S3_BUCKET: communication-artifacts
+      # ADR-0020 D6: this replica answers preview documents on this host only,
+      # and mints preview URLs pointing at it. The token key is shared with the
+      # other replica through the generated volume — a token minted here must
+      # verify there, which is the whole point of stateless replicas.
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:18084
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18084
+      COMMUNICATION_PREVIEW_TOKEN_SECRET_FILE: /preview-keys/token-v1
+      # Short enough that the exit script's expired-token arm can wait it
+      # out in one sleep, long enough that a preview survives an ordinary
+      # look. The default (5m) would force a five-minute blind wait. Both
+      # replicas set it because a mint can land on either one and the token
+      # has to carry the same TTL wherever it was promised.
+      COMMUNICATION_PREVIEW_TOKEN_TTL: 45s
     volumes:
       - artifacts:/artifacts:ro
       - masterkeys:/keyring:ro
+      - previewkeys:/preview-keys:ro
     ports:
       - "127.0.0.1:18081:8080"
     depends_on:
@@ -168,9 +221,19 @@ services:
       COMMUNICATION_SECRET_KEYRING: /keyring
       COMMUNICATION_ARTIFACT_S3_ENDPOINT: http://seaweedfs:8333
       COMMUNICATION_ARTIFACT_S3_BUCKET: communication-artifacts
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:18084
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18084
+      COMMUNICATION_PREVIEW_TOKEN_SECRET_FILE: /preview-keys/token-v1
+      # Short enough that the exit script's expired-token arm can wait it
+      # out in one sleep, long enough that a preview survives an ordinary
+      # look. The default (5m) would force a five-minute blind wait. Both
+      # replicas set it because a mint can land on either one and the token
+      # has to carry the same TTL wherever it was promised.
+      COMMUNICATION_PREVIEW_TOKEN_TTL: 45s
     volumes:
       - artifacts:/artifacts:ro
       - masterkeys:/keyring:ro
+      - previewkeys:/preview-keys:ro
     ports:
       - "127.0.0.1:18082:8080"
     depends_on:
@@ -191,6 +254,11 @@ services:
       - ./api/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
       - "127.0.0.1:18080:80"
+      # The preview origin (ADR-0020 D6). A *hostname* (preview.localhost —
+      # the browser resolves *.localhost like localhost) rather than a port on
+      # the app origin, because cookies are host-scoped and a port would not
+      # remove one. Published on 127.0.0.1 only, like every other port here.
+      - "127.0.0.1:18084:8084"
     depends_on:
       api-a:
         condition: service_healthy
@@ -316,5 +384,11 @@ volumes:
   # Deleting this volume makes every stored secret version undecryptable — that
   # is the point, not an accident to discover later.
   masterkeys:
+  # The preview/download token HMAC key (ADR-0020 D1/D5), generated beside the
+  # master key by keyring-init and mounted read-only on both API replicas. It
+  # lives outside the keyring directory because LoadKeyring refuses stray files
+  # there, and it is shared because a token minted by one replica must verify on
+  # the other (stateless replicas, ADR-0012).
+  previewkeys:
   # SeaweedFS data (only used under the `s3` profile).
   seaweedfs:

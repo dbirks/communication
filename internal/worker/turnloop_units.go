@@ -35,7 +35,7 @@ func (l *TurnLoop) prepareUnit(ctx context.Context, c Claim, repos []Repo) (*Uni
 	unit, prepErr := svc.Prepare(ctx, UnitRequest{
 		OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
 		ConversationID: c.ConversationID, TurnID: c.TurnID, WorkerID: c.WorkerID,
-		Axes: axes, LauncherID: c.LauncherID,
+		Axes: axes, LauncherID: c.LauncherID, FencingToken: c.FencingToken,
 		Repos: toProjectRepos(repos),
 	})
 	if prepErr != nil {
@@ -176,6 +176,18 @@ func (l *TurnLoop) forgetUnit(conversationID string) *Unit {
 	u := l.liveUnits[conversationID]
 	delete(l.liveUnits, conversationID)
 	return u
+}
+
+// unitFor reads the live unit without taking it out of the map: the turn sink
+// asks it for the secret-redaction hook on every flush, which is a read of
+// state the unit owns, not a claim on its lifecycle.
+func (l *TurnLoop) unitFor(conversationID string) *Unit {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.liveUnits == nil {
+		return nil
+	}
+	return l.liveUnits[conversationID]
 }
 
 // note appends a transcript-visible line without going through a turn's stream,

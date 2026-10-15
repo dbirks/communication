@@ -88,6 +88,7 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 		s.armIdleLocked()
 	case "tool_call":
 		s.flushAllLocked()
+		input := s.redact(ev.Input)
 		s.appendLocked(TurnEvent{
 			Type:      events.TypeConversationToolCall,
 			ActorKind: events.ActorKindWorker,
@@ -96,17 +97,18 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 				ConversationID: s.claim.ConversationID,
 				TurnID:         s.claim.TurnID,
 				ToolCallID:     ev.ToolCallID,
-				Title:          bounded(ev.Text, 200),
+				Title:          bounded(s.redact(ev.Text), 200),
 				Kind:           ev.ToolKind,
 				Status:         orDefault(ev.ToolStatus, "pending"),
-				InputPreview:   bounded(ev.Input, s.loop.cfg.MaxPreviewBytes),
-				Truncated:      len(ev.Input) > s.loop.cfg.MaxPreviewBytes,
+				InputPreview:   bounded(input, s.loop.cfg.MaxPreviewBytes),
+				Truncated:      len(input) > s.loop.cfg.MaxPreviewBytes,
 			},
 		})
 	case "tool_call_update":
 		s.flushAllLocked()
 		n := s.updateSeq[ev.ToolCallID] + 1
 		s.updateSeq[ev.ToolCallID] = n
+		output := s.redact(ev.Output)
 		s.appendLocked(TurnEvent{
 			Type:      events.TypeConversationToolUpdate,
 			ActorKind: events.ActorKindWorker,
@@ -116,9 +118,9 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 				TurnID:         s.claim.TurnID,
 				ToolCallID:     ev.ToolCallID,
 				Status:         orDefault(ev.ToolStatus, "in_progress"),
-				Title:          bounded(ev.Text, 200),
-				OutputPreview:  bounded(ev.Output, s.loop.cfg.MaxPreviewBytes),
-				Truncated:      len(ev.Output) > s.loop.cfg.MaxPreviewBytes,
+				Title:          bounded(s.redact(ev.Text), 200),
+				OutputPreview:  bounded(output, s.loop.cfg.MaxPreviewBytes),
+				Truncated:      len(output) > s.loop.cfg.MaxPreviewBytes,
 				UpdateSeq:      n,
 			},
 		})
@@ -127,6 +129,36 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 		// unknown kinds have no M2 event type — dropping them is honest;
 		// inventing types is not (ADR-0016 §7).
 	}
+}
+
+// redact applies the live unit's secret-redaction hook to text about to enter
+// the journal, and is a pass-through when the unit materialized nothing. The
+// hook is a black box owned by the materializer (which alone knows the values):
+// this package replaces occurrences it is not told about with a marker without
+// ever learning what it replaced (12-test-strategy case 12: an agent that cats
+// its own materialized .env must still not put the value in the journal).
+//
+// Redaction runs at flush time, on the coalesced buffer, so a sentinel split
+// across stream chunks is matched on the whole text. A sentinel split across
+// two *flushes* (idle boundary in the middle of the value) is the known limit
+// of a streaming transcript; the exclusion set and the download path are what
+// case 12 asserts against, and neither can carry a file's content.
+func (s *turnSink) redact(text string) string {
+	if text == "" {
+		return text
+	}
+	u := s.loop.unitFor(s.claim.ConversationID)
+	if u == nil || u.Materialized == nil || u.Materialized.Redact == nil {
+		return text
+	}
+	out, n := u.Materialized.Redact(text)
+	if n > 0 && s.log != nil {
+		// The count, never the value: the log is operator-visible, the journal
+		// is browser-visible, and neither gets plaintext.
+		s.log.Info("journal text redacted for materialized secrets",
+			slog.String("turn_id", s.claim.TurnID), slog.Int("occurrences", n))
+	}
+	return out
 }
 
 // note records a human-readable workspace note (clone failures) as a
@@ -139,6 +171,7 @@ func (s *turnSink) note(text string) {
 		return
 	}
 	s.flushMsgLocked(false)
+	text = s.redact("workspace: " + text)
 	s.appendLocked(TurnEvent{
 		Type:      events.TypeConversationMessageAgent,
 		ActorKind: events.ActorKindWorker,
@@ -147,7 +180,7 @@ func (s *turnSink) note(text string) {
 			ConversationID: s.claim.ConversationID,
 			TurnID:         s.claim.TurnID,
 			ChunkSeq:       s.nextMsgSeq(),
-			Text:           bounded("workspace: "+text, s.loop.cfg.MaxChunkBytes),
+			Text:           bounded(text, s.loop.cfg.MaxChunkBytes),
 			Truncated:      false,
 		},
 	})
@@ -201,7 +234,7 @@ func (s *turnSink) flushAllLocked() {
 
 // flushMsgLocked writes the buffered agent text as ordered, bounded chunks.
 func (s *turnSink) flushMsgLocked(final bool) {
-	text := s.msg.String()
+	text := s.redact(s.msg.String())
 	s.msg.Reset()
 	if text == "" {
 		return
@@ -247,7 +280,7 @@ func (s *turnSink) flushMsgLocked(final bool) {
 }
 
 func (s *turnSink) flushThoughtLocked() {
-	text := s.thought.String()
+	text := s.redact(s.thought.String())
 	s.thought.Reset()
 	if text == "" {
 		return

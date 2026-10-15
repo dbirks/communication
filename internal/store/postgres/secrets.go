@@ -178,15 +178,16 @@ type NewSecretMount struct {
 
 // NewSecretMaterialization is the worker's record of one delivery.
 type NewSecretMaterialization struct {
-	SecretID      string
-	SecretVersion int
-	ProjectID     string
-	WorkspaceID   string
-	TurnID        string
-	WorkerID      string
-	DeliveryMode  string
-	Target        string
-	FileMode      int
+	SecretID       string
+	SecretVersion  int
+	OrganizationID string
+	ProjectID      string
+	WorkspaceID    string
+	TurnID         string
+	WorkerID       string
+	DeliveryMode   string
+	Target         string
+	FileMode       int
 }
 
 // --- read paths ----------------------------------------------------------
@@ -736,7 +737,7 @@ func (s *SecretStore) RecordMaterialization(ctx context.Context, in NewSecretMat
 			return fmt.Errorf("postgres: record secret materialization: %w", err)
 		}
 		if _, err := AppendEvent(ctx, tx, events.New{
-			Type: events.TypeSecretMaterialized, OrganizationID: payload.ProjectID,
+			Type: events.TypeSecretMaterialized, OrganizationID: in.OrganizationID,
 			ProjectID: in.ProjectID, Actor: events.Actor{Kind: events.ActorKindWorker, ID: in.WorkerID},
 			Payload: payload,
 		}); err != nil {

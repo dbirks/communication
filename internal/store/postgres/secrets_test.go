@@ -936,7 +936,7 @@ func TestSecretStoreMaterializationRecordAndSweep(t *testing.T) {
 	// transaction. Two mounts, one env_file and one env, because the columns differ
 	// (file_mode is a fact about a file, and env delivery has none).
 	fileID, err := f.store.RecordMaterialization(ctx, NewSecretMaterialization{
-		SecretID: secret.ID, SecretVersion: 1, ProjectID: f.projA, WorkspaceID: f.wsA,
+		SecretID: secret.ID, SecretVersion: 1, OrganizationID: f.orgID, ProjectID: f.projA, WorkspaceID: f.wsA,
 		WorkerID: f.worker, DeliveryMode: "env_file", Target: ".env.local", FileMode: 0o600,
 	}, events.SecretMaterializedPayload{
 		SecretID: secret.ID, ProjectID: f.projA, Slug: secret.Slug, Version: 1,
@@ -947,7 +947,7 @@ func TestSecretStoreMaterializationRecordAndSweep(t *testing.T) {
 		t.Fatalf("RecordMaterialization env_file: %v", err)
 	}
 	if _, err := f.store.RecordMaterialization(ctx, NewSecretMaterialization{
-		SecretID: secret.ID, SecretVersion: 1, ProjectID: f.projA, WorkspaceID: f.wsA,
+		SecretID: secret.ID, SecretVersion: 1, OrganizationID: f.orgID, ProjectID: f.projA, WorkspaceID: f.wsA,
 		WorkerID: f.worker, DeliveryMode: "env", Target: "REGISTRY_TOKEN",
 	}, events.SecretMaterializedPayload{
 		SecretID: secret.ID, ProjectID: f.projA, Slug: secret.Slug, Version: 1,
@@ -1081,7 +1081,7 @@ func TestSecretStorePlaintextAbsentFromDatabaseDump(t *testing.T) {
 		t.Fatalf("CreateMount: %v", err)
 	}
 	if _, err := f.store.RecordMaterialization(ctx, NewSecretMaterialization{
-		SecretID: secret.ID, SecretVersion: 1, ProjectID: f.projA, WorkspaceID: f.wsA,
+		SecretID: secret.ID, SecretVersion: 1, OrganizationID: f.orgID, ProjectID: f.projA, WorkspaceID: f.wsA,
 		WorkerID: f.worker, DeliveryMode: "env_file", Target: ".env.local", FileMode: 0o600,
 	}, events.SecretMaterializedPayload{
 		SecretID: secret.ID, ProjectID: f.projA, Slug: secret.Slug, Version: 1,

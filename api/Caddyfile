@@ -39,6 +39,19 @@
 		# so a crashing process does not see every other request fail.
 		fail_duration 5s
 
+		# Restart tolerance: a single-replica restart (a redeploy, an OOM kill)
+		# otherwise shows the browser a 502 for the seconds the upstream is
+		# gone, which reads as "the app is broken" even though the other
+		# replica is healthy. Retrying another upstream for a bounded window
+		# makes a replica restart invisible to a session — and the statelessness
+		# that makes the retry correct (ADR-0012: all state is PostgreSQL, any
+		# replica may serve any request) is the same thing that makes it safe
+		# for non-idempotent POSTs: the write lands in the database or it does
+		# not, and a second replica answering the same request is the same
+		# answer waiting for the same row.
+		lb_try_duration 5s
+		lb_try_interval 250ms
+
 		# No header_up X-Forwarded-* overrides needed for the dev stack; Caddy
 		# adds X-Forwarded-For/Proto by default, and the API trusts
 		# X-Forwarded-Proto for its strict origin check.
@@ -51,27 +64,46 @@
 
 # ── Sandboxed artifact preview origin (ADR-0020 D6) ───────────────────────
 #
-# A second site on its own published port, because isolation here is *origin*
-# isolation: http://localhost:18084 is a different origin from
-# http://localhost:18080, so a previewed artifact document can read neither the
-# app's cookies nor the app's DOM. In a multi-host deployment this becomes a
-# distinct hostname under the deployment's domain and the block is unchanged.
+# A second site on its own published port. What isolates a previewed document
+# from the app is NOT the port — a cookie is scoped to a *host* and ignores
+# ports, so "a different port isolates cookies" would be false (that is the
+# claim this comment used to make; ADR-0020 D6 says outright that a port
+# would not remove one). The isolation is a stack of independent layers, of
+# which Caddy contributes only the first:
 #
-# Every header that matters is set by the Go handler
-# (internal/api/artifact_preview.go), not here. Caddy contributes exactly two
-# things, both by omission:
+#   * the browser arrives at a different **hostname** — the dev stack uses
+#     `preview.localhost` (browsers resolve *.localhost to loopback), and the
+#     session cookie is set with no Domain attribute (host-only), so it is
+#     bound to `localhost` and never sent to `preview.localhost`. In a real
+#     deployment this becomes a distinct preview hostname under the
+#     deployment's domain; a deployment that ever sets a cookie with a Domain
+#     attribute wide enough to cover both origins has lost the cookie half of
+#     the isolation and must treat the CSP layer as the only one left.
+#   * the Go handler deletes any Cookie header that arrives anyway
+#     (internal/api/artifact_preview.go), so a proxy misconfiguration cannot
+#     hand the preview document a session it was never meant to see.
+#   * every preview response carries `Content-Security-Policy: sandbox`, an
+#     opaque origin whose script can read neither the embedder's DOM nor any
+#     cookie, and whose fetches carry no credentials — the layer that holds
+#     even when the two above are argued about. It is set by the handler,
+#     not here.
 #
-#   * it forwards nothing that carries the session — and the handler deletes a
-#     Cookie header even if a proxy added one;
-#   * there is no `reverse_proxy /api/*` and no static file server in this
-#     block, so the SPA shell cannot be reached on this origin. The control
-#     plane refuses non-/preview paths on this host too (api.PreviewHostOnly);
-#     this line is the second of the two layers, not the only one.
+# The control plane also refuses non-/preview paths on this host
+# (api.PreviewHostOnly); together with the missing /api route and the missing
+# static file server below, the SPA shell is unreachable on this origin by
+# three independent means.
 #
-# The round-robin and health-check tuning of the API block above is deliberately
-# absent: one previewed document per navigation, and a wedged preview must fail
-# visibly rather than be re-served by a second replica with a different signing
-# key (ADR-0020's single-key config note).
+# Preview traffic pins to api-a rather than joining the round-robin above:
+# every replica shares one signing key (compose mounts it on both, generated
+# by keyring-init), so the pin is an availability choice — a wedged preview
+# should fail visibly rather than be re-served behind a health check this
+# block does not run — and never a correctness one. Tokens minted by api-b
+# verify here exactly because the key is shared.
 :8084 {
-	reverse_proxy api-a:8080
+	reverse_proxy api-a:8080 {
+		# Same restart tolerance as the app site: one previewed document per
+		# navigation, and a 502 here is a blank panel in the UI.
+		lb_try_duration 5s
+		lb_try_interval 250ms
+	}
 }

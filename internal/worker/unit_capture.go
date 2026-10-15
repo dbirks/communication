@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dbirks/communication/internal/agent/apm"
@@ -121,7 +123,8 @@ func (u *Unit) captureArtifact(ctx context.Context, res CaptureOutcome) error {
 	if len(res.Manifest) > 0 {
 		id, err := u.svc.Artifacts.Capture(ctx, CaptureRequest{
 			OrganizationID: u.OrganizationID, ProjectID: u.ProjectID, WorkspaceID: u.WorkspaceID,
-			TurnID: u.TurnID, RepositoryID: res.RepositoryID,
+			ConversationID: u.ConversationID, TurnID: u.TurnID, RepositoryID: res.RepositoryID,
+			WorkerID: u.WorkerID, FencingToken: u.FencingToken,
 			Kind:          ArtifactKindCheckpoint,
 			Name:          "checkpoint-" + res.RepoName,
 			Summary:       res.Summary,
@@ -133,7 +136,87 @@ func (u *Unit) captureArtifact(ctx context.Context, res CaptureOutcome) error {
 		}
 		res.ArtifactID = id
 	}
+	// Agent-produced report files become artifacts too (contract § 4.7): the
+	// capture rule declares any manifest path with an artifactable extension a
+	// candidate. Git exclusion already removed declared secret targets from the
+	// manifest, the store filters ExcludedPaths a second time, and the backend
+	// refuses anything over the kind's cap — so this loop may stay simple.
+	for _, path := range res.Manifest {
+		kind, media, ok := artifactKindFor(path)
+		if !ok {
+			continue
+		}
+		repo := repoFor(u.Repos, res.RepositoryID)
+		content, err := u.readArtifactFile(&repo, path)
+		if err != nil {
+			u.logger.Warn("capture skipped an artifact candidate",
+				slog.String("path", path), slog.String("error", err.Error()))
+			continue
+		}
+		if _, err := u.svc.Artifacts.Capture(ctx, CaptureRequest{
+			OrganizationID: u.OrganizationID, ProjectID: u.ProjectID, WorkspaceID: u.WorkspaceID,
+			ConversationID: u.ConversationID, TurnID: u.TurnID, RepositoryID: res.RepositoryID,
+			WorkerID: u.WorkerID, FencingToken: u.FencingToken,
+			Kind: kind, Name: path, Summary: res.Summary,
+			Content: content, MediaType: media,
+			ExcludedPaths: u.ExcludedPaths,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// artifactKindFor is the capture rule's extension table: what an agent wrote
+// that may be *shown* becomes an artifact; source edits stay in git (the
+// checkpoint manifest already names them). Only the renderable documentation
+// kinds are candidates — an arbitrary source file as an artifact would make the
+// artifact list a second, weaker git.
+func artifactKindFor(path string) (kind, media string, ok bool) {
+	ext := path[strings.LastIndexByte(path, '.')+1:]
+	switch strings.ToLower(ext) {
+	case "html", "htm":
+		return "html", "text/html", true
+	case "md", "markdown":
+		return "markdown", "text/markdown", true
+	default:
+		return "", "", false
+	}
+}
+
+// repoFor finds the prepared repo by id; capture already iterated it, so the
+// zero value only happens if the caller lied about the id.
+func repoFor(repos []wsgit.PreparedRepo, id string) wsgit.PreparedRepo {
+	for _, r := range repos {
+		if r.RepositoryID == id {
+			return r
+		}
+	}
+	return wsgit.PreparedRepo{}
+}
+
+// artifactMaxRead bounds what capture will read from a checkout before handing
+// bytes to the store: the store's own per-kind cap is the authority (it refuses
+// rather than truncates); this only stops a capture from buffering a monster.
+const artifactMaxRead = 32 << 20
+
+func (u *Unit) readArtifactFile(repo *wsgit.PreparedRepo, rel string) ([]byte, error) {
+	if repo.CheckoutPath == "" || rel == "" || strings.Contains(rel, "..") {
+		return nil, errors.New("capture: candidate is not a checkout-relative path")
+	}
+	f, err := os.Open(filepath.Join(repo.CheckoutPath, filepath.FromSlash(rel)))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("capture: candidate is not a regular file")
+	}
+	if info.Size() > artifactMaxRead {
+		return nil, errors.New("capture: candidate exceeds the capture read bound")
+	}
+	return io.ReadAll(f)
 }
 
 // rowID finds the workspace_repos row for a prepared repo. The store keys
@@ -187,6 +270,17 @@ func (u *Unit) cleanup(ctx context.Context) (bool, error) {
 		// stream would otherwise have to notice the quarantine itself, and the
 		// turn loop's exit path is not a reader.
 		return false, leftover
+	}
+	// The removal is asserted gone; now close the ledger. Done writes the
+	// secret_materializations cleanup and journals secret.removed — the pair
+	// that distinguishes "cleanup happened" from "cleanup is claimed". A unit
+	// whose hook fails leaves uncleaned rows, which is the *finding* state the
+	// startup sweep exists to close, not a silent pass.
+	if u.Materialized != nil && u.Materialized.Done != nil {
+		if err := u.Materialized.Done(ctx); err != nil {
+			log.Warn("secret.removed could not be journalled",
+				slog.String("workspace_id", u.WorkspaceID), slog.String("error", err.Error()))
+		}
 	}
 
 	// 2. the per-attempt home: APM's state, the harness caches, the seeded

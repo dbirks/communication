@@ -77,3 +77,34 @@ digest) differs per target because it records per-target `deployments`.
   `.mcp.json`-style files), `apm compile` output semantics, `-g/--global`
   scope, registry marketplaces, concurrent installs sharing a real HOME,
   behavior with harness auth/env present, and Windows/macOS targets.
+
+## M3 exit-run observations (apm 0.33.0, `communication-worker:dev`, 2026-10-15)
+
+- **`--frozen` verifies the lockfile is PRESENT, not that upstream bytes match
+  it (the A5 caveat, now proven twice):**
+  1. `apm install --frozen` **rewrites `apm.lock.yaml` in place** — it
+     re-serializes and re-hashes local-path dependency content, so the bytes
+     on disk after staging are generally *not* the bytes that were committed
+     (`b6c7…` → `f0be…` after one frozen install against a mutated upstream;
+     deterministic and idempotent once upstream is stable). A profile's
+     `apm_lock_digest` is therefore only usable if it pins the
+     **post-install** bytes.
+  2. Mutating a local-path dependency's content afterwards **moves the
+     on-disk digest** (drift is visible) and the worker's digest gate refuses
+     the launch with a named-digest failure. A profile *without* a pin would
+     silently stage the mutated content — the pinned digest is load-bearing.
+- **A tracked `apm.lock.yaml` cannot be excluded from git** — exclusion files
+  do not apply to tracked content and `check-ignore` says so. Declaring it as
+  an APM-generated path used to fail prepare outright;
+  `internal/workspace/git` now drops tracked declarations (`TestDeclareExclusionsSkipsTrackedPaths`)
+  and the rewritten lock simply rides the unit's run ref.
+- **The lock is generated with `apm lock`, not `apm install`** (0.33 CLI):
+  `install` on an app whose `dependencies.apm[]` list is empty answers
+  "No changes — install state already up to date" and writes no lock. The
+  schema is `dependencies: {apm: [<path-or-source#ref>]}`; a
+  `pkg: {path: …}` mapping parses as *zero* dependencies.
+- Observed PASS, exit run C14 (contract § 7): frozen staging across an
+  upstream mutation refuses rather than restages (C14e), digest gate holds
+  (C14b: staged tree + completed turn with post-install digest == pin),
+  per-attempt HOME (T4) unchanged, and the staged trees stay out of the
+  project's tracked surface (C14b `git status`).
