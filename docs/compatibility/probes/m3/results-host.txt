@@ -1,0 +1,173 @@
+== m3 probe suite
+SUITE nono=/home/david/.local/bin/nono root=/home/david/.cache/communication-lab/m3-probes groups='p1 p2 p3 p4 p5' host=delightful-goose date=2026-10-15T05:00:33Z
+
+================================================================
+## p1_git_worktrees.sh
+================================================================
+== m3 probe: p1_git_worktrees
+ENV date=2026-10-15T05:00:33Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p1
+
+CHECK G1 PASS ADR-0017 P1 re-derived: admin dirs are backend/backend1 for two worktrees of one repo — the second is auto-suffixed, so the admin path is NOT derivable from the layout
+CHECK G1b FAIL ADR-0017 D4's stated mechanism is wrong for this git: 'git worktree list --porcelain' emitted NO gitdir line at all (8 lines, members: ,bare,HEAD,) — the admin dir must be resolved with 'git -C <worktree> rev-parse --absolute-git-dir' (which did return backend1)
+CHECK G1c PASS the admin dir IS readable back — from the worktree's .git file: 'gitdir: /home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git/worktrees/backend1 ' == rev-parse --absolute-git-dir (/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git/worktrees/backend1). This is the read-back ADR-0017 D4 should name
+CHECK G2 GAP logs/refs/heads/run-1 does not exist after worktree add+commit unsandboxed (git created it lazily) — the pre-create requirement is a sandbox-only failure, asserted in p2 C-P7
+CHECK G3 PASS ADR-0017 X1 re-derived: rule in $(git-dir)/info/exclude (/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git/worktrees/backend) is ignored — check-ignore exit=1, status still lists ?? .env.test.local
+CHECK G4 PASS ADR-0017 X2 re-derived: same rule in <mirror>/info/exclude is honored — check-ignore says '/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git/info/exclude:7:.env.test.local .env.test.local'; status now ''
+CHECK G5 PASS ADR-0017 X5 re-derived: run-2's file at the same relative path is ignored by run-1's declaration — status ''; the exclusion's scope is the project mirror, not the mount
+CHECK G6 PASS ADR-0017 X3 re-derived: with extensions.worktreeConfig=true, git status fails exit=128: 'fatal: this operation must be run in a work tree' (unset restored normal: '')
+CHECK G7 PASS case-17 shape re-derived unsandboxed: run-1 committed app.txt, run-2 file unchanged and status empty
+CHECK G8 PASS WORKSPACES W5 re-derived: copied worktree without its mirror fails exit=128: 'fatal: gitfile does not point to a valid repository: /home/david/.cache/communication-lab/m3-probes/p1/copied/backend/.git'
+CHECK G9 PASS WORKSPACES W6 re-derived: remove --force + prune dropped run-2; run-1 intact and clean (/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git (bare) /home/david/.cache/communication-lab/m3-probes/p1/workspaces/run/run-1/repos/backend 795c7ee [run-1/backend] )
+CHECK G10 PASS ADR-0017's untested item 'concurrent Prepare of two runs against one mirror': 6 parallel 'git worktree add -b' against one mirror all succeeded (rc=0 x6, 6 worktrees listed) on 2.56.0 — no index.lock/refs contention observed
+
+================================================================
+## p2_git_under_nono.sh
+================================================================
+== m3 probe: p2_git_under_nono
+ENV date=2026-10-15T05:00:33Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p2
+
+NOTE PATHS mirror=/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git run-1 wt=/home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/repos/backend admin=backend run-2 admin=backend1
+CHECK C-P10 PASS P10 re-derived: the worktree grant alone breaks git (exit=128) — 'fatal: gitfile does not point to a valid repository: /home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/repos/backend/.git'
+CHECK C-P10b PASS adding 'ro <mirror>' fixes it: exit=0 '6bd1f92 seed backend'
+CHECK C-P6 PASS ungranted HOME aborts git even with -c identity flags: exit=128 'warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gitconfig': Permission denied warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gitconfig': Permission denied warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gi
+CHECK C-P6b PASS HOME inside the grants (workspace home/) works: exit=0 ''
+CHECK C-H1 FAIL ADR-0019 Decision 1's argv is not launchable as written: handing HOME=<workspace>/home to the nono process makes nono REFUSE the workspace grant — exit=1 'nono: Sandbox initialization failed: Refusing to grant '/home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1' (source: CLI) because it overlaps protected nono state root '/home/david/.cache/communication-lab/m3-probes/p2/worksp
+CHECK C-H1b PASS the working shape: nono's own HOME outside the grants, child HOME=<workspace>/home inside -> exit=0 'run-1/backend'
+CHECK C-P7 PASS P7 re-derived: without pre-created <mirror>/logs/refs/heads/run-3 the commit failed exit=128 'fatal: cannot update the ref 'refs/heads/run-3/backend': unable to create directory for '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/logs/refs/heads/run-3/backend': No such file or directory'; after worker-side mkdir -p the same grant set committed (exit=0)
+CHECK C-P2 PASS P2 re-derived: sandboxed commit with exactly rw <ws> + rw <mirror>/objects + rw refs/heads/run-1 + rw logs/refs/heads/run-1 + rw <admin> + ro <mirror> succeeded ('28386c1 narrow-set commit '); every changed mirror path (15 of them) was inside the granted set
+CHECK C-P3 PASS P3 re-derived: with the mirror ro only the commit failed exit=128 'fatal: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/worktrees/backend3/index.lock': Permission denied fatal: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/worktrees/backend3/index.lock': Permission denied'
+CHECK C-P4 PASS P4 re-derived as a control pair: run-2's sandboxed 'git update-ref refs/heads/run-1/backend' denied exit=128 ('fatal: update_ref failed for ref 'refs/heads/run-1/backend': cannot lock ref 'refs/heads/run-1/backend': Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/refs/heads/run-1/backend.lock': Permission denied'); the identical unsandboxed command succe
+NOTE C-P4 post-control ref run-1/backend -> 28386c1220
+CHECK C-P5 PASS P5 re-derived: run-2's sandbox CAN read run-1's branch through the shared mirror (exit=0, 0 lines of output) — a limitation, not a defect
+CHECK C-X4 PASS exit=1 /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/info/exclude: Permission denied
+CHECK C-META FAIL 05's 'meta/ is worker-only, never mounted to agent' does NOT hold under ADR-0019's grant shape: --allow <workspace root> is recursive, so the sandboxed child read meta/workspace.json AND wrote meta/agent-written (exit=0). meta/ must be a sibling of the granted tree, not a child of the workspace root
+CHECK C-P8 PASS P8 re-derived: exit=0 with 'error: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/packed-refs.lock': Permission denied' — stderr noise is NOT a failure signal; the post-commit ref readback (06e29f369fb723dfd0ce1c502c5e9362e90b39bb ) is the proof
+
+================================================================
+## p3_nono_policy.sh
+================================================================
+== m3 probe: p3_nono_policy
+ENV date=2026-10-15T05:00:37Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p3
+
+CHECK C-PROBE PASS N-a: nono setup --check-only exit=0 — Landlock V6, 'Filesystem ruleset creation verified' and 1 'TCP network rule support verified' line(s); kernel 7.2.9-arch1-1; lsm capability,landlock,lockdown,yama,bpf
+CHECK C-TMP1 PASS P9/N1 re-derived: with a single rw grant OUTSIDE any temp dir the sandboxed child WROTE TMP_WRITE_OK (host-visible, content ''); same run's other arms: /usr/bin/sh: line 1: /var/tmp/m3-probe-2255361: Permission denied VARTMP_DENIED /usr/bin/sh: line 1: /dev/shm/m3-probe-2255361: Permission denied SHM_DENIED ETC_READ_DENIED. 'Denied by omission' is FALSE under /tmp — ADR-0017 D5's hard rule stands
+CHECK C-TMP2 PASS ADR-0017 D5 / ADR-0019's 'absence-of-grant is the only deny mechanism' re-derived the hard way: a profile-level filesystem.deny of [/tmp,/var/tmp,/dev/shm] did NOT stop the write (DENY_FAILED_WRITE_OK) — the layered default's write grant wins, so FSDeny stays an adapter-level configuration error rather than a policy tool
+CHECK C-TMP3 PASS the /tmp write comes from the system_write_linux group: excluding it denied /tmp. Side effect observed: /usr/bin/sh: line 2: /tmp/m3-notemp-2255407: Permission denied TMP_WRITE_DENIED /usr/bin/sh: line 3: /dev/null: Permission denied DEVNULL_WRITE_DENIED /usr/bin/sh: line 4: /dev/null: Permission denied GIT_BROKEN /usr/bin/sh: line 5: /dev/null: Permission denied NODE_BROKEN — /dev/null matters to
+CHECK C-RO PASS N2 re-derived: --read is read-only outside temp grants ('READ-ME /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p3/other/f: Permission denied RO_WRITE_DENIED')
+CHECK C-ROb N/A secret under a read grant is readable by design: exit=0 'SECRET-NOT-GRANTED' (this is ADR-0018's 'an agent granted read can exfiltrate' clause, not a defect)
+CHECK C-PROF PASS N3 re-derived: 'nono profile init <path>' refuses a path argument (exit=1 'nono: Profile parse error: Invalid profile name '/home/david/.cache/communication-lab/m3-probes/p3/cfg/comm-agent.json': must be alphanumeric with hyphens, no leading/trailing hyphens ') → the profile file must be authored, not generated (ADR-0009 D4 asset dir)
+CHECK C-PROFb PASS N-b: 'nono profile validate <path>' on a file we ship → exit=0 'nono profile: validating /home/david/.cache/communication-lab/m3-probes/p3/cfg/communication-agent.json [ok] JSON syntax valid [ok] All 17 group references valid Result: valid '
+CHECK C-PROFc PASS N-b fail-closed: validating a missing profile exits 1 'nono profile: validating /nonexistent-profile.json [err] File read error: Profile read error at /nonexistent-profile.json: profile file not found Result: invalid (1 error) nono: Profile parse error: validation failed '
+CHECK C-AFU PASS N-c: 'nono profile show <path>' reports 'AF_UNIX mediation: Pathname'
+CHECK C-SILENT FAIL the ADR-0019 chain runs nono with -s everywhere except N-d, and that is load-bearing: 'run -s -p <path> -v --dry-run' printed 0 line(s) (no grant list at all) while the same argv without -s printed 62. An adapter that reuses its silent flags for N-d asserts against empty output and passes vacuously
+CHECK C-AFU2 PASS N4's premise re-derived: the verbose dry-run (62 lines, 1 [user] + 39 [group:] grants) contains NO AF_UNIX line — the mediation assertion must come from 'nono profile show'
+NOTE C-SOCK control (no profile, socket ungranted): connect SUCCEEDED — reproduces SANDBOX.md C7's fail-open on a socket we own: 'M3-ECHO unix'
+CHECK C-SOCK PASS N4 re-derived with our own profile file: af_unix_mediation=pathname denied connect() to an ungranted AF_UNIX socket — 'curl: (7) Failed to connect to localhost:80 over unix:///home/david/.cache/communication-lab/m3-probes/p3/sock/probe.sock after 11 ms: Could not connect to server CURL_DENIED' (control had connected: 'M3-ECHO unix')
+CHECK C-SOCKb PASS positive control: explicitly granting the socket restores it (mediation is a real gate, not a blanket block): 'M3-ECHO unix' (rc=0)
+CHECK C-SOCK2 PASS SANDBOX.md C7's remedy re-derived with our own profile file: the docker socket was unreachable from inside the sandbox (exit=0 'curl: (7) Failed to connect to localhost:80 over unix:///var/run/docker.sock after 7 ms: Could not connect to server code=000child_rc=7')
+NOTE C-CWD argv 'nono run -s --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=1
+NOTE C-CWD argv 'nono run -s -p /home/david/.cache/communication-lab/m3-probes/p3/cfg/communication-agent.json --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
+NOTE C-CWD argv 'nono run --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
+NOTE C-CWD argv 'nono run -p /home/david/.cache/communication-lab/m3-probes/p3/cfg/communication-agent.json --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
+CHECK C-CWD FAIL ADR-0019 N-d's exit-status assertion is FALSE for the configuration ADR-0009 mandates: with CLI flags only a cwd outside the grants exits 1 ('CWD access requires --allow-cwd'), but with '-p <profile path>' the SAME command exits 0 and simply skips the CWD grant. A required-mode adapter must therefore validate cmd.Dir itself (requireDirInsideReadWrite) and never read N-d's exit status as the CWD pr
+CHECK C-ND PASS N-d is observable WITHOUT -s: 63 lines, 2 [user] grant(s), 39 [group:…] grant(s); our profile's resolved list names /tmp 0 time(s) vs 1 for '-p default' — the merged list is the right place to assert the grant set and to catch a temp-dir grant
+CHECK C-MISSING PASS N6 re-derived: missing profile → exit=1 and the child was NEVER exec'd (marker absent): 'nono: Profile read error at /home/david/.cache/communication-lab/m3-probes/p3/cfg/does-not-exist.json: profile file not found '
+CHECK C-EG1 PASS agent-turn-egress-denied shape: --block-net denied a loopback TCP connect (port 34269): 'curl: (7) Failed to connect to 127.0.0.1:34269 after 0 ms: Could not connect to server CURL_DENIED' (this is the command-only profile case 13 needs)
+CHECK C-EG2 PASS agent-turn shape: without --block-net the same connect succeeded ('M3-ECHO tcp') — this is the observed proof that M3's agent-turn profile carries network_enforced=false, exactly as ADR-0019 D3 states
+CHECK C-FC2 FAIL FC2 re-produced: with --sandbox-policy external the child reached the network (exit=0 '200') while --block-net was requested — ADR-0019 D2's 'never emit external' stands, and no M3 profile may accept it
+CHECK C-FC3 PASS FC3 re-derived: non-existent grant ignored with no error, sandbox still applied (exit=1 'cat: /home/david/.cache/communication-lab/m3-probes/p3/other/secret.txt: Permission denied') — the adapter must validate grant paths itself (ADR-0019 FC3/N-d)
+NOTE C-CMD default-profile dangerous_commands as observed: cp: cannot open '/home/david/.cache/communication-lab/m3-probes/p3/other/f' for reading: Permission denied CP_BLOCKED — mode after the sandboxed chmod: 600. nono documents command blocking as bypassable, so it is not a control — but a materializer still must use O_CREAT|O_EXCL + umask rather than chmod (nono documents command blocking as bypassable, 
+
+================================================================
+## p4_secrets_env.sh
+================================================================
+== m3 probe: p4_secrets_env
+ENV date=2026-10-15T05:00:40Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p4
+
+CHECK C-ENV1 PASS case 12/C12a shape: O_EXCL+umask077 materialization produced /home/david/.cache/communication-lab/m3-probes/p4/workspaces/run/run-A/repos/backend/.env.test.local at mode 600 1000 (uid = the worker uid, which is the whole point of C-XPROJ4 below)
+CHECK C-ENV2 PASS case 12/C12c re-derived while the file EXISTS: git status --porcelain='', git ls-files empty, git diff empty
+CHECK C-ENV3 N/A the sandboxed agent inside project A read its own materialized secret (expected, and the reason ADR-0018 Security says file permissions are defense in depth, not the control): 'SENTINEL-m3-9f4c2a1b-database_url-for_exit_test_only=postgres://a:pw@h/db'
+CHECK C-ENV4 PASS case 12/C12g re-derived: 'git add -A && git commit' inside the sandbox did NOT capture .env.test.local — git grep over every ref in the mirror found nothing (exit=1)
+CHECK C-ENV4b PASS negative control works: the same sentinel committed through an UNexcluded path IS in history — so C-ENV4's clean answer is the exclusion's doing, not git ignoring the value
+CHECK C-ENV5 PASS case 12/C12d shape: after the unit the file is gone (git status now ''); a leftover would be the quarantined-workspace trigger
+CHECK C-ENV6 PASS case 12/C12i battery: every attempt refused before any write, no file created anywhere ( [../../etc/m3-probe → REASON:path_escape] [../backend/.env.test.local → REASON:path_escape] [/etc/m3-probe-abs → REASON:absolute_path] [.env.test.local/../../y → REASON:path_escape] [linkdir/escaped.env → REASON:path_escape] [tracked.env → REASON:tracked_target] [weird//path → REASON:bad_shape] [trail/. → REAS
+CHECK C-ENV6b PASS a TRACKED target is refused with reason=tracked_target (05's 'not a silent overwrite'); nothing was rewritten: 'TRACKED-ENV '
+CHECK C-ENV7 PASS second materialization at a live path is refused with reason=exists (ADR-0018 D4 step 4's 'refuse a second time'); content untouched: 600
+CHECK C-ENV10 PASS ADR-0019 D1's 'Env built from scratch, never os.Environ()' is load-bearing: a launcher env var reached the sandboxed child unchanged ('COMMUNICATION_DATABASE_URL=postgres://worker:pw@db/communication ') — Landlock does not scrub environment, so the worker must
+CHECK C-XPROJ1 PASS exit=1 cat: /home/david/.cache/communication-lab/m3-probes/p4/workspaces/run/run-B/repos/backend-b/.env.test.local: Permission denied
+CHECK C-XPROJ1b PASS no project-B value appeared anywhere in the sandboxed output (exit=1 'cat: /home/david/.cache/communication-lab/m3-probes/p4/workspaces/run/run-B/repos/backend-b/.env.test.local: Permission denied')
+CHECK C-XPROJ2 PASS positive control (contract X3): the identical path IS readable for project B's own launch — without this arm X1 would prove nothing
+CHECK C-XPROJ3 PASS exit=128 (non-zero, content not returned) fatal: not a git repository: '/home/david/.cache/communication-lab/m3-probes/p4/repos/projB/backend-b.git'
+CHECK C-XPROJ3b PASS exit=2 ls: cannot open directory '/home/david/.cache/communication-lab/m3-probes/p4/workspaces/run/run-B': Permission denied
+CHECK C-XPROJ3c PASS exit=1 /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p4/repos/projB/backend-b.git/info/exclude: Permission denied
+CHECK C-XPROJ4 N/A measured, and it is the D-025 caveat rather than a bug: with the SAME uid and NO sandbox, project B's 0600 secret is readable ('SENTINEL-B-7777-other-project-database_url=postgres://b:pw@h/db'). Everything ADR-0018 defends is the DB dump / API / journal / artifacts — never a hostile same-uid process on the worker
+CHECK C-ENV8 PASS temp paths are an INTEGRITY hole, not a disclosure hole: project B's sandbox could not READ A's 0600 secret under /tmp (exit=1 'cat: /tmp/communication-m3-probe-p4.2255954/run-A/repos/backend/.env.test.local: Permission denied') but it TRUNCATED AND REPLACED it ('CLOBBER_OK'; host now sees 'clobbered-by-B '). ADR-0017 D5's ban is still required — and ADR-0019's wording ('writable by any agent') is
+CHECK C-ENV8b N/A the default temp grant is WRITE-ONLY — an agent cannot even read back what it wrote there: 'cat: /tmp/communication-m3-probe-p4.2255954/self.txt: Permission denied SELF_READ_DENIED'. It also means a spool area under /tmp cannot be trusted as an artifact staging dir (ADR-0020 D2)
+
+================================================================
+## p5_volume_identity.sh
+================================================================
+== m3 probe: p5_volume_identity
+ENV date=2026-10-15T05:00:42Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p5
+
+CHECK V1 N/A named volume m3probe-v1-2256486 mounted at /workspaces in a fresh container: st_dev=30 inode=19414245
+CHECK V2 PASS ADR-0017 D2's premise, same-volume arm: the same named volume at the same path reports the same st_dev AND inode in two fresh containers (30 19414245 == 30 19414245) — an identity derived from (dev, inode, path) survives a worker restart
+CHECK V3 FAIL ADR-0017 D2's derivation is INSUFFICIENT as written: two DIFFERENT docker named volumes at the same path share st_dev (30 == 30 — docker volumes are bind mounts of host directories on one filesystem), so 'resolves the st_dev of its workspace root, hashes the device identity plus the root path' would call a replaced volume the SAME volume and silently reclaim workspaces that are gone (case 20's hon
+CHECK V4 PASS compose.harness.yml's shape (host bind over a volume path): bind mount is on st_dev 52 vs the named volume's 30 at the identical path — switching the dev harness really does change volume identity
+CHECK V5 PASS ADR-0017 D1's 'repos/ beside workspaces/ on the same worker volume': one volume mounted at both paths reports one st_dev (workspaces=30 19414449 repos=30 19414449) — 'same volume' is a device statement that holds
+CHECK V5b FAIL docs/m3-contract.md § 5 gives the mirror root its OWN named volume beside the workspaces volume — measured /workspaces=(dev 30, ino 19414245) and /repos=(dev 30, ino 19414347): same device, different inode. workers.volume_id is one column, so it names exactly one of the two trees; the recovery rule has to say which, or store the identity per path (workspace_repos.mirror_path is already per-path)
+CHECK V6 N/A the worker image's own view of its configured root, i.e. the exact tuple ADR-0017 D2 hashes: root=/workspaces dev=30 ino=19414245 fstype=0 uid=10001
+
+== summary
+SUMMARY C-XPROJ3b=1 C-ENV5=1 C-SILENT=1 C-ROb=1 C-XPROJ3c=1 C-ENV6=1 C-TMP1=1 C-X4=1 C-P10=1 C-ENV7=1 C-SOCK2=1 C-PROFb=1 C-TMP2=1 C-ENV8=1 C-PROFc=1 C-TMP3=1 G1=1 C-P2=1 C-P6b=1 G2=1 V1=1 C-SOCK=1 C-P3=1 G3=1 V2=1 C-XPROJ1=1 C-ENV10=1 C-P4=1 G4=1 V3=1 C-XPROJ2=1 C-ENV4b=1 C-ND=1 C-CWD=1 C-P5=1 G5=1 V4=1 C-XPROJ3=1 C-EG1=1 C-PROF=1 C-PROBE=1 C-H1=1 C-P6=1 G6=1 G1b=1 V5b=1 V5=1 C-XPROJ4=1 C-ENV6b=1 C-ENV1=1 C-EG2=1 C-MISSING=1 C-AFU2=1 C-RO=1 C-P7=1 C-P10b=1 G7=1 G1c=1 V6=1 C-ENV2=1 C-FC2=1 C-AFU=1 C-P8=1 G10=1 G8=1 C-ENV8b=1 C-XPROJ1b=1 C-ENV3=1 C-FC3=1 C-SOCKb=1 C-META=1 C-H1b=1 G9=1 C-ENV4=1 TOTAL=74
+log: /home/david/.cache/communication-lab/m3-probes/run.VeuKoB.log
