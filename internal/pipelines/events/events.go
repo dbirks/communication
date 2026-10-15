@@ -1,7 +1,7 @@
-// Package events models the M4 run/node/attempt/approval payload shapes named
-// in docs/m4-contract.md § 3, so the advancer, the worker and the Postgres
-// adapter emit one shape rather than each inventing one (ADR-0016's rule for
-// the types that cross a process boundary).
+// Package events models the M4 run/node/attempt/approval/pipeline/assignment
+// payload shapes named in docs/m4-contract.md § 3, so the advancer, the
+// worker, the API and the Postgres adapter emit one shape rather than each
+// inventing one (ADR-0016's rule for the types that cross a process boundary).
 //
 // This package deliberately does NOT touch internal/events: M3 integration is
 // editing that file, and the two merge later. What lives here is the payload
@@ -27,10 +27,10 @@ import (
 // reaching a browser.
 type TypeName = string
 
-// M4 event types (contract § 3 rows 2-30: the ones the runtime and the worker
-// write). Row numbers in the comments point at § 3's table. The Type prefix
-// keeps the names distinct from the payload structs below, which carry § 3's
-// names verbatim (one shape per row).
+// M4 event types (contract § 3 rows 1-36: the ones the runtime, the worker
+// and the API write). Row numbers in the comments point at § 3's table. The
+// Type prefix keeps the names distinct from the payload structs below, which
+// carry § 3's names verbatim (one shape per row).
 const (
 	// Run lifecycle (§ 3 rows 1-14). TypeRunCreated is emitted by the API in
 	// the POST /runs transaction (row 1) — listed for completeness; the
@@ -71,6 +71,17 @@ const (
 	TypeApprovalExpired   TypeName = "approval.expired"
 	TypeApprovalDenied    TypeName = "approval.denied"
 	TypeApprovalCancelled TypeName = "approval.cancelled"
+
+	// Pipeline library and assignments (§ 3 rows 31-36): API-emitted, never
+	// runtime rows, but they share the journal so they share this vocabulary.
+	TypePipelineCreated            TypeName = "pipeline.created"             // 31
+	TypePipelineDraftUpdated       TypeName = "pipeline.draft.updated"       // 32
+	TypePipelineDraftValidated     TypeName = "pipeline.draft.validated"     // 33
+	TypePipelineRevisionPublished  TypeName = "pipeline.revision.published"  // 34
+	TypePipelineRevisionDeprecated TypeName = "pipeline.revision.deprecated" // 35
+
+	TypeAssignmentCreated TypeName = "assignment.created" // 36
+	TypeAssignmentUpdated TypeName = "assignment.updated" // 36
 )
 
 // ReservedTypes names § 3 row 37: the type exists so M5 can land it without
@@ -82,6 +93,23 @@ var typePattern = regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
 
 // ValidTypeName reports whether t satisfies the envelope grammar.
 func ValidTypeName(t string) bool { return typePattern.MatchString(t) }
+
+// § 1's CHECK patterns, restated so a payload's Validate refuses at the
+// boundary the shapes the migration would only catch at insert time.
+var (
+	digestPattern       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	sha256HexPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	slugPattern         = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,127}$`)
+	versionLabelPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+)
+
+// Validator is implemented by payload structs that check their own members.
+// Record.Validate dispatches to it, so a payload cannot reach the journal in
+// a shape § 1's CHECKs would reject (the run/node/approval payloads predate
+// the hook and are checked by the reflection tests instead).
+type Validator interface {
+	Validate() error
+}
 
 // Actor kinds (internal/events' enumeration, restated here so this package
 // stays standalone until the two merge). A reconciler row is always system.
@@ -128,6 +156,11 @@ func (r Record) Validate() error {
 	case ActorKindSystem, ActorKindWorker, ActorKindHuman:
 	default:
 		return fmt.Errorf("events: %s has actor kind %q", r.Type, r.ActorKind)
+	}
+	if v, ok := r.Payload.(Validator); ok {
+		if err := v.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -461,4 +494,245 @@ type ApprovalCancelled struct {
 	RunID      string `json:"run_id"`
 	ApprovalID string `json:"approval_id"`
 	Reason     string `json:"reason"`
+}
+
+// ------------------------------------------------- pipeline library payloads
+
+// PipelineCreated is § 3 row 31. The slug is the pipeline's identity inside
+// the organization, so the payload carries the § 1 CHECK shape, verbatim.
+type PipelineCreated struct {
+	ProjectID  string `json:"project_id"`
+	PipelineID string `json:"pipeline_id"`
+	Slug       string `json:"slug"`
+}
+
+// Validate enforces § 3 row 31.
+func (p PipelineCreated) Validate() error {
+	if p.ProjectID == "" {
+		return fmt.Errorf("events: pipeline.created carries no project_id")
+	}
+	if p.PipelineID == "" {
+		return fmt.Errorf("events: pipeline.created carries no pipeline_id")
+	}
+	if !slugPattern.MatchString(p.Slug) {
+		return fmt.Errorf("events: pipeline.created slug %q violates § 1's CHECK", p.Slug)
+	}
+	return nil
+}
+
+// PipelineDraftUpdated is § 3 row 32 — the audit trail for editor churn:
+// hashes and versions, never the document body.
+type PipelineDraftUpdated struct {
+	ProjectID    string `json:"project_id"`
+	DraftID      string `json:"draft_id"`
+	Version      int    `json:"version"`
+	SourceSHA256 string `json:"source_sha256"`
+	EditedBy     string `json:"edited_by"`
+	Kind         string `json:"kind"`
+}
+
+// Validate enforces § 3 row 32 against § 1's pipeline_drafts CHECKs.
+func (p PipelineDraftUpdated) Validate() error {
+	if p.ProjectID == "" {
+		return fmt.Errorf("events: pipeline.draft.updated carries no project_id")
+	}
+	if p.DraftID == "" {
+		return fmt.Errorf("events: pipeline.draft.updated carries no draft_id")
+	}
+	if p.EditedBy == "" {
+		return fmt.Errorf("events: pipeline.draft.updated carries no edited_by")
+	}
+	if p.Version < 1 {
+		return fmt.Errorf("events: pipeline.draft.updated version %d is below 1 (§ 1's CHECK)", p.Version)
+	}
+	if !sha256HexPattern.MatchString(p.SourceSHA256) {
+		return fmt.Errorf("events: pipeline.draft.updated source_sha256 %q is not 64 hex characters", p.SourceSHA256)
+	}
+	switch p.Kind {
+	case "manual", "yaml_import", "assistant", "clone":
+	default:
+		return fmt.Errorf("events: pipeline.draft.updated kind %q is outside § 1's source_kind enum", p.Kind)
+	}
+	return nil
+}
+
+// PipelineDraftValidated is § 3 row 33: codes only, so the journal records
+// *what* failed without cloning the editor's payload (§ 2.2's body).
+type PipelineDraftValidated struct {
+	ProjectID      string   `json:"project_id"`
+	DraftID        string   `json:"draft_id"`
+	Valid          bool     `json:"valid"`
+	RevisionDigest string   `json:"revision_digest,omitempty"`
+	PlanDigest     string   `json:"plan_digest,omitempty"`
+	ErrorCount     int      `json:"error_count"`
+	ErrorCodes     []string `json:"error_codes"`
+}
+
+// Validate enforces § 3 row 33. Valid means § 2.2's success arm: both
+// digests written and no errors; an invalid row must name at least one.
+func (p PipelineDraftValidated) Validate() error {
+	if p.ProjectID == "" {
+		return fmt.Errorf("events: pipeline.draft.validated carries no project_id")
+	}
+	if p.DraftID == "" {
+		return fmt.Errorf("events: pipeline.draft.validated carries no draft_id")
+	}
+	if p.ErrorCount < 0 || len(p.ErrorCodes) > p.ErrorCount {
+		return fmt.Errorf("events: pipeline.draft.validated reports %d errors across %d codes", p.ErrorCount, len(p.ErrorCodes))
+	}
+	if p.Valid {
+		if p.ErrorCount != 0 {
+			return fmt.Errorf("events: pipeline.draft.validated is valid with %d errors", p.ErrorCount)
+		}
+		if !digestPattern.MatchString(p.RevisionDigest) || !digestPattern.MatchString(p.PlanDigest) {
+			return fmt.Errorf("events: pipeline.draft.validated is valid without both digests (§ 2.2 writes them on success)")
+		}
+		return nil
+	}
+	if p.ErrorCount == 0 {
+		return fmt.Errorf("events: pipeline.draft.validated is invalid without a single error")
+	}
+	if p.RevisionDigest != "" && !digestPattern.MatchString(p.RevisionDigest) {
+		return fmt.Errorf("events: pipeline.draft.validated revision_digest %q is not sha256:<64 hex>", p.RevisionDigest)
+	}
+	if p.PlanDigest != "" && !digestPattern.MatchString(p.PlanDigest) {
+		return fmt.Errorf("events: pipeline.draft.validated plan_digest %q is not sha256:<64 hex>", p.PlanDigest)
+	}
+	return nil
+}
+
+// PipelineRevisionPublished is § 3 row 34 — 09's name, kept. Every digest is
+// a § 1 CHECK shape: these are the values a run pins (ADR-0002).
+type PipelineRevisionPublished struct {
+	ProjectID      string `json:"project_id"`
+	PipelineID     string `json:"pipeline_id"`
+	RevisionID     string `json:"revision_id"`
+	RevisionNumber int    `json:"revision_number"`
+	VersionLabel   string `json:"version_label"`
+	RevisionDigest string `json:"revision_digest"`
+	PlanDigest     string `json:"plan_digest"`
+	DigestScope    string `json:"digest_scope"`
+	SchemaDigest   string `json:"schema_digest"`
+	CelEnvDigest   string `json:"cel_env_digest"`
+}
+
+// Validate enforces § 3 row 34 against § 1's pipeline_revisions CHECKs.
+func (p PipelineRevisionPublished) Validate() error {
+	if p.ProjectID == "" {
+		return fmt.Errorf("events: pipeline.revision.published carries no project_id")
+	}
+	if p.PipelineID == "" || p.RevisionID == "" {
+		return fmt.Errorf("events: pipeline.revision.published carries no pipeline or revision id")
+	}
+	if p.RevisionNumber < 1 {
+		return fmt.Errorf("events: pipeline.revision.published revision_number %d is below 1", p.RevisionNumber)
+	}
+	if !versionLabelPattern.MatchString(p.VersionLabel) {
+		return fmt.Errorf("events: pipeline.revision.published version_label %q is not semver (§ 1's CHECK)", p.VersionLabel)
+	}
+	if p.DigestScope == "" {
+		return fmt.Errorf("events: pipeline.revision.published carries no digest_scope")
+	}
+	for name, d := range map[string]string{
+		"revision_digest": p.RevisionDigest,
+		"plan_digest":     p.PlanDigest,
+		"schema_digest":   p.SchemaDigest,
+		"cel_env_digest":  p.CelEnvDigest,
+	} {
+		if !digestPattern.MatchString(d) {
+			return fmt.Errorf("events: pipeline.revision.published %s %q is not sha256:<64 hex", name, d)
+		}
+	}
+	return nil
+}
+
+// PipelineRevisionDeprecated is § 3 row 35: the digest pins WHICH revision,
+// so the journal survives a later publish shadowing the id.
+type PipelineRevisionDeprecated struct {
+	ProjectID      string `json:"project_id"`
+	RevisionID     string `json:"revision_id"`
+	RevisionDigest string `json:"revision_digest"`
+}
+
+// Validate enforces § 3 row 35.
+func (p PipelineRevisionDeprecated) Validate() error {
+	if p.ProjectID == "" {
+		return fmt.Errorf("events: pipeline.revision.deprecated carries no project_id")
+	}
+	if p.RevisionID == "" {
+		return fmt.Errorf("events: pipeline.revision.deprecated carries no revision_id")
+	}
+	if !digestPattern.MatchString(p.RevisionDigest) {
+		return fmt.Errorf("events: pipeline.revision.deprecated revision_digest %q is not sha256:<64 hex", p.RevisionDigest)
+	}
+	return nil
+}
+
+// -------------------------------------------------------- assignment payloads
+
+// validateAssignmentShape checks the members § 3 row 36 gives BOTH of its
+// payloads; the bounds are assignments' § 1 CHECKs (1..8, the digest shape).
+func validateAssignmentShape(typ, projectID, assignmentID, pipelineID, pinnedRevisionID, revisionDigest string, maxConcurrentRuns int, budgetOverrides map[string]any) error {
+	switch {
+	case projectID == "":
+		return fmt.Errorf("events: %s carries no project_id", typ)
+	case assignmentID == "":
+		return fmt.Errorf("events: %s carries no assignment_id", typ)
+	case pipelineID == "":
+		return fmt.Errorf("events: %s carries no pipeline_id", typ)
+	case pinnedRevisionID == "":
+		return fmt.Errorf("events: %s carries no pinned_revision_id", typ)
+	case !digestPattern.MatchString(revisionDigest):
+		return fmt.Errorf("events: %s revision_digest %q is not sha256:<64 hex", typ, revisionDigest)
+	case maxConcurrentRuns < 1 || maxConcurrentRuns > 8:
+		return fmt.Errorf("events: %s max_concurrent_runs %d is outside 1..8 (§ 1's CHECK)", typ, maxConcurrentRuns)
+	case budgetOverrides == nil:
+		return fmt.Errorf("events: %s budget_overrides must be an object", typ)
+	}
+	return nil
+}
+
+// AssignmentCreated is § 3 row 36: the pin plus the ceilings, the whole M4
+// assignment (channels and promotes stay M6).
+type AssignmentCreated struct {
+	ProjectID         string         `json:"project_id"`
+	AssignmentID      string         `json:"assignment_id"`
+	PipelineID        string         `json:"pipeline_id"`
+	PinnedRevisionID  string         `json:"pinned_revision_id"`
+	RevisionDigest    string         `json:"revision_digest"`
+	MaxConcurrentRuns int            `json:"max_concurrent_runs"`
+	BudgetOverrides   map[string]any `json:"budget_overrides"`
+}
+
+// Validate enforces § 3 row 36 (created).
+func (a AssignmentCreated) Validate() error {
+	return validateAssignmentShape("assignment.created", a.ProjectID, a.AssignmentID, a.PipelineID,
+		a.PinnedRevisionID, a.RevisionDigest, a.MaxConcurrentRuns, a.BudgetOverrides)
+}
+
+// AssignmentUpdated is § 3 row 36: before{}/after{} carry only the changed
+// members, so the journal answers "what did that PATCH do?" without a diff.
+type AssignmentUpdated struct {
+	ProjectID         string         `json:"project_id"`
+	AssignmentID      string         `json:"assignment_id"`
+	PipelineID        string         `json:"pipeline_id"`
+	PinnedRevisionID  string         `json:"pinned_revision_id"`
+	RevisionDigest    string         `json:"revision_digest"`
+	MaxConcurrentRuns int            `json:"max_concurrent_runs"`
+	BudgetOverrides   map[string]any `json:"budget_overrides"`
+	Before            map[string]any `json:"before"`
+	After             map[string]any `json:"after"`
+}
+
+// Validate enforces § 3 row 36 (updated): the created shape plus both
+// before/after snapshots.
+func (a AssignmentUpdated) Validate() error {
+	if err := validateAssignmentShape("assignment.updated", a.ProjectID, a.AssignmentID, a.PipelineID,
+		a.PinnedRevisionID, a.RevisionDigest, a.MaxConcurrentRuns, a.BudgetOverrides); err != nil {
+		return err
+	}
+	if a.Before == nil || a.After == nil {
+		return fmt.Errorf("events: assignment.updated carries no before{}/after{} snapshot")
+	}
+	return nil
 }

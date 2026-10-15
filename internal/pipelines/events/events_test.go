@@ -26,6 +26,10 @@ func TestTypeNamesSatisfyTheEnvelopeGrammar(t *testing.T) {
 		events.TypeNodeAttemptRetryScheduled, events.TypeNodeAttemptInterrupted, events.TypeNodeAttemptCancelled,
 		events.TypeApprovalRequested, events.TypeApprovalDecided, events.TypeApprovalDenied,
 		events.TypeApprovalExpired, events.TypeApprovalCancelled,
+		events.TypePipelineCreated, events.TypePipelineDraftUpdated,
+		events.TypePipelineDraftValidated, events.TypePipelineRevisionPublished,
+		events.TypePipelineRevisionDeprecated,
+		events.TypeAssignmentCreated, events.TypeAssignmentUpdated,
 	}
 	seen := map[events.TypeName]bool{}
 	for _, ty := range all {
@@ -71,6 +75,9 @@ func TestPayloadsCarryProjectIDAndMarshalSnakeCase(t *testing.T) {
 		events.NodeAttemptRetryScheduled{}, events.NodeAttemptInterrupted{}, events.NodeAttemptCancelled{},
 		events.ApprovalRequested{}, events.ApprovalDecided{}, events.ApprovalDenied{},
 		events.ApprovalExpired{}, events.ApprovalCancelled{},
+		events.PipelineCreated{}, events.PipelineDraftUpdated{}, events.PipelineDraftValidated{},
+		events.PipelineRevisionPublished{}, events.PipelineRevisionDeprecated{},
+		events.AssignmentCreated{}, events.AssignmentUpdated{},
 	}
 	for _, p := range payloads {
 		rv := reflect.ValueOf(p)
@@ -139,5 +146,182 @@ func TestRecordValidate(t *testing.T) {
 	nodeOnly.AttemptID = ""
 	if err := nodeOnly.Validate(); err != nil {
 		t.Errorf("control-plane rows are legal without an attempt id: %v", err)
+	}
+}
+
+// TestPipelineLibraryAndAssignmentPayloads covers § 3 rows 31-36 with the
+// idiom the suite uses everywhere: each payload round-trips over the wire,
+// each good shape validates, and every shape the emitter might get wrong is
+// refused — by the payload AND through the Record.Validate bridge, so a bad
+// payload cannot reach the journal even when the writer forgot to check.
+func TestPipelineLibraryAndAssignmentPayloads(t *testing.T) {
+	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	digest := "sha256:" + hex64
+	overrides := map[string]any{"max_duration_seconds": 600}
+	for _, tc := range []struct {
+		name string
+		typ  events.TypeName
+		good events.Validator
+		bad  []events.Validator
+	}{
+		{
+			name: "pipeline.created", typ: events.TypePipelineCreated,
+			good: events.PipelineCreated{ProjectID: "p1", PipelineID: "pipe1", Slug: "feature-development"},
+			bad: []events.Validator{
+				events.PipelineCreated{PipelineID: "pipe1", Slug: "ok"},
+				events.PipelineCreated{ProjectID: "p1", Slug: "ok"},
+				events.PipelineCreated{ProjectID: "p1", PipelineID: "pipe1"},
+				events.PipelineCreated{ProjectID: "p1", PipelineID: "pipe1", Slug: "Feature_Dev"},
+				events.PipelineCreated{ProjectID: "p1", PipelineID: "pipe1", Slug: "a" + strings.Repeat("b", 128)},
+			},
+		},
+		{
+			name: "pipeline.draft.updated", typ: events.TypePipelineDraftUpdated,
+			good: events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2,
+				SourceSHA256: hex64, EditedBy: "u1", Kind: "yaml_import"},
+			bad: []events.Validator{
+				events.PipelineDraftUpdated{DraftID: "d1", Version: 2, SourceSHA256: hex64, EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", Version: 2, SourceSHA256: hex64, EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", SourceSHA256: hex64, EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2, EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2, SourceSHA256: digest, EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2, SourceSHA256: "nothex", EditedBy: "u1", Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2, SourceSHA256: hex64, Kind: "manual"},
+				events.PipelineDraftUpdated{ProjectID: "p1", DraftID: "d1", Version: 2, SourceSHA256: hex64, EditedBy: "u1", Kind: "telepathy"},
+			},
+		},
+		{
+			name: "pipeline.draft.validated (valid)", typ: events.TypePipelineDraftValidated,
+			good: events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", Valid: true,
+				RevisionDigest: digest, PlanDigest: digest},
+			bad: []events.Validator{
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", Valid: true},
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", Valid: true, RevisionDigest: digest},
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", Valid: true, RevisionDigest: digest, PlanDigest: digest, ErrorCount: 3},
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", Valid: true, RevisionDigest: "sha256:zz", PlanDigest: digest},
+				events.PipelineDraftValidated{DraftID: "d1", Valid: true, RevisionDigest: digest, PlanDigest: digest},
+			},
+		},
+		{
+			name: "pipeline.draft.validated (invalid)", typ: events.TypePipelineDraftValidated,
+			good: events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", ErrorCount: 2,
+				ErrorCodes: []string{"cycle_detected", "cel_compile_error"}},
+			bad: []events.Validator{
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1"},
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", ErrorCount: 1, RevisionDigest: "sha256:zz"},
+				events.PipelineDraftValidated{ProjectID: "p1", DraftID: "d1", ErrorCount: 1, ErrorCodes: []string{"a", "b", "c"}},
+				events.PipelineDraftValidated{ProjectID: "p1", ErrorCount: 1, ErrorCodes: []string{"cycle_detected"}},
+			},
+		},
+		{
+			name: "pipeline.revision.published", typ: events.TypePipelineRevisionPublished,
+			good: events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionID: "rev1",
+				RevisionNumber: 3, VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+				DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+			bad: []events.Validator{
+				events.PipelineRevisionPublished{ProjectID: "p1", RevisionID: "rev1", RevisionNumber: 3,
+					VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+					DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+				events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionNumber: 3,
+					VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+					DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+				events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionID: "rev1",
+					VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+					DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+				events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionID: "rev1", RevisionNumber: 3,
+					VersionLabel: "1.2", RevisionDigest: digest, PlanDigest: digest,
+					DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+				events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionID: "rev1", RevisionNumber: 3,
+					VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+					SchemaDigest: digest, CelEnvDigest: digest},
+				events.PipelineRevisionPublished{ProjectID: "p1", PipelineID: "pipe1", RevisionID: "rev1", RevisionNumber: 3,
+					VersionLabel: "1.2.0", RevisionDigest: hex64, PlanDigest: digest,
+					DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest},
+			},
+		},
+		{
+			name: "pipeline.revision.deprecated", typ: events.TypePipelineRevisionDeprecated,
+			good: events.PipelineRevisionDeprecated{ProjectID: "p1", RevisionID: "rev1", RevisionDigest: digest},
+			bad: []events.Validator{
+				events.PipelineRevisionDeprecated{RevisionID: "rev1", RevisionDigest: digest},
+				events.PipelineRevisionDeprecated{ProjectID: "p1", RevisionDigest: digest},
+				events.PipelineRevisionDeprecated{ProjectID: "p1", RevisionID: "rev1", RevisionDigest: "sha256:abc"},
+			},
+		},
+		{
+			name: "assignment.created", typ: events.TypeAssignmentCreated,
+			good: events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+				PinnedRevisionID: "rev1", RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+			bad: []events.Validator{
+				events.AssignmentCreated{AssignmentID: "a1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+					RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: hex64, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 0, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 9, BudgetOverrides: overrides},
+				events.AssignmentCreated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1", PinnedRevisionID: "rev1",
+					RevisionDigest: digest, MaxConcurrentRuns: 3},
+			},
+		},
+		{
+			name: "assignment.updated", typ: events.TypeAssignmentUpdated,
+			good: events.AssignmentUpdated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+				PinnedRevisionID: "rev1", RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides,
+				Before: map[string]any{"max_concurrent_runs": 1}, After: map[string]any{"max_concurrent_runs": 3}},
+			bad: []events.Validator{
+				events.AssignmentUpdated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+					PinnedRevisionID: "rev1", RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides},
+				events.AssignmentUpdated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+					PinnedRevisionID: "rev1", RevisionDigest: digest, MaxConcurrentRuns: 3, BudgetOverrides: overrides,
+					Before: map[string]any{"max_concurrent_runs": 1}},
+				events.AssignmentUpdated{ProjectID: "p1", AssignmentID: "a1", PipelineID: "pipe1",
+					PinnedRevisionID: "rev1", RevisionDigest: digest, MaxConcurrentRuns: 9, BudgetOverrides: overrides,
+					Before: map[string]any{}, After: map[string]any{}},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.good)
+			if err != nil {
+				t.Fatalf("good payload does not marshal: %v", err)
+			}
+			rv := reflect.New(reflect.TypeOf(tc.good))
+			if err := json.Unmarshal(b, rv.Interface()); err != nil {
+				t.Fatalf("round-trip unmarshal: %v", err)
+			}
+			b2, err := json.Marshal(rv.Elem().Interface())
+			if err != nil {
+				t.Fatalf("round-trip re-marshal: %v", err)
+			}
+			if string(b) != string(b2) {
+				t.Errorf("wire drift: %s != %s", b, b2)
+			}
+			if err := tc.good.Validate(); err != nil {
+				t.Errorf("good payload refused: %v", err)
+			}
+			rec := events.Record{Type: tc.typ, Payload: tc.good, ProjectID: "p1",
+				ActorKind: events.ActorKindSystem, Timestamp: time.Now()}
+			if err := rec.Validate(); err != nil {
+				t.Errorf("record with good payload refused: %v", err)
+			}
+			for i, p := range tc.bad {
+				if err := p.Validate(); err == nil {
+					t.Errorf("bad payload %d accepted", i)
+				}
+				bad := rec
+				bad.Payload = p
+				if err := bad.Validate(); err == nil {
+					t.Errorf("bad payload %d reached the journal through Record.Validate", i)
+				}
+			}
+		})
 	}
 }
