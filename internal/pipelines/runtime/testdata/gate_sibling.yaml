@@ -1,0 +1,38 @@
+# Gate honesty (12 case 9 / C9): the gate holds no worker while a sibling
+# branch keeps running, and the dependant reads the decision as a business
+# outcome.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: gate-and-sibling
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 2
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: gate
+    kind: human.approval
+    config:
+      summary: ${{ inputs.goal }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 60
+      onTimeout: fail
+  - id: sibling
+    kind: process.exec
+    config:
+      executable: side
+  - id: after
+    kind: process.exec
+    dependsOn: [gate]
+    when: nodes.gate.outputs.decision == 'approved'
+    config:
+      executable: go_on
+  resultBindings:
+    gate_decision: ${{ nodes.gate.outputs.decision }}

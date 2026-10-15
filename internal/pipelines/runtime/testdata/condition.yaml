@@ -1,0 +1,48 @@
+# The `condition` kind (contract § 9.1 row 13, 03 § routing): cases evaluate
+# in authored order, first true wins, unmatched falls to the declared
+# default. The branches then route off `nodes.pick.outputs.route`.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: condition-arms
+spec:
+  inputs:
+    type: object
+    required: [goal, flags]
+    properties:
+      goal: {type: string, minLength: 1}
+      flags:
+        type: object
+        properties:
+          keep: {type: boolean}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: pick
+    kind: condition
+    config:
+      cases:
+      - when: inputs.flags.keep == true
+        route: on
+      default: off
+    outputs:
+      type: object
+      properties:
+        route: {type: string}
+  - id: on
+    kind: process.exec
+    dependsOn: [pick]
+    when: nodes.pick.outputs.route == 'on'
+    config:
+      executable: on
+  - id: off
+    kind: process.exec
+    dependsOn: [pick]
+    when: nodes.pick.outputs.route == 'off'
+    config:
+      executable: off
+  resultBindings:
+    route: ${{ nodes.pick.outputs.route }}

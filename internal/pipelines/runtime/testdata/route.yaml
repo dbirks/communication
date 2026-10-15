@@ -1,0 +1,52 @@
+# Failure-route arm of 03's failure table (D6): gen fails, the named error
+# route runs off the failed envelope, the non-route dependant is skipped.
+# The authored onFailure is compiled to the plan by the compiler (a known
+# defect reads the wrong key, so tests patch the compiled policy).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: failure-routes
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: gen
+    kind: process.exec
+    onFailure:
+      onExecutionError: route
+      errorRoute: recover
+    config:
+      executable: gen
+    outputs:
+      type: object
+      properties:
+        exit_code: {type: integer}
+  - id: recover
+    kind: process.exec
+    dependsOn: [gen]
+    when: nodes.gen.status == 'failed'
+    outputs:
+      type: object
+      properties:
+        ok: {type: boolean}
+    config:
+      executable: recover
+  - id: sidecar
+    kind: process.exec
+    dependsOn: [gen]
+    outputs:
+      type: object
+      properties:
+        ok: {type: boolean}
+    config:
+      executable: sidecar
+  resultBindings:
+    done: ${{ nodes.recover.outputs.ok }}

@@ -1,0 +1,51 @@
+# carryForward through the `previous`/`iteration` roots (ADR-0022 § 2 as
+# amended, contract § 9.1 rows 17-18): the loop passes only when the PRIOR
+# iteration's resultBindings say approved — iteration 1 sees an empty
+# previous and must guard it.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: loop-previous
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  outputs:
+    type: object
+    properties:
+      iterations: {type: integer}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: build
+    kind: until
+    config:
+      maxIterations: 3
+      carryForward: true
+      passWhen: has(previous.approved) && previous.approved == true
+      body:
+        nodes:
+        - id: review
+          kind: process.exec
+          config:
+            executable: review
+          outputs:
+            type: object
+            required: [approved]
+            properties:
+              approved: {type: boolean}
+      resultBindings:
+        approved: ${{ nodes.review.outputs.approved }}
+    outputs:
+      type: object
+      required: [iterations, approved]
+      properties:
+        iterations: {type: integer}
+        approved: {type: boolean}
+  resultBindings:
+    iterations: ${{ nodes.build.outputs.iterations }}

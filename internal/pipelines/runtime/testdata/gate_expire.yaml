@@ -1,0 +1,24 @@
+# onTimeout: expire — contract § 5.4 pass 2's re-request-exactly-once arm.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: gate-expire
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 2
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 20
+    cancelPolicy: cascade
+  nodes:
+  - id: gate
+    kind: human.approval
+    config:
+      summary: ${{ inputs.goal }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 60
+      onTimeout: expire

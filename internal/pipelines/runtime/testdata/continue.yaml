@@ -1,0 +1,29 @@
+# onExecutionError: continue arm: b skips after a fails, the run still ends
+# honestly (completed with b's envelope reading "skipped").
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: continue-policy
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: a
+    kind: process.exec
+    config:
+      executable: a
+  - id: b
+    kind: process.exec
+    dependsOn: [a]
+    config:
+      executable: b
+  resultBindings:
+    b_status: ${{ nodes.b.status }}

@@ -1,0 +1,412 @@
+package runtime
+
+import (
+	"fmt"
+	"sort"
+
+	pevents "github.com/dbirks/communication/internal/pipelines/events"
+)
+
+// Workspace modes (ADR-0023 § 6). The plan's compiled retry.workspacePolicy
+// may spell the default "reuse_or_recreate" (the compiler's authored
+// default); both spellings mean continue_workspace here.
+const (
+	WorkspaceContinue = "continue_workspace"
+	WorkspaceRestore  = "restore_checkpoint"
+)
+
+// ErrCheckpointUnavailable is contract route 31's 409 checkpoint_unavailable:
+// restore_checkpoint is only legal when every repository is committed at the
+// boundary — refusing is what stops "a destructive default wearing a feature
+// badge" (C6d).
+type ErrCheckpointUnavailable struct {
+	NodeInstanceKey string
+	Reason          string
+}
+
+func (e ErrCheckpointUnavailable) Error() string {
+	return fmt.Sprintf("runtime: checkpoint_unavailable for %s: %s", e.NodeInstanceKey, e.Reason)
+}
+
+// RetryDecision answers "what does a retry inherit?" (contract route 27's
+// purpose sentence) for one node execution, purely from rows.
+type RetryDecision struct {
+	NodeInstanceKey string
+	Mode            string // WorkspaceContinue | WorkspaceRestore
+	Context         map[string]any
+	Checkpoint      *CheckpointRecord // last valid boundary (may be nil at the run's first node)
+	// FromCommit is the boundary the restore would reset to (restore mode only).
+	FromCommit string
+}
+
+// RetryPlan computes the decision for one node execution. mode is the node's
+// compiled workspace policy; repoCommitted comes from the checkpoint's own
+// recorded states (the flag is part of the record, "never a guess made at
+// retry time" — see CheckpointRecord.RepoState).
+func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, error) {
+	row := st.Node(instanceKey)
+	if row == nil {
+		return RetryDecision{}, fmt.Errorf("runtime: no node execution %s in run %s", instanceKey, st.Run.ID)
+	}
+	pn, ok := prog.Plan().FindNode(trimInstanceSuffixes(row.ScopeKey), row.NodeID)
+	if !ok {
+		return RetryDecision{}, fmt.Errorf("runtime: node %s is not in the pinned plan", instanceKey)
+	}
+	mode := WorkspaceContinue
+	if pn.Retry.WorkspacePolicy == WorkspaceRestore {
+		mode = WorkspaceRestore
+	}
+	// The boundary the retry inherits: the newest checkpoint in the run that
+	// precedes this node — the last COMPLETED node, which continue_workspace
+	// honours fully (ADR-0023 § 6: "02's checkpoint sentence is about where
+	// the durable record boundary is").
+	var last *CheckpointRecord
+	for i, c := range st.Checkpoints {
+		if c.NodeExecutionID == row.ID {
+			continue // a retry of THIS node inherits the boundary before it
+		}
+		if last == nil || st.Checkpoints[i].CreatedAt.After(last.CreatedAt) ||
+			(st.Checkpoints[i].CreatedAt.Equal(last.CreatedAt) && c.NodeExecutionID > last.NodeExecutionID) {
+			cc := st.Checkpoints[i]
+			last = &cc
+		}
+	}
+	d := RetryDecision{NodeInstanceKey: instanceKey, Mode: mode, Context: map[string]any{}, Checkpoint: last}
+	if a := st.LastAttempt(row.ID); a != nil {
+		d.Context["attempt"] = int64(a.AttemptNumber)
+		if a.ErrorClass != "" {
+			d.Context["error_class"] = a.ErrorClass
+		}
+	}
+	if last != nil {
+		for _, r := range last.RepoStates {
+			if r.HeadCommit != "" {
+				if d.Context["head_commit"] == nil {
+					d.Context["head_commit"] = r.HeadCommit
+				}
+			}
+			if r.ModifiedPathCount > 0 {
+				d.Context["modified_path_count"] = r.ModifiedPathCount
+			}
+		}
+	}
+	if mode == WorkspaceRestore {
+		if last == nil {
+			return d, ErrCheckpointUnavailable{NodeInstanceKey: instanceKey,
+				Reason: "no completed boundary exists to restore to"}
+		}
+		for _, r := range last.RepoStates {
+			if !r.Committed {
+				return d, ErrCheckpointUnavailable{NodeInstanceKey: instanceKey,
+					Reason: "repository " + r.RepositoryID + " has uncommitted changes at the boundary"}
+			}
+		}
+		if len(last.RepoStates) > 0 {
+			d.FromCommit = last.RepoStates[0].HeadCommit
+		}
+	}
+	return d, nil
+}
+
+// RetryRun is contract route 31's engine half: re-target the failed,
+// interrupted or cancelled node executions, reopen them (and their cancelled
+// descendants — the branch must be runnable again), re-queue attempts with
+// retry_context, and reopen the run itself. Idempotence rule C6d honoured
+// first: every target's plan is validated BEFORE any row moves, so a
+// checkpoint_unavailable refusal resets nothing.
+//
+// An `until` whose iteration 2 died restarts iteration 2, not the loop
+// (ADR-0023 § 6) — because the composite's ScopeState was never rolled back
+// and reopen only touches the iteration's own rows.
+func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOverrides map[string]any) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	if ms.Adv == nil {
+		return fmt.Errorf("runtime: no advancer wired")
+	}
+	prog := ms.Adv.Prog
+	// Resolve targets: named keys, or every non-succeeded terminal row.
+	var rows []*NodeExecution
+	if len(targets) == 0 {
+		for _, n := range st.Nodes {
+			if n.Status == NodeFailed || n.Status == NodeInterrupted || n.Status == NodeCancelled {
+				rows = append(rows, n)
+			}
+		}
+	} else {
+		for _, key := range targets {
+			n := st.Node(key)
+			if n == nil {
+				return fmt.Errorf("runtime: no node execution %s in run %s", key, runID)
+			}
+			if n.Status != NodeFailed && n.Status != NodeInterrupted && n.Status != NodeCancelled {
+				return fmt.Errorf("runtime: %s is %s, not retriable", key, n.Status)
+			}
+			rows = append(rows, n)
+		}
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("runtime: run_not_retriable: no target is in a retriable state")
+	}
+	// Validate every plan first (validate-then-mutate: a refusal must leave
+	// the rows exactly as they were).
+	decisions := make([]RetryDecision, 0, len(rows))
+	reopen := map[string]*NodeExecution{}
+	for _, n := range rows {
+		d, err := RetryPlan(st, prog, n.InstanceKey)
+		if err != nil {
+			return err // ErrCheckpointUnavailable carries the 409 code
+		}
+		decisions = append(decisions, d)
+		reopen[n.InstanceKey] = n
+		// Cancelled descendants of a reopened target come back too.
+		for _, other := range st.Nodes {
+			if other.Status == NodeCancelled && sameScopeInstance(other, n) && dependsOnTransitively(prog, other, n) {
+				reopen[other.InstanceKey] = other
+			}
+		}
+	}
+	at := ms.now()
+	for _, key := range sortedKeys(reopen) {
+		n := reopen[key]
+		switch n.Status {
+		case NodeFailed, NodeInterrupted, NodeCancelled:
+			if err := n.Move(NodeReady, at); err != nil {
+				return err
+			}
+			n.ErrorClass = ""
+			n.FailedCause = ""
+			n.Outcome = ""
+		}
+	}
+	// Re-queue one attempt per reopened WORKER row with the decision's
+	// context; control-plane rows re-derive inside the advancer.
+	for _, n := range reopen {
+		if n.Location != "worker" {
+			continue
+		}
+		d, has := decisionFor(decisions, n.InstanceKey)
+		if !has {
+			d = RetryDecision{Context: map[string]any{}, Mode: WorkspaceContinue}
+		}
+		a := &Attempt{
+			ID: st.NewID("at"), NodeExecutionID: n.ID, RunID: runID,
+			AttemptNumber: n.AttemptCount + 1, Status: AttemptQueued,
+			ScheduledAt: at, RetryContext: d.Context,
+			Overrides: filterOverrides(inputOverrides, n.NodeID),
+			CreatedAt: at,
+		}
+		if err := a.Check(); err != nil {
+			return err
+		}
+		n.AttemptCount++
+		n.InFlight++
+		st.Attempts = append(st.Attempts, a)
+		_ = prog
+		if d.Mode == WorkspaceRestore {
+			// The worker performs the unsandboxed reset BEFORE launching
+			// anything; the event is the engine stating the difference
+			// (contract § 3 row 8).
+			st.event(at, pevents.ActorKindSystem, pevents.Record{
+				Type: pevents.TypeRunCheckpointRestored, RunID: runID, NodeExecutionID: n.ID,
+				Payload: pevents.RunCheckpointRestored{
+					ProjectID: st.Run.ProjectID, RunID: runID,
+					NodeInstanceKey: n.InstanceKey, FromCommit: d.FromCommit,
+				},
+			})
+		}
+	}
+	if st.Run.Status == RunCancelled || st.Run.Status == RunFailed || st.Run.Status == RunInterrupted {
+		if err := st.Run.ReopenForRetry(); err != nil {
+			return err
+		}
+	}
+	st.event(at, pevents.ActorKindHuman, pevents.Record{
+		Type: pevents.TypeRunRetried, RunID: runID, ActorID: requestedBy,
+		Payload: pevents.RunRetried{
+			ProjectID: st.Run.ProjectID, RunID: runID, RequestedBy: requestedBy,
+			Targets: sortedTargetKeys(rows), InputNames: sortedInputNames(inputOverrides),
+			WorkspacePolicies: map[string]string{},
+		},
+	})
+	if ms.Adv != nil {
+		return ms.Adv.Advance(st, at)
+	}
+	return nil
+}
+
+func decisionFor(ds []RetryDecision, key string) (RetryDecision, bool) {
+	for _, d := range ds {
+		if d.NodeInstanceKey == key {
+			return d, true
+		}
+	}
+	return RetryDecision{}, false
+}
+
+func sortedTargetKeys(rows []*NodeExecution) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.InstanceKey)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedInputNames(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func filterOverrides(m map[string]any, nodeID string) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+func sameScopeInstance(a, b *NodeExecution) bool {
+	return a.ScopeKey == b.ScopeKey
+}
+
+// dependsOnTransitively reports whether `other` (same scope instance) depends
+// on `target` through declared dependsOn edges.
+func dependsOnTransitively(prog *Program, other, target *NodeExecution) bool {
+	scope := trimInstanceSuffixes(other.ScopeKey)
+	byID := map[string][]string{}
+	for _, n := range prog.ScopeNodes(scope) {
+		byID[n.ID] = n.DependsOn
+	}
+	seen := map[string]bool{}
+	var walk func(id string) bool
+	walk = func(id string) bool {
+		for _, dep := range byID[id] {
+			if dep == target.NodeID {
+				return true
+			}
+			if !seen[dep] {
+				seen[dep] = true
+				if walk(dep) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(other.NodeID)
+}
+
+func sortedKeys(m map[string]*NodeExecution) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// PauseRequest/ResumeRequest are contract routes 28/29's engine effect:
+// pause stops FUTURE scheduling only (in-flight attempts finish honestly),
+// and resume lets the advancer re-derive readiness from rows — never from a
+// memory (route 29's sentence is the whole design of this package).
+func (ms *MemStore) Pause(runID, reason, requestedBy string) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	var inFlight []string
+	for _, a := range st.LiveAttempts() {
+		inFlight = append(inFlight, a.ID)
+	}
+	if err := st.Run.MoveRun(RunPaused, "", reason, ms.now()); err != nil {
+		return err
+	}
+	st.event(ms.now(), pevents.ActorKindHuman, pevents.Record{
+		Type: pevents.TypeRunPaused, RunID: runID, ActorID: requestedBy,
+		Payload: pevents.RunPaused{
+			ProjectID: st.Run.ProjectID, RunID: runID, PausedReason: reason,
+			InFlightAttempts: inFlight, RequestedBy: requestedBy,
+		},
+	})
+	return nil
+}
+
+func (ms *MemStore) Resume(runID, requestedBy string) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	if st.Run.Status != RunPaused {
+		return fmt.Errorf("runtime: run %s is %s, not paused", runID, st.Run.Status)
+	}
+	cleared := st.Run.PausedReason
+	if err := st.Run.MoveRun(RunQueued, "", "", ms.now()); err != nil {
+		return err
+	}
+	st.event(ms.now(), pevents.ActorKindHuman, pevents.Record{
+		Type: pevents.TypeRunResumed, RunID: runID, ActorID: requestedBy,
+		Payload: pevents.RunResumed{ProjectID: st.Run.ProjectID, RunID: runID, PausedReason: cleared},
+	})
+	// The advance that follows re-derives everything from rows.
+	if ms.Adv != nil {
+		return ms.Adv.Advance(st, ms.now())
+	}
+	return nil
+}
+
+// RequestCancel is route 30's write: the flag only. The advancer cascades
+// (ADR-0023 § 10), which is why cancel and cascade are separate steps with an
+// observable event between them.
+func (ms *MemStore) RequestCancel(runID, requestedBy string) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	if RunTerminal(st.Run.Status) {
+		return nil
+	}
+	at := ms.now()
+	st.Run.CancelRequestedAt = &at
+	_ = requestedBy
+	return nil
+}
+
+// MarkCancelledByHumanTakeover is ADR-0023 § 9's takeover arm at the run
+// level: the attempt closes interrupted{human_takeover} and the run pauses
+// with that reason (the conversation-control machinery itself is M2's,
+// unchanged — this is only the run-state side of the handoff).
+func (ms *MemStore) MarkCancelledByHumanTakeover(runID, attemptID string) error {
+	// Pause FIRST: the interrupt's follow-up advance must not schedule a
+	// retry for the attempt the human is taking over (pause stops future
+	// scheduling; the interrupt still writes the honest attempt terminal).
+	if err := ms.Pause(runID, PausedHumanTakeover, ""); err != nil {
+		return err
+	}
+	return ms.Interrupt(runID, attemptID, ErrInterrupted)
+}
+
+// RunKeys lists every node execution key — a test/ops helper naming the
+// "same node_instance_key set" the exit test compares (C1i/C5g: a retry
+// appends, never rewrites history).
+func (st *State) RunKeys() []string {
+	out := make([]string, 0, len(st.Nodes))
+	for _, n := range st.Nodes {
+		out = append(out, n.InstanceKey)
+	}
+	sort.Strings(out)
+	return out
+}
