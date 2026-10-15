@@ -25,3 +25,7 @@ __pycache__/
 
 # M2 real-credential harness state (lab only, never commit)
 .harness/
+
+# Playwright E2E evidence output (e2e/): HTML reports, traces, screenshots
+playwright-report/
+test-results/

@@ -1,0 +1,48 @@
+# e2e/compose.e2e.yml — port-isolated override for the Playwright E2E suite
+# (ADR-0006) so a CI run — or a local run while the dev stack is up — never
+# clashes with anything else on the host.
+#
+#   docker compose -p communication-e2e -f compose.yml -f e2e/compose.e2e.yml up -d --build
+#   docker compose -p communication-e2e -f compose.yml -f e2e/compose.e2e.yml down -v
+#
+# Every published host port is overridden (1808x -> 2808x) and the two
+# browser-visible URLs the API bakes into the OIDC redirect dance change with
+# it: COMMUNICATION_PUBLIC_URL (the redirect_uri base) and
+# COMMUNICATION_OIDC_BROWSER_ISSUER (the issuer the browser is sent to). The
+# in-network issuer (http://oidc:8080/default, used for discovery/JWKS) stays
+# untouched.
+#
+# Host-only safety note: this lab also runs a model gateway on 8080/8081/8090
+# and a dev stack on 18080-18090; 28080/28081/28082/28090 overlap with neither.
+name: communication-e2e
+
+services:
+  oidc:
+    # !override: replace the published-port list rather than appending to it,
+    # otherwise the dev-stack 18090 mapping from compose.yml stays active.
+    ports: !override
+      - "127.0.0.1:28090:8080"
+
+  api-a:
+    environment:
+      COMMUNICATION_PUBLIC_URL: http://localhost:28080
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:28090/default
+    ports: !override
+      - "127.0.0.1:28081:8080"
+
+  api-b:
+    environment:
+      COMMUNICATION_PUBLIC_URL: http://localhost:28080
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:28090/default
+    ports: !override
+      - "127.0.0.1:28082:8080"
+
+  lb:
+    ports: !override
+      - "127.0.0.1:28080:80"
+
+  worker:
+    # The M1 journey exercises control plane + UI only. Give the worker a
+    # profile so a default `up` never starts it and `--build` never builds the
+    # heavy worker image (Node + agent adapters, ADR-0007) in the e2e CI job.
+    profiles: ["worker"]
