@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """M4 exit proof — STACK SKELETON (docs/m4-contract.md § 7).
 
-Status: the lifecycle, fixtures and helpers below are real; every gate C1–C14
-and W1–W11 prints `SKIP (pending)` with its one-line intent. No gate here may
-ever print PASS without the literal Postgres/API output its § 7 docstring
-names (12-test-strategy.md: a mocked or inferred green is not done).
+Status: the lifecycle, fixtures and helpers below are real. C1 is the real
+§ 7.1 proof — seed-manifest driven, honestly SKIPping until a live stack and
+a seed-manifest.json exist, deterministic once the stack answers; its pure
+logic is unit-tested offline by e2e/m4/test_c1_logic.py. Every other gate
+(C2–C14, W1–W11) prints `SKIP (pending)` with its one-line intent. No gate
+here may ever print PASS without the literal Postgres/API output its § 7
+docstring names (12-test-strategy.md: a mocked or inferred green is not done).
 
 Host safety (§ 7.0, repeated because M4 is the first two-worker milestone):
 every docker command here uses compose project `communication-m4` with its
@@ -24,15 +27,19 @@ Stack (compose.yml + compose.harness.yml + compose.m4.yml):
              through the API; profile pins with no API yet go by SQL, M3 D10).
 
 Usage:
-  python3 e2e/m4/e2e_m4_exit.py [--up] [--down] [--only C1,C5,W2] [--list]
+  python3 e2e/m4/e2e_m4_exit.py [--up] [--seed] [--down] [--only C1,C5,W2] [--list]
   (run from the repository root; --up prepares .harness dirs + the fixture
-  repo and builds; --down tears the project down at the end, even on failure)
+  repo and builds; --seed shells out to the § 7.0 seed.sh contract and parses
+  its manifest; --down tears the project down at the end, even on failure)
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -59,6 +66,12 @@ SCRATCH = os.environ.get("M4X_SCRATCH") or os.path.join(
 # § 7.0's lab fixture secret — the literal the contract fixes (its value is a
 # public contract string, not a credential; C2c asserts it appears NOWHERE).
 SENTINEL = "SENTINEL-m4-7c1e9d42-exit-test-only"
+
+# § 7.0 seed contract: the driver shells out to the probe's seed.sh and reads
+# its manifest; M4_SEED_MANIFEST overrides the path exactly as seed.sh's does.
+SEED_SH = os.path.join(REPO_DIR, "docs", "compatibility", "probes", "m4", "seed.sh")
+MANIFEST_PATH = os.environ.get("M4_SEED_MANIFEST") or os.path.join(
+    SCRATCH, "seed-manifest.json")
 
 WORKER_A = "communication-m4-worker-a"
 WORKER_B = "communication-m4-worker-b"
@@ -241,7 +254,7 @@ def prepare_host_dirs():
     Docker would create a missing bind source root-owned; these must be ours."""
     for d in (".harness/workspaces", ".harness/home-a", ".harness/home-b",
               ".harness/remotes", ".harness/apm-upstream",
-              ".harness/m4-fixtures"):
+              ".harness/m4-fixtures", ".harness/m4-fixtures/bin"):
         os.makedirs(os.path.join(REPO_DIR, d), exist_ok=True)
 
 
@@ -315,6 +328,7 @@ def start_throwaway(name, enforcement, repos_volume=None):
            "-v", f"{WS_BIND}:/workspaces",
            "-v", f"{vol}:/repos",
            "-v", f"{FIXTURE_HOST}:/srv/m4/fixtures:ro",
+           "-v", f"{FIXTURE_HOST}/bin:/opt/m4/bin:ro",
            "-v", f"{REMOTES}:{REMOTES}:ro",
            "-v", f"{scr}/sandbox-home:/sandbox-home",
            "-v", f"{scr}/sandbox-policy:/sandbox-policy",
@@ -342,7 +356,7 @@ def start_throwaway(name, enforcement, repos_volume=None):
            "-e", "CLAUDE_CONFIG_DIR=/harness/claude",
            "-e", "CODEX_HOME=/harness/codex",
            "--entrypoint", "/bin/sh", "communication-worker:dev",
-           "-c", "exec communication worker"]
+           "-c", "export PATH=/opt/m4/bin:$PATH; exec communication worker"]
     rc, out = run(cmd)
     check(f"throwaway {enforcement} worker {name} started", rc == 0, out[-200:])
     return name
@@ -367,6 +381,567 @@ def wait_worker_row(name, timeout=120):
     return None, None, None
 
 
+# --- C1 pure logic — unit-tested offline by e2e/m4/test_c1_logic.py -----------
+# Nothing below this line may touch the stack: manifest normalization, key-set
+# algebra, SSE frame parsing, journal-shape and result-binding assertions all
+# run against canned fixtures so most of C1 is proven WITHOUT a server.
+
+FD_SLUG = "feature-development"
+TW_SLUG = "feature-development-deterministic"
+II_SLUG = "issue-implementation"
+
+# § 7.1 C1d's root key set for the seeded pipeline: the when-gated fan-out
+# pair and the losing publish arm exist as TERMINAL `skipped` rows (the
+# pipeline.yaml header says so in words: "appear as node.execution_skipped
+# exactly like publish_needs_attention already does").
+C1_ROOT_KEYS = {
+    "/plan": "succeeded",
+    "/approve": "succeeded",
+    "/build_until_verified": "succeeded",
+    "/emit_items": "skipped",
+    "/fan_out": "skipped",
+    "/verdict": "succeeded",
+    "/publish_verified": "succeeded",
+    "/publish_needs_attention": "skipped",
+}
+
+
+def expected_node_keys(iterations):
+    """The full node_instance_key -> expected terminal status map for an
+    until-loop run that passed at `iterations` (iteration body rows carry the
+    [n] suffix; the loop itself is the unsuffixed composite row)."""
+    keys = dict(C1_ROOT_KEYS)
+    for i in range(1, iterations + 1):
+        for n in ("implement", "test", "review"):
+            keys[f"/build_until_verified[{i}]/{n}"] = "succeeded"
+    return keys
+
+
+def observed_iterations(keys):
+    """Highest /build_until_verified[n]/… suffix seen in a key set (0 if none)."""
+    ns = [int(m.group(1)) for k in keys if (m := re.match(r"^/build_until_verified\[(\d+)\]", k))]
+    return max(ns) if ns else 0
+
+
+def collapse_iterations(keys):
+    """/build_until_verified[2]/review -> …[*]/review — the iteration-counter-
+    free view of a key set (the stable cross-variant identity: equal node ids,
+    equal scopes, whatever iteration count each variant spent)."""
+    return {re.sub(r"\[\d+\]", "[*]", k) for k in keys}
+
+
+def compare_key_sets(a, b):
+    """(identical, only_in_a, only_in_b) with the diffs sorted for the print."""
+    sa, sb = set(a), set(b)
+    return sa == sb, sorted(sa - sb), sorted(sb - sa)
+
+
+class SseFrames(list):
+    """Parsed SSE envelopes plus a `_junk` note: data frames that arrived but
+    were not JSON — reported, never crashy (a malformed observer frame is a
+    fact about the stream, not a verdict on the run)."""
+    _junk: list
+
+
+def parse_sse(text):
+    """Standard SSE framing (communication-spec/09): id:/event: fields and
+    ': heartbeat' comments are consumed; blank line dispatches the data as
+    JSON. Returns the parsed envelopes in stream order."""
+    events, junk, buf = SseFrames(), [], []
+    for line in text.splitlines():
+        if line.startswith(":"):
+            continue
+        if line == "":
+            if buf:
+                raw = "\n".join(buf)
+                buf = []
+                try:
+                    events.append(json.loads(raw))
+                except ValueError:
+                    junk.append(raw[:120])
+            continue
+        if line.startswith("data:"):
+            buf.append(line[5:].lstrip())
+    if buf:  # stream closed on an un-dispatched final frame
+        try:
+            events.append(json.loads("\n".join(buf)))
+        except ValueError:
+            junk.append("\n".join(buf)[:120])
+    events._junk = junk
+    return events
+
+
+# Envelope correlation rules (openapi run-events description, stated once):
+# a worker row that touches a node execution sets run_id + node_execution_id
+# + attempt_id; the control plane may carry node_execution_id with attempt_id
+# NULL because control-plane work creates no attempts (ADR-0023 § 3).
+ATTEMPT_CORRELATED_TYPES = {
+    "node.attempt.started", "node.attempt.completed", "node.attempt.failed",
+    "node.attempt.interrupted", "node.attempt.cancelled",
+    "node.attempt.retry_scheduled",
+}
+CONTROL_PLANE_GATE_TYPES = {"approval.requested", "approval.decided"}
+
+# § 7.1 C1h: the milestone chain that must appear, first-occurrence by
+# first-occurrence, run.created to run.completed. node.attempt.* is asserted
+# separately (it legitimately opens the story at /plan, before the gate);
+# the GATE-then-EXECUTE order is what the chain pins.
+JOURNAL_MILESTONES = ["run.created", "approval.requested", "approval.decided",
+                      "run.checkpoint_saved", "node.scope.completed", "run.completed"]
+
+
+def journal_shape(rows):
+    """C1h over one run's journal slice — rows are dicts
+    {global_seq, type, node_execution_id, attempt_id}. Returns
+    [(label, ok, detail)] for the gate's CHECK lines; pure."""
+    out = []
+    types = [r["type"] for r in rows]
+    seqs = [int(r["global_seq"]) for r in rows]
+    out.append(("journal non-empty", bool(rows), f"{len(rows)} rows"))
+    out.append(("journal opens with run.created",
+                bool(types) and types[0] == "run.created", str(types[:1])))
+    out.append(("journal closes with run.completed",
+                bool(types) and types[-1] == "run.completed", str(types[-1:])))
+    regress = [(a, b) for a, b in zip(seqs, seqs[1:]) if b <= a]
+    out.append(("run slice strictly ascending in global_seq (the run's own slice is "
+                "the contiguity contract; global gaps belong to other runs)",
+                not regress, f"{len(seqs)} rows, {len(regress)} regressions {regress[:3]}"))
+    present = [m for m in JOURNAL_MILESTONES if m in types]
+    firsts = [types.index(m) for m in present]
+    out.append(("milestone chain run.created→approval.*→checkpoint→scope→completed",
+                present == JOURNAL_MILESTONES and firsts == sorted(firsts),
+                "seen: " + ",".join(present)))
+    att_idx = [i for i, t in enumerate(types) if t in ATTEMPT_CORRELATED_TYPES]
+    out.append(("node.attempt.* events present between the terminals",
+                bool(att_idx) and 0 < min(att_idx) < len(types) - 1,
+                f"{len(att_idx)} attempt rows"))
+    viol = [(r["global_seq"], r["type"]) for r in rows
+            if r["type"] in ATTEMPT_CORRELATED_TYPES
+            and not (r["node_execution_id"] and r["attempt_id"])]
+    out.append(("worker attempt rows carry node_execution_id AND attempt_id",
+                not viol, str(viol[:4])))
+    viol2 = [(r["global_seq"], r["type"]) for r in rows
+             if r["type"] in CONTROL_PLANE_GATE_TYPES
+             and (not r["node_execution_id"] or r["attempt_id"])]
+    out.append(("control-plane gate rows: node_execution_id set, attempt_id NULL",
+                not viol2, str(viol2[:4])))
+    return out
+
+
+def result_bindings_ok(rb, variant):
+    """§ 7.1 C1g: implementation_summary non-empty, review_approved=true,
+    iterations=2 (twin) / >=2 (agent). [(label, ok, detail)] — pure."""
+    rb = rb if isinstance(rb, dict) else {}
+    s = rb.get("implementation_summary")
+    it = rb.get("iterations")
+    out = [
+        ("result_bindings.implementation_summary non-empty",
+         isinstance(s, str) and s.strip() != "", repr(s)[:90]),
+        ("result_bindings.review_approved == true",
+         rb.get("review_approved") is True, repr(rb.get("review_approved"))),
+    ]
+    if variant == "twin":
+        out.append(("result_bindings.iterations == 2 (twin is deterministic)",
+                    it == 2, repr(it)))
+    else:
+        out.append(("result_bindings.iterations >= 2 (agent, § 7.1 C1g)",
+                    isinstance(it, int) and not isinstance(it, bool) and it >= 2,
+                    repr(it)))
+    return out
+
+
+def validate_manifest(obj):
+    """seed-manifest/1 (docs/compatibility/probes/m4/README.md) -> the facts C1
+    consumes without re-deriving anything: {agent|twin: {project_id,
+    pipeline_id, revision_id, revision_digest, plan_digest, assignment_id,
+    run_id, inputs}}. Raises ValueError naming the missing member — the loud
+    abort on a manifest that is absent-shaped wrong."""
+    if not isinstance(obj, dict):
+        raise ValueError(f"manifest is {type(obj).__name__}, not an object")
+    if obj.get("schema") != "m4-seed-manifest/1":
+        raise ValueError(f"schema tag is {obj.get('schema')!r}, want m4-seed-manifest/1")
+    project = obj.get("project") if isinstance(obj.get("project"), dict) else {}
+    project_id = project.get("id")
+    if not project_id:
+        raise ValueError("project.id missing")
+    pipes = obj.get("pipelines") if isinstance(obj.get("pipelines"), dict) else {}
+    by_variant = {r.get("variant"): r for r in obj.get("runs") or [] if isinstance(r, dict)}
+
+    def facts(slug, variant):
+        p = pipes.get(slug)
+        if not isinstance(p, dict):
+            raise ValueError(f"pipelines.{slug} missing")
+        for k in ("pipeline_id", "revision_id", "revision_digest", "plan_digest",
+                  "assignment_id"):
+            if not p.get(k):
+                raise ValueError(f"pipelines.{slug}.{k} missing")
+        run_id = p.get("run_id") or (by_variant.get(variant) or {}).get("run_id")
+        if not run_id:
+            raise ValueError(f"no {variant} run_id (pipelines.{slug}.run_id / runs[])")
+        return {"project_id": project_id, "pipeline_id": p["pipeline_id"],
+                "revision_id": p["revision_id"], "revision_digest": p["revision_digest"],
+                "plan_digest": p["plan_digest"], "assignment_id": p["assignment_id"],
+                "run_id": run_id,
+                "inputs": (by_variant.get(variant) or {}).get("inputs") or {}}
+
+    return {"agent": facts(FD_SLUG, "agent"), "twin": facts(TW_SLUG, "twin")}
+
+
+# --- C1 live helpers — the stack-facing half -----------------------------------
+
+
+def load_manifest_facts():
+    """Read + validate MANIFEST_PATH; None when absent (the SKIP path) and a
+    CHECK-FAIL on a corrupt one (loud, never a crash)."""
+    if not os.path.exists(MANIFEST_PATH):
+        return None
+    try:
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            facts = validate_manifest(json.load(f))
+    except (ValueError, OSError) as e:
+        check("seed manifest parses", False, f"{MANIFEST_PATH}: {e}")
+        return None
+    show("seed manifest (ids C1 consumes verbatim)",
+         json.dumps({v: {k: f[k] for k in ("revision_id", "revision_digest",
+                                           "plan_digest", "run_id")}
+                     for v, f in facts.items()}, indent=1))
+    return facts
+
+
+def run_seed():
+    """§ 7.0's seed contract from the driver: bash seed.sh -> MANIFEST_PATH.
+    Loud abort when seed.sh is absent or the seed fails — a stale manifest is
+    deleted first so an old file can never masquerade as a fresh seed."""
+    if not os.path.isfile(SEED_SH):
+        check("seed.sh present (§ 7.0 seed contract)", False, SEED_SH)
+        return False
+    os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
+    if os.path.exists(MANIFEST_PATH):
+        os.remove(MANIFEST_PATH)
+    env = dict(COMPOSE_ENV, M4_SEED_MANIFEST=MANIFEST_PATH, M4_URL=LB,
+               M4_API_A=A, M4_API_B=B, M4_REPO_DIR=REPO_DIR)
+    rc, out = run(["bash", SEED_SH], env=env)
+    show(f"bash docs/compatibility/probes/m4/seed.sh (rc={rc})", out[-1600:])
+    ok = rc == 0 and os.path.exists(MANIFEST_PATH)
+    check("seed.sh seeded — manifest written", ok,
+          "" if ok else f"rc={rc}, no manifest at {MANIFEST_PATH}: the SEED FAIL "
+                        "lines above are the reason")
+    return ok
+
+
+class RunWatch:
+    """The C1c 'watch' leg: hold the run SSE stream open in a daemon thread
+    while the poll loop reads the ledger. The stream is an OBSERVER — a drop
+    is recorded, never fatal, because domain_events in Postgres is the truth
+    C1h re-reads wholesale. Thread appends only; the main thread reads after
+    stop() (the daemon dies with the process if C1 aborts mid-stream)."""
+
+    def __init__(self, client, run_id):
+        self.client, self.run_id = client, run_id
+        self.frames = []
+        self.error = None
+        self._stop = threading.Event()
+        self._resp = None
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _loop(self):
+        url = LB + f"/api/v1/runs/{self.run_id}/events"
+        try:
+            req = urllib.request.Request(url, headers={
+                "Accept": "text/event-stream",
+                "Cookie": "; ".join(f"{k}={v}" for k, v in self.client.cookies.items())})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                self._resp = resp
+                parts, raw = [], b""
+                while not self._stop.is_set():
+                    chunk = resp.read(1)
+                    if not chunk:
+                        break
+                    raw += chunk
+                    if not raw.endswith(b"\n"):
+                        continue
+                    line, raw = raw[:-1], b""
+                    text = line.decode("utf-8", "replace").rstrip("\r")
+                    if text == "":
+                        if parts:
+                            try:
+                                self.frames.append(json.loads("\n".join(parts)))
+                            except ValueError:
+                                pass
+                            parts = []
+                        continue
+                    if text.startswith(":") or text.startswith("id:") or text.startswith("event:"):
+                        continue
+                    if text.startswith("data:"):
+                        parts.append(text[5:].lstrip())
+        except Exception as e:  # noqa: BLE001 — observer thread; the ledger poll decides
+            if not self._stop.is_set():
+                self.error = f"{type(e).__name__}: {e}"
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._resp:
+                self._resp.close()
+        except Exception:  # noqa: BLE001 — close race with the daemon is fine
+            pass
+        self._thread.join(timeout=5)
+        return self
+
+
+def run_status(run_id):
+    try:
+        return psql(f"SELECT status FROM runs WHERE id = '{run_id}'")
+    except RuntimeError as e:
+        return f"PSQL_ERROR {e}"[:160]
+
+
+def dump_run_evidence(client, run_id):
+    """Failure honesty: dump the run row, the node tree and the last journal
+    rows BEFORE the FAIL — an exit run that times out must arrive with its
+    evidence already printed."""
+    try:
+        show(f"runs row {run_id}", psql(
+            f"SELECT status || ' cause=' || COALESCE(failed_cause,'-') || "
+            f"' rd=' || revision_digest || ' pd=' || plan_digest "
+            f"FROM runs WHERE id = '{run_id}'"))
+    except RuntimeError as e:
+        show("runs row", str(e))
+    try:
+        show("node tree (ledger)", psql(
+            f"SELECT node_instance_key || ' ' || kind || ' ' || execution_location || ' ' || "
+            f"status || ' ' || COALESCE(outcome,'-') || ' att=' || attempt_count::text || "
+            f"' ' || COALESCE(waiting_reason,'') FROM node_executions "
+            f"WHERE run_id = '{run_id}' ORDER BY node_instance_key"))
+    except RuntimeError as e:
+        show("node tree", str(e))
+    if client is not None:
+        try:
+            r = client.get(LB, f"/api/v1/runs/{run_id}/tree")
+            show(f"GET /runs/{run_id}/tree", f"{r.status} {r.text[:600]}")
+        except Exception as e:  # noqa: BLE001
+            show("GET /runs/../tree", str(e))
+    try:
+        show("last 12 journal rows", psql(
+            f"SELECT global_seq::text || ' ' || type || ' ' || "
+            f"COALESCE(node_execution_id::text,'-') || ' ' || COALESCE(attempt_id::text,'-') "
+            f"FROM domain_events WHERE run_id = '{run_id}' ORDER BY global_seq DESC LIMIT 12"))
+    except RuntimeError as e:
+        show("last journal rows", str(e))
+
+
+def approve_gate(client, project_id, run_id):
+    """C1b, silent half: find the run's pending gate through the frozen list
+    route, re-read it for the CAS version, decide approved. True on the 200."""
+    try:
+        r = client.get(LB, f"/api/v1/projects/{project_id}/approvals")
+        if r.status != 200:
+            return False
+        pend = [a for a in r.json().get("approvals", [])
+                if a.get("run_id") == run_id and a.get("state") == "pending"]
+        if not pend:
+            return False
+        cur = client.get(LB, f"/api/v1/approvals/{pend[0]['id']}")
+        if cur.status != 200:
+            return False
+        gate = cur.json()
+        d = client.post(LB, f"/api/v1/approvals/{gate['id']}/decide",
+                        {"decision": "approved", "version": gate["version"],
+                         "comments": "M4 exit C1b (docs/m4-contract.md § 7.1)"})
+        return d.status == 200
+    except Exception:  # noqa: BLE001 — transient; the poll retries until the cap
+        return False
+
+
+def watch_run(client, facts, run_id, cap, label):
+    """Poll to terminal via the ledger with the SSE stream watched alongside;
+    alice's gate lands the moment the run waits. Returns (terminal status,
+    watch) or (None, watch) after the cap — with the evidence dump already
+    printed and the timeout CHECK already made."""
+    watch = RunWatch(client, run_id)
+    watch.start()
+    approved, status, deadline = False, "", time.time() + cap
+    while time.time() < deadline:
+        status = run_status(run_id)
+        if status in ("completed", "failed", "cancelled", "interrupted"):
+            break
+        if status == "waiting_human" and not approved:
+            approved = approve_gate(client, facts["project_id"], run_id)
+            if approved:
+                check(f"C1b {label}: alice's gate decision -> 200", True, run_id)
+        time.sleep(5)
+    watch.stop()
+    if status not in ("completed", "failed", "cancelled", "interrupted"):
+        dump_run_evidence(client, run_id)
+        check(f"{label}: terminal within {cap}s cap", False,
+              f"last observed status={status!r} (tree + journal dumped above)")
+        return None, watch
+    ok = check(f"{label}: terminal status completed (§ 7.1 C1c)", status == "completed",
+               f"observed {status!r}")
+    if not ok:
+        dump_run_evidence(client, run_id)
+        return None, watch
+    return status, watch
+
+
+def post_c1_run(client, facts, idem, label):
+    """§ 7.1 C1a: POST /api/v1/projects/{p}/runs pinned straight to the
+    manifest's revision (the frozen route and RunCreate body from
+    api/openapi.yaml); 201/queued or nothing."""
+    body = {"pipeline_revision_id": facts["revision_id"],
+            "inputs": facts["inputs"], "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    if not check(f"C1a {label}: POST runs ({idem}) -> 201 queued",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    d = r.json()
+    check(f"C1a {label}: response status queued", d.get("status") == "queued",
+          str(d.get("status")))
+    return d.get("run_id")
+
+
+def assert_c1_run(client, facts, run_id, variant, watch, label):
+    """§ 7.1 C1d–C1h for one completed run. Every assertion is its own CHECK
+    with the literal pasted; returns {keys, iterations, plan_digest} for the
+    cross-run comparisons or None if the run did not survive the gauntlet."""
+    ok_all = True
+
+    # C1d — per-node terminal rows, from the LEDGER, not fixtures.
+    rows = (psql(f"SELECT node_instance_key || '|' || kind || '|' || execution_location || '|' ||"
+                 f" status || '|' || COALESCE(outcome,'-') || '|' || attempt_count::text"
+                 f" FROM node_executions WHERE run_id = '{run_id}' ORDER BY node_instance_key")).splitlines()
+    show(f"C1d {label}: node_executions ledger rows", "\n".join(rows) or "(none)")
+    seen = {}
+    for line in rows:
+        parts = line.split("|")
+        if len(parts) == 6:
+            seen[parts[0]] = {"kind": parts[1], "loc": parts[2], "status": parts[3],
+                              "outcome": parts[4], "attempt_count": int(parts[5])}
+    iters = observed_iterations(set(seen))
+    exp = expected_node_keys(iters)
+    ident, only_a, only_b = compare_key_sets(set(seen), set(exp))
+    ok_all &= check(f"C1d {label}: full node_instance_key set ({len(exp)} keys) from ledger rows",
+                    ident, f"ledger_only={only_a} expected_only={only_b}")
+    wrong = {k: v["status"] for k, v in seen.items() if v["status"] != exp.get(k)}
+    ok_all &= check(f"C1d {label}: every node terminal at its expected status "
+                    f"(succeeded / when-skipped)", not wrong, str(wrong))
+    ctrl = {k: v["loc"] for k, v in seen.items()
+            if k in ("/approve", "/verdict") and v["loc"] != "control_plane"}
+    ctrl |= {k: v["loc"] for k, v in seen.items()
+             if re.match(r"^/build_until_verified\[\d+\]/(implement|test|review)$", k)
+             and v["loc"] != "worker"}
+    ok_all &= check("C1d /approve,/verdict control_plane; loop bodies worker (two writers, "
+                    "ADR-0023 § 3)", not ctrl, str(ctrl))
+
+    # C1e — validated inputs, digests, checkpoints.
+    n_inputs = int(psql(f"SELECT count(*) FROM run_inputs WHERE run_id = '{run_id}'") or 0)
+    origins = psql(f"SELECT name || '=' || origin FROM run_inputs WHERE run_id = '{run_id}' "
+                   f"ORDER BY name")
+    ok_all &= check("C1e run_inputs: 5 validated rows (4 submitted + declared default; "
+                    "README: read the manifest, not the old 2-rows prose)",
+                    n_inputs == 5 and all(f"{n}=submitted" in origins
+                                          for n in ("goal", "repository")),
+                    f"count={n_inputs} origins={origins.splitlines()}")
+    dig = psql(f"SELECT revision_digest || '|' || plan_digest || '|' || digest_scope "
+               f"FROM runs WHERE id = '{run_id}'").strip().split("|")
+    ok_all &= check(f"C1e run digests match the manifest (which came from publish) verbatim",
+                    len(dig) == 3 and dig[0] == facts["revision_digest"]
+                    and dig[1] == facts["plan_digest"] and dig[2] != "",
+                    f"db={dig[:2]} manifest={[facts['revision_digest'][:18], facts['plan_digest'][:18]]}")
+    api_run = client.get(LB, f"/api/v1/runs/{run_id}")
+    ok_all &= check("C1e GET /runs/{id} agrees with the ledger (API says X, Postgres says X)",
+                    api_run.status == 200 and api_run.json().get("revision_digest") == dig[0]
+                    and api_run.json().get("plan_digest") == dig[1]
+                    and api_run.json().get("status") == "completed",
+                    f"{api_run.status}")
+    ck = int(psql(f"SELECT count(*) FROM run_checkpoints WHERE run_id = '{run_id}'") or 0)
+    sw = int(psql(f"SELECT count(*) FROM node_executions WHERE run_id = '{run_id}' "
+                  f"AND execution_location = 'worker' AND status = 'succeeded'") or 0)
+    ok_all &= check("C1e run_checkpoints == succeeded worker node executions", ck == sw > 0,
+                    f"checkpoints={ck} succeeded_worker={sw}")
+    t2 = psql(f"SELECT attempt_count::text FROM node_executions WHERE run_id = '{run_id}' "
+              f"AND node_instance_key = '/build_until_verified[2]/test'").strip()
+    if t2:
+        ok_all &= check("C1e /build_until_verified[2]/test attempt_count = 1 (it failed the "
+                        "BUSINESS way, not by retrying)", t2 == "1", f"attempt_count={t2}")
+
+    # C1f — the published evidence artifact, readable through the M3 routes.
+    arts = psql(f"SELECT id || ' ' || name || ' ' || kind || ' ' || media_type || ' ' ||"
+                f" sha256 || ' ' || sensitivity || ' ' || redaction_count::text || ' ' || state"
+                f" FROM artifacts WHERE run_id = '{run_id}'").splitlines()
+    show(f"C1f {label}: artifacts journaled to the run", "\n".join(arts) or "(none)")
+    ev = [a.split(" ") for a in arts
+          if len(a.split(" ")) == 7 and a.split(" ")[1] == "review-evidence.md"]
+    ok_all &= check("C1f review-evidence.md (markdown/text/markdown) published exactly once",
+                    len(ev) == 1 and ev[0][2] == "markdown" and ev[0][3] == "text/markdown",
+                    str([a[:4] for a in ev]))
+    if ev:
+        aid, sha = ev[0][0], ev[0][4]
+        ok_all &= check("C1f redaction_count=0 and state=ready (ADR-0020 D4: 0 is the scanner "
+                        "saying so, not silence)", ev[0][5] == "0" and ev[0][6] == "ready",
+                        f"redaction={ev[0][5]} state={ev[0][6]}")
+        meta = client.get(LB, f"/api/v1/artifacts/{aid}")
+        body = client.get(LB, f"/api/v1/artifacts/{aid}/content")
+        got = hashlib.sha256(body.body).hexdigest()
+        ok_all &= check("C1f GET /artifacts/{id} + /content readable; bytes hash to the row's sha256",
+                        meta.status == 200 and body.status == 200 and got == sha,
+                        f"meta={meta.status} content={body.status} sha {got[:12]} vs {sha[:12]}")
+        show("C1f artifact bytes (first line)", body.text.splitlines()[0] if body.text else "(empty)")
+        j = int(psql(f"SELECT count(*) FROM artifacts a JOIN domain_events e "
+                     f"ON e.payload->>'artifact_id' = a.id::text AND e.type = 'artifact.created' "
+                     f"WHERE a.run_id = '{run_id}'") or 0)
+        ok_all &= check("C1f artifact.created journaled (row+event in one transaction)", j > 0, f"n={j}")
+
+    # C1g — run.completed result_bindings.
+    raw = psql(f"SELECT payload->'result_bindings' FROM domain_events WHERE run_id = '{run_id}' "
+               f"AND type = 'run.completed' LIMIT 1").strip()
+    rb = json.loads(raw) if raw else {}
+    show(f"C1g {label}: result_bindings", raw or "(none)")
+    for lbl, ok, detail in result_bindings_ok(rb, variant):
+        ok_all &= check(f"C1g {label}: {lbl}", ok, detail)
+    it_rb = rb.get("iterations")
+    ok_all &= check(f"C1g {label}: journal iterations agree with the ledger's last suffix",
+                    it_rb == iters, f"rb={it_rb} ledger={iters}")
+
+    # C1h — the event journal's shape and correlation discipline.
+    jrows = []
+    for line in psql(f"SELECT global_seq::text || '|' || type || '|' ||"
+                    f" COALESCE(node_execution_id::text,'') || '|' ||"
+                    f" COALESCE(attempt_id::text,'') FROM domain_events "
+                    f"WHERE run_id = '{run_id}' ORDER BY global_seq").splitlines():
+        p = line.split("|")
+        if len(p) == 4:
+            jrows.append({"global_seq": p[0], "type": p[1],
+                          "node_execution_id": p[2] or None, "attempt_id": p[3] or None})
+    for lbl, ok, detail in journal_shape(jrows):
+        ok_all &= check(f"C1h {label}: {lbl}", ok, detail)
+    show(f"C1h {label}: journal head/tail",
+         "\n".join(f"{r['global_seq']} {r['type']}" for r in jrows[:3] + jrows[-3:]))
+    types = {r["type"] for r in jrows}
+    ok_all &= check("C1h run.checkpoint_saved rows exist per succeeded worker node",
+                    sum(1 for r in jrows if r["type"] == "run.checkpoint_saved") >= sw,
+                    f"events>={sum(1 for r in jrows if r['type'] == 'run.checkpoint_saved')} vs {sw}")
+
+    # The SSE observer watched the same story as it happened.
+    sse_types = [f.get("type") for f in watch.frames if isinstance(f, dict)]
+    if watch.error:
+        gap(f"C1c {label}: SSE observer", f"stream dropped ({watch.error}); ledger "
+            "polling and the C1h re-read carried the proof — the run stream itself is W2/C14's subject")
+    ok_all &= check(f"C1c {label}: SSE stream observed the opening and the closing event",
+                    "run.created" in sse_types and "run.completed" in sse_types,
+                    f"{len(sse_types)} frames seen")
+
+    ok_all &= check(f"C1d {label}: no unexpected node kinds/keys (loop spent {iters} iteration(s))",
+                    iters >= 1, str(iters))
+    if not ok_all:
+        dump_run_evidence(client, run_id)
+    return {"keys": set(seen), "iterations": iters,
+            "plan_digest": dig[1] if len(dig) == 3 else None}
+
+
 # --- gates: docs/m4-contract.md § 7.1 (C1–C14) -------------------------------
 # Each gate becomes real by replacing its skip() with the assertions in its
 # docstring, pasting literal output via show(). Docstrings condense the
@@ -384,7 +959,79 @@ def c1():
     + redaction_count=0; run.completed result_bindings carry implementation_summary,
     review_approved=true, iterations=2 (twin); journal sequence contiguous; a
     second run yields an identical key set and identical plan_digest."""
-    skip("C1", "sample pipeline completes twice on the disposable repo, digests pinned")
+    facts = CTX.get("manifest")
+    if facts is None:
+        facts = load_manifest_facts()
+        if facts is None and CTX.get("stack_up"):
+            if run_seed():
+                facts = load_manifest_facts()
+        elif facts is None and not CTX.get("stack_up"):
+            CTX["c1_skip"] = True
+        if facts is not None:
+            CTX["manifest"] = facts
+    if facts is None:
+        if CTX.get("c1_skip"):
+            # The honest pending path: no stack answered, so there is nothing
+            # to prove against — never a crash, never an inferred green.
+            skip("C1", "needs the live stack + seed.sh manifest; both variants "
+                       "complete end to end on the disposable repo, key sets and "
+                       "plan_digests asserted from ledger rows")
+        return
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        check("C1: alice signed in", False, "no session — the gate cannot decide itself")
+        return
+    CTX["alice"] = alice
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+    # ---- agent variant (C1a–C1h, cap 30 min) ----
+    agent = facts["agent"]
+    run_a = post_c1_run(alice, agent, f"m4x-c1-agent-{suffix}", "agent")
+    res_a = None
+    if run_a:
+        status, watch = watch_run(alice, agent, run_a, 1800, "agent")
+        if status:
+            res_a = assert_c1_run(alice, agent, run_a, "agent", watch, "agent")
+
+    # ---- deterministic twin: finish the seeded run, then RE-RUN the variant ----
+    tw = facts["twin"]
+    res_tw_seed = None
+    status, watch = watch_run(alice, tw, tw["run_id"], 600, "twin(seed)")
+    if status:
+        res_tw_seed = assert_c1_run(alice, tw, tw["run_id"], "twin", watch, "twin(seed)")
+    run_tw = post_c1_run(alice, tw, f"m4x-c1-twin-{suffix}", "twin(replay)")
+    res_tw = None
+    if run_tw:
+        status, watch = watch_run(alice, tw, run_tw, 300, "twin(replay)")
+        if status:
+            res_tw = assert_c1_run(alice, tw, run_tw, "twin", watch, "twin(replay)")
+
+    # ---- C1i — replay identity + the cross-variant key-set proof ----
+    if res_tw_seed and res_tw:
+        ident, oa, ob = compare_key_sets(res_tw_seed["keys"], res_tw["keys"])
+        check("C1i twin re-run: node_instance_key SET identical (ledger rows, exact)",
+              ident, f"seed_only={oa} replay_only={ob}")
+        check("C1i twin re-run: plan_digest identical (seed == replay == manifest)",
+              res_tw_seed["plan_digest"] == res_tw["plan_digest"] == tw["plan_digest"],
+              f"{str(res_tw['plan_digest'])[:23]}")
+    else:
+        gap("C1i twin replay identity", "twin seed or replay leg did not reach completed "
+                                        "(see the FAILs above — identity is asserted only "
+                                        "over two ledger-complete runs)")
+    if res_a and res_tw:
+        ident, oa, ob = compare_key_sets(res_a["keys"], res_tw["keys"])
+        check("C1 cross-variant key set identical, EXACT (both variants spent "
+              f"{res_a['iterations']}/{res_tw['iterations']} iterations — § 9.4: the agent "
+              "leg earns this only when the model actually looped like the fixture)",
+              ident, f"agent_only={oa} twin_only={ob}")
+    ident_n, oa, ob = compare_key_sets(
+        collapse_iterations(res_a["keys"]) if res_a else set(),
+        collapse_iterations(res_tw["keys"]) if res_tw else set())
+    check("C1 cross-variant key set identical, iteration-normalized (the equal-node-ids "
+          "claim pipeline.yaml's twin makes)", res_a is not None and res_tw is not None
+          and ident_n, f"agent_only={oa} twin_only={ob}" if res_a and res_tw else "a leg failed")
+    CTX["c1"] = {"agent": res_a, "twin_seed": res_tw_seed, "twin": res_tw,
+                 "runs": [run_a, tw["run_id"], run_tw]}
 
 
 def c2():
@@ -656,6 +1303,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--up", action="store_true",
                     help="prepare host dirs + fixture, compose up -d --build")
+    ap.add_argument("--seed", action="store_true",
+                    help="run the § 7.0 seed.sh contract against the ready stack "
+                         "and parse its manifest (C1 also seeds on demand when the "
+                         "stack is up but no manifest exists)")
     ap.add_argument("--down", action="store_true",
                     help="tear the project down at the end (down -v, project-scoped)")
     ap.add_argument("--no-build", action="store_true",
@@ -684,15 +1335,24 @@ def main(argv=None):
 
     if args.up or args.ready:
         step("stack: readiness")
-        if not wait_ready(hard=True):
+        ready = wait_ready(hard=True)
+        CTX["stack_up"] = ready
+        if not ready:
             if args.down:
                 stack_down()
             return finish()
+        if args.seed:
+            step("stack: § 7.0 seed contract (seed.sh -> seed-manifest.json)")
+            if not run_seed():
+                if args.down:
+                    stack_down()
+                return finish()
+            CTX["manifest"] = load_manifest_facts()
     else:
         # Skeleton default: a five-second informational probe. Absent stack
         # prints a NOTE, never a FAIL — the SKIP lines below carry the honesty.
         step("stack: readiness (informational)")
-        wait_ready(timeout=5, hard=False)
+        CTX["stack_up"] = wait_ready(timeout=5, hard=False)
 
     step("§ 7 gates (skeleton: every verdict is an honest SKIP until implemented)")
     for gid, fn in GATES:

@@ -33,8 +33,10 @@
 #
 # Host preparation (lab only, done by e2e/m4/e2e_m4_exit.py's stack_up):
 #   mkdir -p .harness/workspaces .harness/home-a .harness/home-b \
-#            .harness/remotes .harness/m4-fixtures
+#            .harness/remotes .harness/m4-fixtures .harness/m4-fixtures/bin
 #   e2e/m4/make_fixture_repo.sh .harness/m4-fixtures
+#   (the script writes bin/m4-exit.sh — the twins' step helper mounted at
+#   /opt/m4/bin above and prepended to PATH by each worker's command)
 #
 # NEW IMAGE PULL (flagged per AGENTS.md): python:3.13-alpine for `collector`
 # — a stdlib HTTP logger, chosen because the worker image cannot be repurposed
@@ -152,6 +154,11 @@ services:
       # A different mount path would make every prepare fail for a fixture
       # bug wearing a protocol hat.
       - .harness/m4-fixtures:/srv/m4/fixtures:ro
+      # The deterministic step helper the § 7.1 twins exec (pipeline.yaml's
+      # bare `m4-exit.sh`): generated into .harness/m4-fixtures/bin by
+      # make_fixture_repo.sh and put on the workers' PATH via the command's
+      # export below — process.exec resolves the bare name through it.
+      - .harness/m4-fixtures/bin:/opt/m4/bin:ro
       - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
       - .harness/apm-upstream:/apm-upstream:ro
       - sandbox-home-a:/sandbox-home
@@ -188,6 +195,7 @@ services:
     command:
       - |
         mkdir -p /harness/home /repos /sandbox-home /sandbox-policy
+        export PATH=/opt/m4/bin:$PATH
         exec communication worker
     stop_grace_period: 25s
     depends_on:
@@ -207,6 +215,7 @@ services:
       - repos-b:/repos
       - artifacts:/artifacts
       - .harness/m4-fixtures:/srv/m4/fixtures:ro
+      - .harness/m4-fixtures/bin:/opt/m4/bin:ro
       - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
       - .harness/apm-upstream:/apm-upstream:ro
       - sandbox-home-b:/sandbox-home
@@ -239,6 +248,7 @@ services:
     command:
       - |
         mkdir -p /harness/home /repos /sandbox-home /sandbox-policy
+        export PATH=/opt/m4/bin:$PATH
         exec communication worker
     stop_grace_period: 25s
     depends_on:
