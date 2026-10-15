@@ -24,6 +24,12 @@ type runningTurn struct {
 	notes   []string
 	sinkRef atomic.Pointer[turnSink]
 
+	// turnOrigin is how this turn met its session — new | resumed | reused
+	// (events.SessionOrigin*) — set by sessionFor before BeginTurn. It must
+	// never claim `new` for a turn that rode a live session (04 "Session
+	// reuse semantics", J7 honesty).
+	turnOrigin string
+
 	// cancel ends every goroutine working for this turn. Its parent is a
 	// detached context, so only drain, lease loss, remote cancel or a
 	// wedged harness reach it.
@@ -70,7 +76,9 @@ func (l *TurnLoop) runTurn(ctx context.Context, c Claim) {
 		return
 	}
 
-	if err := l.store.BeginTurn(tctx, c, sess.bindingID, sess.info); err != nil {
+	beginInfo := sess.info
+	beginInfo.Origin = rt.turnOrigin
+	if err := l.store.BeginTurn(tctx, c, sess.bindingID, beginInfo); err != nil {
 		l.log.Error("begin turn failed", slog.String("turn_id", c.TurnID), slog.String("error", err.Error()))
 		if errors.Is(err, ErrLeaseLost) {
 			rt.lostLease.Store(true)

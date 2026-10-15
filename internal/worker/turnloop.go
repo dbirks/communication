@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dbirks/communication/internal/domain"
+	"github.com/dbirks/communication/internal/events"
 )
 
 // M2 cadence defaults (ADR-0016 §3): a 30 s lease renewed every 10 s, a
@@ -393,6 +394,10 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	if s := l.live[c.ConversationID]; s != nil && !s.dead.Load() {
 		l.mu.Unlock()
 		rt.session(s)
+		// Honest turn origin: this turn rides a session an earlier turn
+		// created — no new binding, no new agent.session.connected (04
+		// "Session reuse semantics": continue_live).
+		rt.turnOrigin = events.SessionOriginReused
 		return s, nil
 	}
 	l.mu.Unlock()
@@ -483,12 +488,17 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		l.mu.Unlock()
 		_ = sess.Close()
 		rt.session(existing)
+		rt.turnOrigin = events.SessionOriginReused
 		return existing, nil
 	}
 	l.live[c.ConversationID] = ls
 	l.mu.Unlock()
 	go ls.dispatch()
 	rt.session(ls)
+	// The session was created (new) or restored (resumed) *for this turn*,
+	// with the matching agent.session.connected just emitted; turn.started
+	// says the same word about this turn.
+	rt.turnOrigin = info.Origin
 	rt.notes = notes
 	return ls, nil
 }

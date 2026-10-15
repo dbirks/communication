@@ -29,6 +29,7 @@ type fakeStore struct {
 	renewed     chan error // each renewal outcome (nil or the error) delivered
 	beginErr    error
 	begun       chan worker.Claim
+	beginSess   []domain.SessionInfo // SessionInfo passed to each BeginTurn
 	appends     []recordedAppend
 	appended    chan recordedAppend // agent-message appends stream to wait on
 	finished    []worker.TurnOutcome
@@ -119,12 +120,12 @@ func (f *fakeStore) RenewLease(_ context.Context, _ worker.Claim) error {
 func (f *fakeStore) BeginTurn(_ context.Context, c worker.Claim, bindingID string, s domain.SessionInfo) error {
 	f.mu.Lock()
 	err := f.beginErr
+	f.beginSess = append(f.beginSess, s)
 	f.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	_ = bindingID
-	_ = s
 	f.begun <- c
 	return nil
 }
@@ -870,9 +871,24 @@ func TestSessionReuseAcrossTurns(t *testing.T) {
 	}
 	st.mu.Lock()
 	bindings := append([]string(nil), st.bindingConv...)
+	origins := make([]string, 0, len(st.beginSess))
+	for _, s := range st.beginSess {
+		origins = append(origins, s.Origin)
+	}
 	st.mu.Unlock()
 	if len(bindings) != 1 {
 		t.Fatalf("recorded %d bindings, want exactly one across both turns", len(bindings))
+	}
+	// turn.started must tell the truth about how *this turn* met its
+	// session: the first turn created it (new), the second rode the live
+	// process (reused) — never a blanket "new".
+	if len(origins) != 2 || origins[0] != events.SessionOriginNew || origins[1] != events.SessionOriginReused {
+		t.Fatalf("turn.started session origins = %v, want [new reused]", origins)
+	}
+	for _, o := range origins {
+		if !events.ValidTurnSessionOrigin(o) {
+			t.Errorf("origin %q is not a legal turn session origin", o)
+		}
 	}
 }
 
