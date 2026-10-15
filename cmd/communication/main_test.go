@@ -23,7 +23,7 @@ func TestRunModes(t *testing.T) {
 		{name: "serve", args: []string{"serve"}, wantCode: 2, wantStderr: "not implemented"},
 		{name: "worker", args: []string{"worker"}, wantCode: 2, wantStderr: "not implemented"},
 		{name: "dev", args: []string{"dev"}, wantCode: 2, wantStderr: "not implemented"},
-		{name: "migrate", args: []string{"migrate"}, wantCode: 2, wantStderr: "not implemented"},
+		{name: "migrate", args: []string{"migrate"}, wantCode: 2, wantStderr: "usage"},
 		{name: "unknown mode", args: []string{"frobnicate"}, wantCode: 2, wantStderr: `unknown mode "frobnicate"`},
 		{name: "no args", args: nil, wantCode: 2, wantStderr: "usage"},
 		{name: "help", args: []string{"help"}, wantCode: 0, wantStdout: "usage"},
