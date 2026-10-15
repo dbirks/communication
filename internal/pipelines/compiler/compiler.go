@@ -287,7 +287,7 @@ func (w *walk) compileScope(s *scope) {
 		Parent:             s.parent,
 		EntryNodes:         entries,
 		TerminalNodes:      terminals,
-		TopologicalOrder:   s.order,
+		TopologicalOrder:   topoOrder(s),
 		ExpressionScope:    scopeName(s.exprScope),
 		MaxIterations:      s.maxIterations,
 		MaxDurationSeconds: s.maxDuration,

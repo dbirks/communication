@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -100,21 +101,96 @@ func TestSpikeRejectedCasesAreRefused(t *testing.T) {
 	}
 }
 
-// TestAllowlistIsTheOnlyDoor states ADR-0022 § 4 plainly: the subset is 21 named
-// functions, and the count is pinned so an accidental env widening is a test
-// failure rather than a quiet capability increase.
+// TestAllowlistIsTheOnlyDoor states ADR-0022 § 4 plainly. The subset is the
+// exact name set ADR-0022 § 5 lists — sixteen operator spellings ("the
+// operator spellings are CEL's, not ours", incl. `_/_` and `@in`) plus the
+// nine named functions has/size/contains/startsWith/endsWith/string/int/
+// double/bool: twenty-five in total. The contract's earlier "21" counted only
+// the ADR's prose list and is reconciled here against the ADR itself, which
+// names all twenty-five (contract § 9.1 defers to ADR-0022 for the subset).
+// The set is pinned exactly so an accidental env widening is a test failure
+// rather than a quiet capability increase.
 func TestAllowlistIsTheOnlyDoor(t *testing.T) {
-	// The count is pinned: widening the environment must be a deliberate edit
-	// here, in ADR-0022 § 5 and in contract § 6, not a silent dependency change.
-	if n := len(expr.AllowedFunctions()); n != 25 {
-		t.Fatalf("allowlist has %d entries: %v", n, expr.AllowedFunctions())
+	want := map[string]bool{
+		"_&&_": true, "_||_": true, "!_": true, "_==_": true, "_!=_": true,
+		"_<_": true, "_<=_": true, "_>_": true, "_>=_": true,
+		"_+_": true, "_-_": true, "_*_": true, "_/_": true, "_%_": true,
+		"_?_:_": true, "@in": true,
+		"has": true, "size": true, "contains": true, "startsWith": true, "endsWith": true,
+		"string": true, "int": true, "double": true, "bool": true,
 	}
-	for _, banned := range []string{"exec", "eval", "printf", "format", "matches", "now", "type", "exists", "map", "filter", "all", "sort", "transformValue", "toInt", "to string"} {
+	got := expr.AllowedFunctions()
+	if len(got) != len(want) {
+		t.Fatalf("allowlist has %d entries, want %d: %v", len(got), len(want), got)
+	}
+	for _, name := range got {
+		if !want[name] {
+			t.Fatalf("%q is not in ADR-0022 § 5's allowlist", name)
+		}
+	}
+	for _, banned := range []string{"exec", "eval", "printf", "format", "matches", "now", "type", "exists", "map", "filter", "all", "sort", "transformValue", "toInt", "to string", "_[_]"} {
 		for _, allowed := range expr.AllowedFunctions() {
 			if allowed == banned {
 				t.Fatalf("%q must not be reachable", banned)
 			}
 		}
+	}
+}
+
+// TestAllowlistNamesAreLive is ADR-0022 § 5's pinning promise and contract § 8
+// unit-CEL: one expression per allowlisted name, evaluated for real, so a
+// cel-go release that renames an operator spelling (the `@in` precedent)
+// fails the build instead of surprising an author at publish time.
+func TestAllowlistNamesAreLive(t *testing.T) {
+	liveness := map[string]struct {
+		src  string
+		want any
+	}{
+		"_&&_":       {"inputs.goal == 'x' && 1 < 2", true},
+		"_||_":       {"inputs.goal == 'nope' || 1 < 2", true},
+		"!_":         {"!(1 == 2)", true},
+		"_==_":       {"1 == 1", true},
+		"_!=_":       {"1 != 2", true},
+		"_<_":        {"1 < 2", true},
+		"_<=_":       {"1 <= 1", true},
+		"_>_":        {"2 > 1", true},
+		"_>=_":       {"2 >= 2", true},
+		"_+_":        {"1 + 1 == 2", true},
+		"_-_":        {"3 - 1 == 2", true},
+		"_*_":        {"2 * 3 == 6", true},
+		"_/_":        {"7 / 2 == 3", true},
+		"_%_":        {"7 % 2 == 1", true},
+		"_?_:_":      {"1 < 2 ? 'go' : 'stop'", "go"},
+		"@in":        {"'a' in ['a', 'b']", true},
+		"has":        {"has(inputs.goal)", true},
+		"size":       {"size('abc') == 3", true},
+		"contains":   {"'abc'.contains('b')", true},
+		"startsWith": {"'abc'.startsWith('a')", true},
+		"endsWith":   {"'abc'.endsWith('c')", true},
+		"string":     {"string(1) == '1'", true},
+		"int":        {"int('3') == 3", true},
+		"double":     {"double(1) == 1.0", true},
+		"bool":       {"bool('true')", true},
+	}
+	if len(liveness) != len(expr.AllowedFunctions()) {
+		t.Fatalf("liveness table covers %d names, the allowlist has %d", len(liveness), len(expr.AllowedFunctions()))
+	}
+	ctx := pipelineCtx()
+	vars := expr.Vars(nil, map[string]any{"goal": "x"}, nil, nil, nil)
+	for name, c := range liveness {
+		t.Run(name, func(t *testing.T) {
+			p, d := expr.Prepare(expr.ScopePipeline, c.src, ctx)
+			if !d.Valid() {
+				t.Fatalf("the allowlisted name %q no longer compiles (%s): %v", name, c.src, d)
+			}
+			got, _, err := p.Eval(context.Background(), vars)
+			if err != nil {
+				t.Fatalf("eval of %q failed: %v", c.src, err)
+			}
+			if got != c.want {
+				t.Fatalf("%s = %#v, want %#v — an operator spelling changed", c.src, got, c.want)
+			}
+		})
 	}
 }
 
@@ -419,15 +495,13 @@ func TestLimitsAreTheContractDocuments(t *testing.T) {
 	}
 }
 
-// TestExpressionSizeAndNodeLimits covers the two bounds a hostile or merely
-// enthusiastic author can hit, both observed against the pinned cel-go.
-//
-// Not claimed: the parser's own nesting option. Measured here, a 40-segment
-// selector chain compiles, because cel-go's depth counter does not count select
-// operands. The effective bounds are the 2048 characters and the 256 AST nodes,
-// and both refuse; contract § 6's "16 nesting levels" is therefore enforced by
-// the node bound rather than by a depth bound, and this comment is where that
-// difference is recorded instead of being quietly claimed.
+// TestExpressionSizeAndNodeLimits covers the two parser bounds a hostile or
+// merely enthusiastic author can hit, both observed against the pinned
+// cel-go: 2048 characters and 256 AST nodes. The third bound — 16 nesting
+// levels — is enforced by this package, not the engine: cel-go v0.31.0
+// records ExpressionNestingDepthLimit but no code path reads it (see
+// TestNestingBoundIsEnforced and expr.checkNestingDepth for the evidence and
+// the door the bound actually walks through).
 func TestExpressionSizeAndNodeLimits(t *testing.T) {
 	ctx := pipelineCtx()
 	if _, d := expr.Compile(`inputs.goal == "`+strings.Repeat("a", 2100)+`"`, ctx, ptr.Root); d.Valid() {
@@ -435,15 +509,19 @@ func TestExpressionSizeAndNodeLimits(t *testing.T) {
 	} else if d[0].Code != diag.CodeExpressionTooLarge {
 		t.Fatalf("code = %s, want expression_too_large", d[0].Code)
 	}
-	wide := "inputs.goal == 'a'"
-	for range 300 {
-		wide += " && inputs.goal == 'b'"
+	// A list literal wide enough to break the node bound while staying inside
+	// the size bound (≈900 chars) and the depth bound (2 levels), so the only
+	// door this can hit is ExpressionNodeLimit.
+	wide := "inputs.a in [1"
+	for i := 2; i <= 300; i++ {
+		wide += "," + strconv.Itoa(i)
+	}
+	wide += "]"
+	if len(wide) > expr.ExpressionSizeLimit {
+		t.Fatalf("fixture grew past the size bound (%d), so it would not isolate the node bound", len(wide))
 	}
 	if _, d := expr.Compile(wide, ctx, ptr.Root); d.Valid() {
-		t.Fatal("a 300-clause expression compiled; the node limit is not enforced")
-	}
-	if _, d := expr.Compile(`inputs.a`+strings.Repeat(".b", 40)+` == 1`, ctx, ptr.Root); !d.Valid() {
-		t.Logf("note: a deep selector chain was refused: %v", d)
+		t.Fatal("a 300-element list literal compiled; the node limit is not enforced")
 	}
 }
 

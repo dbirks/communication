@@ -415,6 +415,18 @@ func (w *walker) scalar(n *yaml.Node, at ptr.Pointer) (canon.Value, error) {
 		return f, nil
 	case "!!str", "":
 		return n.Value, nil
+	case "!!timestamp":
+		// metadata.ui is exempt from the timestamp rule (ADR-0021 § 4: the
+		// subtree is served, never digested), so the same authored text that
+		// inspect() lets through must not die here — scalar() previously
+		// refused it through the default branch, making the exemption dead
+		// code. It is carried as its authored text.
+		if at == "/metadata/ui" || strings.HasPrefix(string(at), "/metadata/ui/") {
+			return n.Value, nil
+		}
+		w.fail(at, diag.CodeUnquotedDate,
+			"scalar %q resolved to a timestamp; quote it to keep it a string", n.Value)
+		return nil, errors.New("timestamp")
 	default:
 		w.fail(at, diag.CodeInvalidYAML, "tag %s is not allowed in a pipeline document", n.Tag)
 		return nil, errors.New("disallowed tag")

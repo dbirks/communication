@@ -14,8 +14,8 @@
     },
     {
       "path": "02-system-architecture.md",
-      "sha256": "1331e64e9ea6642c682f4fb5521133a11592f1f10022a4a2a85465f353e1f304",
-      "bytes": 7355
+      "sha256": "c5eedbf6eaf532eed48ce57f92082ea0340950d7ab6db45e2e5fc3ca59a9d465",
+      "bytes": 7983
     },
     {
       "path": "03-pipeline-engine.md",
@@ -49,8 +49,8 @@
     },
     {
       "path": "09-api-events-data.md",
-      "sha256": "bf091628bb3eaad1d6c7821958f6aa801b831a6943583e946c310b1f6039b025",
-      "bytes": 5875
+      "sha256": "35c4ecf50129b9777c545235459ed21e828ccbf708cefd4ade28969b0439651b",
+      "bytes": 8778
     },
     {
       "path": "10-ui-design-handoff.md",
@@ -136,6 +136,11 @@
       "path": "examples/secret-mounts.yaml",
       "sha256": "5e5d898a56edaab81eddd571985f0bbd1ba1c9d5888c198ff62bdd8b8f190a3a",
       "bytes": 639
+    },
+    {
+      "path": "schemas/pipeline-v1alpha1.schema.json",
+      "sha256": "7436769592c6be847c325cb1a609972e6e83002c97103ea96aeedbca118190ec",
+      "bytes": 26449
     },
     {
       "path": "schemas/pipeline.schema.json",

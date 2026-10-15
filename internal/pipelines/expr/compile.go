@@ -51,6 +51,13 @@ type Compiled struct {
 	RootNames  []string
 	// BoolResult records that the expression is known to produce a boolean.
 	BoolResult bool
+	// Depth is the AST nesting depth the compiler counted (ADR-0022 § 5's
+	// 16-level bound). cel-go v0.31.0 records ExpressionNestingDepthLimit but
+	// never enforces it — observed: a 40-segment selector chain and a 31-clause
+	// && chain compile under the option — so this package owns the count.
+	// Compilation refuses anything above ExpressionNestingLimit; the field is
+	// what a plan records and what the fuzz property asserts.
+	Depth int
 }
 
 // ResultTypeName names the checked output type ("bool", "dyn", …).
@@ -147,6 +154,10 @@ func Compile(src string, sc ScopeContext, at ptr.Pointer) (Compiled, diag.List) 
 		return Compiled{}, d
 	}
 
+	if d := checkNestingDepth(astc, at); !d.Valid() {
+		return Compiled{}, d
+	}
+
 	refs := references(astc)
 	for _, r := range refs {
 		if code, msg, bad := sc.checkRef(r); bad {
@@ -170,6 +181,7 @@ func Compile(src string, sc ScopeContext, at ptr.Pointer) (Compiled, diag.List) 
 		Normalized: text,
 		Refs:       refs,
 		RootNames:  rootNames(refs),
+		Depth:      nestingDepth(astc.NativeRep().Expr()),
 	}
 	c.BoolResult = sc.isBoolean(astc, refs)
 	return c, diags
@@ -681,6 +693,79 @@ func (c Compiled) LiteralStrings() []string {
 	return out
 }
 
+// nestingDepth counts the AST's nesting levels the way contract § 6 means it:
+// every selection, operator call, list, map, struct and comprehension adds one
+// level over its deepest child; literals and identifiers add none. The walk is
+// safe to run recursively because the parser's 256-node bound (verified here
+// before this runs) caps the tree, and it counts exactly what the pinned
+// engine's own nesting option fails to: cel-go v0.31.0 records
+// ExpressionNestingDepthLimit but no code path reads it — observed: a
+// 40-segment selector chain and a 31-clause && chain compile under the option.
+// So this package owns the 16-level bound (TestNestingBoundIsEnforced).
+func nestingDepth(e celast.Expr) int {
+	switch e.Kind() {
+	case celast.SelectKind:
+		return 1 + nestingDepth(e.AsSelect().Operand())
+	case celast.CallKind:
+		c := e.AsCall()
+		best := 0
+		if t := c.Target(); t != nil && t.Kind() != celast.UnspecifiedExprKind {
+			best = nestingDepth(t)
+		}
+		for _, a := range c.Args() {
+			if a != nil && a.Kind() != celast.UnspecifiedExprKind {
+				if d := nestingDepth(a); d > best {
+					best = d
+				}
+			}
+		}
+		return 1 + best
+	case celast.ListKind:
+		best := 0
+		for _, el := range e.AsList().Elements() {
+			if d := nestingDepth(el); d > best {
+				best = d
+			}
+		}
+		return 1 + best
+	case celast.MapKind, celast.StructKind:
+		best := 0
+		for _, f := range e.AsStruct().Fields() {
+			var v celast.Expr
+			switch f.Kind() {
+			case celast.MapEntryKind:
+				if k := f.AsMapEntry().Key(); k != nil && k.Kind() != celast.UnspecifiedExprKind {
+					if d := nestingDepth(k); d > best {
+						best = d
+					}
+				}
+				v = f.AsMapEntry().Value()
+			case celast.StructFieldKind:
+				v = f.AsStructField().Value()
+			}
+			if v != nil && v.Kind() != celast.UnspecifiedExprKind {
+				if d := nestingDepth(v); d > best {
+					best = d
+				}
+			}
+		}
+		return 1 + best
+	case celast.ComprehensionKind:
+		c := e.AsComprehension()
+		best := 0
+		for _, sub := range []celast.Expr{c.IterRange(), c.AccuInit(), c.LoopCondition(), c.LoopStep(), c.Result()} {
+			if sub != nil && sub.Kind() != celast.UnspecifiedExprKind {
+				if d := nestingDepth(sub); d > best {
+					best = d
+				}
+			}
+		}
+		return 1 + best
+	}
+	// Literal, ident, not-a-selected-function, unspecified.
+	return 0
+}
+
 // ScopeName renders a scope for messages and the plan's expression_scope.
 func ScopeName(s Scope) string {
 	switch s {
@@ -692,6 +777,54 @@ func ScopeName(s Scope) string {
 		return "template"
 	}
 	return "pipeline"
+}
+
+// ProbeNestingLimitInert asks the pinned engine, built with the same
+// expression options this package passes, whether it refuses src for nesting
+// reasons on its own. At v0.31.0 the answer for a 40-segment selector chain is
+// no — ExpressionNestingDepthLimit is recorded but no code path reads it —
+// which is the evidence TestNestingBoundIsEnforced pins; checkNestingDepth is
+// what enforces the bound in this build. If a future cel-go makes the option
+// live, the probe reports it and the refusal still stands (via the engine).
+func ProbeNestingLimitInert(src string) (engineRefusedNesting bool, msg string) {
+	env, err := cel.NewEnv(
+		cel.ClearMacros(), cel.Macros(cel.HasMacro),
+		cel.ParserExpressionSizeLimit(ExpressionSizeLimit),
+		cel.ExpressionNodeLimit(ExpressionNodeLimit),
+		cel.ExpressionNestingDepthLimit(ExpressionNestingLimit),
+		cel.Variable("inputs", cel.DynType),
+	)
+	if err != nil {
+		return false, err.Error()
+	}
+	_, iss := env.Compile(src)
+	if iss == nil || iss.Err() == nil {
+		return false, ""
+	}
+	for _, e := range iss.Errors() {
+		if strings.Contains(e.Message, "nested depth") || strings.Contains(e.Message, "nesting") {
+			return true, e.Message
+		}
+	}
+	return false, ""
+}
+
+// checkNestingDepth refuses an expression whose AST nests deeper than the
+// contract § 6 bound, with the diagnosis the author can act on. The pinned
+// engine's ExpressionNestingDepthLimit is inert (see nestingDepth), so this is
+// the one door the bound walks through.
+func checkNestingDepth(a *cel.Ast, at ptr.Pointer) diag.List {
+	d := nestingDepth(a.NativeRep().Expr())
+	if d <= ExpressionNestingLimit {
+		return nil
+	}
+	return diag.List{{
+		Code:             diag.CodeExpressionTooLarge,
+		Source:           diag.SourceCompiler,
+		Message:          fmt.Sprintf("expression nests %d levels deep; the bound is %d (ADR-0022 § 5): each selection, operator call or list is a level, so split the check across resultBindings or shorten the field path", d, ExpressionNestingLimit),
+		InstanceLocation: at,
+		Hint:             "the bound is 16 nesting levels; the engine's own nesting option is inert at the pinned cel-go version, so the compiler enforces it",
+	}}
 }
 
 func orRoot(s string) string {

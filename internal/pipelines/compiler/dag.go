@@ -110,6 +110,64 @@ func (w *walk) dag(s *scope) (entries, terminals []string, cyclic bool) {
 	return entries, terminals, false
 }
 
+// topoOrder lists the scope's nodes so every dependency precedes its
+// dependents. TopologicalOrder used to be s.order (declaration order), which
+// only happened to satisfy the promise when authors declared dependencies
+// first — the graph fuzzer caught a plan whose first element depended on its
+// second. The advancer builds its ready-set from this field, so the name must
+// be the promise. Kahn's algorithm over the already-proven-acyclic dep
+// relation, ties broken by declaration order so one document always renders
+// one plan.
+func topoOrder(s *scope) []string {
+	deps := map[string][]string{}
+	children := map[string][]string{}
+	for _, id := range s.order {
+		for _, d := range depsOf(s, id) {
+			deps[id] = append(deps[id], d)
+			children[d] = append(children[d], id)
+		}
+	}
+	remaining := map[string]int{}
+	ready := []string{}
+	for _, id := range s.order {
+		remaining[id] = len(deps[id])
+		if remaining[id] == 0 {
+			ready = append(ready, id)
+		}
+	}
+	out := make([]string, 0, len(s.order))
+	for len(ready) > 0 {
+		id := ready[0]
+		ready = ready[1:]
+		out = append(out, id)
+		for _, c := range children[id] {
+			remaining[c]--
+			if remaining[c] == 0 {
+				ready = append(ready, c)
+			}
+		}
+	}
+	if len(out) != len(s.order) {
+		// Unreachable: dag() proved acyclicity before this runs. Keep the
+		// declaration order as the visible fallback rather than emitting a
+		// short order that would silently drop nodes from the plan.
+		return s.order
+	}
+	return out
+}
+
+// depsOf mirrors dag()'s edge filter: in-scope, non-self dependsOn entries.
+func depsOf(s *scope, id string) []string {
+	var out []string
+	for _, d := range asStrings(s.byID[id]["dependsOn"]) {
+		if !s.ids[d] || d == id {
+			continue
+		}
+		out = append(out, d)
+	}
+	return dedupe(out)
+}
+
 func (w *walk) reportCycle(s *scope, loop []string) {
 	if len(loop) == 0 {
 		w.err(s.nodesAt, diag.CodeCycleDetected, "scope %q contains a cycle", s.key)
