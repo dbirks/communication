@@ -1,0 +1,564 @@
+# docs/compatibility/probes/m4/pipeline.yaml — the § 7 exit seed pipeline set.
+# Provenance: document 1 is internal/pipelines/testdata/feature-development-contract.yaml
+# (docs/m4-contract.md § 9.3, the compiled-against contract shape) adjusted to § 7's exit
+# narrative: (a) the C1 deterministic twin is published beside it as document 2 with the SAME
+# node ids, so both revisions compile to an identical node_instance_key set; (b) the § 7.0
+# fixture is Python (pytest), so the test node executes the committed fixture script instead
+# of `go`, keeping the § 9.3 slots (cwd, json_from_path, {exit_code, result} outputs); (c) the
+# C8 fan-out arm lives inside the sample as the when-gated emit_items -> fan_out branch
+# (inputs.fanout=false keeps C1's key set clean; =true arms C8a-e against fanout_count items);
+# (d) maxChildDepth is 1 because fan_out invokes document 3. Every other line is verbatim § 9.3.
+# Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
+# see README.md "Offline validation" for the exact commands. seed.sh posts one document per
+# `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
+#
+# Document 1: agent-driven variant — Plan -> Approve -> Implement -> Test -> Review ->
+# Loop -> verdict, C8 fan-out arm, then publish evidence.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: feature-development
+  description: Plan, approve, implement, test, review, loop until verified, publish evidence.
+spec:
+  inputs:
+    type: object
+    required: [goal, repository]
+    properties:
+      goal: {type: string, minLength: 1}
+      repository: {type: string, minLength: 1}
+      acceptance_criteria:
+        type: string
+        default: Tests pass, the plan is followed, and the reviewer approves.
+      fanout:
+        type: boolean
+        default: false
+        description: Arms the C8 for_each fan-out branch (emit_items + fan_out run only when true).
+      fanout_count:
+        type: integer
+        minimum: 0
+        maximum: 1000
+        default: 0
+        description: Items the m4-exit.sh items fixture emits (C8a 0, C8b-e 25).
+  outputs:
+    type: object
+    required: [implementation_summary]
+    properties:
+      implementation_summary: {type: string}
+      review_approved: {type: boolean}
+      iterations: {type: integer}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 14400
+    maxNodeExecutions: 200
+    maxChildDepth: 1
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: plan
+    kind: agent.acp
+    timeoutSeconds: 900
+    retry:
+      maxAttempts: 3
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 120, jitter: true}
+      retriableErrors: [infra, interrupted, timeout, agent_error, invalid_output]
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: |
+        Goal: ${{ inputs.goal }}
+        Acceptance criteria: ${{ inputs.acceptance_criteria }}
+        Reply with JSON {plan} only.
+    outputs:
+      type: object
+      required: [plan]
+      properties:
+        plan: {type: string, minLength: 1}
+  - id: approve
+    kind: human.approval
+    dependsOn: [plan]
+    retry:
+      maxAttempts: 1
+    config:
+      summary: |
+        Plan for ${{ inputs.goal }}
+        ${{ nodes.plan.outputs.plan }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 86400
+      onTimeout: fail
+  - id: build_until_verified
+    kind: until
+    dependsOn: [approve]
+    timeoutSeconds: 7200
+    config:
+      maxIterations: 4
+      maxDurationSeconds: 7200
+      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true
+      carryForward: true
+      body:
+        nodes:
+        - id: implement
+          kind: agent.acp
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
+            retriableErrors: [infra, interrupted, timeout, agent_error]
+          config:
+            profile: m4-implementer
+            sessionMode: resume_if_supported
+            fallback: new
+            workspace:
+              mode: run_workspace
+              repositories: ['${{ inputs.repository }}']
+            secretRefs: [project/test-database-url]
+            prompt: |
+              Implement the approved plan in repository ${{ inputs.repository }}.
+              Goal: ${{ inputs.goal }}
+              Previous reviewer feedback: ${{ has(previous.review_feedback) ? previous.review_feedback : '(first iteration: no prior review)' }}
+              Reply with JSON {summary, files_changed} only.
+          outputs:
+            type: object
+            required: [summary]
+            properties:
+              summary: {type: string}
+              files_changed: {type: array, items: {type: string}}
+        - id: test
+          kind: process.exec
+          dependsOn: [implement]
+          timeoutSeconds: 900
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+            retriableErrors: [infra, interrupted]
+          config:
+            executable: m4-exit.sh
+            args: [test]
+            cwd: repos/app
+            workspace:
+              mode: run_workspace
+              repositories: ['${{ inputs.repository }}']
+            outputExtraction: {mode: json_from_path, path: build/test-result.json}
+          outputs:
+            type: object
+            required: [exit_code, result]
+            properties:
+              exit_code: {type: integer}
+              result:
+                type: object
+                required: [successful]
+                properties:
+                  successful: {type: boolean}
+                  packages: {type: array, items: {type: object}}
+        - id: review
+          kind: agent.acp
+          dependsOn: [test]
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
+            retriableErrors: [infra, interrupted, timeout, agent_error, invalid_output]
+          config:
+            profile: m4-reviewer
+            sessionMode: new
+            workspace:
+              mode: read_only
+              repositories: ['${{ inputs.repository }}']
+            prompt: |
+              Decide whether the acceptance criteria are met.
+              Criteria: ${{ inputs.acceptance_criteria }}
+              Test result: ${{ nodes.test.outputs.result }}
+              Reply with JSON {approved, evidence, findings} only.
+          outputs:
+            type: object
+            required: [approved, evidence]
+            properties:
+              approved: {type: boolean}
+              evidence: {type: string}
+              findings: {type: array, items: {type: string}}
+      resultBindings:
+        implementation_summary: ${{ nodes.implement.outputs.summary }}
+        review_feedback: ${{ nodes.review.outputs.evidence }}
+        approved: ${{ nodes.review.outputs.approved }}
+    outputs:
+      type: object
+      required: [iterations, approved]
+      properties:
+        iterations: {type: integer}
+        approved: {type: boolean}
+        implementation_summary: {type: string}
+        review_feedback: {type: string}
+  - id: emit_items
+    kind: process.exec
+    dependsOn: [approve]
+    when: inputs.fanout == true
+    timeoutSeconds: 300
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted]
+    config:
+      executable: m4-exit.sh
+      args: [items]
+      env:
+        M4_FANOUT_COUNT: ${{ string(inputs.fanout_count) }}
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {type: object}}
+  - id: fan_out
+    kind: for_each
+    dependsOn: [emit_items]
+    when: inputs.fanout == true
+    timeoutSeconds: 3600
+    config:
+      items: ${{ nodes.emit_items.outputs.items }}
+      maxConcurrency: 3
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          timeoutSeconds: 1800
+          config:
+            pipeline: issue-implementation
+            inputs:
+              number: ${{ item.number }}
+              title: ${{ item.title }}
+    outputs:
+      type: object
+      properties:
+        children: {type: array, items: {type: object}}
+  - id: verdict
+    kind: condition
+    dependsOn: [build_until_verified]
+    config:
+      cases:
+      - when: nodes.build_until_verified.outputs.approved == true
+        route: verified
+      default: needs_attention
+  - id: publish_verified
+    kind: artifact.publish
+    dependsOn: [verdict]
+    when: nodes.verdict.outputs.route == 'verified'
+    config:
+      name: review-evidence.md
+      kind: markdown
+      mediaType: text/markdown
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.build_until_verified.outputs }}
+  - id: publish_needs_attention
+    kind: artifact.publish
+    dependsOn: [verdict]
+    when: nodes.verdict.outputs.route == 'needs_attention'
+    config:
+      name: needs-attention.json
+      kind: json
+      mediaType: application/json
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.build_until_verified.outputs }}
+  resultBindings:
+    implementation_summary: ${{ nodes.build_until_verified.outputs.implementation_summary }}
+    review_approved: ${{ nodes.build_until_verified.outputs.approved }}
+    iterations: ${{ nodes.build_until_verified.outputs.iterations }}
+---
+# Document 2: the deterministic twin (docs/m4-contract.md § 7.1 C1). The three agent.acp
+# nodes of document 1 become process.exec nodes running the committed fixture script
+# (fixtures/m4-exit.sh: prints the plan JSON, applies the hello.py docstring edit + the
+# `==99` -> `==3` rewrite, prints the reviewer JSON), so C4-C9 always take the same branch.
+# Node ids are byte-identical to document 1 — the compiled node_instance_key SETS are equal,
+# which is what C1 asserts across the two runs (C1 twin requirement). `passWhen` is unchanged.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: feature-development-deterministic
+  description: Deterministic process.exec twin of feature-development; identical node key set.
+spec:
+  inputs:
+    type: object
+    required: [goal, repository]
+    properties:
+      goal: {type: string, minLength: 1}
+      repository: {type: string, minLength: 1}
+      acceptance_criteria:
+        type: string
+        default: Tests pass, the plan is followed, and the reviewer approves.
+      fanout:
+        type: boolean
+        default: false
+        description: Arms the C8 for_each fan-out branch (emit_items + fan_out run only when true).
+      fanout_count:
+        type: integer
+        minimum: 0
+        maximum: 1000
+        default: 0
+        description: Items the m4-exit.sh items fixture emits (C8a 0, C8b-e 25).
+  outputs:
+    type: object
+    required: [implementation_summary]
+    properties:
+      implementation_summary: {type: string}
+      review_approved: {type: boolean}
+      iterations: {type: integer}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 14400
+    maxNodeExecutions: 200
+    maxChildDepth: 1
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: plan
+    kind: process.exec
+    timeoutSeconds: 900
+    retry:
+      maxAttempts: 3
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 120, jitter: true}
+      retriableErrors: [infra, interrupted, invalid_output]
+    config:
+      executable: m4-exit.sh
+      args: [plan]
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [plan]
+      properties:
+        plan: {type: string, minLength: 1}
+  - id: approve
+    kind: human.approval
+    dependsOn: [plan]
+    retry:
+      maxAttempts: 1
+    config:
+      summary: |
+        Plan for ${{ inputs.goal }}
+        ${{ nodes.plan.outputs.plan }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 86400
+      onTimeout: fail
+  - id: build_until_verified
+    kind: until
+    dependsOn: [approve]
+    timeoutSeconds: 7200
+    config:
+      maxIterations: 4
+      maxDurationSeconds: 7200
+      passWhen: nodes.test.outputs.result.successful == true && nodes.review.status == 'succeeded' && nodes.review.outputs.approved == true
+      carryForward: true
+      body:
+        nodes:
+        - id: implement
+          kind: process.exec
+          timeoutSeconds: 900
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
+            retriableErrors: [infra, interrupted]
+          config:
+            executable: m4-exit.sh
+            args: [implement]
+            cwd: repos/app
+            workspace:
+              mode: run_workspace
+              repositories: ['${{ inputs.repository }}']
+            secretRefs: [project/test-database-url]
+            outputExtraction: {mode: json_from_stdout}
+          outputs:
+            type: object
+            required: [summary]
+            properties:
+              summary: {type: string}
+              files_changed: {type: array, items: {type: string}}
+        - id: test
+          kind: process.exec
+          dependsOn: [implement]
+          timeoutSeconds: 900
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+            retriableErrors: [infra, interrupted]
+          config:
+            executable: m4-exit.sh
+            args: [test]
+            cwd: repos/app
+            workspace:
+              mode: run_workspace
+              repositories: ['${{ inputs.repository }}']
+            outputExtraction: {mode: json_from_path, path: build/test-result.json}
+          outputs:
+            type: object
+            required: [exit_code, result]
+            properties:
+              exit_code: {type: integer}
+              result:
+                type: object
+                required: [successful]
+                properties:
+                  successful: {type: boolean}
+                  packages: {type: array, items: {type: object}}
+        - id: review
+          kind: process.exec
+          dependsOn: [test]
+          timeoutSeconds: 900
+          retry:
+            maxAttempts: 2
+            backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
+            retriableErrors: [infra, interrupted, invalid_output]
+          config:
+            executable: m4-exit.sh
+            args: [review]
+            workspace:
+              mode: read_only
+              repositories: ['${{ inputs.repository }}']
+            outputExtraction: {mode: json_from_stdout}
+          outputs:
+            type: object
+            required: [approved, evidence]
+            properties:
+              approved: {type: boolean}
+              evidence: {type: string}
+              findings: {type: array, items: {type: string}}
+      resultBindings:
+        implementation_summary: ${{ nodes.implement.outputs.summary }}
+        review_feedback: ${{ nodes.review.outputs.evidence }}
+        approved: ${{ nodes.review.outputs.approved }}
+    outputs:
+      type: object
+      required: [iterations, approved]
+      properties:
+        iterations: {type: integer}
+        approved: {type: boolean}
+        implementation_summary: {type: string}
+        review_feedback: {type: string}
+  - id: emit_items
+    kind: process.exec
+    dependsOn: [approve]
+    when: inputs.fanout == true
+    timeoutSeconds: 300
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted]
+    config:
+      executable: m4-exit.sh
+      args: [items]
+      env:
+        M4_FANOUT_COUNT: ${{ string(inputs.fanout_count) }}
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {type: object}}
+  - id: fan_out
+    kind: for_each
+    dependsOn: [emit_items]
+    when: inputs.fanout == true
+    timeoutSeconds: 3600
+    config:
+      items: ${{ nodes.emit_items.outputs.items }}
+      maxConcurrency: 3
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          timeoutSeconds: 1800
+          config:
+            pipeline: issue-implementation
+            inputs:
+              number: ${{ item.number }}
+              title: ${{ item.title }}
+    outputs:
+      type: object
+      properties:
+        children: {type: array, items: {type: object}}
+  - id: verdict
+    kind: condition
+    dependsOn: [build_until_verified]
+    config:
+      cases:
+      - when: nodes.build_until_verified.outputs.approved == true
+        route: verified
+      default: needs_attention
+  - id: publish_verified
+    kind: artifact.publish
+    dependsOn: [verdict]
+    when: nodes.verdict.outputs.route == 'verified'
+    config:
+      name: review-evidence.md
+      kind: markdown
+      mediaType: text/markdown
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.build_until_verified.outputs }}
+  - id: publish_needs_attention
+    kind: artifact.publish
+    dependsOn: [verdict]
+    when: nodes.verdict.outputs.route == 'needs_attention'
+    config:
+      name: needs-attention.json
+      kind: json
+      mediaType: application/json
+      sensitivity: standard
+      from:
+        mode: output_json
+        value: ${{ nodes.build_until_verified.outputs }}
+  resultBindings:
+    implementation_summary: ${{ nodes.build_until_verified.outputs.implementation_summary }}
+    review_approved: ${{ nodes.build_until_verified.outputs.approved }}
+    iterations: ${{ nodes.build_until_verified.outputs.iterations }}
+---
+# Document 3: the C8 fan-out child (docs/m4-contract.md § 7.1 C8): one process.exec node
+# that writes a file and exits 0 — and exits 1 for item number 13, which is C8d/e's failing
+# child arm. Invoked by /fan_out in documents 1-2 via pipeline.invoke (children are runs).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: issue-implementation
+  description: C8 fan-out child; one process.exec that exits 0, except item number 13.
+spec:
+  inputs:
+    type: object
+    required: [number]
+    properties:
+      number: {type: integer, minimum: 1}
+      title: {type: string, default: ''}
+  outputs:
+    type: object
+    required: [summary]
+    properties:
+      summary: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 600
+    maxNodeExecutions: 10
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: implement
+    kind: process.exec
+    timeoutSeconds: 300
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted]
+    config:
+      executable: m4-exit.sh
+      args: [issue]
+      env:
+        M4_ISSUE_NUMBER: ${{ string(inputs.number) }}
+        M4_ISSUE_TITLE: ${{ inputs.title }}
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [summary]
+      properties:
+        summary: {type: string}
+  resultBindings:
+    summary: ${{ nodes.implement.outputs.summary }}
