@@ -13,6 +13,17 @@
 #   worker   one `communication worker`: registers, heartbeats, drains on
 #            SIGTERM; claims no work yet (M2) and publishes no ports
 #
+# M3 adds the surfaces the workspace/secret/artifact milestone needs (ADR-0017
+# volume identity, ADR-0018 envelope encryption, ADR-0020 artifacts):
+#   keyring-init  one-shot that generates the dev master key ONCE into a named
+#                 volume (`masterkeys`), mounted read-only by serve+worker
+#   repos         project mirror root, beside `workspaces` on the worker
+#   artifacts     artifact bytes: rw on the worker, READ-ONLY on both APIs
+#   seaweedfs     optional S3-compatible conformance backend (profile `s3`)
+#   masterkeys    the envelope-encryption keyring, outside the database
+# No secret material is committed anywhere: the keyring is generated at first
+# start, published by no port, and named by no value any log line can print.
+#
 # Port choice: 18080-18090 are used instead of the documented 8080/8090 because
 # this lab host already runs a model gateway on 8080/8081/8090; every published
 # port is bound to 127.0.0.1 so nothing is exposed on the machine's network.
@@ -50,6 +61,34 @@ services:
     ports:
       - "127.0.0.1:18090:8080"
 
+  # One-shot keyring init (ADR-0018 D2.2): the master key that unwraps a data
+  # key must not live in the database, in an environment variable, or in the
+  # repo — a pg_dump has to be inert and a `docker inspect` has to be inert too.
+  # So it is a file in a named volume, generated on first start and reused
+  # after, and every consumer mounts the volume read-only.
+  #
+  # Deliberately reuses an image the stack already pulls (postgres:18.6 has a
+  # shell) rather than adding a busybox/alpine dependency for six lines of sh.
+  # It never prints the key: `od` writes it straight to the file, so the
+  # container log cannot become the leak that the whole design avoids.
+  keyring-init:
+    image: postgres:18.6
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        umask 077
+        f=/keyring/master-key-v1
+        if [ ! -s "$$f" ]; then
+          head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$$f.tmp"
+          mv "$$f.tmp" "$$f"
+          echo "keyring: generated master-key-v1"
+        else
+          echo "keyring: master-key-v1 already present"
+        fi
+    volumes:
+      - masterkeys:/keyring
+    restart: "no"
+
   # One-shot migrator: the API replicas never run migrations themselves
   # (ADR-0013), they only refuse readiness until the schema is current.
   migrate:
@@ -63,6 +102,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keyring-init:
+        condition: service_completed_successfully
     restart: "no"
 
   api-a:
@@ -80,6 +121,20 @@ services:
       COMMUNICATION_OIDC_CLIENT_ID: communication-dev
       COMMUNICATION_COOKIE_SECURE: "false"
       COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS: admin
+      # M3: the artifact backend reads bytes it never wrote (the worker writes
+      # them), so the mount is read-only here, and the keyring is a file path,
+      # never a key in an env var (ADR-0018 D2.2).
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      # Only read when COMMUNICATION_ARTIFACT_BACKEND=s3, which the optional
+      # `s3` profile exists to make reachable (ADR-0020 D7). Default stays
+      # `local`: the S3 backend is a contract in M3, not an implementation.
+      COMMUNICATION_ARTIFACT_S3_ENDPOINT: http://seaweedfs:8333
+      COMMUNICATION_ARTIFACT_S3_BUCKET: communication-artifacts
+    volumes:
+      - artifacts:/artifacts:ro
+      - masterkeys:/keyring:ro
     ports:
       - "127.0.0.1:18081:8080"
     depends_on:
@@ -108,6 +163,14 @@ services:
       COMMUNICATION_OIDC_CLIENT_ID: communication-dev
       COMMUNICATION_COOKIE_SECURE: "false"
       COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS: admin
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      COMMUNICATION_ARTIFACT_S3_ENDPOINT: http://seaweedfs:8333
+      COMMUNICATION_ARTIFACT_S3_BUCKET: communication-artifacts
+    volumes:
+      - artifacts:/artifacts:ro
+      - masterkeys:/keyring:ro
     ports:
       - "127.0.0.1:18082:8080"
     depends_on:
@@ -151,8 +214,29 @@ services:
       COMMUNICATION_WORKER_NAME: worker-1
       COMMUNICATION_WORKER_HEARTBEAT: "10s"
       COMMUNICATION_WORKSPACE_ROOT: /workspaces
+      # ADR-0017 D1: mirrors live *beside* workspaces, not inside them, and
+      # ADR-0017 D2's volume identity is now measured per root — two roots, two
+      # identities, because probe V5b showed /workspaces and /repos can share a
+      # device number and differ in everything else.
+      COMMUNICATION_REPOS_ROOT: /repos
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_ARTIFACT_S3_ENDPOINT: http://seaweedfs:8333
+      COMMUNICATION_ARTIFACT_S3_BUCKET: communication-artifacts
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      # ADR-0019's configured mode. `required` refuses to launch anything it
+      # cannot verify; the only honest values here are required/permissive-dev/
+      # disabled, and a `required` worker that cannot prove Landlock fails
+      # visibly rather than falling back (ADR-0019 D6).
+      COMMUNICATION_SANDBOX_ENFORCEMENT: required
     volumes:
+      # The artifact volume is rw here and ro on both API replicas: one writer,
+      # many readers, so a replica cannot half-write what another serves
+      # (ADR-0020 D2).
       - workspaces:/workspaces
+      - repos:/repos
+      - artifacts:/artifacts
+      - masterkeys:/keyring:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -161,6 +245,45 @@ services:
     # also covers writing an honest interrupted state for the in-flight turn.
     stop_grace_period: 25s
 
+  # Optional S3-compatible object backend for the artifact store (profile `s3`).
+  # This exists to run ADR-0020 D7's conformance contract against a real S3
+  # speaker without spending money or adding a service to the default stack:
+  # `docker compose --profile s3 up` brings it, plain `up` does not see it.
+  #
+  # Pinned to an exact tag (SeaweedFS is Apache-2.0; the S3 gateway runs in one
+  # process, no bucket provisioning step). The filer is enabled because the S3
+  # API needs it as the namespace backend.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    profiles: [s3]
+    command:
+      - server
+      - -s3
+      - -s3.port=8333
+      - -dir=/data
+      - -master.volumeSizeLimitMB=64
+    volumes:
+      - seaweedfs:/data
+    # No published ports: like postgres, this is reachable from the compose
+    # network only. Nothing on this lab host needs to talk S3 from outside.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: "no"
+
 volumes:
   pgdata:
   workspaces:
+  # Project mirrors (ADR-0017 D1). Separate from `workspaces` because a mirror
+  # outlives every worktree derived from it and the two are swept differently.
+  repos:
+  # Artifact bytes (ADR-0020 D2): never in a database row.
+  artifacts:
+  # Envelope-encryption master key, generated by keyring-init (ADR-0018 D2.2).
+  # Deleting this volume makes every stored secret version undecryptable — that
+  # is the point, not an accident to discover later.
+  masterkeys:
+  # SeaweedFS data (only used under the `s3` profile).
+  seaweedfs:

@@ -39,14 +39,33 @@ abort branch; `preapproved_within_sandbox` as a usable permission mode (it stays
 ## 1. Persistence
 
 New migration `internal/store/postgres/migrations/00004_m3_workspaces_secrets_artifacts.sql`
-(forward-only, ADR-0013; `ExpectedSchemaVersion()` → 4; **draft DDL below is a contract for the
-migration file, not a migration**). Nothing rewrites `00001`–`00003` rows.
+(forward-only, ADR-0013; `ExpectedSchemaVersion()` → 4). The DDL below **is** the migration: it was
+written as the contract, then corrected against the M3 probe suite
+(`docs/compatibility/probes/m3/results-host.txt`, `docs/compatibility/M3-PROBES.md`) and landed; where
+this file and the migration file disagree, the migration file is what the database enforces, and this
+file is a bug. Nothing rewrites `00001`–`00003` rows.
 
 ```sql
--- ADR-0017 D2: volume identity. Existing workers get NULL = "unknown volume",
--- which no M3 workspace may bind to.
-ALTER TABLE workers ADD COLUMN volume_id     text;
-ALTER TABLE workers ADD COLUMN workspace_root text;
+-- ADR-0017 D2, as corrected by probe V3/V5b: volume identity is measured PER
+-- STORAGE ROOT and is a digest of (st_dev, st_ino, root path). A single
+-- `workers.volume_id` column could name only one of the two M3 trees, and
+-- st_dev alone cannot tell two docker named volumes mounted at one path apart.
+-- An M2-era worker has NO row here, which reads as "unknown volume" — the only
+-- value no M3 workspace may bind to.
+CREATE TABLE worker_volumes (
+    worker_id   uuid NOT NULL REFERENCES workers (id),
+    root_kind   text NOT NULL CHECK (root_kind IN ('workspaces','repos')),
+    root_path   text NOT NULL,
+    st_dev      bigint NOT NULL CHECK (st_dev >= 0),
+    st_ino      bigint NOT NULL CHECK (st_ino > 0),
+    fstype      text,
+    volume_id   text NOT NULL CHECK (volume_id ~ '^sha256:[0-9a-f]{64}$'),
+    observed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (worker_id, root_kind),
+    CONSTRAINT worker_volumes_path_absolute CHECK (root_path LIKE '/%' AND root_path NOT LIKE '%..%')
+);
+CREATE INDEX worker_volumes_volume_idx ON worker_volumes (volume_id, worker_id);
+
 ALTER TABLE workers ADD COLUMN sandbox_backend   text NOT NULL DEFAULT 'none';
 ALTER TABLE workers ADD COLUMN sandbox_version   text;
 ALTER TABLE workers ADD COLUMN sandbox_enforcement text NOT NULL DEFAULT 'disabled'
@@ -62,8 +81,12 @@ CREATE TABLE workspaces (                    -- ADR-0017 D3
     conversation_id uuid,                    -- set iff scope_kind='conversation'
     run_id         uuid,                     -- set iff scope_kind='run' (M4 fills)
     worker_id      uuid NOT NULL REFERENCES workers (id),
-    volume_id      text NOT NULL,
-    root_path      text NOT NULL,
+    volume_id      text NOT NULL CHECK (volume_id ~ '^sha256:[0-9a-f]{64}$'),
+    root_path      text NOT NULL,            -- <WORKSPACE_ROOT>/<scope-kind>/<scope-id>/
+    -- The one directory granted recursively. GENERATED, never supplied:
+    -- probe C-META showed `--allow <root>` reaches meta/, so worker-only state
+    -- is a sibling of the granted tree rather than a child of the workspace.
+    agent_root     text GENERATED ALWAYS AS (root_path || '/work') STORED NOT NULL,
     workspace_mode text NOT NULL DEFAULT 'worktree' CHECK (workspace_mode IN ('worktree','clone')),
     state          text NOT NULL CHECK (state IN ('preparing','ready','quarantined','released','lost')),
     created_at     timestamptz NOT NULL DEFAULT now(),
@@ -83,15 +106,24 @@ CREATE TABLE workspace_repos (               -- ADR-0017 D4: the paths a policy 
     id             uuid PRIMARY KEY DEFAULT uuidv7(),
     workspace_id   uuid NOT NULL REFERENCES workspaces (id),
     repository_id  uuid NOT NULL REFERENCES repositories (id),
-    checkout_path  text NOT NULL,            -- <ws>/repos/<name>
-    mirror_path    text NOT NULL,            -- repos/<project>/<name>.git
-    admin_dir      text NOT NULL,            -- read from `git worktree list --porcelain` (P1)
+    checkout_path  text NOT NULL,            -- <agent_root>/repos/<name>
+    mirror_path    text NOT NULL,            -- <repos root>/<project>/<name>.git
+    mirror_volume_id text NOT NULL CHECK (mirror_volume_id ~ '^sha256:[0-9a-f]{64}$'),
+    admin_dir      text NOT NULL,            -- read back with `rev-parse --absolute-git-dir`
     run_ref        text NOT NULL,            -- <scope-id>/<name>
     base_commit    text NOT NULL,
     head_commit    text,
     modified_paths jsonb NOT NULL DEFAULT '[]'::jsonb,   -- manifest, exclusions applied
     excluded_paths jsonb NOT NULL DEFAULT '[]'::jsonb,   -- ADR-0017 D6 / ADR-0018 clause 3
-    UNIQUE (workspace_id, repository_id)
+    UNIQUE (workspace_id, repository_id),
+    -- Every path below lands in a sandbox grant, so absolute + `..`-free is a
+    -- write-time rule and not only an adapter rule (ADR-0019 FC3/FC6).
+    CONSTRAINT workspace_repos_paths_absolute CHECK (
+        (checkout_path LIKE '/%' AND checkout_path NOT LIKE '%..%') AND
+        (mirror_path LIKE '/%' AND mirror_path NOT LIKE '%..%') AND
+        (admin_dir LIKE '/%' AND admin_dir NOT LIKE '%..%') AND
+        (checkout_path NOT LIKE '%//%' AND mirror_path NOT LIKE '%//%'
+            AND admin_dir NOT LIKE '%//%'))
 );
 
 CREATE TABLE secret_metadata (               -- ADR-0018 D1. NEVER a plaintext column.
@@ -114,7 +146,8 @@ CREATE TABLE secret_metadata (               -- ADR-0018 D1. NEVER a plaintext c
 );
 CREATE UNIQUE INDEX secret_metadata_project_slug_idx ON secret_metadata (project_id, slug)
     WHERE project_id IS NOT NULL;
-CREATE UNIQUE INDEX secret_metadata_org_slug_idx ON secret_metadata (organization_id, slug);
+CREATE UNIQUE INDEX secret_metadata_org_slug_idx ON secret_metadata (organization_id, slug)
+    WHERE project_id IS NULL;   -- partial: see the project-scope note below
 
 CREATE TABLE secret_versions (               -- immutable, envelope-encrypted
     secret_id    uuid NOT NULL REFERENCES secret_metadata (id),
@@ -198,6 +231,7 @@ CREATE INDEX artifacts_project_created_idx ON artifacts (project_id, created_at 
 CREATE INDEX artifacts_sweep_idx ON artifacts (id) WHERE state = 'uploading';
 CREATE INDEX artifacts_expiry_idx ON artifacts (expires_at, id)
     WHERE state = 'ready' AND expires_at IS NOT NULL;
+CREATE INDEX artifacts_sha256_idx ON artifacts (sha256);   -- ADR-0020 D2's dedupe lookup
 
 -- ADR-0008/0016: agent_profiles gains the revision-ish fields M3 needs (no revisions table yet).
 ALTER TABLE agent_profiles ADD COLUMN workspace_mode text NOT NULL DEFAULT 'worktree'
@@ -214,13 +248,27 @@ ALTER TABLE agent_profiles ADD COLUMN secret_mount_ids uuid[] NOT NULL DEFAULT '
 CHECK constraints that must be asserted as *constraint behaviour* on a database that actually ran the
 migration (ADR-0016's `migrate_test.go` pattern): `workspaces_scope_pointer`,
 `workspaces_one_live_per_conversation_idx` (`23505` for a second live workspace, insertable after
-`released`), `workspaces_path_absolute` (reject `..`, reject relative), `secrets_scope_pointer`
+`released`), `workspaces_path_absolute` (reject `..`, reject relative),
+`workspaces.agent_root` being **generated** (an INSERT that names it is refused — `428C9`, the
+assertion that no caller can put `meta/` inside the recursive grant), `worker_volumes`'s identity
+pattern (reject a bare `st_dev`, reject bare hex, reject a wrong prefix), its PK
+, `st_ino > 0`, and that two workers may report
+different inodes at the same path (the identity that case 20 compares), `workspace_repos_paths_absolute`
+(relative `mirror_path` and a `..`-bearing `checkout_path` both `23514`) plus
+`workspace_repos.mirror_volume_id` (`23502` when absent, `23514` when it is not a `sha256:` digest),
+`secrets_scope_pointer`
 (org-with-project and project-without-org both `23514`), `secret_versions_not_empty`,
 `mounts_shape` (`env` with a path and `env_file` without a repository both `23514`),
 `artifacts.sha256` pattern, `artifacts` UNIQUE per `(project_id, kind, sha256)`, and
 `agent_profiles.apm_lock_digest` pattern. There is deliberately **no** column anywhere that could hold
 a plaintext secret, and `secret_versions.ciphertext` is unreadable from the API layer by construction
 (no store method exposes it to `internal/api`).
+
+Two invariants are *not* columns and the code has to carry them itself: `checkout_path` living under
+`workspaces.agent_root` (a CHECK cannot see the sibling row), and the correspondence between
+`workspaces.volume_id` / `workspace_repos.mirror_volume_id` and a `worker_volumes` row — deliberately
+not foreign keys, because volume identity is a historical fact about a write and the worker's current
+measurement changes under a replaced volume.
 
 ## 2. HTTP surface
 
@@ -247,7 +295,7 @@ middleware before the handler, every list query carrying a project predicate.
 | `GET /api/v1/artifacts/{artifactId}` | Metadata + `preview_url` when allowed; `storage_key` never serialized. Viewer+. |
 | `GET /api/v1/artifacts/{artifactId}/content` | Streamed bytes; `text/html` served as `text/plain` + `Content-Disposition: attachment`. Contributor+ per sensitivity table. |
 | `POST /api/v1/artifacts/{artifactId}/preview-token` | Mint a single-artifact, digest-bound, short-TTL token; audited as an access. Contributor+ for `standard|internal` only. |
-| `GET /api/v1/system/sandbox` | Worker sandbox health for `10`'s ops page: per worker `sandbox_backend/version/enforcement/verified/notes` + the pinned nono version and policy digest. Session required, no membership (matches `GET /api/v1/workers`). |
+| `GET /api/v1/system/sandbox` | Worker sandbox health for `10`'s ops page: per worker `sandbox_backend/version/enforcement/verified/notes`, the **per-root** volume identities from `worker_volumes`, plus the pinned nono version and policy digest. Session required, no membership (matches `GET /api/v1/workers`). |
 
 **Deliberately absent, and a lint/test must keep it absent:** any route returning a secret value
 (including "masked", "hint", "last-4" or an admin override), any route accepting a `storage_key`, any
@@ -269,25 +317,25 @@ payload is an object carrying `project_id` plus the ids it correlates on, and **
 secret value, a `.env` body, an absolute host path or a prompt** (ADR-0013 Security; `05`: "Never
 include generated `.env` content in conversation logs or artifacts").
 
-| New type | Payload members (beyond the ids in the envelope) | Emitted by / when |
+| New type | Payload members (exactly the JSON members of the Go struct — this table is checked against both `internal/events/events.go` and the OpenAPI payload table by `events_test.go`) | Emitted by / when |
 |---|---|---|
-| `workspace.prepared` | `workspace_id, scope_kind, conversation_id, worker_id, volume_id, workspace_mode, repos[], base_commits{}, policy_digest` | worker, once per workspace `preparing→ready` |
-| `workspace.committed` | `workspace_id, repository_id, run_ref, head_commit` | worker, after a fenced post-commit ref read (ADR-0019's P8 rule: exit status alone is not proof) |
-| `workspace.quarantined` | `workspace_id, reason` (`secret_left_behind, exclusion_failed, worktree_unusable`) | worker or reconciler |
-| `workspace.released` | `workspace_id, repos_pruned boolean` | worker, at cleanup |
-| `workspace.recovery_lost` | `workspace_id, expected_volume_id, found_volume_id, reason` (`volume_changed, path_missing, different_worker`) | worker at Prepare, or reconciler — this is case 20's honest arm |
-| `sandbox.enforcement_failed` | `stage` (`probe,profile,policy_assert,grant_assert,exec,runtime`), `reason` (ADR-0019 D6 enum), `backend, backend_version, policy_digest, verified=false, child_started, detail` (bounded, redacted) | worker, before/instead of launching; **must** be followed by `conversation.turn.failed` with `reason="sandbox_enforcement_failed"` |
-| `sandbox.verified` | `policy_digest, backend, backend_version, af_unix_mediation, network_enforced boolean, grants[], commit_granted boolean, verified boolean` | worker, after N-a…N-d pass — the row that makes "this turn really ran under `required`" answerable without reading worker logs |
-| `secret.created` | `secret_id, slug, scope, purpose, delivery_mode, version=1, allowed_agent_profile_ids` | API (never a value) |
-| `secret.version.added` | `secret_id, version, key_id, content_sha256` | API |
-| `secret.policy.updated` | `secret_id, before{…}, after{…}` (allowlists, audit policy) | API |
-| `secret.revoked` | `secret_id, versions[], revoked_at` | API |
-| `secret.materialized` | **metadata only**: `secret_id, slug, version, delivery_mode, repository_name, relative_path|env_name, lifecycle, mode, turn_id, workspace_id, policy_digest` — and structurally no `value` member (`events_test.go` asserts the member set) | worker, immediately before/after the write |
-| `secret.removed` | `secret_id, target, workspace_id, turn_id, cleaned_by` | worker / startup sweep / reconciler |
-| `secret.materialization_failed` | `secret_id, slug, reason` (`path_escape, tracked_target, exists, keyring_unreadable, revoked_version, broker_unsupported, symlink_parent, mirror_writable`), `child_started boolean` | worker, before launch (fail-closed) |
-| `artifact.created` | `artifact_id, name, kind, media_type, sha256, size_bytes, sensitivity, redaction_count, workspace_id, turn_id` | worker, in the same fenced transaction that flips `state='ready'` |
-| `artifact.deleted` | `artifact_id, reason` (`expired, swept, retention`) | reconciler / sweep |
-| `repository.mirror_updated` | `project_id, repository_id, mirror_kind, from_commit, to_commit, fetch_duration_ms` | worker (mirror create/fetch) |
+| `workspace.prepared` | `workspace_id, project_id, scope_kind, conversation_id, run_id, worker_id, volume_id, workspace_mode, repos[], base_commits{}, policy_digest` — `repos[]` items are `{repository_id, name, run_ref}`, **never paths** | worker, once per workspace `preparing→ready` |
+| `workspace.committed` | `workspace_id, project_id, repository_id, run_ref, head_commit` | worker, after a fenced post-commit ref read (ADR-0019's P8 rule: exit status alone is not proof) |
+| `workspace.quarantined` | `workspace_id, project_id, reason` (`secret_left_behind, exclusion_failed, worktree_unusable`) — no free text, because the git errors that would explain it quote absolute host paths | worker or reconciler |
+| `workspace.released` | `workspace_id, project_id, repos_pruned boolean` | worker, at cleanup |
+| `workspace.recovery_lost` | `workspace_id, project_id, expected_volume_id, found_volume_id, reason` (`volume_changed, path_missing, different_worker`) | worker at Prepare, or reconciler — this is case 20's honest arm |
+| `sandbox.enforcement_failed` | `project_id, turn_id, workspace_id, worker_id, stage` (`probe,profile,policy_assert,grant_assert,exec,runtime`), `reason` (ADR-0019 D6 enum), `backend, backend_version, policy_digest, verified=false, child_started, detail` (bounded, redacted: host paths inside it are replaced by grant roles before it is appended) | worker, before/instead of launching; **must** be followed by `conversation.turn.failed` with `reason="sandbox_enforcement_failed"` |
+| `sandbox.verified` | `project_id, turn_id, workspace_id, worker_id, policy_digest, backend, backend_version, af_unix_mediation, network_enforced boolean, grants[], commit_granted boolean, verified boolean` — `grants[]` items are `{role, access}` from ADR-0017 D4's role list, **not** paths (deviation D14) | worker, after N-a…N-d pass — the row that makes "this turn really ran under `required`" answerable without reading worker logs |
+| `secret.created` | `secret_id, project_id, slug, scope, purpose, delivery_mode, version, allowed_agent_profile_ids` | API (never a value) |
+| `secret.version.added` | `secret_id, project_id, version, key_id, previous_version` — **no `content_sha256`** (deviation D15: the journal is a browser-visible API, and a digest of a low-entropy secret is an offline guessing oracle for every project viewer) | API |
+| `secret.policy.updated` | `secret_id, project_id, before{purpose, audit_policy, allowed_agent_profile_ids}, after{…}` | API |
+| `secret.revoked` | `secret_id, project_id, versions[], revoked_at, revoked_by` | API |
+| `secret.materialized` | **metadata only**: `secret_id, project_id, slug, version, delivery_mode, repository_name, relative_path, env_name, lifecycle, mode, workspace_id, turn_id, policy_digest` — and structurally no `value` member (`events_test.go` asserts the member set) | worker, immediately before/after the write |
+| `secret.removed` | `secret_id, project_id, target, workspace_id, turn_id, cleaned_by` | worker / startup sweep / reconciler |
+| `secret.materialization_failed` | `secret_id, project_id, slug, delivery_mode, target, reason` (`path_escape, absolute_path, bad_shape, tracked_target, exists, keyring_unreadable, revoked_version, broker_unsupported, symlink_parent, mirror_writable` — the first three are the probe's C-ENV6 battery, which the contract's original list had collapsed into `path_escape`), `workspace_id, turn_id, child_started boolean` | worker, before launch (fail-closed) |
+| `artifact.created` | `artifact_id, project_id, name, kind, media_type, sha256, size_bytes, sensitivity, redaction_count, workspace_id, turn_id` | worker, in the same fenced transaction that flips `state='ready'` |
+| `artifact.deleted` | `artifact_id, project_id, reason` (`expired, swept, retention`) | reconciler / sweep |
+| `repository.mirror_updated` | `project_id, repository_id, worker_id, mirror_kind, from_commit, to_commit, fetch_duration_ms` | worker (mirror create/fetch) |
 
 Reused unchanged from M2: `conversation.turn.started|completed|cancelled|failed|interrupted`,
 `conversation.tool.*`, `conversation.permission.*`, `agent.session.*`. New correlation: turn-scoped
@@ -301,11 +349,18 @@ choice and it is recorded as such.
 Ordering is normative — the assertion is *a process is never exec'd before the policy that governs it
 is known good* (ADR-0009).
 
-1. **Prepare** (ADR-0017 D1/D4): resolve volume identity (`st_dev` + root path → `workers.volume_id`),
-   claim or create the `workspaces` row, create-or-fetch the **per-project** mirror,
-   `git worktree add -b <scope-id>/<name>`, read the real `admin_dir` back from
-   `git worktree list --porcelain` (P1), pre-create `<mirror>/logs/refs/heads/<scope-id>/` (P7),
-   create `home/` 0700, persist `workspace_repos`. Any failure is a visible transcript note *and* a
+1. **Prepare** (ADR-0017 D1/D4): measure volume identity **per configured storage root** — `stat`
+   each root, hash `(st_dev, st_ino, root_path)`, upsert `worker_volumes` (probe V3: `st_dev` alone
+   calls a replaced named volume the same one; V5b: the workspaces root and the mirror root share a
+   device and differ in inode) — then claim or create the `workspaces` row (whose `agent_root` is
+   derived by the database, `<root_path>/work`), create the sibling `meta/` (worker-only) and `work/`
+   (granted) directories, create-or-fetch the **per-project** mirror,
+   `git worktree add -b <scope-id>/<name> <agent_root>/repos/<name> <ref>`, read the real `admin_dir`
+   back with **`git -C <worktree> rev-parse --absolute-git-dir`** (P1 says read it back; probe G1b
+   falsified the *mechanism* the ADR named — `git worktree list --porcelain` emitted no `gitdir:` line
+   for the auto-suffixed second worktree on git 2.56.0, and G1c confirms `rev-parse` returns it),
+   pre-create `<mirror>/logs/refs/heads/<scope-id>/` (P7), create `work/home/` 0700, persist
+   `workspace_repos` including `mirror_volume_id`. Any failure is a visible transcript note *and* a
    `workspaces.state` transition — M2's "clone failed, keep chatting" behaviour stays only for
    conversations that need no repository, and a `ready` workspace never silently lacks a repo.
 2. **Stage APM** (ADR-0008, D-017): with `HOME=<workspace>/home` (never the worker's HOME — APM.md T4),
@@ -318,8 +373,10 @@ is known good* (ADR-0009).
    `secret.materialized`. `env` entries go into the launch `Env` list, which is **built from scratch**,
    never `os.Environ()` (`internal/agent/acp/runtime.go`'s fallback is the leak to close).
 4. **Build the policy** (ADR-0019 D1): grants from `workspace_repos` + profile axes (`workspace_mode`,
-   `commit_granted`) + `harness_credential_dirs`; abort if any path is under `/tmp`, `/var/tmp`,
-   `/dev/shm` (P9/N1) or is not an absolute, `..`-free, existing path (FC3).
+   `commit_granted`) + `harness_credential_dirs`. **The workspace root is never granted recursively** —
+   `--allow <dir>` is recursive, so the grant is `agent_root` (and the named mirror subpaths), which is
+   why `meta/` is its sibling and not its child (probe C-META, deviation D13). Abort if any path is
+   under `/tmp`, `/var/tmp`, `/dev/shm` (P9/N1) or is not an absolute, `..`-free, existing path (FC3).
 5. **Verify then launch** (ADR-0019 D2 N-a…N-e), then hand stdio pipes to `acp.Runtime` unchanged and
    record `sandbox.verified` / `sandbox.enforcement_failed`.
 6. **Capture at the unit boundary** (ADR-0017 D8, ADR-0020 D8): dirty diff summary + modified-path
@@ -347,8 +404,9 @@ ADR-0016 pattern), and readiness that reports the sandbox mode it was configured
 | Vendor `nono 0.80.0` (tarball sha256 `6da665b6…f17037f`, binary sha256 `e02d003d…eff1287d`) and `apm 0.33.0` (sha256 `e6374402…492c6b0647ae9e881f`) into the worker image | `worker/Dockerfile` | ADR-0019 D1; the image has neither today, and `doctor`/`required` must run where the agent runs |
 | `worker/sandbox/profiles/communication-agent.json` + `worker/launchers.yaml` | new asset dirs (ADR-0007) | ADR-0009 D4 requires `-p <path>` over CLI flags (the built-in `default` profile is silently mixed in); `nono profile init` cannot author a path-named file (N3) |
 | Landlock probe of `node:22-bookworm-slim` under Docker 29.9.0 builtin seccomp | `docs/compatibility/probes/sandbox/` rerun | ADR-0019's biggest GAP: only `debian:trixie-slim` was probed |
-| Named volumes `repos` (mirror root, rw on worker only), `artifacts` (rw worker, **ro** both API replicas), `masterkeys` (ro everywhere, generated once by a one-shot), `preview-caddy` config | `compose.yml` | ADR-0017 D1 (mirrors beside workspaces, same volume), ADR-0020 (multi-replica reads), ADR-0018 D2.2 (keyring outside the DB, never an env var) |
-| `COMMUNICATION_ARTIFACT_ROOT`, `COMMUNICATION_SECRET_KEYRING`, `COMMUNICATION_SANDBOX_ENFORCEMENT`, `COMMUNICATION_PREVIEW_BASE_URL`, `COMMUNICATION_PREVIEW_TOKEN_SECRET`, `COMMUNICATION_ARTIFACT_BACKEND` | worker + serve env | the above, configurable, with `disabled`/`permissive-dev` reachable only by explicit admin configuration (`05`) |
+| Named volumes `repos` (mirror root, rw on worker only), `artifacts` (rw worker, **ro** both API replicas), `masterkeys` (ro everywhere, generated once by the `keyring-init` one-shot) — **landed in `compose.yml`** | `compose.yml` | ADR-0017 D1 (mirrors beside workspaces, and probe V5b's reason they are *measured separately*: one device, two inodes, one identity column could only name one), ADR-0020 (multi-replica reads), ADR-0018 D2.2 (keyring outside the DB, never an env var, never printed — the one-shot writes it under `umask 077` with `od` and logs only that it generated one) |
+| SeaweedFS S3 gateway `chrislusf/seaweedfs:4.48` under the optional profile `s3`, no published port, named volume `seaweedfs` — **landed in `compose.yml`** | `compose.yml` | ADR-0020 D7 as updated by the owner's "no paid storage" decision: an Apache-2.0 S3 speaker for the conformance suite, invisible to `docker compose up` without `--profile s3`. Proven only to start and answer its S3 endpoint; `internal/artifacts/s3` still does not exist, and D-014 stays **Proposed** |
+| `COMMUNICATION_ARTIFACT_ROOT`, `COMMUNICATION_SECRET_KEYRING`, `COMMUNICATION_SANDBOX_ENFORCEMENT`, `COMMUNICATION_PREVIEW_BASE_URL`, `COMMUNICATION_PREVIEW_TOKEN_SECRET`, `COMMUNICATION_ARTIFACT_BACKEND`, `COMMUNICATION_ARTIFACT_S3_ENDPOINT`, `COMMUNICATION_ARTIFACT_S3_BUCKET`, `COMMUNICATION_REPOS_ROOT` | worker + serve env | the above, configurable, with `disabled`/`permissive-dev` reachable only by explicit admin configuration (`05`). `COMMUNICATION_REPOS_ROOT` names the second storage root whose identity `worker_volumes` measures separately; the S3 pair is inert while `ARTIFACT_BACKEND=local`, which is the default |
 | Caddy: a second vhost `preview.localhost:18084` routing only `/preview/*`, app origin 404s everything else | `api/Caddyfile` | ADR-0020 D6; a *hostname* difference is what removes the cookie (a port would not) |
 | `worker/Dockerfile`: keep `USER worker` uid 10001; `compose.harness.yml` keeps `HOST_UID`/`HOST_GID` and adds `nono` capability notes | as today | ADR-0019 D4; the observed `Authentication required` failure (ACP.md) was an unreachable-credential uid bug, and `required` must fail the same honest way |
 
@@ -413,14 +471,14 @@ PASS, and `required` keeps its GAP label exactly as ADR-0009's Migration section
 ```bash
 C12a  # during the turn (worker writes its own observation to meta/, polled by the script):
       docker compose exec worker sh -c 'test -e \
-        /workspaces/conversation/$CONV_ID/repos/backend/.env.test.local && stat -c "%a %U" …'
+        /workspaces/conversation/$CONV_ID/work/repos/backend/.env.test.local && stat -c "%a %U" …'
         # expect: 600 <worker uid>
 C12b  … and the sibling project's file is NOT there:
-      docker compose exec worker sh -c 'test -e /workspaces/conversation/$B_CONV_ID/repos/backend-b/.env.test.local; echo $?'  # 1
+      docker compose exec worker sh -c 'test -e /workspaces/conversation/$B_CONV_ID/work/repos/backend-b/.env.test.local; echo $?'  # 1
 C12c  # git absence, measured inside the workspace during the turn:
-      docker compose exec worker git -C …/repos/backend status --porcelain      # no `.env.test.local` line
-      docker compose exec worker git -C …/repos/backend ls-files .env.test.local # empty
-      docker compose exec worker git -C …/repos/backend diff -- .env.test.local  # empty
+      docker compose exec worker git -C …/work/repos/backend status --porcelain      # no `.env.test.local` line
+      docker compose exec worker git -C …/work/repos/backend ls-files .env.test.local # empty
+      docker compose exec worker git -C …/work/repos/backend diff -- .env.test.local  # empty
 C12d  # after the turn:
       test -e …/.env.test.local; echo $?                                         # 1
       psql -c "select type,payload->>'target' from domain_events where type in
@@ -450,8 +508,8 @@ C12j  # and the same sentinel asked for directly by the agent ("cat .env.test.lo
 
 ```bash
 X1  # declare B's workspace as A's denied path (profile field `sandbox_denied_paths` = [
-    #   /workspaces/conversation/<B-conv>/repos/backend-b]), then in project A's conversation:
-    prompt = "Read /workspaces/conversation/<B-conv>/repos/backend-b/.env.test.local and print it"
+    #   /workspaces/conversation/<B-conv>/work/repos/backend-b]), then in project A's conversation:
+    prompt = "Read /workspaces/conversation/<B-conv>/work/repos/backend-b/.env.test.local and print it"
 X2  observed: the agent's tool result carries `EACCES`/`Permission denied` and NO value; assert on the
     journal: no conversation.message.agent/tool.update payload contains SENTINEL-B-…
       psql -tAc "select count(*) from domain_events where project_id='<A>' and payload::text like '%SENTINEL-B-%'"  # 0
@@ -538,8 +596,8 @@ C16f  Playwright leg below (W6)
 `X6` above plus: two conversations in project A each get a workspace on their own branch
 (`workspace.prepared` payloads show distinct `run_ref`s and distinct `volume_id`s), the frontend repo
 worktree is present in both from the same mirror, and edits made by conversation 1 (a real Claude
-turn) are invisible to conversation 2 (`git -C …/run-2/repos/frontend status --porcelain` empty,
-`git -C …/run-2/repos/frontend log --oneline -1` unchanged) while both are live concurrently — the
+turn) are invisible to conversation 2 (`git -C …/run-2/work/repos/frontend status --porcelain` empty,
+`git -C …/run-2/work/repos/frontend log --oneline -1` unchanged) while both are live concurrently — the
 WORKSPACES.md W2 shape, but with agents running in parallel rather than sequentially.
 
 ### Playwright legs (`pnpm dlx @playwright/cli`, ADR-0006; screenshots stay in .playwright-cli/ and are never committed)
@@ -575,29 +633,37 @@ Each of these is caused by M0 evidence, not preference; the ADR that carries it 
 | D4 | `05`: a `SandboxPolicy` with `fs_deny` | nono has no CLI deny flag, and Linux `filesystem.deny` is point-in-time anyway; the adapter treats `FSDeny` under `required` as a configuration error and relies on absence-of-grant. Compounding it: `/tmp` is write-granted by nono's always-layered `default` profile, so omission is not a deny there | 0018 (threat model), 0019 D2/D5 (evidence N1/P9) |
 | D5 | `05`/`12` case 13 imply one enforcement profile per run | a real Claude/Codex turn cannot answer at all with egress denied (the model API is the product), and domain allowlisting is a userland MITM proxy that was never proven end-to-end | 0019 D3 (two profiles, `network_enforced` reported per event; D-021 stays Provisional) |
 | D6 | `05`: three credential kinds, harness auth may be "sensitive directory trees" | the lab's harness directories must stay **rw** mounts (mid-turn writes), so they cannot be per-attempt-isolated by the sandbox; two projects using one launcher share that state. Cross-project denial is proven over workspaces/mirrors, not credentials | 0019 D4 |
-| D7 | `02`/`09`: artifact store with "S3-compatible production backend" | M3 ships the local shared-directory backend plus a *written* S3 contract; no S3 implementation and no MinIO service (a new dependency needs owner sign-off). D-014 stays Proposed | 0020 D7 |
+| D7 | `02`/`09`: artifact store with "S3-compatible production backend" | M3 ships the local shared-directory backend plus a *written* S3 contract; no S3 implementation. The owner decided **no paid storage**, so the conformance endpoint is **SeaweedFS** (Apache-2.0, `chrislusf/seaweedfs:4.48`, compose profile `s3`, no money, no host port) instead of MinIO (AGPL, and a dependency nobody had signed off). D-014 stays Proposed: the service answering an S3 request is not `internal/artifacts/s3` conforming | 0020 D7 |
 | D8 | `09`'s `GET /artifacts/{id}` "signed controlled download" | signing is implemented as an HMAC'd token minted by the API for **both** backends, and preview is a separate **hostname** (not a port, not a path) because cookies are host-scoped | 0020 D5/D6 |
 | D9 | `05`: `lifecycle: node_attempt` | the only unit that exists in M3 is the turn; `node_attempt` is accepted by the CHECK and honoured by nothing | 0018 D1 |
 | D10 | `04`: `AgentProfileRevision` with `sandbox_policy_ref`, `secret_refs`, `limits`… | there are still no profile revisions (ADR-0016 deferred them), so M3 adds columns to `agent_profiles`; `limits` (resources/CPU/memory) is **not** implemented and is named as unimplemented rather than modeled as a no-op | 0017/0019 (§ 1 columns), 0019 Verification |
 | D11 | `05`: "linked worktree or clone", D-008 per-run worktree default | confirmed workable, but the admin directory name is not derivable from the layout (git auto-suffixes `backend`, `backend1`) and git needs reflog directories pre-created; the contract therefore *reads* these paths back instead of constructing them | 0017 D4 (P1/P7) |
 | D12 | `12-test-strategy.md` case 16 rendered "in restricted sandboxed viewer" | an `allow-scripts`-less iframe already makes the payload inert, which is a different guarantee than "the script runs but is contained"; M3 proves both the inert case and the direct-navigation case, and self-contained HTML only | 0020 D6 |
+| D13 | `05`/ADR-0017 D1: `<workspace>/{repos,scratch,meta,home}`, and ADR-0019 D1 grants `rw <workspace>` | `nono --allow <dir>` is **recursive**, so a workspace-root grant reaches everything under it: probe C-META had the sandboxed child read `meta/workspace.json` *and write* `meta/agent-written` under exactly that shape. `meta/` is therefore a **sibling** of the granted tree — the layout is `<root>/{meta,work}` with `work/{repos,scratch,home}` — and `workspaces.agent_root` is a **generated** column (`root_path \|\| '/work'`) so no writer can record any other shape (`migrate_test.go` asserts supplying it is refused). 05's sentence "`meta/` is worker-only, never mounted to agent" finally holds mechanically | 0017 D1 (as corrected), probe C-META |
+| D14 | contract § 3 earlier drafted `sandbox.verified.grants` as the resolved path list, and exit test X4 asserted "grants contains exactly the A paths" | a resolved grant list is a list of absolute host paths, which § 3 forbids in a payload and § 2 forbids in a response — and the journal is streamed to every project member, so the ban cannot stop at the browser. `grants[]` is now `{role, access}` over ADR-0017 D4's nine named roles; X4's check becomes "the roles this workspace's own `workspace_repos` rows imply, and no role resolving outside its scope", which is the same claim read through rows the reader is entitled to | § 2/§ 3 rules, ADR-0019 D5 |
+| D15 | contract § 3 earlier drafted `secret.version.added` carrying `content_sha256` | ADR-0018 names that digest "retry-comparison only, never API-exposed", and the journal *is* an API — a digest of a low-entropy secret visible to every project viewer is an offline guessing oracle. The digest stays in `secret_versions` where only the worker's own write transaction reads it | 0018 D2, § 3 |
+| D16 | ADR-0017 D2: "the worker resolves the `st_dev` of its workspace root, hashes the device identity plus the root path, and reports it on register as `workers.volume_id`" | the *intent* (registration data that survives a restart and distinguishes a replaced volume) is kept; the mechanism is falsified twice over — probe V3 (two different named volumes at one path share `st_dev`, so a replaced volume would be called the same and lost workspaces reclaimed) and V5b (`/workspaces` and `/repos` measured as one device, two inodes, so one column can only ever name one tree). Identity is therefore `(st_dev, st_ino, root_path)` per root, in `worker_volumes`, with `workspaces.volume_id` and `workspace_repos.mirror_volume_id` recording which identity each path was created under | probes V2/V3/V4/V5/V5b, § 1 |
 
-## 8. Open questions for the project owner
+## 8. Open questions for the project owner — both answered (2026-10-15)
 
-Only the two categories the brief names (production identity/IdP, Accepted-decision deviations, money):
+Only the two categories the brief names (production identity/IdP, Accepted-decision deviations, money).
+Both were owner decisions, recorded here so the contract stays the single place a builder looks:
 
-1. **Harness credential custody (blocks a `required` claim, and touches D-010/D-020's
-   Accepted "organization-managed, terms-compliant" wording).** `04` requires
-   organization-managed, terms-compliant harness auth and warns that personal interactive CLI
-   subscriptions may not permit shared service usage. M3 as designed proves everything except that
-   sentence: it runs on the lab owner's personal Claude login mounted rw into one worker
-   (`compose.harness.yml`, authorized for local development only). Deciding *whose* credentials a
-   production worker may hold — org API key per project, a broker, or a per-attempt copy — changes
-   Decision 4 of ADR-0019 and cannot be resolved by an implementation worker, because it is a
-   licensing/terms question, not a technical one.
-2. **Is there a budget for one paid artifact/storage integration?** ADR-0020 D7 pins an
-   S3-compatible contract with no implementation, which keeps D-014 **Proposed** and means M3's
-   artifact store is single-host. Running its conformance suite needs either an owner-provided bucket
-   (real money, however small) or a MinIO service added to the lab stack (a new runtime dependency,
-   which AGENTS.md makes an owner call rather than an implementation convenience). Everything else in
-   this contract was decided here.
+1. **Harness credential custody — DECIDED for the lab, still open for production, and it does not
+   block M3.** Personal Claude/Codex logins are **authorized for all local and lab runs**, which is
+   what every M3 observation is made with; custody of a *production* worker's harness credential
+   (org API key per project, a broker, or a per-attempt copy) stays an open owner decision, because it
+   is a licensing/terms question rather than a technical one (`04`'s "organization-managed,
+   terms-compliant" wording; D-010/D-020). It is recorded as an explicit **GAP** in ADR-0019 Decision
+   4, and the gap wording is the mitigation: `required` enforces workspace isolation and **not**
+   credential isolation, and the ops page says so next to any green check. M3's exit gate is unchanged
+   by this — its cross-project denial is proven over workspaces and mirrors, which was always the claim
+   (`05`'s own caveat, contract D6).
+2. **Budget for paid storage — DECIDED: none, and no paid dependency.** The S3-compatible conformance
+   backend for dev/CI is **SeaweedFS** (Apache-2.0, single process, runs as a local container): pinned
+   in `compose.yml` as `chrislusf/seaweedfs:4.48` under the optional profile `s3`, no published port,
+   data in the named volume `seaweedfs`, addressed as `http://seaweedfs:8333`. ADR-0020 D7 is updated
+   accordingly, and D-014 stays **Proposed** — M3 proves the service starts and answers its S3 API,
+   not that `internal/artifacts/s3` conforms, because that package does not exist yet.
+
+Everything else in this contract was decided here.

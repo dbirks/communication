@@ -37,7 +37,7 @@ directory, and must never be a path from which a file is later trusted as an art
 | **A (selected).** Content-addressed object backend behind `ArtifactStore`; **dev = a dedicated shared directory volume** (`artifacts` named volume: worker rw, both API replicas ro), **deployed = S3-compatible** with a contract pinned now and conformance proven later | One volume, one interface, zero new services in the one-command stack; multi-replica reads work because both replicas mount the same bytes; immutability falls out of content addressing (`sha256` in the key); rows stay metadata (`02`) | Still single-host: the dev backend is not survivable across hosts, so it must never be called durable storage; "S3-compatible" is a *written contract* in M3, not a running implementation, and D-014 stays Proposed because of that | `compose.yml` (three containers, one named volume per concern); `02` § "Data / infrastructure plan"; `09` artifact routes |
 | B. Bytes in Postgres (`bytea`) | One store, transactions for free, backup story identical to everything else | Directly against `02` ("avoid storing multi-MB logs in database rows"; "artifacts in separate blob store"); bloats the one component that is already the single failure domain; a report screenshot becomes a DB migration risk | Rejected on spec grounds |
 | C. Worker serves its own artifacts over an authenticated internal HTTP endpoint | No shared filesystem at all; artifacts stay where the bytes are | `09` forbids the shape ("Do not make browser API accidentally expose worker internal service endpoints. … direct worker API, if added, requires mutual authentication and short-lived authorization") and no worker mTLS exists; also pins artifact reads to a live worker, so history dies with it | Compared; deferred, not chosen |
-| D. MinIO as a compose service so the S3 path is the *only* path | The dev stack then exercises production code | A new runtime dependency in the acceptance gate and a second storage engine to operate locally, which `12-test-strategy.md`'s lab does not need to prove M3; would be a dependency added without owner sign-off | AGENTS.md "No new dependencies without flagging" |
+| D. An S3-compatible service as a compose service so the S3 path is the *only* path exercised | The dev stack then exercises production code | A new runtime dependency in the acceptance gate and a second storage engine to operate locally, which `12-test-strategy.md`'s lab does not need to prove M3; the first candidate (MinIO) would also have been an AGPL dependency added without owner sign-off | AGENTS.md "No new dependencies without flagging"; **resolved by the owner decision below**: the conformance backend is SeaweedFS under an optional compose profile, not a default service |
 | **Preview: distinct hostname on the same listener** (`http://preview.localhost:…` → `/preview/{token}`) (selected) | Cookies are host-scoped, so a document loaded from `preview.localhost` carries no `localhost` session cookie; CSP `sandbox` gives it an opaque origin, so it cannot read the app's DOM/storage; no new service, no new certificate, works under `10-ui-design-handoff.md`'s browser verification with Playwright | Requires `preview.localhost` to resolve (it does on Linux; Windows needs a hosts entry or a second port — recorded, not waved away) and forbids multi-file HTML reports (relative sub-resource fetches would leave the sandboxed origin) | `09` "HTML previews through separate sandbox origin"; `10` "separate origin"; `12` case 16 |
 | Preview via `srcdoc`/Blob URL inside the app origin | No new host, no routing | **Rejected and this is the trap:** same-origin by construction, so the artifact script reads the session cookie and calls `/api/v1` as the user; CSP sandbox cannot undo the origin | Case 16 exists precisely to catch it |
 | Preview via a *different port* on the same hostname | Feels isolated | Rejected: different **origin**, same **site** — `SameSite=Lax` cookies are attached per *site*, so a subresource from `localhost:18085` inside a `localhost:18080` page still carries the session cookie. Port changes do not stop case 16 | Cookie scope semantics; `12` case 16 |
@@ -177,7 +177,20 @@ rather than by us, prefix per deployment. **Prohibited:** `PutObjectAcl`, `ListA
 `Create*` call, and STS credentials broader than one bucket prefix.
 Credentials come from the deployment's own provider chain in the **worker** and **serve** processes —
 never through `SecretRef`, because a storage credential that can write artifacts cannot be an artifact
-of the system it stores. S3 keys may contain no user-supplied path segments: the key is built from
+of the system it stores.
+
+**Conformance backend (owner decision, 2026-10-15):** there is no budget for paid storage, so the
+S3-compatible endpoint the conformance suite runs against is **SeaweedFS** — Apache-2.0, single
+process, no money, no account. It is pinned in `compose.yml` as `chrislusf/seaweedfs:4.48` under the
+optional profile `s3` (`docker compose --profile s3 up`), stores to the named volume `seaweedfs`,
+listens on `8333` (S3) / `9333` (master) **inside the compose network only** — no published host port,
+matching this stack's rule for postgres — and is addressed by
+`COMMUNICATION_ARTIFACT_S3_ENDPOINT=http://seaweedfs:8333`. Default `docker compose up` does not see
+the service at all, and the default artifact backend stays `local`, so nothing in the M1/M2 acceptance
+path depends on it. What M3 proves about it is only what has been observed: the service starts, is
+healthy, and answers its S3 API (see `docs/m3-contract.md` § 5). What it does **not** prove is
+SigV4/streaming-SHA256 conformance of `internal/artifacts/s3`, which does not exist yet — hence
+D-014 stays **Proposed** and Verification 7 stays NOT claimed. S3 keys may contain no user-supplied path segments: the key is built from
 server-side ids only.
 
 ### 8. Checkpoints are just artifacts with a strict manifest
@@ -203,8 +216,9 @@ recoverability claim.
 - Cost: `Presign` needs a deployment secret, which enters the same keyring conversation as ADR-0018's
   master key (separate purpose string, same custody).
 - Limitation (this is the honest one, and it is why D-014 stays Proposed): **the S3 backend is not
-  implemented in M3.** A written contract with a conformance suite that has never run against MinIO or
-  S3 is a specification, not a capability, and no sentence in `docs/` may call multi-replica-object-storage
+  implemented in M3.** A written contract with a conformance suite that has never run against a real
+  S3 speaker (SeaweedFS in the lab, an owner-provided bucket later) is a specification, not a
+  capability, and no sentence in `docs/` may call multi-replica-object-storage
   "supported" before it runs.
 - Limitation: self-contained HTML only; no screenshots bundle, no multi-page test report, no PDF viewer.
 - Limitation: no artifact GC beyond retention + orphan sweep; dedupe means a project cannot delete one
@@ -267,10 +281,12 @@ are scripted):
 6. **Delivery hardening:** `curl -D-` against `…/content` for a `text/html` artifact shows
    `text/plain` + `Content-Disposition: attachment`; `/preview/<valid>` on the app origin is `404`;
    `/api/v1/…` on the preview origin is `404`; an expired or re-signed-elsewhere token is refused.
-7. **S3 contract:** NOT claimed. When the conformance suite is written it must run against MinIO in CI
-   (or an owner-provided bucket) and produce the same seven results as gate 1 plus SSE, Range, presign
-   expiry and lifecycle-rule behaviour; until then D-014 stays **Proposed** and the docs say
-   "single-host dev backend".
+7. **S3 contract:** NOT claimed. The conformance backend is decided and pinned (SeaweedFS
+   `chrislusf/seaweedfs:4.48`, compose profile `s3`, no money and no host port — ADR-0020 D7), and
+   M3's observed evidence for it is limited to "the service comes up and its S3 endpoint answers".
+   When the conformance suite is written it must run against that service in CI and produce the same
+   seven results as gate 1 plus SSE, Range, presign expiry and lifecycle-rule behaviour; until then
+   D-014 stays **Proposed** and the docs say "single-host dev backend".
 
 ## Migration/rollback
 

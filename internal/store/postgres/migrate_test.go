@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -59,16 +60,20 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 	}
 	// Pinned, not derived from the filesystem: a migration file appearing by
 	// accident must fail here rather than silently raise the version every
-	// replica demands. Current head: 00003, the M2 conversation/control/turn
-	// model (ADR-0016), on top of 00002, the event-stream ordering column
-	// (ADR-0014 §9). Adding a migration means updating this number on purpose.
+	// replica demands. See migHeadVersion for what the current head is and why.
 	if want != int64(migHeadVersion) {
 		t.Errorf("ExpectedSchemaVersion = %d, want %d", want, migHeadVersion)
 	}
 }
 
-// migHeadVersion is the highest migration this suite expects to find.
-const migHeadVersion = 3
+// A migration is only believed once it has been applied. ExpectedSchemaVersion
+// reads the embedded filesystem, so the constant here is what makes a migration
+// file appearing "by accident" a test failure rather than a silently higher
+// version every replica demands. Current head: 00004, the M3 workspace/secret/
+// artifact model (docs/m3-contract.md § 1, ADR-0017..0020), on top of 00003 (M2
+// conversations/control/turns, ADR-0016), 00002 (the event-stream ordering
+// column, ADR-0014 §9) and 00001 (M1 core).
+const migHeadVersion = 4
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
@@ -1110,4 +1115,1333 @@ func TestMigrate0003TranscriptJournal(t *testing.T) {
 	}
 	prows.Close()
 	t.Logf("transcript read plan:\n%s", plan)
+}
+
+// ------------------------------------------------------- 00004 (M3) contract
+//
+// The M3 half of ADR-0013's rule that a migration is only believed once it has
+// been applied: every invariant docs/m3-contract.md § 1 promises the three M3
+// implementation workers is asserted here as constraint behaviour on a database
+// 00004 was actually applied to. A write that *succeeds* is the bug these tests
+// exist to catch, so each one states the code it expects (23505 uniqueness,
+// 23514 CHECK) and the contract's list is checked off item by item.
+
+// The two volume identities the fixture's worker reports, spelled the way the
+// schema requires (`sha256:<64 hex>`). They are literals rather than derived
+// values on purpose: a derivation rule that only exists in Go is a rule nobody
+// can read off the database, and the whole point of probe V3 is that the *shape*
+// of this identity is what an implementation must not get wrong.
+var (
+	migM3WorkspaceVolumeID = "sha256:" + strings.Repeat("1", 64)
+	migM3MirrorVolumeID    = "sha256:" + strings.Repeat("2", 64)
+)
+
+// migM3GeneratedColumnCode is the SQLSTATE Postgres 18 raises for an INSERT that
+// supplies a value for a GENERATED ALWAYS column — observed literal from
+// 00004 on postgres:18.6, not looked up: "ERROR: cannot insert a non-DEFAULT
+// value into column \"agent_root\"". Pinned because the refusal is the invariant
+// (nobody may record a grant that includes worker-only `meta/`), and a code
+// change would mean Postgres stopped refusing it, which is worth noticing.
+const migM3GeneratedColumnCode = "428C9"
+
+// migM3Fixture seeds the objects an M3 row hangs off — org, user, project, a
+// repository, the seeded Claude Code profile and a registered worker carrying
+// volume identity — and removes them plus everything below them at cleanup.
+// Names carry migFixtureToken so two runs against one database cannot decide
+// each other's outcome.
+type migM3Fixture struct {
+	orgID, userID, projectID, repoID, profileID, workerID string
+}
+
+func migM3FixtureFor(t *testing.T, ctx context.Context, pool *pgxpool.Pool) migM3Fixture {
+	t.Helper()
+	token := migFixtureToken(t)
+	var f migM3Fixture
+
+	if err := pool.QueryRow(ctx,
+		"SELECT id FROM organizations WHERE slug = 'default'").Scan(&f.orgID); err != nil {
+		t.Fatalf("seed org lookup: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (organization_id, display_name)
+		VALUES ($1, 'm3-user-' || $2) RETURNING id`, f.orgID, token).Scan(&f.userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO projects (organization_id, slug, name, created_by)
+		VALUES ($1, 'm3-proj-' || $2, 'M3 fixture', $3) RETURNING id`, f.orgID, token, f.userID).
+		Scan(&f.projectID); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO repositories (project_id, name, git_url, created_by)
+		VALUES ($1, 'm3-repo-' || $2, 'file:///srv/m3/fixtures/backend.git', $3) RETURNING id`,
+		f.projectID, token, f.userID).Scan(&f.repoID); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT id FROM agent_profiles WHERE organization_id = $1 AND name = 'Claude Code'`,
+		f.orgID).Scan(&f.profileID); err != nil {
+		t.Fatalf("seeded profile 'Claude Code' lookup (migration 00003): %v", err)
+	}
+	// A worker with volume identity: registration data, not a per-run choice
+	// (ADR-0017 D2 as corrected by probe V3/V5b). The workspace rows below name
+	// this worker AND the volume identity of the tree they live in, which is
+	// measured per storage root — the workspaces root and the mirror root are two
+	// rows because they are two trees.
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workers (name, hostname, version, status,
+		                     sandbox_backend, sandbox_version, sandbox_enforcement, sandbox_verified)
+		VALUES ('m3-worker-' || $1, 'lab', 'contract-test', 'online',
+		        'nono', '0.80.0', 'required', true)
+		RETURNING id`, token).Scan(&f.workerID); err != nil {
+		t.Fatalf("insert worker: %v", err)
+	}
+	// (st_dev, st_ino) are the numbers the m3 probe suite actually observed for
+	// two named volumes mounted at these paths (p5 V5b), including the fact that
+	// the device number is shared and the inode is not.
+	for _, root := range []struct {
+		kind, path, volumeID string
+		ino                  int64
+	}{
+		{"workspaces", "/workspaces", migM3WorkspaceVolumeID, 19414245},
+		{"repos", "/repos", migM3MirrorVolumeID, 19414347},
+	} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO worker_volumes (worker_id, root_kind, root_path, st_dev, st_ino, fstype, volume_id)
+			VALUES ($1, $2, $3, 30, $4, NULL, $5)`,
+			f.workerID, root.kind, root.path, root.ino, root.volumeID); err != nil {
+			t.Fatalf("insert worker_volumes %s: %v", root.kind, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		bg := context.Background()
+		cleanup := func(sql string, args ...any) {
+			if _, err := pool.Exec(bg, sql, args...); err != nil {
+				t.Errorf("cleanup %q: %v", sql, err)
+			}
+		}
+		// Every fixture object is reachable from the fixture user, including a
+		// sibling project one test inserts itself: keying teardown on that (not on
+		// the first project id) is what keeps FK ordering from depending on which
+		// test registered its cleanup in what order.
+		const owned = `(SELECT id FROM projects WHERE created_by = $1::uuid)`
+		cleanup(`DELETE FROM artifacts WHERE project_id IN `+owned+` OR organization_id = $2`, f.userID, f.orgID)
+		cleanup(`DELETE FROM secret_materializations WHERE project_id IN `+owned, f.userID)
+		cleanup(`DELETE FROM secret_mounts WHERE project_id IN `+owned, f.userID)
+		// Org-scope secrets carry no project, so they travel by their creator.
+		cleanup(`DELETE FROM secret_versions WHERE secret_id IN
+			(SELECT id FROM secret_metadata WHERE project_id IN `+owned+` OR created_by = $1::uuid)`, f.userID)
+		cleanup(`DELETE FROM secret_metadata WHERE project_id IN `+owned+` OR created_by = $1::uuid`, f.userID)
+		cleanup(`DELETE FROM workspace_repos WHERE workspace_id IN
+			(SELECT id FROM workspaces WHERE project_id IN `+owned+`)`, f.userID)
+		cleanup(`DELETE FROM workspaces WHERE project_id IN `+owned, f.userID)
+		for _, q := range []string{
+			`DELETE FROM conversation_control WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id IN ` + owned + `)`,
+			`DELETE FROM permission_requests WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id IN ` + owned + `)`,
+			`DELETE FROM acp_session_bindings WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id IN ` + owned + `)`,
+			`DELETE FROM conversation_turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id IN ` + owned + `)`,
+			`DELETE FROM domain_events WHERE project_id IN ` + owned,
+			`DELETE FROM conversations WHERE project_id IN ` + owned,
+			`DELETE FROM repositories WHERE project_id IN ` + owned,
+			`DELETE FROM projects WHERE created_by = $1::uuid`,
+		} {
+			cleanup(q, f.userID)
+		}
+		cleanup(`DELETE FROM worker_volumes WHERE worker_id = $1`, f.workerID)
+		cleanup(`DELETE FROM workers WHERE id = $1`, f.workerID)
+		cleanup(`DELETE FROM users WHERE id = $1`, f.userID)
+	})
+	return f
+}
+
+// migM3Conversation creates a conversation with its controller row, since a
+// conversation-scoped workspace must point at a real conversation.
+func migM3Conversation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f migM3Fixture, title string) string {
+	t.Helper()
+	var convID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO conversations (project_id, agent_profile_id, title, created_by)
+		VALUES ($1, $2, $3, $4) RETURNING id`, f.projectID, f.profileID, title, f.userID).
+		Scan(&convID); err != nil {
+		t.Fatalf("insert conversation %q: %v", title, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO conversation_control (conversation_id, controller_kind, controller_user_id)
+		VALUES ($1, 'human', $2)`, convID, f.userID); err != nil {
+		t.Fatalf("insert control row for %q: %v", title, err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		// Order matters and every statement is checked: a leftover queued turn is
+		// visible to *every* claim test in this package (the claim query is FIFO
+		// over all conversations), so an ignored error here breaks M2's suite, not
+		// just M3's.
+		for _, q := range []string{
+			"DELETE FROM workspace_repos WHERE workspace_id IN (SELECT id FROM workspaces WHERE conversation_id = $1)",
+			"DELETE FROM secret_materializations WHERE workspace_id IN (SELECT id FROM workspaces WHERE conversation_id = $1)",
+			"DELETE FROM workspaces WHERE conversation_id = $1",
+			"DELETE FROM permission_requests WHERE conversation_id = $1",
+			"DELETE FROM acp_session_bindings WHERE conversation_id = $1",
+			"DELETE FROM conversation_turns WHERE conversation_id = $1",
+			"DELETE FROM conversation_control WHERE conversation_id = $1",
+			"DELETE FROM domain_events WHERE conversation_id = $1",
+			"DELETE FROM conversations WHERE id = $1",
+		} {
+			if _, err := pool.Exec(bg, q, convID); err != nil {
+				t.Errorf("conversation cleanup %q: %v", q, err)
+			}
+		}
+	})
+	return convID
+}
+
+// TestMigrate0004WorkerVolumeIdentity checks the two halves of ADR-0017 D2 as
+// the m3 probe suite corrected them:
+//
+//   - The sandbox columns arrived as registration data with honest defaults: an
+//     M2-era worker reports backend 'none', enforcement 'disabled', verified
+//     false and has NO `worker_volumes` row ("unknown volume" — and no M3
+//     workspace may bind to an unknown volume). A column default must never read
+//     as a capability.
+//   - Volume identity is stored per storage root and is a digest, not a device
+//     number. Probe V3 measured two different docker named volumes mounted at
+//     one path reporting the SAME st_dev, so a worker that hashed st_dev alone
+//     would call a replaced volume the same one and silently reclaim workspaces
+//     whose bytes are gone (case 20's honest arm). Probe V5b measured the
+//     workspaces root and the mirror root as one device with different inodes,
+//     which is why identity is keyed by root rather than held in one column on
+//     `workers`.
+func TestMigrate0004WorkerVolumeIdentity(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var id string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workers (name, hostname, version, status)
+		VALUES ('m3-defaults-' || $1, 'lab', 'contract-test', 'online') RETURNING id`,
+		migFixtureToken(t)).Scan(&id); err != nil {
+		t.Fatalf("insert an M2-shaped worker: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		// Both statements are checked and neither is combined: pgx sends a simple
+		// query as one statement, and a cleanup that silently failed would leak a
+		// worker row into every later test in this package.
+		for _, q := range []string{
+			"DELETE FROM worker_volumes WHERE worker_id = $1",
+			"DELETE FROM workers WHERE id = $1",
+		} {
+			if _, err := pool.Exec(bg, q, id); err != nil {
+				t.Errorf("cleanup worker %s (%s): %v", id, q, err)
+			}
+		}
+	})
+
+	var backend, enforcement string
+	var version *string
+	var verified bool
+	var notes []byte
+	err = pool.QueryRow(ctx, `
+		SELECT sandbox_backend, sandbox_enforcement,
+		       sandbox_version, sandbox_verified, sandbox_notes
+		FROM workers WHERE id = $1`, id).
+		Scan(&backend, &enforcement, &version, &verified, &notes)
+	if err != nil {
+		t.Fatalf("read worker sandbox columns: %v", err)
+	}
+	if version != nil {
+		t.Errorf("an M2-era worker reported sandbox_version %v, want NULL", *version)
+	}
+	if backend != "none" || enforcement != "disabled" || verified {
+		t.Errorf("sandbox defaults = (%s, %s, verified=%v), want (none, disabled, false)", backend, enforcement, verified)
+	}
+	if string(notes) != "[]" {
+		t.Errorf("sandbox_notes default = %s, want []", notes)
+	}
+
+	// "Unknown volume" is the absence of a probe, never a placeholder value.
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_volumes WHERE worker_id = $1`, id).Scan(&n); err != nil {
+		t.Fatalf("count worker_volumes: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("an un-probing worker has %d worker_volumes rows, want 0 (unknown volume)", n)
+	}
+	// And the shape ADR-0017 D2 originally drafted must not exist: one identity
+	// column on `workers` could only ever name one of the two M3 trees (V5b).
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'workers'
+		  AND column_name IN ('volume_id', 'workspace_root', 'repos_root')`).Scan(&n); err != nil {
+		t.Fatalf("count workers identity columns: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("workers carries %d single-column volume identity columns, want 0 (identity is per root in worker_volumes)", n)
+	}
+
+	// The enforcement enum is a CHECK, not an application convention: a worker
+	// that reported "required-ish" would make ADR-0019's fallback debate mute.
+	if _, err := pool.Exec(ctx,
+		"UPDATE workers SET sandbox_enforcement = 'required-ish' WHERE id = $1", id); err == nil {
+		t.Error("sandbox_enforcement 'required-ish' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("sandbox_enforcement code = %s, want 23514", code)
+	}
+
+	// ---- worker_volumes: the identity itself.
+
+	probe := `
+		INSERT INTO worker_volumes (worker_id, root_kind, root_path, st_dev, st_ino, fstype, volume_id)
+		VALUES ($1, $2, $3, $4, $5, 'ext4', $6)`
+	if _, err := pool.Exec(ctx, probe, id, "workspaces", "/workspaces", 30, 19414245,
+		migM3WorkspaceVolumeID); err != nil {
+		t.Fatalf("a legal probe row was rejected: %v", err)
+	}
+	// A second root of the same worker is a second row, and the mirror root is
+	// the same device with a different inode — exactly V5b's measurement.
+	if _, err := pool.Exec(ctx, probe, id, "repos", "/repos", 30, 19414347,
+		migM3MirrorVolumeID); err != nil {
+		t.Fatalf("the mirror root was rejected: %v", err)
+	}
+
+	// The identity is a digest of the whole tuple, so the number that V3 showed
+	// to be insufficient on its own is not a legal value here. This is the
+	// assertion that keeps `st_dev`-only identity from coming back.
+	for _, bad := range []struct{ name, volumeID string }{
+		{"bare st_dev", "30"},
+		{"device and path", "/workspaces:30"},
+		{"bare hex digest", strings.Repeat("3", 64)},
+		{"wrong prefix", "sha512:" + strings.Repeat("3", 128)},
+		{"short digest", "sha256:" + strings.Repeat("3", 63)},
+	} {
+		if _, err := pool.Exec(ctx, probe, id, "repos", "/repos/other", 30, 19414999, bad.volumeID); err == nil {
+			t.Errorf("volume_id %s (%s) accepted", bad.volumeID, bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("volume_id %s (%s) code = %s, want 23514", bad.volumeID, bad.name, code)
+		}
+	}
+
+	// One identity row per (worker, root kind): a worker that re-probed and got a
+	// different volume must not have two claims about the same tree, because the
+	// reclaim rule reads exactly one.
+	if _, err := pool.Exec(ctx, probe, id, "workspaces", "/workspaces/second", 30, 19414246,
+		migM3WorkspaceVolumeID); err == nil {
+		t.Error("a second 'workspaces' root for one worker accepted")
+	} else if code := migPgCode(t, err); code != "23505" {
+		t.Errorf("duplicate root_kind code = %s, want 23505", code)
+	}
+
+	// A replaced volume at the SAME path is a different identity: same worker,
+	// same kind, same root_path, different inode ⇒ different volume_id, which is
+	// what makes case 20's "different volume" arm observable at all. Proven by
+	// letting a second worker report it (two workers may share a disk).
+	var other string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workers (name, hostname, version, status) VALUES ('m3-other-' || $1, 'lab', 'ct', 'online')
+		RETURNING id`, migFixtureToken(t)).Scan(&other); err != nil {
+		t.Fatalf("insert second worker: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		for _, q := range []string{
+			"DELETE FROM worker_volumes WHERE worker_id = $1",
+			"DELETE FROM workers WHERE id = $1",
+		} {
+			if _, err := pool.Exec(bg, q, other); err != nil {
+				t.Errorf("cleanup worker %s (%s): %v", other, q, err)
+			}
+		}
+	})
+	if _, err := pool.Exec(ctx, probe, other, "workspaces", "/workspaces", 30, 99999999,
+		"sha256:"+strings.Repeat("4", 64)); err != nil {
+		t.Errorf("a second worker reporting a different volume at the same path was rejected: %v", err)
+	}
+
+	// Paths must be absolute and `..`-free — the same ACL proof rule as every
+	// other path column here — and root_kind is a closed enum.
+	if _, err := pool.Exec(ctx, probe, other, "repos", "repos/projA", 30, 12,
+		"sha256:"+strings.Repeat("5", 64)); err == nil {
+		t.Error("relative worker_volumes.root_path accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("relative root_path code = %s, want 23514", code)
+	}
+	if _, err := pool.Exec(ctx, probe, other, "scratch", "/scratch", 30, 12,
+		"sha256:"+strings.Repeat("6", 64)); err == nil {
+		t.Error("root_kind 'scratch' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("root_kind code = %s, want 23514", code)
+	}
+	// st_ino 0 is not a measured inode: an implementation that left it unset
+	// rather than stat'ing the root would otherwise look identical to a probe.
+	if _, err := pool.Exec(ctx, probe, other, "repos", "/repos", 30, 0,
+		"sha256:"+strings.Repeat("7", 64)); err == nil {
+		t.Error("st_ino = 0 accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("st_ino = 0 code = %s, want 23514", code)
+	}
+}
+
+// TestMigrate0004WorkspaceScopePointer is contract § 1's first named invariant:
+// a workspace belongs to exactly one of {conversation, run}. M4's run scope must
+// already be legal (so it does not rename the wire) and the mixed shapes
+// impossible.
+func TestMigrate0004WorkspaceScopePointer(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "workspace scope")
+
+	insert := `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id, run_id,
+		                        worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '/workspaces/conversation/x', 'preparing')`
+
+	// The conversation shape the M3 worker writes today.
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "conversation", convID, nil,
+		f.workerID, migM3WorkspaceVolumeID); err != nil {
+		t.Fatalf("conversation-scoped workspace rejected: %v", err)
+	}
+	// The run shape M4 writes, legal now with no runs table.
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "run", nil, genUUID(),
+		f.workerID, migM3WorkspaceVolumeID); err != nil {
+		t.Errorf("run-scoped workspace rejected (M4 must not need a migration): %v", err)
+	}
+
+	for _, bad := range []struct {
+		name      string
+		kind      string
+		conv, run any
+	}{
+		{"conversation without a conversation id", "conversation", nil, nil},
+		{"run without a run id", "run", nil, nil},
+		{"both pointers populated", "conversation", convID, genUUID()},
+		{"run kind carrying a conversation", "run", convID, genUUID()},
+	} {
+		_, err := pool.Exec(ctx, insert, f.orgID, f.projectID, bad.kind, bad.conv, bad.run,
+			f.workerID, migM3WorkspaceVolumeID)
+		if err == nil {
+			t.Errorf("%s: accepted", bad.name)
+			continue
+		}
+		if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("%s: code = %s, want 23514", bad.name, code)
+		}
+	}
+
+	// Unknown scope kinds are not a future extension point, they are a typo.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, 'attempt', gen_random_uuid(), $3, 'sha256:' || repeat('1', 64), '/workspaces/x', 'preparing')`,
+		f.orgID, f.projectID, f.workerID); err == nil {
+		t.Error("scope_kind 'attempt' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("scope_kind code = %s, want 23514", code)
+	}
+}
+
+// TestMigrate0004WorkspacePathsAndState proves root_path is an ACL proof
+// (absolute, `..`-free), that state and ready_at agree, and that a workspace's
+// volume is the worker's own — the columns case 20's honest loss report reads.
+func TestMigrate0004WorkspacePathsAndState(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "workspace paths")
+
+	for _, path := range []string{"workspaces/conversation/x", "/workspaces/conversation/../y",
+		"/workspaces//..", "~/workspaces"} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+			                        worker_id, volume_id, root_path, state)
+			VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, 'preparing')`,
+			f.orgID, f.projectID, convID, f.workerID, path); err == nil {
+			t.Errorf("root_path %q accepted", path)
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("root_path %q code = %s, want 23514", path, code)
+		}
+	}
+
+	// A 'ready' workspace without ready_at is a workspace that claims a path on
+	// disk nobody timestamped; a 'preparing' one with it is the same lie reversed.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state, ready_at)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/conversation/ready-lie', 'ready', NULL)`,
+		f.orgID, f.projectID, convID, f.workerID); err == nil {
+		t.Error("ready workspace without ready_at accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("ready without ready_at code = %s, want 23514", code)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/conversation/preparing', 'preparing')`,
+		f.orgID, f.projectID, convID, f.workerID); err != nil {
+		t.Fatalf("insert preparing workspace: %v", err)
+	}
+	tag, err := pool.Exec(ctx, `
+		UPDATE workspaces SET ready_at = now() WHERE project_id = $1 AND state = 'preparing'`,
+		f.projectID)
+	if err == nil {
+		t.Error("preparing workspace with ready_at accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("preparing with ready_at code = %s, want 23514", code)
+	} else if tag.RowsAffected() != 0 {
+		t.Errorf("rejected UPDATE reported %d rows affected", tag.RowsAffected())
+	}
+
+	// volume_id is NOT NULL: a workspace that cannot name its disk cannot later
+	// claim it was reclaimed from the same one.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, 'conversation', $3, $4, NULL, '/workspaces/conversation/novol', 'preparing')`,
+		f.orgID, f.projectID, convID, f.workerID); err == nil {
+		t.Error("workspace with NULL volume_id accepted")
+	} else if code := migPgCode(t, err); code != "23502" {
+		t.Errorf("NULL volume_id code = %s, want 23502", code)
+	}
+
+	// workspace_mode is the ADR-0010 escape hatch and nothing else.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, workspace_mode, state)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/conversation/mode', 'symlink', 'preparing')`,
+		f.orgID, f.projectID, convID, f.workerID); err == nil {
+		t.Error("workspace_mode 'symlink' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("workspace_mode code = %s, want 23514", code)
+	}
+}
+
+// TestMigrate0004OneLiveWorkspacePerConversation is contract § 1's 23505 case:
+// two live workspaces means two agent processes in two checkouts of one scope.
+// The index is partial over the live set, so `released` frees the slot and the
+// history stays.
+func TestMigrate0004OneLiveWorkspacePerConversation(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "workspace live")
+
+	insert := `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state, ready_at)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, 'ready', now())`
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, convID, f.workerID,
+		"/workspaces/conversation/"+convID); err != nil {
+		t.Fatalf("insert first live workspace: %v", err)
+	}
+	for _, state := range []string{"preparing", "ready", "quarantined"} {
+		// ready_at is set for every state that requires it, so what fires here is
+		// the partial UNIQUE and not the state/timestamp CHECK.
+		_, err := pool.Exec(ctx, `
+			INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+			                        worker_id, volume_id, root_path, state, ready_at)
+			VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, $6,
+			        CASE WHEN $6 = 'preparing' THEN NULL ELSE now() END)`,
+			f.orgID, f.projectID, convID, f.workerID, "/workspaces/conversation/second-"+state, state)
+		if err == nil {
+			t.Errorf("second live workspace in state %q accepted", state)
+			continue
+		}
+		if code := migPgCode(t, err); code != "23505" {
+			t.Errorf("second live workspace (%s) code = %s, want 23505", state, code)
+		}
+	}
+
+	// Releasing makes room, and the released row survives as evidence.
+	if _, err := pool.Exec(ctx, `
+		UPDATE workspaces SET state = 'released', released_at = now()
+		WHERE project_id = $1 AND conversation_id = $2`, f.projectID, convID); err != nil {
+		t.Fatalf("release workspace: %v", err)
+	}
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, convID, f.workerID,
+		"/workspaces/conversation/"+convID+"-second"); err != nil {
+		t.Errorf("workspace after release rejected: %v", err)
+	}
+	var total, live int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM workspaces WHERE conversation_id = $1`, convID).Scan(&total); err != nil {
+		t.Fatalf("count workspaces: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM workspaces WHERE conversation_id = $1
+		  AND state IN ('preparing','ready','quarantined')`, convID).Scan(&live); err != nil {
+		t.Fatalf("count live workspaces: %v", err)
+	}
+	if total != 2 || live != 1 {
+		t.Errorf("workspaces = %d total / %d live, want 2 total / 1 live (a released workspace is history)", total, live)
+	}
+
+	// A run scope is a different scope: the conversation index must not bind it.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, 'run', gen_random_uuid(), $3, 'sha256:' || repeat('1', 64), '/workspaces/run/one', 'preparing')`,
+		f.orgID, f.projectID, f.workerID); err != nil {
+		t.Errorf("run-scoped workspace alongside a released conversation one rejected: %v", err)
+	}
+}
+
+// TestMigrate0004WorkspaceRepos pins the per-repository topology table: one row
+// per workspace × repository, and the paths ADR-0017 D4 refuses to construct
+// (admin_dir included, because git's own naming is not derivable — and, per
+// probe G1b, not readable from `git worktree list --porcelain` either on git
+// 2.56.0, so it comes from `rev-parse --absolute-git-dir`). Every path here ends
+// up in a sandbox grant, so absolute-and-`..`-free is a constraint, and the
+// mirror lives on its own volume identity (probe V5b).
+func TestMigrate0004WorkspaceRepos(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "workspace repos")
+	var wsID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state, ready_at)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, 'ready', now()) RETURNING id`,
+		f.orgID, f.projectID, convID, f.workerID, "/workspaces/conversation/"+convID).
+		Scan(&wsID); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+
+	insert := `
+		INSERT INTO workspace_repos (workspace_id, repository_id, checkout_path, mirror_path,
+		                             mirror_volume_id, admin_dir, run_ref, base_commit)
+		VALUES ($1, $2, '/workspaces/conversation/' || $3 || '/work/repos/backend',
+		        '/repos/' || $4 || '/backend.git', $5,
+		        '/repos/' || $4 || '.git/worktrees/backend1', $3 || '/backend',
+		        '2222222222222222222222222222222222222222')`
+	if _, err := pool.Exec(ctx, insert, wsID, f.repoID, convID, f.projectID,
+		migM3MirrorVolumeID); err != nil {
+		t.Fatalf("insert workspace_repo: %v", err)
+	}
+	if _, err := pool.Exec(ctx, insert, wsID, f.repoID, convID, f.projectID,
+		migM3MirrorVolumeID); err == nil {
+		t.Error("second workspace_repo for the same (workspace, repository) accepted")
+	} else if code := migPgCode(t, err); code != "23505" {
+		t.Errorf("duplicate workspace_repo code = %s, want 23505", code)
+	}
+
+	// The mirror's volume is named per repository row because it is a different
+	// tree from the workspace (V5b): "my worktree is intact but the mirror is
+	// gone" must be reportable, and a shape that cannot hold both cannot.
+	for _, bad := range []struct {
+		name     string
+		checkout string
+		mirror   string
+		volume   any
+		adminDir string
+		want     string
+	}{
+		{"relative mirror path", "/workspaces/conversation/" + convID + "/work/repos/backend", "repos/x/backend.git", migM3MirrorVolumeID, "/repos/x.git/worktrees/backend", "23514"},
+		{"traversal in checkout", "/workspaces/conversation/" + convID + "/work/../meta", "/repos/x/backend.git", migM3MirrorVolumeID, "/repos/x.git/worktrees/backend", "23514"},
+		{"relative admin dir", "/workspaces/conversation/" + convID + "/work/repos/backend", "/repos/x/backend.git", migM3MirrorVolumeID, "repos/x.git/worktrees/backend", "23514"},
+		{"empty mirror volume", "/workspaces/conversation/" + convID + "/work/repos/backend", "/repos/x/backend.git", nil, "/repos/x.git/worktrees/backend", "23502"},
+		{"st_dev-only mirror volume", "/workspaces/conversation/" + convID + "/work/repos/backend", "/repos/x/backend.git", "30", "/repos/x.git/worktrees/backend", "23514"},
+	} {
+		// One CHECK-constrained INSERT per arm against the (workspace, repository)
+		// pair already inserted above: a CHECK or NOT NULL violation fires while
+		// the tuple is built, i.e. before the unique index is consulted, so the
+		// expected code is the shape problem and never an incidental 23505 — and
+		// if the shape *were* legal this arm would fail on 23505 instead, which is
+		// reported rather than accepted.
+		_, err := pool.Exec(ctx, `
+			INSERT INTO workspace_repos (workspace_id, repository_id, checkout_path, mirror_path,
+			                             mirror_volume_id, admin_dir, run_ref, base_commit)
+			VALUES ($1, $2, $3, $4, $5, $6, 'other-scope/backend',
+			        '2222222222222222222222222222222222222222')`,
+			wsID, f.repoID, bad.checkout, bad.mirror, bad.volume, bad.adminDir)
+		if err == nil {
+			t.Errorf("%s: accepted", bad.name)
+			continue
+		}
+		if code := migPgCode(t, err); code != bad.want {
+			t.Errorf("%s code = %s, want %s", bad.name, code, bad.want)
+		}
+	}
+
+	// The manifests are the checkpoint's inputs; a missing one would be an
+	// unprovable "what changed", so both default to an empty array, never NULL.
+	var modified, excluded string
+	if err := pool.QueryRow(ctx, `
+		SELECT modified_paths::text, excluded_paths::text FROM workspace_repos
+		WHERE workspace_id = $1 AND repository_id = $2`, wsID, f.repoID).
+		Scan(&modified, &excluded); err != nil {
+		t.Fatalf("read workspace_repo manifests: %v", err)
+	}
+	if modified != "[]" || excluded != "[]" {
+		t.Errorf("manifest defaults = (%s, %s), want ([], [])", modified, excluded)
+	}
+}
+
+// TestMigrate0004WorkspaceGrantLayout is the schema's answer to probe C-META:
+// `nono --allow <dir>` is recursive, so a workspace layout that puts worker-only
+// state (`meta/`) under the granted directory leaks it — the sandboxed child
+// both read meta/workspace.json and wrote meta/agent-written. The layout here
+// grants `<root>/work` and keeps `meta/` a sibling of it, and `agent_root` is a
+// GENERATED column so no writer can record any other shape.
+func TestMigrate0004WorkspaceGrantLayout(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "grant layout")
+
+	root := "/workspaces/conversation/" + convID
+	var id, agentRoot string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, 'preparing')
+		RETURNING id, agent_root`, f.orgID, f.projectID, convID, f.workerID, root).
+		Scan(&id, &agentRoot); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	if want := root + "/work"; agentRoot != want {
+		t.Errorf("agent_root = %q, want %q (the grant must exclude <root>/meta)", agentRoot, want)
+	}
+
+	// The derivation is the database's, not a convention in one worker: the
+	// column reports as generated, so an INSERT that names it is refused.
+	var generated, expression string
+	if err := pool.QueryRow(ctx, `
+		SELECT is_generated, generation_expression FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'workspaces' AND column_name = 'agent_root'`).
+		Scan(&generated, &expression); err != nil {
+		t.Fatalf("read agent_root generation: %v", err)
+	}
+	if generated != "ALWAYS" || !strings.Contains(expression, "/work") {
+		t.Errorf("agent_root is_generated = %q expression = %q, want ALWAYS … '/work'", generated, expression)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, agent_root, state)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5,
+		        '/workspaces', 'preparing')`,
+		f.orgID, f.projectID, convID, f.workerID, root+"-two"); err == nil {
+		t.Error("supplying agent_root by hand was accepted (meta/ could be inside the grant)")
+	} else if code := migPgCode(t, err); code != migM3GeneratedColumnCode {
+		t.Errorf("supplying agent_root code = %s, want %s", code, migM3GeneratedColumnCode)
+	}
+
+	// Root and grant move together: a relayout re-derives the grant rather than
+	// leaving a stale one behind (a stale grant is a directory the sandbox still
+	// reaches after the worker stopped calling it the workspace).
+	if _, err := pool.Exec(ctx, `UPDATE workspaces SET root_path = $2 WHERE id = $1`,
+		id, root+"-moved"); err != nil {
+		t.Fatalf("relocate workspace root: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT agent_root FROM workspaces WHERE id = $1`, id).Scan(&agentRoot); err != nil {
+		t.Fatalf("read relocated agent_root: %v", err)
+	}
+	if want := root + "-moved/work"; agentRoot != want {
+		t.Errorf("agent_root after relayout = %q, want %q", agentRoot, want)
+	}
+}
+
+// TestMigrate0004SecretsScopePointer is contract § 1's named invariant, and the
+// one whose failure would be a disclosure: an org-scope secret pointing at a
+// project (or a project-scope secret with nothing to scope it to) makes "which
+// projects may read this" a question with two answers.
+func TestMigrate0004SecretsScopePointer(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+
+	// A second project in the same organization, so slug scoping is tested
+	// against a real sibling rather than an assumption.
+	var otherProject string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO projects (organization_id, slug, name, created_by)
+		VALUES ($1, 'm3-proj-b-' || $2, 'M3 sibling', $3) RETURNING id`,
+		f.orgID, migFixtureToken(t), f.userID).Scan(&otherProject); err != nil {
+		t.Fatalf("insert sibling project: %v", err)
+	}
+	// delivery_mode has no default on purpose: ADR-0018 clause 8 refuses a
+	// delivery mode nobody chose, so every insert below states one.
+	insert := `
+		INSERT INTO secret_metadata (organization_id, project_id, scope, slug, delivery_mode, created_by)
+		VALUES ($1, $2, $3, $4, 'env_file', $5)`
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "project", "database-url", f.userID); err != nil {
+		t.Fatalf("project-scope secret rejected: %v", err)
+	}
+	if _, err := pool.Exec(ctx, insert, f.orgID, nil, "org", "harness-token", f.userID); err != nil {
+		t.Fatalf("org-scope secret rejected: %v", err)
+	}
+
+	for _, bad := range []struct {
+		name      string
+		projectID any
+		scope     string
+		slug      string
+	}{
+		{"org scope with a project", f.projectID, "org", "leaky-org"},
+		{"project scope without a project", nil, "project", "orphan-project"},
+	} {
+		if _, err := pool.Exec(ctx, insert, f.orgID, bad.projectID, bad.scope, bad.slug, f.userID); err == nil {
+			t.Errorf("%s: accepted", bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("%s: code = %s, want 23514", bad.name, code)
+		}
+	}
+
+	// The two slug indexes are scoped, not org-wide: the M3 exit fixtures plant
+	// the same slug in two projects, and an org-wide UNIQUE would reject that.
+	if _, err := pool.Exec(ctx, insert, f.orgID, otherProject, "project", "database-url", f.userID); err != nil {
+		t.Errorf("the same slug in a sibling project rejected: %v — secret_metadata_project_slug_idx is not project-scoped", err)
+	}
+	if _, err := pool.Exec(ctx, insert, f.orgID, nil, "org", "harness-token", f.userID); err == nil {
+		t.Error("duplicate org-scope slug accepted")
+	} else if code := migPgCode(t, err); code != "23505" {
+		t.Errorf("duplicate org slug code = %s, want 23505", code)
+	}
+	// An org-scope slug and a project slug may share a name; the partial
+	// predicates are what make that legal.
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "project", "harness-token", f.userID); err != nil {
+		t.Errorf("project slug colliding with an org slug rejected: %v", err)
+	}
+
+	// delivery_mode / audit_policy / current_version are CHECKs, and the empty
+	// allowlist means "denied to all", so it must be present, not absent.
+	var allowed []string
+	if err := pool.QueryRow(ctx, `
+		SELECT allowed_agent_profile_ids FROM secret_metadata
+		WHERE project_id = $1 AND slug = 'database-url'`, f.projectID).Scan(&allowed); err != nil {
+		t.Fatalf("read allowlist: %v", err)
+	}
+	if len(allowed) != 0 {
+		t.Errorf("empty allowlist = %v, want no members (empty means denied to all)", allowed)
+	}
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "unbounded", "bad-scope", f.userID); err == nil {
+		t.Error("secret scope 'unbounded' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("secret scope code = %s, want 23514", code)
+	}
+}
+
+// TestMigrate0004NoPlaintextColumnAnywhere is the structural half of ADR-0018
+// D1: it is not enough that no API route returns a value, no *column* may be
+// able to hold one. It reads the schema rather than trusting the file, so a
+// later migration that adds `secret_metadata.value text` fails here.
+func TestMigrate0004NoPlaintextColumnAnywhere(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	rows, err := pool.Query(ctx, `
+		SELECT table_name, column_name, data_type
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND (table_name LIKE 'secret%' OR table_name LIKE '%workspace%' OR table_name = 'domain_events')
+		  AND lower(column_name) ~ '(^|_)(value|plaintext|cleartext|raw|password|passphrase|secret_value|env_body)($|_)'
+		ORDER BY table_name, column_name`)
+	if err != nil {
+		t.Fatalf("scan for plaintext-shaped columns: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var table, column, datatype string
+		if err := rows.Scan(&table, &column, &datatype); err != nil {
+			t.Fatalf("scan column row: %v", err)
+		}
+		t.Errorf("column %s.%s (%s) could hold a plaintext secret", table, column, datatype)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read column rows: %v", err)
+	}
+
+	// And the ciphertext column is where the bytes are, so its name says so.
+	var ctType string
+	if err := pool.QueryRow(ctx, `
+		SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+		WHERE attrelid = 'secret_versions'::regclass AND attname = 'ciphertext'`).Scan(&ctType); err != nil {
+		t.Fatalf("secret_versions.ciphertext missing: %v", err)
+	}
+	if ctType != "bytea" {
+		t.Errorf("secret_versions.ciphertext = %s, want bytea", ctType)
+	}
+}
+
+// TestMigrate0004SecretVersionShape asserts the envelope-encrypted row cannot
+// exist in a half state: an empty ciphertext is indistinguishable from a failed
+// write, a wrong-size nonce cannot be AES-GCM, and a version below 1 is not a
+// version.
+func TestMigrate0004SecretVersionShape(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	var secretID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO secret_metadata (organization_id, project_id, scope, slug, delivery_mode, created_by)
+		VALUES ($1, $2, 'project', 'versioned', 'env', $3) RETURNING id`, f.orgID, f.projectID, f.userID).
+		Scan(&secretID); err != nil {
+		t.Fatalf("insert secret metadata: %v", err)
+	}
+
+	insert := `
+		INSERT INTO secret_versions (secret_id, version, key_id, nonce, ciphertext, aad, content_sha256, created_by)
+		VALUES ($1, $2, 'gen-1', decode($3, 'hex'), decode($4, 'hex'), $5,
+		        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', $6)`
+	nonce12 := strings.Repeat("ab", 12)
+	if _, err := pool.Exec(ctx, insert, secretID, 1, nonce12, "2cf24dba5fb0a30e26e83b2ac5b9e29e",
+		secretID+"|1|gen-1", f.userID); err != nil {
+		t.Fatalf("legal secret_version rejected: %v", err)
+	}
+
+	// The same bytes as version 2 are legal (versions are immutable history, and
+	// rotation of an unchanged value is not itself a violation).
+	if _, err := pool.Exec(ctx, insert, secretID, 2, nonce12, "2cf24dba5fb0a30e26e83b2ac5b9e29e",
+		secretID+"|2|gen-1", f.userID); err != nil {
+		t.Errorf("second version rejected: %v", err)
+	}
+	for _, bad := range []struct {
+		name              string
+		version           int
+		nonce, ciphertext string
+	}{
+		{"empty ciphertext", 3, nonce12, ""},
+		{"8-byte nonce", 4, strings.Repeat("ab", 8), "2cf24dba5fb0a30e26e83b2ac5b9e29e"},
+		{"16-byte nonce", 5, strings.Repeat("ab", 16), "2cf24dba5fb0a30e26e83b2ac5b9e29e"},
+	} {
+		if _, err := pool.Exec(ctx, insert, secretID, bad.version, bad.nonce, bad.ciphertext,
+			secretID+"|"+strconv.Itoa(bad.version)+"|gen-1", f.userID); err == nil {
+			t.Errorf("%s: accepted", bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("%s: code = %s, want 23514", bad.name, code)
+		}
+	}
+	if _, err := pool.Exec(ctx, insert, secretID, 0, nonce12, "2cf24dba5fb0a30e26e83b2ac5b9e29e",
+		secretID+"|0|gen-1", f.userID); err == nil {
+		t.Error("version 0 accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("version 0 code = %s, want 23514", code)
+	}
+	// A version is a key into (secret_id, version): a replay of the same pair is
+	// a key violation, not an UPDATE of immutable history.
+	if _, err := pool.Exec(ctx, insert, secretID, 1, nonce12, "2cf24dba5fb0a30e26e83b2ac5b9e29e",
+		secretID+"|1|gen-1", f.userID); err == nil {
+		t.Error("duplicate (secret_id, version) accepted")
+	} else if code := migPgCode(t, err); code != "23505" {
+		t.Errorf("duplicate version code = %s, want 23505", code)
+	}
+}
+
+// TestMigrate0004MountShape is contract § 1's named invariant for placement: a
+// mount says how a value arrives, exactly one way, into a path git cannot
+// mistake for a tracked file. `..`, an absolute path and a `//` are refused by
+// constraint before the worker's stricter filesystem check ever runs.
+func TestMigrate0004MountShape(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	var secretID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO secret_metadata (organization_id, project_id, scope, slug, delivery_mode, created_by)
+		VALUES ($1, $2, 'project', 'mountable', 'env_file', $3) RETURNING id`,
+		f.orgID, f.projectID, f.userID).Scan(&secretID); err != nil {
+		t.Fatalf("insert secret metadata: %v", err)
+	}
+
+	insert := `
+		INSERT INTO secret_mounts (project_id, secret_id, delivery_mode, repository_id, relative_path, env_name)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	if _, err := pool.Exec(ctx, insert, f.projectID, secretID, "env_file", f.repoID,
+		".env.test.local", nil); err != nil {
+		t.Fatalf("legal env_file mount rejected: %v", err)
+	}
+	if _, err := pool.Exec(ctx, insert, f.projectID, secretID, "env", nil, nil,
+		"TEST_DATABASE_URL"); err != nil {
+		t.Fatalf("legal env mount rejected: %v", err)
+	}
+
+	for _, bad := range []struct {
+		name                      string
+		mode, repo, path, envName any
+	}{
+		{"env naming a path", "env", nil, ".env.test.local", "TEST_DATABASE_URL"},
+		{"env without a name", "env", nil, nil, nil},
+		{"env_file without a repository", "env_file", nil, ".env.test.local", nil},
+		{"env_file without a path", "env_file", f.repoID, nil, nil},
+		{"env_file with an absolute path", "env_file", f.repoID, "/etc/passwd", nil},
+		{"env_file with a traversal", "env_file", f.repoID, "../../etc/x", nil},
+		{"env_file with an empty segment", "env_file", f.repoID, ".env//x", nil},
+	} {
+		if _, err := pool.Exec(ctx, insert, f.projectID, secretID, bad.mode, bad.repo, bad.path, bad.envName); err == nil {
+			t.Errorf("%s: accepted", bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("%s: code = %s, want 23514", bad.name, code)
+		}
+	}
+
+	// integration_broker is declared but not buildable in M3, and placement rows
+	// for it are refused outright (ADR-0018 clause 8 puts the refusal in code
+	// with a message naming M3's scope; the constraint refuses a *placement*).
+	if _, err := pool.Exec(ctx, insert, f.projectID, secretID, "integration_broker", nil, nil, nil); err == nil {
+		t.Error("integration_broker mount accepted by mounts_shape")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("integration_broker mount code = %s, want 23514", code)
+	}
+
+	// lifecycle accepts the M4 value it must not honour yet, and rejects one
+	// nobody named.
+	for _, life := range []struct {
+		value string
+		ok    bool
+	}{
+		{"turn", true}, {"workspace", true}, {"node_attempt", true}, {"forever", false},
+	} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO secret_mounts (project_id, secret_id, delivery_mode, env_name, lifecycle)
+			VALUES ($1, $2, 'env', 'LIFECYCLE_PROBE', $3)`, f.projectID, secretID, life.value)
+		if life.ok && err != nil {
+			t.Errorf("lifecycle %q rejected: %v", life.value, err)
+		}
+		if !life.ok && err == nil {
+			t.Errorf("lifecycle %q accepted", life.value)
+		}
+	}
+
+	// A mount into a repository of another project is refused by FK *identity*:
+	// the repository must belong to the project's own set, which the API checks
+	// (09). Here we assert the DB does not let a mount point at a foreign row it
+	// cannot see — i.e. repository_id is a real FK.
+	if _, err := pool.Exec(ctx, insert, f.projectID, secretID, "env_file",
+		"00000000-0000-0000-0000-000000000000", ".env.x", nil); err == nil {
+		t.Error("mount pointing at a nonexistent repository accepted")
+	} else if code := migPgCode(t, err); code != "23503" {
+		t.Errorf("foreign repository code = %s, want 23503", code)
+	}
+}
+
+// TestMigrate0004MaterializationCleanupShape proves the "present only during the
+// unit" record cannot be half-written: cleanup is a who+when pair, and the
+// uncleaned sweep the worker starts with is index-backed.
+func TestMigrate0004MaterializationCleanupShape(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+	convID := migM3Conversation(t, ctx, pool, f, "materialization")
+	var wsID, secretID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, conversation_id,
+		                        worker_id, volume_id, root_path, state, ready_at)
+		VALUES ($1, $2, 'conversation', $3, $4, 'sha256:' || repeat('1', 64), $5, 'ready', now()) RETURNING id`,
+		f.orgID, f.projectID, convID, f.workerID, "/workspaces/conversation/"+convID).
+		Scan(&wsID); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO secret_metadata (organization_id, project_id, scope, slug, delivery_mode, created_by)
+		VALUES ($1, $2, 'project', 'materialized', 'env_file', $3) RETURNING id`,
+		f.orgID, f.projectID, f.userID).Scan(&secretID); err != nil {
+		t.Fatalf("insert secret metadata: %v", err)
+	}
+
+	var turnID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
+		VALUES ($1, 'materialize for me', $2) RETURNING id`, convID, f.userID).
+		Scan(&turnID); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+
+	var matID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO secret_materializations
+			(secret_id, secret_version, project_id, workspace_id, turn_id, worker_id, delivery_mode, target, file_mode)
+		VALUES ($1, 1, $2, $3, $4::uuid, $5, 'env_file', '.env.test.local', 384) RETURNING id`,
+		secretID, f.projectID, wsID, turnID, f.workerID).Scan(&matID)
+	if err != nil {
+		t.Fatalf("insert materialization: %v", err)
+	}
+	// turn_id is not an FK in M3 (the column exists so M4 does not rename it), so
+	// it must at least be uuid-shaped — a text junk value would be unjoinable.
+	var isUUID bool
+	if err := pool.QueryRow(ctx, `
+		SELECT turn_id::text ~ '^[0-9a-f]{8}-' FROM secret_materializations WHERE id = $1`, matID).
+		Scan(&isUUID); err != nil {
+		t.Fatalf("read materialization turn_id: %v", err)
+	}
+	if !isUUID {
+		t.Error("materialization turn_id is not uuid-shaped")
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE secret_materializations SET cleaned_by = 'gardener' WHERE id = $1`, matID); err == nil {
+		t.Error("cleaned_by 'gardener' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("unknown cleaned_by code = %s, want 23514", code)
+	}
+	// The honest path: removed by the unit's own defer, with a timestamp. Note
+	// what the schema does NOT say: `cleaned_at` and `cleaned_by` are two columns,
+	// so "a cleanup claim names its actor" is a store-layer obligation (the only
+	// writers are the three named here), not a CHECK — asserted by the sweep code,
+	// not by a constraint, and recorded as such rather than quietly asserted.
+	if _, err := pool.Exec(ctx, `
+		UPDATE secret_materializations SET cleaned_at = now(), cleaned_by = 'worker' WHERE id = $1`, matID); err != nil {
+		t.Errorf("honest cleanup record rejected: %v", err)
+	}
+
+	var indexDef string
+	if err := pool.QueryRow(ctx, `
+		SELECT indexdef FROM pg_indexes
+		WHERE tablename = 'secret_materializations' AND indexname = 'secret_materializations_uncleaned_idx'`).
+		Scan(&indexDef); err != nil {
+		t.Fatalf("uncleaned sweep index missing: %v", err)
+	}
+	if !strings.Contains(indexDef, "workspace_id") || !strings.Contains(indexDef, "cleaned_at IS NULL") {
+		t.Errorf("sweep index = %s, want (workspace_id) WHERE cleaned_at IS NULL", indexDef)
+	}
+}
+
+// TestMigrate0004ArtifactsShape pins the artifact row that makes case 16 and
+// case 12 answerable: a sha256 that is a sha256, no bytes without a state, and
+// one row per (project, kind, digest) so a retried Put cannot double-count.
+func TestMigrate0004ArtifactsShape(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+
+	digest := strings.Repeat("a", 64)
+	insert := `
+		INSERT INTO artifacts (organization_id, project_id, name, kind, media_type, sha256,
+		                       size_bytes, storage_backend, storage_key, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, 12, 'local', $7, 'worker')`
+	key := "projects/" + f.projectID + "/html/aa/report.html"
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "report.html", "html",
+		"text/html", digest, key); err != nil {
+		t.Fatalf("legal artifact rejected: %v", err)
+	}
+	// Same bytes again = same row: the retry path ADR-0020 D2 depends on.
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "report.html", "html",
+		"text/html", digest, key); err == nil {
+		t.Error("duplicate (project_id, kind, sha256) accepted")
+	} else if code := migPgCode(t, err); code != "23505" {
+		t.Errorf("duplicate artifact code = %s, want 23505", code)
+	}
+	// Another kind is another artifact of the same bytes (a checkpoint companion
+	// object and its manifest), so the UNIQUE is not (project, digest).
+	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "manifest.json", "json",
+		"application/json", digest, "projects/x/json/aa/manifest.json"); err != nil {
+		t.Errorf("same digest under another kind rejected: %v", err)
+	}
+
+	for _, bad := range []struct{ name, sha string }{
+		{"uppercase hex", strings.Repeat("A", 64)},
+		{"short hex", strings.Repeat("a", 63)},
+		{"non hex", strings.Repeat("z", 64)},
+	} {
+		if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "x.md", "markdown",
+			"text/markdown", bad.sha, "k"); err == nil {
+			t.Errorf("artifacts.sha256 %s accepted", bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("artifacts.sha256 %s code = %s, want 23514", bad.name, code)
+		}
+	}
+
+	// A `ready` artifact must be the fenced transaction's work; the default state
+	// is `uploading` precisely so a row written without that transaction is a
+	// sweep target, never a served object.
+	var state string
+	var redaction int
+	if err := pool.QueryRow(ctx, `
+		SELECT state, redaction_count FROM artifacts
+		WHERE project_id = $1 AND name = 'report.html'`, f.projectID).Scan(&state, &redaction); err != nil {
+		t.Fatalf("read artifact state: %v", err)
+	}
+	if state != "uploading" {
+		t.Errorf("new artifact state = %q, want uploading (no route serves bytes for it until a fenced Put flips it)", state)
+	}
+	if redaction != 0 {
+		t.Errorf("redaction_count = %d, want 0 (ADR-0020 gate 5: a legitimately clean artifact counts nothing)", redaction)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE artifacts SET state = 'published' WHERE project_id = $1 AND name = 'report.html'`,
+		f.projectID); err == nil {
+		t.Error("artifact state 'published' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("artifact state code = %s, want 23514", code)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE artifacts SET size_bytes = -1 WHERE project_id = $1 AND name = 'report.html'`,
+		f.projectID); err == nil {
+		t.Error("negative size_bytes accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("negative size_bytes code = %s, want 23514", code)
+	}
+	// 'secret' exists in the enum so the label is available before the policy
+	// that fills it — and M3 gives it no download path (ADR-0020 D3).
+	if _, err := pool.Exec(ctx, `
+		UPDATE artifacts SET sensitivity = 'secret' WHERE project_id = $1 AND name = 'report.html'`,
+		f.projectID); err != nil {
+		t.Errorf("sensitivity 'secret' rejected: %v", err)
+	}
+
+	// The three scans the reconciler and the retention pass need exist.
+	for _, idx := range []struct{ name, want string }{
+		{"artifacts_sweep_idx", "state = 'uploading'"},
+		{"artifacts_expiry_idx", "expires_at"},
+		{"artifacts_sha256_idx", "sha256"},
+	} {
+		var def string
+		if err := pool.QueryRow(ctx, `
+			SELECT indexdef FROM pg_indexes WHERE tablename = 'artifacts' AND indexname = $1`,
+			idx.name).Scan(&def); err != nil {
+			t.Errorf("%s missing: %v", idx.name, err)
+			continue
+		}
+		if !strings.Contains(def, idx.want) {
+			t.Errorf("%s = %s, want it to cover %s", idx.name, def, idx.want)
+		}
+	}
+}
+
+// TestMigrate0004AgentProfileColumns checks the M3 profile axes arrived with
+// fail-closed defaults: workspace_mode worktree, sandbox_enforcement required,
+// commit not granted, no APM lock, and no mounts. A default that read "permissive"
+// would make the whole milestone's honesty claim depend on a missed UPDATE.
+func TestMigrate0004AgentProfileColumns(t *testing.T) {
+	ctx := testCtx(t)
+	pool, err := Open(ctx, mustMigrate(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	f := migM3FixtureFor(t, ctx, pool)
+
+	var workspaceMode, enforcement, apmTarget, apmDigest, pkgRef *string
+	var commitGranted bool
+	var mounts []string
+	err = pool.QueryRow(ctx, `
+		SELECT workspace_mode, sandbox_enforcement, commit_granted, apm_package_ref,
+		       apm_target, apm_lock_digest, secret_mount_ids
+		FROM agent_profiles WHERE id = $1`, f.profileID).
+		Scan(&workspaceMode, &enforcement, &commitGranted, &pkgRef, &apmTarget, &apmDigest, &mounts)
+	if err != nil {
+		t.Fatalf("read seeded profile's M3 columns: %v", err)
+	}
+	if workspaceMode == nil || *workspaceMode != "worktree" {
+		t.Errorf("workspace_mode = %v, want worktree (D-008)", workspaceMode)
+	}
+	if enforcement == nil || *enforcement != "required" {
+		t.Errorf("sandbox_enforcement = %v, want required", enforcement)
+	}
+	if commitGranted {
+		t.Error("commit_granted = true by default, want false (the grant is a decision, ADR-0017 D4)")
+	}
+	if pkgRef != nil || apmTarget != nil || apmDigest != nil {
+		t.Errorf("APM columns preset on a seeded profile: %v/%v/%v, want all NULL", pkgRef, apmTarget, apmDigest)
+	}
+	if len(mounts) != 0 {
+		t.Errorf("secret_mount_ids = %v, want empty", mounts)
+	}
+
+	for _, bad := range []struct{ name, digest string }{
+		{"bare hex", strings.Repeat("f", 64)},
+		{"wrong prefix", "sha512:" + strings.Repeat("f", 64)},
+		{"short digest", "sha256:" + strings.Repeat("f", 63)},
+	} {
+		if _, err := pool.Exec(ctx,
+			"UPDATE agent_profiles SET apm_lock_digest = $2 WHERE id = $1", f.profileID, bad.digest); err == nil {
+			t.Errorf("apm_lock_digest %s accepted (%s)", bad.digest, bad.name)
+			continue
+		} else if code := migPgCode(t, err); code != "23514" {
+			t.Errorf("apm_lock_digest %s code = %s, want 23514", bad.name, code)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_profiles SET apm_lock_digest = $2, apm_target = 'claude' WHERE id = $1`,
+		f.profileID, "sha256:"+strings.Repeat("f", 64)); err != nil {
+		t.Errorf("legal apm_lock_digest rejected: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE agent_profiles SET apm_target = 'cursor' WHERE id = $1", f.profileID); err == nil {
+		t.Error("apm_target 'cursor' accepted")
+	} else if code := migPgCode(t, err); code != "23514" {
+		t.Errorf("apm_target code = %s, want 23514", code)
+	}
+	// NULL stays legal: a profile that stages no APM package must not invent one.
+	if _, err := pool.Exec(ctx,
+		"UPDATE agent_profiles SET apm_lock_digest = NULL, apm_target = NULL WHERE id = $1", f.profileID); err != nil {
+		t.Errorf("NULL apm_lock_digest rejected: %v", err)
+	}
+	// The seeded profiles still refuse every prompt: M3 added sandbox columns,
+	// it did not unlock permission_mode (ADR-0016 § 10 gates that on an observed
+	// Verified=true launch, which no test has produced yet).
+	var permissionMode string
+	if err := pool.QueryRow(ctx,
+		"SELECT permission_mode FROM agent_profiles WHERE id = $1", f.profileID).Scan(&permissionMode); err != nil {
+		t.Fatalf("read permission_mode: %v", err)
+	}
+	if permissionMode != "ask" {
+		t.Errorf("seeded profile permission_mode = %q, want ask", permissionMode)
+	}
+}
+
+// genUUID returns a fresh uuid for the columns M4 will own (run ids, attempt
+// ids), which must be legal today and unpopulated by M3 code. Generated here
+// rather than by gen_random_uuid() so a test never needs a connection just to
+// name a placeholder scope.
+func genUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

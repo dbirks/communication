@@ -513,7 +513,10 @@ func TestM2EnumValidators(t *testing.T) {
 			[]string{"pending", "decided", "expired", "cancelled"},
 			[]string{"", "allowed", "denied", "Decided"}},
 		{"session origin", ValidSessionOrigin, []string{"new", "resumed"},
-			[]string{"", "load", "resume", "New"}},
+			[]string{"", "load", "resume", "New", "reused"}},
+		{"turn session origin", ValidTurnSessionOrigin,
+			[]string{"new", "resumed", "reused"},
+			[]string{"", "load", "loaded", "Reused"}},
 		{"binding status", ValidBindingStatus,
 			[]string{"connected", "disconnected", "closed"},
 			[]string{"", "live", "errored", "Connected"}},
@@ -605,6 +608,11 @@ func TestM2PayloadFieldsMatchOpenAPITable(t *testing.T) {
 	for _, tt := range m2Types() {
 		byType[tt.constant] = tt.payload
 	}
+	// M3 rows in the same table are checked the same way — one table, one
+	// mechanism, so an M3 event documented without a Go payload fails here too.
+	for _, tt := range m3Types() {
+		byType[tt.constant] = tt.payload
+	}
 
 	for typ, fields := range wanted {
 		payload, ok := byType[typ]
@@ -683,4 +691,361 @@ func filledValue(t *testing.T, payload any) any {
 		}
 	}
 	return out.Interface()
+}
+
+// ------------------------------------------------------------ M3 contract
+
+// m3Types is the M3 event-type surface (docs/m3-contract.md § 3) paired with the
+// payload struct the control plane and the worker must emit for it. Same purpose
+// as m2Types: the pairing is what three parallel M3 workers build against, so it
+// is asserted rather than implied by prose.
+func m3Types() []struct {
+	constant string
+	literal  string
+	payload  any
+} {
+	return []struct {
+		constant string
+		literal  string
+		payload  any
+	}{
+		{TypeWorkspacePrepared, "workspace.prepared", WorkspacePreparedPayload{}},
+		{TypeWorkspaceCommitted, "workspace.committed", WorkspaceCommittedPayload{}},
+		{TypeWorkspaceQuarantined, "workspace.quarantined", WorkspaceQuarantinedPayload{}},
+		{TypeWorkspaceReleased, "workspace.released", WorkspaceReleasedPayload{}},
+		{TypeWorkspaceRecoveryLost, "workspace.recovery_lost", WorkspaceRecoveryLostPayload{}},
+		{TypeSandboxVerified, "sandbox.verified", SandboxVerifiedPayload{}},
+		{TypeSandboxEnforcementFailed, "sandbox.enforcement_failed", SandboxEnforcementFailedPayload{}},
+		{TypeSecretCreated, "secret.created", SecretCreatedPayload{}},
+		{TypeSecretVersionAdded, "secret.version.added", SecretVersionAddedPayload{}},
+		{TypeSecretPolicyUpdated, "secret.policy.updated", SecretPolicyUpdatedPayload{}},
+		{TypeSecretRevoked, "secret.revoked", SecretRevokedPayload{}},
+		{TypeSecretMaterialized, "secret.materialized", SecretMaterializedPayload{}},
+		{TypeSecretRemoved, "secret.removed", SecretRemovedPayload{}},
+		{TypeSecretMaterializationFailed, "secret.materialization_failed", SecretMaterializationFailedPayload{}},
+		{TypeArtifactCreated, "artifact.created", ArtifactCreatedPayload{}},
+		{TypeArtifactDeleted, "artifact.deleted", ArtifactDeletedPayload{}},
+		{TypeRepositoryMirrorUpdated, "repository.mirror_updated", RepositoryMirrorUpdatedPayload{}},
+	}
+}
+
+// TestM3TypeConstants pins each M3 event type's spelling against the envelope
+// schema's own `type` pattern. The `.`-joined lowercase form is not a convention
+// — a name the journal's schema would reject is a contract bug.
+func TestM3TypeConstants(t *testing.T) {
+	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
+	seen := map[string]bool{}
+	for _, tt := range m3Types() {
+		if tt.constant != tt.literal {
+			t.Errorf("event type constant = %q, want %q", tt.constant, tt.literal)
+		}
+		if seen[tt.constant] {
+			t.Errorf("event type %q listed twice", tt.constant)
+		}
+		seen[tt.constant] = true
+		if !pattern.MatchString(tt.constant) {
+			t.Errorf("event type %q does not match the schema pattern %s", tt.constant, pattern)
+		}
+	}
+}
+
+// TestM3TypesDocumentedInOpenAPI keeps api/openapi.yaml honest for the M3 surface
+// too: an event type the worker can append that the API contract does not name is
+// an event the UI silently drops.
+func TestM3TypesDocumentedInOpenAPI(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	doc := string(raw)
+	for _, tt := range m3Types() {
+		if !strings.Contains(doc, tt.constant) {
+			t.Errorf("event type %q is not documented in api/openapi.yaml", tt.constant)
+		}
+	}
+}
+
+// TestM3PayloadFieldNames pins the JSON member set of every M3 payload. The
+// envelope schema validates payloads only as objects, so this is the only thing
+// between a renamed field and a UI that renders nothing.
+func TestM3PayloadFieldNames(t *testing.T) {
+	want := map[string][]string{
+		"WorkspacePreparedPayload": {
+			"base_commits", "conversation_id", "policy_digest", "project_id", "repos",
+			"run_id", "scope_kind", "volume_id", "worker_id", "workspace_id", "workspace_mode",
+		},
+		"WorkspaceRepoRef": {"name", "repository_id", "run_ref"},
+		"WorkspaceCommittedPayload": {
+			"head_commit", "project_id", "repository_id", "run_ref", "workspace_id",
+		},
+		"WorkspaceQuarantinedPayload": {"project_id", "reason", "workspace_id"},
+		"WorkspaceReleasedPayload":    {"project_id", "repos_pruned", "workspace_id"},
+		"WorkspaceRecoveryLostPayload": {
+			"expected_volume_id", "found_volume_id", "project_id", "reason", "workspace_id",
+		},
+		"SandboxVerifiedPayload": {
+			"af_unix_mediation", "backend", "backend_version", "commit_granted", "grants",
+			"network_enforced", "policy_digest", "project_id", "turn_id", "verified",
+			"worker_id", "workspace_id",
+		},
+		"SandboxGrant": {"access", "role"},
+		"SandboxEnforcementFailedPayload": {
+			"backend", "backend_version", "child_started", "detail", "policy_digest", "project_id",
+			"reason", "stage", "turn_id", "verified", "worker_id", "workspace_id",
+		},
+		"SecretCreatedPayload": {
+			"allowed_agent_profile_ids", "delivery_mode", "project_id", "purpose",
+			"scope", "secret_id", "slug", "version",
+		},
+		"SecretVersionAddedPayload": {
+			"key_id", "previous_version", "project_id", "secret_id", "version",
+		},
+		"SecretPolicyUpdatedPayload": {
+			"after", "before", "project_id", "secret_id",
+		},
+		"SecretPolicyState": {
+			"allowed_agent_profile_ids", "audit_policy", "purpose",
+		},
+		"SecretRevokedPayload": {"project_id", "revoked_at", "revoked_by", "secret_id", "versions"},
+		"SecretMaterializedPayload": {
+			"delivery_mode", "env_name", "lifecycle", "mode", "policy_digest", "project_id",
+			"relative_path", "repository_name", "secret_id", "slug", "turn_id",
+			"version", "workspace_id",
+		},
+		"SecretRemovedPayload": {
+			"cleaned_by", "project_id", "secret_id", "target", "turn_id", "workspace_id",
+		},
+		"SecretMaterializationFailedPayload": {
+			"child_started", "delivery_mode", "project_id", "reason", "secret_id",
+			"slug", "target", "turn_id", "workspace_id",
+		},
+		"ArtifactCreatedPayload": {
+			"artifact_id", "kind", "media_type", "name", "project_id", "redaction_count",
+			"sensitivity", "sha256", "size_bytes", "turn_id", "workspace_id",
+		},
+		"ArtifactDeletedPayload": {"artifact_id", "project_id", "reason"},
+		"RepositoryMirrorUpdatedPayload": {
+			"fetch_duration_ms", "from_commit", "mirror_kind", "project_id",
+			"repository_id", "to_commit", "worker_id",
+		},
+	}
+
+	full := map[string]any{
+		"WorkspacePreparedPayload": WorkspacePreparedPayload{
+			WorkspaceID: "ws-1", ProjectID: "p-1", ScopeKind: WorkspaceScopeConversation,
+			ConversationID: "c-1", RunID: "r-1", WorkerID: "w-1",
+			VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceMode: WorkspaceModeWorktree,
+			Repos:        []WorkspaceRepoRef{{RepositoryID: "repo-1", Name: "backend", RunRef: "c-1/backend"}},
+			BaseCommits:  map[string]string{"backend": "2222222222222222222222222222222222222222"},
+			PolicyDigest: "sha256:" + strings.Repeat("2", 64),
+		},
+		"WorkspaceRepoRef":            WorkspaceRepoRef{RepositoryID: "repo-1", Name: "backend", RunRef: "c-1/backend"},
+		"WorkspaceCommittedPayload":   WorkspaceCommittedPayload{WorkspaceID: "ws-1", ProjectID: "p-1", RepositoryID: "repo-1", RunRef: "c-1/backend", HeadCommit: "3333333333333333333333333333333333333333"},
+		"WorkspaceQuarantinedPayload": WorkspaceQuarantinedPayload{WorkspaceID: "ws-1", ProjectID: "p-1", Reason: QuarantineSecretLeftBehind},
+		"WorkspaceReleasedPayload":    WorkspaceReleasedPayload{WorkspaceID: "ws-1", ProjectID: "p-1", ReposPruned: true},
+		"WorkspaceRecoveryLostPayload": WorkspaceRecoveryLostPayload{
+			WorkspaceID: "ws-1", ProjectID: "p-1",
+			ExpectedVolumeID: "sha256:" + strings.Repeat("1", 64),
+			FoundVolumeID:    "sha256:" + strings.Repeat("9", 64),
+			Reason:           RecoveryVolumeChanged,
+		},
+		"SandboxVerifiedPayload": SandboxVerifiedPayload{
+			ProjectID: "p-1", TurnID: "t-1", WorkspaceID: "ws-1", WorkerID: "w-1",
+			PolicyDigest: "sha256:" + strings.Repeat("2", 64), Backend: "nono",
+			BackendVersion: "0.80.0", AfUnixMediation: "pathname", NetworkEnforced: false,
+			Grants:        []SandboxGrant{{Role: GrantRoleWorkspaceRepo, Access: GrantAccessRW}},
+			CommitGranted: true, Verified: true,
+		},
+		"SandboxGrant": SandboxGrant{Role: GrantRoleMirrorRead, Access: GrantAccessRO},
+		"SandboxEnforcementFailedPayload": SandboxEnforcementFailedPayload{
+			ProjectID: "p-1", TurnID: "t-1", WorkspaceID: "ws-1", WorkerID: "w-1",
+			Stage: SandboxStageGrantAssert, Reason: SandboxReasonTempPathGrant,
+			Backend: "nono", BackendVersion: "0.80.0",
+			PolicyDigest: "sha256:" + strings.Repeat("2", 64), Detail: "grant role workspace_repo resolved under /tmp",
+		},
+		"SecretCreatedPayload": SecretCreatedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Slug: "test-database-url",
+			Scope: "project", Purpose: "m3-exit", DeliveryMode: "env_file", Version: 1,
+			AllowedAgentProfileIDs: []string{"ap-1"},
+		},
+		"SecretVersionAddedPayload": SecretVersionAddedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Version: 2,
+			KeyID: "gen-2", PreviousVersion: 1,
+		},
+		"SecretPolicyUpdatedPayload": SecretPolicyUpdatedPayload{
+			SecretID: "s-1", ProjectID: "p-1",
+			Before: SecretPolicyState{Purpose: "old", AuditPolicy: "materialization", AllowedAgentProfileIDs: []string{"ap-1"}},
+			After:  SecretPolicyState{Purpose: "new", AuditPolicy: "materialization_and_access", AllowedAgentProfileIDs: []string{}},
+		},
+		"SecretPolicyState": SecretPolicyState{Purpose: "p", AuditPolicy: "materialization", AllowedAgentProfileIDs: []string{"ap-1"}},
+		"SecretRevokedPayload": SecretRevokedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Versions: []int{1, 2},
+			RevokedAt: "2026-10-15T05:00:00Z", RevokedBy: "u-1",
+		},
+		"SecretMaterializedPayload": SecretMaterializedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Slug: "test-database-url", Version: 1,
+			DeliveryMode: "env_file", RepositoryName: "backend", RelativePath: ".env.test.local",
+			EnvName: "TEST_DATABASE_URL", Lifecycle: "turn", Mode: "0600",
+			WorkspaceID: "ws-1", TurnID: "t-1", PolicyDigest: "sha256:" + strings.Repeat("2", 64),
+		},
+		"SecretRemovedPayload": SecretRemovedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Target: ".env.test.local",
+			WorkspaceID: "ws-1", TurnID: "t-1", CleanedBy: "worker",
+		},
+		"SecretMaterializationFailedPayload": SecretMaterializationFailedPayload{
+			SecretID: "s-1", ProjectID: "p-1", Slug: "test-database-url", DeliveryMode: "env_file",
+			Target: "../../etc/x", Reason: MaterializationPathEscape,
+			WorkspaceID: "ws-1", TurnID: "t-1", ChildStarted: false,
+		},
+		"ArtifactCreatedPayload": ArtifactCreatedPayload{
+			ArtifactID: "a-1", ProjectID: "p-1", Name: "report.html", Kind: "html",
+			MediaType: "text/html", SHA256: strings.Repeat("a", 64), SizeBytes: 12,
+			Sensitivity: "standard", RedactionCount: 0, WorkspaceID: "ws-1", TurnID: "t-1",
+		},
+		"ArtifactDeletedPayload": ArtifactDeletedPayload{ArtifactID: "a-1", ProjectID: "p-1", Reason: ArtifactDeletionExpired},
+		"RepositoryMirrorUpdatedPayload": RepositoryMirrorUpdatedPayload{
+			ProjectID: "p-1", RepositoryID: "repo-1", WorkerID: "w-1", MirrorKind: MirrorKindFetched,
+			FromCommit: "4444444444444444444444444444444444444444",
+			ToCommit:   "5555555555555555555555555555555555555555", FetchDurationMS: 41,
+		},
+	}
+
+	for name, fields := range want {
+		v, ok := full[name]
+		if !ok {
+			t.Errorf("no M3 payload struct %q to check", name)
+			continue
+		}
+		sort.Strings(fields)
+		got := jsonKeys(t, v)
+		if !reflect.DeepEqual(got, fields) {
+			t.Errorf("%s JSON members = %v, want %v", name, got, fields)
+		}
+		delete(full, name)
+	}
+	for name := range full {
+		if _, ok := want[name]; !ok {
+			t.Errorf("M3 payload %q has no pinned member list", name)
+		}
+	}
+}
+
+// TestM3PayloadsAreObjectsAndCarryProjectID pins the two rules § 3 states for
+// every M3 payload: it is an object, and it names its project — the project is
+// the authorization scope of the stream it arrives on, so a payload that cannot
+// name one cannot be filtered by the SSE reader.
+func TestM3PayloadsAreObjectsAndCarryProjectID(t *testing.T) {
+	for _, tt := range m3Types() {
+		raw, err := json.Marshal(filledValue(t, tt.payload))
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tt.literal, err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Errorf("%s: payload is not a JSON object: %s", tt.literal, raw)
+			continue
+		}
+		if _, ok := m["project_id"]; !ok {
+			t.Errorf("%s: payload has no project_id, so a stream reader cannot attribute it", tt.literal)
+		}
+	}
+}
+
+// TestM3PayloadsCarryNoSecretValuesOrHostPaths is the structural half of § 3's
+// "no payload carries a secret value, a .env body, an absolute host path or a
+// prompt". Prose cannot stop a later worker from adding `Value string` to a
+// secret payload or `RootPath string` to a workspace one — this can, and it
+// reads the structs rather than the event stream because a struct field is how
+// both get introduced.
+func TestM3PayloadsCarryNoSecretValuesOrHostPaths(t *testing.T) {
+	// Names that could receive a forbidden thing, at any nesting depth.
+	denied := map[string]string{
+		"value": "a secret value", "secret_value": "a secret value", "plaintext": "a decrypted value",
+		"cleartext": "a decrypted value", "env_body": "a generated .env file", "ciphertext": "encrypted bytes",
+		"prompt": "a user prompt", "token": "a credential", "preview_token": "a credential",
+		"raw": "unfiltered material", "password": "a credential", "passphrase": "a credential",
+		"root_path": "an absolute host path", "mirror_path": "an absolute host path",
+		"admin_dir": "an absolute host path", "checkout_path": "an absolute host path",
+		"storage_key": "an object-store key", "home": "an absolute host path", "cwd": "an absolute host path",
+	}
+	var walk func(v reflect.Value, typ string)
+	walk = func(v reflect.Value, typ string) {
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if why, bad := denied[name]; bad {
+				t.Errorf("%s: member %q could carry %s", typ, name, why)
+			}
+			if strings.HasSuffix(name, "_path") && name != "relative_path" {
+				t.Errorf("%s: member %q names a path that is not relative_path", typ, name)
+			}
+			fv := v.Field(i)
+			for fv.Kind() == reflect.Pointer || fv.Kind() == reflect.Slice {
+				fv = reflect.New(fv.Type().Elem()).Elem()
+			}
+			if fv.Kind() == reflect.Struct && f.Type.String() != "time.Time" {
+				walk(fv, typ+"."+name)
+			}
+		}
+	}
+	for _, tt := range m3Types() {
+		walk(reflect.ValueOf(tt.payload), tt.literal)
+	}
+}
+
+// TestM3EnumValidators exercises every M3 enum the events package owns, so the
+// wire vocabulary and the database CHECKs cannot drift apart silently.
+func TestM3EnumValidators(t *testing.T) {
+	cases := []struct {
+		name  string
+		valid func(string) bool
+		yes   []string
+		no    []string
+	}{
+		{"workspace scope kind", ValidWorkspaceScopeKind,
+			[]string{"conversation", "run"}, []string{"", "attempt", "Run", "node"}},
+		{"workspace state", ValidWorkspaceState,
+			[]string{"preparing", "ready", "quarantined", "released", "lost"},
+			[]string{"", "active", "Ready", "deleted", "resumed"}},
+		{"workspace mode", ValidWorkspaceMode,
+			[]string{"worktree", "clone"}, []string{"", "symlink", "hardlink", "Worktree"}},
+		{"quarantine reason", ValidQuarantineReason,
+			[]string{"secret_left_behind", "exclusion_failed", "worktree_unusable"},
+			[]string{"", "secret_found", "quarantined", "Secret_left_behind"}},
+		{"recovery lost reason", ValidRecoveryLostReason,
+			[]string{"volume_changed", "path_missing", "different_worker"},
+			[]string{"", "volume_gone", "resumed", "unknown"}},
+		{"sandbox stage", ValidSandboxStage,
+			[]string{"probe", "profile", "policy_assert", "grant_assert", "exec", "runtime"},
+			[]string{"", "launch", "verify", "Probe", "sandbox"}},
+		{"sandbox failure reason", ValidSandboxFailureReason,
+			[]string{"binary_missing", "landlock_unavailable", "fs_unverified", "tcp_unverified",
+				"af_unix_not_mediated", "profile_invalid", "grant_mismatch", "temp_path_grant",
+				"cwd_not_granted", "policy_delegation_refused", "deny_unsupported", "egress_check_failed"},
+			[]string{"", "sandbox_off", "unknown", "Landlock_unavailable", "external_policy"}},
+		{"grant role", ValidGrantRole,
+			[]string{"workspace_repo", "workspace_scratch", "workspace_home", "mirror_read",
+				"mirror_objects", "mirror_run_refs", "mirror_run_logs", "mirror_admin_dir", "harness_credentials"},
+			[]string{"", "workspace_root", "mirror", "/workspaces/x", "Mirror_read"}},
+		{"grant access", ValidGrantAccess, []string{"ro", "rw"}, []string{"", "read", "write", "RW"}},
+		{"materialization failure reason", ValidMaterializationFailureReason,
+			[]string{"path_escape", "absolute_path", "bad_shape", "tracked_target", "exists",
+				"symlink_parent", "keyring_unreadable", "revoked_version", "broker_unsupported", "mirror_writable"},
+			[]string{"", "not_found", "PERMISSION_DENIED", "written"}},
+		{"artifact deletion reason", ValidArtifactDeletionReason,
+			[]string{"expired", "swept", "retention"}, []string{"", "deleted", "user", "Expired"}},
+		{"mirror kind", ValidMirrorKind, []string{"created", "fetched"}, []string{"", "cloned", "gc", "init"}},
+	}
+	for _, tc := range cases {
+		for _, yes := range tc.yes {
+			if !tc.valid(yes) {
+				t.Errorf("%s: %q rejected, want accepted", tc.name, yes)
+			}
+		}
+		for _, no := range tc.no {
+			if tc.valid(no) {
+				t.Errorf("%s: %q accepted, want rejected", tc.name, no)
+			}
+		}
+	}
 }

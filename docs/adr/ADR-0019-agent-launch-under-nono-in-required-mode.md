@@ -147,6 +147,22 @@ Until then **D-021 stays Provisional and no run may claim enforced egress contro
   the environment it inherited — they are declared in `worker/launchers.yaml` as per-launcher auth
   requirements (`04` "per-harness auth requirements"), which is the missing home for this config.
 
+> **GAP — custody of production harness credentials (owner decision; does not block M3).**
+> The project owner has authorized **personal Claude/Codex logins for all local and lab runs**, which
+> is what every M3 observation in `docs/compatibility/` is made with — and that authorization stops at
+> the lab boundary. *Whose* credential a **production** worker may hold (`04`'s "organization-managed,
+> terms-compliant" requirement; `05`'s warning that personal interactive subscriptions may not permit
+> shared service usage) is unresolved, and it is a licensing/terms question rather than a technical
+> one, so it cannot be closed by an implementation worker. Consequences kept explicit: Decision 4
+> above stays the shipped shape (shared rw credential tree), **this record must not be cited as
+> evidence of credential isolation**, `required` mode enforces workspace isolation only, and the ops
+> page has to show that next to any green check. Per-attempt copied credentials (mode 0400, deleted
+> with the attempt) remain the intended answer for a profile-managed harness and stay an M3 spike,
+> not a decision. The technical options the owner's choice will pick between — org API key per
+> project, a broker (`integration_broker`, declared and unbuilt per ADR-0018 clause 8), or a
+> per-attempt copy — are all behind `worker/launchers.yaml`'s per-launcher auth requirements, so none
+> of them changes this ADR's launch chain; only its honesty label changes. Tracked as D-010/D-020.
+
 ### 5. Where the policy lives, and how it is identified
 
 `worker/sandbox/profiles/communication-agent.json` (ADR-0007: `worker/` holds sandbox policy files),
