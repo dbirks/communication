@@ -19,16 +19,25 @@ import Projects from "./pages/Projects";
 const M4PreviewPage = import.meta.env.DEV ? lazy(() => import("./pages/M4Preview")) : null;
 
 export default function App() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not a
   // fixture page. It also returns early rather than mounting a second `<Routes>`,
   // because the catch-all below would otherwise render NotFound underneath it.
+  // `?source=live&project=<id>&run=<id>` mounts the same blocks against the
+  // frozen M4 routes — the seam lives in `pages/M4Preview.tsx`; fixture mode
+  // remains the default so nothing screenshots like a run by accident.
   if (M4PreviewPage && pathname === "/__m4-preview") {
+    const params = new URLSearchParams(search);
+    const source = params.get("source") === "live" ? "live" : "fixture";
     return (
       <Suspense fallback={null}>
-        <M4PreviewPage />
+        <M4PreviewPage
+          source={source}
+          projectId={params.get("project") ?? ""}
+          runId={params.get("run")}
+        />
       </Suspense>
     );
   }

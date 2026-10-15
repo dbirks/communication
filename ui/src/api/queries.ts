@@ -80,6 +80,28 @@ export const queryKeys = {
   artifact: (artifactId: string) => ["artifact", artifactId] as const,
   systemSandbox: ["system", "sandbox"] as const,
   turnSandbox: (turnId: string) => ["turn", turnId, "sandbox"] as const,
+  /* M4. Project-scoped keys stay under `["project", projectId]` so the one
+   * `invalidateProject` call the SSE feeds make covers runs/assignments/
+   * approvals (`docs/design/data-dependencies.md` "Cache-key map"). The run
+   * subtree `["run", runId]` covers nodes, tree and checkpoints by prefix. */
+  pipelines: ["pipelines"] as const,
+  pipeline: (pipelineId: string) => ["pipeline", pipelineId] as const,
+  pipelineRevisions: (pipelineId: string) => ["pipeline", pipelineId, "revisions"] as const,
+  pipelineDrafts: (pipelineId: string) => ["pipeline", pipelineId, "drafts"] as const,
+  draft: (draftId: string) => ["draft", draftId] as const,
+  revision: (digestOrId: string) => ["revision", digestOrId] as const,
+  assignments: (projectId: string) => ["project", projectId, "assignments"] as const,
+  runs: (projectId: string) => ["project", projectId, "runs"] as const,
+  run: (runId: string) => ["run", runId] as const,
+  runNodes: (runId: string) => ["run", runId, "nodes"] as const,
+  runNode: (runId: string, nodeExecutionId: string) =>
+    ["run", runId, "nodes", nodeExecutionId] as const,
+  runTree: (runId: string) => ["run", runId, "tree"] as const,
+  runCheckpoints: (runId: string) => ["run", runId, "checkpoints"] as const,
+  attempt: (attemptId: string) => ["attempt", attemptId] as const,
+  approvals: (projectId: string) => ["project", projectId, "approvals"] as const,
+  approval: (approvalId: string) => ["approval", approvalId] as const,
+  scheduler: ["system", "scheduler"] as const,
 };
 
 export function useMe() {

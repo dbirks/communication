@@ -13,7 +13,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { invalidateConversation, invalidateProject } from "./queries";
+import { M4_PROJECT_EVENT_TYPES } from "../lib/pipeline/runEvents";
+import { invalidateConversation, invalidateProject, queryKeys } from "./queries";
 import type { EventEnvelope } from "./types";
 
 /** Event types that existed in M1. */
@@ -78,8 +79,8 @@ export const M3_EVENT_TYPES = [
 
 export type ProjectM3EventType = (typeof M3_EVENT_TYPES)[number];
 
-/** Everything the project scope carries from M1 through M3. */
-const PROJECT_EVENT_TYPES = [...M1_EVENT_TYPES, ...M3_EVENT_TYPES] as const;
+/** Everything the project scope carries from M1 through M4. */
+const PROJECT_EVENT_TYPES = [...M1_EVENT_TYPES, ...M3_EVENT_TYPES, ...M4_PROJECT_EVENT_TYPES];
 
 /**
  * Types that change the `Conversation` resource itself (control, active turn,
@@ -130,7 +131,7 @@ interface StreamOptions {
 }
 
 /** Open one journal scope and return its frames in commit order. */
-function useEventStream({ url, types, keys, onEvent }: StreamOptions): EventStream {
+export function useEventStream({ url, types, keys, onEvent }: StreamOptions): EventStream {
   const [events, setEvents] = useState<EventEnvelope[]>([]);
   const [status, setStatus] = useState<ConnectionState>("reconnecting");
   const lastSeq = useRef(0);
@@ -197,6 +198,15 @@ export function useProjectEvents(projectId: string): ProjectEvents {
     types: PROJECT_EVENT_TYPES,
     keys: [projectId],
     onEvent: (event) => {
+      // M4 rows carry `run_id`: an open Run Inspector is a `["run", id]`
+      // subtree, outside the project key, so name it too (docs/m4-contract.md
+      // § 3: the project stream remains the superset).
+      if (event.run_id) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.run(event.run_id) });
+      }
+      if (event.type.startsWith("pipeline.") || event.type.startsWith("assignment.")) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+      }
       void invalidateProject(queryClient, event.project_id ?? projectId);
     },
   });

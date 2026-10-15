@@ -285,12 +285,17 @@ export interface RunCheckpoint {
 
 /** `GET /api/v1/runs/{runId}/tree` (route 26). */
 export interface RunTreeChild {
-  invocation_id: string;
-  node_instance_key: string;
+  /** The `pipeline_invocations` row id. The frozen wire joins the child run's
+   * summary in place and does not name the invocation row, so live mode may
+   * leave it absent (`api/runs.ts` maps `RunTree` onto this view). */
+  invocation_id?: string;
+  /** Null on the tree root; a child names the invocation that created it. */
+  node_instance_key: string | null;
   child_run_id: string;
   pipeline_slug: string;
   revision_digest: string;
   depth: number;
+  /** Absent means `completion` — the compiled default (`03`), not a guess. */
   wait_policy: "completion" | "started" | "detach";
   status: RunStatus;
   expression_evaluations?: number;
@@ -347,10 +352,14 @@ export interface ApprovalDetail {
 export type RunEventType =
   | "run.created"
   | "run.started"
+  | "run.paused"
+  | "run.resumed"
   | "run.waiting_human"
   | "run.checkpoint_saved"
   | "run.checkpoint_restored"
   | "run.retried"
+  | "run.cancel_requested"
+  | "run.cancelled"
   | "run.completed"
   | "run.failed"
   | "run.interrupted"
@@ -359,13 +368,18 @@ export type RunEventType =
   | "node.scope.completed"
   | "node.scope.failed"
   | "node.execution_skipped"
+  | "node.execution_cancelled"
   | "node.attempt.started"
   | "node.attempt.completed"
   | "node.attempt.failed"
   | "node.attempt.interrupted"
+  | "node.attempt.cancelled"
   | "node.attempt.retry_scheduled"
   | "approval.requested"
-  | "approval.decided";
+  | "approval.decided"
+  | "approval.expired"
+  | "approval.denied"
+  | "approval.cancelled";
 
 /**
  * An event as the run stream delivers it: the envelope's three new optional
