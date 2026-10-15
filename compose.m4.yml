@@ -1,0 +1,277 @@
+# compose.m4.yml — M4 exit-test lab stack (docs/m4-contract.md § 7.0).
+#
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     docker compose -p communication-m4 \
+#       -f compose.yml -f compose.harness.yml -f compose.m4.yml up -d --build
+#
+#   teardown: the same command with `down -v` (project-scoped: removes ONLY
+#   containers/volumes/images this plan creates — § 7.0 forbids docker
+#   system/volume/image prune for this lab).
+#
+# What this layer adds over compose.yml + compose.harness.yml:
+#   * TWO workers (§ 6.2, § 7 C3–C6): worker-a (named volume repos-a,
+#     capacity 3) and worker-b (named volume repos-b, capacity 1). Distinct
+#     volumes because ADR-0017's volume identity is measured per repos root —
+#     C5 asserts volume_id 'repos-a' and C6e needs a genuinely different
+#     volume to prove the honest-loss arm.
+#   * `collector` — the § 7 C11 egress-probe sentinel on host port 18099,
+#     logging every request it receives (python3's http.server logs the full
+#     request line, query string included, to stderr → `compose logs
+#     collector` is the evidence the contract greps).
+#   * The M4 port block. § 7.0: never touch the `communication` project or
+#     ports 18080–18090, never 8080/8081/8090 (the host's model gateway).
+#     This stack therefore publishes ONLY 127.0.0.1:18091 (lb/app),
+#     18092/18093 (api-a/api-b direct, the replica legs), 18094 (preview
+#     origin), 18095 (mock OIDC) and 18099 (collector). Every 1808x mapping
+#     inherited from compose.yml is replaced with `!override` so it is NOT
+#     published at all — an appended list would leave the forbidden ports up.
+#   * The `worker` service from compose.yml is profile-gated (`m4-legacy`):
+#     the M4 stack runs worker-a/worker-b, never a third worker sharing the
+#     `repos` volume. It stays defined so `--build` images and `config` still
+#     resolve, but a default `up` does not start it (e2e/compose.e2e.yml's
+#     idiom, inverted).
+#
+# Host preparation (lab only, done by e2e/m4/e2e_m4_exit.py's stack_up):
+#   mkdir -p .harness/workspaces .harness/home-a .harness/home-b \
+#            .harness/remotes .harness/m4-fixtures
+#   e2e/m4/make_fixture_repo.sh .harness/m4-fixtures
+#
+# NEW IMAGE PULL (flagged per AGENTS.md): python:3.13-alpine for `collector`
+# — a stdlib HTTP logger, chosen because the worker image cannot be repurposed
+# to receive egress and the stack should not grow a Node service. Everything
+# else reuses images the stack already pulls.
+name: communication-m4
+
+services:
+  # ── port block for this project (see header) ──────────────────────────────
+  lb:
+    ports: !override
+      - "127.0.0.1:18091:80"
+      # The preview origin (ADR-0020 D6) moves with the app origin: the API
+      # mints preview URLs at preview.localhost:18094 below, so the published
+      # port has to match or the stack advertises a port it does not own.
+      - "127.0.0.1:18094:8084"
+
+  oidc:
+    # 18090 is inside the block § 7.0 forbids; the browser-visible issuer
+    # moves to 18095 (api-a/api-b COMMUNICATION_OIDC_BROWSER_ISSUER below).
+    # The in-network issuer (http://oidc:8080/default) is untouched.
+    ports: !override
+      - "127.0.0.1:18095:8080"
+
+  api-a:
+    environment:
+      COMMUNICATION_PUBLIC_URL: http://localhost:18091
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18094
+      # ADR-0023 Migration/rollback: the engine is a configuration flag.
+      # C14c flips it to `off` on a restarted replica; default is on.
+      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER:-on}"
+    ports: !override
+      - "127.0.0.1:18092:8080"
+
+  api-b:
+    environment:
+      COMMUNICATION_PUBLIC_URL: http://localhost:18091
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
+      COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
+      COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18094
+      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER:-on}"
+    ports: !override
+      - "127.0.0.1:18093:8080"
+
+  # The single M1/M2/M3 worker is not part of the M4 exit stack (§ 7.0 runs
+  # exactly worker-a and worker-b). Profile-gated rather than deleted so
+  # compose.yml's `worker` build keeps resolving for other layers.
+  worker:
+    profiles: ["m4-legacy"]
+
+  # ── one-shot volume ownership (mirrors keyring-init's pattern) ────────────
+  # Named volumes are created root-owned (or inherit the image's 0700
+  # worker:worker dirs at /repos when first mounted); every reader here runs
+  # as HOST_UID, so ownership is fixed once, beside the keyring fix, rather
+  # than left to the first EACCES at runtime. Per-worker sandbox roots are
+  # separate volumes because nono derives a protected state root from its
+  # HOME and permanently refuses grants overlapping it (probe C-H1) — two
+  # live workers must not share one sandbox-home.
+  m4-storage-init:
+    image: postgres:18.6
+    environment:
+      INIT_UID: "${HOST_UID:-10001}"
+      INIT_GID: "${HOST_GID:-10001}"
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        chown -R "$$INIT_UID:$$INIT_GID" \
+          /repos-a /repos-b \
+          /sandbox-home-a /sandbox-policy-a /sandbox-selftest-a \
+          /sandbox-home-b /sandbox-policy-b /sandbox-selftest-b
+        echo "m4-storage-init: ownership set for the two worker volume sets"
+    volumes:
+      - repos-a:/repos-a
+      - repos-b:/repos-b
+      - sandbox-home-a:/sandbox-home-a
+      - sandbox-policy-a:/sandbox-policy-a
+      - sandbox-selftest-a:/sandbox-selftest-a
+      - sandbox-home-b:/sandbox-home-b
+      - sandbox-policy-b:/sandbox-policy-b
+      - sandbox-selftest-b:/sandbox-selftest-b
+    depends_on:
+      keyring-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ── the two workers (§ 6.2) ───────────────────────────────────────────────
+  # Both repeat compose.harness.yml's worker conventions *in full* — compose
+  # overlays merge per-service, so nothing the harness sets on `worker`
+  # reaches worker-a/worker-b: HOST_UID user, the same-path .harness binds,
+  # shared /workspaces, ro masterkeys, and the live ~/.claude + ~/.codex
+  # agent-login mounts with CLAUDE_CONFIG_DIR/CODEX_HOME (HOST_UID is NOT
+  # optional; see compose.harness.yml's header for the observed failure).
+  worker-a:
+    image: communication-worker:dev
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    # worker-b shares this build; nobody may pull the dev tag.
+    user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+    volumes:
+      # Shared workspace root (bind, host-inspectable) — both workers see the
+      # same /workspaces tree ONLY so the harness legs can watch; per ADR-0017
+      # a workspace is claimed by the worker that prepared it, and C6e proves
+      # the other worker refuses it (different_worker), not clones it.
+      - .harness/workspaces:/workspaces
+      # Per-worker mirror roots, DISTINCT named volumes (C5/C6/C6e).
+      - repos-a:/repos
+      - artifacts:/artifacts
+      # M4 fixture remote, § 7.0's `file:///srv/m4/fixtures/app.git`. Same
+      # bind trick as .harness/remotes above: the URL stored in the database
+      # must resolve *inside* the container, so the host directory (generated
+      # by e2e/m4/make_fixture_repo.sh) is mounted at the URL's own path.
+      # A different mount path would make every prepare fail for a fixture
+      # bug wearing a protocol hat.
+      - .harness/m4-fixtures:/srv/m4/fixtures:ro
+      - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
+      - .harness/apm-upstream:/apm-upstream:ro
+      - sandbox-home-a:/sandbox-home
+      - sandbox-policy-a:/sandbox-policy
+      - sandbox-selftest-a:/sandbox-selftest
+      - .harness/home-a:/harness/home
+      # rw on purpose — live agent state directories (compose.harness.yml).
+      - ${HOME}/.claude:/harness/claude
+      - ${HOME}/.codex:/harness/codex
+      - masterkeys:/keyring:ro
+    environment:
+      HOME: /harness/home
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_WORKER_NAME: worker-a
+      COMMUNICATION_WORKER_HEARTBEAT: "10s"
+      # § 6.2: capacity plumbing; worker-a is the lab exit run's 3,
+      # worker-b is 1 so the claim predicate's
+      # `active_attempts < capacity` split is observable (C3/C8c).
+      COMMUNICATION_WORKER_CAPACITY: "3"
+      COMMUNICATION_WORKSPACE_ROOT: /workspaces
+      COMMUNICATION_REPOS_ROOT: /repos
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      COMMUNICATION_SANDBOX_ENFORCEMENT: required
+      COMMUNICATION_SANDBOX_HOME: /sandbox-home
+      COMMUNICATION_SANDBOX_POLICY_DIR: /sandbox-policy
+      COMMUNICATION_SANDBOX_SELFTEST_DIR: /sandbox-selftest
+      COMMUNICATION_AGENT_GIT_NAME: Communication Worker
+      COMMUNICATION_AGENT_GIT_EMAIL: worker@communication.invalid
+      CLAUDE_CONFIG_DIR: /harness/claude
+      CODEX_HOME: /harness/codex
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /harness/home /repos /sandbox-home /sandbox-policy
+        exec communication worker
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      m4-storage-init:
+        condition: service_completed_successfully
+
+  worker-b:
+    image: communication-worker:dev
+    # Produced by worker-a's build above (same trick as compose.yml's api
+    # replicas against the `migrate` build); never pulled.
+    pull_policy: never
+    user: "${HOST_UID:-10001}:${HOST_GID:-10001}"
+    volumes:
+      - .harness/workspaces:/workspaces
+      - repos-b:/repos
+      - artifacts:/artifacts
+      - .harness/m4-fixtures:/srv/m4/fixtures:ro
+      - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
+      - .harness/apm-upstream:/apm-upstream:ro
+      - sandbox-home-b:/sandbox-home
+      - sandbox-policy-b:/sandbox-policy
+      - sandbox-selftest-b:/sandbox-selftest
+      - .harness/home-b:/harness/home
+      - ${HOME}/.claude:/harness/claude
+      - ${HOME}/.codex:/harness/codex
+      - masterkeys:/keyring:ro
+    environment:
+      HOME: /harness/home
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_WORKER_NAME: worker-b
+      COMMUNICATION_WORKER_HEARTBEAT: "10s"
+      COMMUNICATION_WORKER_CAPACITY: "1"
+      COMMUNICATION_WORKSPACE_ROOT: /workspaces
+      COMMUNICATION_REPOS_ROOT: /repos
+      COMMUNICATION_ARTIFACT_ROOT: /artifacts
+      COMMUNICATION_ARTIFACT_BACKEND: local
+      COMMUNICATION_SECRET_KEYRING: /keyring
+      COMMUNICATION_SANDBOX_ENFORCEMENT: required
+      COMMUNICATION_SANDBOX_HOME: /sandbox-home
+      COMMUNICATION_SANDBOX_POLICY_DIR: /sandbox-policy
+      COMMUNICATION_SANDBOX_SELFTEST_DIR: /sandbox-selftest
+      COMMUNICATION_AGENT_GIT_NAME: Communication Worker
+      COMMUNICATION_AGENT_GIT_EMAIL: worker@communication.invalid
+      CLAUDE_CONFIG_DIR: /harness/claude
+      CODEX_HOME: /harness/codex
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /harness/home /repos /sandbox-home /sandbox-policy
+        exec communication worker
+    stop_grace_period: 25s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      m4-storage-init:
+        condition: service_completed_successfully
+      worker-a:
+        condition: service_started   # only for the image build ordering
+
+  # ── § 7 C11 egress-probe sentinel ─────────────────────────────────────────
+  # Deliberately the ONE port in this file not bound to 127.0.0.1: C11's
+  # injected prompt fetches http://172.17.0.1:18099/..., and docker's
+  # bridge-gateway address is not reachable through a loopback-only
+  # published port. It serves nothing but an access log (no files of value
+  # are ever placed under its document root) and 18099 is outside every
+  # block § 7.0 forbids.
+  collector:
+    image: python:3.13-alpine
+    command: ["python3", "-m", "http.server", "8080"]
+    ports:
+      - "18099:8080"
+    restart: "no"
+
+volumes:
+  # Per-worker mirror roots (§ 6.2: "one per worker (repos-a, repos-b)").
+  repos-a:
+  repos-b:
+  # Per-worker nono launcher homes and policy dirs — see m4-storage-init's
+  # comment; sharing them across two live workers poisons grants (C-H1).
+  sandbox-home-a:
+  sandbox-policy-a:
+  sandbox-selftest-a:
+  sandbox-home-b:
+  sandbox-policy-b:
+  sandbox-selftest-b:
