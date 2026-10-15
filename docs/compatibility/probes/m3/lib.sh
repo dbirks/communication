@@ -18,6 +18,20 @@ M3_NODE="${M3_NODE:-node}"
 M3_KEEP=0
 M3_PROBE_ROOT_BASE="${M3_PROBE_ROOT_BASE:-$HOME/.cache/communication-lab/m3-probes}"
 
+# Keep m3_oneline's length bound character-based. Under a POSIX locale `cut -c`
+# counts BYTES and can split a UTF-8 sequence — observed in communication-worker:dev,
+# whose default locale is POSIX while nono's banner carries box-drawing characters;
+# the split byte landed in the results file and made it non-text.
+case "${LC_ALL:-${LANG:-}}" in
+    *utf8*|*UTF-8*|*Utf8*|*utf-8*) ;;
+    *)
+        _m3_locale="$(locale -a 2>/dev/null | grep -iE '^C\.utf-?8$' | head -1)"
+        [ -n "$_m3_locale" ] && export LC_ALL="$_m3_locale"
+        ;;
+esac
+if command -v iconv >/dev/null 2>&1; then M3_SANITIZE=iconv; else M3_SANITIZE=cat; fi
+export M3_SANITIZE
+
 m3_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -30,7 +44,20 @@ m3_args() {
     done
 }
 
-m3_oneline() { tr '\n\r\t' '   ' | sed 's/  */ /g' | cut -c1-400; }
+m3_oneline() {
+    # `cut -c` is byte-based in practice on this pair (coreutils 9.1 / mawk, observed
+    # in communication-worker:dev), which can split a UTF-8 sequence and write an
+    # invalid byte into the results file; `iconv -c` drops the split tail. iconv
+    # exits 1 when it drops anything, so the status is normalised here.
+    local _out=""
+    if [ "${M3_SANITIZE:-cat}" = iconv ]; then
+        _out="$(tr '\n\r\t' '   ' | sed 's/  */ /g' | cut -c1-400 | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)"
+    else
+        _out="$(tr '\n\r\t' '   ' | sed 's/  */ /g' | cut -c1-400)"
+    fi
+    printf '%s' "$_out"
+    return 0
+}
 
 # check <id> <PASS|FAIL|GAP|N/A> <observation...>
 check() { printf 'CHECK %s %s %s\n' "$1" "$2" "$(printf '%s' "$3" | m3_oneline)"; }
@@ -58,6 +85,7 @@ m3_env_header() {
     echo "ENV date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "ENV user=$(id -un 2>/dev/null || echo '?') uid=$(id -u) gid=$(id -g)"
     echo "ENV kernel=$(uname -r) machine=$(uname -m)"
+    echo "ENV locale=${LC_ALL:-${LANG:-unset}} (cut -c in m3_oneline is byte-based under POSIX)"
     echo "ENV lsm=${lsm}"
     echo "ENV git=$(git --version 2>&1 | m3_oneline)"
     echo "ENV nono_bin=${M3_NONO}"

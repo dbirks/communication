@@ -210,6 +210,28 @@ else
     check C-CWD FAIL "unexpected CWD matrix: flags-only=$rcout_s, profile=$rcout_p"
 fi
 
+# ---- C-CWD2: profile mode + an outside cwd: is anything actually readable? ---
+# The corrected N-d assertion has to say what nono DOES (nothing) and whether the
+# ungranted launch directory leaks. Both arms below are what the launcher rule
+# (validate cmd.Dir yourself; never pass --allow-cwd) is built on.
+cwd2_rc=0
+cwd2_raw="$(cd "$M3_FIXTURE/other" && HOME="$M3_SB_HOME" "$M3_NONO" run -p "$M3_FIXTURE/cfg/communication-agent.json" --allow "$M3_FIXTURE/ws" -- sh -c "echo CWD=\$(pwd); cat '$M3_FIXTURE/other/secret.txt' 2>&1; ls '$M3_FIXTURE/other' 2>&1; exit 0" 2>&1)" || cwd2_rc=$?
+cwd2="$(printf '%s' "$cwd2_raw" | m3_oneline)"
+cwd2_pwd="$(printf '%s' "$cwd2_raw" | grep -o 'CWD=[^ ]*' | head -1 | m3_oneline)"
+if [ "$cwd2_rc" -eq 0 ] && ! printf '%s' "$cwd2_raw" | grep -q 'SECRET-NOT-GRANTED' && printf '%s' "$cwd2_raw" | grep -qi 'Permission denied'; then
+    check C-CWD2 PASS "no disclosure, but no abort either: with '-p <profile>' and a cwd outside the grants nono exits $cwd2_rc and the child's working directory became '$cwd2_pwd', while the ungranted launch dir stays unreadable even by absolute path ('$cwd2'). In profile mode the adapter owns the cwd rule entirely: require cmd.Dir inside its own rw grant list BEFORE launching, and never read nono's exit status as proof"
+else
+    check C-CWD2 FAIL "profile-mode cwd is not understood (exit=$cwd2_rc '$cwd2') — no cwd assertion may rely on nono until this is measured"
+fi
+cwd3_rc=0
+cwd3_raw="$(cd "$M3_FIXTURE/other" && HOME="$M3_SB_HOME" "$M3_NONO" run -s --allow-cwd --allow "$M3_FIXTURE/ws" -- cat "$M3_FIXTURE/other/secret.txt" 2>&1)" || cwd3_rc=$?
+cwd3="$(printf '%s' "$cwd3_raw" | m3_oneline)"
+if printf '%s' "$cwd3_raw" | grep -q 'SECRET-NOT-GRANTED'; then
+    check C-CWD3 PASS "hazard confirmed, so the launcher rule is load-bearing: '--allow-cwd' is a GRANT, not an assertion — with it (flags-only argv) the launch directory outside the intended grants became readable (exit=$cwd3_rc '$cwd3'). The M3 launcher must never pass it, and must not need it: every launch sets cmd.Dir inside the workspace"
+else
+    check C-CWD3 N/A "'--allow-cwd' did not widen the grant set on this build (exit=$cwd3_rc '$cwd3') — never passing it stays as defence in depth, not a measured requirement"
+fi
+
 # ---- C-ND: the grant-list assertion needs the non-silent form ---------------
 nd_raw="$(cd "$M3_FIXTURE/ws" && HOME="$M3_SB_HOME" "$M3_NONO" run -p "$M3_FIXTURE/cfg/communication-agent.json" --allow "$M3_FIXTURE/ws" --read "$M3_FIXTURE/repos" -v --dry-run -- true 2>&1)"
 nd_lines="$(printf '%s\n' "$nd_raw" | grep -c .)"
@@ -263,6 +285,26 @@ if [ "$M3_RC" -eq 0 ]; then
     check C-FC2 FAIL "FC2 re-produced: with --sandbox-policy external the child reached the network (exit=0 '$M3_OUT') while --block-net was requested — ADR-0019 D2's 'never emit external' stands, and no M3 profile may accept it"
 else
     check C-FC2 PASS "FC2 no longer reproduces: egress stayed blocked with --sandbox-policy external (exit=$M3_RC '$M3_OUT')"
+fi
+
+# ---- C-FC2b: can any nono surface REPORT the resolved sandbox policy? -------
+# If none can, the adapter cannot outsource the "never external" rule to N-b/N-c/N-d
+# and must assert the shipped profile file's own contents instead.
+if [ -s "$M3_FIXTURE/cfg/communication-agent.json" ]; then
+    sed 's/"sandbox_policy":"landlock"/"sandbox_policy":"external"/' "$M3_FIXTURE/cfg/communication-agent.json" > "$M3_FIXTURE/cfg/external-agent.json"
+fi
+"$M3_NONO" profile show "$M3_FIXTURE/cfg/communication-agent.json" 2>&1 | grep -v "^nono profile: profile" >"$M3_FIXTURE/show-ll.txt"; show_ll_rc=$?
+"$M3_NONO" profile show "$M3_FIXTURE/cfg/external-agent.json" 2>&1 | grep -v "^nono profile: profile" >"$M3_FIXTURE/show-ext.txt"; show_ext_rc=$?
+"$M3_NONO" profile validate "$M3_FIXTURE/cfg/external-agent.json" >/dev/null 2>&1; val_ext_rc=$?
+show_diff=0; cmp -s "$M3_FIXTURE/show-ll.txt" "$M3_FIXTURE/show-ext.txt" || show_diff=1
+# /proc/<pid>/fd is granted per-invocation, so the pid is normalised before compare.
+norm() { sed -E 's|/proc/[0-9]+/|/proc/PID/|g' | m3_oneline; }
+gl_ll="$(cd "$M3_FIXTURE/ws" && HOME="$M3_SB_HOME" "$M3_NONO" run -p "$M3_FIXTURE/cfg/communication-agent.json" --allow "$M3_FIXTURE/ws" -v --dry-run -- true 2>&1 | grep -E '^[[:space:]]*(r\+w|=w|=r|sock|net|scope)' | norm)"
+gl_ext="$(cd "$M3_FIXTURE/ws" && HOME="$M3_SB_HOME" "$M3_NONO" run -p "$M3_FIXTURE/cfg/external-agent.json" --allow "$M3_FIXTURE/ws" -v --dry-run -- true 2>&1 | grep -E '^[[:space:]]*(r\+w|=w|=r|sock|net|scope)' | norm)"
+if [ "$show_ll_rc" -eq 0 ] && [ "$show_ext_rc" -eq 0 ] && [ "$val_ext_rc" -eq 0 ] && [ "$show_diff" -eq 0 ] && [ -n "$gl_ll" ] && [ "$gl_ll" = "$gl_ext" ]; then
+    check C-FC2b PASS "no nono surface reveals the policy: 'profile validate' accepts sandbox_policy=external (exit=$val_ext_rc), 'profile show' is identical for landlock and external once its own path echo is dropped ($(wc -c <"$M3_FIXTURE/show-ll.txt") bytes), and the dry-run rule lines are identical modulo the per-invocation /proc/<pid>/fd grant ('$gl_ll') — while C-FC2 shows the enforced behaviour differs. The 'never external' rule therefore cannot live in N-b/N-c/N-d: it must be a text assertion over the profile file the worker ships (which the recorded policy_digest already pins) plus a ban on the CLI flag"
+else
+    check C-FC2b FAIL "a nono surface did distinguish the two policies (validate=$val_ext_rc, show_diff=$show_diff, grants equal=$([ "$gl_ll" = "$gl_ext" ] && echo yes || echo no)) — N-b/N-c can assert the policy after all; record the observed difference and keep ADR-0019's chain as written"
 fi
 
 # ---- C-FC3: a nonexistent grant path is silently ignored --------------------

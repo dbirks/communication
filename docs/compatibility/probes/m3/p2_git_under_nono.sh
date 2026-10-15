@@ -88,6 +88,14 @@ if [ "$M3_RC" -eq 0 ]; then
 else
     check C-H1b FAIL "even the child-side HOME shape failed: exit=$M3_RC '$M3_OUT'"
 fi
+# The same thing without a shell, which is what a Go exec.Command needs: `env` as
+# the sandboxed program, HOME as its first argument.
+M3_SB_CWD="$B1" m3_sb --allow "$W1" --read "$M" -- env "HOME=$W1/home" git rev-parse --abbrev-ref HEAD
+if [ "$M3_RC" -eq 0 ] && printf '%s' "$M3_OUT" | grep -q 'run-1/backend'; then
+    check C-H1c PASS "spec.Env's HOME must be applied INSIDE the sandbox, never on nono's own process: 'nono run … -- env HOME=<ws>/home <adapter argv>' works shell-free (exit=0 '$M3_OUT'). That is the argv the launcher must build; nono's own HOME stays the worker's, because once nono runs with HOME=X it creates a protected state root under X and every later grant covering X is refused (C-H1)"
+else
+    check C-H1c FAIL "the shell-free env recipe does not work (exit=$M3_RC '$M3_OUT') — ADR-0019 D1's Env contract still has no launchable form"
+fi
 
 # ---- C-P7: reflog namespace must exist before a confined commit --------------
 mkdir -p "$W3/home"
@@ -177,11 +185,33 @@ printf 'WORKER-ONLY-BOOKKEEPING-MARKER' > "$W1/meta/workspace.json"
 grant_edit "$W1"
 M3_SB_CWD="$B1" m3_sb "${GRANTS[@]}" -- sh -c "cat '$W1/meta/workspace.json'; printf 'agent-touched' > '$W1/meta/agent-written'"
 if [ "$M3_RC" -eq 0 ] && printf '%s' "$M3_OUT" | grep -q WORKER-ONLY-BOOKKEEPING-MARKER && [ -e "$W1/meta/agent-written" ]; then
-    check C-META FAIL "05's 'meta/ is worker-only, never mounted to agent' does NOT hold under ADR-0019's grant shape: --allow <workspace root> is recursive, so the sandboxed child read meta/workspace.json AND wrote meta/agent-written (exit=0). meta/ must be a sibling of the granted tree, not a child of the workspace root"
+    check C-META FAIL "05's 'meta/ is worker-only, never mounted to agent' does NOT hold under ADR-0019's grant shape: --allow <workspace root> is recursive, so the sandboxed child read meta/workspace.json AND wrote meta/agent-written (exit=0). Either stop granting the workspace root (grant its agent-visible children instead — measured in C-GRANT/C-GRANT2 below) or move meta/ out of the granted tree"
 elif [ "$M3_RC" -ne 0 ] && printf '%s' "$M3_OUT" | grep -qi 'permission denied'; then
     check C-META PASS "meta/ was unreachable under the applied grants: exit=$M3_RC '$M3_OUT'"
 else
     check C-META FAIL "inconclusive: exit=$M3_RC '$M3_OUT'"
+fi
+
+# ---- C-GRANT: the corrected grant shape (what C-META's FAIL asks for) -------
+# Grant the three agent-visible CHILDREN of the workspace instead of its root,
+# so meta/ — which stays where 05 put it — is outside every grant by omission.
+rm -f "$W1/meta/agent-written"
+printf 'WORKER-ONLY-BOOKKEEPING-MARKER2' > "$W1/meta/workspace.json"
+M3_SB_CWD="$B1" m3_sb --allow "$W1/repos" --allow "$W1/scratch" --allow "$W1/home" --read "$M" -- sh -c "HOME='$W1/home' git status --porcelain && printf 'narrow-grant edit\\n' >> app.txt && printf s > '$W1/scratch/out.txt' && echo EDIT_OK"
+g_a_rc=$M3_RC; g_a="$M3_OUT"
+M3_SB_CWD="$B1" m3_sb --allow "$W1/repos" --allow "$W1/scratch" --allow "$W1/home" --read "$M" -- cat "$W1/meta/workspace.json"
+g_b_rc=$M3_RC; g_b="$M3_OUT"
+M3_SB_CWD="$B1" m3_sb --allow "$W1/repos" --allow "$W1/scratch" --allow "$W1/home" --read "$M" -- sh -c "printf 'agent-touched' > '$W1/meta/agent-written2'"
+g_c_rc=$M3_RC; g_c="$M3_OUT"
+if [ "$g_a_rc" = 0 ] && printf '%s' "$g_a" | grep -q EDIT_OK; then
+    check C-GRANT PASS "the minimal correction to ADR-0019 D1's 'rw <workspace>' is launchable: 'rw <ws>/repos + rw <ws>/scratch + rw <ws>/home + ro <mirror>' let git status and an edit in the worktree and a write in scratch/ all succeed (exit=0 '$g_a') — the workspace root itself never needs to be a grant"
+else
+    check C-GRANT FAIL "narrowing the grant to the agent-visible children broke git or the edit (exit=$g_a_rc '$g_a') — C-META's correction must be found another way"
+fi
+if [ "$g_b_rc" -ne 0 ] && ! printf '%s' "$g_b" | grep -q WORKER-ONLY-BOOKKEEPING-MARKER2 && [ "$g_c_rc" -ne 0 ] && [ ! -e "$W1/meta/agent-written2" ]; then
+    check C-GRANT2 PASS "and meta/ keeps 05's promise under that shape: read denied exit=$g_b_rc ('$g_b'), write denied exit=$g_c_rc ('$g_c'); host still sees meta/ as $(ls -1 "$W1/meta" | tr '\n' ' ' | m3_oneline) — 'worker-only, never mounted to agent' is achievable with omission alone, no nono deny rule needed"
+else
+    check C-GRANT2 FAIL "meta/ is still reachable under the narrow shape (read exit=$g_b_rc '$g_b'; write exit=$g_c_rc '$g_c'; meta/ now holds: $(ls -1 "$W1/meta" | tr '\n' ' ' | m3_oneline))"
 fi
 
 # ---- C-P8: a successful commit still prints an error line -------------------

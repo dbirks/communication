@@ -162,5 +162,23 @@ else
     check G10 FAIL "concurrent worktree add on $(git --version | awk '{print $3}'): $ok/6 succeeded, $listed listed in 'worktree list'; errors:$errs — the mirror's ref namespace is a real contention point that Prepare must serialize or retry"
 fi
 
+# ---- G10b: is serialization the sufficient remedy G10's FAIL asks for? ------
+# Same mirror, same number of adds, one at a time.
+rm -rf "$M3_FIXTURE/conc2"; mkdir -p "$M3_FIXTURE/conc2"
+sok=0; serr=""
+for i in 1 2 3 4 5 6; do
+    if git --git-dir="$MBAK" worktree add -q -b "conc2-$i" "$M3_FIXTURE/conc2/$i" main >"$M3_FIXTURE/conc2/$i.err" 2>&1; then
+        sok=$((sok+1))
+    else
+        serr="$serr [$i: $(m3_oneline < "$M3_FIXTURE/conc2/$i.err")]"
+    fi
+done
+slisted="$(git --git-dir="$MBAK" worktree list | grep -c 'conc2/')"
+if [ "$sok" = 6 ] && [ "$slisted" = 6 ]; then
+    check G10b PASS "serialization is sufficient on $(git --version | awk '{print $3}'): the same 6 'git worktree add -b' against one mirror, run one at a time, all succeeded (rc=0 x6, $slisted listed) — Prepare needs a per-mirror mutex (or a lockfile), not a git upgrade"
+else
+    check G10b FAIL "even serialized, $sok/6 adds succeeded on $(git --version | awk '{print $3}'); errors:$serr — the contention is not fixed by ordering alone"
+fi
+
 m3_cleanup
 exit 0

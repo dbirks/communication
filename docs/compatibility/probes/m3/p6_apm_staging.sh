@@ -24,12 +24,25 @@ while [ $# -gt 0 ]; do
     esac
 done
 m3_env_header
+echo "ENV glibc=$(ldd --version 2>&1 | head -1 | m3_oneline)"
 echo "ENV apm_bin=${M3_APM}"
-echo "ENV apm_version=$([ -x "$M3_APM" ] && "$M3_APM" --version 2>&1 | m3_oneline || echo MISSING)"
+apm_ver='MISSING'; apm_vrc=1
+if [ -x "$M3_APM" ]; then
+    apm_raw="$("$M3_APM" --version 2>&1)"; apm_vrc=$?
+    apm_ver="$(printf '%s' "$apm_raw" | m3_oneline)"
+fi
+echo "ENV apm_version=$apm_ver"
 echo
 
 if [ ! -x "$M3_APM" ]; then
     check A0 GAP "apm not found at $M3_APM — ADR-0008 D1's vendored 0.33.0 is not in this environment (and not in communication-worker:dev, which is the point: docs/m3-contract.md § 5 still has to vendor it)"
+    exit 0
+fi
+# A binary that exists but cannot execute is a missing precondition, not a
+# failed claim: reporting A1..A7 as FAIL would blame the APM behaviour we never
+# got to measure. The observed loader error is what A0 records instead.
+if [ "$apm_vrc" -ne 0 ]; then
+    check A0 GAP "apm is present at $M3_APM but cannot execute here (exit=$apm_vrc '$apm_ver') — A1..A7 are UNMEASURED in this environment, not failed"
     exit 0
 fi
 
@@ -81,50 +94,72 @@ else
     check A2 FAIL "apm wrote nothing into the per-run HOME ('$home_writes') — T4's premise may be stale, in which case home/ needs re-justifying"
 fi
 
-# ---- A3: the lock digest is per target ---------------------------------------
+tree_hash() { ( cd "$B1" && find .claude .agents apm_modules -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}' ); }
+
+# ---- A4: --frozen reproduces an UNCHANGED upstream (case 14's stability) -----
+# This runs BEFORE A3 deliberately: apm keeps ONE apm.lock.yaml per checkout
+# recording every target ever installed into it, so a codex install would move
+# the claude baseline and A4 would be measuring install history, not --frozen.
+d_base="$d_claude"; tree_base="$(tree_hash)"
+run_apm install --frozen --target claude >"$M3_FIXTURE/a4.log" 2>&1; a4rc=$?
+d_frozen="$(lock_digest)"; tree_frozen="$(tree_hash)"
+if [ "$a4rc" = 0 ] && [ "$d_frozen" = "$d_base" ] && [ "$tree_frozen" = "$tree_base" ]; then
+    check A4 PASS "case 14's stability half re-derived for an UNCHANGED upstream: 'apm install --frozen --target claude' over the same package reproduced the lock digest ($d_frozen) and the deployed tree exactly — C14d's 'turn 2 reproduces the SAME tree' holds while nothing upstream moved"
+else
+    check A4 FAIL "frozen install did not reproduce the unchanged-upstream install (rc=$a4rc digest $d_base -> $d_frozen; tree $tree_base -> $tree_frozen)"
+fi
+
+# ---- A5: --frozen does NOT freeze a local-path dependency -------------------
+printf '# alpha-skill\nALPHA-MARKER MUTATED-UPSTREAM\n' > "$M3_FIXTURE/pkgs/pkg-alpha/skills/alpha-skill/SKILL.md"
+printf 'extra: true\n' >> "$M3_FIXTURE/pkgs/pkg-alpha/apm.yml"
+run_apm install --frozen --target claude >"$M3_FIXTURE/a5.log" 2>&1; a5rc=$?
+d_mut="$(lock_digest)"; tree_mut="$(tree_hash)"
+deployed="$(cat "$B1/.claude/skills/alpha-skill/SKILL.md" 2>/dev/null | m3_oneline)"
+if [ "$a5rc" = 0 ] && [ "$d_mut" != "$d_frozen" ] && [ "$tree_mut" != "$tree_frozen" ] && printf '%s' "$deployed" | grep -q MUTATED; then
+    check A5 FAIL "docs/m3-contract.md C14d's 'no new package content appears' is FALSE for a local-path dependency: after mutating the upstream package, 'apm install --frozen --target claude' exited 0 — apm said '$(grep -i -m1 -o 'Lockfile presence verified[.][^.]*' "$M3_FIXTURE/a5.log" | head -1 | m3_oneline)' — and MOVED the lock digest (${d_frozen:0:12}… -> ${d_mut:0:12}…), replaced the deployed tree, and put the MUTATED content live ('$deployed'). --frozen verifies the lockfile is present; it does not pin local-path content. The control that works is ADR-0008 D4's pre-launch digest comparison (it sees this move)"
+else
+    check A5 FAIL "unexpected --frozen behaviour after an upstream mutation (rc=$a5rc digest $d_frozen -> $d_mut; tree changed=$([ "$tree_mut" != "$tree_frozen" ] && echo yes || echo no); deployed='$deployed')"
+fi
+
+# ---- A5b: the digest is a faithful change detector under BOTH flags ---------
+run_apm install --target claude >"$M3_FIXTURE/a5b.log" 2>&1; a5brc=$?
+d_unfrozen="$(lock_digest)"; deployed2="$(cat "$B1/.claude/skills/alpha-skill/SKILL.md" 2>/dev/null | m3_oneline)"
+if [ "$a5brc" = 0 ] && [ "$d_unfrozen" = "$d_mut" ] && printf '%s' "$deployed2" | grep -q MUTATED; then
+    check A5b PASS "the recorded digest moves exactly when package content moves, under --frozen and without it alike (both $d_unfrozen) — so 'validate sha256(apm.lock.yaml) against agent_profiles.apm_lock_digest before launch' (contract § 4.2 step 2 / ADR-0008 D4) catches restaging; --frozen contributes nothing to that control"
+else
+    check A5b FAIL "frozen and unfrozen digests diverged for the same tree (rc=$a5brc $d_mut -> $d_unfrozen, deployed='$deployed2')"
+fi
+
+# ---- A3: one shared lock, so the digest identifies the install SET ----------
 run_apm install --target codex >"$M3_FIXTURE/a3.log" 2>&1; a3rc=$?
 d_codex="$(lock_digest)"
 if [ "$a3rc" = 0 ] && [ -n "$d_claude" ] && [ -n "$d_codex" ] && [ "$d_claude" != "$d_codex" ]; then
-    check A3 PASS "APM.md T5 / ADR-0008's per-target digest: sha256(apm.lock.yaml) differs per target for the SAME dependency set (claude=$d_claude codex=$d_codex) — agent_profiles.apm_lock_digest must be one value per target, not one per profile"
+    check A3 PASS "APM.md T5 / ADR-0008's per-target digest, with a caveat: apm keeps ONE apm.lock.yaml per checkout, so adding '--target codex' to a checkout that already had claude MOVED the digest ($d_claude -> $d_codex) instead of writing a per-target lock. agent_profiles.apm_lock_digest is one value per profile only if exactly one target is ever installed into a run checkout"
 else
     check A3 FAIL "per-target digests did not differ as expected (rc=$a3rc claude=$d_claude codex=$d_codex)"
 fi
-
-# ---- A4: --frozen survives an upstream mutation (case 14) -------------------
-run_apm install --frozen --target claude >/dev/null 2>&1
-d_before="$(lock_digest)"; tree_before="$(cd "$B1" && find .claude apm_modules -type f | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')"
-printf '# alpha-skill\nALPHA-MARKER MUTATED-UPSTREAM\n' > "$M3_FIXTURE/pkgs/pkg-alpha/skills/alpha-skill/SKILL.md"
-printf 'extra: true\n' >> "$M3_FIXTURE/pkgs/pkg-alpha/apm.yml"
-run_apm install --frozen --target claude >"$M3_FIXTURE/a4.log" 2>&1; a4rc=$?
-d_after="$(lock_digest)"; tree_after="$(cd "$B1" && find .claude apm_modules -type f | sort | xargs sha256sum 2>/dev/null | sha256sum | awk '{print $1}')"
-deployed="$(cat "$B1/.claude/skills/alpha-skill/SKILL.md" 2>/dev/null | m3_oneline)"
-if [ "$a4rc" = 0 ] && [ "$d_before" = "$d_after" ] && [ "$tree_before" = "$tree_after" ] && ! printf '%s' "$deployed" | grep -q MUTATED; then
-    check A4 PASS "case 14's stability half re-derived: after the upstream local package was mutated, 'apm install --frozen' reproduced the identical lock digest ($d_after) and the identical deployed tree, and the mutated content did NOT appear ('$deployed')"
+run_apm install --frozen --target claude >"$M3_FIXTURE/a3b.log" 2>&1; a3brc=$?
+d_switch="$(lock_digest)"
+if [ "$a3brc" = 0 ] && [ "$d_switch" = "$d_codex" ] && [ "$d_switch" != "$d_claude" ]; then
+    check A3b PASS "a target switch is loud, not silent: 'install --frozen --target claude' on a checkout whose lock was last written by a codex install exited 0 but left the codex lock ($d_switch), so the recorded claude digest would NOT match and the pre-launch assertion refuses the launch rather than accepting a mixed-target tree"
 else
-    check A4 FAIL "frozen install did not survive the upstream mutation (rc=$a4rc digest $d_before -> $d_after; deployed='$deployed')"
-fi
-
-# ---- A5: an unfrozen install DOES pick the mutation up (the digest must move)
-run_apm install --target claude >"$M3_FIXTURE/a5.log" 2>&1; a5rc=$?
-d_unfrozen="$(lock_digest)"; deployed2="$(cat "$B1/.claude/skills/alpha-skill/SKILL.md" 2>/dev/null | m3_oneline)"
-if [ "$a5rc" = 0 ] && [ "$d_unfrozen" != "$d_after" ] && printf '%s' "$deployed2" | grep -q MUTATED; then
-    check A5 PASS "the refusal path is measurable: without --frozen the same install moved the digest ($d_after -> $d_unfrozen) and deployed the mutated content ('$deployed2') — so a digest check before launch catches restaging, exactly as ADR-0008 D4 requires"
-else
-    check A5 FAIL "unfrozen install did not move the digest/deploy the change (rc=$a5rc $d_after -> $d_unfrozen, deployed='$deployed2')"
+    check A3b FAIL "unexpected lock after a target switch (rc=$a3brc claude=$d_claude codex=$d_codex switch=$d_switch)"
 fi
 
 # ---- A6: APM's generated paths are git-visible until excluded ---------------
 status_raw="$(git -C "$B1" status --porcelain | tr '\n' ';' | m3_oneline)"
+ignored="$(cd "$B1" && for g in apm.yml apm.lock.yaml .gitignore .claude .agents apm_modules; do printf '%s=%s;' "$g" "$(git check-ignore -v "$g" 2>/dev/null | m3_oneline)"; done | m3_oneline)"
 mkdir -p "$M/info"
 for g in apm.yml apm.lock.yaml .gitignore .claude/ apm_modules/ .agents/ .codex/; do
     grep -qxF "$g" "$M/info/exclude" || printf '%s\n' "$g" >> "$M/info/exclude"
 done
 status_ex="$(git -C "$B1" status --porcelain | tr '\n' ';' | m3_oneline)"
-if printf '%s' "$status_raw" | grep -q 'apm_modules' && ! printf '%s' "$status_ex" | grep -qE 'apm_modules|\.claude'; then
+if printf '%s' "$status_raw" | grep -qE '\.claude|apm\.lock\.yaml|apm\.yml' && [ -z "$(git -C "$B1" status --porcelain)" ]; then
     check A6 PASS "contract § 4.2's exclusion step is load-bearing: before it, 'git status --porcelain' listed the staging output ($status_raw); after appending the generated paths to <mirror>/info/exclude it is clean ('$status_ex')"
 else
     check A6 FAIL "exclusion of APM output did not behave as expected (before='$status_raw' after='$status_ex')"
 fi
+note A6b "which generated paths git actually sees: status before exclusion='$status_raw'; check-ignore -v reports [$ignored] — apm_modules/ is hidden by the .gitignore apm itself wrote into the checkout, while apm.yml, apm.lock.yaml, .gitignore, .claude/ and .agents/ are visible until the mirror's info/exclude names them. The exclusion set must therefore include .gitignore (a new untracked file apm authors), and the contract cannot rely on apm's own .gitignore for the other five"
 
 # ---- A7: a per-run HOME is only isolated if someone deletes it --------------
 if [ -d "$W1/home/.apm" ] || [ -d "$W1/home/.cache/apm" ]; then

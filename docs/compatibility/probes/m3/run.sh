@@ -11,11 +11,13 @@ set -uo pipefail
 M3_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$M3_DIR"
 export M3_NONO="${M3_NONO:-$HOME/.local/bin/nono}"
+export M3_APM="${M3_APM:-$HOME/.local/bin/apm}"
 export M3_PROBE_ROOT_BASE="${M3_PROBE_ROOT_BASE:-$HOME/.cache/communication-lab/m3-probes}"
 M3_GROUPS="p1 p2 p3 p4 p5 p6"
 while [ $# -gt 0 ]; do
     case "$1" in
         --nono)   M3_NONO="$2"; shift 2 ;;
+        --apm)    M3_APM="$2"; shift 2 ;;
         --root)   M3_PROBE_ROOT_BASE="$2"; shift 2 ;;
         --groups) M3_GROUPS="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -27,7 +29,7 @@ LOG="$(mktemp "${M3_PROBE_ROOT_BASE}/run.XXXXXX.log")"
 emit() { printf '%s\n' "$@" | tee -a "$LOG"; }
 
 emit "== m3 probe suite"
-emit "SUITE nono=$M3_NONO root=$M3_PROBE_ROOT_BASE groups='$M3_GROUPS' host=$(uname -n) date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+emit "SUITE nono=$M3_NONO apm=$M3_APM root=$M3_PROBE_ROOT_BASE groups='$M3_GROUPS' host=$(uname -n) date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 for g in $M3_GROUPS; do
     case "$g" in
         p1) f=p1_git_worktrees.sh ;;

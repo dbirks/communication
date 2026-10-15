@@ -1,13 +1,14 @@
 == m3 probe suite
-SUITE nono=/home/david/.local/bin/nono root=/home/david/.cache/communication-lab/m3-probes groups='p1 p2 p3 p4 p5' host=delightful-goose date=2026-10-15T05:00:33Z
+SUITE nono=/home/david/.local/bin/nono apm=/home/david/.local/bin/apm root=/home/david/.cache/communication-lab/m3-probes groups='p1 p2 p3 p4 p5 p6' host=delightful-goose date=2026-10-15T06:13:39Z
 
 ================================================================
 ## p1_git_worktrees.sh
 ================================================================
 == m3 probe: p1_git_worktrees
-ENV date=2026-10-15T05:00:33Z
+ENV date=2026-10-15T06:13:39Z
 ENV user=david uid=1000 gid=1000
 ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
 ENV lsm=capability,landlock,lockdown,yama,bpf
 ENV git=git version 2.56.0 
 ENV nono_bin=/home/david/.local/bin/nono
@@ -27,16 +28,18 @@ CHECK G5 PASS ADR-0017 X5 re-derived: run-2's file at the same relative path is 
 CHECK G6 PASS ADR-0017 X3 re-derived: with extensions.worktreeConfig=true, git status fails exit=128: 'fatal: this operation must be run in a work tree' (unset restored normal: '')
 CHECK G7 PASS case-17 shape re-derived unsandboxed: run-1 committed app.txt, run-2 file unchanged and status empty
 CHECK G8 PASS WORKSPACES W5 re-derived: copied worktree without its mirror fails exit=128: 'fatal: gitfile does not point to a valid repository: /home/david/.cache/communication-lab/m3-probes/p1/copied/backend/.git'
-CHECK G9 PASS WORKSPACES W6 re-derived: remove --force + prune dropped run-2; run-1 intact and clean (/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git (bare) /home/david/.cache/communication-lab/m3-probes/p1/workspaces/run/run-1/repos/backend 795c7ee [run-1/backend] )
+CHECK G9 PASS WORKSPACES W6 re-derived: remove --force + prune dropped run-2; run-1 intact and clean (/home/david/.cache/communication-lab/m3-probes/p1/repos/projA/backend.git (bare) /home/david/.cache/communication-lab/m3-probes/p1/workspaces/run/run-1/repos/backend b3bbebd [run-1/backend] )
 CHECK G10 PASS ADR-0017's untested item 'concurrent Prepare of two runs against one mirror': 6 parallel 'git worktree add -b' against one mirror all succeeded (rc=0 x6, 6 worktrees listed) on 2.56.0 — no index.lock/refs contention observed
+CHECK G10b PASS serialization is sufficient on 2.56.0: the same 6 'git worktree add -b' against one mirror, run one at a time, all succeeded (rc=0 x6, 6 listed) — Prepare needs a per-mirror mutex (or a lockfile), not a git upgrade
 
 ================================================================
 ## p2_git_under_nono.sh
 ================================================================
 == m3 probe: p2_git_under_nono
-ENV date=2026-10-15T05:00:33Z
+ENV date=2026-10-15T06:13:40Z
 ENV user=david uid=1000 gid=1000
 ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
 ENV lsm=capability,landlock,lockdown,yama,bpf
 ENV git=git version 2.56.0 
 ENV nono_bin=/home/david/.local/bin/nono
@@ -48,28 +51,32 @@ ENV fixture=/home/david/.cache/communication-lab/m3-probes/p2
 
 NOTE PATHS mirror=/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git run-1 wt=/home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/repos/backend admin=backend run-2 admin=backend1
 CHECK C-P10 PASS P10 re-derived: the worktree grant alone breaks git (exit=128) — 'fatal: gitfile does not point to a valid repository: /home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/repos/backend/.git'
-CHECK C-P10b PASS adding 'ro <mirror>' fixes it: exit=0 '6bd1f92 seed backend'
+CHECK C-P10b PASS adding 'ro <mirror>' fixes it: exit=0 '88a1b68 seed backend'
 CHECK C-P6 PASS ungranted HOME aborts git even with -c identity flags: exit=128 'warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gitconfig': Permission denied warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gitconfig': Permission denied warning: unable to access '/home/david/.cache/communication-lab/m3-probes/p2/outside-home/.gi
 CHECK C-P6b PASS HOME inside the grants (workspace home/) works: exit=0 ''
 CHECK C-H1 FAIL ADR-0019 Decision 1's argv is not launchable as written: handing HOME=<workspace>/home to the nono process makes nono REFUSE the workspace grant — exit=1 'nono: Sandbox initialization failed: Refusing to grant '/home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1' (source: CLI) because it overlaps protected nono state root '/home/david/.cache/communication-lab/m3-probes/p2/worksp
 CHECK C-H1b PASS the working shape: nono's own HOME outside the grants, child HOME=<workspace>/home inside -> exit=0 'run-1/backend'
+CHECK C-H1c PASS spec.Env's HOME must be applied INSIDE the sandbox, never on nono's own process: 'nono run … -- env HOME=<ws>/home <adapter argv>' works shell-free (exit=0 'run-1/backend'). That is the argv the launcher must build; nono's own HOME stays the worker's, because once nono runs with HOME=X it creates a protected state root under X and every later grant covering X is refused (C-H1)
 CHECK C-P7 PASS P7 re-derived: without pre-created <mirror>/logs/refs/heads/run-3 the commit failed exit=128 'fatal: cannot update the ref 'refs/heads/run-3/backend': unable to create directory for '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/logs/refs/heads/run-3/backend': No such file or directory'; after worker-side mkdir -p the same grant set committed (exit=0)
-CHECK C-P2 PASS P2 re-derived: sandboxed commit with exactly rw <ws> + rw <mirror>/objects + rw refs/heads/run-1 + rw logs/refs/heads/run-1 + rw <admin> + ro <mirror> succeeded ('28386c1 narrow-set commit '); every changed mirror path (15 of them) was inside the granted set
+CHECK C-P2 PASS P2 re-derived: sandboxed commit with exactly rw <ws> + rw <mirror>/objects + rw refs/heads/run-1 + rw logs/refs/heads/run-1 + rw <admin> + ro <mirror> succeeded ('f4b0148 narrow-set commit '); every changed mirror path (15 of them) was inside the granted set
 CHECK C-P3 PASS P3 re-derived: with the mirror ro only the commit failed exit=128 'fatal: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/worktrees/backend3/index.lock': Permission denied fatal: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/worktrees/backend3/index.lock': Permission denied'
 CHECK C-P4 PASS P4 re-derived as a control pair: run-2's sandboxed 'git update-ref refs/heads/run-1/backend' denied exit=128 ('fatal: update_ref failed for ref 'refs/heads/run-1/backend': cannot lock ref 'refs/heads/run-1/backend': Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/refs/heads/run-1/backend.lock': Permission denied'); the identical unsandboxed command succe
-NOTE C-P4 post-control ref run-1/backend -> 28386c1220
+NOTE C-P4 post-control ref run-1/backend -> f4b01481ac
 CHECK C-P5 PASS P5 re-derived: run-2's sandbox CAN read run-1's branch through the shared mirror (exit=0, 0 lines of output) — a limitation, not a defect
 CHECK C-X4 PASS exit=1 /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/info/exclude: Permission denied
-CHECK C-META FAIL 05's 'meta/ is worker-only, never mounted to agent' does NOT hold under ADR-0019's grant shape: --allow <workspace root> is recursive, so the sandboxed child read meta/workspace.json AND wrote meta/agent-written (exit=0). meta/ must be a sibling of the granted tree, not a child of the workspace root
-CHECK C-P8 PASS P8 re-derived: exit=0 with 'error: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/packed-refs.lock': Permission denied' — stderr noise is NOT a failure signal; the post-commit ref readback (06e29f369fb723dfd0ce1c502c5e9362e90b39bb ) is the proof
+CHECK C-META FAIL 05's 'meta/ is worker-only, never mounted to agent' does NOT hold under ADR-0019's grant shape: --allow <workspace root> is recursive, so the sandboxed child read meta/workspace.json AND wrote meta/agent-written (exit=0). Either stop granting the workspace root (grant its agent-visible children instead — measured in C-GRANT/C-GRANT2 below) or move meta/ out of the granted tree
+CHECK C-GRANT PASS the minimal correction to ADR-0019 D1's 'rw <workspace>' is launchable: 'rw <ws>/repos + rw <ws>/scratch + rw <ws>/home + ro <mirror>' let git status and an edit in the worktree and a write in scratch/ all succeed (exit=0 'EDIT_OK') — the workspace root itself never needs to be a grant
+CHECK C-GRANT2 PASS and meta/ keeps 05's promise under that shape: read denied exit=1 ('cat: /home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/meta/workspace.json: Permission denied'), write denied exit=1 ('/usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p2/workspaces/run/run-1/meta/agent-written2: Permission denied'); host still sees meta/ as workspace.json — 'worker-only, ne
+CHECK C-P8 PASS P8 re-derived: exit=0 with 'error: Unable to create '/home/david/.cache/communication-lab/m3-probes/p2/repos/projA/backend.git/packed-refs.lock': Permission denied' — stderr noise is NOT a failure signal; the post-commit ref readback (43aea761f0ca8e21709b7a669899073483564ac4 ) is the proof
 
 ================================================================
 ## p3_nono_policy.sh
 ================================================================
 == m3 probe: p3_nono_policy
-ENV date=2026-10-15T05:00:37Z
+ENV date=2026-10-15T06:13:44Z
 ENV user=david uid=1000 gid=1000
 ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
 ENV lsm=capability,landlock,lockdown,yama,bpf
 ENV git=git version 2.56.0 
 ENV nono_bin=/home/david/.local/bin/nono
@@ -80,9 +87,9 @@ ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3
 ENV fixture=/home/david/.cache/communication-lab/m3-probes/p3
 
 CHECK C-PROBE PASS N-a: nono setup --check-only exit=0 — Landlock V6, 'Filesystem ruleset creation verified' and 1 'TCP network rule support verified' line(s); kernel 7.2.9-arch1-1; lsm capability,landlock,lockdown,yama,bpf
-CHECK C-TMP1 PASS P9/N1 re-derived: with a single rw grant OUTSIDE any temp dir the sandboxed child WROTE TMP_WRITE_OK (host-visible, content ''); same run's other arms: /usr/bin/sh: line 1: /var/tmp/m3-probe-2255361: Permission denied VARTMP_DENIED /usr/bin/sh: line 1: /dev/shm/m3-probe-2255361: Permission denied SHM_DENIED ETC_READ_DENIED. 'Denied by omission' is FALSE under /tmp — ADR-0017 D5's hard rule stands
+CHECK C-TMP1 PASS P9/N1 re-derived: with a single rw grant OUTSIDE any temp dir the sandboxed child WROTE TMP_WRITE_OK (host-visible, content ''); same run's other arms: /usr/bin/sh: line 1: /var/tmp/m3-probe-2461004: Permission denied VARTMP_DENIED /usr/bin/sh: line 1: /dev/shm/m3-probe-2461004: Permission denied SHM_DENIED ETC_READ_DENIED. 'Denied by omission' is FALSE under /tmp — ADR-0017 D5's hard rule stands
 CHECK C-TMP2 PASS ADR-0017 D5 / ADR-0019's 'absence-of-grant is the only deny mechanism' re-derived the hard way: a profile-level filesystem.deny of [/tmp,/var/tmp,/dev/shm] did NOT stop the write (DENY_FAILED_WRITE_OK) — the layered default's write grant wins, so FSDeny stays an adapter-level configuration error rather than a policy tool
-CHECK C-TMP3 PASS the /tmp write comes from the system_write_linux group: excluding it denied /tmp. Side effect observed: /usr/bin/sh: line 2: /tmp/m3-notemp-2255407: Permission denied TMP_WRITE_DENIED /usr/bin/sh: line 3: /dev/null: Permission denied DEVNULL_WRITE_DENIED /usr/bin/sh: line 4: /dev/null: Permission denied GIT_BROKEN /usr/bin/sh: line 5: /dev/null: Permission denied NODE_BROKEN — /dev/null matters to
+CHECK C-TMP3 PASS the /tmp write comes from the system_write_linux group: excluding it denied /tmp. Side effect observed: /usr/bin/sh: line 2: /tmp/m3-notemp-2461059: Permission denied TMP_WRITE_DENIED /usr/bin/sh: line 3: /dev/null: Permission denied DEVNULL_WRITE_DENIED /usr/bin/sh: line 4: /dev/null: Permission denied GIT_BROKEN /usr/bin/sh: line 5: /dev/null: Permission denied NODE_BROKEN — /dev/null matters to
 CHECK C-RO PASS N2 re-derived: --read is read-only outside temp grants ('READ-ME /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p3/other/f: Permission denied RO_WRITE_DENIED')
 CHECK C-ROb N/A secret under a read grant is readable by design: exit=0 'SECRET-NOT-GRANTED' (this is ADR-0018's 'an agent granted read can exfiltrate' clause, not a defect)
 CHECK C-PROF PASS N3 re-derived: 'nono profile init <path>' refuses a path argument (exit=1 'nono: Profile parse error: Invalid profile name '/home/david/.cache/communication-lab/m3-probes/p3/cfg/comm-agent.json': must be alphanumeric with hyphens, no leading/trailing hyphens ') → the profile file must be authored, not generated (ADR-0009 D4 asset dir)
@@ -92,19 +99,22 @@ CHECK C-AFU PASS N-c: 'nono profile show <path>' reports 'AF_UNIX mediation: Pat
 CHECK C-SILENT FAIL the ADR-0019 chain runs nono with -s everywhere except N-d, and that is load-bearing: 'run -s -p <path> -v --dry-run' printed 0 line(s) (no grant list at all) while the same argv without -s printed 62. An adapter that reuses its silent flags for N-d asserts against empty output and passes vacuously
 CHECK C-AFU2 PASS N4's premise re-derived: the verbose dry-run (62 lines, 1 [user] + 39 [group:] grants) contains NO AF_UNIX line — the mediation assertion must come from 'nono profile show'
 NOTE C-SOCK control (no profile, socket ungranted): connect SUCCEEDED — reproduces SANDBOX.md C7's fail-open on a socket we own: 'M3-ECHO unix'
-CHECK C-SOCK PASS N4 re-derived with our own profile file: af_unix_mediation=pathname denied connect() to an ungranted AF_UNIX socket — 'curl: (7) Failed to connect to localhost:80 over unix:///home/david/.cache/communication-lab/m3-probes/p3/sock/probe.sock after 11 ms: Could not connect to server CURL_DENIED' (control had connected: 'M3-ECHO unix')
+CHECK C-SOCK PASS N4 re-derived with our own profile file: af_unix_mediation=pathname denied connect() to an ungranted AF_UNIX socket — 'curl: (7) Failed to connect to localhost:80 over unix:///home/david/.cache/communication-lab/m3-probes/p3/sock/probe.sock after 1 ms: Could not connect to server CURL_DENIED' (control had connected: 'M3-ECHO unix')
 CHECK C-SOCKb PASS positive control: explicitly granting the socket restores it (mediation is a real gate, not a blanket block): 'M3-ECHO unix' (rc=0)
-CHECK C-SOCK2 PASS SANDBOX.md C7's remedy re-derived with our own profile file: the docker socket was unreachable from inside the sandbox (exit=0 'curl: (7) Failed to connect to localhost:80 over unix:///var/run/docker.sock after 7 ms: Could not connect to server code=000child_rc=7')
+CHECK C-SOCK2 PASS SANDBOX.md C7's remedy re-derived with our own profile file: the docker socket was unreachable from inside the sandbox (exit=0 'curl: (7) Failed to connect to localhost:80 over unix:///var/run/docker.sock after 8 ms: Could not connect to server code=000child_rc=7')
 NOTE C-CWD argv 'nono run -s --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=1
 NOTE C-CWD argv 'nono run -s -p /home/david/.cache/communication-lab/m3-probes/p3/cfg/communication-agent.json --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
 NOTE C-CWD argv 'nono run --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
 NOTE C-CWD argv 'nono run -p /home/david/.cache/communication-lab/m3-probes/p3/cfg/communication-agent.json --allow <ws> -v --dry-run': cwd-inside exit=0, cwd-outside exit=0
 CHECK C-CWD FAIL ADR-0019 N-d's exit-status assertion is FALSE for the configuration ADR-0009 mandates: with CLI flags only a cwd outside the grants exits 1 ('CWD access requires --allow-cwd'), but with '-p <profile path>' the SAME command exits 0 and simply skips the CWD grant. A required-mode adapter must therefore validate cmd.Dir itself (requireDirInsideReadWrite) and never read N-d's exit status as the CWD pr
+CHECK C-CWD2 PASS no disclosure, but no abort either: with '-p <profile>' and a cwd outside the grants nono exits 0 and the child's working directory became 'CWD=/ ', while the ungranted launch dir stays unreadable even by absolute path (' nono v0.80.0 Capabilities: ──────────────────────────────────────────────────── r+w /proc/2461425/fd (dir) r+w /dev/pts (dir) r+w /dev/null (file) r+w /dev/zero (file) r+w /dev/t
+CHECK C-CWD3 PASS hazard confirmed, so the launcher rule is load-bearing: '--allow-cwd' is a GRANT, not an assertion — with it (flags-only argv) the launch directory outside the intended grants became readable (exit=0 'SECRET-NOT-GRANTED'). The M3 launcher must never pass it, and must not need it: every launch sets cmd.Dir inside the workspace
 CHECK C-ND PASS N-d is observable WITHOUT -s: 63 lines, 2 [user] grant(s), 39 [group:…] grant(s); our profile's resolved list names /tmp 0 time(s) vs 1 for '-p default' — the merged list is the right place to assert the grant set and to catch a temp-dir grant
 CHECK C-MISSING PASS N6 re-derived: missing profile → exit=1 and the child was NEVER exec'd (marker absent): 'nono: Profile read error at /home/david/.cache/communication-lab/m3-probes/p3/cfg/does-not-exist.json: profile file not found '
-CHECK C-EG1 PASS agent-turn-egress-denied shape: --block-net denied a loopback TCP connect (port 34269): 'curl: (7) Failed to connect to 127.0.0.1:34269 after 0 ms: Could not connect to server CURL_DENIED' (this is the command-only profile case 13 needs)
+CHECK C-EG1 PASS agent-turn-egress-denied shape: --block-net denied a loopback TCP connect (port 35329): 'curl: (7) Failed to connect to 127.0.0.1:35329 after 0 ms: Could not connect to server CURL_DENIED' (this is the command-only profile case 13 needs)
 CHECK C-EG2 PASS agent-turn shape: without --block-net the same connect succeeded ('M3-ECHO tcp') — this is the observed proof that M3's agent-turn profile carries network_enforced=false, exactly as ADR-0019 D3 states
 CHECK C-FC2 FAIL FC2 re-produced: with --sandbox-policy external the child reached the network (exit=0 '200') while --block-net was requested — ADR-0019 D2's 'never emit external' stands, and no M3 profile may accept it
+CHECK C-FC2b PASS no nono surface reveals the policy: 'profile validate' accepts sandbox_policy=external (exit=0), 'profile show' is identical for landlock and external once its own path echo is dropped (836 bytes), and the dry-run rule lines are identical modulo the per-invocation /proc/<pid>/fd grant (' r+w /proc/PID/fd (dir) [profile] r+w /dev/pts (dir) [profile] r+w /dev/null (file) [profile] r+w /dev/zero (fil
 CHECK C-FC3 PASS FC3 re-derived: non-existent grant ignored with no error, sandbox still applied (exit=1 'cat: /home/david/.cache/communication-lab/m3-probes/p3/other/secret.txt: Permission denied') — the adapter must validate grant paths itself (ADR-0019 FC3/N-d)
 NOTE C-CMD default-profile dangerous_commands as observed: cp: cannot open '/home/david/.cache/communication-lab/m3-probes/p3/other/f' for reading: Permission denied CP_BLOCKED — mode after the sandboxed chmod: 600. nono documents command blocking as bypassable, so it is not a control — but a materializer still must use O_CREAT|O_EXCL + umask rather than chmod (nono documents command blocking as bypassable, 
 
@@ -112,9 +122,10 @@ NOTE C-CMD default-profile dangerous_commands as observed: cp: cannot open '/hom
 ## p4_secrets_env.sh
 ================================================================
 == m3 probe: p4_secrets_env
-ENV date=2026-10-15T05:00:40Z
+ENV date=2026-10-15T06:13:47Z
 ENV user=david uid=1000 gid=1000
 ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
 ENV lsm=capability,landlock,lockdown,yama,bpf
 ENV git=git version 2.56.0 
 ENV nono_bin=/home/david/.local/bin/nono
@@ -141,16 +152,17 @@ CHECK C-XPROJ3 PASS exit=128 (non-zero, content not returned) fatal: not a git r
 CHECK C-XPROJ3b PASS exit=2 ls: cannot open directory '/home/david/.cache/communication-lab/m3-probes/p4/workspaces/run/run-B': Permission denied
 CHECK C-XPROJ3c PASS exit=1 /usr/bin/sh: line 1: /home/david/.cache/communication-lab/m3-probes/p4/repos/projB/backend-b.git/info/exclude: Permission denied
 CHECK C-XPROJ4 N/A measured, and it is the D-025 caveat rather than a bug: with the SAME uid and NO sandbox, project B's 0600 secret is readable ('SENTINEL-B-7777-other-project-database_url=postgres://b:pw@h/db'). Everything ADR-0018 defends is the DB dump / API / journal / artifacts — never a hostile same-uid process on the worker
-CHECK C-ENV8 PASS temp paths are an INTEGRITY hole, not a disclosure hole: project B's sandbox could not READ A's 0600 secret under /tmp (exit=1 'cat: /tmp/communication-m3-probe-p4.2255954/run-A/repos/backend/.env.test.local: Permission denied') but it TRUNCATED AND REPLACED it ('CLOBBER_OK'; host now sees 'clobbered-by-B '). ADR-0017 D5's ban is still required — and ADR-0019's wording ('writable by any agent') is
-CHECK C-ENV8b N/A the default temp grant is WRITE-ONLY — an agent cannot even read back what it wrote there: 'cat: /tmp/communication-m3-probe-p4.2255954/self.txt: Permission denied SELF_READ_DENIED'. It also means a spool area under /tmp cannot be trusted as an artifact staging dir (ADR-0020 D2)
+CHECK C-ENV8 PASS temp paths are an INTEGRITY hole, not a disclosure hole: project B's sandbox could not READ A's 0600 secret under /tmp (exit=1 'cat: /tmp/communication-m3-probe-p4.2461708/run-A/repos/backend/.env.test.local: Permission denied') but it TRUNCATED AND REPLACED it ('CLOBBER_OK'; host now sees 'clobbered-by-B '). ADR-0017 D5's ban is still required — and ADR-0019's wording ('writable by any agent') is
+CHECK C-ENV8b N/A the default temp grant is WRITE-ONLY — an agent cannot even read back what it wrote there: 'cat: /tmp/communication-m3-probe-p4.2461708/self.txt: Permission denied SELF_READ_DENIED'. It also means a spool area under /tmp cannot be trusted as an artifact staging dir (ADR-0020 D2)
 
 ================================================================
 ## p5_volume_identity.sh
 ================================================================
 == m3 probe: p5_volume_identity
-ENV date=2026-10-15T05:00:42Z
+ENV date=2026-10-15T06:13:48Z
 ENV user=david uid=1000 gid=1000
 ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
 ENV lsm=capability,landlock,lockdown,yama,bpf
 ENV git=git version 2.56.0 
 ENV nono_bin=/home/david/.local/bin/nono
@@ -160,14 +172,55 @@ ENV node=v26.11.1
 ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
 ENV fixture=/home/david/.cache/communication-lab/m3-probes/p5
 
-CHECK V1 N/A named volume m3probe-v1-2256486 mounted at /workspaces in a fresh container: st_dev=30 inode=19414245
-CHECK V2 PASS ADR-0017 D2's premise, same-volume arm: the same named volume at the same path reports the same st_dev AND inode in two fresh containers (30 19414245 == 30 19414245) — an identity derived from (dev, inode, path) survives a worker restart
+CHECK V1 N/A named volume m3probe-v1-2462333 mounted at /workspaces in a fresh container: st_dev=30 inode=19522917
+CHECK V2 PASS ADR-0017 D2's premise, same-volume arm: the same named volume at the same path reports the same st_dev AND inode in two fresh containers (30 19522917 == 30 19522917) — an identity derived from (dev, inode, path) survives a worker restart
 CHECK V3 FAIL ADR-0017 D2's derivation is INSUFFICIENT as written: two DIFFERENT docker named volumes at the same path share st_dev (30 == 30 — docker volumes are bind mounts of host directories on one filesystem), so 'resolves the st_dev of its workspace root, hashes the device identity plus the root path' would call a replaced volume the SAME volume and silently reclaim workspaces that are gone (case 20's hon
 CHECK V4 PASS compose.harness.yml's shape (host bind over a volume path): bind mount is on st_dev 52 vs the named volume's 30 at the identical path — switching the dev harness really does change volume identity
-CHECK V5 PASS ADR-0017 D1's 'repos/ beside workspaces/ on the same worker volume': one volume mounted at both paths reports one st_dev (workspaces=30 19414449 repos=30 19414449) — 'same volume' is a device statement that holds
-CHECK V5b FAIL docs/m3-contract.md § 5 gives the mirror root its OWN named volume beside the workspaces volume — measured /workspaces=(dev 30, ino 19414245) and /repos=(dev 30, ino 19414347): same device, different inode. workers.volume_id is one column, so it names exactly one of the two trees; the recovery rule has to say which, or store the identity per path (workspace_repos.mirror_path is already per-path)
-CHECK V6 N/A the worker image's own view of its configured root, i.e. the exact tuple ADR-0017 D2 hashes: root=/workspaces dev=30 ino=19414245 fstype=0 uid=10001
+CHECK V5 PASS ADR-0017 D1's 'repos/ beside workspaces/ on the same worker volume': one volume mounted at both paths reports one st_dev (workspaces=30 19523121 repos=30 19523121) — 'same volume' is a device statement that holds
+CHECK V5b FAIL docs/m3-contract.md § 5 gives the mirror root its OWN named volume beside the workspaces volume — measured /workspaces=(dev 30, ino 19522917) and /repos=(dev 30, ino 19523019): same device, different inode. workers.volume_id is one column, so it names exactly one of the two trees; the recovery rule has to say which, or store the identity per path (workspace_repos.mirror_path is already per-path)
+CHECK V6 N/A the worker image's own view of its configured root, i.e. the exact tuple ADR-0017 D2 hashes: root=/workspaces dev=30 ino=19522917 fstype=0 uid=10001
+
+================================================================
+## p6_apm_staging.sh
+================================================================
+== m3 probe: p6_apm_staging
+ENV date=2026-10-15T06:13:56Z
+ENV user=david uid=1000 gid=1000
+ENV kernel=7.2.9-arch1-1 machine=x86_64
+ENV locale=en_US.UTF-8 (cut -c in m3_oneline is byte-based under POSIX)
+ENV lsm=capability,landlock,lockdown,yama,bpf
+ENV git=git version 2.56.0 
+ENV nono_bin=/home/david/.local/bin/nono
+ENV nono_version=nono 0.80.0 
+ENV nono_sha256=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+ENV node=v26.11.1 
+ENV curl=curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.6.5 zlib/1.3.2 brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.70.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 
+ENV fixture=/home/david/.cache/communication-lab/m3-probes/p6
+
+ENV glibc=ldd (GNU libc) 2.44 
+ENV apm_bin=/home/david/.local/bin/apm
+ENV apm_version=Agent Package Manager (APM) CLI version 0.33.0 (18c4c43)
+
+CHECK A1 PASS contract § 4.2 step 2 shape: 'HOME=<workspace>/home apm install --target claude' staged into the run checkout (.claude/skills/alpha-skill/SKILL.md apm_modules/_local/pkg-alpha/apm.yml apm.lock.yaml .gitignore )
+CHECK A2 PASS APM.md T4 re-derived in the run HOME: apm wrote .gitconfig .cache .cache/apm .apm .apm/config.json into <workspace>/home — which is exactly why home/ exists (deviation D2) and why it must be deleted with the unit
+CHECK A4 PASS case 14's stability half re-derived for an UNCHANGED upstream: 'apm install --frozen --target claude' over the same package reproduced the lock digest (a913098dac550d5c963fb606dd93763ffec60b40422ddd258e9b5fbf91ea2c0d) and the deployed tree exactly — C14d's 'turn 2 reproduces the SAME tree' holds while nothing upstream moved
+CHECK A5 FAIL docs/m3-contract.md C14d's 'no new package content appears' is FALSE for a local-path dependency: after mutating the upstream package, 'apm install --frozen --target claude' exited 0 — apm said 'Lockfile presence verified. Run 'apm audit' for on-disk content integrity ' — and MOVED the lock digest (a913098dac55… -> a63f1423e9f5…), replaced the deployed tree, and put the MUTATED content live ('# al
+CHECK A5b PASS the recorded digest moves exactly when package content moves, under --frozen and without it alike (both a63f1423e9f564c2938da531df0aca7f44fbe0bbf4a0f0e4606147d7f189383d) — so 'validate sha256(apm.lock.yaml) against agent_profiles.apm_lock_digest before launch' (contract § 4.2 step 2 / ADR-0008 D4) catches restaging; --frozen contributes nothing to that control
+CHECK A3 PASS APM.md T5 / ADR-0008's per-target digest, with a caveat: apm keeps ONE apm.lock.yaml per checkout, so adding '--target codex' to a checkout that already had claude MOVED the digest (a913098dac550d5c963fb606dd93763ffec60b40422ddd258e9b5fbf91ea2c0d -> 2093d182e3191e7915341533bda211b09bbbe21679e06566950ad1c9fa12a5f1) instead of writing a per-target lock. agent_profiles.apm_lock_digest is one value pe
+CHECK A3b PASS a target switch is loud, not silent: 'install --frozen --target claude' on a checkout whose lock was last written by a codex install exited 0 but left the codex lock (2093d182e3191e7915341533bda211b09bbbe21679e06566950ad1c9fa12a5f1), so the recorded claude digest would NOT match and the pre-launch assertion refuses the launch rather than accepting a mixed-target tree
+CHECK A6 PASS contract § 4.2's exclusion step is load-bearing: before it, 'git status --porcelain' listed the staging output (?? .agents/;?? .claude/;?? .gitignore;?? apm.lock.yaml;?? apm.yml;); after appending the generated paths to <mirror>/info/exclude it is clean ('')
+NOTE A6b which generated paths git actually sees: status before exclusion='?? .agents/;?? .claude/;?? .gitignore;?? apm.lock.yaml;?? apm.yml;'; check-ignore -v reports [apm.yml=;apm.lock.yaml=;.gitignore=;.claude=;.agents=;apm_modules=.gitignore:3:apm_modules/ apm_modules ;] — apm_modules/ is hidden by the .gitignore apm itself wrote into the checkout, while apm.yml, apm.lock.yaml, .gitignore, .claude/ and
+CHECK A7 N/A home/ carries harness state (APM.md T4) — ADR-0017 D7's 'home/ deleted with the attempt' is what makes it throwaway, and the artifact/checkpoint exclusion set must name home/ (contract § 4.6)
 
 == summary
-SUMMARY C-XPROJ3b=1 C-ENV5=1 C-SILENT=1 C-ROb=1 C-XPROJ3c=1 C-ENV6=1 C-TMP1=1 C-X4=1 C-P10=1 C-ENV7=1 C-SOCK2=1 C-PROFb=1 C-TMP2=1 C-ENV8=1 C-PROFc=1 C-TMP3=1 G1=1 C-P2=1 C-P6b=1 G2=1 V1=1 C-SOCK=1 C-P3=1 G3=1 V2=1 C-XPROJ1=1 C-ENV10=1 C-P4=1 G4=1 V3=1 C-XPROJ2=1 C-ENV4b=1 C-ND=1 C-CWD=1 C-P5=1 G5=1 V4=1 C-XPROJ3=1 C-EG1=1 C-PROF=1 C-PROBE=1 C-H1=1 C-P6=1 G6=1 G1b=1 V5b=1 V5=1 C-XPROJ4=1 C-ENV6b=1 C-ENV1=1 C-EG2=1 C-MISSING=1 C-AFU2=1 C-RO=1 C-P7=1 C-P10b=1 G7=1 G1c=1 V6=1 C-ENV2=1 C-FC2=1 C-AFU=1 C-P8=1 G10=1 G8=1 C-ENV8b=1 C-XPROJ1b=1 C-ENV3=1 C-FC3=1 C-SOCKb=1 C-META=1 C-H1b=1 G9=1 C-ENV4=1 TOTAL=74
-log: /home/david/.cache/communication-lab/m3-probes/run.VeuKoB.log
+SUMMARY PASS=73 FAIL=9 GAP=1 N/A=7 TOTAL=90
+FAILED_CLAIM G1b ADR-0017
+FAILED_CLAIM C-H1 ADR-0019
+FAILED_CLAIM C-META 05's
+FAILED_CLAIM C-SILENT the
+FAILED_CLAIM C-CWD ADR-0019
+FAILED_CLAIM C-FC2 FC2
+FAILED_CLAIM V3 ADR-0017
+FAILED_CLAIM V5b docs/m3-contract.md
+FAILED_CLAIM A5 docs/m3-contract.md
+log: /home/david/.cache/communication-lab/m3-probes/run.amF4oJ.log
