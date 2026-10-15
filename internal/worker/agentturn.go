@@ -164,6 +164,8 @@ type AgentTurn struct {
 	AskModeID func(launcherID string) string
 	// Permissions is the node policy answering session/request_permission.
 	Permissions PermissionPolicy
+	// ModePolicy, when wired, builds the per-attempt decider from the profile mode.
+	ModePolicy func(mode string) PermissionPolicy
 	// Checkpoints resolves the run workspace boundary identity. Nil until the
 	// § 4 step 3 wave wires it; successes then close as infra, visibly,
 	// naming the missing step — procexec's rule, same words.
@@ -443,11 +445,15 @@ func (a *AgentTurn) Execute(ctx context.Context, c AttemptClaim, sink AttemptSin
 		return *refusal, nil
 	}
 
+	policy := a.Permissions
+	if a.ModePolicy != nil {
+		policy = a.ModePolicy(prof.PermissionMode)
+	}
 	req := domain.SessionRequest{
 		LauncherID: prof.LauncherID,
 		WorkDir:    plan.Cwd,
 		ModeID:     modeID,
-		Decider:    a.permissionBridge(c, conv, sink),
+		Decider:    a.permissionBridge(c, conv, policy, sink),
 	}
 	// sessionMode: resume_if_supported is answered by the binding's existence
 	// (§ 4 step 6); when no resumable binding exists the configured fallback
@@ -762,7 +768,7 @@ func (a *AgentTurn) enforcementFailedPayload(c AttemptClaim, workspaceID string,
 // answers every prompt synchronously, and BOTH the request and the answer are
 // journalled as the reused M2 conversation.permission.* pair (§ 3's reuse
 // list) — an honest deny is visible, not a silent no.
-func (a *AgentTurn) permissionBridge(c AttemptClaim, conv AttemptConversation, sink AttemptSink) domain.PermissionDecider {
+func (a *AgentTurn) permissionBridge(c AttemptClaim, conv AttemptConversation, policy PermissionPolicy, sink AttemptSink) domain.PermissionDecider {
 	var seq atomic.Int64
 	return func(ctx context.Context, p domain.PermissionPrompt) (domain.PermissionChoice, error) {
 		if ctx.Err() != nil {
@@ -781,8 +787,8 @@ func (a *AgentTurn) permissionBridge(c AttemptClaim, conv AttemptConversation, s
 			Title: bounded(p.Title, 200), Kind: p.Kind, Options: options,
 		})
 		verdict := PermissionVerdict{}
-		if a.Permissions != nil {
-			verdict = a.Permissions(p)
+		if policy != nil {
+			verdict = policy(p)
 		}
 		chosen := ""
 		if verdict.OptionKind != "" {

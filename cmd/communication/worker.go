@@ -374,9 +374,12 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	// M4 attempt execution (§ 4): the loop claims fenced attempt leases up to
 	// the published capacity and dispatches each kind to its executor.
-	// process.exec is wired; every other claimed kind lands on the loop's
-	// honest refusal until its wave is (contract § 0: kinds land incrementally
-	// and an unwired kind is reported, never faked).
+	// process.exec and agent.acp are wired; every other claimed kind lands on
+	// the loop's honest refusal until its wave is (contract § 0: kinds land
+	// incrementally and an unwired kind is reported, never faked). The
+	// agent-turn executor is gated exactly as procexec is: this same loop,
+	// behind the registration-time sweep gate, under the worker's own
+	// enforcement mode, sharing the drain path (§ 4 step 12).
 	attemptStore := &postgres.AttemptStore{Runs: &postgres.RunStore{Pool: pool}}
 	procExec := &worker.ProcExec{
 		WorkspaceRoot: opts.workspaceRoot,
@@ -392,10 +395,14 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		// infra naming the unbound boundary — a claim about this wiring,
 		// never a checkpoint with an invented volume (D-024).
 	}
+	agentTurn := newAgentTurn(opts, pool, units, log)
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
-		worker.AttemptExecutors{worker.NodeKindProcessExec: procExec},
+		worker.AttemptExecutors{
+			worker.NodeKindProcessExec: procExec,
+			worker.NodeKindAgentACP:    agentTurn,
+		},
 		w.ID,
 		worker.WithAttemptLogger(log),
 	)
@@ -477,6 +484,41 @@ func acpAskModeID(launcherID string) string {
 		return ""
 	}
 	return l.AskModeID
+}
+
+// newAgentTurn assembles the agent.acp executor (contract § 4 steps 4–6, 8,
+// 10–12) on the same seams the § 4 step 6 wave owns: the attempt session
+// store and the pinned agent-profile read are the Postgres implementations,
+// the permission verdict is the node policy built per attempt from the
+// resolved profile's permission mode, and the spawn is the SAME acp factory
+// shape the M2 loop drives — RequirePlan set under `required`, so a session
+// whose context carries no verified launch plan is refused by the factory
+// rather than exec'd unsandboxed (ADR-0019 D6, no third branch). The sandbox
+// verifier, launcher-credential dirs and nono path are procexec's, so the
+// two kinds measure the same backend. Checkpoints is deliberately nil, same
+// as procExec: until the § 4 step 3 run-workspace wave binds it, a completed
+// turn closes as infra naming the unbound boundary — never a checkpoint with
+// an invented volume (D-024).
+func newAgentTurn(opts workerOptions, pool *pgxpool.Pool, units *worker.UnitService, log *slog.Logger) *worker.AgentTurn {
+	return &worker.AgentTurn{
+		WorkspaceRoot: opts.workspaceRoot,
+		LauncherHome:  opts.sandboxLauncherHome,
+		PolicyDir:     opts.policyDir,
+		SandboxPath:   nonoPath(),
+		Sandbox:       units.Sandbox,
+		Enforcement:   opts.sandboxEnforcement,
+		GitIdentity:   opts.agentGit,
+		LauncherAuth:  launcherCredentialDirs,
+		Spawn: &acp.Factory{
+			Runtime:     &acp.Runtime{Logger: log},
+			RequirePlan: opts.sandboxEnforcement == domain.EnforceRequired,
+		},
+		Profiles:   &postgres.AgentProfiles{Pool: pool},
+		Sessions:   &postgres.AttemptSessions{Runs: &postgres.RunStore{Pool: pool}},
+		AskModeID:  acpAskModeID,
+		ModePolicy: postgres.PermissionPolicyFor,
+		Logger:     log,
+	}
 }
 
 // sandboxRegistration is what this worker can honestly write into the

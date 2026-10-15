@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/internal/worker"
@@ -354,4 +357,72 @@ func TestWorkerCapacityEnv(t *testing.T) {
 			t.Errorf("capacity %q error = %v, want substring %q", bad.raw, err, bad.want)
 		}
 	}
+}
+
+// TestNewAgentTurnWiring pins the § 4 agent.acp dispatch's construction: the
+// seams are the Postgres implementations, the spawn is the same
+// plan-required ACP factory shape the M2 turn loop runs (RequirePlan tracks
+// the worker's enforcement mode — with it set, a session whose context
+// carries no verified launch plan is refused by the factory rather than
+// exec'd unsandboxed, ADR-0019 D6), and the permission verdict comes from the
+// per-attempt node policy factory. No real ACP execution is claimed here:
+// this asserts wiring, and the adapters stay image-only until the lab proves
+// them (§ 7's exit, docs/compatibility/ACP.md).
+func TestNewAgentTurnWiring(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	units := &worker.UnitService{} // the zero service: wiring reads fields, never calls
+
+	opts, err := workerOptionsFromEnv(env(map[string]string{
+		"COMMUNICATION_DATABASE_URL":        "postgres://communication@postgres:5432/communication",
+		"COMMUNICATION_SANDBOX_ENFORCEMENT": sandboxMode,
+	}))
+	if err != nil {
+		t.Fatalf("options: %v", err)
+	}
+	turn := newAgentTurn(opts, nil, units, log)
+	if turn == nil {
+		t.Fatal("newAgentTurn returned nil")
+	}
+	if turn.Sessions == nil || turn.Profiles == nil || turn.Spawn == nil {
+		t.Fatalf("unbound seams: sessions=%v profiles=%v spawn=%v", turn.Sessions, turn.Profiles, turn.Spawn)
+	}
+	if _, ok := turn.Sessions.(*postgres.AttemptSessions); !ok {
+		t.Errorf("Sessions = %T, want *postgres.AttemptSessions", turn.Sessions)
+	}
+	if _, ok := turn.Profiles.(*postgres.AgentProfiles); !ok {
+		t.Errorf("Profiles = %T, want *postgres.AgentProfiles", turn.Profiles)
+	}
+	factory, ok := turn.Spawn.(*acp.Factory)
+	if !ok {
+		t.Fatalf("Spawn = %T, want *acp.Factory", turn.Spawn)
+	}
+	if factory.RequirePlan {
+		t.Error("RequirePlan set under permissive-dev: the flag tracks the worker's mode, nothing else")
+	}
+	opts.sandboxEnforcement = domain.EnforceRequired
+	turn = newAgentTurn(opts, nil, units, log)
+	factory, _ = turn.Spawn.(*acp.Factory)
+	if !factory.RequirePlan {
+		t.Error("RequirePlan unset under required mode: an unsandboxed session would be reachable (ADR-0019 D6)")
+	}
+	if turn.ModePolicy == nil {
+		t.Fatal("ModePolicy unbound: prompts would answer without the node policy")
+	}
+	if v := turn.ModePolicy("deny")(promptWithKind("reject_once")); v.OptionKind != "reject_once" || v.DecidedBy == "" {
+		t.Errorf("deny verdict = %+v, want the reject option under a named decider", v)
+	}
+	if turn.AskModeID == nil || turn.AskModeID("no-such-launcher") != "" {
+		t.Error("AskModeID must resolve the registry and yield \"\" for unknown launchers")
+	}
+	if turn.WorkspaceRoot != opts.workspaceRoot || turn.LauncherHome != opts.sandboxLauncherHome ||
+		turn.PolicyDir != opts.policyDir || turn.Enforcement != opts.sandboxEnforcement {
+		t.Error("agent turn did not inherit the worker's roots/mode")
+	}
+	if turn.Checkpoints != nil {
+		t.Error("Checkpoints wired: the § 4 step 3 wave owns that seam, and a completed turn must close as infra naming the unbound boundary (procexec's rule, same words)")
+	}
+}
+
+func promptWithKind(kind string) domain.PermissionPrompt {
+	return domain.PermissionPrompt{Options: []domain.PermissionOption{{OptionID: "o1", Kind: kind}}}
 }
