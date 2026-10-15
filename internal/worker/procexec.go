@@ -1,0 +1,860 @@
+package worker
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/domain"
+	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/sandbox/nono"
+	wsgit "github.com/dbirks/communication/internal/workspace/git"
+)
+
+// NodeKindProcessExec is the § 4 step 7 node kind this executor runs. The
+// string is the catalogue name verbatim (attemptport.go's Kind comment); the
+// loop routes by it and never interprets it.
+const NodeKindProcessExec = "process.exec"
+
+// Contract § 6 caps for process.exec: stdout/stderr are captured IN FULL to
+// worker-side files (the bytes outlive the process and await the § 4 step 9
+// artifact seam), the inline envelope carries bounded previews, and the whole
+// outputs envelope stays under the 32 KiB inline cap or the attempt closes
+// invalid_output with outputs_too_large — oversize payloads' real home is a
+// kind=json artifact, and a worker that silently truncates the payload is a
+// worker inventing outputs.
+const (
+	procExecExtractionMax = 1 << 20 // json extraction reads at most 1 MiB of source (§ 6)
+	procExecPreviewBytes  = 8 << 10 // per-stream preview ceiling inside the envelope
+	procExecInlineOutput  = 32 << 10
+	procExecKillGrace     = 3 * time.Second
+)
+
+// RunWorkspaceRef is the boundary identity process.exec needs and cannot
+// invent: the run workspace row, the volume it lives on, and the repository
+// states at the boundary (commits, never paths).
+type RunWorkspaceRef struct {
+	WorkspaceID string
+	VolumeID    string
+	RepoStates  []CheckpointRepoState
+}
+
+// RunWorkspaceResolver is the seam to § 4 step 3 (run workspace preparation).
+// It is injected rather than assumed because the workspace row and the
+// affinity door are written by the wave that owns that step. Until a worker
+// can bind a run workspace, a successful command has no boundary to record,
+// and the honest answer is a failed attempt naming the missing step — never a
+// checkpoint with an invented volume id (D-024 is same-volume only).
+type RunWorkspaceResolver interface {
+	RunWorkspace(ctx context.Context, runID string) (RunWorkspaceRef, bool, error)
+}
+
+// ProcExec executes process.exec attempts (docs/m4-contract.md § 4 steps 5
+// and 7): an argv array and never a shell, cwd refused outside the run
+// workspace (ADR-0019 FC3), env built from scratch (adapterEnv's discipline,
+// unit.go:537 — nothing inherits from the worker, least of all its
+// DATABASE_URL), full stdout/stderr capture under the worker-only meta/ tree,
+// and the fixed exit-status mapping the contract pins because two workers
+// must not invent it:
+//
+//	exit 0        ⇒ succeeded, outcome "passed"
+//	exit 1…125    ⇒ succeeded, outcome "failed", outputs.exit_code set
+//	                (03's execution_status=success / business_outcome=fail —
+//	                the exit loop's failure signal as a business fact the
+//	                passWhen can read)
+//	unable to start                                   ⇒ failed, infra
+//	sandbox refuses the launch                        ⇒ failed, sandbox_enforcement_failed
+//	Landlock kills the child (SIGSYS)                 ⇒ failed, sandbox_enforcement_failed
+//	a command the sandbox denies mid-run (EPERM face) ⇒ failed, infra, denial
+//	                in detail (§ 4 step 5: a network-hungry command fails
+//	                honestly; the profile is not widened by a worker)
+//	killed by the node deadline                       ⇒ failed, timeout
+//
+// The command runs under the communication-command profile
+// (nono.ProfileCommand): filesystem grants = the run workspace + the
+// per-attempt home, egress DENIED via the same --block-net lever the case-13
+// gate proved. Under `permissive-dev`/`disabled` the same command runs with
+// the same from-scratch env, labelled, and a `required` worker has no code
+// path to either mode (§ 4 step 14).
+type ProcExec struct {
+	// WorkspaceRoot is COMMUNICATION_WORKSPACE_ROOT; the run's workspace is
+	// <root>/run/<run-id> (wsgit's layout, the M3 D1 tree M4 populates).
+	WorkspaceRoot string
+	// LauncherHome is nono's own HOME (probe C-H1: never a grant, never
+	// derived from a workspace).
+	LauncherHome string
+	// PolicyDir is where the profile file is materialized (ADR-0009 D4).
+	PolicyDir string
+	// SandboxPath is the nono executable, recorded in the plan so the argv
+	// and the process agree.
+	SandboxPath string
+	// Sandbox is the verify seam (nil is only reachable in non-required
+	// modes, where nothing verifies because nothing may claim).
+	Sandbox AgentSandbox
+	// Enforcement is this worker's configured mode; a unit can only ever run
+	// in the mode the worker was started with.
+	Enforcement domain.EnforcementMode
+	// GitIdentity is exported to the command (a build step that commits needs
+	// it; probe P6's reasoning is unit.adapterEnv's).
+	GitIdentity acp.GitIdentityEnv
+	Logger      *slog.Logger
+
+	// Checkpoints resolves the run's boundary identity. Nil until the § 4
+	// step 3 wave wires it: successes then close as infra, visibly, naming
+	// the missing step — a claim about the wiring, not about the command.
+	Checkpoints RunWorkspaceResolver
+
+	// KillGrace bounds SIGTERM→SIGKILL for the process group (§ 4 step 11).
+	KillGrace time.Duration
+
+	profileOnce *profileCache
+	memoMu      sync.Mutex
+}
+
+var _ AttemptExecutor = (*ProcExec)(nil)
+
+func (p *ProcExec) logger() *slog.Logger {
+	if p.Logger != nil {
+		return p.Logger
+	}
+	return slog.Default()
+}
+
+func (p *ProcExec) enforcement() domain.EnforcementMode {
+	if p.Enforcement == "" {
+		return domain.EnforceRequired
+	}
+	return p.Enforcement
+}
+
+func (p *ProcExec) nonoBinary() string {
+	if p.SandboxPath != "" {
+		return p.SandboxPath
+	}
+	return "nono"
+}
+
+func (p *ProcExec) killGrace() time.Duration {
+	if p.KillGrace > 0 {
+		return p.KillGrace
+	}
+	return procExecKillGrace
+}
+
+// profile returns the communication-command policy file, materialized once
+// per process (the same memo shape UnitService uses for agent-turn; the
+// command profile is a third kind, not a variant — its NetworkEnforced claim
+// is the file's own, never a launch-time guess).
+func (p *ProcExec) profile() (*nono.Profile, error) {
+	p.memoMu.Lock()
+	if p.profileOnce == nil {
+		p.profileOnce = &profileCache{}
+	}
+	cache := p.profileOnce
+	p.memoMu.Unlock()
+	if p.PolicyDir == "" {
+		return nil, errors.New("worker: no policy directory is configured, so the command profile cannot be materialized (ADR-0009 D4 requires -p <path>)")
+	}
+	return cache.do(nono.ProfileCommand, func() (*nono.Profile, error) {
+		return nono.WriteProfile(p.PolicyDir, nono.ProfileCommand)
+	})
+}
+
+// procExecSpec is one parsed process.exec config. The Config map is
+// executor-owned per kind (attemptport.go); these are § 4 step 7's members.
+type procExecSpec struct {
+	argv       []string
+	cwd        string
+	extraction string // none | json_from_stdout | json_from_path
+	path       string // json_from_path's file, resolved under work/
+}
+
+// Execute runs one attempt body. Every refusal names itself; none pretends.
+func (p *ProcExec) Execute(ctx context.Context, c AttemptClaim, sink AttemptSink) (AttemptResult, error) {
+	spec, refusal := p.parseConfig(c)
+	if refusal != nil {
+		return *refusal, nil
+	}
+	if p.WorkspaceRoot == "" {
+		return failedResult(ErrorClassInfra, "process.exec requires a configured workspace root"), nil
+	}
+	if !uuidDir.MatchString(c.RunID) || !uuidDir.MatchString(c.AttemptID) {
+		return failedResult(ErrorClassInfra, "process.exec run/attempt ids must be uuids: workspace paths are built from them"), nil
+	}
+	layout, err := wsgit.LayoutOf(p.WorkspaceRoot, "run", c.RunID)
+	if err != nil {
+		return failedResult(ErrorClassInfra, "process.exec workspace scope: "+p.redact(err.Error())), nil
+	}
+	// § 4 step 3 owns workspace preparation (the workspaces row, the affinity
+	// door, the mirror/worktree materialization). This executor consumes that
+	// tree and never creates it — a missing tree is a wiring fact, stated as
+	// one, not an agent failure.
+	for _, dir := range []string{layout.Work, layout.Repos, layout.Scratch, layout.Home} {
+		if st, serr := os.Stat(dir); serr != nil || !st.IsDir() {
+			return failedResult(ErrorClassInfra, fmt.Sprintf(
+				"run workspace is not prepared under %s (contract § 4 step 3)", p.redact(layout.Work))), nil
+		}
+	}
+	if err := layout.AssertNothingBut(); err != nil {
+		return failedResult(ErrorClassInfra, p.redact(err.Error())), nil
+	}
+
+	// Per-attempt home and temp inside the granted tree (§ 4 step 5's
+	// "filesystem grants = the run workspace + the per-attempt home/"), and
+	// the capture tree OUTSIDE every grant: meta/ is worker-only, so a command
+	// cannot rewrite the bytes that record what it did.
+	homeDir := filepath.Join(layout.Home, "attempts", c.AttemptID)
+	tmpDir := filepath.Join(layout.Scratch, "attempts", c.AttemptID)
+	capDir := filepath.Join(layout.Meta, "procexec", c.AttemptID)
+	for _, dir := range []string{homeDir, tmpDir, capDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return failedResult(ErrorClassInfra, "create attempt directory: "+p.redact(err.Error())), nil
+		}
+	}
+
+	cwd, err := p.resolveUnderWork(layout.Work, spec.cwd, layout.Scratch)
+	if err != nil { // ADR-0019 FC3's escape refusal, before anything runs.
+		return failedResult(ErrorClassInfra, p.redact(err.Error())), nil
+	}
+	if spec.extraction == "json_from_path" {
+		spec.path, err = p.resolveUnderWork(layout.Work, spec.path, "")
+		if err != nil {
+			return failedResult(ErrorClassInfra, "output path: "+p.redact(err.Error())), nil
+		}
+	}
+
+	plan := wsgit.LaunchPlan{
+		WorkspaceID: "run/" + c.RunID,
+		Layout:      layout,
+		Grants: []wsgit.Grant{
+			{Role: wsgit.RoleCheckout, Path: layout.Repos},
+			{Role: wsgit.RoleScratch, Path: layout.Scratch},
+			{Role: wsgit.RoleAgentHome, Path: layout.Home},
+		},
+		LauncherHome: p.LauncherHome,
+		AgentHome:    homeDir,
+		Cwd:          cwd,
+	}
+	if err := plan.Check(); err != nil {
+		return failedResult(ErrorClassInfra, "command launch plan: "+p.redact(err.Error())), nil
+	}
+
+	required := p.enforcement() == domain.EnforceRequired
+	adapterEnv, err := acp.LaunchEnv(acp.EnvRequest{
+		Home:    homeDir,
+		Scratch: tmpDir,
+		// The two HOMEs (probe C-H1): under a sandbox the launcher's `env` hop
+		// owns HOME and the argv builder refuses a caller-supplied one;
+		// without a sandbox there is no hop, so HOME comes from here.
+		OmitHome:    required,
+		GitIdentity: p.GitIdentity,
+		Extra:       []string{"COMMUNICATION_RUN_ID=" + c.RunID, "COMMUNICATION_ATTEMPT_ID=" + c.AttemptID},
+	})
+	if err != nil {
+		return failedResult(ErrorClassInfra, "build command environment: "+bounded(err.Error(), 400)), nil
+	}
+
+	path, args, env := spec.argv[0], spec.argv[1:], adapterEnv
+	if required {
+		res, refusal := p.verifyThenWrap(ctx, sink, c, plan, spec, adapterEnv)
+		if refusal != nil {
+			return *refusal, nil
+		}
+		path, args, env = p.nonoBinary(), res.argv, p.nonoLauncherEnv()
+	}
+
+	outcome, startErr := p.run(ctx, path, args, env, cwd, capDir)
+	if startErr != nil {
+		return failedResult(ErrorClassInfra, "unable to start "+filepath.Base(spec.argv[0])+": "+p.redact(startErr.Error())), nil
+	}
+
+	res := p.classify(ctx, spec, outcome, required)
+	if res.Status != AttemptStatusSucceeded {
+		return res, nil
+	}
+	built, fail := p.buildOutputs(spec, outcome, capDir, res)
+	if fail != nil {
+		return *fail, nil
+	}
+	built.Checkpoint = p.checkpointFor(ctx, c, spec, built.OutputsDigest)
+	if built.Checkpoint.VolumeID == "" {
+		// Honest: there is no boundary to write. The command passed; the
+		// engine cannot durably say so. Say which half is missing.
+		return failedResult(ErrorClassInfra, fmt.Sprintf(
+			"command succeeded (exit %d) but no run workspace boundary is bound (contract § 4 step 3): a checkpoint requires a workspace row and its volume (D-024 is same-volume only)", outcome.code)), nil
+	}
+	return built, nil
+}
+
+// launchRefusal carries the verify chain's honest "do not launch" answer.
+type wrappedLaunch struct {
+	argv []string
+}
+
+func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string) (*wrappedLaunch, *AttemptResult) {
+	if p.Sandbox == nil {
+		r := failedResult(ErrorClassSandboxEnforcementFail,
+			"enforcement is required but no sandbox backend is configured: refusing to exec unsandboxed (ADR-0019 D6, no fallback exists)")
+		return nil, &r
+	}
+	prof, err := p.profile()
+	if err != nil {
+		r := failedResult(ErrorClassSandboxEnforcementFail, "materialize the command profile: "+p.redact(err.Error()))
+		return nil, &r
+	}
+	nspec := nono.LaunchSpec{
+		Profile: prof, Plan: plan, LauncherHome: p.LauncherHome,
+		AdapterPath: spec.argv[0], AdapterArgs: spec.argv[1:], AdapterEnv: adapterEnv,
+		BlockNet: true, // the command profile IS the egress-denied claim (§ 4 step 5)
+	}
+	res, verr := p.Sandbox.Verify(ctx, nspec)
+	if verr != nil {
+		if ctx.Err() != nil {
+			// The stop signal (deadline/cancel/drain) arrived DURING the
+			// verification chain and killed a probe helper. Reporting that
+			// as a sandbox refusal would be a lie nobody made: the honest
+			// word is the stop arm itself.
+			r := p.classify(ctx, spec, procExecOutcome{}, true)
+			return nil, &r
+		}
+		p.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, p.enforcementFailedPayload(c, res, verr))
+		msg := "sandbox refused the launch"
+		var f *nono.Failure
+		if errors.As(verr, &f) && f.ChildStarted {
+			msg = "sandbox killed the launched process"
+		}
+		r := failedResult(ErrorClassSandboxEnforcementFail, msg+": "+p.redact(verr.Error()))
+		return nil, &r
+	}
+	argv, berr := nspec.BuildLaunchArgv()
+	if berr != nil {
+		p.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, p.enforcementFailedPayload(c, res, berr))
+		r := failedResult(ErrorClassSandboxEnforcementFail, "launch argv: "+p.redact(berr.Error()))
+		return nil, &r
+	}
+	p.journal(ctx, sink, c, events.TypeSandboxVerified, p.verifiedPayload(c, plan, res))
+	return &wrappedLaunch{argv: argv}, nil
+}
+
+func (p *ProcExec) verifiedPayload(c AttemptClaim, plan wsgit.LaunchPlan, res *nono.VerificationResult) events.SandboxVerifiedPayload {
+	grants := make([]events.SandboxGrant, 0, len(plan.Grants))
+	for _, g := range plan.Grants {
+		grants = append(grants, events.SandboxGrant{Role: g.Role, Access: g.Access()})
+	}
+	workspaceID := ""
+	if p.Checkpoints != nil {
+		if ref, ok, err := p.Checkpoints.RunWorkspace(context.Background(), c.RunID); err == nil && ok {
+			workspaceID = ref.WorkspaceID
+		}
+	}
+	return events.SandboxVerifiedPayload{
+		ProjectID: c.ProjectID, WorkspaceID: workspaceID, WorkerID: c.WorkerID,
+		PolicyDigest: res.PolicyDigest, Backend: res.Backend, BackendVersion: res.Version,
+		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: res.NetworkEnforced,
+		Grants: grants, CommitGranted: false, Verified: res.Verified,
+	}
+}
+
+func (p *ProcExec) enforcementFailedPayload(c AttemptClaim, res *nono.VerificationResult, cause error) events.SandboxEnforcementFailedPayload {
+	stage, reason := "launch", "enforcement_failed"
+	var f *nono.Failure
+	if errors.As(cause, &f) {
+		stage, reason = f.Stage, f.Reason
+	}
+	payload := events.SandboxEnforcementFailedPayload{
+		ProjectID: c.ProjectID, WorkerID: c.WorkerID,
+		Stage: stage, Reason: reason, Detail: p.redact(cause.Error()),
+	}
+	if res != nil {
+		payload.Backend, payload.BackendVersion = res.Backend, res.Version
+		payload.PolicyDigest, payload.ChildStarted = res.PolicyDigest, res.ChildStarted
+		payload.Verified = res.Verified
+	}
+	return payload
+}
+
+// journal best-effort appends one attempt-scoped event; a lost fence has
+// already flagged the loop, and the ctx cancel classifies the outcome.
+func (p *ProcExec) journal(ctx context.Context, sink AttemptSink, c AttemptClaim, typ string, payload any) {
+	if err := sink.AppendEvent(ctx, AttemptEvent{Type: typ, Payload: payload}); err != nil {
+		p.logger().Warn("process.exec journal append failed",
+			slog.String("attempt_id", c.AttemptID), slog.String("type", typ), slog.String("error", err.Error()))
+	}
+}
+
+// parseConfig reads the kind-owned config; every shape problem is an honest
+// refusal class (infra = plan/loader gap, binding_error = the advancer has
+// work left, § 4 step 14).
+func (p *ProcExec) parseConfig(c AttemptClaim) (procExecSpec, *AttemptResult) {
+	var spec procExecSpec
+	fail := func(class, detail string) (procExecSpec, *AttemptResult) {
+		r := failedResult(class, detail)
+		return spec, &r
+	}
+	cfg := c.Config
+	if cfg == nil {
+		return fail(ErrorClassInfra, "process.exec attempt carries no config: the claim did not hydrate a plan node")
+	}
+	rawArgv, ok := cfg["argv"]
+	if !ok {
+		return fail(ErrorClassInfra, "process.exec config has no argv")
+	}
+	if isUnresolved(rawArgv) {
+		return fail(ErrorClassBindingError, "process.exec argv still carries unresolved expression bindings; the advancer resolves bindings — the worker never evaluates them (§ 4 step 14)")
+	}
+	list, ok := rawArgv.([]any)
+	if !ok {
+		if strs, strOK := rawArgv.([]string); strOK {
+			list = make([]any, len(strs))
+			for i, s := range strs {
+				list[i] = s
+			}
+		}
+	}
+	if list == nil {
+		return fail(ErrorClassInfra, "process.exec argv is not a list")
+	}
+	if len(list) == 0 {
+		return fail(ErrorClassInfra, "process.exec argv is empty: there is nothing to exec, and an empty command is a plan bug, not a no-op")
+	}
+	for i, el := range list {
+		s, ok := el.(string)
+		if !ok || s == "" {
+			return fail(ErrorClassInfra, fmt.Sprintf("process.exec argv[%d] is not a non-empty string (argv only, never a shell)", i))
+		}
+		spec.argv = append(spec.argv, s)
+	}
+	if v, ok := cfg["cwd"]; ok {
+		if isUnresolved(v) {
+			return fail(ErrorClassBindingError, "process.exec cwd carries an unresolved binding")
+		}
+		spec.cwd, _ = v.(string)
+	}
+	if v, ok := cfg["outputExtraction"]; ok {
+		if isUnresolved(v) {
+			return fail(ErrorClassBindingError, "process.exec outputExtraction carries an unresolved binding")
+		}
+		spec.extraction, _ = v.(string)
+	}
+	if spec.extraction == "" {
+		spec.extraction = "none"
+	}
+	switch spec.extraction {
+	case "none", "json_from_stdout", "json_from_path":
+	default:
+		return fail(ErrorClassInfra, fmt.Sprintf("process.exec outputExtraction %q is not none | json_from_stdout | json_from_path (§ 4 step 7)", spec.extraction))
+	}
+	if spec.extraction == "json_from_path" {
+		pv, ok := cfg["path"]
+		if !ok {
+			pv, ok = cfg["outputPath"]
+		}
+		if !ok {
+			return fail(ErrorClassInfra, "json_from_path requires a path")
+		}
+		if isUnresolved(pv) {
+			return fail(ErrorClassBindingError, "process.exec output path carries an unresolved binding")
+		}
+		spec.path, _ = pv.(string)
+		if spec.path == "" {
+			return fail(ErrorClassInfra, "json_from_path requires a non-empty path")
+		}
+	}
+	return spec, nil
+}
+
+// isUnresolved recognizes the marker claim hydration leaves for bindings
+// whose expression ids belong to the advancer (§ 4 step 14: a worker that
+// could evaluate them is a worker that could lie about routing).
+func isUnresolved(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	flag, _ := m["$unresolved"].(bool)
+	return flag
+}
+
+// resolveUnderWork keeps a configured path inside the run workspace
+// (ADR-0019 FC3): a relative path joins under work/, an absolute one must
+// already be under it, and symlinks resolve before the check so a link
+// cannot carry a command out of the tree the grants describe. An empty value
+// falls back to def (which may be "" when there is no default).
+func (p *ProcExec) resolveUnderWork(work, value, def string) (string, error) {
+	if value == "" {
+		return def, nil
+	}
+	candidate := value
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(work, value)
+	}
+	clean := filepath.Clean(candidate)
+	inner := work
+	if real, err := filepath.EvalSymlinks(work); err == nil {
+		inner = real
+	}
+	check := clean
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		check = real
+	}
+	if check != inner && !strings.HasPrefix(check, inner+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s escapes the run workspace (ADR-0019 FC3)", p.redact(clean))
+	}
+	return clean, nil
+}
+
+// procExecOutcome is one finished command's honest record.
+type procExecOutcome struct {
+	code      int // -1 when killed by a signal
+	signal    int // the killing signal, 0 when exited normally
+	stdoutLen int64
+	stderrLen int64
+	stdoutPre []byte
+	stderrPre []byte
+}
+
+// run execs argv in its own process group, captures full stdout/stderr to
+// worker-side files, and terminates the GROUP when the attempt context stops
+// (§ 4 step 11: cancel-requested, deadline and drain all arrive as ctx). The
+// SIGTERM goes to the group first — the grace window belongs to the command;
+// SIGKILL catches what refuses to leave. Under nono the direct child is the
+// supervisor, which tears its sandboxed process down with it (nono/process.go),
+// so the group kill plus supervisor teardown is the process_group_terminated
+// ack § 4 step 11 names.
+func (p *ProcExec) run(ctx context.Context, path string, args, env []string, cwd, capDir string) (procExecOutcome, error) {
+	var out procExecOutcome
+	stdoutPath := filepath.Join(capDir, "stdout.txt")
+	stderrPath := filepath.Join(capDir, "stderr.txt")
+	stdoutF, err := os.Create(stdoutPath)
+	if err != nil {
+		return out, fmt.Errorf("capture stdout: %w", err)
+	}
+	defer func() { _ = stdoutF.Close() }()
+	stderrF, err := os.Create(stderrPath)
+	if err != nil {
+		return out, fmt.Errorf("capture stderr: %w", err)
+	}
+	defer func() { _ = stderrF.Close() }()
+
+	cmd := exec.Command(path, args...) // argv only — no shell, ever
+	cmd.Dir = cwd
+	cmd.Env = env
+	cmd.Stdout = stdoutF // real files, not pipes: the bytes are the capture
+	cmd.Stderr = stderrF
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return out, err
+	}
+
+	done := make(chan struct{})
+	watchdog := make(chan struct{})
+	go func() {
+		defer close(watchdog)
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+		}
+		pid := cmd.Process.Pid
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(p.killGrace()):
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	}()
+	waitErr := cmd.Wait()
+	close(done)
+	<-watchdog
+
+	if st := cmd.ProcessState; st != nil {
+		out.code = st.ExitCode()
+		if !st.Exited() {
+			if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				out.signal = int(ws.Signal())
+			}
+		}
+	}
+	out.stdoutLen, _ = fileSize(stdoutPath)
+	out.stderrLen, _ = fileSize(stderrPath)
+	out.stdoutPre = headBytes(stdoutPath, procExecPreviewBytes)
+	out.stderrPre = headBytes(stderrPath, procExecPreviewBytes)
+	// A wait error after a start is exit-status data for classify(); only a
+	// never-started command is a run failure, and that returned early above.
+	_ = waitErr
+	return out, nil
+}
+
+func fileSize(path string) (int64, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return st.Size(), nil
+}
+
+func headBytes(path string, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, n)
+	read, _ := io.ReadFull(f, buf)
+	return buf[:read]
+}
+
+// classify maps the finished command onto the contract's fixed vocabulary
+// (§ 4 step 7). Order matters: the loop's cancellation arms outrank the
+// command's own exit — a command we stopped has no exit story to tell.
+func (p *ProcExec) classify(ctx context.Context, spec procExecSpec, out procExecOutcome, sandboxed bool) AttemptResult {
+	switch ctx.Err() {
+	case context.DeadlineExceeded:
+		return failedResult(ErrorClassTimeout, fmt.Sprintf(
+			"node deadline exceeded while running %s (process group terminated)", filepath.Base(spec.argv[0])))
+	case context.Canceled:
+		// Stop signals all arrive here (drain, cancel-requested, lease loss);
+		// the loop's flags choose the terminal. What this executor knows is
+		// that the group went down: that IS the ack (§ 4 step 11).
+		return AttemptResult{CancelReason: CancelReasonProcessTerminated}
+	}
+	if out.signal != 0 {
+		if out.signal == int(syscall.SIGSYS) && sandboxed {
+			return failedResult(ErrorClassSandboxEnforcementFail, fmt.Sprintf(
+				"sandbox killed %s on a denied operation (SIGSYS)", filepath.Base(spec.argv[0])))
+		}
+		return failedResult(ErrorClassInfra, fmt.Sprintf(
+			"%s terminated by signal %d without a stop request", filepath.Base(spec.argv[0]), out.signal))
+	}
+	switch {
+	case out.code == 0:
+		return AttemptResult{Status: AttemptStatusSucceeded, Outcome: "passed"}
+	case out.code >= 1 && out.code <= 125:
+		// § 4 step 5's twin rule: a command the sandbox BLOCKED (a denied
+		// connect) is an infra failure with the denial in detail, not a
+		// business "failed" an until-loop would read as a verdict. The marker
+		// scan is deliberately narrow: kernel EPERM/EACCES text, in the first
+		// preview block, under a profile that denies egress.
+		if sandboxed && sandboxDenialMarker(out.stderrPre) {
+			return failedResult(ErrorClassInfra, fmt.Sprintf(
+				"sandbox denied %s (exit %d): %s — the command profile denies egress by design (§ 4 step 5); a worker does not widen it",
+				filepath.Base(spec.argv[0]), out.code, bounded(string(out.stderrPre), 320)))
+		}
+		return AttemptResult{Status: AttemptStatusSucceeded, Outcome: "failed"}
+	default:
+		// 126+ (not-executable, not-found, shell-internal) is "unable to
+		// start"-class even though the kernel ran the parent: 1–125 is where
+		// authored commands speak, 126+ is the OS talking.
+		return failedResult(ErrorClassInfra, fmt.Sprintf(
+			"%s exited %d, outside the business-outcome band 1..125 (§ 4 step 7: unable-to-start class)",
+			filepath.Base(spec.argv[0]), out.code))
+	}
+}
+
+var sandboxDenialMarkers = []string{
+	"operation not permitted", "permission denied", "eperm", "eacces", "landlock",
+}
+
+func sandboxDenialMarker(stderrPreview []byte) bool {
+	s := strings.ToLower(string(stderrPreview))
+	for _, m := range sandboxDenialMarkers {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildOutputs assembles the validated envelope: engine facts first, the
+// extracted business payload merged under them, everything under the § 6
+// inline cap. Engine keys win: a command that prints exit_code does not get
+// to redefine what exited (§ 4 step 7's whole point).
+func (p *ProcExec) buildOutputs(spec procExecSpec, out procExecOutcome, capDir string, base AttemptResult) (AttemptResult, *AttemptResult) {
+	outputs := map[string]any{
+		"exit_code":      int64(out.code),
+		"stdout_bytes":   out.stdoutLen,
+		"stderr_bytes":   out.stderrLen,
+		"stdout_preview": string(out.stdoutPre),
+		"stderr_preview": string(out.stderrPre),
+	}
+	switch spec.extraction {
+	case "none":
+	case "json_from_stdout":
+		val, oerr := extractJSON(filepath.Join(capDir, "stdout.txt"), "stdout")
+		if oerr != nil {
+			r := invalidOutput(*oerr)
+			return AttemptResult{}, &r
+		}
+		mergeExtracted(outputs, val)
+	case "json_from_path":
+		val, oerr := extractJSON(spec.path, spec.path)
+		if oerr != nil {
+			r := invalidOutput(*oerr)
+			return AttemptResult{}, &r
+		}
+		mergeExtracted(outputs, val)
+	}
+	outputs["exit_code"] = int64(out.code)
+
+	raw, err := json.Marshal(outputs)
+	if len(raw) > procExecInlineOutput || err != nil {
+		// Drop previews before declaring the envelope oversize: previews are
+		// convenience, the extracted payload is the contract.
+		delete(outputs, "stdout_preview")
+		delete(outputs, "stderr_preview")
+		raw, err = json.Marshal(outputs)
+		if err != nil || len(raw) > procExecInlineOutput {
+			r := AttemptResult{
+				Status:     AttemptStatusFailed,
+				ErrorClass: ErrorClassInvalidOutput,
+				Detail:     bounded(fmt.Sprintf("outputs envelope is %d bytes over the 32 KiB inline cap (§ 6); it must travel as a kind=json artifact (§ 4 step 9)", len(raw)), 512),
+				OutputErrors: []any{map[string]any{
+					"code": "outputs_too_large", "message": "outputs exceeded the inline cap",
+				}},
+			}
+			return AttemptResult{}, &r
+		}
+	}
+	base.Outputs = outputs
+	base.OutputsDigest = "sha256:" + sha256Hex(raw)
+	base.ArtifactRefs = []any{}
+	return base, nil
+}
+
+// extractJSON reads a JSON extraction source under the § 6 1 MiB source cap.
+// The bytes are the capture file's — written by the worker's own pipes, so
+// the command cannot have rewritten them after it exited.
+func extractJSON(path, label string) (any, *string) {
+	st, err := os.Stat(path)
+	if err != nil {
+		msg := fmt.Sprintf("%s: unreadable extraction source: %v", label, err)
+		return nil, &msg
+	}
+	if st.Size() > procExecExtractionMax {
+		msg := fmt.Sprintf("%s: extraction source is %d bytes, over the 1 MiB inline bound (§ 6); it must travel as an artifact", label, st.Size())
+		return nil, &msg
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		msg := fmt.Sprintf("%s: read extraction source: %v", label, err)
+		return nil, &msg
+	}
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.UseNumber() // integers stay integers into outputs and digests
+	var val any
+	if err := dec.Decode(&val); err != nil {
+		msg := fmt.Sprintf("%s: extracted stdout/stderr is not valid JSON: %v", label, err)
+		return nil, &msg
+	}
+	if dec.More() {
+		msg := fmt.Sprintf("%s: extraction source carries trailing content after one JSON value", label)
+		return nil, &msg
+	}
+	return val, nil
+}
+
+func mergeExtracted(outputs map[string]any, val any) {
+	if m, ok := val.(map[string]any); ok {
+		for k, v := range m {
+			outputs[k] = v
+		}
+		return
+	}
+	outputs["json"] = val
+}
+
+func invalidOutput(detail string) AttemptResult {
+	return AttemptResult{
+		Status:     AttemptStatusFailed,
+		ErrorClass: ErrorClassInvalidOutput,
+		Detail:     bounded(detail, 512),
+		OutputErrors: []any{map[string]any{
+			"code":    "invalid_json",
+			"message": bounded(detail, 400),
+		}},
+	}
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// redact replaces host roots with a fixed word and bounds the line: grant
+// paths never reach the journal or attempts.detail (deviation D14's rule,
+// unit.go's discipline).
+func (p *ProcExec) redact(s string) string {
+	for _, root := range []string{p.WorkspaceRoot, p.LauncherHome, p.PolicyDir} {
+		if root != "" {
+			s = strings.ReplaceAll(s, root, "<host-root>")
+		}
+	}
+	return bounded(s, 512)
+}
+
+// nonoLauncherEnv is nono's own environment, never the command's and never
+// os.Environ(): the HOME here is what nono derives its protected state root
+// from (probe C-H1). Same construction as UnitService.launcherNonoEnv — the
+// one named variable (PATH) it may read is read by name, nothing else.
+func (p *ProcExec) nonoLauncherEnv() []string {
+	path := os.Getenv("PATH")
+	if path == "" {
+		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
+	home := p.LauncherHome
+	if home == "" {
+		return []string{"PATH=" + path}
+	}
+	return []string{
+		"PATH=" + path,
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+	}
+}
+
+// checkpointFor fills the boundary record. A missing/unbound workspace is
+// reported by the caller as the honest infra refusal it is.
+func (p *ProcExec) checkpointFor(ctx context.Context, c AttemptClaim, spec procExecSpec, outputsDigest string) AttemptCheckpoint {
+	if p.Checkpoints == nil {
+		return AttemptCheckpoint{}
+	}
+	ref, ok, err := p.Checkpoints.RunWorkspace(ctx, c.RunID)
+	if err != nil || !ok || ref.WorkspaceID == "" || ref.VolumeID == "" {
+		return AttemptCheckpoint{}
+	}
+	inputs, err := json.Marshal(map[string]any{
+		"argv": spec.argv, "cwd": spec.cwd, "extraction": spec.extraction, "path": spec.path,
+	})
+	if err != nil {
+		return AttemptCheckpoint{}
+	}
+	return AttemptCheckpoint{
+		InputsDigest:  "sha256:" + sha256Hex(inputs),
+		OutputsDigest: outputsDigest,
+		RepoStates:    ref.RepoStates,
+		WorkspaceID:   ref.WorkspaceID,
+		VolumeID:      ref.VolumeID,
+		WorkerID:      c.WorkerID,
+	}
+}
+
+func failedResult(class, detail string) AttemptResult {
+	return AttemptResult{Status: AttemptStatusFailed, ErrorClass: class, Detail: bounded(detail, 512)}
+}

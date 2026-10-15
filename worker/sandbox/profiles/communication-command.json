@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "name": "communication-command",
+    "version": "3.2.0",
+    "description": "Communication command sandbox: filesystem + AF_UNIX + egress denied (M4 contract § 4 step 5; the process.exec policy — commands run offline against pre-vendored caches)"
+  },
+  "extends": "default",
+  "linux": {
+    "af_unix_mediation": "pathname",
+    "sandbox_policy": "landlock"
+  },
+  "security": {
+    "process_info_mode": "isolated"
+  },
+  "groups": {
+    "exclude": [
+      "dangerous_commands_macos",
+      "homebrew_linux",
+      "homebrew_macos",
+      "system_read_macos",
+      "system_write_linux",
+      "system_write_macos",
+      "user_tools"
+    ]
+  },
+  "filesystem": {
+    "read_file": [
+      "/etc/gitconfig"
+    ],
+    "write_file": [
+      "/dev/null",
+      "/dev/zero",
+      "/dev/tty",
+      "/dev/stdout",
+      "/dev/stderr"
+    ],
+    "allow": [
+      "/proc/self/fd",
+      "/dev/pts"
+    ]
+  }
+}

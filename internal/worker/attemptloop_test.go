@@ -39,6 +39,10 @@ type fakeAttempt struct {
 	detail       string
 	finishedAt   time.Time
 	artifactRefs []any
+
+	// cfg exists so an executor under test (process.exec) receives the same
+	// shape the real claim hydration gives it.
+	cfg map[string]any
 }
 
 type fakeAttemptStore struct {
@@ -66,6 +70,20 @@ func (s *fakeAttemptStore) queue(id, kind string, priority int, scheduled time.T
 		nodeID: strings.TrimPrefix(id, "a"), instanceKey: "/" + id,
 		kind: kind, attemptNumber: 1, priority: priority,
 		scheduledAt: scheduled, status: AttemptStatusQueued,
+	})
+}
+
+// queueExec queues a process.exec attempt with uuid ids and a hydrated
+// config — the exact shape claim hydration produces (§ 4 step 2), so the
+// executor under test is dispatched against real claim data, not a shortcut.
+func (s *fakeAttemptStore) queueExec(attemptID, runID string, cfg map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, &fakeAttempt{
+		id: attemptID, nodeExecID: "ne-" + attemptID, runID: runID,
+		nodeID: "task", instanceKey: "/task",
+		kind: NodeKindProcessExec, attemptNumber: 1,
+		scheduledAt: time.Now(), status: AttemptStatusQueued, cfg: cfg,
 	})
 }
 
@@ -134,6 +152,7 @@ func (s *fakeAttemptStore) ClaimAttempts(_ context.Context, workerID string, cap
 			WorkerID: workerID, FencingToken: token,
 			NodeID: a.nodeID, NodeInstanceKey: a.instanceKey,
 			Kind: a.kind, AttemptNumber: a.attemptNumber,
+			Config: a.cfg,
 		})
 	}
 	s.writes = append(s.writes, "claim "+workerID+" n="+strconv.Itoa(len(due))+" token="+strconv.FormatInt(token, 10))

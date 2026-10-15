@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/worker"
 )
 
 // ------------------------------------------------------------- attempt rows
@@ -154,6 +157,7 @@ type AttemptClaim struct {
 	OrganizationID    string
 	NodeID            string
 	NodeInstanceKey   string
+	ScopeKey          string
 	Kind              string
 	ExecutionLocation string
 	AttemptNumber     int
@@ -167,6 +171,15 @@ type AttemptClaim struct {
 	RetryContext      json.RawMessage
 }
 
+// runClaimPredicate is the ADR-0023 § 4 claim predicate, written once and
+// shared by the locked pick and the fencing-token guard below so the two can
+// never disagree about what "claimable" means.
+const runClaimPredicate = `
+		  a2.status = 'queued' AND a2.scheduled_at <= now()
+		  AND r.status = 'running'
+		  AND wr.status = 'online' AND wr.active_attempts < wr.capacity
+		  AND (r.worker_affinity IS NULL OR r.worker_affinity = $1::uuid)`
+
 // runClaimSQL is ADR-0023 § 4's claim statement, mirrored: FOR UPDATE SKIP
 // LOCKED over queued attempts whose run is 'running', gated on worker
 // liveness and capacity, affinity-bound, tie-broken by
@@ -176,33 +189,51 @@ type AttemptClaim struct {
 // FROM alias), which is the ADR's `RETURNING a.*, ne.node_instance_key,
 // r.revision_digest, r.plan_digest` made executable. migrate_test.go pins
 // this shape against the real DB.
+//
+// The token is drawn ONCE PER CLAIM (contract § 4 step 2, § 7 C3c): a
+// volatile function written straight into SET is evaluated per row — measured
+// on Postgres 18, `SET fencing_token = nextval(...)` drew one value per
+// claimed row — so the draw lives in a MATERIALIZED CTE that yields exactly
+// one row, guarded by an EXISTS over the same predicate so a claim that wins
+// nothing never spends a token. Every row of one batch then shares one token,
+// max(fencing_token) tracks the claim count, and a replacement claim always
+// carries a strictly greater token (`12` case 3).
 const runClaimSQL = `
+	WITH tok AS MATERIALIZED (
+		SELECT nextval('attempt_fencing_seq') AS token
+		WHERE EXISTS (
+			SELECT 1
+			FROM attempts a2
+			JOIN node_executions ne ON ne.id = a2.node_execution_id
+			JOIN runs r            ON r.id = ne.run_id
+			JOIN workers wr        ON wr.id = $1::uuid
+			WHERE ` + runClaimPredicate + `
+		)
+	)
 	UPDATE attempts a
 	SET status = 'leased',
 	    worker_id = w.worker_id,
 	    lease_expires_at = now() + make_interval(secs => $2::double precision),
-	    fencing_token = nextval('attempt_fencing_seq')
+	    fencing_token = tok.token
 	FROM (
 		SELECT a2.id AS attempt_id, $1::uuid AS worker_id,
 		       ne.node_id, ne.node_instance_key, ne.kind, ne.execution_location,
+		       ne.scope_key,
 		       r.project_id, r.organization_id, r.worker_volume_id,
 		       r.revision_digest, r.plan_digest
 		FROM attempts a2
 		JOIN node_executions ne ON ne.id = a2.node_execution_id
 		JOIN runs r            ON r.id = ne.run_id
 		JOIN workers wr        ON wr.id = $1::uuid
-		WHERE a2.status = 'queued' AND a2.scheduled_at <= now()
-		  AND r.status = 'running'
-		  AND wr.status = 'online' AND wr.active_attempts < wr.capacity
-		  AND (r.worker_affinity IS NULL OR r.worker_affinity = $1::uuid)
+		WHERE ` + runClaimPredicate + `
 		ORDER BY r.priority DESC, a2.scheduled_at, a2.id
 		FOR UPDATE OF a2 SKIP LOCKED
 		LIMIT $3::int
-	) w
+	) w, tok
 	WHERE a.id = w.attempt_id
 	RETURNING a.id, a.node_execution_id, a.run_id, a.attempt_number,
 	          a.worker_id::text, a.fencing_token, a.deadline_at, a.overrides, a.retry_context,
-	          w.node_id, w.node_instance_key, w.kind, w.execution_location,
+	          w.node_id, w.node_instance_key, w.kind, w.execution_location, w.scope_key,
 	          w.project_id::text, w.organization_id::text, w.worker_volume_id,
 	          w.revision_digest, w.plan_digest`
 
@@ -257,7 +288,7 @@ func (s *RunStore) ClaimAttempts(ctx context.Context, workerID string, limit int
 		)
 		if err := rows.Scan(&c.AttemptID, &c.NodeExecutionID, &c.RunID, &c.AttemptNumber,
 			&workerCol, &c.FencingToken, &deadline, &overrides, &retryCtx,
-			&c.NodeID, &c.NodeInstanceKey, &c.Kind, &c.ExecutionLocation,
+			&c.NodeID, &c.NodeInstanceKey, &c.Kind, &c.ExecutionLocation, &c.ScopeKey,
 			&c.ProjectID, &c.OrganizationID, &volume,
 			&c.RevisionDigest, &c.PlanDigest); err != nil {
 			rows.Close()
@@ -439,7 +470,11 @@ type AttemptFinish struct {
 	Events          []RunEvent
 	// CloseTurn optionally closes the paired agent turn as interrupted in the
 	// same transaction (worker shutdown arm; the turn must never outlive the
-	// attempt that owns it).
+	// attempt that owns it). When the attempt row carries a conversation the
+	// matching conversation.turn.interrupted is journalled beside the row,
+	// mapped onto M2's closed reason vocabulary (contract § 4 step 12); a
+	// reason with no M2 word closes the row only, because the wave that owns
+	// that vocabulary (ADR-0016 § 5's takeover machinery) also owns its event.
 	CloseTurnReason string
 }
 
@@ -459,8 +494,14 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 	}
 	switch nodeStatus {
 	case "succeeded", "failed", "cancelled", "interrupted":
+	case "ready":
+		// A failed or interrupted attempt returns its node to `ready` and the
+		// ADVANCER decides retry vs terminal from rows (ADR-0023 § 5, reused
+		// verbatim from the runtime engine's failLocked/Interrupt): a worker
+		// terminal write must not silently terminalize the node. `ready`
+		// therefore carries no finished_at — the node is not done.
 	default:
-		return fmt.Errorf("postgres: %q is not a terminal node status for an attempt close", nodeStatus)
+		return fmt.Errorf("postgres: %q is not a node status an attempt close may write", nodeStatus)
 	}
 	return s.runWithFencedTx(ctx, c, true, func(ctx context.Context, tx pgx.Tx) error {
 		if in.Status == "succeeded" && len(in.Outputs) == 0 {
@@ -489,7 +530,10 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE node_executions
-			SET status = $2, finished_at = now(),
+			SET status = $2,
+			    finished_at = CASE WHEN $2 IN ('succeeded','failed','skipped',
+			                                   'cancelled','interrupted')
+			                       THEN now() ELSE finished_at END,
 			    outcome = COALESCE(NULLIF($3, ''), outcome),
 			    error_class = COALESCE(NULLIF($4, ''), error_class),
 			    failed_cause = COALESCE(NULLIF($5, ''), failed_cause),
@@ -506,12 +550,48 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 			}
 		}
 		if in.CloseTurnReason != "" {
-			if _, err := tx.Exec(ctx, `
-				UPDATE conversation_turns
-				SET status = 'interrupted', finished_at = now(), stop_reason = NULL
-				WHERE node_attempt_id = $1 AND status IN ('queued', 'leased', 'running')`,
-				c.AttemptID); err != nil {
-				return fmt.Errorf("postgres: close paired turn for attempt %s: %w", c.AttemptID, err)
+			var closedTurn, closedConv, turnOrg, turnProject string
+			err := tx.QueryRow(ctx, `
+				SELECT t.id::text, COALESCE(t.conversation_id::text, ''),
+				       r.organization_id::text, r.project_id::text
+				FROM conversation_turns t
+				JOIN attempts a2 ON a2.id = t.node_attempt_id
+				JOIN runs r ON r.id = a2.run_id
+				WHERE t.node_attempt_id = $1::uuid AND t.status IN ('queued', 'leased', 'running')`,
+				c.AttemptID).Scan(&closedTurn, &closedConv, &turnOrg, &turnProject)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				// No live paired turn: there is nothing to close or journal.
+			case err != nil:
+				return fmt.Errorf("postgres: find paired turn for attempt %s: %w", c.AttemptID, err)
+			default:
+				if _, err := tx.Exec(ctx, `
+					UPDATE conversation_turns
+					SET status = 'interrupted', finished_at = now(), stop_reason = NULL
+					WHERE id = $1::uuid`, closedTurn); err != nil {
+					return fmt.Errorf("postgres: close paired turn for attempt %s: %w", c.AttemptID, err)
+				}
+				// § 4 step 12 pairs node.attempt.interrupted with
+				// conversation.turn.interrupted in the SAME transaction. The
+				// turn's reason vocabulary is M2's closed set (internal/events
+				// owns it); a reason with no M2 word (e.g. human_takeover,
+				// whose machinery journals its own pair) closes the row only.
+				if reason, ok := attemptTurnInterruptReason(in.CloseTurnReason); ok && closedConv != "" {
+					if _, err := trnAppendTx(ctx, tx, turnOrg, turnProject, closedConv, worker.TurnEvent{
+						Type:      events.TypeConversationTurnInterrupted,
+						ActorKind: events.ActorKindWorker,
+						ActorID:   c.WorkerID,
+						Payload: events.TurnInterruptedPayload{
+							ConversationID: closedConv,
+							TurnID:         closedTurn,
+							WorkerID:       c.WorkerID,
+							FencingToken:   c.FencingToken,
+							Reason:         reason,
+						},
+					}); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if _, err := tx.Exec(ctx, `
@@ -609,6 +689,25 @@ type CheckpointRecord struct {
 	WorkerID        string
 	PlanDigest      string
 	CreatedAt       time.Time
+}
+
+// attemptTurnInterruptReason maps an attempt-level interrupt reason onto
+// M2's closed conversation-turn reason vocabulary (internal/events owns that
+// set; this store may not widen it). ok=false means "close the row, journal
+// nothing": the reason belongs to a machinery that emits its own turn-side
+// pair (ADR-0016 § 5's takeover), and inventing a reason word here would be
+// a vocabulary fork, not a mapping.
+func attemptTurnInterruptReason(reason string) (string, bool) {
+	switch reason {
+	case "worker_shutdown", "process_group_kill_timeout":
+		return events.InterruptShutdown, true
+	case "lease_expired":
+		return events.InterruptLeaseExpired, true
+	case "worker_gone":
+		return events.InterruptWorkerGone, true
+	default:
+		return "", false
+	}
 }
 
 // nullableTime maps a zero time.Time to SQL NULL.

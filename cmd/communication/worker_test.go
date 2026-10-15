@@ -309,3 +309,49 @@ func TestWorkerSchemaCheck(t *testing.T) {
 		t.Errorf("workerSchemaCheck(error) error = %v, want the wrapped store error", err)
 	}
 }
+
+// TestWorkerCapacityEnv covers the M4 knob: default 1, explicit values 1..16,
+// and the CHECK bound named in the refusal (COMMUNICATION_WORKER_CAPACITY;
+// M4 contract § 4 step 1, § 6). The number is validated HERE because a
+// worker that starts and then dies at its first heartbeat over a 23514 has
+// advertised a capability it cannot hold.
+func TestWorkerCapacityEnv(t *testing.T) {
+	base := map[string]string{
+		"COMMUNICATION_DATABASE_URL":        "postgres://x",
+		"COMMUNICATION_SANDBOX_ENFORCEMENT": sandboxMode,
+	}
+	with := func(kv map[string]string) map[string]string {
+		out := map[string]string{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for k, v := range kv {
+			out[k] = v
+		}
+		return out
+	}
+
+	opts, err := workerOptionsFromEnv(env(with(nil)))
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if opts.attemptCapacity != worker.DefaultAttemptCapacity {
+		t.Errorf("default capacity = %d, want %d", opts.attemptCapacity, worker.DefaultAttemptCapacity)
+	}
+	opts, err = workerOptionsFromEnv(env(with(map[string]string{"COMMUNICATION_WORKER_CAPACITY": " 4 "})))
+	if err != nil {
+		t.Fatalf("capacity 4: %v", err)
+	}
+	if opts.attemptCapacity != 4 {
+		t.Errorf("capacity = %d, want 4", opts.attemptCapacity)
+	}
+	for _, bad := range []struct{ raw, want string }{
+		{"0", "outside 1..16"},
+		{"17", "outside 1..16"},
+		{"three", "not a number"},
+	} {
+		if _, err := workerOptionsFromEnv(env(with(map[string]string{"COMMUNICATION_WORKER_CAPACITY": bad.raw}))); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("capacity %q error = %v, want substring %q", bad.raw, err, bad.want)
+		}
+	}
+}

@@ -17,9 +17,10 @@ import (
 // Migration section, not a runtime decision.
 const PinnedVersion = "0.80.0"
 
-// Profile kinds are the two ADR-0019 Decision 3 policies. They are two files
-// rather than one file and a flag because the difference is a security claim:
-// a run under agent-turn must never be able to say it denied egress.
+// Profile kinds are the ADR-0019 Decision 3 policies plus M4's command
+// profile. They are separate files rather than one file and a flag because the
+// difference is a security claim: a run under agent-turn must never be able to
+// say it denied egress.
 const (
 	// ProfileAgentTurn enforces filesystem and AF_UNIX and leaves network
 	// open, which is the only shape a real Claude/Codex turn can run under
@@ -29,12 +30,20 @@ const (
 	// by the case-13 security gate, which proves egress denial with a
 	// command-only run instead of lying about a real turn.
 	ProfileEgressDenied = "communication-agent-egress-denied"
+	// ProfileCommand is the process.exec policy (docs/m4-contract.md § 4
+	// step 5): the same filesystem shape as the agent profile — grants = the
+	// run workspace and the per-attempt home — with egress DENIED. A build or
+	// test command runs offline against the lab's pre-vendored caches, and a
+	// command that needs the network fails honestly rather than widening the
+	// profile. It carries --block-net exactly like the case-13 kind, so the
+	// egress claim and the recorded digest can never disagree.
+	ProfileCommand = "communication-command"
 )
 
 // Profile is one Communication-owned nono policy file: where it is, what it
 // digests to, and which network claim it carries.
 type Profile struct {
-	// Kind is ProfileAgentTurn or ProfileEgressDenied.
+	// Kind is ProfileAgentTurn, ProfileEgressDenied or ProfileCommand.
 	Kind string
 	// Path is the file handed to `nono run -p` (ADR-0009 D4: a path we ship,
 	// never `nono profile init`, which cannot author a path-named file (N3),
@@ -44,9 +53,10 @@ type Profile struct {
 	// `SandboxPolicyRef` content identity ADR-0019 D5 asks to be recorded per
 	// unit.
 	Digest string
-	// NetworkEnforced is true only for ProfileEgressDenied. For agent-turn it
-	// is false and always stays false: ADR-0019 keeps D-021 Provisional until
-	// a domain allowlist is observed from inside a real turn.
+	// NetworkEnforced is true only for the egress-denied kinds
+	// (ProfileEgressDenied, ProfileCommand). For agent-turn it is false and
+	// always stays false: ADR-0019 keeps D-021 Provisional until a domain
+	// allowlist is observed from inside a real turn.
 	NetworkEnforced bool
 	// ProfileVersion is nono's `meta.version` for this file, which is a policy
 	// revision, not a nono release.
@@ -214,13 +224,16 @@ var profileAllows = []string{"/proc/self/fd", "/dev/pts"}
 
 func profileBody(kind string) (profileSource, error) {
 	switch kind {
-	case ProfileAgentTurn, ProfileEgressDenied:
+	case ProfileAgentTurn, ProfileEgressDenied, ProfileCommand:
 	default:
-		return profileSource{}, fmt.Errorf("sandbox: unknown profile kind %q (want %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied)
+		return profileSource{}, fmt.Errorf("sandbox: unknown profile kind %q (want %s, %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied, ProfileCommand)
 	}
 	desc := "Communication agent sandbox: filesystem + AF_UNIX enforced, network open (ADR-0019 D3 agent-turn)"
 	if kind == ProfileEgressDenied {
 		desc = "Communication agent sandbox: filesystem + AF_UNIX + egress denied (ADR-0019 D3 agent-turn-egress-denied; case 13's gate only)"
+	}
+	if kind == ProfileCommand {
+		desc = "Communication command sandbox: filesystem + AF_UNIX + egress denied (M4 contract § 4 step 5; the process.exec policy — commands run offline against pre-vendored caches)"
 	}
 	return profileSource{
 		Meta:    profileMeta{Name: kind, Version: profileVersion, Description: desc},
@@ -311,7 +324,8 @@ func WriteProfile(dir, kind string) (*Profile, error) {
 	}
 	return &Profile{
 		Kind: kind, Path: path, Digest: DigestProfile(onDisk),
-		NetworkEnforced: kind == ProfileEgressDenied, ProfileVersion: profileVersion,
+		NetworkEnforced: kind == ProfileEgressDenied || kind == ProfileCommand,
+		ProfileVersion:  profileVersion,
 	}, nil
 }
 

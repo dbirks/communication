@@ -52,6 +52,26 @@ type Worker struct {
 // A *WorkerRegistry satisfies internal/worker.Registry.
 type WorkerRegistry struct {
 	Pool *pgxpool.Pool
+
+	// Capacity is this worker process's attempt capacity, published by
+	// Register and re-published by Heartbeat (docs/m4-contract.md § 4 step 1:
+	// the claim predicate's wr.active_attempts < wr.capacity is only real if
+	// the row carries the configured capacity). Zero — the M2 default — means
+	// "this caller does not run attempts": neither column is touched and the
+	// workers.capacity CHECK default (1) stands, so every M2 registration path
+	// behaves exactly as before. active_attempts is NEVER written here: it is
+	// bumped by the claim transaction and released only by the attempt's
+	// terminal write, the same transaction that lands it (§ 4 step 1).
+	Capacity int
+}
+
+// regValidateCapacity refuses an out-of-range capacity before Postgres does,
+// naming the CHECK instead of leaking a 23514 through a registration failure.
+func regValidateCapacity(c int) error {
+	if c < 1 || c > 16 {
+		return fmt.Errorf("postgres: worker capacity %d is outside the workers.capacity CHECK bound 1..16 (docs/m4-contract.md § 6)", c)
+	}
+	return nil
 }
 
 // regWorkerColumns is the workers projection returned by every read.
@@ -64,7 +84,11 @@ const regWorkerColumns = `id::text, name, hostname, version, status,
 //
 // An interrupted worker that never reached its offline write comes back
 // online here — its previous process is gone by definition, because the name
-// is unique per worker.
+// is unique per worker. When the process publishes a capacity (the M4 attempt
+// loop), the upsert also writes workers.capacity and zeroes active_attempts:
+// a fresh process holds no attempts, and the leases a dead process left are
+// still fenced — a re-register does not revive their tokens. A zero Capacity
+// (every M2 caller) writes the statement verbatim unchanged.
 func (r *WorkerRegistry) Register(ctx context.Context, name, hostname, version string) (string, error) {
 	if r == nil || r.Pool == nil {
 		return "", errors.New("postgres: worker registry has no pool")
@@ -72,26 +96,51 @@ func (r *WorkerRegistry) Register(ctx context.Context, name, hostname, version s
 	if name == "" || hostname == "" || version == "" {
 		return "", errors.New("postgres: Register requires name, hostname and version")
 	}
+	if r.Capacity != 0 {
+		if err := regValidateCapacity(r.Capacity); err != nil {
+			return "", err
+		}
+	}
 
 	var id string
-	err := r.Pool.QueryRow(ctx, `
-		INSERT INTO workers (name, hostname, version, started_at, last_heartbeat_at, status)
-		VALUES ($1, $2, $3, now(), now(), '`+WorkerStatusOnline+`')
-		ON CONFLICT (name) DO UPDATE SET
-			hostname          = EXCLUDED.hostname,
-			version           = EXCLUDED.version,
-			started_at        = now(),
-			last_heartbeat_at = now(),
-			status            = '`+WorkerStatusOnline+`'
-		RETURNING id::text`, name, hostname, version).Scan(&id)
+	var err error
+	if r.Capacity > 0 {
+		err = r.Pool.QueryRow(ctx, `
+			INSERT INTO workers (name, hostname, version, started_at, last_heartbeat_at, status, capacity)
+			VALUES ($1, $2, $3, now(), now(), '`+WorkerStatusOnline+`', $4)
+			ON CONFLICT (name) DO UPDATE SET
+				hostname          = EXCLUDED.hostname,
+				version           = EXCLUDED.version,
+				started_at        = now(),
+				last_heartbeat_at = now(),
+				status            = '`+WorkerStatusOnline+`',
+				capacity          = EXCLUDED.capacity,
+				active_attempts   = 0
+			RETURNING id::text`, name, hostname, version, r.Capacity).Scan(&id)
+	} else {
+		err = r.Pool.QueryRow(ctx, `
+			INSERT INTO workers (name, hostname, version, started_at, last_heartbeat_at, status)
+			VALUES ($1, $2, $3, now(), now(), '`+WorkerStatusOnline+`')
+			ON CONFLICT (name) DO UPDATE SET
+				hostname          = EXCLUDED.hostname,
+				version           = EXCLUDED.version,
+				started_at        = now(),
+				last_heartbeat_at = now(),
+				status            = '`+WorkerStatusOnline+`'
+			RETURNING id::text`, name, hostname, version).Scan(&id)
+	}
 	if err != nil {
 		return "", fmt.Errorf("postgres: register worker %q: %w", name, err)
 	}
 	return id, nil
 }
 
-// Heartbeat refreshes last_heartbeat_at. It touches no other column: a
-// heartbeat must stay cheap enough to run every few seconds.
+// Heartbeat refreshes last_heartbeat_at — and, for a worker that publishes
+// one, the capacity the claim predicate reads, so § 4 step 1's "register and
+// heartbeat publish capacity" is literally what the statement does. It
+// touches no other column: a heartbeat must stay cheap enough to run every
+// few seconds, and active_attempts belongs to the claim/terminal
+// transactions, never here.
 func (r *WorkerRegistry) Heartbeat(ctx context.Context, name string) error {
 	if r == nil || r.Pool == nil {
 		return errors.New("postgres: worker registry has no pool")
@@ -99,13 +148,26 @@ func (r *WorkerRegistry) Heartbeat(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("postgres: Heartbeat requires a worker name")
 	}
-	tag, err := r.Pool.Exec(ctx, `
-		UPDATE workers SET last_heartbeat_at = now()
-		WHERE name = $1 AND status <> '`+WorkerStatusOffline+`'`, name)
+	var err error
+	var rows int64
+	if r.Capacity != 0 {
+		if verr := regValidateCapacity(r.Capacity); verr != nil {
+			return verr
+		}
+		tag, herr := r.Pool.Exec(ctx, `
+			UPDATE workers SET last_heartbeat_at = now(), capacity = $2
+			WHERE name = $1 AND status <> '`+WorkerStatusOffline+`'`, name, r.Capacity)
+		err, rows = herr, tag.RowsAffected()
+	} else {
+		tag, herr := r.Pool.Exec(ctx, `
+			UPDATE workers SET last_heartbeat_at = now()
+			WHERE name = $1 AND status <> '`+WorkerStatusOffline+`'`, name)
+		err, rows = herr, tag.RowsAffected()
+	}
 	if err != nil {
 		return fmt.Errorf("postgres: heartbeat worker %q: %w", name, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rows == 0 {
 		return fmt.Errorf("postgres: heartbeat worker %q: %w", name, ErrNotFound)
 	}
 	return nil

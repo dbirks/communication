@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +39,10 @@ environment:
   COMMUNICATION_DATABASE_URL     required, postgres connection string
   COMMUNICATION_WORKER_NAME      worker identity (default: hostname)
   COMMUNICATION_WORKER_HEARTBEAT heartbeat interval (default "10s")
+  COMMUNICATION_WORKER_CAPACITY  concurrent attempts this worker claims and
+                                 publishes into workers.capacity (default "1",
+                                 max "16" — the workers.capacity CHECK, M4
+                                 contract § 4 step 1 and § 6)
   COMMUNICATION_WORKSPACE_ROOT   per-run worktree root
                                  (default "/var/lib/communication/workspaces")
   COMMUNICATION_REPOS_ROOT       per-project mirror root, measured as its own
@@ -119,7 +124,15 @@ type workerOptions struct {
 	// and probe P6 showed git aborts outright when its config is unreadable, so
 	// the value has to be deliberate.
 	agentGit acp.GitIdentityEnv
-	cfg      worker.Config
+	// attemptCapacity is workers.capacity as this process publishes it (M4
+	// contract § 4 step 1): the claim predicate's
+	// wr.active_attempts < wr.capacity is only real when the row carries the
+	// configured number, so Register/Heartbeat write it and the DB CHECK
+	// (1..16, § 6) refuses anything else — the ceiling is validated here so
+	// the refusal is a configuration message, not a constraint violation at
+	// the first heartbeat.
+	attemptCapacity int
+	cfg             worker.Config
 }
 
 // workerOptionsFromEnv reads and validates the worker environment. getenv is
@@ -219,6 +232,18 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 		interval = d
 	}
 
+	o.attemptCapacity = worker.DefaultAttemptCapacity
+	if raw := strings.TrimSpace(getenv("COMMUNICATION_WORKER_CAPACITY")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return o, fmt.Errorf("COMMUNICATION_WORKER_CAPACITY %q is not a number: %w", raw, err)
+		}
+		if n < 1 || n > worker.MaxAttemptCapacity {
+			return o, fmt.Errorf("COMMUNICATION_WORKER_CAPACITY %d is outside 1..%d (workers.capacity CHECK, M4 contract § 6)", n, worker.MaxAttemptCapacity)
+		}
+		o.attemptCapacity = n
+	}
+
 	o.cfg = worker.Config{
 		Name:         name,
 		Hostname:     hostname,
@@ -296,7 +321,10 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Info("schema current", slog.Int64("schema_version", schema))
 	}
 
-	w, err := worker.New(opts.cfg, &postgres.WorkerRegistry{Pool: pool}, worker.WithLogger(log))
+	// The registry publishes this worker's attempt capacity (§ 4 step 1) from
+	// the first Register onward, so the claim predicate
+	// wr.active_attempts < wr.capacity measures a real number.
+	w, err := worker.New(opts.cfg, &postgres.WorkerRegistry{Pool: pool, Capacity: opts.attemptCapacity}, worker.WithLogger(log))
 	if err != nil {
 		stop()
 		log.Error("invalid worker configuration", slog.String("error", err.Error()))
@@ -344,7 +372,39 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid turn loop configuration", slog.String("error", err.Error()))
 		return 2
 	}
-	registry := &postgres.WorkerRegistry{Pool: pool}
+	// M4 attempt execution (§ 4): the loop claims fenced attempt leases up to
+	// the published capacity and dispatches each kind to its executor.
+	// process.exec is wired; every other claimed kind lands on the loop's
+	// honest refusal until its wave is (contract § 0: kinds land incrementally
+	// and an unwired kind is reported, never faked).
+	attemptStore := &postgres.AttemptStore{Runs: &postgres.RunStore{Pool: pool}}
+	procExec := &worker.ProcExec{
+		WorkspaceRoot: opts.workspaceRoot,
+		LauncherHome:  opts.sandboxLauncherHome,
+		PolicyDir:     opts.policyDir,
+		SandboxPath:   nonoPath(),
+		Sandbox:       units.Sandbox,
+		Enforcement:   opts.sandboxEnforcement,
+		GitIdentity:   opts.agentGit,
+		Logger:        log,
+		// Checkpoints is deliberately nil until the § 4 step 3
+		// run-workspace wave wires it: a successful command then closes as
+		// infra naming the unbound boundary — a claim about this wiring,
+		// never a checkpoint with an invented volume (D-024).
+	}
+	attemptLoop, err := worker.NewAttemptLoop(
+		worker.AttemptConfig{Capacity: opts.attemptCapacity},
+		attemptStore,
+		worker.AttemptExecutors{worker.NodeKindProcessExec: procExec},
+		w.ID,
+		worker.WithAttemptLogger(log),
+	)
+	if err != nil {
+		stop()
+		log.Error("invalid attempt loop configuration", slog.String("error", err.Error()))
+		return 2
+	}
+	registry := &postgres.WorkerRegistry{Pool: pool, Capacity: opts.attemptCapacity}
 	w.Registered = func(ctx context.Context, workerID string) {
 		// Registration-time writes, in this order and before any claim:
 		//
@@ -375,11 +435,25 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			log.Warn("worker sandbox state could not be registered",
 				slog.String("error", err.Error()))
 		}
+		// M4: the attempt loop starts on the far side of the same
+		// SweepUncleaned gate — a node attempt may materialize secrets
+		// (§ 4 step 4), so it claims only once the promise "no dead
+		// worker's values are on this disk" holds. Both loops then share
+		// the drain path (§ 4 step 12): claims stop, in-flight bodies get
+		// the grace window, and whatever remains writes its own terminal
+		// before the offline row.
+		go func() {
+			if err := attemptLoop.Start(ctx); err != nil {
+				log.Warn("attempt loop stopped", slog.String("error", err.Error()))
+			}
+		}()
 		if err := loop.Start(ctx); err != nil {
 			log.Warn("turn loop stopped", slog.String("error", err.Error()))
 		}
 	}
-	w.Drain = loop.Drain
+	w.Drain = func(ctx context.Context) error {
+		return errors.Join(loop.Drain(ctx), attemptLoop.Drain(ctx))
+	}
 
 	log.Info("worker starting",
 		slog.String("hostname", opts.cfg.Hostname),
