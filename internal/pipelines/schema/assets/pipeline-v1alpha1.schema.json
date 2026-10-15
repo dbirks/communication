@@ -1,0 +1,1329 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://communication.dev/schemas/pipeline-v1alpha1.schema.json",
+ "title": "Communication pipeline documents (v1alpha1)",
+ "description": "Canonical v1alpha1 authoring schema. Every document is one of the named kinds; node config is validated per kind; values that accept a binding are typed bindingText/bindingValue/celExpression so an expression string cannot masquerade as a typed literal. Structural only: identifiers, DAG topology, CEL compilation, secret policy, budget bounds and reachability are compiler responsibilities (ADR-0021 § 3). Derived from the M4 spike candidate with the corrections of docs/m4-contract.md § 9 applied.",
+ "oneOf": [
+  {
+   "$ref": "#/$defs/PipelineDocument"
+  },
+  {
+   "$ref": "#/$defs/NodeTemplateDocument"
+  }
+ ],
+ "$defs": {
+  "identifier": {
+   "type": "string",
+   "pattern": "^[a-z][a-z0-9_]{0,62}$",
+   "description": "Node ids, input names and output names. Deliberately excludes '-' and '.' so every id is a legal single CEL selector; the provisional schema's ^[a-zA-Z][a-zA-Z0-9_-]*$ allows ids that make ${{ nodes.my-step.outputs.x }} unparseable."
+  },
+  "celExpression": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 2048,
+   "description": "Bare restricted CEL (ADR-0022): no ${{ }} delimiters. Grammar/allowlist checks are the compiler's job; the schema bounds size only."
+  },
+  "bindingString": {
+   "type": "string",
+   "pattern": "^\\$\\{\\{[ ]*[a-zA-Z_][a-zA-Z0-9_.\\[\\]()!&|<>=+:*/ ~%'\\-]*[ ]*\\}\\}$",
+   "description": "Whole-value binding: exactly one expression between ${{ and }}. Interpolation inside a longer string is allowed ONLY in fields typed bindingText, never in typed scalars."
+  },
+  "bindingText": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 8192,
+   "description": "Text that may contain zero or more ${{ ... }} interpolations. The schema CANNOT distinguish a binding from a literal inside a string: oneOf/anyOf over string-vs-bindingString double-matches (observed: \"'oneOf' failed, subschemas 0, 1 matched\"), so binding syntax is a compiler check and the schema only bounds size."
+  },
+  "bindingValue": {
+   "oneOf": [
+    {
+     "$ref": "#/$defs/bindingString"
+    },
+    {
+     "type": "object",
+     "required": [
+      "expr"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "expr": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 2048
+      },
+      "fallback": {}
+     }
+    }
+   ]
+  },
+  "bindingOrString": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 8192
+  },
+  "bindingOrInteger": {
+   "type": [
+    "integer",
+    "object",
+    "string"
+   ],
+   "oneOf": [
+    {
+     "type": "integer"
+    },
+    {
+     "$ref": "#/$defs/bindingValue"
+    }
+   ]
+  },
+  "bindingOrBoolean": {
+   "oneOf": [
+    {
+     "type": "boolean"
+    },
+    {
+     "$ref": "#/$defs/bindingValue"
+    }
+   ]
+  },
+  "jsonSchemaObject": {
+   "type": "object",
+   "required": [
+    "type"
+   ],
+   "properties": {
+    "type": {
+     "const": "object"
+    },
+    "properties": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "required": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "uniqueItems": true
+    },
+    "additionalProperties": {
+     "type": [
+      "boolean",
+      "object"
+     ]
+    }
+   },
+   "additionalProperties": true
+  },
+  "retryPolicy": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "maxAttempts": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 10
+    },
+    "backoff": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "baseSeconds": {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 3600
+      },
+      "multiplier": {
+       "type": "number",
+       "minimum": 1,
+       "maximum": 10
+      },
+      "maxSeconds": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 86400
+      },
+      "jitter": {
+       "type": "boolean"
+      }
+     }
+    },
+    "retriableErrors": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "infra",
+       "interrupted",
+       "timeout",
+       "agent_error",
+       "invalid_output",
+       "sandbox_enforcement_failed"
+      ]
+     },
+     "uniqueItems": true,
+     "description": "The retriable half of ADR-0023 § 7's classes. workspace_lost, predicate_error, approval_expired and cancelled are never retriable; sandbox_enforcement_failed is admissible here but only retriable when operator config enables it."
+    },
+    "workspacePolicy": {
+     "enum": [
+      "continue_workspace",
+      "restore_checkpoint"
+     ],
+     "description": "ADR-0023 § 6. continue_workspace is the M4 default; restore_checkpoint requires every repo committed at the boundary and is not portable across volumes (D-024)."
+    }
+   }
+  },
+  "nodeFailure": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "onExecutionError": {
+     "enum": [
+      "stop",
+      "continue",
+      "route"
+     ]
+    },
+    "errorRoute": {
+     "$ref": "#/$defs/identifier"
+    }
+   }
+  },
+  "secretRef": {
+   "type": "string",
+   "pattern": "^(project|org)/[a-z0-9][a-z0-9_-]{0,63}$",
+   "description": "A reference only. Invariant 5: a literal value never appears here and the compiler additionally rejects anything that looks like an inline credential."
+  },
+  "relativePath": {
+   "type": "string",
+   "pattern": "^[A-Za-z0-9][A-Za-z0-9._ +@/-]{0,511}$",
+   "not": {
+    "anyOf": [
+     {
+      "pattern": "//"
+     },
+     {
+      "pattern": "(?:^|/)\\.\\.(?:/|$)"
+     },
+     {
+      "pattern": "/$"
+     }
+    ]
+   },
+   "description": "Relative, traversal-free. Go regexp (used by santhosh v6) rejects ECMA-262 lookarounds and some nested repeats, so path safety is a positive pattern plus not-clauses."
+  },
+  "commonNodeFields": {
+   "id": {
+    "$ref": "#/$defs/identifier"
+   },
+   "dependsOn": {
+    "type": "array",
+    "items": {
+     "$ref": "#/$defs/identifier"
+    },
+    "uniqueItems": true,
+    "minItems": 0
+   },
+   "when": {
+    "$ref": "#/$defs/celExpression"
+   },
+   "timeoutSeconds": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 604800
+   },
+   "retry": {
+    "$ref": "#/$defs/retryPolicy"
+   },
+   "onFailure": {
+    "$ref": "#/$defs/nodeFailure"
+   },
+   "outputs": {
+    "$ref": "#/$defs/jsonSchemaObject"
+   }
+  },
+  "body": {
+   "type": "object",
+   "required": [
+    "nodes"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "nodes": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 200,
+     "items": {
+      "$ref": "#/$defs/node"
+     }
+    }
+   }
+  },
+  "resultBindings": {
+   "type": "object",
+   "minProperties": 1,
+   "maxProperties": 64,
+   "additionalProperties": {
+    "$ref": "#/$defs/bindingValue"
+   }
+  },
+  "node": {
+   "type": "object",
+   "required": [
+    "id",
+    "kind"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "id": {
+     "$ref": "#/$defs/identifier"
+    },
+    "kind": {
+     "enum": [
+      "agent.acp",
+      "model.chat",
+      "process.exec",
+      "condition",
+      "gate",
+      "human.approval",
+      "until",
+      "for_each",
+      "parallel",
+      "join",
+      "pipeline.invoke",
+      "artifact.publish",
+      "git.commit",
+      "git.publish",
+      "integration.query",
+      "integration.action"
+     ]
+    },
+    "dependsOn": {
+     "$ref": "#/$defs/commonNodeFields/dependsOn"
+    },
+    "when": {
+     "$ref": "#/$defs/commonNodeFields/when"
+    },
+    "timeoutSeconds": {
+     "$ref": "#/$defs/commonNodeFields/timeoutSeconds"
+    },
+    "retry": {
+     "$ref": "#/$defs/commonNodeFields/retry"
+    },
+    "onFailure": {
+     "$ref": "#/$defs/commonNodeFields/onFailure"
+    },
+    "outputs": {
+     "$ref": "#/$defs/commonNodeFields/outputs"
+    },
+    "config": {
+     "type": "object"
+    }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "agent.acp"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configAgentAcp"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "process.exec"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configProcessExec"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "condition"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configCondition"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "human.approval"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configHumanApproval"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "until"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configUntil"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "for_each"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configForEach"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "artifact.publish"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configArtifactPublish"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "model.chat"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configModelChat"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "pipeline.invoke"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configPipelineInvoke"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "enum": [
+         "parallel",
+         "join"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configParallel"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "enum": [
+         "git.commit",
+         "git.publish"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configGitPublish"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "enum": [
+         "integration.query",
+         "integration.action"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configIntegration"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "gate"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "config": {
+        "$ref": "#/$defs/configGate"
+       }
+      },
+      "required": [
+       "config"
+      ]
+     }
+    }
+   ]
+  },
+  "configAgentAcp": {
+   "type": "object",
+   "required": [
+    "profile",
+    "prompt"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "profile": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "prompt": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "sessionMode": {
+     "enum": [
+      "new",
+      "resume_if_supported",
+      "continue_live"
+     ]
+    },
+    "fallback": {
+     "enum": [
+      "new",
+      "fail"
+     ]
+    },
+    "context": {
+     "type": "array",
+     "maxItems": 32,
+     "items": {
+      "type": "object",
+      "required": [
+       "from"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "from": {
+        "$ref": "#/$defs/bindingOrString"
+       },
+       "as": {
+        "type": "string"
+       }
+      }
+     }
+    },
+    "workspace": {
+     "$ref": "#/$defs/workspaceScope"
+    },
+    "secretRefs": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/secretRef"
+     },
+     "uniqueItems": true,
+     "maxItems": 32
+    },
+    "structuredOutput": {
+     "type": "string",
+     "maxLength": 4096
+    }
+   }
+  },
+  "configProcessExec": {
+   "type": "object",
+   "required": [
+    "executable"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "executable": {
+     "type": "string",
+     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+    },
+    "args": {
+     "type": "array",
+     "maxItems": 64,
+     "items": {
+      "$ref": "#/$defs/bindingOrString"
+     }
+    },
+    "cwd": {
+     "oneOf": [
+      {
+       "const": ""
+      },
+      {
+       "$ref": "#/$defs/relativePath"
+      }
+     ],
+     "description": "Relative to the run workspace root; empty means the root."
+    },
+    "env": {
+     "type": "object",
+     "maxProperties": 64,
+     "additionalProperties": {
+      "$ref": "#/$defs/bindingOrString"
+     }
+    },
+    "secretRefs": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/secretRef"
+     },
+     "uniqueItems": true,
+     "maxItems": 32
+    },
+    "workspace": {
+     "$ref": "#/$defs/workspaceScope"
+    },
+    "outputExtraction": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "mode": {
+       "enum": [
+        "none",
+        "json_from_stdout",
+        "json_from_path"
+       ]
+      },
+      "path": {
+       "$ref": "#/$defs/relativePath"
+      }
+     }
+    }
+   }
+  },
+  "configCondition": {
+   "type": "object",
+   "required": [
+    "cases"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "cases": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 32,
+     "items": {
+      "type": "object",
+      "required": [
+       "when",
+       "route"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "when": {
+        "$ref": "#/$defs/celExpression"
+       },
+       "route": {
+        "$ref": "#/$defs/identifier"
+       }
+      }
+     }
+    },
+    "default": {
+     "$ref": "#/$defs/identifier"
+    }
+   }
+  },
+  "configHumanApproval": {
+   "type": "object",
+   "required": [
+    "summary"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "summary": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "artifactRefs": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/bindingOrString"
+     },
+     "maxItems": 32
+    },
+    "approverRoles": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "maintainer",
+       "contributor"
+      ]
+     },
+     "uniqueItems": true,
+     "minItems": 1
+    },
+    "approverUserIds": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "uniqueItems": true,
+     "maxItems": 32
+    },
+    "deadlineSeconds": {
+     "type": "integer",
+     "minimum": 60,
+     "maximum": 2592000
+    },
+    "onTimeout": {
+     "enum": [
+      "fail",
+      "cancel_run",
+      "expire"
+     ]
+    }
+   }
+  },
+  "configUntil": {
+   "type": "object",
+   "required": [
+    "maxIterations",
+    "passWhen",
+    "body"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "maxIterations": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 32
+    },
+    "maxDurationSeconds": {
+     "type": "integer",
+     "minimum": 60,
+     "maximum": 604800
+    },
+    "passWhen": {
+     "$ref": "#/$defs/celExpression"
+    },
+    "failWhen": {
+     "$ref": "#/$defs/celExpression"
+    },
+    "carryForward": {
+     "type": "boolean"
+    },
+    "body": {
+     "$ref": "#/$defs/body"
+    },
+    "resultBindings": {
+     "$ref": "#/$defs/resultBindings"
+    }
+   }
+  },
+  "configForEach": {
+   "type": "object",
+   "required": [
+    "items",
+    "body"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "items": {
+     "$ref": "#/$defs/bindingValue"
+    },
+    "maxConcurrency": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 20,
+     "description": "Literal only (ADR-0021 § 3, ADR-0023 § 8): a ${{ }} here is refused at validate, because in-flight accounting is bounded by the plan the run pins."
+    },
+    "onChildFailure": {
+     "enum": [
+      "stop",
+      "collect_and_continue",
+      "fail_after_all"
+     ]
+    },
+    "body": {
+     "$ref": "#/$defs/body"
+    },
+    "resultBindings": {
+     "$ref": "#/$defs/resultBindings"
+    }
+   }
+  },
+  "configParallel": {
+   "type": "object",
+   "required": [
+    "branches"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "branches": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 32,
+     "items": {
+      "$ref": "#/$defs/body"
+     }
+    },
+    "join": {
+     "enum": [
+      "all",
+      "any",
+      "quorum"
+     ]
+    },
+    "quorum": {
+     "type": "integer",
+     "minimum": 1
+    }
+   }
+  },
+  "configPipelineInvoke": {
+   "type": "object",
+   "required": [
+    "pipeline"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "pipeline": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "revisionDigest": {
+     "type": "string",
+     "pattern": "^sha256:[0-9a-f]{64}$",
+     "description": "Explicit pinned child revision; requires revisionPolicy: pinned_digest."
+    },
+    "inputs": {
+     "type": "object",
+     "maxProperties": 64,
+     "additionalProperties": {
+      "$ref": "#/$defs/bindingOrString"
+     }
+    },
+    "waitFor": {
+     "enum": [
+      "completion",
+      "started"
+     ],
+     "description": "M4 executes completion only (ADR-0024 § 1); started is refused at validate with unsupported_policy."
+    },
+    "childLimits": {
+     "type": "object",
+     "additionalProperties": false,
+     "properties": {
+      "maxDurationSeconds": {
+       "type": "integer",
+       "minimum": 60
+      }
+     }
+    },
+    "revisionPolicy": {
+     "enum": [
+      "pinned_by_assignment",
+      "pinned_digest"
+     ],
+     "description": "ADR-0023 § 10: the target resolves at run start, either from the assignment's pin (default) or from revisionDigest. The compiler refuses pinned_digest without a revisionDigest and refuses waitFor: started (ADR-0024 § 3)."
+    }
+   }
+  },
+  "configArtifactPublish": {
+   "type": "object",
+   "required": [
+    "name",
+    "mediaType"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "name": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "kind": {
+     "enum": [
+      "markdown",
+      "image",
+      "html",
+      "json",
+      "patch",
+      "archive",
+      "checkpoint"
+     ]
+    },
+    "mediaType": {
+     "type": "string",
+     "pattern": "^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$"
+    },
+    "from": {
+     "type": "object",
+     "required": [
+      "mode"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "mode": {
+       "enum": [
+        "workspace_path",
+        "output_json"
+       ]
+      },
+      "repository": {
+       "$ref": "#/$defs/bindingOrString"
+      },
+      "path": {
+       "$ref": "#/$defs/relativePath"
+      },
+      "value": {
+       "$ref": "#/$defs/bindingValue"
+      }
+     }
+    },
+    "sensitivity": {
+     "enum": [
+      "standard",
+      "internal",
+      "restricted",
+      "secret"
+     ]
+    },
+    "retentionSeconds": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
+  },
+  "configModelChat": {
+   "type": "object",
+   "required": [
+    "model",
+    "messages"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "provider": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "model": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "messages": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 64,
+     "items": {
+      "type": "object"
+     }
+    },
+    "responseSchema": {
+     "$ref": "#/$defs/jsonSchemaObject"
+    },
+    "temperature": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 2
+    },
+    "maxTokens": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 200000
+    }
+   }
+  },
+  "configGitPublish": {
+   "type": "object",
+   "required": [
+    "mode"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "mode": {
+     "enum": [
+      "commit",
+      "push_branch",
+      "draft_pr",
+      "pr_comment",
+      "merge_with_approval"
+     ]
+    },
+    "repository": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "targetRepository": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "branch": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "title": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "body": {
+     "$ref": "#/$defs/bindingText"
+    },
+    "idempotencyKey": {
+     "$ref": "#/$defs/bindingText"
+    }
+   }
+  },
+  "configIntegration": {
+   "type": "object",
+   "required": [
+    "provider",
+    "operation"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "provider": {
+     "enum": [
+      "github"
+     ]
+    },
+    "operation": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "arguments": {
+     "type": "object",
+     "maxProperties": 32,
+     "additionalProperties": {
+      "$ref": "#/$defs/bindingOrString"
+     }
+    },
+    "credentialRef": {
+     "$ref": "#/$defs/secretRef"
+    }
+   }
+  },
+  "configGate": {
+   "type": "object",
+   "required": [
+    "judge"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "judge": {
+     "enum": [
+      "agent",
+      "model",
+      "command",
+      "human"
+     ]
+    },
+    "template": {
+     "$ref": "#/$defs/bindingOrString"
+    },
+    "delegate": {
+     "type": "object"
+    }
+   }
+  },
+  "workspaceScope": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "mode": {
+     "enum": [
+      "run_workspace",
+      "read_only"
+     ]
+    },
+    "repositories": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/bindingOrString"
+     },
+     "uniqueItems": true,
+     "maxItems": 16
+    }
+   }
+  },
+  "PipelineDocument": {
+   "type": "object",
+   "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "apiVersion": {
+     "const": "communication.dev/v1alpha1"
+    },
+    "kind": {
+     "const": "Pipeline"
+    },
+    "metadata": {
+     "type": "object",
+     "required": [
+      "name"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[a-z][a-z0-9.-]{0,127}$"
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 2000
+      },
+      "labels": {
+       "type": "object",
+       "additionalProperties": {
+        "type": "string"
+       },
+       "maxProperties": 32
+      },
+      "ui": {
+       "type": "object",
+       "description": "Non-semantic layout metadata; excluded from the revision digest (ADR-0021)."
+      }
+     }
+    },
+    "spec": {
+     "type": "object",
+     "required": [
+      "inputs",
+      "nodes"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "inputs": {
+       "$ref": "#/$defs/jsonSchemaObject"
+      },
+      "outputs": {
+       "$ref": "#/$defs/jsonSchemaObject"
+      },
+      "policies": {
+       "type": "object",
+       "additionalProperties": false,
+       "properties": {
+        "maxConcurrentNodes": {
+         "type": "integer",
+         "minimum": 1,
+         "maximum": 64
+        },
+        "maxDurationSeconds": {
+         "type": "integer",
+         "minimum": 60,
+         "maximum": 604800
+        },
+        "maxNodeExecutions": {
+         "type": "integer",
+         "minimum": 1,
+         "maximum": 100000
+        },
+        "maxChildDepth": {
+         "type": "integer",
+         "minimum": 0,
+         "maximum": 2,
+         "description": "Engine ceiling 2 (ADR-0023 § 7); a document must not validate at publish and prove unschedulable at run time."
+        },
+        "workspaceMode": {
+         "enum": [
+          "worktree",
+          "clone"
+         ]
+        },
+        "cancelPolicy": {
+         "enum": [
+          "cascade",
+          "detach"
+         ],
+         "description": "cascade executes in M4; detach is refused at validate with unsupported_policy (ADR-0024 § 3)."
+        }
+       }
+      },
+      "nodes": {
+       "type": "array",
+       "minItems": 1,
+       "maxItems": 200,
+       "items": {
+        "$ref": "#/$defs/node"
+       }
+      },
+      "resultBindings": {
+       "$ref": "#/$defs/resultBindings"
+      }
+     }
+    }
+   }
+  },
+  "NodeTemplateDocument": {
+   "type": "object",
+   "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "apiVersion": {
+     "const": "communication.dev/v1alpha1"
+    },
+    "kind": {
+     "const": "NodeTemplate"
+    },
+    "metadata": {
+     "type": "object",
+     "required": [
+      "name",
+      "version"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "name": {
+       "type": "string",
+       "pattern": "^[a-z][a-z0-9.-]{0,127}$"
+      },
+      "version": {
+       "type": "string",
+       "pattern": "^\\d+\\.\\d+\\.\\d+$"
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 2000
+      }
+     }
+    },
+    "spec": {
+     "type": "object",
+     "required": [
+      "implements",
+      "parameters",
+      "config"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "implements": {
+       "$ref": "#/$defs/node/properties/kind"
+      },
+      "parameters": {
+       "$ref": "#/$defs/jsonSchemaObject"
+      },
+      "config": {
+       "type": "object"
+      },
+      "outputSchema": {
+       "$ref": "#/$defs/jsonSchemaObject"
+      },
+      "workspaceMode": {
+       "enum": [
+        "run_workspace",
+        "read_only"
+       ]
+      }
+     }
+    }
+   },
+   "description": "A NodeTemplate document validates in M4 and cannot be published: the template registry is M5 (ADR-0024 § 2), and validate answers template_publish_deferred."
+  }
+ }
+}
