@@ -34,3 +34,4 @@ exercised — an ADR is not Accepted on the strength of a written intention.
 | ADR-0013 | PostgreSQL 18, pgx, goose forward-only migrations | Accepted | [`ADR-0013-postgres-persistence-and-migrations.md`](ADR-0013-postgres-persistence-and-migrations.md) |
 | ADR-0014 | HTTP /api/v1, problem+json, SSE event stream conventions | Accepted (M1) | [`ADR-0014-http-api-and-event-stream-conventions.md`](ADR-0014-http-api-and-event-stream-conventions.md) |
 | ADR-0015 | ACP Go SDK: coder/acp-go-sdk v0.13.5 | Accepted | [`ADR-0015-acp-go-sdk.md`](ADR-0015-acp-go-sdk.md) |
+| ADR-0016 | Conversations, controller lock, turn leases and fencing tokens | Accepted (M2) | [`ADR-0016-conversations-control-and-turn-leases.md`](ADR-0016-conversations-control-and-turn-leases.md) |
