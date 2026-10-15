@@ -186,8 +186,13 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		}
 	}
 	// Re-queue one attempt per reopened WORKER row with the decision's
-	// context; control-plane rows re-derive inside the advancer.
-	for _, n := range reopen {
+	// context; control-plane rows re-derive inside the advancer. The order is
+	// the sorted key order, not map order: attempt ids (and therefore the
+	// claim tie-break) must be deterministic across processes, or a retried
+	// run's attempt ledger is a coin flip (route 31 / C6e's append-only
+	// ordering claim).
+	for _, key := range sortedKeys(reopen) {
+		n := reopen[key]
 		if n.Location != "worker" {
 			continue
 		}

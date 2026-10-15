@@ -1551,19 +1551,26 @@ func (ac *advanceCtx) settleRun() error {
 		}
 		return nil
 	}
-	for _, id := range root.TerminalNodes {
-		pn := ac.prog.nodes[ScopeRoot][id]
-		row := ac.st.Node(buildInstanceKey(pn.Path, nil))
-		if row == nil || !NodeTerminal(row.Status) {
+	// A run settles only when EVERY root-scope row is terminal, not merely
+	// when the declared terminal nodes are: a reopened branch (route 31) can
+	// leave a non-terminal row whose queued attempt has not run, and
+	// completing over it would be the run lying about work it never re-did.
+	// (The § 5.1 step-6 rule holds for a graph already at rest; this is the
+	// at-rest test itself.)
+	for _, n := range ac.st.Nodes {
+		if n.ScopeKey == ScopeRoot && !NodeTerminal(n.Status) {
 			return nil
 		}
 	}
-	// All root terminal nodes are terminal. Any failure has already failed
+	// All root rows are terminal. Any failure has already failed
 	// the run through the failure policy; a skipped or succeeded set
 	// completes it with the result bindings evaluated over the root envelope.
 	for _, id := range root.TerminalNodes {
 		pn := ac.prog.nodes[ScopeRoot][id]
 		row := ac.st.Node(buildInstanceKey(pn.Path, nil))
+		if row == nil {
+			return nil
+		}
 		if row.Status == NodeFailed || row.Status == NodeInterrupted || row.Status == NodeCancelled {
 			// A continue/route policy let a non-stop failure reach the end of
 			// the graph: the run still has to state an honest outcome.
