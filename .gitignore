@@ -11,8 +11,14 @@ verify-*.png
 
 # Build and test output
 coverage/
-dist/
+/dist/
 bin/
+
+# Frontend (ui/ is the Vite SPA; ui/dist is embedded build output, keep only
+# the placeholder so go:embed compiles before the first UI build)
+node_modules/
+ui/dist/*
+!ui/dist/.gitkeep
 
 # Python bytecode
 __pycache__/

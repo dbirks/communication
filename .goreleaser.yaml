@@ -19,12 +19,12 @@
 version: 2
 project_name: communication
 
-# before:
-#   hooks:
-#     # Activate once ui/ exists (ADR-0005 + ADR-0007, both Proposed): the
-#     # built SPA is embedded by ui/embed.go, so it must precede `go build`.
-#     - pnpm --dir ui install --frozen-lockfile
-#     - pnpm --dir ui build
+before:
+  hooks:
+    # The built SPA is embedded by ui/embed.go, so it must precede `go build`
+    # (ADR-0005 + ADR-0007).
+    - pnpm --dir ui install --frozen-lockfile
+    - pnpm --dir ui build
 
 builds:
   - id: communication
