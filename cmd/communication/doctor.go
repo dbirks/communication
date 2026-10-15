@@ -86,6 +86,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	acpTimeout := fs.Duration("acp-timeout", defaultACPTimeout, "timeout for each --acp end-to-end check")
 	var acpIDs stringListFlag
 	fs.Var(&acpIDs, "acp", "run an end-to-end ACP check for a launcher id (repeatable or comma-separated: claude,codex)")
+	pipelines := fs.Bool("pipelines", false, "run the pipeline-schema/CEL self-check lane (compile the shipped schema, evaluate one expression per allowlisted CEL name, report the cel_env_digest)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -98,6 +99,9 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	var results []CheckResult
 	for _, c := range doctorChecks {
 		results = append(results, c.Fn(ctx)...)
+	}
+	if *pipelines {
+		results = append(results, pipelineChecks(ctx)...)
 	}
 	for _, id := range ids {
 		launcher, _ := acp.LookupLauncher(id)
@@ -117,6 +121,15 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 
 	// Doctor diagnoses; missing tools are a report, not a failure.
+	doctorExit := func() int {
+		if code := acpExitCode(results, ids); code != 0 {
+			return code
+		}
+		if *pipelines {
+			return pipelinesExitCode(results)
+		}
+		return 0
+	}
 	if *jsonOutput {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -127,7 +140,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			fmt.Fprintf(stderr, "doctor: %v\n", err)
 			return 2
 		}
-		return acpExitCode(results, ids)
+		return doctorExit()
 	}
 
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
@@ -137,7 +150,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintf(w, "%s\t%s\t%s\n", r.Name, r.Status, r.Detail)
 	}
 	w.Flush()
-	return acpExitCode(results, ids)
+	return doctorExit()
 }
 
 // resolveACPIDs validates and de-duplicates the requested launcher ids.
