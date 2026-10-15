@@ -30,3 +30,7 @@ exercised — an ADR is not Accepted on the strength of a written intention.
 | ADR-0009 | nono `required` mode is verify-then-run, never policy delegation | Proposed | [`ADR-0009-nono-required-mode-verification.md`](ADR-0009-nono-required-mode-verification.md) |
 | ADR-0010 | Worker-managed mirrors are per-project; runs get linked worktrees | Proposed | [`ADR-0010-workspace-mirrors-and-worktrees.md`](ADR-0010-workspace-mirrors-and-worktrees.md) |
 | ADR-0011 | License: Apache-2.0 | Accepted | [`ADR-0011-license-apache-2.md`](ADR-0011-license-apache-2.md) |
+| ADR-0012 | Dev identity (OIDC + PKCE, mock IdP) and Postgres-backed sessions | Accepted (dev scope) | [`ADR-0012-dev-identity-and-sessions.md`](ADR-0012-dev-identity-and-sessions.md) |
+| ADR-0013 | PostgreSQL 18, pgx, goose forward-only migrations | Accepted | [`ADR-0013-postgres-persistence-and-migrations.md`](ADR-0013-postgres-persistence-and-migrations.md) |
+| ADR-0014 | HTTP /api/v1, problem+json, SSE event stream conventions | Accepted (M1) | [`ADR-0014-http-api-and-event-stream-conventions.md`](ADR-0014-http-api-and-event-stream-conventions.md) |
+| ADR-0015 | ACP Go SDK: coder/acp-go-sdk v0.13.5 | Accepted | [`ADR-0015-acp-go-sdk.md`](ADR-0015-acp-go-sdk.md) |
