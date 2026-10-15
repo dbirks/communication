@@ -1,3 +1,5 @@
 minimumReleaseAgeExclude:
   - react-dom@19.3.1
   - react@19.3.1
+overrides:
+  openapi-typescript>typescript: 5.9.3
