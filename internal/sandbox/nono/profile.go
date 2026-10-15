@@ -1,0 +1,290 @@
+package nono
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// PinnedVersion is the nono release every capability claim in
+// docs/compatibility/ was measured against (ADR-0019 N-a: "version ≠ pinned
+// 0.80.0" is an abort, not a warning). Upgrading it means rebuilding the
+// worker image and re-running the SANDBOX matrix, which is ADR-0019's
+// Migration section, not a runtime decision.
+const PinnedVersion = "0.80.0"
+
+// Profile kinds are the two ADR-0019 Decision 3 policies. They are two files
+// rather than one file and a flag because the difference is a security claim:
+// a run under agent-turn must never be able to say it denied egress.
+const (
+	// ProfileAgentTurn enforces filesystem and AF_UNIX and leaves network
+	// open, which is the only shape a real Claude/Codex turn can run under
+	// (ADR-0019 D3: the harness cannot answer without its model API).
+	ProfileAgentTurn = "communication-agent"
+	// ProfileEgressDenied is the same filesystem policy plus --block-net, used
+	// by the case-13 security gate, which proves egress denial with a
+	// command-only run instead of lying about a real turn.
+	ProfileEgressDenied = "communication-agent-egress-denied"
+)
+
+// Profile is one Communication-owned nono policy file: where it is, what it
+// digests to, and which network claim it carries.
+type Profile struct {
+	// Kind is ProfileAgentTurn or ProfileEgressDenied.
+	Kind string
+	// Path is the file handed to `nono run -p` (ADR-0009 D4: a path we ship,
+	// never `nono profile init`, which cannot author a path-named file (N3),
+	// and never bare CLI flags, which silently mix in the built-in default).
+	Path string
+	// Digest is sha256 of the file bytes, in "sha256:<hex>" form. This is the
+	// `SandboxPolicyRef` content identity ADR-0019 D5 asks to be recorded per
+	// unit.
+	Digest string
+	// NetworkEnforced is true only for ProfileEgressDenied. For agent-turn it
+	// is false and always stays false: ADR-0019 keeps D-021 Provisional until
+	// a domain allowlist is observed from inside a real turn.
+	NetworkEnforced bool
+	// ProfileVersion is nono's `meta.version` for this file, which is a policy
+	// revision, not a nono release.
+	ProfileVersion string
+}
+
+// profileSource is the profile body. It is authored as a struct + canonical
+// marshal rather than a string constant so the digest and the assertions below
+// can never drift from the bytes on disk, and so `sandbox_policy` is one
+// literal that cannot be edited into `external` by a copy/paste (C-FC2b proved
+// no nono surface reveals the difference).
+type profileSource struct {
+	Schema   string          `json:"$schema,omitempty"`
+	Meta     profileMeta     `json:"meta"`
+	Extends  string          `json:"extends"`
+	Linux    profileLinux    `json:"linux"`
+	Security profileSecurity `json:"security"`
+	Groups   profileGroups   `json:"groups"`
+	FS       profileFS       `json:"filesystem"`
+}
+
+type profileMeta struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+}
+
+type profileLinux struct {
+	// AfUnixMediation is the C7 remedy. nono's default is off, which left
+	// /var/run/docker.sock reachable (SANDBOX.md C7, reproduced as probe
+	// C-SOCK2 with our own file).
+	AfUnixMediation string `json:"af_unix_mediation"`
+	// SandboxPolicy is pinned to landlock. `external` is never emitted: it
+	// silently un-enforces --block-net (C-FC2) and nothing reveals that it
+	// happened (C-FC2b).
+	SandboxPolicy string `json:"sandbox_policy"`
+}
+
+type profileSecurity struct {
+	ProcessInfoMode string `json:"process_info_mode"`
+}
+
+type profileGroups struct {
+	Exclude []string `json:"exclude"`
+}
+
+type profileFS struct {
+	WriteFile []string `json:"write_file"`
+	Allow     []string `json:"allow"`
+}
+
+// policyExternal is named so the refusal below can say what it refuses. It is
+// never emitted (C-FC2).
+const policyExternal = "external"
+
+// GrantModelNote is the measured reason per-run paths are CLI flags and the
+// static shape is the profile file.
+//
+// A profile-file `filesystem.allow` entry resolves to `r+w` and a
+// `filesystem.write` entry to `w` alone, and either way it is tagged
+// `[profile]` in the verbose dry-run — the same tag nono uses for the grants
+// it inherits from `extends: default` (including one for
+// /run/systemd/userdb, which no Communication file mentions). A `--allow` CLI
+// flag is tagged `[user]`. So N-d's "assert the resolved grant set" is only
+// expressible against the CLI flags: they are the part of the policy this
+// process computes, and `[user]` is the tag that identifies them. The profile
+// file therefore carries the static shape — mediation, policy, temp-group
+// exclusion and the device re-grants that exclusion requires — and every
+// per-workspace path is a flag.
+const GrantModelNote = "static policy in the profile file; per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
+
+// profileVersion is bumped when the body below changes, so a recorded
+// policy_digest identifies a policy revision and not just a filename.
+const profileVersion = "3.0.0"
+
+// deviceWrites are the paths the excluded group would otherwise have granted.
+//
+// C-TMP3 measured the cost of `groups.exclude: [system_write_linux]` — the
+// exclusion that closes /tmp, which is the whole point of ADR-0017 D5's temp
+// rule — and `/dev/null` stopped being writable, which breaks nearly every
+// CLI. So the devices are re-granted explicitly and /tmp is not.
+var deviceWrites = []string{"/dev/null", "/dev/zero", "/dev/tty", "/dev/stdout", "/dev/stderr"}
+
+// profileAllows are the read-write system paths the toolchain needs that are
+// not covered by the read-only system groups. /proc/self/fd is what a process
+// uses to talk about its own stdio; /dev/pts is how Node detects a terminal.
+var profileAllows = []string{"/proc/self/fd", "/dev/pts"}
+
+func profileBody(kind string) (profileSource, error) {
+	switch kind {
+	case ProfileAgentTurn, ProfileEgressDenied:
+	default:
+		return profileSource{}, fmt.Errorf("sandbox: unknown profile kind %q (want %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied)
+	}
+	desc := "Communication agent sandbox: filesystem + AF_UNIX enforced, network open (ADR-0019 D3 agent-turn)"
+	if kind == ProfileEgressDenied {
+		desc = "Communication agent sandbox: filesystem + AF_UNIX + egress denied (ADR-0019 D3 agent-turn-egress-denied; case 13's gate only)"
+	}
+	return profileSource{
+		Meta:    profileMeta{Name: kind, Version: profileVersion, Description: desc},
+		Extends: "default",
+		Linux:   profileLinux{AfUnixMediation: "pathname", SandboxPolicy: policyLandlock},
+		Security: profileSecurity{
+			// C9b: process *existence* stays visible even isolated; this is the
+			// strongest setting nono offers, not a claim of invisibility.
+			ProcessInfoMode: "isolated",
+		},
+		Groups: profileGroups{Exclude: []string{"system_write_linux"}},
+		FS:     profileFS{WriteFile: append([]string(nil), deviceWrites...), Allow: append([]string(nil), profileAllows...)},
+	}, nil
+}
+
+// ProfileJSON renders the canonical bytes of a policy file. Exported because
+// `communication doctor` prints the digest it is about to launch under, and
+// two renderings that disagree would make that number meaningless.
+func ProfileJSON(kind string) ([]byte, error) {
+	body, err := profileBody(kind)
+	if err != nil {
+		return nil, err
+	}
+	// json.Marshal emits struct fields in declaration order, so the output is
+	// stable for a given source; no map is involved anywhere in this type.
+	out, err := json.MarshalIndent(body, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: encode profile %s: %w", kind, err)
+	}
+	return append(out, '\n'), nil
+}
+
+// DigestProfile is the content identity of arbitrary policy bytes.
+func DigestProfile(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// WriteProfile materializes a policy file under dir and returns its identity.
+//
+// This is where ADR-0009 D4's "a profile we ship" lives at runtime. A
+// repository asset would be the natural home (ADR-0019 D5 names
+// worker/sandbox/profiles/) and is outside this package's boundary, so the
+// worker writes the bytes it can prove and records the digest; the digest, not
+// the filename, is what a unit's journal cites. Writing is atomic-ish on
+// purpose: the file is 0444 under a 0700 directory owned by the worker, and a
+// partially written profile makes `nono run` fail closed (C-MISSING/N6), which
+// is the right direction for a failure.
+func WriteProfile(dir, kind string) (*Profile, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("sandbox: no directory to write profile %s into", kind)
+	}
+	data, err := ProfileJSON(kind)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("sandbox: create profile dir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, kind+".json")
+	tmp := path + ".tmp"
+	// 0600 for the temp file: an agent must never get a window on a policy
+	// file mid-write, and the final file is world-readable only because it
+	// contains nothing secret.
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return nil, fmt.Errorf("sandbox: write profile %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return nil, fmt.Errorf("sandbox: publish profile %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o444); err != nil {
+		return nil, fmt.Errorf("sandbox: seal profile %s: %w", path, err)
+	}
+	// The bytes on disk are re-read and re-digested, because the assertion
+	// chain below runs against this digest and a torn write would otherwise be
+	// a policy nobody measured.
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: read back profile %s: %w", path, err)
+	}
+	if got := DigestProfile(onDisk); got != DigestProfile(data) {
+		return nil, fmt.Errorf("sandbox: profile %s digests to %s, expected %s", path, got, DigestProfile(data))
+	}
+	return &Profile{
+		Kind: kind, Path: path, Digest: DigestProfile(onDisk),
+		NetworkEnforced: kind == ProfileEgressDenied, ProfileVersion: profileVersion,
+	}, nil
+}
+
+// AssertOwnBytes is the *only* mechanism that can prove the policy shape, and
+// it is worth being blunt about why. C-FC2b measured that `profile validate`
+// accepts a profile whose sandbox_policy is `external`, that `profile show`
+// output is identical for landlock and external once its own path echo is
+// dropped, and that the verbose dry-run rule list is identical too. ADR-0019
+// D2's "never emit external" therefore cannot be delegated to nono: the
+// adapter checks the file it wrote, before handing it over, and says which
+// check failed.
+func (p *Profile) AssertOwnBytes() error {
+	data, err := os.ReadFile(p.Path)
+	if err != nil {
+		return fmt.Errorf("sandbox: profile %s is unreadable: %w", p.Path, err)
+	}
+	if got := DigestProfile(data); got != p.Digest {
+		return fmt.Errorf("sandbox: profile %s changed after it was written (%s, expected %s)", p.Path, got, p.Digest)
+	}
+	var body profileSource
+	dec := json.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		return fmt.Errorf("sandbox: profile %s does not parse as our own schema: %w", p.Path, err)
+	}
+	if body.Meta.Name != p.Kind {
+		return fmt.Errorf("sandbox: profile %s names %q, expected %q", p.Path, body.Meta.Name, p.Kind)
+	}
+	if body.Linux.SandboxPolicy != policyLandlock {
+		return fmt.Errorf("sandbox: profile %s has sandbox_policy %q: `%s` is never acceptable (C-FC2 measured a child reaching the network under external while --block-net was requested, and no nono surface reveals it)",
+			p.Path, body.Linux.SandboxPolicy, policyExternal)
+	}
+	if body.Linux.AfUnixMediation != "pathname" {
+		return fmt.Errorf("sandbox: profile %s has af_unix_mediation %q, want pathname (SANDBOX.md C7 fell open at the defaults)", p.Path, body.Linux.AfUnixMediation)
+	}
+	if body.Extends != "default" {
+		return fmt.Errorf("sandbox: profile %s extends %q; the system read groups come from the default layer and re-listing them by hand is how a path silently stops being granted", p.Path, body.Extends)
+	}
+	if !containsString(body.Groups.Exclude, "system_write_linux") {
+		return fmt.Errorf("sandbox: profile %s does not exclude system_write_linux, which is the group that hands every sandboxed child write access to /tmp (probe C-TMP1/C-TMP3)", p.Path)
+	}
+	for _, dev := range deviceWrites {
+		if !containsString(body.FS.WriteFile, dev) {
+			return fmt.Errorf("sandbox: profile %s excludes system_write_linux without re-granting %s, and every CLI the agent runs needs it (probe C-TMP3)", p.Path, dev)
+		}
+	}
+	return nil
+}
+
+func containsString(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}

@@ -68,6 +68,14 @@ const (
 type Launcher struct {
 	// Binary is the nono executable. Empty means exec.LookPath("nono").
 	Binary string
+	// Home is nono's own HOME for helper invocations (validate, show, dry-run).
+	// A workspace launch overrides it per-spec; this field exists for `doctor`,
+	// which has no workspace and may legitimately ride the ambient login.
+	//
+	// It must never point inside a workspace: nono derives its protected state
+	// root from HOME and then refuses any grant overlapping it, and that refusal
+	// is permanent for the directory (probe C-H1).
+	Home string
 }
 
 var _ domain.SandboxLauncher = (*Launcher)(nil)

@@ -242,3 +242,65 @@ drop the four mirror writes, the run continues dirty-only, and the worker captur
 the grant goes away. Dropping volume identity is a column nobody reads — no data migration. If the
 mirror layout ever has to move, ADR-0010's Migration section applies unchanged
 (`git clone --mirror` per project, re-fetch, `git worktree list` as the audit).
+
+---
+
+## Implementation note (M3 build, 2026-10-15)
+
+Two clauses of this record were falsified by the code they were written to guide.
+Both are corrected here rather than left for a reader to rediscover; neither
+changes a Decision, only the mechanism a Decision named.
+
+**D1's mirror creation cannot use `git clone --mirror`** (contract deviation D17,
+probe G9). A `--mirror` clone sets `remote.origin.mirror=true`, which makes every
+subsequent `git fetch --prune` delete refs the *platform* wrote, not just stale
+ones. Observed on a second prepare in the same project:
+
+```
+$ git --git-dir=<mirror> rev-parse <scope-id>/backend
+fatal: ambiguous argument '<scope-id>/backend': unknown revision
+```
+
+The first run's ref had been pruned by the second run's fetch. D1's own
+requirement — run refs persist, because that is what makes a resumed conversation
+continue — cannot coexist with mirror-mode fetch, so the mirror is built as
+`git init --bare --initial-branch=<default>` + `remote add origin` +
+`config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`, with
+`remote.origin.mirror` explicitly unset (`init --bare` leaves it set in some git
+versions, and the pin is worthless if it does not). Pruning is then confined to
+`refs/remotes/origin/*`, and a start point reads `refs/remotes/origin/<branch>`
+rather than `refs/heads/<branch>`. Every observable property D1 claims — one bare
+per-project mirror, shared objects, no cross-project link — is unchanged.
+
+**D4's sequence needs one step this record does not contain** (contract deviation
+D22, `TestRePrepareAfterReleaseResumesTheRunRef`). `git worktree add -b
+<scope-id>/<name>` is right for a *first* prepare and wrong for every later one:
+release deliberately keeps the run refs (that is D1's point), so on turn two the
+branch exists and the worktree does not, and git answers
+
+```
+fatal: a branch named '<scope-id>/<name>' already exists
+```
+
+which would make every resumed conversation permanently unstartable — a failure
+that cannot be observed on turn one and so cannot be caught by a test that only
+prepares once. Prepare now reads `refs/heads/<scope-id>/<name>` back first; when
+it exists, the worktree is added **on that ref** and `base_commit` becomes the
+previous turn's commit rather than the branch head. The `clone` mode's equivalent
+(`checkout -b` after `clone`) needed the same split.
+
+Everything else in the implementation follows the record as written: the admin
+directory is read back with `rev-parse --absolute-git-dir` (D4, probes G1b/G1c —
+`git worktree list --porcelain` emitted no `gitdir:` line at all on git 2.56.0 and
+2.39.5, so G1c's read replaced G1b's mechanism before this note was written); the
+reflog directory is pre-created (P7); exclusions are project-scoped in
+`<mirror>/info/exclude` and re-filtered in code (D6, X1/X3/X4); no path is ever
+placed under `/tmp` (D5); and the four-path commit axis was measured rather than
+inferred, then confirmed live when a sandboxed agent under `required` mode wrote
+exactly its own ref:
+
+```
+refs/heads/01a13eaa-bf85-…/projA → 464ecb68
+  Communication Worker <worker@communication.invalid> m3 projA
+  ls-tree: .env  MARKER_projA.txt  README.md
+```

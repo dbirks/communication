@@ -177,7 +177,7 @@ the arms disagree — different git versions).
 
 | id | claim | H | C |
 | --- | --- | --- | --- |
-| A0 | the vendored apm 0.33.0 binary runs in this environment | — (runs) | **GAP**: needs `GLIBC_2.38`, image has 2.36 |
+| A0 | the vendored apm 0.33.0 binary runs in this environment | — (runs) | ~~GAP~~ → **PASS after the base image moves to trixie**: `node:22-bookworm-slim` has glibc 2.36 and apm's bundled `libpython3.12` needs `GLIBC_2.38`, so it died at import (`Failed to load Python shared library … version 'GLIBC_2.38' not found`). `node:22-trixie-slim` has 2.41. Two more runtime deps fell out of the same run and are now installed explicitly: **`libffi8`** (apm's Python imports `ctypes` → `ImportError: libffi.so.8`) and **`git`** (apm imports GitPython at startup → `ImportError: Failed to initialize: Bad git executable`, which means git is a dependency of *staging*, not only of the workspace step). Verified by executing the real binaries inside both candidate images, not by reading release notes: `apm --version` → `APM CLI version 0.33.0 (18c4c43)`, `exit=0`. nono 0.80.0 needs only `GLIBC_2.34` and ran on bookworm; the base is chosen by the stricter requirement. |
 | A1 | `HOME=<ws>/home apm install --target claude` stages into the run checkout (contract § 4.2 step 2) | PASS | — |
 | A2 | apm writes `.apm` + `.cache/apm` into the per-run HOME (APM.md T4 — why `home/` exists) | PASS | — |
 | A4 | `install --frozen --target claude` reproduces the lock digest and tree for an unchanged upstream (C14d's stability half) | PASS | — |
@@ -421,3 +421,19 @@ as an ADR amendment** (13-decisions: protocol/persistence/deployment changes nee
   check **ids** rather than verdicts — it was emitted by an earlier revision of the tally awk and
   cannot be reproduced from the committed `run.sh`. The regenerated file reports the real verdict
   counts (`PASS=73 FAIL=9 GAP=1 N/A=7 TOTAL=90`).
+
+
+### post-contract probes run during the M3 build (2026-10-15)
+
+Four claims the contract assumed rather than measured. Each is now measured, and
+each is recorded in a Go test so it cannot silently regress.
+
+| id | claim | result |
+| --- | --- | --- |
+| G9 | `git clone --mirror` + `fetch --prune` keeps a run ref written by the platform | **FAIL**. `remote.origin.mirror=true` makes prune delete `refs/heads/<scope>/<name>`: a second prepare in one project removed the first run's ref, and `rev-parse <scope>/backend` then answered `unknown revision`. Remedy: `init --bare` + pinned `remote.origin.fetch` (contract D17). `TestMirrorFetchPrunesNothingOfOurs` |
+| G11 | a released workspace can be prepared again (i.e. a conversation can have a second turn) | **FAIL** as written. Release keeps run refs by design, so turn two's `worktree add -b <run-ref>` answers `fatal: a branch named '<run-ref>' already exists` — every resumed conversation permanently unstartable. Observed live in `-p m3sbx`; remedy is to read the ref back and add the worktree **on** it (contract D22). `TestRePrepareAfterReleaseResumesTheRunRef`, whose load-bearing direction was confirmed by reverting the fix and watching the test reproduce the identical git message |
+| C-FC3b | `nono` refuses a grant path that does not exist | **FAIL, and worse than C-FC3 recorded**: `run -v --dry-run` emits `WARN '/repos/DOES-NOT-EXIST' does not exist and will be ignored.` / `INFO Skipping non-existent path:` **and then execs the child anyway**. A grant list can therefore lose an entry with only a stderr WARN as evidence. Remedy: stat every grant path before building argv, and assert the resolved `[user]` set *equals* the requested set (contract D19). `TestVerifyRefusesAPathNonoDrops` |
+| C-FC4 | grants can be asserted from the **profile file** | **FAIL**. `--dry-run` tags profile-derived rules `[profile]`, which is indistinguishable from nono's own `extends: default` contributions (`/run/systemd/userdb` appears with no caller having named it), so an exact-match assertion is not expressible over them. Grants must be CLI flags, tagged `[user]` (contract D18) |
+| C-H1d | `HOME` may be supplied in the adapter environment alongside the launcher's hop | **REFUSED by design, and now structurally**: `BuildLaunchArgv` rejects a caller-supplied `HOME=` in the adapter env, because two sources for the agent's HOME is the C-H1 confusion. `acp.EnvRequest.OmitHome` makes the sandboxed path unable to make that mistake rather than relying on the caller to remember |
+| V3b | `Probe`'s `Verified` can gate `required` mode at startup | **FAIL by construction** — `Probe` hardcodes `Verified=false` (M2's deliberate honesty: a probe cannot observe enforcement), so gating on it makes `required` unstartable. Observed verbatim: `sandbox cannot enforce filesystem isolation (observed filesystem=true verified=false): required mode refuses to start`. Remedy is a real two-legged exec self-test (contract D21), with its own negative control that fails loudly if it becomes vacuous |
+| C-TMP1b | the shipped profile actually refuses `/tmp`, and the agent can still work | **PASS both ways**, in the container: no `-p` → `/tmp WRITABLE`; with `-p <policy>/communication-agent.json` → `cannot create /tmp/m3-b: Permission denied`. The agent's `TMPDIR` under its scratch grant is writable (`claude-1000` created by Claude Code where it had previously failed) — see contract D23 |

@@ -3,11 +3,13 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/dbirks/communication/internal/agent/acp"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 )
@@ -105,6 +107,16 @@ type TurnLoop struct {
 	store TurnStore
 	spawn domain.AgentSessionFactory
 	work  WorkspacePrep
+	// units is the M3 execution-unit service; nil keeps M2's behaviour
+	// (workspace.Prepare, an unsandboxed launch). It is a collaborator rather
+	// than a replacement of `work` because a worker started without nono,
+	// without volumes or in `disabled` mode still has to run turns, and the
+	// difference between those two shapes is configuration, not a code fork.
+	units *UnitService
+	// liveUnits tracks the live unit per conversation so the turn-end hook can
+	// capture and clean it up. Guarded by mu; nil when no unit service is wired.
+	liveUnits map[string]*Unit
+
 	clock Clock
 	log   *slog.Logger
 
@@ -131,6 +143,16 @@ type TurnLoop struct {
 
 // TurnOption customises a TurnLoop.
 type TurnOption func(*TurnLoop)
+
+// WithUnits runs the loop on M3 execution units: worktrees from project
+// mirrors, APM staging, secret materialization and a sandbox-verified launch.
+// Passing nil is not a way to run unsandboxed — it is the M2 path, and the
+// worker only takes it when the enforcement mode is `disabled`.
+func WithUnits(u *UnitService) TurnOption {
+	return func(l *TurnLoop) {
+		l.units = u
+	}
+}
 
 // WithTurnClock replaces the loop's clock (tests drive cadence).
 func WithTurnClock(c Clock) TurnOption {
@@ -406,9 +428,22 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	if err != nil {
 		return nil, err
 	}
-	workDir, notes, err := l.work.Prepare(ctx, c.ConversationID, repos)
-	if err != nil {
-		return nil, err
+	var (
+		workDir string
+		notes   []string
+		unit    *Unit
+	)
+	if l.units != nil {
+		unit, err = l.prepareUnit(ctx, c, repos)
+		if err != nil {
+			return nil, err
+		}
+		workDir = unit.WorkDir()
+	} else {
+		workDir, notes, err = l.work.Prepare(ctx, c.ConversationID, repos)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	modeID := ""
@@ -454,6 +489,24 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 	// session/load for; both adapters must have advertised it.
 	if prev, ok, err := l.store.ResumableSession(ctx, c.ConversationID, c.WorkerID); err == nil && ok {
 		req.LoadSessionID = prev.ACPSessionID
+	}
+
+	// The M3 sandbox gate. On this path the launch either gets a verified plan
+	// in its context or the session is never created — there is no third branch
+	// (ADR-0019 D6: a sandbox refusal fails the turn, it does not fall back).
+	//
+	// The order is the contract's: prepare → stage → materialize → *verify* →
+	// exec. Nothing after this point can run unsandboxed in `required` mode
+	// because the factory refuses a missing plan when RequirePlan is set.
+	if unit != nil {
+		launcher, ok := acp.LookupLauncher(c.LauncherID)
+		if !ok {
+			return nil, fmt.Errorf("worker: launcher %q is not a known launcher, so no sandbox plan can name its adapter", c.LauncherID)
+		}
+		ctx, err = l.launchPlanFor(ctx, c, unit, launcher)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	sess, err := l.spawn.NewSession(ctx, req)

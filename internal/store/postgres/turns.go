@@ -244,6 +244,20 @@ func (s *TurnStore) AppendTurnEvent(ctx context.Context, c worker.Claim, ev work
 	})
 }
 
+// WorkspaceEvent appends a workspace- or sandbox-scoped event on this turn's
+// fence. It is AppendTurnEvent with a name that says what the subject is: the
+// payloads (workspace.prepared, sandbox.verified, …) describe a workspace and a
+// policy rather than a transcript line, and the distinction is why the loop has
+// two calls. Both are fenced, because every one of them reports a security fact
+// about a run and an unfenced append is how a stale worker gets to lie about
+// having sandboxed something.
+func (s *TurnStore) WorkspaceEvent(ctx context.Context, c worker.Claim, ev worker.TurnEvent) error {
+	return s.trnWithFencedTx(ctx, c, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, ev)
+		return err
+	})
+}
+
 // AppendConversationEvent appends a conversation-scoped event that belongs
 // to no in-flight turn (agent.session.connected/disconnected). Scope (org,
 // project) is resolved from the conversation itself, so a caller cannot
@@ -647,7 +661,7 @@ func (s *TurnStore) SetConversationStatus(ctx context.Context, conversationID, s
 // ProjectRepos lists the project's repositories for workspace prep.
 func (s *TurnStore) ProjectRepos(ctx context.Context, projectID string) ([]worker.Repo, error) {
 	rows, err := s.Pool.Query(ctx, `
-		SELECT name, git_url, default_branch FROM repositories WHERE project_id = $1 ORDER BY name`,
+		SELECT id::text, name, git_url, default_branch FROM repositories WHERE project_id = $1 ORDER BY name`,
 		projectID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list repositories for %s: %w", projectID, err)
@@ -656,7 +670,7 @@ func (s *TurnStore) ProjectRepos(ctx context.Context, projectID string) ([]worke
 	var out []worker.Repo
 	for rows.Next() {
 		var r worker.Repo
-		if err := rows.Scan(&r.Name, &r.GitURL, &r.DefaultBranch); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.GitURL, &r.DefaultBranch); err != nil {
 			return nil, fmt.Errorf("postgres: scan repository: %w", err)
 		}
 		out = append(out, r)

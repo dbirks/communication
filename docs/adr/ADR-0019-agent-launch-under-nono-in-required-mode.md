@@ -296,3 +296,88 @@ type in the same journal. A deployment that does not want the sandbox sets
 Removing nono later (bubblewrap — present on the lab host, still untested; or OCI per Option C)
 replaces this adapter behind the unchanged `domain.SandboxLauncher` contract, and N-a…N-d transfer to
 whatever answers "what did you actually enforce?".
+
+---
+
+## Implementation note (M3 build, 2026-10-15)
+
+Four things this record specified needed correcting against the built system. Each
+is a mechanism change; no Decision here is relaxed.
+
+**The startup gate cannot be `Probe`.** Decision 6 requires a refusal rather than
+a fallback, and the first implementation read that as "probe, and refuse unless
+`Verified`" — which is unstartable, because `Launcher.Probe` sets
+`Verified=false` *by construction*. M2 wrote that deliberately: a probe reports
+what `nono setup --check-only` claims it supports, and cannot report that a child
+was confined. The failure was observed on the first compose bring-up:
+
+```
+"msg":"invalid execution-unit configuration",
+"error":"sandbox cannot enforce filesystem isolation (observed filesystem=true verified=false): required mode refuses to start"
+```
+
+`required` mode therefore has a real two-legged exec test at startup
+(`Launcher.SelfTest`, contract deviation D21): a granted path must be writable, and
+a non-granted sibling under the same scratch root must not be — with the child's
+own report corroborated by a `stat`, so a child that *printed* success while
+leaving no file cannot pass either. It runs before registration, and the negative
+control (`selftest_negative_test.go`) replaces `nono` with a shim that performs no
+sandboxing; if the test ever became vacuous, that test fails with
+`SELF-TEST IS VACUOUS` rather than quietly green. Observed live, the refusal is now
+specific and the success is earned:
+
+```
+"msg":"sandbox enforcement observed before serving turns","backend":"nono","backend_version":"0.80.0","filesystem_live":true
+```
+
+**Grants are CLI flags, not profile entries** (deviation D18). N-d was written
+assuming the resolved grant list could be matched against what the profile
+declared. It cannot: `--dry-run` tags profile-inherited rules `[profile]`, and
+those are indistinguishable from nono's own `extends: default` contributions —
+`/run/systemd/userdb` appears in the resolved set with no caller having named it.
+Exact-match assertion is only expressible over `[user]`-tagged lines, so grants go
+in as `--allow`/`--read` and the static profile carries only what flags cannot
+express: mediation settings, the Landlock pin, the `system_write_linux` exclusion,
+and the device re-grants that exclusion breaks (probe C-TMP3).
+
+**N-d asserts set *equality*, and that is load-bearing** (deviation D19). Comparison
+in the "did we get at least what we asked for" direction would pass on a superset,
+and nono always layers its `default` profile — so `/tmp` is always present. Two
+observations make this concrete; the first is from the live container:
+
+```
+WARN  '/repos/DOES-NOT-EXIST' does not exist and will be ignored.
+INFO  Skipping non-existent path: /repos/DOES-NOT-EXIST
+CHILD-RAN
+```
+
+nono accepts a grant naming a nonexistent path, warns on stderr, and execs the
+child anyway — the silent-drop class probe C-FC3 recorded, now observed on the
+release build. So every grant path is stat-ed before the argv is built, the
+resolved `[user]` set must equal the requested set with nothing added, and a
+resolved temp path is refused on sight. The second observation: with no `-p` flag,
+`/tmp` is writable; with the shipped profile, it is not
+(`cannot create /tmp/m3-b: Permission denied`). Omission is not a deny under a
+layered default profile, and this record's D4 said so — the note is that the
+*assertion* has to be as strict as that statement.
+
+**The agent needs a temp directory inside its grants** (deviation D23). Refusing
+`/tmp` is correct and unchanged; what was missing is a place for the harness to
+write. The first real turn showed the shape of the gap — Claude Code aborted at
+`session/new` with `EACCES: permission denied, mkdir '/tmp/claude-1000'`, which
+looks exactly like an adapter bug and is the sandbox working. `TMPDIR` is now
+pointed at `<scratch>/tmp`, created *before* the launch (a grant to a nonexistent
+path grants nothing, the same C-FC3 class), and proven both ways in the container:
+`/tmp` unwritable under the shipped profile, `claude-1000` created successfully
+under `TMPDIR`. Per-attempt scratch beats a shared `/tmp` for ADR-0008's purposes
+anyway.
+
+**What this record claims, now observed rather than designed.** A turn under
+`required` mode produced seven `sandbox.verified` rows carrying nine
+`{role, access}` labels and no paths, and one of those turns ran a real commit
+through the four-path axis into its own run ref. Cross-project denial held from
+inside the container in both directions (read and write against another project's
+mirror, disk-corroborated, with a positive control so the denial could not be an
+artifact of broken access). Decision 4's credential gap is unchanged and still
+called a gap: `harness_credentials` is a **rw** grant, so `required` isolates
+workspaces, not credentials.

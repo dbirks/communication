@@ -17,4 +17,11 @@ var (
 	// mode this aborts the launch: the process is never started
 	// unsandboxed (communication-spec/05-workspaces-security-secrets.md).
 	ErrNotEnforceable = errors.New("sandbox guarantees not enforceable")
+
+	// ErrGrantSource means the sandbox's own resolved policy named a rule
+	// source this adapter does not understand. It is a distinct failure from
+	// ErrNotEnforceable because the backend *did* enforce something — the
+	// question is whether it is the policy we recorded, which is the assertion
+	// ADR-0009 D4 requires and the one a green exit code cannot answer.
+	ErrGrantSource = errors.New("sandbox policy came from an unrecognized source")
 )

@@ -7,14 +7,21 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/domain"
+	"github.com/dbirks/communication/internal/sandbox/nono"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/internal/worker"
+	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
 const workerUsage = `usage: communication worker
@@ -30,8 +37,26 @@ environment:
   COMMUNICATION_DATABASE_URL     required, postgres connection string
   COMMUNICATION_WORKER_NAME      worker identity (default: hostname)
   COMMUNICATION_WORKER_HEARTBEAT heartbeat interval (default "10s")
-  COMMUNICATION_WORKSPACE_ROOT   per-conversation workspace root
+  COMMUNICATION_WORKSPACE_ROOT   per-run worktree root
                                  (default "/var/lib/communication/workspaces")
+  COMMUNICATION_REPOS_ROOT       per-project mirror root, measured as its own
+                                 storage volume (ADR-0017 D5; default
+                                 "<workspace root's parent>/repos")
+  COMMUNICATION_SANDBOX_ENFORCEMENT  required (default) | permissive-dev |
+                                 disabled. "required" refuses to start without
+                                 the nono binary rather than launching an
+                                 unisolated agent (05, ADR-0019 D6); the other
+                                 two are reachable only by explicit
+                                 configuration and every event they produce says
+                                 so.
+  COMMUNICATION_SANDBOX_HOME     nono's own HOME (default
+                                 "<workspace root's parent>/sandbox-home"):
+                                 worker-owned, never a grant, never derived from
+                                 a workspace (probe C-H1's refusal is sticky).
+  COMMUNICATION_SANDBOX_POLICY_DIR   where the profile files are written
+                                 (default "<workspace root's parent>/sandbox-policy")
+  COMMUNICATION_AGENT_GIT_NAME / COMMUNICATION_AGENT_GIT_EMAIL
+                                 commit identity seeded into each agent home
 
 migrations are applied separately: communication migrate up
 `
@@ -44,7 +69,38 @@ const defaultWorkspaceRoot = "/var/lib/communication/workspaces"
 type workerOptions struct {
 	databaseURL   string
 	workspaceRoot string
-	cfg           worker.Config
+	// reposRoot is the second storage root M3 measures (ADR-0017 D5). It is not
+	// derived from workspaceRoot: probe V5b found the lab's workspaces and repos
+	// trees share a device and differ only by inode, so a path-prefix relationship
+	// would have made one measurement look like two.
+	reposRoot string
+	// sandboxEnforcement is this worker's configured mode. `required` is the
+	// default because 05 defines it as the only mode that may be described as
+	// sandboxed; the others are reachable only by explicit configuration, and a
+	// worker that could not resolve nono in `required` refuses to run turns rather
+	// than falling back.
+	sandboxEnforcement domain.EnforcementMode
+	// sandboxLauncherHome is nono's own HOME: worker-owned, under neither storage
+	// root, and never a grant. Probe C-H1's refusal is permanent for a directory
+	// that has ever been nono's HOME while a grant covered it, so this is chosen
+	// at startup and never derived from a workspace.
+	sandboxLauncherHome string
+	// policyDir holds the materialized nono profile files (ADR-0009 D4: -p takes
+	// a path, and without one nono mixes in its built-in default profile — the
+	// default that writes to /tmp).
+	policyDir string
+	// sandboxSelfTest is where the startup enforcement self-test creates and
+	// removes its two directories. Sibling of the others for the same reason the
+	// launcher home is: it is granted rw during the test, so it must not be a tree
+	// any workspace grant also covers.
+	sandboxSelfTest string
+	// agentGit is the commit identity the worker seeds into each agent home and
+	// exports to the child. It is configuration rather than inferred: an agent
+	// that commits as "root@<container id>" produces history no team can attribute,
+	// and probe P6 showed git aborts outright when its config is unreadable, so
+	// the value has to be deliberate.
+	agentGit acp.GitIdentityEnv
+	cfg      worker.Config
 }
 
 // workerOptionsFromEnv reads and validates the worker environment. getenv is
@@ -64,6 +120,63 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 	if o.workspaceRoot == "" {
 		o.workspaceRoot = defaultWorkspaceRoot
 	}
+	o.reposRoot = strings.TrimSpace(getenv("COMMUNICATION_REPOS_ROOT"))
+	if o.reposRoot == "" {
+		// The default is a sibling of the workspace root, not a subdirectory of
+		// it: the two trees have different lifetimes (a mirror outlives every
+		// conversation that used it) and AssertNothingBut refuses foreign entries
+		// in a workspace root, which nesting would guarantee.
+		o.reposRoot = filepath.Join(filepath.Dir(o.workspaceRoot), "repos")
+	}
+
+	o.sandboxEnforcement = domain.EnforcementMode(strings.TrimSpace(getenv("COMMUNICATION_SANDBOX_ENFORCEMENT")))
+	if o.sandboxEnforcement == "" {
+		o.sandboxEnforcement = domain.EnforceRequired
+	}
+	switch o.sandboxEnforcement {
+	case domain.EnforceRequired, domain.EnforcePermissiveDev, domain.EnforceDisabled:
+	default:
+		return o, fmt.Errorf("COMMUNICATION_SANDBOX_ENFORCEMENT %q is not required, permissive-dev or disabled", o.sandboxEnforcement)
+	}
+	// No silent downgrade: a worker configured for `required` that cannot find
+	// nono must fail to start, because the alternative is a fleet that runs
+	// unsandboxed while its configuration says otherwise (05: "fails closed
+	// rather than starting unisolated").
+	if o.sandboxEnforcement == domain.EnforceRequired {
+		if _, err := exec.LookPath("nono"); err != nil {
+			return o, errors.New("COMMUNICATION_SANDBOX_ENFORCEMENT=required but the nono binary is not on PATH: refusing to start rather than launch an unisolated agent")
+		}
+	}
+
+	o.sandboxLauncherHome = strings.TrimSpace(getenv("COMMUNICATION_SANDBOX_HOME"))
+	if o.sandboxLauncherHome == "" {
+		o.sandboxLauncherHome = filepath.Join(filepath.Dir(o.workspaceRoot), "sandbox-home")
+	}
+	o.policyDir = strings.TrimSpace(getenv("COMMUNICATION_SANDBOX_POLICY_DIR"))
+	if o.policyDir == "" {
+		o.policyDir = filepath.Join(filepath.Dir(o.workspaceRoot), "sandbox-policy")
+	}
+	o.sandboxSelfTest = strings.TrimSpace(getenv("COMMUNICATION_SANDBOX_SELFTEST_DIR"))
+	if o.sandboxSelfTest == "" {
+		o.sandboxSelfTest = filepath.Join(filepath.Dir(o.workspaceRoot), "sandbox-selftest")
+	}
+	if pathIsUnderRoot(o.workspaceRoot, o.sandboxSelfTest) || pathIsUnderRoot(o.reposRoot, o.sandboxSelfTest) {
+		return o, errors.New("COMMUNICATION_SANDBOX_SELFTEST_DIR must not be inside either storage root: the self-test grants it rw, and a workspace root holds foreign entries only during a test run (ADR-0017 D4's AssertNothingBut)")
+	}
+	if pathIsUnderRoot(o.sandboxLauncherHome, o.sandboxSelfTest) {
+		return o, errors.New("COMMUNICATION_SANDBOX_SELFTEST_DIR must not be inside nono's HOME: a grant overlapping nono's protected state root is refused permanently (probe C-H1)")
+	}
+
+	// The commit identity. It is validated per-unit rather than here, because the
+	// axis that needs it is a profile's commit_granted flag: a worker with no
+	// commit-granting profile runs correctly with no identity at all, and refusing
+	// to start would make an unstartable worker out of a valid configuration.
+	// What is *not* an option is silence: GIT_CONFIG_NOSYSTEM is set and the
+	// agent's HOME is its own tree, so an agent that runs `git commit` without a
+	// configured identity fails mid-turn with git's own "Please tell me who you
+	// are" — a message that reads like an agent bug rather than a missing setting.
+	o.agentGit.Name = strings.TrimSpace(getenv("COMMUNICATION_AGENT_GIT_NAME"))
+	o.agentGit.Email = strings.TrimSpace(getenv("COMMUNICATION_AGENT_GIT_EMAIL"))
 
 	hostname, hostErr := os.Hostname()
 
@@ -179,14 +292,33 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// turns → honest terminal states) before the offline write.
 	wakes := postgres.NewEventWake(opts.databaseURL, log)
 	defer wakes.Close()
+	if opts.agentGit.Name == "" || opts.agentGit.Email == "" {
+		log.Warn("no agent commit identity configured: a turn whose profile grants commits will fail at the agent's own `git commit`",
+			slog.String("hint", "set COMMUNICATION_AGENT_GIT_NAME and COMMUNICATION_AGENT_GIT_EMAIL"))
+	}
+	units, unitErr := newUnitService(opts, pool, log)
+	if unitErr != nil {
+		stop()
+		log.Error("invalid execution-unit configuration", slog.String("error", unitErr.Error()))
+		return 2
+	}
 	loop, err := worker.NewTurnLoop(
 		worker.TurnConfig{AskModeID: acpAskModeID},
 		&postgres.TurnStore{Pool: pool},
-		&acp.Factory{Runtime: &acp.Runtime{Logger: log}},
+		&acp.Factory{
+			Runtime: &acp.Runtime{Logger: log},
+			// RequirePlan is the enforcement axis: with it set, a session whose
+			// context carries no verified launch plan is refused by the factory
+			// rather than quietly exec'd unsandboxed. There is no path from a
+			// sandbox refusal to an exec in `required` mode (ADR-0019 D6), and an
+			// interface-level guarantee beats a convention about call order.
+			RequirePlan: opts.sandboxEnforcement == domain.EnforceRequired,
+		},
 		&worker.Workspace{Root: opts.workspaceRoot},
 		w.ID,
 		worker.WithTurnLogger(log),
 		worker.WithJournalWake(wakes.Watch),
+		worker.WithUnits(units),
 	)
 	if err != nil {
 		stop()
@@ -222,4 +354,129 @@ func acpAskModeID(launcherID string) string {
 		return ""
 	}
 	return l.AskModeID
+}
+
+// newUnitService assembles the M3 execution-unit service from worker options.
+//
+// The two storage roots are validated here rather than by the caller because the
+// refusal has to happen before the worker registers: a worker that comes online
+// and then fails every turn because its mirror root is inside its workspace root
+// (which AssertNothingBut would reject on every prepare) advertises a capability
+// it does not have.
+func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*worker.UnitService, error) {
+	workMgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	if err != nil {
+		return nil, fmt.Errorf("workspace roots: %w", err)
+	}
+	for dir, why := range map[string]string{
+		opts.sandboxLauncherHome: "nono's HOME must exist and be worker-owned",
+		opts.policyDir:           "the profile directory must exist before a policy can be written",
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("%s (%s): %w", why, dir, err)
+		}
+		if err := wsgit.CheckGrantPath(dir); err != nil {
+			return nil, fmt.Errorf("%s: %w", why, err)
+		}
+	}
+	// The launcher home must not sit under either storage root: a grant covering
+	// nono's own HOME is refused by nono itself, and the refusal is *sticky* —
+	// once nono has run with HOME=X, every later grant covering X is refused
+	// (probe C-H1). Placing it under a workspace would poison the workspace for
+	// every subsequent unit on this worker, which is why this is checked at
+	// startup rather than discovered mid-turn.
+	for _, root := range []string{opts.workspaceRoot, opts.reposRoot} {
+		if pathIsUnderRoot(root, opts.sandboxLauncherHome) {
+			return nil, fmt.Errorf("nono's HOME %s is inside the storage root %s: any grant covering the root would be refused permanently (probe C-H1)", opts.sandboxLauncherHome, root)
+		}
+	}
+	nano := &nono.Launcher{Binary: nonoPath(), Home: opts.sandboxLauncherHome}
+	// The startup gate. Probe alone cannot serve as this gate: `nono setup
+	// --check-only` reports whether Landlock rulesets could be *created*, and
+	// Launch.Probe deliberately never sets Verified (M2 recorded that honesty,
+	// and a probe that claims enforcement it did not observe would be worse than
+	// one that refuses). A `required` worker therefore has to prove enforcement by
+	// running a child, which is what SelfTest does — and its own negative control
+	// (selftest_negative_test.go) shows a sandbox that does not deny is refused
+	// rather than credited.
+	//
+	// The scratch root is a *third* directory, not the launcher home and not a
+	// storage root: a grant under either would either trip C-H1's permanent
+	// refusal or leave self-test debris inside a tree AssertNothingBut inspects.
+	if opts.sandboxEnforcement == domain.EnforceRequired {
+		caps, err := nano.Probe(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("sandbox probe: %w", err)
+		}
+		if !caps.Filesystem {
+			return nil, fmt.Errorf("sandbox reports no Landlock filesystem support (%s): required mode refuses to start", strings.Join(caps.Notes, "; "))
+		}
+		selfRoot := opts.sandboxSelfTest
+		if err := os.MkdirAll(selfRoot, 0o700); err != nil {
+			return nil, fmt.Errorf("sandbox self-test scratch %s: %w", selfRoot, err)
+		}
+		observed, err := nano.SelfTest(context.Background(), selfRoot, 30*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox enforcement self-test: %w", err)
+		}
+		log.Info("sandbox enforcement observed before serving turns",
+			slog.String("backend", observed.Backend),
+			slog.String("backend_version", observed.Version),
+			slog.Bool("filesystem_live", observed.FilesystemLive))
+	}
+	return &worker.UnitService{
+		Store:        &postgres.WorkspaceStore{Pool: pool},
+		Workspaces:   workMgr,
+		Sandbox:      nano,
+		SandboxPath:  nonoPath(),
+		Profiles:     &postgres.ProfileReader{Pool: pool},
+		LauncherHome: opts.sandboxLauncherHome,
+		PolicyDir:    opts.policyDir,
+		GitIdentity:  opts.agentGit,
+		Enforcement:  opts.sandboxEnforcement,
+		LauncherAuth: launcherCredentialDirs,
+		Logger:       log,
+	}, nil
+}
+
+// launcherCredentialDirs resolves the credential directories a launcher declares
+// (ADR-0019 D4). It reads the variables the launcher itself names, so a launcher
+// whose auth lives somewhere the operator did not configure is a startup refusal
+// rather than an agent that cannot log in — the failure docs/compatibility/ACP.md
+// already documented as looking like an agent bug.
+func launcherCredentialDirs(launcherID string) ([]string, error) {
+	launcher, ok := acp.LookupLauncher(launcherID)
+	if !ok {
+		return nil, fmt.Errorf("unknown launcher %q", launcherID)
+	}
+	var out []string
+	for _, kv := range acp.AuthEnvFromOS(launcher) {
+		_, value, _ := strings.Cut(kv, "=")
+		out = append(out, value)
+	}
+	return out, nil
+}
+
+// nonoPath resolves the sandbox binary once, so the recorded plan and the
+// probed backend are the same program. LookPath rather than a configured path
+// keeps the container image in charge of which build this is (worker/Dockerfile
+// pins it by SHA-256); a configured path would let an operator point a
+// `required` worker at anything.
+func nonoPath() string {
+	path, err := exec.LookPath("nono")
+	if err != nil {
+		return "nono"
+	}
+	return path
+}
+
+// pathIsUnderRoot reports whether candidate sits strictly below root. Both
+// arguments are cleaned first so a trailing slash or a `./` cannot make a path
+// that is inside look like one that is not.
+func pathIsUnderRoot(root, candidate string) bool {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(candidate) {
+		return false
+	}
+	root, candidate = filepath.Clean(root), filepath.Clean(candidate)
+	return strings.HasPrefix(candidate, root+string(filepath.Separator))
 }

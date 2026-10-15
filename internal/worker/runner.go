@@ -188,6 +188,14 @@ func (l *TurnLoop) finish(base context.Context, c Claim, rt *runningTurn, o Turn
 		}
 		l.log.Error("terminal write failed", slog.String("turn_id", c.TurnID), slog.String("error", err.Error()))
 	}
+	// The M3 unit boundary. It runs *after* the terminal write and never
+	// interferes with it: contract deviation D9 says an M3 failure loses
+	// artifacts, not edits, and the edits are durable in the run ref the moment
+	// the turn is. Cleanup itself is unconditional — the secret-removal assertion
+	// does not care whether the turn completed, failed or was cancelled.
+	if l.units != nil {
+		l.captureAndRelease(base, c)
+	}
 }
 
 // abandon drops a session whose worker no longer owns the turn: never write

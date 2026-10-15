@@ -167,6 +167,16 @@ func (f *fakeStore) ControllerUser(_ context.Context, _ string) (string, bool, e
 	return f.controller, f.controller != "", nil
 }
 
+func (f *fakeStore) WorkspaceEvent(_ context.Context, c worker.Claim, ev worker.TurnEvent) error {
+	// Same append path as a transcript write: M3's workspace/sandbox events are
+	// fenced appends too, and a test that injects an append failure must be able
+	// to reach them.
+	f.mu.Lock()
+	f.appends = append(f.appends, recordedAppend{claim: c, event: ev})
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeStore) FinishTurn(_ context.Context, _ worker.Claim, o worker.TurnOutcome) error {
 	f.mu.Lock()
 	f.finished = append(f.finished, o)

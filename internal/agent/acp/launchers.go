@@ -32,6 +32,19 @@ type Launcher struct {
 	// permission_mode 'ask' cannot be honoured on it and the worker must
 	// fail closed rather than run in the adapter's permissive default.
 	AskModeID string
+	// AuthEnvVars names the environment variables that tell this adapter
+	// *where its credentials live* — CLAUDE_CONFIG_DIR, CODEX_HOME. They are
+	// declared here rather than read out of the worker's environment because
+	// ADR-0019 D4 requires the launch env to be built from scratch, and
+	// because "the credential directory is one of these two" is launcher
+	// knowledge that belongs in the registry.
+	//
+	// What they cost is recorded, not hidden: whatever these point at is a
+	// read-write grant (a harness writes into its own config tree mid-turn),
+	// so the tree they name is shared mutable state between every conversation
+	// that uses this launcher. ADR-0019 Decision 4 owns that consequence and
+	// says this record may not be cited as evidence of credential isolation.
+	AuthEnvVars []string
 	// Notes records observed caveats; never a capability guarantee.
 	Notes string
 }
@@ -46,6 +59,7 @@ var knownLaunchers = []Launcher{
 		Package:     "@agentclientprotocol/claude-agent-acp",
 		Version:     "0.90.0",
 		AskModeID:   "default",
+		AuthEnvVars: []string{"CLAUDE_CONFIG_DIR"},
 		Notes: "probed at protocolVersion 1 with loadSession advertised; auth rides the " +
 			"ambient claude CLI login; adapter default mode auto never sends " +
 			"session/request_permission (docs/compatibility/ACP.md)",
@@ -57,6 +71,7 @@ var knownLaunchers = []Launcher{
 		Package:     "@agentclientprotocol/codex-acp",
 		Version:     "2.2.2",
 		AskModeID:   "read-only",
+		AuthEnvVars: []string{"CODEX_HOME"},
 		Notes: "probed at protocolVersion 1 with loadSession advertised; auth rode the " +
 			"existing codex-cli login; adapter default mode agent never sends " +
 			"session/request_permission (docs/compatibility/ACP.md)",

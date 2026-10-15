@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"os/exec"
 	"sync"
 
@@ -47,11 +46,16 @@ func (r *Runtime) StartWithOptions(ctx context.Context, spec domain.AgentLaunchS
 
 	cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...) //nolint:gosec // launcher argv is governed by the profile, no shell
 	cmd.Dir = spec.WorkDir
-	if spec.Env != nil {
-		cmd.Env = spec.Env
-	} else {
-		cmd.Env = os.Environ()
+	// No inheritance. Falling back to os.Environ() here handed every launched
+	// agent the worker's whole environment, `COMMUNICATION_DATABASE_URL`
+	// included (ADR-0019 D1 names this as the leak to close). A launch with no
+	// environment is a configuration bug, and the fix is for the caller to say
+	// what the child may see — see acp.LaunchEnv for the built-from-scratch
+	// form and acp.MinimalEnv for the allowlisted one.
+	if spec.Env == nil {
+		return nil, fmt.Errorf("acp: launch spec for %s carries no environment: the worker must build it from scratch (acp.LaunchEnv), never inherit os.Environ()", spec.Executable)
 	}
+	cmd.Env = spec.Env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

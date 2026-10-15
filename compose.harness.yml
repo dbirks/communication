@@ -56,6 +56,19 @@ services:
       # Replaces the named volume from compose.yml (bind wins on the same
       # path) so lab workspaces are inspectable from the host.
       - .harness/workspaces:/workspaces
+      # The second storage root (ADR-0017 D1). Bind-mounted like the workspace
+      # root so a mirror's objects and refs are inspectable from the host — the
+      # case-18 cross-project assertion is a `ls`, not a log parse.
+      - .harness/repos:/repos
+      # The two project remotes, read-only, at the *same* path in the worker as on
+      # the host. A fixture mounted at a different path would make file:// URLs in
+      # the database resolve to a directory that does not exist in the container,
+      # and every prepare would fail for a reason that is the lab rather than the
+      # code (the same reason the harness mounts /workspaces at /workspaces).
+      - .harness/remotes:/home/david/dev/communication/.harness/remotes:ro
+      - .harness/sandbox-home:/sandbox-home
+      - .harness/sandbox-policy:/sandbox-policy
+      - .harness/sandbox-selftest:/sandbox-selftest
       # Writable agent home (host-owned, uid matches the `user:` override).
       - .harness/home:/harness/home
       # rw on purpose: these are the agents' live state directories — Claude
@@ -68,6 +81,12 @@ services:
       # A numeric `user:` has no passwd entry, so HOME must be stated. Claude
       # and codex both fall back to $HOME for caches when nothing else is set.
       HOME: /harness/home
+      COMMUNICATION_REPOS_ROOT: /repos
+      COMMUNICATION_SANDBOX_HOME: /sandbox-home
+      COMMUNICATION_SANDBOX_POLICY_DIR: /sandbox-policy
+      COMMUNICATION_SANDBOX_SELFTEST_DIR: /sandbox-selftest
+      COMMUNICATION_AGENT_GIT_NAME: Communication Worker
+      COMMUNICATION_AGENT_GIT_EMAIL: worker@communication.invalid
       # The two variables the status checks above proved: Claude Code reads its
       # login from $CLAUDE_CONFIG_DIR, Codex from $CODEX_HOME.
       CLAUDE_CONFIG_DIR: /harness/claude
@@ -75,7 +94,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        mkdir -p /harness/home
+        mkdir -p /harness/home /repos /sandbox-home /sandbox-policy
         exec communication worker
 # Which agent programs the worker starts is not configured here: it is the
 # launcher registry in internal/agent/acp/launchers.go (claude-agent-acp, which

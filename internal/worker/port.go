@@ -83,6 +83,11 @@ type PermissionState struct {
 
 // Repo is one project repository to mirror into the conversation workspace.
 type Repo struct {
+	// ID is repositories.id. M2 did not need it (a clone is addressed by URL);
+	// M3 must, because workspace_repos has an FK to repositories(id) and a
+	// repository *name* cannot fill a uuid column — and guessing one from the
+	// name would be a topology record nobody could verify.
+	ID            string
 	Name          string
 	GitURL        string
 	DefaultBranch string
@@ -132,6 +137,15 @@ type TurnStore interface {
 
 	// ProjectRepos lists a project's repositories for workspace prep.
 	ProjectRepos(ctx context.Context, projectID string) ([]Repo, error)
+
+	// WorkspaceEvent appends a workspace-scoped journal event on this turn's
+	// fence. It is separate from AppendTurnEvent because the subject is a
+	// workspace, not a conversation transcript: workspace.prepared and
+	// sandbox.verified carry grant roles and digest facts that a browser has no
+	// business rendering as message content, and because several of them
+	// (workspace.released, workspace.quarantined) can legitimately be written
+	// after the turn has reached its terminal state.
+	WorkspaceEvent(ctx context.Context, c Claim, ev TurnEvent) error
 
 	// RecordBinding closes any stale live binding for the conversation and
 	// inserts the new connected row; closedPrior lists the ids whose
