@@ -1,5 +1,7 @@
-# onExecutionError: continue arm: b skips after a fails, the run still ends
-# honestly (completed with b's envelope reading "skipped").
+# The onExecutionError: continue arm, authored (contract § 9.2 nodeFailure):
+# a fails, b skips, and the run still ends honestly — completed, with b's
+# envelope reading "skipped". A run-level retry of a failed /a needs the stop
+# arm, so that test uses stop.yaml rather than patching this plan.
 apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:
@@ -20,6 +22,8 @@ spec:
     kind: process.exec
     config:
       executable: a
+    onFailure:
+      onExecutionError: continue
   - id: b
     kind: process.exec
     dependsOn: [a]

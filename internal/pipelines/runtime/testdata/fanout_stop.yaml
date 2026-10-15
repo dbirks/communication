@@ -1,0 +1,49 @@
+# Fan-out with onChildFailure: stop (ADR-0023 § 9): the first terminal child
+# failure cancels the queued siblings while the completed ones keep their
+# results (12 case 8's stop arm, C8e). maxConcurrency 2 keeps an in-flight
+# window, which is what makes "a live sibling at stop time" observable at all.
+# Zero items ride this same plan: an empty worklist ends the scope immediately.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: fan-out-stop
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 8
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 200
+    maxChildDepth: 2
+    cancelPolicy: cascade
+  nodes:
+  - id: seed
+    kind: process.exec
+    config:
+      executable: seed
+    outputs:
+      type: object
+      properties:
+        worklist:
+          type: array
+          items:
+            type: object
+  - id: fan_out
+    kind: for_each
+    dependsOn: [seed]
+    config:
+      items: ${{ nodes.seed.outputs.worklist }}
+      maxConcurrency: 2
+      onChildFailure: stop
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          config:
+            pipeline: issue-implementation
+            waitFor: completion
+            inputs:
+              issue: ${{ item.number }}

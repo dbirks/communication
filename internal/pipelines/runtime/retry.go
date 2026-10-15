@@ -7,9 +7,11 @@ import (
 	pevents "github.com/dbirks/communication/internal/pipelines/events"
 )
 
-// Workspace modes (ADR-0023 § 6). The plan's compiled retry.workspacePolicy
-// may spell the default "reuse_or_recreate" (the compiler's authored
-// default); both spellings mean continue_workspace here.
+// Workspace modes (ADR-0023 § 6) — the two spellings the schema's
+// retry.workspacePolicy enum admits, and the only two a plan can carry: the
+// compiler defaults an unauthored node to continue_workspace (§ 6) and refuses
+// anything else at validate. restore_checkpoint is the destructive arm, so it
+// is the one this package must prove safe (ErrCheckpointUnavailable).
 const (
 	WorkspaceContinue = "continue_workspace"
 	WorkspaceRestore  = "restore_checkpoint"

@@ -1,0 +1,31 @@
+# The authored default arm: no onFailure, no retry, so one infra failure on /a
+# is terminal and the run fails honestly (contract § 5.1 step 8's stop path).
+# This is the graph the run-level retry test needs: a run that really failed,
+# retried at a boundary (route 31, C6e).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: stop-policy
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: a
+    kind: process.exec
+    config:
+      executable: a
+  - id: b
+    kind: process.exec
+    dependsOn: [a]
+    config:
+      executable: b
+  resultBindings:
+    b_status: ${{ nodes.b.status }}

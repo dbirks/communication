@@ -5,17 +5,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbirks/communication/internal/pipelines/compiler"
 	pevents "github.com/dbirks/communication/internal/pipelines/events"
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 )
 
 // TestContinuePolicySkipsDependants: 03's failure table row — an execution
 // error with onExecutionError=continue fails the node, skips its dependants,
-// and the run completes honestly (b's envelope reads "skipped").
+// and the run completes honestly (b's envelope reads "skipped"). The policy is
+// authored in continue.yaml and reaches the plan through the compiler.
 func TestContinuePolicySkipsDependants(t *testing.T) {
 	plan := loadPlan(t, "testdata/continue.yaml")
-	patchFailure(plan, "a", "continue", "")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
 	dv.script("/a", step{failClass: runtime.ErrInfra, detail: "the sandbox said no"})
 	dv.pump(30)
@@ -41,9 +40,6 @@ func TestContinuePolicySkipsDependants(t *testing.T) {
 // FAILED envelope; the non-route dependant is skipped; the run completes.
 func TestRoutePolicyRunsTheCarrier(t *testing.T) {
 	plan := loadPlan(t, "testdata/route.yaml")
-	// The compiler defect (a) drops authored onFailure from the plan; state
-	// the fixed compiler's output.
-	patchFailure(plan, "gen", "route", "recover")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
 	dv.script("/gen", step{failClass: runtime.ErrAgentError, detail: "agent exploded"})
 	dv.script("/recover", step{outputs: map[string]any{"ok": true}})
@@ -224,11 +220,12 @@ func TestInvalidOutputIsHonestFailure(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 	st := dv.state()
-	att := st.LastAttempt(a.NodeExecutionID)
-	if att.Status != runtime.AttemptFailed || att.ErrorClass != runtime.ErrInvalidOutput {
-		t.Fatalf("lying completion = %s/%s, want failed/invalid_output", att.Status, att.ErrorClass)
+	atts := st.AttemptsFor(a.NodeExecutionID)
+	first := atts[0]
+	if first.Status != runtime.AttemptFailed || first.ErrorClass != runtime.ErrInvalidOutput {
+		t.Fatalf("lying completion = %s/%s, want failed/invalid_output", first.Status, first.ErrorClass)
 	}
-	if att.Detail == "" {
+	if first.Detail == "" {
 		t.Error("invalid_output must carry the validation detail")
 	}
 	if n := st.Node("/plan"); n.Status == runtime.NodeSucceeded {
@@ -238,12 +235,20 @@ func TestInvalidOutputIsHonestFailure(t *testing.T) {
 	if c := countType(st, pevents.TypeNodeAttemptCompleted); c != 0 {
 		t.Errorf("node.attempt.completed on the invalid attempt = %d, want 0", c)
 	}
-	// And with the node's attempt budget spent (maxAttempts 1), the failure
-	// policy (stop) ends the run honestly.
+	// invalid_output sits inside /plan's authored retriableErrors (contract § 9.3)
+	// and its budget is 3, so a rejected envelope buys retries — the honest
+	// failure arrives when the budget is spent, not before.
+	if len(atts) != 2 || atts[1].Status != runtime.AttemptQueued {
+		t.Fatalf("attempts after the rejection = %d (%s), want a second queued",
+			len(atts), atts[len(atts)-1].Status)
+	}
 	dv.pump(30)
 	st = dv.state()
 	if st.Run.Status != runtime.RunFailed || st.Run.FailedCause != "node_execution_failed:/plan" {
 		t.Fatalf("run = %s/%s, want failed / node_execution_failed:/plan", st.Run.Status, st.Run.FailedCause)
+	}
+	if got := len(st.AttemptsFor(st.Node("/plan").ID)); got != 3 {
+		t.Errorf("attempt rows = %d, want the authored budget 3 spent on three rejections", got)
 	}
 }
 
@@ -251,7 +256,6 @@ func TestInvalidOutputIsHonestFailure(t *testing.T) {
 // lease was taken over can write NOTHING.
 func TestStaleTokenRefusedEverywhere(t *testing.T) {
 	plan := loadPlan(t, "testdata/gate_sibling.yaml")
-	patchRetries(plan, "sibling", retryPolicy(2, 1))
 	dv := newDriver(t, plan, map[string]any{"goal": "fence"})
 	dv.advance()
 	a, err := dv.ms.Claim(dv.run.ID, "worker-old")
@@ -274,7 +278,7 @@ func TestStaleTokenRefusedEverywhere(t *testing.T) {
 	if first.Status != runtime.AttemptInterrupted || first.ErrorClass != runtime.ErrInterrupted {
 		t.Fatalf("expired lease attempt = %s/%s, want interrupted", first.Status, first.ErrorClass)
 	}
-	// The retry's backoff is ~2 s (base 1, multiplier 2): cross it.
+	// The retry's backoff is ~2 s (authored base 1 s, multiplier 2): cross it.
 	dv.now = dv.now.Add(5 * time.Second)
 	b, err := dv.ms.Claim(dv.run.ID, "worker-new")
 	if err != nil || b == nil || b.NodeExecutionID != a.NodeExecutionID {
@@ -308,11 +312,11 @@ func TestStaleTokenRefusedEverywhere(t *testing.T) {
 // children": the flag, then the cascade, then run.cancelled — with the
 // child run asked politely and no attempt left claimed.
 func TestCancelCascadeClosesEverything(t *testing.T) {
-	plan := planFanout("collect_and_continue", 4, 1)
+	plan := loadPlan(t, "testdata/fanout_single.yaml")
 	cr := &scriptedChildren{status: map[int]string{}, delay: map[int]int{0: 99, 1: 99, 2: 99, 3: 99}}
 	dv := newDriverWith(t, plan, map[string]any{"goal": "cancel me"}, runtime.AdvancerDeps{Children: cr})
-	dv.script("/seed", step{outputs: items25(4)})
-	dv.pump(50) // leaves one child running (maxConcurrency 1) and the rest queued
+	dv.script("/seed", step{outputs: worklist(4)})
+	dv.pump(50) // maxConcurrency 1: one child in flight, three still queued
 	st := dv.state()
 	if st.Run.Status != runtime.RunRunning {
 		t.Fatalf("run = %s pre-cancel", st.Run.Status)
@@ -447,14 +451,4 @@ func TestAdvanceIsIdempotent(t *testing.T) {
 
 func eventKey(typ string, nodeExecID string) string {
 	return typ + "\x00" + nodeExecID
-}
-
-// patchFailure states an authored onFailure for a plan node (compiler
-// defect (a) — see patchRetries).
-func patchFailure(plan *compiler.Plan, nodeID, policy, route string) {
-	for i := range plan.Nodes {
-		if plan.Nodes[i].ID == nodeID {
-			plan.Nodes[i].Failure = compiler.FailurePolicy{OnExecutionError: policy, ErrorRoute: route}
-		}
-	}
 }

@@ -83,55 +83,77 @@ func (w *walk) clampPolicies(at ptr.Pointer, p *Policies) {
 	}
 }
 
-// retry compiles a node's retryPolicy.
+// retry compiles a node's authored `retry` block (#/$defs/retryPolicy, contract
+// § 9.2): {maxAttempts, backoff{baseSeconds, multiplier, maxSeconds, jitter},
+// retriableErrors, workspacePolicy}. The plan keeps Retry flat because the
+// runtime's delay arithmetic is flat (`backoffDelay` reads BaseSeconds,
+// Multiplier, MaxSeconds, Jitter directly); the nesting is only where the
+// fields live on paper, and reading them flat compiled a policy of "no backoff"
+// out of a document that authored one.
 func (w *walk) retry(nv map[string]canonValue, at ptr.Pointer) Retry {
-	r := Retry{MaxAttempts: 1, Jitter: true, WorkspacePolicy: "reuse_or_recreate"}
-	cfg, ok := nv["retryPolicy"].(map[string]canonValue)
+	// A node with no retry block is max-attempts-one, so its backoff fields can
+	// never apply; runtime/backoffDelay still holds ADR-0023 § 7's defaults
+	// (30 s, multiplier 2, ±20 %) if a plan ever asks for a delay with them zero.
+	// continue_workspace is the default ADR-0023 § 6 states and the only
+	// remaining spelling the schema admits (workspacePolicy is an enum).
+	r := Retry{MaxAttempts: 1, Jitter: true, WorkspacePolicy: "continue_workspace"}
+	cfg, ok := nv["retry"].(map[string]canonValue)
 	if !ok {
 		return r
 	}
-	at = at.Child("retryPolicy")
+	at = at.Child("retry")
 	r.MaxAttempts = intOf(cfg["maxAttempts"], 1)
-	r.BaseSeconds = intOf(cfg["baseSeconds"], 30)
-	if m, ok := cfg["multiplier"].(float64); ok {
-		r.Multiplier = m
-	} else {
-		r.Multiplier = 2
+	// An authored retry block means the author wants the exponential default
+	// wherever they left a gap (ADR-0023 § 7).
+	r.BaseSeconds, r.Multiplier = 30, 2
+	if bo, ok := cfg["backoff"].(map[string]canonValue); ok {
+		at := at.Child("backoff")
+		r.BaseSeconds = intOf(bo["baseSeconds"], 30)
+		// The schema types multiplier as a number, so an author may write 2 or 2.5
+		// and the loader emits int64 for the first.
+		r.Multiplier = floatOf(bo["multiplier"], 2)
+		r.MaxSeconds = intOf(bo["maxSeconds"], 0)
+		if j, ok := bo["jitter"].(bool); ok {
+			r.Jitter = j
+		}
+		if r.MaxSeconds > 0 && r.MaxSeconds < r.BaseSeconds {
+			w.err(at.Child("maxSeconds"), diag.CodeUnsupportedPolicy,
+				"retry.backoff.maxSeconds %d is below baseSeconds %d: the cap cannot be lower than the first wait", r.MaxSeconds, r.BaseSeconds)
+		}
 	}
-	r.MaxSeconds = intOf(cfg["maxSeconds"], 0)
-	if j, ok := cfg["jitter"].(bool); ok {
-		r.Jitter = j
+	r.WorkspacePolicy, _ = stringOr(cfg["workspacePolicy"], r.WorkspacePolicy)
+	if arr, ok := cfg["retriableErrors"].([]canonValue); ok {
+		r.RetriableErrors = asStrings(arr)
 	}
-	r.WorkspacePolicy, _ = cfg["workspacePolicy"].(string)
-	r.RetriableErrors = asStrings(cfg["retriableErrors"])
 	if r.MaxAttempts > w.budgets.MaxAttemptsCeiling() {
 		w.err(at.Child("maxAttempts"), diag.CodeBudgetAboveCeiling,
-			"maxAttempts %d exceeds the ceiling %d", r.MaxAttempts, w.budgets.MaxAttemptsCeiling())
+			"retry.maxAttempts %d exceeds the ceiling %d", r.MaxAttempts, w.budgets.MaxAttemptsCeiling())
 		r.MaxAttempts = w.budgets.MaxAttemptsCeiling()
 	}
 	// ADR-0023 § 7: workspace_lost never auto-retries, so admitting it into a
-	// retriableErrors list would promise a retry that cannot happen. The schema
-	// admits the name because a future milestone owns it; the compiler refuses
-	// it while the worker cannot honour it.
+	// retriableErrors list would promise a retry that cannot happen. The schema's
+	// enum already refuses the name; the compiler refuses it too, because a
+	// document that skipped validation must not reach a run with it.
 	for _, code := range r.RetriableErrors {
 		if code == "workspace_lost" {
 			w.err(at.Child("retriableErrors"), diag.CodeUnsupportedPolicy,
-				"retriableErrors may not list workspace_lost: a lost workspace is never retried automatically (ADR-0023 § 7)")
+				"retry.retriableErrors may not list workspace_lost: a lost workspace is never retried automatically (ADR-0023 § 7)")
 		}
 	}
 	return r
 }
 
-// failure compiles 03's failure table for one node. Deviation D6: the error
+// failure compiles 03's failure table for one node, authored as `onFailure`
+// (#/$defs/nodeFailure: {onExecutionError, errorRoute}). Deviation D6: the error
 // route is a readiness exception, not a graph edge, which is what keeps the DAG
 // free of route-typed edges (ADR-0021 § 6).
 func (w *walk) failure(s *scope, id string, nv map[string]canonValue, at ptr.Pointer) FailurePolicy {
 	f := FailurePolicy{OnExecutionError: "stop"}
-	cfg, ok := nv["failurePolicy"].(map[string]canonValue)
+	cfg, ok := nv["onFailure"].(map[string]canonValue)
 	if !ok {
 		return f
 	}
-	at = at.Child("failurePolicy")
+	at = at.Child("onFailure")
 	f.ErrorRoute, _ = cfg["errorRoute"].(string)
 	f.OnExecutionError, _ = cfg["onExecutionError"].(string)
 	if f.OnExecutionError == "" {
@@ -147,16 +169,16 @@ func (w *walk) failure(s *scope, id string, nv map[string]canonValue, at ptr.Poi
 		}
 		if f.ErrorRoute == "stop" || f.ErrorRoute == "continue" {
 			w.err(at.Child("errorRoute"), diag.CodeUnknownDependency,
-				"node %q sets errorRoute: %q, which is an outcome name, not a node id in scope %q", id, f.ErrorRoute, s.key)
+				"node %q sets onFailure.errorRoute: %q, which is an outcome name, not a node id in scope %q", id, f.ErrorRoute, s.key)
 			return f
 		}
 		if !s.ids[f.ErrorRoute] {
 			if where := w.declaredIDs[f.ErrorRoute]; len(where) > 0 {
 				w.err(at.Child("errorRoute"), diag.CodeUnknownDependency,
-					"node %q sets errorRoute: %q, declared in scope %s and not visible in scope %q", id, f.ErrorRoute, strings.Join(where, ", "), s.key)
+					"node %q sets onFailure.errorRoute: %q, declared in scope %s and not visible in scope %q", id, f.ErrorRoute, strings.Join(where, ", "), s.key)
 			} else {
 				w.err(at.Child("errorRoute"), diag.CodeUnknownDependency,
-					"node %q sets errorRoute: %q, which is not a node in scope %q", id, f.ErrorRoute, s.key)
+					"node %q sets onFailure.errorRoute: %q, which is not a node in scope %q", id, f.ErrorRoute, s.key)
 			}
 			return f
 		}
@@ -344,6 +366,13 @@ func (w *walk) conditionPolicy(s *scope, id string, cfg map[string]canonValue, a
 }
 
 func (w *walk) untilPolicy(s *scope, id string, cfg map[string]canonValue, at ptr.Pointer, pn *Node) {
+	if _, ok := cfg["passWhen"]; !ok {
+		// The schema requires passWhen, so this is the defensive arm: with no
+		// predicate the runtime's "a missing predicate is satisfied" reading would
+		// end the loop after one iteration, a silent semantic rather than a error.
+		w.err(at, diag.CodeSchemaShape,
+			"until %q carries no passWhen: the loop would end on its first iteration instead of its predicate (contract § 9.2 makes passWhen mandatory)", id)
+	}
 	mi := intOf(cfg["maxIterations"], 0)
 	if mi == 0 {
 		// The schema requires maxIterations, so this is the defensive arm.

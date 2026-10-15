@@ -94,12 +94,6 @@ func TestPreviousRootIsPriorResultBindings(t *testing.T) {
 // and the run completes.
 func TestSampleKilledAttemptRetriesFromCheckpoint(t *testing.T) {
 	plan := loadPlan(t, "../testdata/feature-development-contract.yaml")
-	// The compiler defect (a) means authored retry blocks never reach the
-	// plan; state what the fixed compiler would compile for the sample.
-	patchRetries(plan, "plan", retryPolicy(3, 10))
-	patchRetries(plan, "implement", retryPolicy(2, 10))
-	patchRetries(plan, "test", retryPolicy(2, 5))
-	patchRetries(plan, "review", retryPolicy(2, 10))
 	dv := newDriver(t, plan, sampleInputs())
 	dv.gate = func(*runtime.Approval) (string, string) { return "approved", "" }
 	dv.script("/plan", step{outputs: map[string]any{"plan": "the plan"}})
@@ -198,7 +192,7 @@ func TestSampleApprovalRejectedIsBusinessOutcome(t *testing.T) {
 // items → pipeline.invoke child runs, maxConcurrency 3 measured never
 // exceeded, child number 3 fails, its 24 siblings are preserved and readable.
 func TestFanoutTwentyFiveChildrenOneFails(t *testing.T) {
-	plan := planFanout("collect_and_continue", 25, 3)
+	plan := loadPlan(t, "testdata/fanout_collect.yaml")
 	cr := &scriptedChildren{status: map[int]string{}}
 	for i := 0; i < 25; i++ {
 		s := runtime.RunCompleted
@@ -208,7 +202,7 @@ func TestFanoutTwentyFiveChildrenOneFails(t *testing.T) {
 		cr.status[i] = s
 	}
 	dv := newDriverWith(t, plan, map[string]any{"goal": "issues"}, runtime.AdvancerDeps{Children: cr})
-	dv.script("/seed", step{outputs: items25(25)})
+	dv.script("/seed", step{outputs: worklist(25)})
 	dv.pump(300)
 	st := dv.state()
 	if st.Run.Status != runtime.RunCompleted {
@@ -272,13 +266,13 @@ func TestFanoutTwentyFiveChildrenOneFails(t *testing.T) {
 // TestFanoutStopPreservesCompletedSiblings is case 8's stop arm: queued
 // siblings cancel, completed ones keep their results, the scope fails.
 func TestFanoutStopPreservesCompletedSiblings(t *testing.T) {
-	plan := planFanout("stop", 5, 2)
+	plan := loadPlan(t, "testdata/fanout_stop.yaml")
 	// Index 0 fails immediately; index 1 is still running when the stop is
 	// observed (it goes terminal only on its third poll), so the cancelled
 	// sibling is a LIVE child — and 2..4 were never started.
 	cr := &scriptedChildren{status: map[int]string{0: runtime.RunFailed}, delay: map[int]int{1: 3}}
 	dv := newDriverWith(t, plan, map[string]any{"goal": "stop me"}, runtime.AdvancerDeps{Children: cr})
-	dv.script("/seed", step{outputs: items25(5)})
+	dv.script("/seed", step{outputs: worklist(5)})
 	dv.pump(100)
 	st := dv.state()
 	if st.Run.Status != runtime.RunFailed {
@@ -333,10 +327,10 @@ func TestFanoutStopPreservesCompletedSiblings(t *testing.T) {
 // TestFanoutZeroItems is 03's zero-item edge case, asserted as a test and not
 // a comment (ADR-0023 § 8): succeeded with items: 0 and ONE scope.completed.
 func TestFanoutZeroItems(t *testing.T) {
-	plan := planFanout("stop", 0, 2)
+	plan := loadPlan(t, "testdata/fanout_stop.yaml")
 	cr := &scriptedChildren{status: map[int]string{}}
 	dv := newDriverWith(t, plan, map[string]any{"goal": "none"}, runtime.AdvancerDeps{Children: cr})
-	dv.script("/seed", step{outputs: map[string]any{"items25": []any{}}})
+	dv.script("/seed", step{outputs: map[string]any{"worklist": []any{}}})
 	dv.pump(50)
 	st := dv.state()
 	fo := st.Node("/fan_out")
@@ -380,12 +374,15 @@ func nodeByExec(st *runtime.State, id string) *runtime.NodeExecution {
 	return nil
 }
 
-func items25(n int) map[string]any {
+// worklist is a seed node's outputs: n items, numbered from 1, which is what
+// the fan-out fixtures' `items` binding reads and what the invoke inputs assert
+// (item number 3 is index 2).
+func worklist(n int) map[string]any {
 	list := make([]any, 0, n)
 	for i := 1; i <= n; i++ {
 		list = append(list, map[string]any{"number": int64(i)})
 	}
-	return map[string]any{"items25": list}
+	return map[string]any{"worklist": list}
 }
 
 // scriptedChildren is the ChildResolver the fan-out tests run against: every

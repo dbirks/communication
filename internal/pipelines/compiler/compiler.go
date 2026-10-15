@@ -373,10 +373,27 @@ func (w *walk) node(s *scope, id string) {
 	child := w.compositeChild(s, id, kind, cfg, at)
 	if child != nil {
 		pn.SubScope = child.key
-		pn.PassWhen = ptrOf(w.binding(cfgString(cfg, "passWhen"), at.Child("config").Child("passWhen"), child, schema.PositionExpression))
-		if fs, ok := cfg["failWhen"].(string); ok {
-			b := w.binding(fs, at.Child("config").Child("failWhen"), child, schema.PositionExpression)
-			pn.FailWhen = &b
+		// A for_each scope ends when every index key is terminal (ADR-0023 § 8);
+		// only an `until` judges its body with predicates, because passWhen/failWhen
+		// exist in configUntil and nowhere else in the catalogue (contract § 9.2).
+		// Reading them for every composite compiled an empty expression for each
+		// for_each body, which the parser refused as a syntax error — a legal
+		// fan-out could not be published at all.
+		if kind == "until" {
+			if pw, has := cfg["passWhen"]; has {
+				pn.PassWhen = ptrOf(w.binding(pw, at.Child("config").Child("passWhen"), child, schema.PositionExpression))
+			}
+			if fs, has := cfg["failWhen"]; has {
+				b := w.binding(fs, at.Child("config").Child("failWhen"), child, schema.PositionExpression)
+				pn.FailWhen = &b
+			}
+		} else {
+			for _, name := range []string{"passWhen", "failWhen"} {
+				if _, has := cfg[name]; has {
+					w.err(at.Child("config").Child(name), diag.CodeUnsupportedPolicy,
+						"%s %q has no %s: only an until judges its body with a predicate, and a %s scope ends when every child key is terminal (ADR-0023 § 8)", kind, id, name, kind)
+				}
+			}
 		}
 		if rb, ok := cfg["resultBindings"].(map[string]canon.Value); ok {
 			pn.ResultBindings = w.resultBindings(rb, at.Child("config").Child("resultBindings"), child)

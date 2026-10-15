@@ -1,7 +1,7 @@
 # Failure-route arm of 03's failure table (D6): gen fails, the named error
-# route runs off the failed envelope, the non-route dependant is skipped.
-# The authored onFailure is compiled to the plan by the compiler (a known
-# defect reads the wrong key, so tests patch the compiled policy).
+# route runs off the failed envelope, the non-route dependant is skipped. The
+# authored onFailure is what the compiler compiles into the plan's failure
+# policy — the runtime routes from the plan, never from this document.
 apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:

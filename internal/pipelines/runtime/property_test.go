@@ -30,11 +30,10 @@ func TestPropertyRandomScripts(t *testing.T) {
 
 func runRandomScript(t *testing.T, seed int64) {
 	rng := rand.New(rand.NewSource(seed))
+	// No retry patching: the sample's authored retry blocks reach the plan now,
+	// so the dice roll against real attempt budgets (3 for /plan, 2 for the
+	// loop body nodes) and real retriable class lists.
 	plan := loadPlan(t, "../testdata/feature-development-contract.yaml")
-	patchRetries(plan, "plan", retryPolicy(3, 1))
-	patchRetries(plan, "implement", retryPolicy(2, 1))
-	patchRetries(plan, "test", retryPolicy(2, 1))
-	patchRetries(plan, "review", retryPolicy(2, 1))
 	dv := newDriver(t, plan, sampleInputs())
 	dv.gate = func(*runtime.Approval) (string, string) { return "approved", "" }
 

@@ -1,0 +1,48 @@
+# Fan-out with maxConcurrency 1: one child in flight at a time, so a
+# cancellation is asserted against a queue that is demonstrably not empty
+# (12 "parent cancelled with live children"). Same document as
+# fanout_collect.yaml apart from the bound and the name.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: fan-out-single
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 8
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 200
+    maxChildDepth: 2
+    cancelPolicy: cascade
+  nodes:
+  - id: seed
+    kind: process.exec
+    config:
+      executable: seed
+    outputs:
+      type: object
+      properties:
+        worklist:
+          type: array
+          items:
+            type: object
+  - id: fan_out
+    kind: for_each
+    dependsOn: [seed]
+    config:
+      items: ${{ nodes.seed.outputs.worklist }}
+      maxConcurrency: 1
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          config:
+            pipeline: issue-implementation
+            waitFor: completion
+            inputs:
+              issue: ${{ item.number }}

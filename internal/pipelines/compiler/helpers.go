@@ -116,6 +116,30 @@ func boolOf(v canonValue, def bool) bool {
 	return def
 }
 
+// floatOf reads a schema "number" the author may have written as an integer:
+// the loader keeps integers as int64, so a bare `multiplier: 2` is not a
+// float64 and asserting one silently loses the authored value.
+func floatOf(v canonValue, def float64) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case int64:
+		return float64(t)
+	case int:
+		return float64(t)
+	}
+	return def
+}
+
+// stringOr keeps the default for an absent field, so compiling an optional
+// authored value never erases the default the schema did not require.
+func stringOr(v canonValue, def string) (string, bool) {
+	if s, ok := v.(string); ok && s != "" {
+		return s, true
+	}
+	return def, false
+}
+
 func dedupe(in []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -199,14 +223,6 @@ func EnvDigest() string {
 }
 
 // cfgString reads an optional string field of a node config.
-func cfgString(cfg map[string]canonValue, key string) string {
-	if cfg == nil {
-		return ""
-	}
-	s, _ := cfg[key].(string)
-	return s
-}
-
 func kindOf(nv map[string]canonValue) string {
 	k, _ := nv["kind"].(string)
 	return k

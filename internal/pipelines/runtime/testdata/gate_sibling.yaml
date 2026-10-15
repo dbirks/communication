@@ -1,6 +1,9 @@
 # Gate honesty (12 case 9 / C9): the gate holds no worker while a sibling
 # branch keeps running, and the dependant reads the decision as a business
-# outcome.
+# outcome. The sibling carries an authored retry block (ADR-0023 § 7: base 1 s,
+# multiplier 2, ±20 % jitter, three attempts over infra/interrupted/timeout),
+# which is what lets the lease-expiry and human-takeover tests watch a real
+# second attempt appear and watch the budget run out.
 apiVersion: communication.dev/v1alpha1
 kind: Pipeline
 metadata:
@@ -26,6 +29,10 @@ spec:
       onTimeout: fail
   - id: sibling
     kind: process.exec
+    retry:
+      maxAttempts: 3
+      backoff: {baseSeconds: 1, multiplier: 2, maxSeconds: 60, jitter: true}
+      retriableErrors: [infra, interrupted, timeout]
     config:
       executable: side
   - id: after

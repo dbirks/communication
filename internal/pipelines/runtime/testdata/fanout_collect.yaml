@@ -1,0 +1,51 @@
+# Fan-out with onChildFailure: collect_and_continue (ADR-0023 § 9): a failing
+# child does not stop its siblings — the scope still succeeds and reports every
+# child, which is what 12 case 8's "24 siblings preserved and readable" asserts.
+# The three fan-out fixtures differ only in the two knobs the cells measure:
+# onChildFailure and maxConcurrency, both literal integers by schema (ADR-0021
+# § 3: in-flight accounting is bounded by the plan the run pins, never by an
+# expression).
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: fan-out-collect
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 8
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 200
+    maxChildDepth: 2
+    cancelPolicy: cascade
+  nodes:
+  - id: seed
+    kind: process.exec
+    config:
+      executable: seed
+    outputs:
+      type: object
+      properties:
+        worklist:
+          type: array
+          items:
+            type: object
+  - id: fan_out
+    kind: for_each
+    dependsOn: [seed]
+    config:
+      items: ${{ nodes.seed.outputs.worklist }}
+      maxConcurrency: 3
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          config:
+            pipeline: issue-implementation
+            waitFor: completion
+            inputs:
+              issue: ${{ item.number }}

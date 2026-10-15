@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbirks/communication/internal/pipelines/compiler"
 	pevents "github.com/dbirks/communication/internal/pipelines/events"
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 )
@@ -15,12 +14,13 @@ import (
 // boundary; the key set never changes, attempts only grow, and the reopened
 // run re-derives everything from rows.
 func TestRunLevelRetryIsAppendOnly(t *testing.T) {
-	plan := loadPlan(t, "testdata/continue.yaml")
+	plan := loadPlan(t, "testdata/stop.yaml")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
 	dv.script("/a", step{failClass: runtime.ErrInfra, detail: "transient"},
 		step{outputs: map[string]any{"ok": true}})
 	dv.script("/b", step{outputs: map[string]any{"ok": true}})
-	// First pass: a's single attempt fails (stop) — the run fails honestly.
+	// First pass: /a authors no retry and no onFailure, so its single infra
+	// attempt is terminal and the stop policy fails the run honestly.
 	dv.pump(30)
 	st := dv.state()
 	if st.Run.Status != runtime.RunFailed {
@@ -73,9 +73,7 @@ func TestRunLevelRetryIsAppendOnly(t *testing.T) {
 // against an uncommitted (or absent) boundary is a refusal that resets
 // NOTHING — the destructive arm cannot be reached by accident.
 func TestCheckpointUnavailableRefusesRestore(t *testing.T) {
-	plan := loadPlan(t, "testdata/continue.yaml")
-	patchFailure(plan, "a", "continue", "")
-	patchWorkspace(plan, "b", runtime.WorkspaceRestore)
+	plan := loadPlan(t, "testdata/restore.yaml")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
 	// a succeeds (durable checkpoint with an UNCOMMITTED repo state); b fails.
 	dv.script("/a", step{outputs: map[string]any{"ok": true}, uncommitted: true})
@@ -109,15 +107,14 @@ func TestCheckpointUnavailableRefusesRestore(t *testing.T) {
 // boundary succeeds, and run.checkpoint_restored — the event that "proves
 // the engine knows the difference" (contract § 3 row 8) — is written.
 func TestRestoreCheckpointFromCommittedBoundary(t *testing.T) {
-	plan := loadPlan(t, "testdata/continue.yaml")
-	patchFailure(plan, "a", "continue", "")
-	patchWorkspace(plan, "b", runtime.WorkspaceRestore)
+	plan := loadPlan(t, "testdata/restore.yaml")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
 	dv.script("/a", step{outputs: map[string]any{"ok": true}})
 	dv.script("/b", step{failClass: runtime.ErrInfra}, step{failClass: runtime.ErrInfra},
 		step{outputs: map[string]any{"ok": true}})
 	// Make /a's checkpoint boundary committed: the driver's default records
-	// committed=true, so this is the ordinary case.
+	// committed=true, so this is the ordinary case. /b authors two attempts,
+	// so its own budget is spent before the run fails.
 	dv.pump(20)
 	st := dv.state()
 	if st.Run.Status != runtime.RunFailed {
@@ -149,7 +146,6 @@ func TestRestoreCheckpointFromCommittedBoundary(t *testing.T) {
 // paused{human_takeover} — never a silent steal.
 func TestHumanTakeoverPausesTheRun(t *testing.T) {
 	plan := loadPlan(t, "testdata/gate_sibling.yaml")
-	patchRetries(plan, "sibling", retryPolicy(2, 1))
 	dv := newDriver(t, plan, map[string]any{"goal": "take it"})
 	dv.advance()
 	a, err := dv.ms.Claim(dv.run.ID, "worker-a")
@@ -186,11 +182,11 @@ func TestHumanTakeoverPausesTheRun(t *testing.T) {
 	}
 }
 
-// TestAttemptBudgetIsHard: MaxAttempts N means exactly N attempt rows and no
-// more, even with an infinitely retriable class.
+// TestAttemptBudgetIsHard: the authored maxAttempts 3 in gate_sibling.yaml
+// means exactly 3 attempt rows and no more, even with an infinitely retriable
+// class.
 func TestAttemptBudgetIsHard(t *testing.T) {
 	plan := loadPlan(t, "testdata/gate_sibling.yaml")
-	patchRetries(plan, "sibling", retryPolicy(3, 1))
 	dv := newDriver(t, plan, map[string]any{"goal": "budget"})
 	dv.script("/sibling", step{failClass: runtime.ErrInfra}) // every attempt fails
 	dv.script("/after", step{outputs: map[string]any{}})
@@ -212,21 +208,5 @@ func TestAttemptBudgetIsHard(t *testing.T) {
 	}
 	if n.Status != runtime.NodeFailed || n.ErrorClass != runtime.ErrInfra {
 		t.Errorf("node = %s/%s, want failed after the budget", n.Status, n.ErrorClass)
-	}
-}
-
-// patchWorkspace states an authored retry.workspacePolicy (compiler defect
-// (a) again: retry blocks never reach the compiled plan).
-func patchWorkspace(plan *compiler.Plan, nodeID, mode string) {
-	for i := range plan.Nodes {
-		if plan.Nodes[i].ID == nodeID {
-			r := plan.Nodes[i].Retry
-			r.WorkspacePolicy = mode
-			if r.MaxAttempts < 2 {
-				r.MaxAttempts = 2 // a restore retry needs a second attempt
-			}
-			r.RetriableErrors = append(r.RetriableErrors, runtime.ErrInfra)
-			plan.Nodes[i].Retry = r
-		}
 	}
 }

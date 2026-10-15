@@ -12,8 +12,12 @@ import (
 	"github.com/dbirks/communication/internal/pipelines/schema"
 )
 
-// loadPlan compiles a testdata pipeline. The runtime consumes exactly the
-// compiler's exported Plan — nothing here reimplements a plan shape.
+// loadPlan compiles a testdata pipeline: loader, then schema, then compiler —
+// the same three steps a publish performs. Every plan these tests run is an
+// authored document's output: none is assembled in Go, and none is edited
+// afterwards, so what the runtime honours (retry budgets, failure routing,
+// workspace policy) is what an author wrote. compiler/policy_test.go holds the
+// pins that keep that promise true.
 func loadPlan(t *testing.T, path string) *compiler.Plan {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -32,19 +36,6 @@ func loadPlan(t *testing.T, path string) *compiler.Plan {
 		t.Fatalf("compiler: %v", d)
 	}
 	return plan
-}
-
-// patchRetries works around a known compiler defect (retryPolicy is read from
-// the wrong document key, so compiled Retry blocks are all defaults): the
-// runtime consumes whatever the plan says, and these tests need real attempt
-// budgets. It mutates the in-memory plan ONLY — the compiler package is
-// another worker's boundary (see the DEVIATIONS note in the report).
-func patchRetries(plan *compiler.Plan, nodeID string, r compiler.Retry) {
-	for i := range plan.Nodes {
-		if plan.Nodes[i].ID == nodeID {
-			plan.Nodes[i].Retry = r
-		}
-	}
 }
 
 // ---------------------------------------------------------------- scenario harness
@@ -245,18 +236,6 @@ func (dv *driver) keyForAttempt(a *runtime.Attempt) string {
 	}
 	dv.t.Fatalf("attempt %s on unknown node execution", a.ID)
 	return ""
-}
-
-// retryPolicy states what the fixed compiler would compile for a node with
-// an authored retry block (the compiler defect (a) means loadPlan's plans
-// only ever carry defaults; see patchRetries).
-func retryPolicy(maxAttempts, baseSeconds int) compiler.Retry {
-	return compiler.Retry{
-		MaxAttempts: maxAttempts, BaseSeconds: baseSeconds, Multiplier: 2,
-		MaxSeconds: 60, Jitter: true, WorkspacePolicy: "continue_workspace",
-		RetriableErrors: []string{runtime.ErrInfra, runtime.ErrInterrupted,
-			runtime.ErrTimeout, runtime.ErrWorkspaceLost},
-	}
 }
 
 // ---------------------------------------------------------------- event helpers
