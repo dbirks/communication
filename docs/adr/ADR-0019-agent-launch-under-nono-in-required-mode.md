@@ -378,6 +378,23 @@ sources are exactly `group:system_read_linux_core`, `[profile]` and `[user]`
 on any host. The N-d source allowlist was **not** widened; a stray grant is
 still refused, it just no longer arrives.
 
+**The inherited layer also decides what git can *read*** (D19 follow-up, probe
+C-GITCFG, CI run 38759216292). Set equality made the grant list portable; the
+launch then died inside the child instead: `git commit` exited 128 with
+`warning: unable to access '/etc/gitconfig': Permission denied` and
+`fatal: unknown error occurred while reading the configuration files`. git skips
+a system config file that is absent and refuses one it cannot read, and
+`system_read_linux_core` names its `/etc` files without `/etc/gitconfig` — a
+file Arch does not ship and the worker image never creates, but the runner image
+does, via git-lfs's `git lfs install --system`. This is a grant gap, not an
+identity gap (Decision 4's seeded `~/.gitconfig` and `GIT_AUTHOR_*`/`GIT_COMMITTER_*`
+were already in place, and the failure precedes any identity lookup), so the fix
+stays in D18's static layer: the shipped profile grants that one file
+read-only — the file, not `/etc` — and N-d admits the `[profile]` rule at level
+`r` only, so a broadened or additional system read still stops the launch.
+Profile version 3.2.0: every unit journal written after this carries a new
+`policy_digest`, which is what D5's digest is for.
+
 **The agent needs a temp directory inside its grants** (deviation D23). Refusing
 `/tmp` is correct and unchanged; what was missing is a place for the harness to
 write. The first real turn showed the shape of the gap — Claude Code aborted at

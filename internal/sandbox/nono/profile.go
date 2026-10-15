@@ -94,6 +94,9 @@ type profileGroups struct {
 }
 
 type profileFS struct {
+	// ReadFile is the read-only *single file* list. It exists for one entry
+	// and one reason: probe C-GITCFG.
+	ReadFile  []string `json:"read_file"`
 	WriteFile []string `json:"write_file"`
 	Allow     []string `json:"allow"`
 }
@@ -116,13 +119,44 @@ const policyExternal = "external"
 // file therefore carries the static shape — mediation, policy, temp-group
 // exclusion and the device re-grants that exclusion requires — and every
 // per-workspace path is a flag.
-const GrantModelNote = "static policy in the profile file (mediation, the Landlock pin, the /tmp and host-conditional group exclusions, and the device re-grants); per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
+const GrantModelNote = "static policy in the profile file (mediation, the Landlock pin, the /tmp and host-conditional group exclusions, the device re-grants and the read-only system git config file); per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
 
 // profileVersion is bumped when the body below changes, so a recorded
 // policy_digest identifies a policy revision and not just a filename.
 // 3.1.0 adds the host-conditional group exclusions CI run 38755314927 proved
 // necessary (probe C-HOSTGRP).
-const profileVersion = "3.1.0"
+// 3.2.0 adds the read-only system git config file CI run 38759216292 proved
+// git needs wherever that file exists (probe C-GITCFG).
+const profileVersion = "3.2.0"
+
+// systemConfigReads are single system-scoped files the toolchain must be able
+// to *read*, granted read-only by the profile file rather than as per-run flags
+// (they are host infrastructure, not workspace material, so they belong to the
+// static shape — and a `[user]` grant would break N-d's exact-set equality).
+//
+// /etc/gitconfig is the one CI run 38759216292 died on (probe C-GITCFG): the
+// sandboxed `git commit` exited 128 with
+//
+//	warning: unable to access '/etc/gitconfig': Permission denied   (x3)
+//	fatal: unknown error occurred while reading the configuration files
+//
+// because git treats a system config file that exists but cannot be read as
+// fatal, while one that is simply absent (ENOENT) is not. The lab host has no
+// /etc/gitconfig at all, and the worker image installs git without git-lfs —
+// the only Debian packaging that writes that file (`git lfs install --system`
+// in its postinst) — which is why the file exists on the GitHub runner image
+// and nowhere this suite had previously run. nono's own
+// `system_read_linux_core` group names a fixed list of /etc files and
+// /etc/gitconfig is not on it.
+//
+// The grant is the exact file, never the directory: `--read /etc` would hand
+// the agent every system configuration file to read.
+var systemConfigReads = []string{"/etc/gitconfig"}
+
+// SystemConfigReads returns the profile's read-only single-file grants, so a
+// test can assert the resolved rule against the contract instead of restating
+// it inline.
+func SystemConfigReads() []string { return append([]string(nil), systemConfigReads...) }
 
 // deviceWrites are the paths the excluded group would otherwise have granted.
 //
@@ -198,7 +232,11 @@ func profileBody(kind string) (profileSource, error) {
 			ProcessInfoMode: "isolated",
 		},
 		Groups: profileGroups{Exclude: ExcludedGroups()},
-		FS:     profileFS{WriteFile: append([]string(nil), deviceWrites...), Allow: append([]string(nil), profileAllows...)},
+		FS: profileFS{
+			ReadFile:  append([]string(nil), systemConfigReads...),
+			WriteFile: append([]string(nil), deviceWrites...),
+			Allow:     append([]string(nil), profileAllows...),
+		},
 	}, nil
 }
 
@@ -328,6 +366,16 @@ func (p *Profile) AssertOwnBytes() error {
 	for _, dev := range deviceWrites {
 		if !containsString(body.FS.WriteFile, dev) {
 			return fmt.Errorf("sandbox: profile %s excludes system_write_linux without re-granting %s, and every CLI the agent runs needs it (probe C-TMP3)", p.Path, dev)
+		}
+	}
+	for _, f := range systemConfigReads {
+		if !containsString(body.FS.ReadFile, f) {
+			return fmt.Errorf("sandbox: profile %s does not grant read access to %s: git treats a system config file that exists but is unreadable as fatal (`fatal: unknown error occurred while reading the configuration files`, exit 128) rather than skipping it the way it skips an absent one, so a host that ships that file fails every sandboxed git command (probe C-GITCFG, CI run 38759216292)", p.Path, f)
+		}
+	}
+	for _, f := range body.FS.ReadFile {
+		if !containsString(systemConfigReads, f) {
+			return fmt.Errorf("sandbox: profile %s reads %q, which is not on this adapter's read-only system-file contract: the list is pinned so no system file starts being readable inside the sandbox without a reviewed change", p.Path, f)
 		}
 	}
 	return nil

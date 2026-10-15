@@ -356,8 +356,8 @@ func assertGrants(plan wsgit.LaunchPlan, got []grantEntry) error {
 			if !allowedGroups[g.source] && !strings.HasPrefix(g.source, "group:deny_") {
 				return fmt.Errorf("the resolved grant list contains a rule from source %q (%s %s), which is not on the allowlist of policy sources this adapter understands: %w", g.source, g.level, g.path, sandbox.ErrGrantSource)
 			}
-			if g.source == sourceProfile && !isDeviceGrant(g.path) && !nonoInjectedGrants[filepath.Clean(g.path)] {
-				return fmt.Errorf("the profile layer contributes a grant it should not (%s %s): per-run paths are CLI flags, so a [profile] rule outside the device re-grants and the observed nono-injected sockets means the policy file and the launcher have diverged", g.level, g.path)
+			if g.source == sourceProfile && !isDeviceGrant(g.path) && !nonoInjectedGrants[filepath.Clean(g.path)] && !isSystemConfigGrant(g) {
+				return fmt.Errorf("the profile layer contributes a grant it should not (%s %s): per-run paths are CLI flags, so a [profile] rule outside the device re-grants, the pinned read-only system files and the observed nono-injected sockets means the policy file and the launcher have diverged", g.level, g.path)
 			}
 			continue
 		}
@@ -411,6 +411,30 @@ func isDeviceGrant(p string) bool {
 	if base := filepath.Base(clean); base == "fd" {
 		parent := filepath.Base(filepath.Dir(clean))
 		if strings.Count(clean, "/") == 3 && strings.HasPrefix(clean, "/proc/") && allDigits(parent) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSystemConfigGrant admits exactly the read-only rules the shipped profile is
+// allowed to contribute for host-scoped toolchain files (probe C-GITCFG:
+// /etc/gitconfig exists on the GitHub runner image and git dies with exit 128,
+// "unknown error occurred while reading the configuration files", when the
+// sandbox cannot read it).
+//
+// The admission is path-exact *and* level-exact: a `[profile]` rule for the same
+// file at r+w is a broadening, not the grant that was reviewed, and a rule for
+// any other /etc path is a second system file nobody looked at. The assertion
+// stays host-portable because a grant nono skips (the file does not exist) is
+// simply absent from the resolved list, and nothing here requires it.
+func isSystemConfigGrant(g grantEntry) bool {
+	if g.level != "r" {
+		return false
+	}
+	clean := filepath.Clean(g.path)
+	for _, p := range systemConfigReads {
+		if p == clean {
 			return true
 		}
 	}

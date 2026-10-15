@@ -225,6 +225,13 @@ func TestProfileTamperIsRefused(t *testing.T) {
 		{"undeclared exclusion added", func(p map[string]any) {
 			p["groups"] = map[string]any{"exclude": append(nono.ExcludedGroups(), "system_read_linux_core")}
 		}, "pinned"},
+		{"system git config read dropped", func(p map[string]any) {
+			p["filesystem"].(map[string]any)["read_file"] = []any{}
+		}, "/etc/gitconfig"},
+		{"system git config read widened to an unreviewed file", func(p map[string]any) {
+			fs := p["filesystem"].(map[string]any)
+			fs["read_file"] = append(fs["read_file"].([]any), "/etc/shadow")
+		}, "/etc/shadow"},
 		{"device re-grant dropped", func(p map[string]any) { p["filesystem"].(map[string]any)["write_file"] = []any{"/dev/not-there"} }, "/dev/null"},
 		{"wrong profile name", func(p map[string]any) { p["meta"].(map[string]any)["name"] = "someone-elses-profile" }, "name"},
 		{"no default layer", func(p map[string]any) { p["extends"] = "" }, "extends"},
@@ -527,9 +534,14 @@ func TestSandboxedGitCommitWritesOnlyItsOwnRef(t *testing.T) {
 	}
 	waitErr := handle.Wait()
 	out := captured(handle)
-	t.Logf("child output: %s (wait=%v)", out, waitErr)
+	stdout, stderr := streamsOf(handle)
+	// Both streams are named and an empty one says so: CI run 38759216292 read
+	// as "empty child output" when only stdout was empty — git never ran, and
+	// the fatal that named the cause (/etc/gitconfig unreadable, probe C-GITCFG)
+	// was in the stderr continuation lines of a merged log line.
+	t.Logf("child stdout:\n%s\nchild stderr:\n%s\n(wait=%v)", stdout, stderr, waitErr)
 	if waitErr != nil {
-		t.Fatalf("the sandboxed commit failed: %v\n%s", waitErr, out)
+		t.Fatalf("the sandboxed commit failed: %v\nstdout:\n%s\nstderr:\n%s", waitErr, stdout, stderr)
 	}
 	if !strings.Contains(out, "COMMITTED") {
 		t.Fatalf("the child never reported committing: %s", out)
@@ -667,6 +679,160 @@ func TestSandboxedGitCommitWritesOnlyItsOwnRef(t *testing.T) {
 			t.Errorf("a commit landed with commit_granted=false: %s", got)
 		}
 	})
+}
+
+// TestSystemGitConfigIsReadableInsideTheSandbox is probe C-GITCFG's regression.
+// CI run 38759216292 failed the commit test above with
+//
+//	warning: unable to access '/etc/gitconfig': Permission denied
+//	fatal: unknown error occurred while reading the configuration files
+//
+// because git treats a system config file that exists but cannot be read as
+// fatal, while one that is merely absent (ENOENT) is skipped. The grant, the
+// level it must resolve at, and the child actually reading the file are all
+// measured here rather than assumed. A host that ships no such file (the lab's
+// Arch host, and the worker image, which installs git without git-lfs — the
+// only Debian packaging that writes /etc/gitconfig) has nothing to read, and
+// says so instead of passing vacuously.
+func TestSystemGitConfigIsReadableInsideTheSandbox(t *testing.T) {
+	l := newLab(t)
+	if err := newLabNonoWorks(t, l); err != nil {
+		t.Skipf("nono cannot enforce here: %v", err)
+	}
+	prof, err := nono.WriteProfile(l.profileDir(), nono.ProfileAgentTurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prof.AssertOwnBytes(); err != nil {
+		t.Fatalf("the shipped profile does not carry the system config read: %v", err)
+	}
+	plan := l.plan(t)
+	launch := &nono.Launcher{Binary: nonobin(), Home: l.launcher}
+
+	for _, path := range nono.SystemConfigReads() {
+		if _, err := os.Stat(path); err != nil {
+			t.Logf("%s does not exist on this host (%v): git skips an absent system config file, so there is nothing to read here — the grant exists for hosts that ship the file, which is what the GitHub runner image does via git-lfs's `git lfs install --system`", path, err)
+			continue
+		}
+		// N-d's own view: the rule must resolve read-only and from the profile
+		// layer, never as a per-run [user] grant of a wider directory.
+		matched := 0
+		for _, line := range dryRunRules(t, prof.Path, l.launcher, nono.GrantFlags(plan)) {
+			if !strings.Contains(line, path) {
+				continue
+			}
+			matched++
+			t.Logf("resolved rule: %s", line)
+			if want := "r " + path; !strings.HasPrefix(line, want) {
+				t.Errorf("%s resolved as %q, want the read-only grant (%s…): a system file is never writable inside the sandbox", path, line, want)
+			}
+		}
+		if matched == 0 {
+			t.Errorf("%s exists on this host but no resolved grant rule names it, so the sandboxed child cannot read it (probe C-GITCFG: git exits 128 on an unreadable-but-present system config)", path)
+		}
+
+		spec := nono.LaunchSpec{
+			Profile: prof, Plan: plan, LauncherHome: l.launcher,
+			AdapterPath: "/bin/sh",
+			AdapterArgs: []string{"-c", "cat " + path + " >/dev/null 2>read-err.txt; echo rc=$?; cat read-err.txt"},
+			AdapterEnv:  []string{"PATH=/usr/local/bin:/usr/bin:/bin"},
+		}
+		h, _, err := launch.LaunchPlan(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("launch: %v", err)
+		}
+		_ = h.Wait()
+		got := captured(h)
+		if !strings.Contains(got, "rc=0") {
+			t.Errorf("the sandboxed child could not read %s: %s", path, got)
+		}
+	}
+}
+
+// TestSandboxDeniesTheSystemGitConfigWithoutTheGrant is the control that makes
+// TestSystemGitConfigIsReadableInsideTheSandbox mean something: the same
+// sandboxed `cat` is measured against a policy with the read_file entry and one
+// without it, so the passing case cannot be an artifact of the host having left
+// /etc/gitconfig world-readable to sandboxed processes anyway. The stripped
+// policy is launched by exec'ing nono directly — the adapter itself refuses
+// that file (AssertOwnBytes pins the read list), which the negative-control run
+// in docs/compatibility/M3-PROBES.md records.
+func TestSandboxDeniesTheSystemGitConfigWithoutTheGrant(t *testing.T) {
+	l := newLab(t)
+	if err := newLabNonoWorks(t, l); err != nil {
+		t.Skipf("nono cannot enforce here: %v", err)
+	}
+	for _, path := range nono.SystemConfigReads() {
+		if _, err := os.Stat(path); err != nil {
+			t.Logf("%s does not exist on this host (%v): the control has nothing to deny", path, err)
+			continue
+		}
+		prof, err := nono.WriteProfile(l.profileDir(), nono.ProfileAgentTurn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(prof.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatal(err)
+		}
+		body["filesystem"].(map[string]any)["read_file"] = []any{}
+		stripped, err := json.MarshalIndent(body, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path0 := filepath.Join(l.root, "no-system-config-read.json")
+		if err := os.WriteFile(path0, append(stripped, '\n'), 0o444); err != nil {
+			t.Fatal(err)
+		}
+
+		flags := nono.GrantFlags(l.plan(t))
+		for _, tc := range []struct {
+			name, profile, want string
+		}{
+			{"without the profile grant", path0, "rc=1"},
+			{"with the profile grant", prof.Path, "rc=0"},
+		} {
+			args := append([]string{"run", "-s", "-p", tc.profile}, flags...)
+			args = append(args, "--", "env", "HOME="+l.prep.Layout.Home, "/bin/sh",
+				"-c", "cat "+path+" >/dev/null 2>&1; echo rc=$?")
+			cmd := exec.Command(nonobin(), args...) //nolint:gosec // test argv
+			cmd.Dir = l.prep.Repos[0].CheckoutPath
+			cmd.Env = append(os.Environ(), "HOME="+l.launcher)
+			out, err := cmd.CombinedOutput()
+			got := string(out) + fmt.Sprintf(" (rc err=%v)", err)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("%s: expected %s reading %s inside the sandbox, got: %s", tc.name, tc.want, path, got)
+			}
+			t.Logf("%s: %s", tc.name, strings.Join(strings.Fields(got), " "))
+		}
+	}
+}
+
+// dryRunRules returns the rule lines a verbose dry-run prints, whitespace
+// collapsed. The source-tag regex is the one hostgroups_test.go duplicates on
+// purpose, so this measures nono's output rather than the adapter's parser.
+func dryRunRules(t *testing.T, profPath, launcherHome string, flags []string) []string {
+	t.Helper()
+	args := append([]string{"run", "-p", profPath, "-v", "--dry-run"}, flags...)
+	args = append(args, "--", "sh", "-c", "true")
+	cmd := exec.Command(nonobin(), args...) //nolint:gosec // test argv
+	cmd.Env = append(os.Environ(), "HOME="+launcherHome)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("nono verbose dry-run failed: %v\n%s", err, out)
+	}
+	var rules []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if grantSourceLine.MatchString(line) {
+			rules = append(rules, strings.Join(strings.Fields(line), " "))
+		}
+	}
+	return rules
 }
 
 // TestEgressDeniedProfileActuallyDenies is the case-13 half of ADR-0019 D3: the
@@ -835,6 +1001,23 @@ func captured(h domain.ProcessHandle) string {
 		out += "\n[stderr] " + e
 	}
 	return out
+}
+
+// streamsOf returns the child's captured stdout and stderr separately, each
+// labelled when it produced nothing, so an empty stream is never mistaken for
+// an uncaptured one.
+func streamsOf(h domain.ProcessHandle) (string, string) {
+	p, ok := h.(*nono.Process)
+	if !ok {
+		return "<not a *nono.Process>", "<not a *nono.Process>"
+	}
+	label := func(s string) string {
+		if strings.TrimSpace(s) == "" {
+			return "<empty>"
+		}
+		return s
+	}
+	return label(p.Stdout()), label(p.Stderr())
 }
 
 // TestVerifyRefusesAPathNonoDrops is probe C-FC3 turned into a regression test on
