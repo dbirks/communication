@@ -226,6 +226,16 @@ func ConformanceTests(t *testing.T, f Factory) {
 	t.Run("Decide_DoubleDecideRefused", func(t *testing.T) { testDecideDouble(t, f) })
 	t.Run("Retry_FailedNode_AppendOnlyNeverRewritesKeys", func(t *testing.T) { testRetryAppendOnly(t, f) })
 	t.Run("Advance_TwiceNoNewInputs_IsJournalNoOp", func(t *testing.T) { testAdvanceIdempotence(t, f) })
+	// The dual-instance arm is parameterized on the factory: a store whose
+	// run-state lives only in one process cannot implement DualFactory's
+	// OpenPair honestly, and the in-memory reference simply skips.
+	t.Run("DualInstance_TwoStoresOneDatabase_Converge", func(t *testing.T) {
+		df, ok := f.(DualFactory)
+		if !ok {
+			t.Skip("factory provides one store instance only (runtime.Store seam has no cluster to split)")
+		}
+		dualInstanceTests(t, df)
+	})
 }
 
 // snapshot is a deep copy of the journal for prefix assertions.
