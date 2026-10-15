@@ -18,6 +18,7 @@
 #   pnpm                                      12.11.2
 #   Node.js                                   24.22.0 (current LTS line)
 #   @redocly/cli                            2.63.0 (API contract lint, api/README.md)
+#   openapi-typescript                    7.13.0 (ui/tools/apigen only — the API type generator; the app itself builds on TypeScript 7 and keeps its pins in ui/package.json / ui/tools/apigen/package.json)
 #   @playwright/test                        1.64.1 (e2e/ Playwright suite, ADR-0006)
 # Container images for the go job's integration services (12-test-strategy:
 # real Postgres/OIDC, never mocks):
@@ -153,7 +154,12 @@ jobs:
     # Skipped until ui/package.json lands (ADR-0005, ADR-0007).
     if: needs.detect.outputs.ui == 'true'
     steps:
+      # fetch-depth: 0 because the test-id guard below diffs a previous
+      # revision against the worktree; the default shallow checkout carries no
+      # history to compare against.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: ui/package.json
@@ -162,18 +168,35 @@ jobs:
           node-version: 24.22.0
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
+      # The workspace install (ui/pnpm-workspace.yaml) also installs
+      # ui/tools/apigen — openapi-typescript 7.13 needs the TypeScript 5 JS API
+      # while the app builds on TypeScript 7, so `gen:api` resolves the
+      # generator from that package's tree and fails without it.
       - name: install
         run: pnpm --dir ui install --frozen-lockfile
-      - name: lint
-        run: pnpm --dir ui exec oxlint
-      - name: format
-        run: pnpm --dir ui exec oxfmt --check
-      - name: typecheck
-        run: pnpm --dir ui exec tsc --noEmit
-      - name: build
-        run: pnpm --dir ui build
-      - name: test
-        run: pnpm --dir ui test
+      # ui's check script: gen:api:check (fails if src/api/schema.d.ts drifts
+      # from api/openapi.yaml) && lint && fmt:check && typecheck &&
+      # check:testids && test && build.
+      - name: check
+        run: pnpm --dir ui check
+      # check:testids inside `check` compares the worktree with HEAD, which in
+      # CI is the same tree — a no-op. The comparison that catches a restyle
+      # dropping a test id is against the revision the PR is merging into (or,
+      # on push to main, the previous commit), so run that one explicitly.
+      - name: test ids vs base revision
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASE_REF:-}" ]; then
+            git fetch --no-tags --no-recurse-submodules origin \
+              "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            rev="$(git merge-base HEAD "origin/${BASE_REF}")"
+          else
+            rev="$(git rev-parse HEAD^1)"
+          fi
+          echo "comparing ui test ids against ${rev}"
+          pnpm --dir ui exec node scripts/check-testids.mjs "$rev"
 
   e2e:
     name: e2e
