@@ -207,8 +207,13 @@ func mapStopReason(r acp.StopReason) domain.StopReason {
 // Cancel requests cancellation of the in-flight turn and resolves any
 // pending permission request with the cancelled outcome.
 func (h *handle) Cancel(ctx context.Context) error {
-	err := h.conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(h.sessionID)})
-
+	// Mark the turn cancelled *before* notifying the agent. The SDK writes
+	// notifications synchronously and dispatches each inbound request on a
+	// fresh goroutine, so a prompt-requesting agent can answer
+	// session/cancel with session/request_permission before this call
+	// returns; its handler must already observe turnCancelled and resolve
+	// with the cancelled outcome. Setting the flag after the write races
+	// that window and lets the permission be answered "selected".
 	h.permMu.Lock()
 	h.turnCancelled = true
 	waiters := h.permWaiters
@@ -217,7 +222,7 @@ func (h *handle) Cancel(ctx context.Context) error {
 	for w := range waiters {
 		close(w)
 	}
-	return err
+	return h.conn.Cancel(ctx, acp.CancelNotification{SessionId: acp.SessionId(h.sessionID)})
 }
 
 // Close terminates the agent process and closes the event stream exactly

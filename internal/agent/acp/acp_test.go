@@ -487,11 +487,23 @@ func drainSome(t *testing.T, h *handle, n int) []domain.ConversationEvent {
 
 func TestCancelDuringPendingPermissionYieldsCancelled(t *testing.T) {
 	fake := newFakeAgent()
+	// promptStarted closes once the agent has received session/prompt, i.e.
+	// the client-side Prompt has already cleared turnCancelled. Cancelling
+	// before that point races the reset and is not what this test means.
+	promptStarted := make(chan struct{})
 	fake.promptFn = func(ctx context.Context, f *fakeAgent) (acp.PromptResponse, error) {
+		close(promptStarted)
 		// Only ask once the client has already cancelled this turn: the
 		// client MUST answer with the cancelled outcome.
 		<-f.cancelled
-		resp, err := f.conn.RequestPermission(ctx, acp.RequestPermissionRequest{
+		// Deliberately not the prompt ctx: the SDK's AgentSideConnection
+		// cancels the in-flight prompt ctx when session/cancel arrives, so
+		// issuing the follow-up request on it would abort locally with
+		// -32800 before ever reaching the client. Real adapters (e.g.
+		// claude-agent-acp) keep the request on the wire and await the
+		// client's answer; this models that, exercising the client's
+		// must-answer-cancelled obligation.
+		resp, err := f.conn.RequestPermission(context.Background(), acp.RequestPermissionRequest{
 			SessionId: acp.SessionId(fakeSessionID),
 			ToolCall:  acp.ToolCallUpdate{ToolCallId: "tcancel", Title: ptr("sleep 60")},
 			Options:   permissionOptions(),
@@ -513,6 +525,11 @@ func TestCancelDuringPendingPermissionYieldsCancelled(t *testing.T) {
 		done <- r
 	}()
 
+	select {
+	case <-promptStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent never entered prompt")
+	}
 	if err := h.Cancel(context.Background()); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
