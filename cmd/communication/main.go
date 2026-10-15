@@ -32,7 +32,6 @@ modes:
 // unimplementedModes are planned for milestone M1 and later
 // (communication-spec/11-build-roadmap.md).
 var unimplementedModes = map[string]bool{
-	"serve":  true,
 	"worker": true,
 	"dev":    true,
 }
@@ -60,6 +59,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "migrate":
 		ctx := context.Background()
 		return runMigrate(ctx, args[1:], stdout, stderr)
+	case "serve":
+		ctx := context.Background()
+		return runServe(ctx, args[1:], stdout, stderr)
 	}
 
 	if unimplementedModes[args[0]] {

@@ -1,0 +1,50 @@
+#
+# api/Caddyfile — dev/test load balancer for the M1 two-replica stack
+# (compose service `lb`, published as http://localhost:18080).
+#
+# Its only job is to prove replica independence: successive identical requests
+# must be answered alternately by api-a and api-b, which the
+# X-Communication-Replica response header makes observable.
+#
+
+{
+	# Not needed locally; keeps the container from binding the admin endpoint.
+	admin off
+	log {
+		output stderr
+		level INFO
+	}
+}
+
+:80 {
+	# Both replicas are stateless — all state is in PostgreSQL — so any
+	# request may land on any of them (D-003, ADR-0012).
+	reverse_proxy api-a:8080 api-b:8080 {
+		lb_policy round_robin
+
+		# SSE (GET /api/v1/projects/{projectId}/events) must stream through
+		# unbuffered; -1 flushes every write.
+		flush_interval -1
+
+		# Active health checks against liveness, which never touches the
+		# database: a replica is pulled from rotation only when the process is
+		# wedged. Readiness (schema current, datastore reachable) is reported
+		# separately by /api/v1/system/readiness and must not flap the pool.
+		health_uri /api/v1/system/health
+		health_interval 2s
+		health_timeout 2s
+		health_status 200
+
+		# Passive checks: a transport error or 5xx takes a replica out briefly
+		# so a crashing process does not see every other request fail.
+		fail_duration 5s
+
+		# No header_up X-Forwarded-* overrides needed for the dev stack; Caddy
+		# adds X-Forwarded-For/Proto by default, and the API trusts
+		# X-Forwarded-Proto for its strict origin check.
+		#
+		# X-Communication-Replica is passed through untouched: Caddy copies
+		# every upstream response header except hop-by-hop ones, so the
+		# replica label set by internal/api survives the proxy hop.
+	}
+}

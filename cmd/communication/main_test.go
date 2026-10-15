@@ -7,6 +7,12 @@ import (
 )
 
 func TestRunModes(t *testing.T) {
+	// The serve case below exercises argument routing only: pin the required
+	// environment to empty so runServe fails on configuration instead of
+	// trying to reach a database.
+	t.Setenv("COMMUNICATION_DATABASE_URL", "")
+	t.Setenv("COMMUNICATION_PUBLIC_URL", "")
+
 	tests := []struct {
 		name       string
 		args       []string
@@ -20,7 +26,12 @@ func TestRunModes(t *testing.T) {
 			wantCode:   0,
 			wantStdout: "communication dev",
 		},
-		{name: "serve", args: []string{"serve"}, wantCode: 2, wantStderr: "not implemented"},
+		{
+			name:       "serve",
+			args:       []string{"serve"},
+			wantCode:   2,
+			wantStderr: "COMMUNICATION_DATABASE_URL is not set",
+		},
 		{name: "worker", args: []string{"worker"}, wantCode: 2, wantStderr: "not implemented"},
 		{name: "dev", args: []string{"dev"}, wantCode: 2, wantStderr: "not implemented"},
 		{name: "migrate", args: []string{"migrate"}, wantCode: 2, wantStderr: "usage"},

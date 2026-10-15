@@ -1,9 +1,14 @@
-# Build context hygiene for the runtime image (Dockerfile copies one binary).
+# Build context hygiene for the runtime image (Dockerfile copies one binary)
+# and for the source build in api/Dockerfile, whose context is the repo root.
 .git
 .env
 *.zip
 .playwright-cli/
 node_modules/
+# pnpm installs into ui/node_modules: never send it (or a host-built bundle)
+# into any image context — api/Dockerfile installs and builds inside the image.
+**/node_modules
+ui/dist
 communication-spec/
 communication-ui-brief/
 COMMUNICATION_MASTER_SPEC.md

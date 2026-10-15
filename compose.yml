@@ -1,0 +1,138 @@
+# M1 dev/test stack for Communication — NOT a production deployment.
+#
+# Brings up the whole milestone M1 topology with one command:
+#
+#     docker compose -p communication up --build
+#
+# Topology (11-build-roadmap.md M1 exit, ADR-0012, ADR-0013):
+#   lb       caddy, round-robin over the two API replicas  -> http://localhost:18080
+#   api-a/b  two stateless `communication serve` replicas  -> 127.0.0.1:18081 / :18082
+#   migrate  one-shot `communication migrate up`           -> completes before the APIs start
+#   oidc     mock-oauth2-server (dev IdP, no committed credentials) -> 127.0.0.1:18090
+#   postgres authoritative store (ADR-0013), named volume
+#
+# A worker service joins this file in a later milestone task.
+#
+# Port choice: 18080-18090 are used instead of the documented 8080/8090 because
+# this lab host already runs a model gateway on 8080/8081/8090; every published
+# port is bound to 127.0.0.1 so nothing is exposed on the machine's network.
+name: communication
+
+services:
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: communication
+      POSTGRES_DB: communication
+      # Dev-only: trust removes the need for a committed password (AGENTS.md
+      # forbids credentials in the repo). It is safe only because this service
+      # publishes NO ports — it is reachable from the compose network alone,
+      # never from the host (the host already runs a lab Postgres on 55432 and
+      # an unauthenticated trust database must not join the routable network).
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      # Postgres 18 images move the data directory under the cluster root
+      # (/var/lib/postgresql/18/docker), so the mount has to be the parent or
+      # the entrypoint refuses to start with "unused mount/volume".
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U communication"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:6.0.7
+    environment:
+      JSON_CONFIG_PATH: /config/oidc-dev.json
+    volumes:
+      - ./api/oidc-dev.json:/config/oidc-dev.json:ro
+    ports:
+      - "127.0.0.1:18090:8080"
+
+  # One-shot migrator: the API replicas never run migrations themselves
+  # (ADR-0013), they only refuse readiness until the schema is current.
+  migrate:
+    image: communication:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["migrate", "up"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api-a:
+    image: communication:dev
+    # The image is produced by the `migrate` build above; never pull it.
+    pull_policy: never
+    command: ["serve"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_LISTEN_ADDR: ":8080"
+      COMMUNICATION_PUBLIC_URL: http://localhost:18080
+      COMMUNICATION_REPLICA_NAME: api-a
+      COMMUNICATION_OIDC_ISSUER: http://oidc:8080/default
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18090/default
+      COMMUNICATION_OIDC_CLIENT_ID: communication-dev
+      COMMUNICATION_COOKIE_SECURE: "false"
+      COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS: admin
+    ports:
+      - "127.0.0.1:18081:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      oidc:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v1/system/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  api-b:
+    image: communication:dev
+    pull_policy: never
+    command: ["serve"]
+    environment:
+      COMMUNICATION_DATABASE_URL: postgres://communication@postgres:5432/communication?sslmode=disable
+      COMMUNICATION_LISTEN_ADDR: ":8080"
+      COMMUNICATION_PUBLIC_URL: http://localhost:18080
+      COMMUNICATION_REPLICA_NAME: api-b
+      COMMUNICATION_OIDC_ISSUER: http://oidc:8080/default
+      COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18090/default
+      COMMUNICATION_OIDC_CLIENT_ID: communication-dev
+      COMMUNICATION_COOKIE_SECURE: "false"
+      COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS: admin
+    ports:
+      - "127.0.0.1:18082:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      oidc:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v1/system/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  lb:
+    image: caddy:2.11.7-alpine
+    volumes:
+      - ./api/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:18080:80"
+    depends_on:
+      api-a:
+        condition: service_healthy
+      api-b:
+        condition: service_healthy
+
+volumes:
+  pgdata:
