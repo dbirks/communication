@@ -51,9 +51,13 @@ func fullEnvelope() Envelope {
 		OrganizationID: "01987a6b-9c1d-7e5f-8a0b-1c2d3e4f5a60",
 		ProjectID:      "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
 		ConversationID: "01987a6d-5e6f-7a2b-8c3d-4e5f6a7b8c90",
-		Actor:          Actor{Kind: ActorKindHuman, ID: "01987a61-2345-7000-8000-abcdef012345"},
-		TraceID:        "0af7651916cd43dd8448eb211c80319c",
-		Payload:        map[string]any{"repository_id": "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0"},
+		RunID:          "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+
+		NodeExecutionID: "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d",
+		AttemptID:       "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e",
+		Actor:           Actor{Kind: ActorKindHuman, ID: "01987a61-2345-7000-8000-abcdef012345"},
+		TraceID:         "0af7651916cd43dd8448eb211c80319c",
+		Payload:         map[string]any{"repository_id": "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0"},
 	}
 }
 
@@ -117,6 +121,7 @@ func TestEnvelopeOptionalMembersOmitted(t *testing.T) {
 
 	optional := map[string]bool{
 		"project_id": true, "conversation_id": true, "trace_id": true,
+		"run_id": true, "node_execution_id": true, "attempt_id": true,
 	}
 	for _, k := range got {
 		if optional[k] {
@@ -613,6 +618,12 @@ func TestM2PayloadFieldsMatchOpenAPITable(t *testing.T) {
 	for _, tt := range m3Types() {
 		byType[tt.constant] = tt.payload
 	}
+	// M4 rows ride the same mechanism (docs/m4-contract.md § 3's table is
+	// this one table): a documented run/node/approval/pipeline/assignment
+	// payload with no Go struct, or a Go struct outside the table, fails here.
+	for _, tt := range m4Types() {
+		byType[tt.constant] = tt.payload
+	}
 
 	for typ, fields := range wanted {
 		payload, ok := byType[typ]
@@ -1049,3 +1060,537 @@ func TestM3EnumValidators(t *testing.T) {
 		}
 	}
 }
+
+// ------------------------------------------------------------ M4 contract
+
+// m4Types is the M4 event-type surface (docs/m4-contract.md § 3 rows 1-36,
+// as documented by api/openapi.yaml's streamRunEvents payload table) paired
+// with the payload struct the control plane and the worker must emit for it.
+// Same purpose as m2Types/m3Types: the pairing is what the M4 workers build
+// against, so it is asserted rather than implied by prose. run.override.applied
+// (§ 3 row 37) is deliberately absent — it is reserved, never emitted.
+func m4Types() []struct {
+	constant string
+	literal  string
+	payload  any
+} {
+	return []struct {
+		constant string
+		literal  string
+		payload  any
+	}{
+		{TypeRunCreated, "run.created", RunCreatedPayload{}},
+		{TypeRunStarted, "run.started", RunStartedPayload{}},
+		{TypeRunPaused, "run.paused", RunPausedPayload{}},
+		{TypeRunResumed, "run.resumed", RunResumedPayload{}},
+		{TypeRunWaitingHuman, "run.waiting_human", RunWaitingHumanPayload{}},
+		{TypeRunRetried, "run.retried", RunRetriedPayload{}},
+		{TypeRunCheckpointSaved, "run.checkpoint_saved", RunCheckpointSavedPayload{}},
+		{TypeRunCheckpointRestored, "run.checkpoint_restored", RunCheckpointRestoredPayload{}},
+		{TypeRunCompleted, "run.completed", RunCompletedPayload{}},
+		{TypeRunFailed, "run.failed", RunFailedPayload{}},
+		{TypeRunCancelRequested, "run.cancel_requested", RunCancelRequestedPayload{}},
+		{TypeRunCancelled, "run.cancelled", RunCancelledPayload{}},
+		{TypeRunInterrupted, "run.interrupted", RunInterruptedPayload{}},
+		{TypeNodeExecutionSkipped, "node.execution_skipped", NodeExecutionSkippedPayload{}},
+		{TypeNodeExecutionCancelled, "node.execution_cancelled", NodeExecutionCancelledPayload{}},
+		{TypeNodeScopeStarted, "node.scope.started", NodeScopeStartedPayload{}},
+		{TypeNodeScopeIteration, "node.scope.iteration", NodeScopeIterationPayload{}},
+		{TypeNodeScopeCompleted, "node.scope.completed", NodeScopeCompletedPayload{}},
+		{TypeNodeScopeFailed, "node.scope.failed", NodeScopeFailedPayload{}},
+		{TypeNodeAttemptStarted, "node.attempt.started", NodeAttemptStartedPayload{}},
+		{TypeNodeAttemptCompleted, "node.attempt.completed", NodeAttemptCompletedPayload{}},
+		{TypeNodeAttemptFailed, "node.attempt.failed", NodeAttemptFailedPayload{}},
+		{TypeNodeAttemptInterrupted, "node.attempt.interrupted", NodeAttemptInterruptedPayload{}},
+		{TypeNodeAttemptCancelled, "node.attempt.cancelled", NodeAttemptCancelledPayload{}},
+		{TypeNodeAttemptRetryScheduled, "node.attempt.retry_scheduled", NodeAttemptRetryScheduledPayload{}},
+		{TypeApprovalRequested, "approval.requested", ApprovalRequestedPayload{}},
+		{TypeApprovalDecided, "approval.decided", ApprovalDecidedPayload{}},
+		{TypeApprovalExpired, "approval.expired", ApprovalExpiredPayload{}},
+		{TypeApprovalDenied, "approval.denied", ApprovalDeniedPayload{}},
+		{TypeApprovalCancelled, "approval.cancelled", ApprovalCancelledPayload{}},
+		{TypePipelineCreated, "pipeline.created", PipelineCreatedPayload{}},
+		{TypePipelineDraftUpdated, "pipeline.draft.updated", PipelineDraftUpdatedPayload{}},
+		{TypePipelineDraftValidated, "pipeline.draft.validated", PipelineDraftValidatedPayload{}},
+		{TypePipelineRevisionPublished, "pipeline.revision.published", PipelineRevisionPublishedPayload{}},
+		{TypePipelineRevisionDeprecated, "pipeline.revision.deprecated", PipelineRevisionDeprecatedPayload{}},
+		{TypeAssignmentCreated, "assignment.created", AssignmentCreatedPayload{}},
+		{TypeAssignmentUpdated, "assignment.updated", AssignmentUpdatedPayload{}},
+	}
+}
+
+// TestM4TypeConstants pins each M4 event type's spelling and checks it against
+// the envelope schema's own `type` pattern, and that the reserved
+// run.override.applied is never one of the emitted constants (ADR-0024 § 3:
+// M4 has no emitter for it; the name exists so M5 needs no rename).
+func TestM4TypeConstants(t *testing.T) {
+	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
+	seen := map[string]bool{}
+	for _, tt := range m4Types() {
+		if tt.constant != tt.literal {
+			t.Errorf("event type constant = %q, want %q", tt.constant, tt.literal)
+		}
+		if seen[tt.constant] {
+			t.Errorf("event type %q listed twice", tt.constant)
+		}
+		seen[tt.constant] = true
+		if !pattern.MatchString(tt.constant) {
+			t.Errorf("event type %q does not match the schema pattern %s", tt.constant, pattern)
+		}
+		if tt.constant == ReservedTypeRunOverrideApplied {
+			t.Errorf("reserved type %q must not be an emitted constant", tt.constant)
+		}
+	}
+	if !pattern.MatchString(ReservedTypeRunOverrideApplied) {
+		t.Errorf("reserved type %q does not match the schema pattern", ReservedTypeRunOverrideApplied)
+	}
+}
+
+// TestM4TypesDocumentedInOpenAPI keeps api/openapi.yaml honest for the M4
+// surface too, in both directions: every constant must appear in the frozen
+// contract, and the reserved name must appear only as reserved.
+func TestM4TypesDocumentedInOpenAPI(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	doc := string(raw)
+	for _, tt := range m4Types() {
+		if !strings.Contains(doc, tt.constant) {
+			t.Errorf("event type %q is not documented in api/openapi.yaml", tt.constant)
+		}
+	}
+	if !strings.Contains(doc, ReservedTypeRunOverrideApplied) {
+		t.Errorf("reserved type %q is not named by api/openapi.yaml", ReservedTypeRunOverrideApplied)
+	}
+}
+
+// TestNewCarriesRunCorrelationScope guards the § 1/§ 3 store obligation in
+// the same shape as TestNewCarriesConversationScope: the append input has the
+// three run-correlation fields at all, and they are plain strings like the
+// other scopes — a missing one here means run-stream rows silently lose their
+// correlation columns.
+func TestNewCarriesRunCorrelationScope(t *testing.T) {
+	n := New{
+		Type:            TypeNodeAttemptCompleted,
+		OrganizationID:  "o-1",
+		ProjectID:       "p-1",
+		RunID:           "r-1",
+		NodeExecutionID: "ne-1",
+		AttemptID:       "at-1",
+		Actor:           Actor{Kind: ActorKindWorker, ID: "worker-a"},
+	}
+	rt := reflect.TypeOf(n)
+	for _, field := range []string{"RunID", "NodeExecutionID", "AttemptID"} {
+		f, ok := rt.FieldByName(field)
+		if !ok {
+			t.Fatalf("events.New has no %s field", field)
+		}
+		if f.Type.Kind() != reflect.String {
+			t.Errorf("events.New.%s is %s, want string", field, f.Type)
+		}
+	}
+	if n.RunID != "r-1" || n.NodeExecutionID != "ne-1" || n.AttemptID != "at-1" {
+		t.Errorf("New run scopes lost: run=%q node=%q attempt=%q", n.RunID, n.NodeExecutionID, n.AttemptID)
+	}
+}
+
+// TestM4PayloadFieldNames pins the JSON member set of every M4 payload, in
+// sorted order, following the TestM2PayloadFieldNames/TestM3PayloadFieldNames
+// idiom. Payloads are validated by their own contract, not the envelope's, so
+// this is the only thing standing between a renamed field and a UI (or a
+// worker) that reads nothing.
+func TestM4PayloadFieldNames(t *testing.T) {
+	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	digest := "sha256:" + hex64
+	when := time.Date(2026, 10, 15, 9, 12, 0, 0, time.UTC)
+	want := map[string][]string{
+		"RunCreatedPayload": {
+			"assignment_id", "depth", "digest_scope", "input_names", "parent_run_id",
+			"pipeline_id", "plan_digest", "priority", "project_id", "revision_digest",
+			"revision_id", "run_id",
+		},
+		"RunStartedPayload": {
+			"project_id", "repo_snapshot", "run_id", "worker_affinity_present",
+		},
+		"RunPausedPayload": {
+			"in_flight_attempts", "paused_reason", "project_id", "requested_by", "run_id",
+		},
+		"RunResumedPayload": {"paused_reason", "project_id", "run_id"},
+		"RunWaitingHumanPayload": {
+			"approval_id", "approver_roles", "deadline_at", "node_instance_key",
+			"project_id", "run_id",
+		},
+		"RunRetriedPayload": {
+			"input_names", "project_id", "requested_by", "run_id", "targets", "workspace_policies",
+		},
+		"RunCheckpointSavedPayload": {"checkpoint", "project_id", "run_id"},
+		"Checkpoint": {
+			"artifact_refs", "inputs_digest", "node_instance_key", "outputs_digest",
+			"repo_states", "volume_id",
+		},
+		"RepoState": {"base_commit", "head_commit", "modified_paths_artifact", "repository_id"},
+		"RunCheckpointRestoredPayload": {
+			"discarded_paths", "from_commit", "node_instance_key", "project_id", "run_id",
+		},
+		"RunCompletedPayload": {
+			"artifact_refs", "iteration_totals", "project_id", "result_bindings", "run_id",
+		},
+		"RunFailedPayload": {
+			"budget", "evidence_artifacts", "error_class", "failed_cause",
+			"node_instance_key", "project_id", "run_id",
+		},
+		"RunCancelRequestedPayload": {
+			"cascade", "children", "project_id", "requested_by", "run_id",
+		},
+		"RunCancelledPayload": {
+			"cancelled_attempts", "cancelled_node_executions", "project_id", "run_id",
+		},
+		"RunInterruptedPayload": {
+			"error_class", "node_instance_keys", "project_id", "reason", "run_id",
+		},
+		"NodeExecutionSkippedPayload": {
+			"node_instance_key", "project_id", "reason", "run_id",
+		},
+		"NodeExecutionCancelledPayload": {
+			"node_instance_key", "project_id", "reason", "run_id",
+		},
+		"NodeScopeStartedPayload": {
+			"items", "iteration", "kind", "node_instance_key", "project_id",
+			"run_id", "scope_key",
+		},
+		"NodeScopeIterationPayload": {
+			"items", "iteration", "node_instance_key", "pass_when_result",
+			"predicate_error_detail", "project_id", "run_id", "scope_key",
+		},
+		"NodeScopeCompletedPayload": {
+			"items", "iterations", "kind", "node_instance_key", "project_id",
+			"result_bindings", "run_id", "scope_key",
+		},
+		"NodeScopeFailedPayload": {
+			"evidence", "failed_cause", "iterations_stopped", "kind",
+			"node_instance_key", "project_id", "run_id", "scope_key",
+		},
+		"NodeAttemptStartedPayload": {
+			"attempt_number", "error_class", "node_instance_key", "project_id",
+			"run_id", "sandbox_verified", "session_resumed", "worker_affinity",
+		},
+		"NodeAttemptCompletedPayload": {
+			"artifact_refs", "attempt_number", "checkpoint_saved", "node_instance_key",
+			"outputs", "outputs_digest", "project_id", "run_id",
+		},
+		"NodeAttemptFailedPayload": {
+			"attempt_number", "detail", "error_class", "next_attempt_number",
+			"node_instance_key", "output_errors", "project_id", "run_id", "scheduled_at",
+		},
+		"NodeAttemptInterruptedPayload": {
+			"attempt_number", "node_instance_key", "project_id", "reason", "run_id",
+		},
+		"NodeAttemptCancelledPayload": {
+			"attempt_number", "node_instance_key", "project_id", "reason", "run_id",
+		},
+		"NodeAttemptRetryScheduledPayload": {
+			"attempt_number", "delay_seconds", "error_class", "next_attempt_number",
+			"node_instance_key", "project_id", "run_id", "scheduled_at",
+		},
+		"ApprovalRequestedPayload": {
+			"approval_id", "approver_roles", "approver_user_ids", "artifact_refs",
+			"deadline_at", "node_instance_key", "on_timeout", "project_id",
+			"run_id", "summary_digest",
+		},
+		"ApprovalDecidedPayload": {
+			"approval_id", "comments_present", "decided_by", "decision",
+			"project_id", "run_id", "version",
+		},
+		"ApprovalExpiredPayload": {
+			"approval_id", "on_timeout", "project_id", "re_requested", "run_id",
+		},
+		"ApprovalDeniedPayload":    {"approval_id", "project_id", "reason", "run_id"},
+		"ApprovalCancelledPayload": {"approval_id", "project_id", "reason", "run_id"},
+		"PipelineCreatedPayload":   {"pipeline_id", "project_id", "slug"},
+		"PipelineDraftUpdatedPayload": {
+			"draft_id", "edited_by", "kind", "project_id", "source_sha256", "version",
+		},
+		"PipelineDraftValidatedPayload": {
+			"draft_id", "error_codes", "error_count", "plan_digest",
+			"project_id", "revision_digest", "valid",
+		},
+		"PipelineRevisionPublishedPayload": {
+			"cel_env_digest", "digest_scope", "pipeline_id", "plan_digest",
+			"project_id", "revision_digest", "revision_id", "revision_number",
+			"schema_digest", "version_label",
+		},
+		"PipelineRevisionDeprecatedPayload": {"project_id", "revision_digest", "revision_id"},
+		"AssignmentCreatedPayload": {
+			"assignment_id", "budget_overrides", "max_concurrent_runs", "pinned_revision_id",
+			"pipeline_id", "project_id", "revision_digest",
+		},
+		"AssignmentUpdatedPayload": {
+			"after", "assignment_id", "before", "budget_overrides", "max_concurrent_runs",
+			"pinned_revision_id", "pipeline_id", "project_id", "revision_digest",
+		},
+	}
+
+	// Every member, including the optional ones, has to appear: each value is
+	// populated so the marshalled key set is the payload's full vocabulary.
+	full := map[string]any{
+		"RunCreatedPayload": RunCreatedPayload{
+			ProjectID: "p-1", RunID: "r-1", PipelineID: "pipe-1", RevisionID: "rev-1",
+			RevisionDigest: digest, PlanDigest: digest, DigestScope: "v1alpha1-canonical-1",
+			AssignmentID: "as-1", Depth: 1, ParentRunID: "r-0",
+			InputNames: []string{"goal"}, Priority: 3,
+		},
+		"RunStartedPayload": RunStartedPayload{
+			ProjectID: "p-1", RunID: "r-1", WorkerAffinityPresent: true,
+			RepoSnapshot: []any{map[string]any{"repository_id": "repo-1", "base_commit": "2222222"}},
+		},
+		"RunPausedPayload": RunPausedPayload{
+			ProjectID: "p-1", RunID: "r-1", PausedReason: "human_takeover",
+			InFlightAttempts: []string{"at-1"}, RequestedBy: "u-1",
+		},
+		"RunResumedPayload": RunResumedPayload{ProjectID: "p-1", RunID: "r-1", PausedReason: "manual"},
+		"RunWaitingHumanPayload": RunWaitingHumanPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1",
+			NodeInstanceKey: "/approve", DeadlineAt: when, ApproverRoles: []string{"maintainer"},
+		},
+		"RunRetriedPayload": RunRetriedPayload{
+			ProjectID: "p-1", RunID: "r-1", RequestedBy: "u-1",
+			Targets: []string{"/work"}, InputNames: []string{"goal"},
+			WorkspacePolicies: map[string]string{"/work": "continue_workspace"},
+		},
+		"RunCheckpointSavedPayload": RunCheckpointSavedPayload{
+			ProjectID: "p-1", RunID: "r-1",
+			Checkpoint: Checkpoint{
+				NodeInstanceKey: "/work", InputsDigest: digest, OutputsDigest: digest,
+				RepoStates:   []RepoState{{RepositoryID: "repo-1", BaseCommit: "111", HeadCommit: "222", ModifiedPathsArtifact: "art:mp"}},
+				ArtifactRefs: []any{"art:1"}, VolumeID: "sha256:" + strings.Repeat("1", 64),
+			},
+		},
+		"Checkpoint": Checkpoint{
+			NodeInstanceKey: "/work", InputsDigest: digest, OutputsDigest: digest,
+			RepoStates: []RepoState{{RepositoryID: "repo-1", BaseCommit: "111", HeadCommit: "222"}},
+		},
+		"RepoState": RepoState{RepositoryID: "repo-1", BaseCommit: "111", HeadCommit: "222", ModifiedPathsArtifact: "art:mp"},
+		"RunCheckpointRestoredPayload": RunCheckpointRestoredPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work",
+			FromCommit:     "2222222222222222222222222222222222222222",
+			DiscardedPaths: []string{"hello.py"},
+		},
+		"RunCompletedPayload": RunCompletedPayload{
+			ProjectID: "p-1", RunID: "r-1",
+			ResultBindings: map[string]any{"review_approved": true},
+			ArtifactRefs:   []any{"art:1"}, IterationTotals: map[string]int{"/build": 2},
+		},
+		"RunFailedPayload": RunFailedPayload{
+			ProjectID: "p-1", RunID: "r-1", FailedCause: "expression_eval_budget_exceeded",
+			ErrorClass: "predicate_error", NodeInstanceKey: "/work",
+			Budget: "expression_eval_budget_exceeded", EvidenceArtifacts: []any{"art:err"},
+		},
+		"RunCancelRequestedPayload": RunCancelRequestedPayload{
+			ProjectID: "p-1", RunID: "r-1", Cascade: true, Children: []string{"r-2"}, RequestedBy: "u-1",
+		},
+		"RunCancelledPayload": RunCancelledPayload{
+			ProjectID: "p-1", RunID: "r-1",
+			CancelledNodeExecutions: []string{"/work"}, CancelledAttempts: []string{"at-2"},
+		},
+		"RunInterruptedPayload": RunInterruptedPayload{
+			ProjectID: "p-1", RunID: "r-1", Reason: "volume_lost",
+			ErrorClass: "workspace_lost", NodeInstanceKeys: []string{"/work"},
+		},
+		"NodeExecutionSkippedPayload": NodeExecutionSkippedPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/review", Reason: "dependency_skipped",
+		},
+		"NodeExecutionCancelledPayload": NodeExecutionCancelledPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", Reason: "cascade",
+		},
+		"NodeScopeStartedPayload": NodeScopeStartedPayload{
+			ProjectID: "p-1", RunID: "r-1", ScopeKey: "/build_until_verified[1]/",
+			NodeInstanceKey: "/build_until_verified[1]/test", Kind: "until", Iteration: 1, Items: 3,
+		},
+		"NodeScopeIterationPayload": NodeScopeIterationPayload{
+			ProjectID: "p-1", RunID: "r-1", ScopeKey: "/build_until_verified[1]/",
+			NodeInstanceKey: "/build_until_verified", Iteration: 2, Items: 1,
+			PassWhenResult:       boolPtr(false),
+			PredicateErrorDetail: "no such key",
+		},
+		"NodeScopeCompletedPayload": NodeScopeCompletedPayload{
+			ProjectID: "p-1", RunID: "r-1", ScopeKey: "/build_until_verified/",
+			NodeInstanceKey: "/build_until_verified", Kind: "until", Iterations: 2, Items: 0,
+			ResultBindings: map[string]any{"iterations": 2},
+		},
+		"NodeScopeFailedPayload": NodeScopeFailedPayload{
+			ProjectID: "p-1", RunID: "r-1", ScopeKey: "/build_until_verified/",
+			NodeInstanceKey: "/build_until_verified", Kind: "until",
+			FailedCause: "until_exhausted", Evidence: []any{map[string]any{"iteration": 32}},
+			Iterations: 32,
+		},
+		"NodeAttemptStartedPayload": NodeAttemptStartedPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", AttemptNumber: 1,
+			ErrorClass: "", WorkerAffinity: true, SandboxVerified: true, SessionResumed: boolPtr(false),
+		},
+		"NodeAttemptCompletedPayload": NodeAttemptCompletedPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", AttemptNumber: 1,
+			OutputsDigest: digest, Outputs: map[string]any{"note": "done"},
+			ArtifactRefs: []any{"art:1"}, CheckpointSaved: true,
+		},
+		"NodeAttemptFailedPayload": NodeAttemptFailedPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", AttemptNumber: 1,
+			ErrorClass: "invalid_output", Detail: "outputs rejected",
+			OutputErrors: []any{"missing required property"}, NextAttemptNumber: 2,
+			ScheduledAt: &when,
+		},
+		"NodeAttemptInterruptedPayload": NodeAttemptInterruptedPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", AttemptNumber: 1,
+			Reason: "lease_expired",
+		},
+		"NodeAttemptCancelledPayload": NodeAttemptCancelledPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/work", AttemptNumber: 1,
+			Reason: "acp_cancel_ack",
+		},
+		"NodeAttemptRetryScheduledPayload": NodeAttemptRetryScheduledPayload{
+			ProjectID: "p-1", RunID: "r-1", NodeInstanceKey: "/build_until_verified[2]/test",
+			AttemptNumber: 1, NextAttemptNumber: 2, ErrorClass: "interrupted",
+			DelaySeconds: 15, ScheduledAt: when,
+		},
+		"ApprovalRequestedPayload": ApprovalRequestedPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1", NodeInstanceKey: "/approve",
+			SummaryDigest: digest, ArtifactRefs: []any{"art:1"}, DeadlineAt: when,
+			OnTimeout: "fail", ApproverRoles: []string{"maintainer"}, ApproverUserIDs: []string{"u-1"},
+		},
+		"ApprovalDecidedPayload": ApprovalDecidedPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1", Decision: "approved",
+			CommentsPresent: true, Version: 2, DecidedBy: "u-1",
+		},
+		"ApprovalExpiredPayload": ApprovalExpiredPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1",
+			OnTimeout: "expire", ReRequested: true,
+		},
+		"ApprovalDeniedPayload": ApprovalDeniedPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1", Reason: "approver_lost_access",
+		},
+		"ApprovalCancelledPayload": ApprovalCancelledPayload{
+			ProjectID: "p-1", RunID: "r-1", ApprovalID: "ap-1", Reason: "run_cancelled",
+		},
+		"PipelineCreatedPayload": PipelineCreatedPayload{
+			ProjectID: "p-1", PipelineID: "pipe-1", Slug: "feature-development",
+		},
+		"PipelineDraftUpdatedPayload": PipelineDraftUpdatedPayload{
+			ProjectID: "p-1", DraftID: "d-1", Version: 2, SourceSHA256: hex64,
+			EditedBy: "u-1", Kind: "yaml_import",
+		},
+		"PipelineDraftValidatedPayload": PipelineDraftValidatedPayload{
+			ProjectID: "p-1", DraftID: "d-1", Valid: true, RevisionDigest: digest,
+			PlanDigest: digest, ErrorCount: 1, ErrorCodes: []string{"cycle_detected"},
+		},
+		"PipelineRevisionPublishedPayload": PipelineRevisionPublishedPayload{
+			ProjectID: "p-1", PipelineID: "pipe-1", RevisionID: "rev-1", RevisionNumber: 3,
+			VersionLabel: "1.2.0", RevisionDigest: digest, PlanDigest: digest,
+			DigestScope: "v1alpha1-canonical-1", SchemaDigest: digest, CelEnvDigest: digest,
+		},
+		"PipelineRevisionDeprecatedPayload": PipelineRevisionDeprecatedPayload{
+			ProjectID: "p-1", RevisionID: "rev-1", RevisionDigest: digest,
+		},
+		"AssignmentCreatedPayload": AssignmentCreatedPayload{
+			ProjectID: "p-1", AssignmentID: "as-1", PipelineID: "pipe-1",
+			PinnedRevisionID: "rev-1", RevisionDigest: digest, MaxConcurrentRuns: 2,
+			BudgetOverrides: map[string]any{"max_duration_seconds": 3600},
+		},
+		"AssignmentUpdatedPayload": AssignmentUpdatedPayload{
+			ProjectID: "p-1", AssignmentID: "as-1", PipelineID: "pipe-1",
+			PinnedRevisionID: "rev-1", RevisionDigest: digest, MaxConcurrentRuns: 2,
+			BudgetOverrides: map[string]any{"max_duration_seconds": 3600},
+			Before:          map[string]any{"max_concurrent_runs": 1},
+			After:           map[string]any{"max_concurrent_runs": 2},
+		},
+	}
+
+	for name, fields := range want {
+		v, ok := full[name]
+		if !ok {
+			t.Errorf("no M4 payload struct %q to check", name)
+			continue
+		}
+		sort.Strings(fields)
+		got := jsonKeys(t, v)
+		if !reflect.DeepEqual(got, fields) {
+			t.Errorf("%s JSON members = %v, want %v", name, got, fields)
+		}
+		delete(full, name)
+	}
+	for name := range full {
+		if _, ok := want[name]; !ok {
+			t.Errorf("M4 payload %q has no pinned member list", name)
+		}
+	}
+}
+
+// TestM4PayloadsAreObjectsAndCarryProjectID pins the two rules § 3 states for
+// every M4 payload: it is an object, and it names its project — the M4 types
+// also arrive on the project stream, and the project is the authorization
+// scope of every stream they can land on.
+func TestM4PayloadsAreObjectsAndCarryProjectID(t *testing.T) {
+	for _, tt := range m4Types() {
+		raw, err := json.Marshal(filledValue(t, tt.payload))
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tt.literal, err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Errorf("%s: payload is not a JSON object: %s", tt.literal, raw)
+			continue
+		}
+		if _, ok := m["project_id"]; !ok {
+			t.Errorf("%s: payload has no project_id, so a stream reader cannot attribute it", tt.literal)
+		}
+	}
+}
+
+// TestM4PayloadsCarryNoSecretsPromptsPathsOrLeases is the structural half of
+// § 3's prohibition, reusing M3's denied-name walk over the M4 types: no
+// prompt body, no secret value, no absolute host path, no fencing token and
+// no lease deadline can be introduced as a field without failing here. CEL
+// failure text is admitted only through predicate_error_detail (the name
+// itself is the contract), and the checkpoint keeps its digest vocabulary,
+// never a path.
+func TestM4PayloadsCarryNoSecretsPromptsPathsOrLeases(t *testing.T) {
+	denied := map[string]string{
+		"value": "a secret value", "secret_value": "a secret value", "plaintext": "a decrypted value",
+		"cleartext": "a decrypted value", "env_body": "a generated .env file", "ciphertext": "encrypted bytes",
+		"prompt": "a user prompt", "token": "a credential", "fencing_token": "a fencing token",
+		"lease_expires_at": "a lease deadline", "raw": "unfiltered material", "comments": "a decision comment body",
+		"summary":       "a gate summary body (only summary_digest is journal material)",
+		"document_text": "a document body", "document_yaml": "a document body",
+		"root_path": "an absolute host path", "mirror_path": "an absolute host path",
+		"admin_dir": "an absolute host path", "checkout_path": "an absolute host path",
+		"storage_key": "an object-store key", "home": "an absolute host path", "cwd": "an absolute host path",
+	}
+	var walk func(v reflect.Value, typ string)
+	walk = func(v reflect.Value, typ string) {
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if why, bad := denied[name]; bad {
+				t.Errorf("%s: member %q could carry %s", typ, name, why)
+			}
+			if strings.HasSuffix(name, "_path") {
+				t.Errorf("%s: member %q names a path; § 3 admits no host paths", typ, name)
+			}
+			fv := v.Field(i)
+			for fv.Kind() == reflect.Pointer || fv.Kind() == reflect.Slice {
+				fv = reflect.New(fv.Type().Elem()).Elem()
+			}
+			if fv.Kind() == reflect.Struct && f.Type.String() != "time.Time" && f.Type.String() != "*time.Time" {
+				walk(fv, typ+"."+name)
+			}
+		}
+	}
+	for _, tt := range m4Types() {
+		walk(reflect.ValueOf(tt.payload), tt.literal)
+	}
+}
+
+// filledValue leaves pointer members nil; the M4 payloads that carry a
+// tri-state (pass_when_result, session_resumed, scheduled_at) deliberately
+// have no omitempty so the member is still present (as null) — this helper
+// just makes the fixtures above readable.
+func boolPtr(b bool) *bool { return &b }

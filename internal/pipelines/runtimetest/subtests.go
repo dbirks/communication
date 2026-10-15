@@ -49,7 +49,7 @@ func testHappyPath(t *testing.T, f Factory) {
 		t.Fatalf("renew did not extend: expires=%s now=%s", got, s.Now())
 	}
 	err = s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
-		Outputs: map[string]any{"note": "done"}, OutputsDigest: "sha256:out",
+		Outputs: map[string]any{"note": "done"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{"art:1"}, Outcome: "success", Checkpoint: NewCheckpoint(WorkerA),
 	})
 	if err != nil {
@@ -87,7 +87,7 @@ func testStaleTokenWritesNothing(t *testing.T, f Factory) {
 
 	// Wrong token, right owner.
 	err = s.Complete(a.ID, WorkerA, a.FencingToken+100, Completion{
-		Outputs: map[string]any{"note": "x"}, OutputsDigest: "sha256:d",
+		Outputs: map[string]any{"note": "x"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerA),
 	})
 	if !errors.As(err, new(runtime.StaleOwner)) {
@@ -96,7 +96,7 @@ func testStaleTokenWritesNothing(t *testing.T, f Factory) {
 	// Right token, wrong owner (the thief shape of 12 case 2's "only one
 	// valid fencing token can commit state").
 	err = s.Complete(a.ID, WorkerB, a.FencingToken, Completion{
-		Outputs: map[string]any{"note": "x"}, OutputsDigest: "sha256:d",
+		Outputs: map[string]any{"note": "x"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerB),
 	})
 	if !errors.As(err, new(runtime.StaleOwner)) {
@@ -118,7 +118,7 @@ func testStaleTokenWritesNothing(t *testing.T, f Factory) {
 	}
 	// The refusal is the FENCE, not the payload: the honest owner still can.
 	if err := s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
-		Outputs: map[string]any{"note": "done"}, OutputsDigest: "sha256:d",
+		Outputs: map[string]any{"note": "done"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerA),
 	}); err != nil {
 		t.Fatalf("owner's complete after refusals: %v", err)
@@ -199,7 +199,7 @@ func testInterruptAndLateComplete(t *testing.T, f Factory) {
 	// Late writes from the dead owner: refused, journal untouched.
 	for name, err := range map[string]error{
 		"complete": s.Complete(a1.ID, WorkerA, a1.FencingToken, Completion{
-			Outputs: map[string]any{"note": "zombie"}, OutputsDigest: "sha256:d",
+			Outputs: map[string]any{"note": "zombie"}, OutputsDigest: BoundaryDigest,
 			ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerA),
 		}),
 		"renew": s.Renew(a1.ID, WorkerA, a1.FencingToken),
@@ -254,9 +254,13 @@ func testInterruptAndLateComplete(t *testing.T, f Factory) {
 // KNOWN DISCREPANCY (MemStore followed per the harness rule): a Complete
 // whose CheckpointRecord fails Check() AFTER the rows moved (e.g. an empty
 // volume_id) returns an error but leaves the attempt/node succeeded — the
-// in-memory store has no rollback. That arm is therefore asserted here only
-// for the two guards MemStore enforces pre-mutation (the fence and the
-// schema); the Postgres adapter must additionally roll back, per contract § 5.
+// in-memory store has no rollback. The third arm below parameterizes on the
+// AtomicBoundary capability so both facts are pinned: a store that does not
+// claim § 5's all-or-nothing keeps the observed MemStore behaviour, and a
+// store that does (the Postgres adapter) must roll the entire boundary back —
+// attempt, node, checkpoint row and journal alike. The suite is not weakened
+// by the split: every store faces the same error demand (Check refuses), and
+// claiming the capability is what binds it to the rollback assertion.
 func testBoundaryAtomicity(t *testing.T, f Factory) {
 	t.Run("success-arms", func(t *testing.T) {
 		s := f.Open(t, Config{Pipeline: PipelineSingle})
@@ -270,14 +274,14 @@ func testBoundaryAtomicity(t *testing.T, f Factory) {
 		ckpt.RepoStates[0].HeadCommit = "head-abc"
 		before := s.Events(t)
 		if err := s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
-			Outputs: map[string]any{"note": "done"}, OutputsDigest: "sha256:digest",
+			Outputs: map[string]any{"note": "done"}, OutputsDigest: BoundaryDigest,
 			ArtifactRefs: []any{"art:1"}, Outcome: "success", Checkpoint: ckpt,
 		}); err != nil {
 			t.Fatalf("complete: %v", err)
 		}
 		st := s.State(t)
 		att := attemptByID(st, a.ID)
-		if att.OutputsDigest != "sha256:digest" || att.ArtifactRefs[0] != "art:1" {
+		if att.OutputsDigest != BoundaryDigest || att.ArtifactRefs[0] != "art:1" {
 			t.Fatalf("attempt boundary fields: %+v", att)
 		}
 		n := st.Node("/work")
@@ -311,7 +315,7 @@ func testBoundaryAtomicity(t *testing.T, f Factory) {
 		_ = s.Start(a.ID, WorkerA, a.FencingToken)
 		before := s.Events(t)
 		if err := s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
-			Outputs: map[string]any{"wrong": 1}, OutputsDigest: "sha256:d",
+			Outputs: map[string]any{"wrong": 1}, OutputsDigest: BoundaryDigest,
 			ArtifactRefs: []any{"art:1"}, Checkpoint: NewCheckpoint(WorkerA),
 		}); err != nil {
 			t.Fatalf("invalid-output complete returned %v; MemStore converts it to an attempt failure (nil error)", err)
@@ -331,6 +335,66 @@ func testBoundaryAtomicity(t *testing.T, f Factory) {
 		if countType(appended, string(pevents.TypeNodeAttemptCompleted)) != 0 ||
 			countType(appended, string(pevents.TypeRunCheckpointSaved)) != 0 {
 			t.Fatalf("success events appended for a refused envelope")
+		}
+	})
+
+	// Arm 3, the contract § 5 boundary proper: a CheckpointRecord that
+	// refuses (empty volume_id violates run_checkpoints_volume_required,
+	// D-024) AFTER the rows have moved. MemStore's observed behaviour is the
+	// error with the success half-written (deviation); the Postgres adapter
+	// implements AtomicBoundary and must have rolled everything back.
+	t.Run("invalid-checkpoint-boundary-rollback-or-observed-divergence", func(t *testing.T) {
+		s := f.Open(t, Config{Pipeline: PipelineSingle})
+		_ = s.Advance()
+		a, err := s.Claim(WorkerA)
+		if err != nil || a == nil {
+			t.Fatalf("claim: %v", err)
+		}
+		_ = s.Start(a.ID, WorkerA, a.FencingToken)
+		before := s.Events(t)
+		attBefore := *attemptByID(s.State(t), a.ID)
+		badCkpt := NewCheckpoint(WorkerA)
+		badCkpt.VolumeID = "" // run_checkpoints_volume_required (D-024)
+		err = s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
+			Outputs: map[string]any{"note": "done"}, OutputsDigest: BoundaryDigest,
+			ArtifactRefs: []any{"art:1"}, Outcome: "success", Checkpoint: badCkpt,
+		})
+		if err == nil {
+			t.Fatalf("a checkpoint without a volume_id was accepted (D-024's CHECK is a contract, not a hint)")
+		}
+		st := s.State(t)
+		if !boundaryAtomic(s) {
+			// OBSERVED MemStore divergence, kept honest rather than copied:
+			// the rows moved before Check() refused. No checkpoint row and
+			// no success events may exist either way — a boundary that says
+			// "saved" without the record is the bug the CHECK exists for.
+			if got := attemptByID(st, a.ID); got.Status != runtime.AttemptSucceeded {
+				t.Fatalf("non-atomic store reported %v but left the attempt %s (the deviation is the point)", err, got.Status)
+			}
+			if len(st.Checkpoints) != 0 {
+				t.Fatalf("a refused checkpoint was still stored")
+			}
+			appended := st.Events[len(before):]
+			if countType(appended, string(pevents.TypeRunCheckpointSaved)) != 0 {
+				t.Fatalf("checkpoint_saved appended for a checkpoint that refused (ADR-0023 § 6)")
+			}
+			return
+		}
+		// The atomic arm — contract § 5's all-or-nothing, asserted, not
+		// implied: nothing moved, nothing appended, nothing stored.
+		if got := attemptByID(st, a.ID); !sameAttempt(&attBefore, got) {
+			t.Fatalf("refused boundary moved the attempt row: %+v → %+v (contract § 5: one transaction per state change)", attBefore, got)
+		}
+		if n := st.Node("/work"); n.Status != runtime.NodeRunning {
+			t.Fatalf("refused boundary moved the node to %s", n.Status)
+		}
+		if len(st.Checkpoints) != 0 {
+			t.Fatalf("refused boundary stored a checkpoint row")
+		}
+		after := s.Events(t)
+		hasPrefix(t, "refused boundary", before, after)
+		if len(after) != len(before) {
+			t.Fatalf("refused boundary appended %d journal rows", len(after)-len(before))
 		}
 	})
 }
@@ -480,7 +544,7 @@ func testRetryAppendOnly(t *testing.T, f Factory) {
 	}
 	_ = s.Start(a2.ID, WorkerC, a2.FencingToken)
 	if err := s.Complete(a2.ID, WorkerC, a2.FencingToken, Completion{
-		Outputs: map[string]any{"note": "ok"}, OutputsDigest: "sha256:d",
+		Outputs: map[string]any{"note": "ok"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerC),
 	}); err != nil {
 		t.Fatalf("retry complete: %v", err)
@@ -515,7 +579,7 @@ func testAdvanceIdempotence(t *testing.T, f Factory) {
 		}
 	}
 	_ = s.Complete(a.ID, WorkerA, a.FencingToken, Completion{
-		Outputs: map[string]any{"note": "ok"}, OutputsDigest: "sha256:d",
+		Outputs: map[string]any{"note": "ok"}, OutputsDigest: BoundaryDigest,
 		ArtifactRefs: []any{}, Checkpoint: NewCheckpoint(WorkerA),
 	})
 	end := s.Events(t)

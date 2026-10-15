@@ -100,6 +100,37 @@ type Completion struct {
 	Checkpoint    runtime.CheckpointRecord
 }
 
+// BoundaryDigest is the outputs digest the suite writes through the happy
+// boundary. attempts.outputs_digest carries § 1's CHECK
+// (^sha256:[0-9a-f]{64}$), so a fixture digest must satisfy it: the Postgres
+// adapter mirrors every Completion into the real ledger, and a shape the
+// database rejects is not a conformance input worth pinning. (MemStore never
+// checked this; the CHECK is the contract, not the adapter — 12-test-strategy:
+// constraint behaviour on a database that ran the migration.)
+const BoundaryDigest = "sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// AtomicBoundary is an optional Session capability: BoundaryIsAtomic reports
+// true when the store's boundary transaction is the contract § 5 all-or-nothing
+// one — every Complete/Fail/Decide writes and journal rows commit together, or
+// nothing does. The reference MemStore does NOT implement it: its Complete
+// mutates the attempt and node rows BEFORE CheckpointRecord.Check() runs, so
+// a Check refusal leaves the success half-written (an observed deviation from
+// contract § 5 the harness documents, per the package rule "the subtest
+// follows MemStore and the comment says so"). The Postgres adapter implements
+// it and must roll back; the boundary subtest asserts the rollback arm only
+// for stores that claim it, so MemStore keeps its observed behaviour and the
+// real adapter is still held to the contract.
+type AtomicBoundary interface {
+	BoundaryIsAtomic() bool
+}
+
+// boundaryAtomic reports whether the session's store promises § 5's
+// all-or-nothing boundary.
+func boundaryAtomic(s Session) bool {
+	a, ok := s.(AtomicBoundary)
+	return ok && a.BoundaryIsAtomic()
+}
+
 // GateDecision is one POST /approvals/{id}/decide (contract § 5.3).
 type GateDecision struct {
 	ApprovalID string

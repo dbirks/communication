@@ -60,6 +60,24 @@
       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
       "description": "Conversation the event belongs to, when it is conversation-scoped (M2, ADR-0016: the transcript is this journal read through `conversation_id`). Null otherwise. A conversation-scoped row always carries `project_id` too, so the project stream remains a superset and one gap-safe cursor serves both."
     },
+    "run_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Run the event belongs to, when it is run-scoped (M4, docs/m4-contract.md § 1/§ 3: the `domain_events.run_id` column, indexed `(run_id, global_seq)`, which is what `GET /api/v1/runs/{runId}/events` streams through). Additive per ADR-0014 § 8 — consumers ignore members they do not know. A run-scoped row always carries `project_id` too. Null on every pre-M4 row and on non-run events."
+    },
+    "node_execution_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Node execution the event is about (§ 3's correlation rule). A worker row that touches a node execution sets this AND `attempt_id`; a control-plane row may carry this with `attempt_id` null, because control-plane work creates no attempts (ADR-0023 § 3)."
+    },
+    "attempt_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "Attempt the event is about (`domain_events.attempt_id`, indexed `(attempt_id, global_seq)`). Set on every attempt-lifecycle event, written under the row's fence; null for control-plane events, which have no attempts."
+    },
     "actor": {
       "type": "object",
       "description": "Who caused the transition. `id` is the internal id for humans/agents/workers, an integration key for integrations, and the literal `system` for system actions.",
@@ -108,6 +126,32 @@
         "name": "communication",
         "git_url": "https://github.com/example/communication.git",
         "default_branch": "main"
+      }
+    },
+    {
+      "event_id": "01987b10-5a4a-7d3b-9e1f-2c3d4e5f6a70",
+      "global_seq": 208441,
+      "type": "node.attempt.retry_scheduled",
+      "schema_version": 1,
+      "occurred_at": "2026-10-15T09:12:00Z",
+      "organization_id": "01987a6b-9c1d-7e5f-8a0b-1c2d3e4f5a60",
+      "project_id": "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
+      "run_id": "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+      "node_execution_id": "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d",
+      "attempt_id": "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e",
+      "actor": {
+        "kind": "system",
+        "id": "system"
+      },
+      "payload": {
+        "project_id": "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
+        "run_id": "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+        "node_instance_key": "/build_until_verified[2]/test",
+        "attempt_number": 1,
+        "next_attempt_number": 2,
+        "error_class": "interrupted",
+        "delay_seconds": 15,
+        "scheduled_at": "2026-10-15T09:12:15Z"
       }
     }
   ]

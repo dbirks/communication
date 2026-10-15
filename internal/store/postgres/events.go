@@ -20,9 +20,12 @@ import (
 // prjEventColumns is the single read-back projection used for both journal
 // reads and AppendEvent's RETURNING clause. Nullable members are COALESCEd to
 // ” so they can be scanned into strings: an absent project_id and an empty
-// one mean the same thing to every caller in M1.
+// one mean the same thing to every caller in M1. The three run-correlation
+// members (M4, migration 00005, ADR-0014 § 8 additive) join the same
+// projection so every reader sees the same envelope shape.
 const prjEventColumns = `global_seq, event_id, type, schema_version, occurred_at,
 	organization_id, COALESCE(project_id::text, ''), COALESCE(conversation_id::text, ''),
+	COALESCE(run_id::text, ''), COALESCE(node_execution_id::text, ''), COALESCE(attempt_id::text, ''),
 	actor_kind, actor_id, COALESCE(trace_id, ''), payload`
 
 // evtAppendLockPrefix namespaces the advisory-lock keys that serialize journal
@@ -150,15 +153,32 @@ func AppendEvent(ctx context.Context, tx pgx.Tx, e events.New) (events.Envelope,
 	// column has existed since 00001 but no writer populated it, so an append
 	// that set events.New.ConversationID without it produced a transcript row
 	// that was invisible to the conversation stream while looking correct in
-	// every other read.
+	// every other read. The three run-correlation columns are the M4 twin of
+	// that obligation (contract § 1/§ 3): the INSERT lists them, so an append
+	// that sets events.New.RunID lands on the run stream.
+	runID, err := runCleanScopeID(e.RunID, "run")
+	if err != nil {
+		return events.Envelope{}, err
+	}
+	nodeExecutionID, err := runCleanScopeID(e.NodeExecutionID, "node execution")
+	if err != nil {
+		return events.Envelope{}, err
+	}
+	attemptID, err := runCleanScopeID(e.AttemptID, "attempt")
+	if err != nil {
+		return events.Envelope{}, err
+	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO domain_events (type, organization_id, project_id, conversation_id, actor_kind, actor_id, payload)
-		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7::jsonb)
+		INSERT INTO domain_events (type, organization_id, project_id, conversation_id,
+			actor_kind, actor_id, payload, run_id, node_execution_id, attempt_id)
+		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7::jsonb,
+		        NULLIF($8, '')::uuid, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid)
 		RETURNING `+prjEventColumns,
 		e.Type, e.OrganizationID, prjCleanUUID(e.ProjectID), conversationID,
-		e.Actor.Kind, e.Actor.ID, payload).
+		e.Actor.Kind, e.Actor.ID, payload, runID, nodeExecutionID, attemptID).
 		Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion, &env.OccurredAt,
 			&env.OrganizationID, &env.ProjectID, &env.ConversationID,
+			&env.RunID, &env.NodeExecutionID, &env.AttemptID,
 			&env.Actor.Kind, &env.Actor.ID, &env.TraceID, &payloadRaw)
 	if err != nil {
 		return events.Envelope{}, fmt.Errorf("postgres: append domain event: %w", err)
@@ -189,6 +209,62 @@ func cnvCleanConversationID(s string) (string, error) {
 		return "", fmt.Errorf("postgres: conversation id %q is not a uuid", s)
 	}
 	return strings.ToLower(s), nil
+}
+
+// runCleanScopeID is cnvCleanConversationID for the three M4 correlation
+// members: an empty scope stays NULL (the schema allows all three to be
+// absent), anything that is not a uuid can only be a programming mistake.
+func runCleanScopeID(s, what string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	if !prjValidUUID(s) {
+		return "", fmt.Errorf("postgres: %s id %q is not a uuid", what, s)
+	}
+	return strings.ToLower(s), nil
+}
+
+// runEventsSQL is the run-scoped journal read behind
+// GET /api/v1/runs/{runId}/events (contract § 2.1 route 33, filtered by the
+// new domain_events.run_id partial index). It is ConversationEventsAfter's
+// shape applied to a run: the gap-safety clause is kept verbatim, and
+// project_id stays in the predicate because the project is the authorization
+// scope of the stream — a row that somehow names another project is never
+// delivered here.
+const runEventsSQL = `
+	SELECT ` + prjEventColumns + `
+	FROM domain_events e
+	WHERE e.run_id = $1::uuid
+	  AND e.project_id = $2::uuid
+	  AND e.global_seq > $3
+	  AND e.tx_id < pg_snapshot_xmin(pg_current_snapshot())
+	ORDER BY e.global_seq
+	LIMIT $4`
+
+// RunEventsAfter returns up to limit journal rows of one run's stream with
+// global_seq strictly greater than afterSeq, oldest first — the replay path
+// behind the run SSE stream, modelled on ConversationEventsAfter. Like every
+// journal read here it is visibility-neutral: authorization (the run's project
+// membership, re-checked at subscribe and per flush) is the caller's decision.
+func (s *ProjectStore) RunEventsAfter(ctx context.Context, runID, projectID string, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: project store has no pool")
+	}
+	if !prjValidUUID(runID) || !prjValidUUID(projectID) {
+		return nil, ErrRunNotFound
+	}
+	if limit <= 0 {
+		limit = prjDefaultEventLimit
+	}
+	if limit > prjMaxEventLimit {
+		limit = prjMaxEventLimit
+	}
+	rows, err := s.Pool.Query(ctx, runEventsSQL, runID, projectID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query run events: %w", err)
+	}
+	return evtScanEvents(rows, limit)
 }
 
 // ConversationEventsAfter returns up to limit journal rows of one
@@ -288,6 +364,7 @@ func evtScanEvents(rows pgx.Rows, limit int) ([]events.Envelope, error) {
 		var payloadRaw []byte
 		if err := rows.Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion,
 			&env.OccurredAt, &env.OrganizationID, &env.ProjectID, &env.ConversationID,
+			&env.RunID, &env.NodeExecutionID, &env.AttemptID,
 			&env.Actor.Kind, &env.Actor.ID, &env.TraceID, &payloadRaw); err != nil {
 			return nil, fmt.Errorf("postgres: scan event: %w", err)
 		}

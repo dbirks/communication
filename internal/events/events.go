@@ -66,9 +66,17 @@ type Envelope struct {
 	OrganizationID string    `json:"organization_id"`
 	ProjectID      string    `json:"project_id,omitempty"`
 	ConversationID string    `json:"conversation_id,omitempty"`
-	Actor          Actor     `json:"actor"`
-	TraceID        string    `json:"trace_id,omitempty"`
-	Payload        any       `json:"payload"`
+	// RunID, NodeExecutionID and AttemptID are M4's run-correlation members
+	// (docs/m4-contract.md § 1/§ 3, the domain_events columns of the same
+	// names added by migration 00005). Additive per ADR-0014 § 8: an additive
+	// member is not a version bump and consumers ignore what they do not
+	// know, so every pre-M4 row simply omits them.
+	RunID           string `json:"run_id,omitempty"`
+	NodeExecutionID string `json:"node_execution_id,omitempty"`
+	AttemptID       string `json:"attempt_id,omitempty"`
+	Actor           Actor  `json:"actor"`
+	TraceID         string `json:"trace_id,omitempty"`
+	Payload         any    `json:"payload"`
 }
 
 // New is the input to AppendEvent: everything the database does not generate
@@ -98,8 +106,21 @@ type New struct {
 	// notification would be an optimization, never a correctness requirement —
 	// every consumer re-queries the journal by sequence (ADR-0014 §9).
 	ConversationID string
-	Actor          Actor
-	Payload        any
+	// RunID, NodeExecutionID and AttemptID scope an event to one run of the
+	// M4 execution ledger (docs/m4-contract.md § 1: domain_events gains the
+	// three columns, indexed (run_id, global_seq) and (attempt_id, global_seq);
+	// GET /api/v1/runs/{runId}/events streams through run_id). The § 3
+	// correlation rule: a worker row that touches a node execution sets all
+	// three on the journal row, not only in the payload; a control-plane row
+	// may carry NodeExecutionID with AttemptID empty because control-plane work
+	// creates no attempts (ADR-0023 § 3). Like ConversationID they narrow the
+	// stream; ProjectID remains the authorization scope. Additive per
+	// ADR-0014 § 8.
+	RunID           string
+	NodeExecutionID string
+	AttemptID       string
+	Actor           Actor
+	Payload         any
 }
 
 // M1 event types (communication-spec/09-api-events-data.md, M1 design
@@ -1082,4 +1103,537 @@ func ValidArtifactDeletionReason(reason string) bool {
 // ValidMirrorKind reports whether kind says whether the mirror was made or moved.
 func ValidMirrorKind(kind string) bool {
 	return kind == MirrorKindCreated || kind == MirrorKindFetched
+}
+
+// ---------------------------------------------------------------- M4 events
+
+// M4 event types (docs/m4-contract.md § 3 rows 1-36; api/openapi.yaml's
+// streamRunEvents payload table is the wire contract events_test.go pins
+// these against). The run/node/attempt/approval rows are written by the
+// advancer, the worker and the reconciler; the pipeline.* and assignment.*
+// rows by the definition service. Same rules as M2/M3: every payload is an
+// object carrying project_id plus the ids it correlates on, and no payload
+// carries a secret value, a prompt body, an absolute host path, a fencing
+// token or a lease deadline. CEL failure text is admitted only as
+// predicate_error_detail, truncated to 512 bytes and redaction-scanned
+// (ADR-0022 Security). The envelope's run_id/node_execution_id/attempt_id
+// members (§ 1) are populated on every run-scoped row below.
+const (
+	// Run lifecycle (§ 3 rows 1-13).
+	TypeRunCreated            = "run.created"             // 1
+	TypeRunStarted            = "run.started"             // 2
+	TypeRunPaused             = "run.paused"              // 3
+	TypeRunResumed            = "run.resumed"             // 4
+	TypeRunWaitingHuman       = "run.waiting_human"       // 5
+	TypeRunRetried            = "run.retried"             // 6
+	TypeRunCheckpointSaved    = "run.checkpoint_saved"    // 7
+	TypeRunCheckpointRestored = "run.checkpoint_restored" // 8
+	TypeRunCompleted          = "run.completed"           // 9
+	TypeRunFailed             = "run.failed"              // 10
+	TypeRunCancelRequested    = "run.cancel_requested"    // 11
+	TypeRunCancelled          = "run.cancelled"           // 12
+	TypeRunInterrupted        = "run.interrupted"         // 13
+
+	// Node executions and scopes (§ 3 rows 14-19): control-plane rows; a scope
+	// event may carry node_execution_id with attempt_id NULL because
+	// control-plane work creates no attempts (ADR-0023 § 3).
+	TypeNodeExecutionSkipped   = "node.execution_skipped"
+	TypeNodeExecutionCancelled = "node.execution_cancelled"
+	TypeNodeScopeStarted       = "node.scope.started"
+	TypeNodeScopeIteration     = "node.scope.iteration"
+	TypeNodeScopeCompleted     = "node.scope.completed"
+	TypeNodeScopeFailed        = "node.scope.failed"
+
+	// Attempts (§ 3 rows 20-25): the worker-side rows, every one written
+	// under the fence with all three correlation columns set.
+	TypeNodeAttemptStarted        = "node.attempt.started"
+	TypeNodeAttemptCompleted      = "node.attempt.completed"
+	TypeNodeAttemptFailed         = "node.attempt.failed"
+	TypeNodeAttemptInterrupted    = "node.attempt.interrupted"
+	TypeNodeAttemptCancelled      = "node.attempt.cancelled"
+	TypeNodeAttemptRetryScheduled = "node.attempt.retry_scheduled"
+
+	// Gates (§ 3 rows 26-30). approval.requested reuses the name `09` fixes;
+	// it is NOT conversation.permission.requested, which stays the ACP tool
+	// prompt (ADR-0023 § 9).
+	TypeApprovalRequested = "approval.requested"
+	TypeApprovalDecided   = "approval.decided"
+	TypeApprovalExpired   = "approval.expired"
+	TypeApprovalDenied    = "approval.denied"
+	TypeApprovalCancelled = "approval.cancelled"
+
+	// Pipeline library and assignments (§ 3 rows 31-36): API-emitted audit
+	// rows. They share the journal but never the run correlation columns.
+	TypePipelineCreated            = "pipeline.created"
+	TypePipelineDraftUpdated       = "pipeline.draft.updated"
+	TypePipelineDraftValidated     = "pipeline.draft.validated"
+	TypePipelineRevisionPublished  = "pipeline.revision.published"
+	TypePipelineRevisionDeprecated = "pipeline.revision.deprecated"
+
+	TypeAssignmentCreated = "assignment.created"
+	TypeAssignmentUpdated = "assignment.updated"
+)
+
+// ReservedTypeRunOverrideApplied is § 3 row 37: the type name is fixed so M5
+// can land it without renaming the wire, and M4 never emits it (ADR-0024 § 3
+// — M4's overrides are visible on the attempt row and in run.retried).
+const ReservedTypeRunOverrideApplied = "run.override.applied"
+
+// ----------------------------------------------------------- M4: run payloads
+
+// RunCreatedPayload is run.created (§ 3 row 1), appended in the same
+// transaction as the run row (POST /runs and the child-run creation
+// transaction alike).
+type RunCreatedPayload struct {
+	ProjectID      string   `json:"project_id"`
+	RunID          string   `json:"run_id"`
+	PipelineID     string   `json:"pipeline_id"`
+	RevisionID     string   `json:"revision_id"`
+	RevisionDigest string   `json:"revision_digest"`
+	PlanDigest     string   `json:"plan_digest"`
+	DigestScope    string   `json:"digest_scope"`
+	AssignmentID   string   `json:"assignment_id,omitempty"`
+	Depth          int      `json:"depth"`
+	ParentRunID    string   `json:"parent_run_id,omitempty"`
+	InputNames     []string `json:"input_names"`
+	Priority       int      `json:"priority"`
+}
+
+// RunStartedPayload is run.started (§ 3 row 2). The repo snapshot names
+// commits, never paths (03 step 2).
+type RunStartedPayload struct {
+	ProjectID             string `json:"project_id"`
+	RunID                 string `json:"run_id"`
+	WorkerAffinityPresent bool   `json:"worker_affinity_present"`
+	RepoSnapshot          []any  `json:"repo_snapshot"`
+}
+
+// RunPausedPayload is run.paused (§ 3 row 3): pause stops future scheduling
+// only, so the honest payload names what is still in flight.
+type RunPausedPayload struct {
+	ProjectID        string   `json:"project_id"`
+	RunID            string   `json:"run_id"`
+	PausedReason     string   `json:"paused_reason"`
+	InFlightAttempts []string `json:"in_flight_attempts"`
+	RequestedBy      string   `json:"requested_by,omitempty"`
+}
+
+// RunResumedPayload is run.resumed (§ 3 row 4); PausedReason is the one
+// cleared.
+type RunResumedPayload struct {
+	ProjectID    string `json:"project_id"`
+	RunID        string `json:"run_id"`
+	PausedReason string `json:"paused_reason"`
+}
+
+// RunWaitingHumanPayload is run.waiting_human (§ 3 row 5), emitted when a
+// gate row is inserted. The scope waits, not the run (contract § 5.3).
+type RunWaitingHumanPayload struct {
+	ProjectID       string    `json:"project_id"`
+	RunID           string    `json:"run_id"`
+	ApprovalID      string    `json:"approval_id"`
+	NodeInstanceKey string    `json:"node_instance_key"`
+	DeadlineAt      time.Time `json:"deadline_at"`
+	ApproverRoles   []string  `json:"approver_roles"`
+}
+
+// RunRetriedPayload is run.retried (§ 3 row 6).
+type RunRetriedPayload struct {
+	ProjectID         string            `json:"project_id"`
+	RunID             string            `json:"run_id"`
+	RequestedBy       string            `json:"requested_by"`
+	Targets           []string          `json:"targets"`
+	InputNames        []string          `json:"input_names"`
+	WorkspacePolicies map[string]string `json:"workspace_policies"`
+}
+
+// Checkpoint is run.checkpoint_saved's boundary record (§ 3 row 7): digests
+// and refs only. No paths — the volume identity is the address (D-009's
+// durable boundary, ADR-0023 § 6; D-024 stays Open: same-volume only).
+type Checkpoint struct {
+	NodeInstanceKey string      `json:"node_instance_key"`
+	InputsDigest    string      `json:"inputs_digest"`
+	OutputsDigest   string      `json:"outputs_digest"`
+	RepoStates      []RepoState `json:"repo_states"`
+	ArtifactRefs    []any       `json:"artifact_refs"`
+	VolumeID        string      `json:"volume_id"`
+}
+
+// RepoState is one repository at a boundary: commits, not paths.
+type RepoState struct {
+	RepositoryID          string `json:"repository_id"`
+	BaseCommit            string `json:"base_commit"`
+	HeadCommit            string `json:"head_commit"`
+	ModifiedPathsArtifact string `json:"modified_paths_artifact,omitempty"`
+}
+
+// RunCheckpointSavedPayload is run.checkpoint_saved (§ 3 row 7), written by
+// the worker in the attempt's success transaction (ADR-0023 § 6).
+type RunCheckpointSavedPayload struct {
+	ProjectID  string     `json:"project_id"`
+	RunID      string     `json:"run_id"`
+	Checkpoint Checkpoint `json:"checkpoint"`
+}
+
+// RunCheckpointRestoredPayload is run.checkpoint_restored (§ 3 row 8):
+// emitted ONLY under retry.workspacePolicy: restore_checkpoint — its absence
+// beside a retry is what proves the run used continue_workspace.
+type RunCheckpointRestoredPayload struct {
+	ProjectID       string   `json:"project_id"`
+	RunID           string   `json:"run_id"`
+	NodeInstanceKey string   `json:"node_instance_key"`
+	FromCommit      string   `json:"from_commit"`
+	DiscardedPaths  []string `json:"discarded_paths"`
+}
+
+// RunCompletedPayload is run.completed (§ 3 row 9). completed means the
+// configured acceptance passed (01), not that anything merged.
+type RunCompletedPayload struct {
+	ProjectID       string         `json:"project_id"`
+	RunID           string         `json:"run_id"`
+	ResultBindings  map[string]any `json:"result_bindings"`
+	ArtifactRefs    []any          `json:"artifact_refs"`
+	IterationTotals map[string]int `json:"iteration_totals"`
+}
+
+// RunFailedPayload is run.failed (§ 3 row 10). FailedCause names the budget
+// when a budget caused it (max_duration_exceeded,
+// node_execution_budget_exceeded, child_depth_exceeded,
+// expression_eval_budget_exceeded, run_duration_exceeded).
+type RunFailedPayload struct {
+	ProjectID         string `json:"project_id"`
+	RunID             string `json:"run_id"`
+	FailedCause       string `json:"failed_cause"`
+	ErrorClass        string `json:"error_class"`
+	NodeInstanceKey   string `json:"node_instance_key,omitempty"`
+	Budget            string `json:"budget,omitempty"`
+	EvidenceArtifacts []any  `json:"evidence_artifacts"`
+}
+
+// RunCancelRequestedPayload is run.cancel_requested (§ 3 row 11): the API
+// flag plus the advancer's cascade (ADR-0023 § 10).
+type RunCancelRequestedPayload struct {
+	ProjectID   string   `json:"project_id"`
+	RunID       string   `json:"run_id"`
+	Cascade     bool     `json:"cascade"`
+	Children    []string `json:"children"`
+	RequestedBy string   `json:"requested_by,omitempty"`
+}
+
+// RunCancelledPayload is run.cancelled (§ 3 row 12), emitted once every
+// branch is terminal.
+type RunCancelledPayload struct {
+	ProjectID               string   `json:"project_id"`
+	RunID                   string   `json:"run_id"`
+	CancelledNodeExecutions []string `json:"cancelled_node_executions"`
+	CancelledAttempts       []string `json:"cancelled_attempts"`
+}
+
+// RunInterruptedPayload is run.interrupted (§ 3 row 13) — reconciler only,
+// never the dead process — with error_class: workspace_lost among its arms
+// and no auto-retry (case 20's honest arm).
+type RunInterruptedPayload struct {
+	ProjectID        string   `json:"project_id"`
+	RunID            string   `json:"run_id"`
+	Reason           string   `json:"reason"`
+	ErrorClass       string   `json:"error_class"`
+	NodeInstanceKeys []string `json:"node_instance_keys"`
+}
+
+// ---------------------------------------------------------- M4: node payloads
+
+// NodeExecutionSkippedPayload is node.execution_skipped (§ 3 row 14). Reason
+// is dependency_skipped, condition_default, case_not_selected or
+// for_each_zero_items_body_unreached (the zero-item edge case instead emits
+// node.scope.completed with items: 0).
+type NodeExecutionSkippedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	Reason          string `json:"reason"`
+}
+
+// NodeExecutionCancelledPayload is node.execution_cancelled (§ 3 row 15):
+// cascade, on_child_failure_stop or run_cancelled.
+type NodeExecutionCancelledPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	Reason          string `json:"reason"`
+}
+
+// NodeScopeStartedPayload is node.scope.started (§ 3 row 16).
+type NodeScopeStartedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	ScopeKey        string `json:"scope_key"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	Kind            string `json:"kind"`
+	Iteration       int    `json:"iteration,omitempty"`
+	Items           int    `json:"items,omitempty"`
+}
+
+// NodeScopeIterationPayload is node.scope.iteration (§ 3 row 17): case 7's
+// per-iteration evidence and case 8's fan-out accounting. PassWhenResult is
+// nil when the iteration failed before a predicate could be evaluated;
+// PredicateErrorDetail is the only place CEL text enters the journal,
+// bounded and redaction-scanned (ADR-0022 Security).
+type NodeScopeIterationPayload struct {
+	ProjectID            string `json:"project_id"`
+	RunID                string `json:"run_id"`
+	ScopeKey             string `json:"scope_key"`
+	NodeInstanceKey      string `json:"node_instance_key"`
+	Iteration            int    `json:"iteration,omitempty"`
+	Items                int    `json:"items,omitempty"`
+	PassWhenResult       *bool  `json:"pass_when_result"`
+	PredicateErrorDetail string `json:"predicate_error_detail,omitempty"`
+}
+
+// NodeScopeCompletedPayload is node.scope.completed (§ 3 row 18); the
+// zero-item edge case emits items: 0.
+type NodeScopeCompletedPayload struct {
+	ProjectID       string         `json:"project_id"`
+	RunID           string         `json:"run_id"`
+	ScopeKey        string         `json:"scope_key"`
+	NodeInstanceKey string         `json:"node_instance_key"`
+	Kind            string         `json:"kind"`
+	Iterations      int            `json:"iterations,omitempty"`
+	Items           int            `json:"items"`
+	ResultBindings  map[string]any `json:"result_bindings"`
+}
+
+// NodeScopeFailedPayload is node.scope.failed (§ 3 row 19). FailedCause is
+// until_exhausted, child_failed, predicate_error or child_run_failed — an
+// indeterminate predicate is a predicate_error that fails the scope at once,
+// never counted as false (cost exhaustion reports the class predicate_error
+// with the code predicate_cost_exceeded — § 6).
+type NodeScopeFailedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	ScopeKey        string `json:"scope_key"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	Kind            string `json:"kind"`
+	FailedCause     string `json:"failed_cause"`
+	Evidence        []any  `json:"evidence"`
+	Iterations      int    `json:"iterations_stopped,omitempty"`
+}
+
+// NodeAttemptStartedPayload is node.attempt.started (§ 3 row 20).
+// SessionResumed is the single field M4 claims about session behaviour
+// (`continue_live` is refused at validate, unsupported_session_mode).
+type NodeAttemptStartedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	AttemptNumber   int    `json:"attempt_number"`
+	ErrorClass      string `json:"error_class"`
+	WorkerAffinity  bool   `json:"worker_affinity"`
+	SandboxVerified bool   `json:"sandbox_verified"`
+	SessionResumed  *bool  `json:"session_resumed"`
+}
+
+// NodeAttemptCompletedPayload is node.attempt.completed (§ 3 row 21).
+// Outputs is the bounded inline copy (≤ 32 KiB, contract § 6); the digest is
+// what another process can verify.
+type NodeAttemptCompletedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	AttemptNumber   int    `json:"attempt_number"`
+	OutputsDigest   string `json:"outputs_digest"`
+	Outputs         any    `json:"outputs"`
+	ArtifactRefs    []any  `json:"artifact_refs"`
+	CheckpointSaved bool   `json:"checkpoint_saved"`
+}
+
+// NodeAttemptFailedPayload is node.attempt.failed (§ 3 row 22).
+type NodeAttemptFailedPayload struct {
+	ProjectID         string     `json:"project_id"`
+	RunID             string     `json:"run_id"`
+	NodeInstanceKey   string     `json:"node_instance_key"`
+	AttemptNumber     int        `json:"attempt_number"`
+	ErrorClass        string     `json:"error_class"`
+	Detail            string     `json:"detail"`
+	OutputErrors      []any      `json:"output_errors"`
+	NextAttemptNumber int        `json:"next_attempt_number,omitempty"`
+	ScheduledAt       *time.Time `json:"scheduled_at"`
+}
+
+// NodeAttemptInterruptedPayload is node.attempt.interrupted (§ 3 row 23).
+// Reason is lease_expired, worker_gone, worker_shutdown,
+// process_group_kill_timeout or human_takeover — reconciler rows for the
+// first two, the worker closing its own attempt honestly for the last three,
+// and never a claim of resume-without-loss.
+type NodeAttemptInterruptedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	AttemptNumber   int    `json:"attempt_number"`
+	Reason          string `json:"reason"`
+}
+
+// NodeAttemptCancelledPayload is node.attempt.cancelled (§ 3 row 24). Reason
+// is acp_cancel_ack, process_group_terminated or before_claim.
+type NodeAttemptCancelledPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	NodeInstanceKey string `json:"node_instance_key"`
+	AttemptNumber   int    `json:"attempt_number"`
+	Reason          string `json:"reason"`
+}
+
+// NodeAttemptRetryScheduledPayload is node.attempt.retry_scheduled (§ 3 row
+// 25): case 5's visible half — the backoff landing time is persisted, not
+// recomputed from a memory.
+type NodeAttemptRetryScheduledPayload struct {
+	ProjectID         string    `json:"project_id"`
+	RunID             string    `json:"run_id"`
+	NodeInstanceKey   string    `json:"node_instance_key"`
+	AttemptNumber     int       `json:"attempt_number"`
+	NextAttemptNumber int       `json:"next_attempt_number"`
+	ErrorClass        string    `json:"error_class"`
+	DelaySeconds      int       `json:"delay_seconds"`
+	ScheduledAt       time.Time `json:"scheduled_at"`
+}
+
+// ---------------------------------------------------------- M4: approval payloads
+
+// ApprovalRequestedPayload is approval.requested (§ 3 row 26). The summary is
+// digested, never copied: a gate summary may embed another node's output and
+// the journal is readable by every project member; the full text is a
+// GET /approvals/{approvalId} fetch.
+type ApprovalRequestedPayload struct {
+	ProjectID       string    `json:"project_id"`
+	RunID           string    `json:"run_id"`
+	ApprovalID      string    `json:"approval_id"`
+	NodeInstanceKey string    `json:"node_instance_key"`
+	SummaryDigest   string    `json:"summary_digest"`
+	ArtifactRefs    []any     `json:"artifact_refs"`
+	DeadlineAt      time.Time `json:"deadline_at"`
+	OnTimeout       string    `json:"on_timeout"`
+	ApproverRoles   []string  `json:"approver_roles"`
+	ApproverUserIDs []string  `json:"approver_user_ids"`
+}
+
+// ApprovalDecidedPayload is approval.decided (§ 3 row 27). CommentsPresent is
+// the honest boolean: the comment body is not journal material.
+type ApprovalDecidedPayload struct {
+	ProjectID       string `json:"project_id"`
+	RunID           string `json:"run_id"`
+	ApprovalID      string `json:"approval_id"`
+	Decision        string `json:"decision"`
+	CommentsPresent bool   `json:"comments_present"`
+	Version         int    `json:"version"`
+	DecidedBy       string `json:"decided_by"`
+}
+
+// ApprovalExpiredPayload is approval.expired (§ 3 row 28): the reconciler
+// pass-2 arm; re_requested marks the exactly-once second gate.
+type ApprovalExpiredPayload struct {
+	ProjectID   string `json:"project_id"`
+	RunID       string `json:"run_id"`
+	ApprovalID  string `json:"approval_id"`
+	OnTimeout   string `json:"on_timeout"`
+	ReRequested bool   `json:"re_requested"`
+}
+
+// ApprovalDeniedPayload is approval.denied (§ 3 row 29): approver_lost_access,
+// not_a_designated_approver, already_decided or run_terminal.
+type ApprovalDeniedPayload struct {
+	ProjectID  string `json:"project_id"`
+	RunID      string `json:"run_id"`
+	ApprovalID string `json:"approval_id"`
+	Reason     string `json:"reason"`
+}
+
+// ApprovalCancelledPayload is approval.cancelled (§ 3 row 30): run_cancelled
+// or superseded.
+type ApprovalCancelledPayload struct {
+	ProjectID  string `json:"project_id"`
+	RunID      string `json:"run_id"`
+	ApprovalID string `json:"approval_id"`
+	Reason     string `json:"reason"`
+}
+
+// ------------------------------------------------- M4: pipeline library payloads
+
+// PipelineCreatedPayload is § 3 row 31.
+type PipelineCreatedPayload struct {
+	ProjectID  string `json:"project_id"`
+	PipelineID string `json:"pipeline_id"`
+	Slug       string `json:"slug"`
+}
+
+// PipelineDraftUpdatedPayload is § 3 row 32 — the audit trail for editor
+// churn: hashes and versions, never the document body.
+type PipelineDraftUpdatedPayload struct {
+	ProjectID    string `json:"project_id"`
+	DraftID      string `json:"draft_id"`
+	Version      int    `json:"version"`
+	SourceSHA256 string `json:"source_sha256"`
+	EditedBy     string `json:"edited_by"`
+	Kind         string `json:"kind"`
+}
+
+// PipelineDraftValidatedPayload is § 3 row 33: codes only, so the journal
+// records *what* failed without cloning the editor's payload.
+type PipelineDraftValidatedPayload struct {
+	ProjectID      string   `json:"project_id"`
+	DraftID        string   `json:"draft_id"`
+	Valid          bool     `json:"valid"`
+	RevisionDigest string   `json:"revision_digest,omitempty"`
+	PlanDigest     string   `json:"plan_digest,omitempty"`
+	ErrorCount     int      `json:"error_count"`
+	ErrorCodes     []string `json:"error_codes"`
+}
+
+// PipelineRevisionPublishedPayload is § 3 row 34 — 09's name, kept. Every
+// digest is a § 1 CHECK shape: these are the values a run pins (ADR-0002).
+type PipelineRevisionPublishedPayload struct {
+	ProjectID      string `json:"project_id"`
+	PipelineID     string `json:"pipeline_id"`
+	RevisionID     string `json:"revision_id"`
+	RevisionNumber int    `json:"revision_number"`
+	VersionLabel   string `json:"version_label"`
+	RevisionDigest string `json:"revision_digest"`
+	PlanDigest     string `json:"plan_digest"`
+	DigestScope    string `json:"digest_scope"`
+	SchemaDigest   string `json:"schema_digest"`
+	CelEnvDigest   string `json:"cel_env_digest"`
+}
+
+// PipelineRevisionDeprecatedPayload is § 3 row 35: the digest pins WHICH
+// revision, so the journal survives a later publish shadowing the id.
+type PipelineRevisionDeprecatedPayload struct {
+	ProjectID      string `json:"project_id"`
+	RevisionID     string `json:"revision_id"`
+	RevisionDigest string `json:"revision_digest"`
+}
+
+// -------------------------------------------------------- M4: assignment payloads
+
+// AssignmentCreatedPayload is § 3 row 36: the pin plus the ceilings, the
+// whole M4 assignment (channels and promotes stay M6).
+type AssignmentCreatedPayload struct {
+	ProjectID         string         `json:"project_id"`
+	AssignmentID      string         `json:"assignment_id"`
+	PipelineID        string         `json:"pipeline_id"`
+	PinnedRevisionID  string         `json:"pinned_revision_id"`
+	RevisionDigest    string         `json:"revision_digest"`
+	MaxConcurrentRuns int            `json:"max_concurrent_runs"`
+	BudgetOverrides   map[string]any `json:"budget_overrides"`
+}
+
+// AssignmentUpdatedPayload is § 3 row 36: the created shape plus the
+// before{}/after{} snapshot of only the changed members.
+type AssignmentUpdatedPayload struct {
+	ProjectID         string         `json:"project_id"`
+	AssignmentID      string         `json:"assignment_id"`
+	PipelineID        string         `json:"pipeline_id"`
+	PinnedRevisionID  string         `json:"pinned_revision_id"`
+	RevisionDigest    string         `json:"revision_digest"`
+	MaxConcurrentRuns int            `json:"max_concurrent_runs"`
+	BudgetOverrides   map[string]any `json:"budget_overrides"`
+	Before            map[string]any `json:"before"`
+	After             map[string]any `json:"after"`
 }

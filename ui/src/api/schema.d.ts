@@ -1002,6 +1002,773 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/pipelines": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the organization's pipeline library
+     * @description Pipeline definitions with their revision roll-up, ordered by `slug`. Organization member or above; the list carries no documents, so no library content leaks before membership is checked. M4 has no pagination (same ordered-list idiom as the other lists).
+     */
+    get: operations["listPipelines"];
+    put?: never;
+    /**
+     * Create a pipeline definition (no revision, no run)
+     * @description Creates the *logical* definition only — the mutable-draft → immutable- revision lifecycle starts at `POST /pipelines/{pipelineId}/drafts`. Requires the library role (`01` "Publish shared pipeline revision"). `{slug, display_name, description}`; `slug` matches `^[a-z][a-z0-9.-]{0,127}$` and is unique in the organization (duplicate is `409`). Appends `pipeline.created` in the creating transaction.
+     */
+    post: operations["createPipeline"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/pipelines/{pipelineId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one definition with its revision summaries
+     * @description The definition plus `revisions[]` summaries (never document bodies — that content arrives through `GET /revisions/{digestOrId}`). A pipeline of another organization is `404`, not `403`. Organization member+.
+     */
+    get: operations["getPipeline"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Rename, describe or archive a definition
+     * @description Metadata only — this route *cannot* touch a revision, a draft or a run (ADR-0002: published revisions are immutable; existing runs keep their pinned revision). `archived: true` hides the pipeline from new assignments; it does not cancel running ones. Library role.
+     */
+    patch: operations["updatePipeline"];
+    trace?: never;
+  };
+  "/api/v1/pipelines/{pipelineId}/revisions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a pipeline's immutable revisions (summaries)
+     * @description Newest revision first. The summary carries the identity and both digests — `revision_number`, `version_label`, `revision_digest`, `plan_digest`, `digest_scope`, `published_at`, `published_by`, `status` — and **never** the document body: the body is a `GET /revisions/{digestOrId}` fetch. Organization member+.
+     */
+    get: operations["listPipelineRevisions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/pipelines/{pipelineId}/drafts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a pipeline's drafts
+     * @description `id`, `status`, `version`, `updated_at`, `edited_by` per row, newest `updated_at` first (`pipeline_drafts_pipeline_idx`). Drafts are the only mutable pipeline objects, so the list is where an editor finds its way back to uncommitted work. Organization member+.
+     */
+    get: operations["listPipelineDrafts"];
+    put?: never;
+    /**
+     * Start a draft from a document or by cloning a revision
+     * @description Exactly one of `document_yaml` (a new document; `source_kind` becomes `manual` or `yaml_import`) or `from_revision_id` (clone: the revision's canonical document seeds the draft). Either way the server records `source_sha256` over the bytes it received — the same hash the next `validate`/`publish` compares against, which is what makes `draft_changed_since_validation` a fact rather than a guess. Contributor+.
+     */
+    post: operations["createPipelineDraft"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/drafts/{draftId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read a draft with its last validation result
+     * @description `{document_yaml, ui_layout, status, version, validation}` — `validation` is the last `POST /validate` body verbatim, so an editor reload does not need to revalidate to show its problems panel. The `metadata.ui` block is *served* from here and never participates in a digest (ADR-0021 § 5: ui survives a reformat, dies on a structural edit). Contributor+, resolved through the draft's pipeline organization.
+     */
+    get: operations["getDraft"];
+    /**
+     * Replace a draft's document (compare-and-swap)
+     * @description `{document_yaml, version}`. A `version` other than the draft's current one is `409` `stale_draft_version` carrying the winner's version — two open editor tabs must not silently overwrite each other. The stored `metadata.ui` is re-resolved from the new document. Every accepted write appends `pipeline.draft.updated` (ids, version and the new `source_sha256` — never the body). Document beyond 256 KiB is `422` (`document_too_large` is a loader code, and the DB CHECK bounds the column). Contributor+.
+     */
+    put: operations["putDraft"];
+    post?: never;
+    /**
+     * Discard an unpublished draft
+     * @description A draft whose `status` is `published` is `409` — it is the audit trail of a live revision, not discardable material. Anything else is removed; drafts have no other delete path. Contributor+.
+     */
+    delete: operations["deleteDraft"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/drafts/{draftId}/validate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Validate a draft against the schema, loader rules and compiler
+     * @description The validation contract is `docs/m4-contract.md` § 2.2: the response carries `valid`, both digests and `digest_scope` on success, and `errors[]` sorted by `(instance_location, schema_location, code, message)` otherwise. `source` is `loader`, `schema` or `compiler`, and the three sources are **ordered, not merged**: loader rules gate the JSON the schema validator sees, schema units convert 1:1 (`instanceLocation`/`keywordLocation` → snake_case), then the compiler names the classes only it can see (duplicate ids, cycles, dangling references, secret literals, undeclared CEL fields). Error codes are a public contract — the editor's help links and the assistant's fixes name them, so adding a code is additive and renaming one is not. `secret_literal_detected` is a block, not a warning, and the response never quotes an offending value (ADR-0021 Security). On success the draft stores the `canonical_document`, both digests, the `compiled_plan` and `plan_digest`; the draft's `validation` member (what `GET /drafts/{draftId}` echoes) becomes this body. At most 200 errors, then `notes` gains `errors_truncated`. Contributor+.
+     */
+    post: operations["validateDraft"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/drafts/{draftId}/publish": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Publish the draft as an immutable revision
+     * @description Four gates, each with its own `409`/`422` (never a silent revalidate): the draft's *current* `validation` must be `valid` at the same `source_sha256` (`draft_changed_since_validation`), the carried `version` must match (`stale_draft_version`), the caller must hold the library role (`403`), and the document must have no unresolved `NodeTemplate` reference (`unresolved_node_template`). A not-valid draft is `draft_not_valid`. Success creates the `pipeline_revisions` row (both digests, the regenerated `document_text`, `revision_number` and `version_label` unique per pipeline) and flips the draft to `published`, immutable, pointing at the revision. A document whose `revision_digest` already exists in the organization is `409` `revision_already_published` carrying the existing revision id (`UNIQUE (organization_id, revision_digest)` — `09`'s rule made structural). Appends `pipeline.revision.published`.
+     */
+    post: operations["publishDraft"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/revisions/{digestOrId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Resolve a revision by id or revision digest
+     * @description The path segment is either a revision `uuid` or a `revision_digest` (`sha256:<64 hex>`). A digest that exists only in another organization is `404`, byte-identical to a nonsense digest — cross-tenant digests are not a lookup surface. The record includes `canonical_document` and the **regenerated** `document_text` (ADR-0021 § 5: anchors and merge keys do not survive canonicalization, so the regenerated text is the honest textual form). Organization member+.
+     */
+    get: operations["getRevision"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/revisions/{revisionId}/document": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The revision's YAML, regenerated from the canonical document
+     * @description `?format=yaml` is the only supported value (anything else is `422`). The bytes are regenerated from `canonical_document`, not replayed from what the author typed, so a download-and-republish round trip canonicalizes to the same digest. Organization member+.
+     */
+    get: operations["getRevisionDocument"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/revisions/{revisionId}/deprecate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Deprecate a revision without touching any run
+     * @description Sets the revision's `status` to `deprecated`. Existing runs keep their pinned revision and finish untouched (ADR-0002); assignments keep their pin until an explicit re-pin — deprecation is a signal to humans, not an execution kill switch. There is no delete path for a revision at all. Library role.
+     */
+    post: operations["deprecateRevision"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/schemas/pipeline-v1alpha1": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The served pipeline validation schema
+     * @description `api/schemas/pipeline-v1alpha1.schema.json` verbatim as `application/json`, `$id` and all, so the UI never bundles a copy that can drift from the compiler's (ADR-0021 § 7). Session required, no membership check — the schema is public structure, not tenant content.
+     */
+    get: operations["getPipelineSchema"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/assignments": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's pipeline assignments
+     * @description Each assignment with its pinned revision's identity and digests, plus the *effective* ceilings after `budget_overrides` — what a run of this assignment will actually be bounded by, not the raw columns. Viewer+.
+     */
+    get: operations["listProjectAssignments"];
+    put?: never;
+    /**
+     * Assign a pipeline to a project at a pinned revision
+     * @description `{pipeline_id, pinned_revision_id, max_concurrent_runs, budget_overrides}`. One assignment per `(project, pipeline)` — a second is `409` (`UNIQUE (project_id, pipeline_id)`); the row is re-pinned through `PATCH`, never replaced. A `budget_overrides` value that *raises* a ceiling above the pipeline's declared budget is `400` `budget_overrides_may_only_lower`: an assignment is a governor, not an upgrade path (`07` "Budget/limit layers"). The pinned revision must be published and in the caller's organization (`404` otherwise). Maintainer+. Appends `assignment.created`.
+     */
+    post: operations["createProjectAssignment"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/assignments/{assignmentId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /**
+     * Remove an assignment
+     * @description Stops future `POST /runs` through this assignment. Runs already created keep their pinned revision and `policies_snapshot` and finish under the rules they started with (`09`: assignment removal does not affect running runs). Maintainer+.
+     */
+    delete: operations["deleteAssignment"];
+    options?: never;
+    head?: never;
+    /**
+     * Re-pin a revision, change budgets or disable
+     * @description Re-pinning is *explicit promotion* (`07` "Version rollout"): it takes effect at **new run creation only** — every queued or running run keeps the revision it pinned at creation together with its `policies_snapshot` (ADR-0002, `12` case 11). Budget edits follow the same rule: a running run is governed by its snapshot, not by this row. `enabled: false` stops new runs and leaves existing ones alone. Appends `assignment.updated` with the `before`/`after` pair. Maintainer+.
+     */
+    patch: operations["patchAssignment"];
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's runs
+     * @description Newest first (`created_at DESC, id DESC`, `runs_project_created_idx`). Carries `status`, both digests, `depth`, `parent_run_id` and the timing columns; a child run is listed beside its siblings with its `parent_run_id` set, because the tree route is the *relationship* view and this is the *activity* view. Viewer+. M4 has no pagination.
+     */
+    get: operations["listProjectRuns"];
+    put?: never;
+    /**
+     * Start a run at a pinned revision (idempotent)
+     * @description Exactly one of `assignment_id` (the assignment's pinned revision and run ceilings) or `pipeline_revision_id` (a direct revision pin, no assignment budgets). In **one transaction** the run resolves and pins `pipeline_revision_id`, `revision_digest`, `plan_digest`, `plan_snapshot`, `policies_snapshot` and `repo_snapshot` (starting base commits, `03` step 2) — after this response a library edit cannot reach the run (`12` case 11) — validates `inputs` against `spec.inputs` (`422` with validate-style locations on a missing or mistyped input; absent optional inputs take their declared defaults, and `run_inputs` records which origin each value came from), enforces `assignments.max_concurrent_runs` at creation, and appends `run.created`. `Idempotency-Key` (the header, or the `idempotency` body member; the header wins) per ADR-0023 § 12: the same key with the same `request_sha256` re-answers `200` with the stored run — a retried click is not a second run (`12` case 1) — and the same key with a different body is `409` `idempotency_key_mismatch`, never an update. Keys are scoped per project and expire after 24 h. Contributor+.
+     */
+    post: operations["createRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one run — pinned identity, status and honest placement
+     * @description Both digests, status, `failed_cause`, `paused_reason`, `depth`, `parent_run_id`, timing, `expression_evaluations` and the validated `inputs`. `worker_affinity` is reported **as a boolean placement view only** (`{scheduled, reason}`): worker ids beyond what M3 already exposes are not browser knowledge. `queued` with `placement.scheduled: false` and reason `volume_affinity_unsatisfied` is the honest "waiting for the run's worker" answer (ADR-0023 § 4/§ 5): the affinity is a one-way door set by the worker that prepared the workspace, and M4 never rebinds, migrates or pretends otherwise. Viewer+.
+     */
+    get: operations["getRun"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/nodes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Every node execution of a run
+     * @description One row per node execution, ordered by `node_instance_key`: the path identity (`/build_until_verified[2]/review` — node ids plus iteration/index suffixes, never a position index, `01` invariant 6), the kind verbatim from the catalogue, `execution_location`, status, business `outcome`, `error_class`, attempt accounting, `in_flight` (fan-out accounting), `waiting_reason`, artifact refs and `depends_on`. Control-plane scope nodes additionally carry `iterations`/`items`. Viewer+.
+     */
+    get: operations["listRunNodes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/nodes/{nodeExecutionId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * One node execution with its attempts, checkpoint and outputs
+     * @description The node execution, its full attempt history (`attempts[]`, append-only — a retry never rewrites an earlier attempt, `01`), its checkpoint row when one exists, its validated `outputs`, and the CEL envelope the node publishes to its scope's bindings: `{status, outcome, outputs, artifact_refs}` — the exact object an expression against this node reads (ADR-0022 § 3; a skipped or unscheduled node's envelope is visible too, which is what makes a `when` decision explainable after the fact). Attempts here follow the same field rules as `GET /attempts/{attemptId}`: no worker id, no fencing token, no lease deadline. Viewer+.
+     */
+    get: operations["getRunNode"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/tree": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The child-run tree rooted at this run
+     * @description `pipeline_invocations` joined to children, recursively, depth-limited by the `runs.depth` ceiling (root 0, maximum 2 — a third level is refused by both the compiler `child_depth_exceeded` check and a DB CHECK). Each node names the `pipeline_invocations` facts (which node execution invoked it, its wait policy) beside the child run summary. Children under a `detach` wait policy would remain visible even when the parent's cancellation does not reach them — M4 refuses `detach` at validate time (ADR-0024 § 4), so no M4 tree has one. Viewer+.
+     */
+    get: operations["getRunTree"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/checkpoints": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * The run's durable boundary records
+     * @description One record per succeeded worker node execution (`run_checkpoints`): `node_instance_key`, inputs/outputs digests, per-repository `repo_states` (base/head commits plus the modified-paths artifact) and `volume_id`. This is the API answer to "what does a retry inherit?" — and, being same-volume records only (D-024 stays **Open**), the honest limit of what a retry *can* inherit. Absolute paths are absent by design; a `volume_id` (`sha256:<64 hex>`) is the identity M3 already defined as honest. Viewer+.
+     */
+    get: operations["listRunCheckpoints"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/pause": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Stop future scheduling (in-flight attempts finish honestly)
+     * @description Sets `status: paused`, `paused_reason: manual`, and stops the advancer *creating new work* (ADR-0023 § 10): live attempts keep their leases and report their real outcomes — a pause never rewrites an in-flight unit as cancelled. `run.paused` names the `in_flight_attempts[]` that continued past the pause. A run that is `waiting_human` (its gate is the wait), already `paused`, or terminal is `409`. Contributor+.
+     */
+    post: operations["pauseRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/resume": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Resume a paused run
+     * @description `paused → queued`; the advancer re-derives every node's readiness from row state (never from a memory), so a resume behaves identically after any number of replica restarts (`02` recovery semantics). `run.resumed` names the `paused_reason` it cleared — including `human_takeover`, which `return-control` clears with the recorded intervention as the next attempt's `retry_context` (ADR-0016 § 5, unchanged by M4). A non-`paused` run is `409`. Contributor+.
+     */
+    post: operations["resumeRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Request cancellation (cascades to child runs)
+     * @description Sets `cancel_requested_at` and returns; this response is a *request*, not proof anything stopped. The advancer cancels `queued`/`ready` rows, marks live attempts cancel-requested (the worker closes them under its valid fence), and recurses into `pipeline_invocations` children, writing `run.cancel_requested` with `cascade: true` and the `children[]` ids (ADR-0023 § 10). The run reaches `cancelled` only when every branch is terminal, and then `run.cancelled` names the `cancelled_node_executions[]` and `cancelled_attempts[]`. An already-terminal run is `409`. Contributor+.
+     */
+    post: operations["cancelRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/retry": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Retry failed, interrupted or cancelled node executions
+     * @description Targets default to every non-succeeded terminal node execution, or the named `node_instance_keys[]`. Scope bookkeeping is recomputed so an `until` loop restarts its dead iteration, not the whole loop (ADR-0023 § 6). Re-queues attempts carrying `retry_context` (what the last attempt knew: attempt number, error class, head commit, modified-path count); a node declaring `retry.workspacePolicy: restore_checkpoint` additionally requires every repository to be committed at that boundary — otherwise `409` `checkpoint_unavailable` and *nothing* is reset (a destructive default would be a data-loss bug wearing a feature badge, `12` C6d). The default policy is `continue_workspace`: the interrupted unit's edits stay where they are and the retry is *told* about them. Retry-time `inputs` overrides are recorded as run inputs (attempt-level `overrides` are visible on the attempt; `run.override.applied` is reserved and not emitted, ADR-0024 § 3). `409` `run_not_retriable` on a `running` or completed run. Contributor+. Appends `run.retried`.
+     */
+    post: operations["retryRun"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/runs/{runId}/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Stream one run's durable events (SSE)
+     * @description `text/event-stream` of this run's rows from the `domain_events` journal,
+     *     selected by the `domain_events.run_id` column M4's migration adds (the
+     *     partial index `(run_id, global_seq)`). Framing, `global_seq` resume,
+     *     gap-safety, the `: heartbeat` comment and the `Last-Event-ID`
+     *     beats-`?after=` rule are identical to
+     *     `GET /api/v1/projects/{projectId}/events` (ADR-0014 § 5, § 9).
+     *     Authorization is the run's project membership, re-checked at subscribe
+     *     **and** before each flush (the removed-member rule, unchanged).
+     *     `domain_events.attempt_id` is populated on every worker row so an
+     *     attempt's slice of the stream is derivable from the envelope members
+     *     alone; an attempt-scoped query parameter is a later addition.
+     *
+     *     M4 adds the three optional envelope correlation members `run_id`,
+     *     `node_execution_id` and `attempt_id` (additive, ADR-0014 § 8: an
+     *     additive member is not a version bump, and consumers ignore what they
+     *     do not know). The correlation rule, stated once: a worker row that
+     *     touches a node execution sets all three columns (not only the payload
+     *     copies); a control-plane row may carry `node_execution_id` with
+     *     `attempt_id` null, because control-plane work creates no attempts
+     *     (ADR-0023 § 3); reconciler rows are `actor.kind: system`.
+     *
+     *     These M4 types also arrive on the project stream (every payload carries
+     *     `project_id`); the run stream is the filtered view. Payload members
+     *     beyond the envelope's own ids (payload structs are one shape for the
+     *     control plane and the worker — `internal/pipelines/events/events.go`
+     *     until the M4 merge into `internal/events/events.go`, member sets pinned
+     *     by `events_test.go`):
+     *
+     *     | `type` | `payload` members |
+     *     |---|---|
+     *     | `run.created` | `project_id`, `run_id`, `pipeline_id`, `revision_id`, `revision_digest`, `plan_digest`, `digest_scope`, `assignment_id`, `depth`, `parent_run_id`, `input_names`, `priority` |
+     *     | `run.started` | `project_id`, `run_id`, `worker_affinity_present`, `repo_snapshot` |
+     *     | `run.paused` | `project_id`, `run_id`, `paused_reason`, `in_flight_attempts`, `requested_by` |
+     *     | `run.resumed` | `project_id`, `run_id`, `paused_reason` |
+     *     | `run.waiting_human` | `project_id`, `run_id`, `approval_id`, `node_instance_key`, `deadline_at`, `approver_roles` |
+     *     | `run.retried` | `project_id`, `run_id`, `requested_by`, `targets`, `input_names`, `workspace_policies` |
+     *     | `run.checkpoint_saved` | `project_id`, `run_id`, `checkpoint` |
+     *     | `run.checkpoint_restored` | `project_id`, `run_id`, `node_instance_key`, `from_commit`, `discarded_paths` |
+     *     | `run.completed` | `project_id`, `run_id`, `result_bindings`, `artifact_refs`, `iteration_totals` |
+     *     | `run.failed` | `project_id`, `run_id`, `failed_cause`, `error_class`, `node_instance_key`, `budget`, `evidence_artifacts` |
+     *     | `run.cancel_requested` | `project_id`, `run_id`, `cascade`, `children`, `requested_by` |
+     *     | `run.cancelled` | `project_id`, `run_id`, `cancelled_node_executions`, `cancelled_attempts` |
+     *     | `run.interrupted` | `project_id`, `run_id`, `reason`, `error_class`, `node_instance_keys` |
+     *     | `node.execution_skipped` | `project_id`, `run_id`, `node_instance_key`, `reason` |
+     *     | `node.execution_cancelled` | `project_id`, `run_id`, `node_instance_key`, `reason` |
+     *     | `node.scope.started` | `project_id`, `run_id`, `scope_key`, `node_instance_key`, `kind`, `iteration`, `items` |
+     *     | `node.scope.iteration` | `project_id`, `run_id`, `scope_key`, `node_instance_key`, `iteration`, `items`, `pass_when_result`, `predicate_error_detail` |
+     *     | `node.scope.completed` | `project_id`, `run_id`, `scope_key`, `node_instance_key`, `kind`, `iterations`, `items`, `result_bindings` |
+     *     | `node.scope.failed` | `project_id`, `run_id`, `scope_key`, `node_instance_key`, `kind`, `failed_cause`, `evidence`, `iterations_stopped` |
+     *     | `node.attempt.started` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `error_class`, `worker_affinity`, `sandbox_verified`, `session_resumed` |
+     *     | `node.attempt.completed` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `outputs_digest`, `outputs`, `artifact_refs`, `checkpoint_saved` |
+     *     | `node.attempt.failed` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `error_class`, `detail`, `output_errors`, `next_attempt_number`, `scheduled_at` |
+     *     | `node.attempt.interrupted` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `reason` |
+     *     | `node.attempt.cancelled` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `reason` |
+     *     | `node.attempt.retry_scheduled` | `project_id`, `run_id`, `node_instance_key`, `attempt_number`, `next_attempt_number`, `error_class`, `delay_seconds`, `scheduled_at` |
+     *     | `approval.requested` | `project_id`, `run_id`, `approval_id`, `node_instance_key`, `summary_digest`, `artifact_refs`, `deadline_at`, `on_timeout`, `approver_roles`, `approver_user_ids` |
+     *     | `approval.decided` | `project_id`, `run_id`, `approval_id`, `decision`, `comments_present`, `version`, `decided_by` |
+     *     | `approval.expired` | `project_id`, `run_id`, `approval_id`, `on_timeout`, `re_requested` |
+     *     | `approval.denied` | `project_id`, `run_id`, `approval_id`, `reason` |
+     *     | `approval.cancelled` | `project_id`, `run_id`, `approval_id`, `reason` |
+     *     | `pipeline.created` | `project_id`, `pipeline_id`, `slug` |
+     *     | `pipeline.draft.updated` | `project_id`, `draft_id`, `version`, `source_sha256`, `edited_by`, `kind` |
+     *     | `pipeline.draft.validated` | `project_id`, `draft_id`, `valid`, `revision_digest`, `plan_digest`, `error_count`, `error_codes` |
+     *     | `pipeline.revision.published` | `project_id`, `pipeline_id`, `revision_id`, `revision_number`, `version_label`, `revision_digest`, `plan_digest`, `digest_scope`, `schema_digest`, `cel_env_digest` |
+     *     | `pipeline.revision.deprecated` | `project_id`, `revision_id`, `revision_digest` |
+     *     | `assignment.created` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides` |
+     *     | `assignment.updated` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides`, `before`, `after` |
+     *
+     *     Nested shapes (named here because the payload member is the object's
+     *     name; none of it carries a path, a secret value, a prompt body, a
+     *     fencing token or a lease deadline — the same structural rule M3's
+     *     payload tests pin for its own types):
+     *     `run.checkpoint_saved`'s `checkpoint` is `{node_instance_key,
+     *     inputs_digest, outputs_digest, repo_states, artifact_refs, volume_id}`
+     *     with each `repo_state` `{repository_id, base_commit, head_commit,
+     *     modified_paths_artifact}` — **no paths**, the volume identity is the
+     *     address (D-009's durable boundary, ADR-0023 § 6).
+     *     `approval.requested` carries `summary_digest`, not the summary text:
+     *     a gate summary may embed another node's output, and the journal is
+     *     readable by every project member (`12` C11's vector); the full text is
+     *     a `GET /approvals/{approvalId}` fetch. `pipeline.draft.validated`
+     *     carries codes only (`error_codes`), so the journal records *what*
+     *     failed without cloning the editor's payload; its audit trail for editor
+     *     churn is `pipeline.draft.updated`, which never carries the document
+     *     body either. `run.completed`'s `result_bindings` is the run's
+     *     configured output bindings (`03`); `completed` means the configured
+     *     acceptance passed (`01`), **not** merged. `run.failed`'s `failed_cause`
+     *     names the budget when a budget caused it (`max_duration_exceeded`,
+     *     `node_execution_budget_exceeded`, `child_depth_exceeded`,
+     *     `expression_eval_budget_exceeded`, `run_duration_exceeded`).
+     *     `run.interrupted` is emitted by the reconciler only — never by the dead
+     *     process — with `error_class: workspace_lost` among its arms and no
+     *     auto-retry (case 20's honest arm). `node.attempt.started`'s
+     *     `session_resumed` is the single field M4 claims about session
+     *     behaviour (`continue_live` is refused at validate,
+     *     `unsupported_session_mode`).
+     *
+     *     Enumerated values, spelled exactly: `node.execution_skipped`'s `reason`
+     *     is `dependency_skipped`, `condition_default`, `case_not_selected` or
+     *     `for_each_zero_items_body_unreached` (03's zero-item edge case emits
+     *     `node.scope.completed` with `items: 0`, not a skip);
+     *     `node.execution_cancelled`'s `reason` is `cascade`,
+     *     `on_child_failure_stop` or `run_cancelled`; `node.scope.failed`'s
+     *     `failed_cause` is `until_exhausted`, `child_failed`, `predicate_error`
+     *     or `child_run_failed` — an *indeterminate* predicate is a
+     *     `predicate_error` that fails the scope at once, never counted as false
+     *     (ADR-0022 § 3; cost exhaustion reports the class
+     *     `predicate_error` with the code `predicate_cost_exceeded`, one event,
+     *     two names, § 6); `node.attempt.interrupted`'s `reason` is
+     *     `lease_expired`, `worker_gone`, `worker_shutdown`,
+     *     `process_group_kill_timeout` or `human_takeover` — reconciler rows for
+     *     the first two, the worker closing its own attempt honestly for the last
+     *     three, and never a claim of resume-without-loss;
+     *     `node.attempt.cancelled`'s `reason` is `acp_cancel_ack`,
+     *     `process_group_terminated` or `before_claim`; every `error_class`
+     *     member carries ADR-0023 § 7's enum (`infra`, `interrupted`, `timeout`,
+     *     `agent_error`, `invalid_output`, `predicate_error`,
+     *     `sandbox_enforcement_failed`, `workspace_lost`, `binding_error`,
+     *     `approval_expired`, `cancelled`); `approval.denied`'s `reason` is
+     *     `approver_lost_access`, `not_a_designated_approver`, `already_decided`
+     *     or `run_terminal`; `approval.cancelled`'s is `run_cancelled` or
+     *     `superseded`; `on_timeout` is `fail`, `cancel_run` or `expire` (where
+     *     `expire` re-requests exactly once, `re_requested` marks the second
+     *     gate). CEL failure text enters the journal only as
+     *     `predicate_error_detail`, truncated to 512 bytes and
+     *     redaction-scanned (ADR-0022 Security).
+     *
+     *     `run.override.applied` is **reserved and NOT emitted** by M4
+     *     (ADR-0024 § 3): the name is fixed here so M5 can land it without
+     *     renaming the wire; an M4 journal never carries it. M4's overrides are
+     *     visible on the attempt row (`overrides`) and in `run.retried`.
+     *
+     *     The types reused unchanged from M2/M3 arrive on this stream too when
+     *     their correlation ids name the run — `conversation.*` and
+     *     `agent.session.*` (an `agent.acp` attempt owns a conversation and a
+     *     turn), `workspace.prepared|committed|quarantined|released|recovery_lost`
+     *     (now with `scope_kind: run`), `sandbox.verified`,
+     *     `sandbox.enforcement_failed`, `secret.materialized|removed|
+     *     materialization_failed` (the `lifecycle: node_attempt` arm ADR-0018
+     *     reserved), `artifact.created|deleted`, `repository.mirror_updated` —
+     *     and M4 adds no payload member to any of them. Their vocabularies are
+     *     documented on the project and conversation streams.
+     */
+    get: operations["streamRunEvents"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/attempts/{attemptId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one attempt's execution record
+     * @description Status, `error_class`, the bounded (≤ 512 bytes, redaction-scanned) `detail`, `output_errors` (the `invalid_output` evidence: one unit per schema violation), `scheduled_at` — the *computed* backoff landing time, which is what makes a retry's promise durable rather than a memory — `deadline_at` (the node's `timeoutSeconds`), `overrides`, `retry_context` (what the previous attempt knew: attempt number, error class, head commit, modified-path count), artifact refs, and the conversation/turn pair an `agent.acp` attempt owns (both null until the attempt claims one; `attempts_agent_turn_pair` makes half a pair unrepresentable). **Never** `worker_id`, `fencing_token` or `lease_expires_at`: lease machinery is asserted server-side and a browser cannot participate in lease arbitration (ADR-0016 § 8, unchanged). Viewer+.
+     */
+    get: operations["getAttempt"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{projectId}/approvals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Pending and decided gates for the project's runs
+     * @description The UI's "needs attention" list: pending gates first, ordered by `deadline_at` (the one about to expire is the urgent one), then decided history newest first. These are the durable pipeline gates (`approval_requests`), *not* the ACP permission prompts of M2 (`permission_requests`): different table, different authorizer, different CAS (ADR-0023 § 9 keeps the two names apart on purpose). Viewer+.
+     */
+    get: operations["listProjectApprovals"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/approvals/{approvalId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one gate
+     * @description The summary in full (this route is the evidence surface; the journal only carries its digest), artifact refs, designated roles and user ids, deadline, `on_timeout`, `state`, the decision when one exists, and the CAS `version` a `decide` must echo. Authorized through the gate's own project: a gate of a project the caller cannot see is `404`. Viewer+.
+     */
+    get: operations["getApproval"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/approvals/{approvalId}/decide": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Decide a gate (authorized at decision time, CAS)
+     * @description `{decision: approved|rejected, comments?, version}` with `version` equal to the gate's current `version`. Two rules make this the `12` case 9 route:
+     *     * **Authorization is evaluated now, not at gate creation.** The caller
+     *       must be named in `approver_user_ids` or hold one of the
+     *       `approver_roles` in the gate's project *at this moment*; a decider
+     *       who lost access gets `403`/`409` plus `approval.denied`
+     *       (`reason: approver_lost_access`) and the gate stays `pending` — a
+     *       refusal is not a decision, and a stale grant cannot decide anything
+     *       (ADR-0023 § 9).
+     *     * **Exactly one decision.** A CAS miss or an already-decided gate is
+     *       `409` `approval_already_decided` carrying the winner's decision,
+     *       decider and version: two maintainers clicking at once produce one
+     *       `200` (`approvals_decided_consistency` makes the second decision
+     *       unrepresentable, `version` increments once).
+     *
+     *     A **rejection is a business outcome, not an execution failure**: the node goes `succeeded` with `outputs.decision = rejected` and `comments_present`, and downstream `when`/`passWhen` expressions read it — `03`'s success/fail split applied to gates. Only a **timeout** is the execution-side failure (`error_class: approval_expired`, reconciler pass 2, honouring `on_timeout`; `expire` re-requests exactly once). `comments` is ≤ 8 KiB and never enters the journal — `approval.decided` reports `comments_present` instead. A gate whose run went terminal is `409` with `approval.denied` (`run_terminal`). Designated approvers only (`01` matrix); CSRF and origin rules as everywhere.
+     */
+    post: operations["decideApproval"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/system/scheduler": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Scheduler and engine counters for the ops page
+     * @description The counters ADR-0023 Consequences names, so "is the engine wedged?" is answerable without reading code: attempts by status, the age of the oldest `queued` attempt, observed lease expirations, the deepest retry loop in flight, pending gates, `queued_unbindable_runs` (§ 5.2's honest "waiting for the run's worker" count) and per-worker `active_attempts` against `capacity`. Session required, no membership check — this matches `GET /api/v1/workers`: an operator has to see the queue before anyone trusts it. No prompt text and no secret material in any field (`02` Observability).
+     */
+    get: operations["getSystemScheduler"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1975,6 +2742,882 @@ export interface components {
       /** Format: date-time */
       expires_at: string;
     };
+    /**
+     * ValidateError
+     * @description One validation finding (`docs/m4-contract.md` § 2.2). `errors` arrays are sorted by `(instance_location, schema_location, code, message)` — stable ordering is a spike-fidelity requirement (`docs/compatibility/m4-spike/README.md`), not presentation. The codes are a public contract named by § 2.2 by source: loader (`invalid_yaml`, `document_too_large`, `multiple_documents`, `duplicate_key`, `alias_budget_exceeded`, `invalid_number`, `unquoted_date`, `unknown_document_kind`); schema (`schema_shape`, one unit per validator error — the location is the payload); topology/identity (`duplicate_node_id`, `unknown_dependency`, `self_dependency`, `cycle_detected`, `depends_on_outside_scope`, `scope_entry_ambiguous`, `unreachable_terminal`, `graph_too_large`, `empty_body`); bindings (`binding_syntax_error`, `binding_offset_out_of_range`, `binding_position_mismatch`, `escape_not_supported`, `expression_too_large`, `cel_compile_error`, `undeclared_root`, `cel_function_not_allowed`, `non_boolean_expression`, `unknown_field`, `type_mismatch`, `undeclared_output_schema`, `reserved_node_id`, `expression_budget_exceeded`); policy/registry (`kind_not_implemented`, `unknown_profile`, `unknown_repository`, `unknown_node_template`, `template_publish_deferred`, `secret_literal_detected`, `invalid_secret_ref`, `budget_below_minimum`, `budget_exceeds_assignment_ceiling`, `unsupported_policy`, `unsupported_session_mode`, `child_depth_exceeded`); publish-time (`draft_changed_since_validation`, `stale_draft_version`, `draft_not_valid`, `revision_already_published`, `unresolved_node_template`). `code` is deliberately an open string: adding a code is additive, renaming one is not, and a client must tolerate codes it has not seen.
+     */
+    ValidateError: {
+      /** @description Stable machine code (see the description for the § 2.2 vocabulary). */
+      code: string;
+      /**
+       * @description Which stage spoke. The three are **ordered, not merged**: loader rules gate the JSON the schema validator sees; schema units convert 1:1 (`instanceLocation`/`keywordLocation` → snake_case); the compiler names only the classes it can see.
+       * @enum {string}
+       */
+      source: "loader" | "schema" | "compiler";
+      /** @description Human-facing text. Never quotes a secret-scanned value. */
+      message: string;
+      /** @description JSON-Pointer-style location in the canonical document, e.g. `/spec/nodes/2/config/passWhen`. Null when the finding is not addressable in the document. */
+      instance_location?: string | null;
+      /** @description JSON-Pointer into the schema; null when not applicable. */
+      schema_location?: string | null;
+      /** @description User-facing guidance. May quote an offending scalar *shape* (`got string, want integer`) but never a value a secret scanner flags (ADR-0021 Security). */
+      hint?: string;
+    };
+    /**
+     * ValidateResponse
+     * @description The `POST /drafts/{draftId}/validate` body (§ 2.2), stored verbatim on the draft as its `validation` and echoed by `GET /drafts/{draftId}` so an editor reload does not revalidate to repaint its problems panel. Bounded at 200 errors; truncation appends `errors_truncated` to `notes` (a 2 000-error list is a browser outage, § 6).
+     */
+    ValidateResponse: {
+      valid: boolean;
+      /** @description Digest over the canonical document (ADR-0021 § 5), null unless `valid` is true. */
+      revision_digest?: string | null;
+      /** @description Digest over the compiled plan, null unless `valid` is true. */
+      plan_digest?: string | null;
+      /** @description Versioned digest scope (`v1alpha1-canonical-1`): the rules this digest was produced under, so a future canonicalization change is distinguishable rather than a silent digest break. */
+      digest_scope: string;
+      errors: components["schemas"]["ValidateError"][];
+      /** @description Non-error prose the tooling must surface (`aliases and merge keys were expanded before hashing; the export is regenerated`) and flags (`errors_truncated`). */
+      notes: string[];
+    };
+    /**
+     * ValidateProblem
+     * @description A `422` that speaks the validation vocabulary — today run-input failure on `POST /runs`, so one client-side renderer covers both editors and runners.
+     */
+    ValidateProblem: components["schemas"]["Problem"] & {
+      /** @constant */
+      valid: false;
+      errors: components["schemas"]["ValidateError"][];
+    };
+    /**
+     * PipelineSummary
+     * @description A row of the organization's pipeline library. No document bytes on a list route — `revision_count` and the latest number tell the story and the content is a fetch.
+     */
+    PipelineSummary: {
+      /** Format: uuid */
+      id: string;
+      slug: string;
+      display_name: string;
+      /** @description 0 when the pipeline has never published. */
+      latest_revision_number: number;
+      revision_count: number;
+      archived: boolean;
+    };
+    /** PipelineList */
+    PipelineList: {
+      pipelines: components["schemas"]["PipelineSummary"][];
+    };
+    /**
+     * Pipeline
+     * @description The logical definition plus its revision summaries. This is the unit that is *not* immutable — revisions are (ADR-0002), and neither this route nor any other can rewrite a published one.
+     */
+    Pipeline: {
+      /** Format: uuid */
+      id: string;
+      slug: string;
+      display_name: string;
+      description: string;
+      /** Format: uuid */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+      latest_revision_number: number;
+      revision_count: number;
+      archived: boolean;
+      revisions: components["schemas"]["PipelineRevisionSummary"][];
+    };
+    /**
+     * PipelineCreate
+     * @description Request body for `createPipeline`.
+     */
+    PipelineCreate: {
+      /** @description Unique in the organization; a duplicate is `409`. */
+      slug: string;
+      display_name?: string;
+      description?: string;
+    };
+    /**
+     * PipelineUpdate
+     * @description Request body for `updatePipeline` — metadata only. There is no field here that reaches a revision, a draft, or a run.
+     */
+    PipelineUpdate: {
+      display_name?: string;
+      description?: string;
+      archived?: boolean;
+    };
+    /**
+     * PipelineRevisionSummary
+     * @description The identity of an immutable revision — both digests, no body. `revision_digest` covers the canonical document, `plan_digest` the compiled plan, `digest_scope` names the rules both were computed under (ADR-0021 § 5/§ 6).
+     */
+    PipelineRevisionSummary: {
+      /** @description Monotonic per pipeline, unique, never reused (there is no update path). */
+      revision_number: number;
+      /** @description The semver label from `07` "One schema, multiple editors"; unique per pipeline. */
+      version_label: string;
+      revision_digest: string;
+      plan_digest: string;
+      digest_scope: string;
+      /** Format: date-time */
+      published_at: string;
+      /** Format: uuid */
+      published_by: string;
+      /** @enum {string} */
+      status: "published" | "deprecated";
+    };
+    /** PipelineRevisionSummaryList */
+    PipelineRevisionSummaryList: {
+      revisions: components["schemas"]["PipelineRevisionSummary"][];
+    };
+    /**
+     * PipelineRevision
+     * @description The full immutable record. `document_text` is the YAML **regenerated** from `canonical_document` — the author's original bytes are not stored on the revision, because canonicalization (alias expansion, merge-key flattening, NFC, deleting `metadata.ui`) is one-way and the regenerated form is the only one that re-canonicalizes to `revision_digest` (ADR-0021 § 5). `schema_digest` and `cel_env_digest` pin *which* validator and *which* CEL environment produced the plan, so a digest is explainable years later.
+     */
+    PipelineRevision: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      pipeline_id: string;
+      /**
+       * Format: uuid
+       * @description The draft that produced this revision (audit trail of the publish).
+       */
+      draft_id?: string | null;
+      revision_number: number;
+      version_label: string;
+      /** @enum {string} */
+      api_version: "communication.dev/v1alpha1";
+      /** @description The canonical JSON the digests are computed over. */
+      canonical_document: {
+        [key: string]: unknown;
+      };
+      /** @description YAML regenerated from `canonical_document`; never re-hashed. */
+      document_text: string;
+      /** @description The `metadata.ui` block, served and **never digested** — moving a node box on a canvas cannot change what a run executes. */
+      ui_layout?: {
+        [key: string]: unknown;
+      };
+      revision_digest: string;
+      digest_scope: string;
+      /** @description The compiler's output the scheduler and engine execute; a run copies it into `plan_snapshot`, so execution never reads the revision row mid-flight. */
+      compiled_plan: {
+        [key: string]: unknown;
+      };
+      plan_digest: string;
+      /** @description Digest of the pipeline schema the document validated against. */
+      schema_digest: string;
+      /** @description Digest of the pinned CEL declaration set (ADR-0022 § 5). */
+      cel_env_digest: string;
+      /** @enum {string} */
+      status: "published" | "deprecated";
+      /** Format: uuid */
+      published_by: string;
+      /** Format: date-time */
+      published_at: string;
+    };
+    /**
+     * DraftSummary
+     * @description A row of a pipeline's draft list.
+     */
+    DraftSummary: {
+      /** Format: uuid */
+      id: string;
+      /**
+       * @description `validating` is transient (a validate in flight on this row); `published` means the draft produced a revision and is now immutable — a `published` draft is the audit trail, not a draft.
+       * @enum {string}
+       */
+      status: "draft" | "validating" | "valid" | "invalid" | "published";
+      /** @description The CAS token `PUT /drafts/{id}` and `publish` must echo. */
+      version: number;
+      /** Format: date-time */
+      updated_at: string;
+      /** Format: uuid */
+      edited_by: string;
+    };
+    /** DraftSummaryList */
+    DraftSummaryList: {
+      drafts: components["schemas"]["DraftSummary"][];
+    };
+    /**
+     * Draft
+     * @description The only mutable pipeline object. `document_yaml` is what the author wrote (bounded at 256 KiB — the loader refuses `document_too_large` before the DB CHECK does); `validation` is the last validate body verbatim, null when never validated. `source_sha256` is the hash `validate` recorded and `publish` compares — the mechanism behind `draft_changed_since_validation`.
+     */
+    Draft: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      pipeline_id: string;
+      /** @enum {string} */
+      status: "draft" | "validating" | "valid" | "invalid" | "published";
+      document_yaml: string;
+      /** @enum {string} */
+      source_kind: "manual" | "yaml_import" | "assistant" | "clone";
+      source_sha256: string;
+      /** @description The `metadata.ui` block, served and never digested. */
+      ui_layout: {
+        [key: string]: unknown;
+      };
+      /** @description The last `POST /validate` body verbatim; null when never validated. */
+      validation?: components["schemas"]["ValidateResponse"];
+      digest_scope: string;
+      /** @description Set only by a successful validate (and carried to publish). */
+      revision_digest?: string | null;
+      plan_digest?: string | null;
+      /**
+       * Format: uuid
+       * @description The revision this draft produced, once `status` is `published`.
+       */
+      published_revision_id?: string | null;
+      version: number;
+      /** Format: uuid */
+      edited_by: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /**
+     * DraftCreate
+     * @description Request body for `createPipelineDraft`: exactly one of `document_yaml` (new document) or `from_revision_id` (clone a published revision). Supplying both or neither is `422`.
+     */
+    DraftCreate: {
+      document_yaml?: string;
+      /** Format: uuid */
+      from_revision_id?: string;
+    };
+    /**
+     * DraftPut
+     * @description Request body for `putDraft` — a full document replacement guarded by the CAS `version` the editor last read.
+     */
+    DraftPut: {
+      document_yaml: string;
+      version: number;
+    };
+    /**
+     * DraftPublish
+     * @description Request body for `publishDraft`: the CAS `version` the caller believes is current, and optionally the `version_label` (semver, `07` "One schema, multiple editors") to stamp the revision with — unique per pipeline (`UNIQUE (pipeline_id, version_label)`), absent means the server assigns the next label for the `revision_number`. A colliding label is `409`.
+     */
+    DraftPublish: {
+      version: number;
+      version_label?: string;
+    };
+    /**
+     * DraftConflictProblem
+     * @description `409` for a draft route: the `Problem` shape plus what the draft is now — `current_version` for `stale_draft_version`, `existing_revision_id` for `revision_already_published` (the live revision this byte-identical document collides with). The client recovers by re-reading, never by guessing.
+     */
+    DraftConflictProblem: components["schemas"]["Problem"] & {
+      /** Format: uuid */
+      draft_id: string;
+      /** @description The draft's actual version; present for `stale_draft_version`. */
+      current_version?: number;
+      /**
+       * Format: uuid
+       * @description The already-published revision with the same digest; present for `revision_already_published`.
+       */
+      existing_revision_id?: string | null;
+    };
+    /**
+     * Assignment
+     * @description A project's pin of a pipeline revision plus the run ceilings (`max_concurrent_runs`) and budget *ceilings* (`budget_overrides`, which may only lower what the pipeline declares — `budget_overrides_may_only_lower`). `effective_budgets` is the merged view a new run will snapshot, so the UI shows the enforced truth instead of recomputing the layering. This row is a pin and budgets — **not** a stable/beta rollout channel and not a promotion workflow (all M6, `07` "Version rollout"): re-pinning here is the promotion, effective only at new run creation (ADR-0002).
+     */
+    Assignment: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      pipeline_id: string;
+      /** Format: uuid */
+      pinned_revision_id: string;
+      /** @description Denormalized from the pinned revision for list rendering. */
+      pinned_revision_digest: string;
+      pinned_version_label?: string | null;
+      max_concurrent_runs: number;
+      /** @description Ceilings only, never a raise. */
+      budget_overrides: {
+        [key: string]: unknown;
+      };
+      /** @description Pipeline-declared budgets with the overrides applied. */
+      effective_budgets: {
+        [key: string]: unknown;
+      };
+      enabled: boolean;
+      version: number;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /** AssignmentList */
+    AssignmentList: {
+      assignments: components["schemas"]["Assignment"][];
+    };
+    /**
+     * AssignmentCreate
+     * @description Request body for `createProjectAssignment`.
+     */
+    AssignmentCreate: {
+      /** Format: uuid */
+      pipeline_id: string;
+      /**
+       * Format: uuid
+       * @description Must be a published revision of `pipeline_id` in this organization.
+       */
+      pinned_revision_id: string;
+      /** @default 1 */
+      max_concurrent_runs: number;
+      /** @description Ceilings only: a value that raises a limit is `400` `budget_overrides_may_only_lower`. */
+      budget_overrides?: {
+        [key: string]: unknown;
+      };
+    };
+    /**
+     * AssignmentPatch
+     * @description Request body for `patchAssignment`. Every change is effective at *new run creation* only; queued and running runs keep the snapshot they started with.
+     */
+    AssignmentPatch: {
+      /** Format: uuid */
+      pinned_revision_id?: string;
+      max_concurrent_runs?: number;
+      budget_overrides?: {
+        [key: string]: unknown;
+      };
+      enabled?: boolean;
+    };
+    /**
+     * RunStatus
+     * @description `01`'s run machine. `waiting_human` means a gate holds a *scope* (the run's other branches keep running); `interrupted` is reconciler-written only (lease/deadline/volume-loss arms — never the dead process itself), always with a `failed_cause`, and with `workspace_lost` never auto-retried (case 20's honest arm).
+     * @enum {string}
+     */
+    RunStatus:
+      | "queued"
+      | "preparing"
+      | "running"
+      | "waiting_human"
+      | "paused"
+      | "completed"
+      | "failed"
+      | "cancelled"
+      | "interrupted";
+    /**
+     * RunSummary
+     * @description A row of the project run list. The digests are on the list row on purpose: "which revision is this run actually executing?" is a first-glance question, and the answer is pinned, immutable data.
+     */
+    RunSummary: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      pipeline_id: string;
+      /** Format: uuid */
+      pipeline_revision_id: string;
+      /**
+       * Format: uuid
+       * @description Null for a direct `pipeline_revision_id` start.
+       */
+      assignment_id?: string | null;
+      /** @description Serialized verbatim as the run stored it. */
+      revision_digest: string;
+      plan_digest: string;
+      status: components["schemas"]["RunStatus"];
+      /** @description Why the run stopped when it did not complete — a node reference (`node_execution_failed:/implement`), a budget name (`run_duration_exceeded`, `expression_eval_budget_exceeded`, `node_execution_budget_exceeded`, `max_duration_exceeded`, `child_depth_exceeded`) or `until_exhausted`. Required by the DB for `failed`/`interrupted` (`runs_terminal_cause`). */
+      failed_cause?: string | null;
+      /** @description 0 for a root run; a child is its parent's depth + 1. Depth 3 is refused twice over. */
+      depth: number;
+      /**
+       * Format: uuid
+       * @description Non-null exactly when `depth > 0` (`runs_root_is_unparented`).
+       */
+      parent_run_id?: string | null;
+      /**
+       * Format: uuid
+       * @description Null for a child run or a system start.
+       */
+      triggered_by?: string | null;
+      /** @description Claim tie-break only (ADR-0023 § 4), never starvation insurance. */
+      priority: number;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      started_at?: string | null;
+      /**
+       * Format: date-time
+       * @description Non-null exactly when `status` is terminal (`runs_terminal_timestamped`).
+       */
+      finished_at?: string | null;
+    };
+    /** RunSummaryList */
+    RunSummaryList: {
+      runs: components["schemas"]["RunSummary"][];
+    };
+    /**
+     * RunPlacement
+     * @description The honest scheduling answer, deliberately **not** the worker id: affinity is a one-way door set by the worker that prepared the run's workspace (ADR-0023 § 4), M4 has no rebinding, and browser knowledge of fleet topology stops where M3's stops.
+     */
+    RunPlacement: {
+      /** @description False on a `queued`/`preparing` run means "waiting for the run's worker" — the affinity worker is offline, draining, or full, and nothing pretends otherwise (`queued_unbindable_runs` counts these). */
+      scheduled: boolean;
+      /** @enum {string|null} */
+      reason?: "volume_affinity_unsatisfied" | null;
+    };
+    /**
+     * RunInputValue
+     * @description One validated run input: the value bindings read, plus where it came from. `origin` distinguishes what the submitter sent from defaults and retry-time overrides, so "what did the loop actually receive?" is answerable from the row.
+     */
+    RunInputValue: {
+      name: string;
+      value: unknown;
+      /** @enum {string} */
+      origin: "submitted" | "default" | "override";
+    };
+    /**
+     * RunRepoSnapshot
+     * @description A repository's starting base commit for the run (`03` step 2) — a commit identity, never a path.
+     */
+    RunRepoSnapshot: {
+      /** Format: uuid */
+      repository_id: string;
+      base_commit: string;
+    };
+    /**
+     * Run
+     * @description The run detail: everything the summary carries, plus the pause/ cancellation facts, the honest placement view, the validated inputs and the expression-evaluation counter (the advancer fails the run at the 10 000 budget, so the counter is load-bearing telemetry, not trivia).
+     */
+    Run: components["schemas"]["RunSummary"] & {
+      digest_scope: string;
+      /**
+       * @description Non-null exactly when `status` is `paused` (`runs_paused_reasoned`).
+       * @enum {string|null}
+       */
+      paused_reason?: "human_takeover" | "manual" | "worker_unavailable" | null;
+      /**
+       * Format: date-time
+       * @description Set by `POST /cancel`; the advancer's cascade and the worker's honest close follow from it — the timestamp is the request, not the stop.
+       */
+      cancel_requested_at?: string | null;
+      placement: components["schemas"]["RunPlacement"];
+      /** @description CEL evaluations this run has spent (cap 10 000, § 6). */
+      expression_evaluations: number;
+      inputs?: components["schemas"]["RunInputValue"][];
+      repo_snapshot?: components["schemas"]["RunRepoSnapshot"][];
+    };
+    /**
+     * RunCreate
+     * @description Request body for `createRun`: exactly one of `assignment_id` or `pipeline_revision_id`. `inputs` is validated against the pinned revision's `spec.inputs` in the creating transaction (`422` with validate-style units otherwise; absent optional inputs take declared defaults, recorded as `origin: default` in `run_inputs`).
+     */
+    RunCreate: {
+      /** Format: uuid */
+      assignment_id?: string;
+      /** Format: uuid */
+      pipeline_revision_id?: string;
+      /** @description Values keyed by declared input name; unknown names are `422`. */
+      inputs?: {
+        [key: string]: unknown;
+      };
+      /** @description Same semantics as the `Idempotency-Key` header (which wins when both are present); the mapping is stored per project for 24 h. */
+      idempotency?: string;
+    };
+    /**
+     * RunCreateResponse
+     * @description The `201` (and the `200` idempotent replay): the run is queued, and every later fact about it arrives through `GET /runs/{runId}` or its event stream — this response proves creation and pinning, nothing else.
+     */
+    RunCreateResponse: {
+      /** Format: uuid */
+      run_id: string;
+      /** @enum {string} */
+      status: "queued";
+    };
+    /**
+     * RunRetryRequest
+     * @description Request body for `retryRun`. Omitted `node_instance_keys` targets every non-succeeded terminal node execution; named keys must exist and be terminal (`409` otherwise). Scope bookkeeping is recomputed so an `until` restarts its dead iteration, not the loop.
+     */
+    RunRetryRequest: {
+      node_instance_keys?: string[];
+      /** @description Retry-time input overrides (attempt-level `overrides` and `run.retried`'s `input_names` name them). */
+      inputs?: {
+        [key: string]: unknown;
+      };
+      /** @description Free text for the audit trail ("crash", "flaky test"), not interpreted. */
+      reason?: string;
+    };
+    /**
+     * RunConflictProblem
+     * @description `409` for a run action: `run_not_retriable`, `checkpoint_unavailable` (nothing was reset — that is the point), `idempotency_key_mismatch`, or a lifecycle action against a state that refuses it. The body names the run's current status so the client can re-read cheaply.
+     */
+    RunConflictProblem: components["schemas"]["Problem"] & {
+      /** Format: uuid */
+      run_id: string;
+      run_status: components["schemas"]["RunStatus"];
+    };
+    /**
+     * ErrorClass
+     * @description ADR-0023 § 7's execution-failure taxonomy, the same enum the `attempts.error_class` CHECK enforces. `predicate_error` is an *indeterminate* expression — never treated as false (ADR-0022 § 3); cost exhaustion reports this class with the code `predicate_cost_exceeded` (§ 6).
+     * @enum {string}
+     */
+    ErrorClass:
+      | "infra"
+      | "interrupted"
+      | "timeout"
+      | "agent_error"
+      | "invalid_output"
+      | "predicate_error"
+      | "sandbox_enforcement_failed"
+      | "workspace_lost"
+      | "binding_error"
+      | "approval_expired"
+      | "cancelled";
+    /**
+     * NodeExecutionStatus
+     * @description `01`'s node machine, two-path per ADR-0023 § 3: control-plane work moves `pending → ready → succeeded` inside `serve` and a DB CHECK (`node_executions_control_plane_never_leased`) makes `leased`/`running` on such a row *unrepresentable* — the two writers cannot lie about the same row.
+     * @enum {string}
+     */
+    NodeExecutionStatus:
+      | "pending"
+      | "ready"
+      | "leased"
+      | "running"
+      | "succeeded"
+      | "failed"
+      | "skipped"
+      | "waiting"
+      | "cancelled"
+      | "interrupted";
+    /**
+     * NodeExecution
+     * @description One execution of one node at one place in the run's tree of scopes. `node_instance_key` is the path identity (`/build_until_verified[2]/ review`, `/fan_out[3]/invoke`) — a text path of node ids with iteration/index suffixes, unique per run, never a position index (`01` invariant 6). `status` is the *execution* fact; `outcome` is the business fact (`03`'s test that ran and failed is `succeeded` with `outcome: failed` — the distinction the exit loop reads).
+     */
+    NodeExecution: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      run_id: string;
+      node_id: string;
+      /** @description Catalogue name verbatim (`agent.acp`, `process.exec`, `human.approval`, `until`, `for_each`, `condition`, `pipeline.invoke`, ...). */
+      kind: string;
+      node_instance_key: string;
+      /** @description '/' for the root scope, otherwise the parent scope key — the path this execution's siblings share. */
+      scope_key: string;
+      /** @enum {string} */
+      execution_location: "worker" | "control_plane";
+      status: components["schemas"]["NodeExecutionStatus"];
+      /** @description Business outcome (`passed`/`failed`/`rejected`/...), distinct from `status` by design. */
+      outcome?: string | null;
+      /** @description ADR-0023 § 7 class when the execution failed; null when there was no execution error. */
+      error_class?: components["schemas"]["ErrorClass"];
+      failed_cause?: string | null;
+      /** @description The validated output object (`01` invariant 4: present exactly when `succeeded`, possibly `{}`). */
+      outputs?: {
+        [key: string]: unknown;
+      } | null;
+      artifact_refs: {
+        [key: string]: unknown;
+      }[];
+      /** @description Node ids *in this scope* (the compiler rejects edges leaving a scope). */
+      depends_on: string[];
+      attempt_count: number;
+      /** @description `retry.maxAttempts` clamped to the assignment ceiling, recorded at compile time. */
+      attempt_limit: number;
+      /** @description Live children for fan-out accounting (`for_each.maxConcurrency` enforcement). */
+      in_flight: number;
+      /** @enum {string|null} */
+      waiting_reason?: "approval" | "child_run" | "join_deferred" | null;
+      /** @description `until` scopes only — iterations run so far. */
+      iterations?: number;
+      /** @description `for_each` scopes only — items dispatched. */
+      items?: number;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      ready_at?: string | null;
+      /** Format: date-time */
+      finished_at?: string | null;
+    };
+    /** NodeExecutionList */
+    NodeExecutionList: {
+      node_executions: components["schemas"]["NodeExecution"][];
+    };
+    /**
+     * CelEnvelope
+     * @description The object a `nodes.<id>` expression reads — materialized by the advancer for **every** declared node in the scope, including unscheduled ones (`{status, outcome: null, outputs: {}, artifact_refs: []}`), which is what makes a `when`/`skipped` decision explainable after the fact (ADR-0022 § 3).
+     */
+    CelEnvelope: {
+      status: components["schemas"]["NodeExecutionStatus"];
+      outcome?: string | null;
+      outputs: {
+        [key: string]: unknown;
+      };
+      artifact_refs: {
+        [key: string]: unknown;
+      }[];
+    };
+    /**
+     * AttemptStatus
+     * @description The claim unit's machine (ADR-0023 § 4). A `queued` row is unowned by construction (`attempts_queued_unowned`), a `leased`/`running` row always carries the full lease triple (worker, deadline, token — `attempts_lease_is_a_triple`) that this API deliberately does not serialize, and a terminal row always has `finished_at`.
+     * @enum {string}
+     */
+    AttemptStatus:
+      | "queued"
+      | "leased"
+      | "running"
+      | "succeeded"
+      | "failed"
+      | "cancelled"
+      | "interrupted";
+    /**
+     * Attempt
+     * @description One worker's honest report on one unit of node work. **Never** `worker_id`, `fencing_token` or `lease_expires_at` (ADR-0016 § 8 — leases are asserted server-side; the fence, not the client, keeps a stale writer out, `12` case 3). `scheduled_at` is the *computed* backoff landing time persisted by the retry scheduler — `12` case 5's visible half: the promise survives any restart because it is a column, not a goroutine. `detail` is bounded at 512 bytes and redaction-scanned.
+     */
+    Attempt: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      node_execution_id: string;
+      /** Format: uuid */
+      run_id: string;
+      /** @description Unique per node execution (`09`'s triple, enforced transitively); attempts append, never overwrite. */
+      attempt_number: number;
+      status: components["schemas"]["AttemptStatus"];
+      /** @description Set exactly when `status` is `failed` (`attempts_failed_has_class`); also `interrupted`/`cancelled` arms. */
+      error_class?: components["schemas"]["ErrorClass"];
+      /** @description Bounded, redaction-scanned diagnostic. */
+      detail?: string | null;
+      /** @description The `invalid_output` evidence — one unit per schema violation, as the validator spoke it. */
+      output_errors: {
+        [key: string]: unknown;
+      }[];
+      /**
+       * Format: date-time
+       * @description When this attempt became claimable (backoff landing time, persisted).
+       */
+      scheduled_at: string;
+      /**
+       * Format: date-time
+       * @description The node's `timeoutSeconds` boundary; the reconciler's pass-3 partner.
+       */
+      deadline_at?: string | null;
+      /** @description Run-local input overrides this attempt ran with (the `run.override.applied` event stays reserved; this row is where overrides are visible). */
+      overrides?: {
+        [key: string]: unknown;
+      } | null;
+      /** @description What the previous attempt knew: `{attempt, error_class, head_commit, modified_path_count}` for `continue_workspace` (the default — edits survive and the retry is *told*), plus the restore boundary when `restore_checkpoint` applied. */
+      retry_context?: {
+        [key: string]: unknown;
+      } | null;
+      artifact_refs: {
+        [key: string]: unknown;
+      }[];
+      /** @description The validated output object, present exactly when `succeeded` (`attempts_succeeded_has_outputs` — `01` invariant 4; possibly `{}`). Bounded inline at 32 KiB; oversize content travels as a `kind=json` artifact with the ref here. */
+      outputs?: {
+        [key: string]: unknown;
+      } | null;
+      outputs_digest?: string | null;
+      /**
+       * Format: uuid
+       * @description The conversation an `agent.acp` attempt owns; null for `process.exec`/`model.chat`.
+       */
+      conversation_id?: string | null;
+      /**
+       * Format: uuid
+       * @description Set exactly with `conversation_id` (`attempts_agent_turn_pair` makes half a pair unrepresentable).
+       */
+      turn_id?: string | null;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      started_at?: string | null;
+      /** Format: date-time */
+      finished_at?: string | null;
+    };
+    /**
+     * NodeExecutionDetail
+     * @description The node execution plus everything that explains it: the full attempt history, the boundary checkpoint when one exists, and the CEL envelope expressions against this node actually saw.
+     */
+    NodeExecutionDetail: components["schemas"]["NodeExecution"] & {
+      attempts: components["schemas"]["Attempt"][];
+      /** @description The durable boundary record for this execution, when it succeeded with one. */
+      checkpoint?: components["schemas"]["RunCheckpoint"];
+      cel_envelope: components["schemas"]["CelEnvelope"];
+    };
+    /**
+     * CheckpointRepoState
+     * @description One repository's state at a boundary: commits and a pointer, never paths. `modified_paths_artifact` is an artifact *id* holding the manifest (inline ≤ 5 000 paths, else the manifest *is* the artifact — § 6).
+     */
+    CheckpointRepoState: {
+      /** Format: uuid */
+      repository_id: string;
+      base_commit: string;
+      head_commit: string;
+      /** Format: uuid */
+      modified_paths_artifact?: string | null;
+    };
+    /**
+     * RunCheckpoint
+     * @description D-009's durable boundary record (`run_checkpoints`, ADR-0023 § 6): what the world looked like after a succeeded worker node execution, so a retry can inherit it. Same-volume only — `volume_id` is required because a checkpoint without its volume's identity is a promise nobody can keep (D-024 stays **Open**; this is what `restore_checkpoint` restores *from*, and `run.checkpoint_restored` is the event that proves the engine knows the difference from `continue_workspace`).
+     */
+    RunCheckpoint: {
+      /** Format: uuid */
+      run_id: string;
+      /** Format: uuid */
+      node_execution_id: string;
+      /** Format: uuid */
+      attempt_id: string;
+      node_instance_key: string;
+      inputs_digest: string;
+      outputs_digest: string;
+      repo_states: components["schemas"]["CheckpointRepoState"][];
+      /** @description The `kind=checkpoint` capture plus its `kind=json` manifest (ADR-0020 D8). */
+      artifact_refs: {
+        [key: string]: unknown;
+      }[];
+      /** Format: uuid */
+      workspace_id: string;
+      volume_id: string;
+      /**
+       * Format: uuid
+       * @description The worker whose volume holds the boundary — M3's fleet identity, already browser-visible.
+       */
+      worker_id: string;
+      plan_digest: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** RunCheckpointList */
+    RunCheckpointList: {
+      checkpoints: components["schemas"]["RunCheckpoint"][];
+    };
+    /**
+     * RunTree
+     * @description A run and the child runs its `pipeline_invocations` produced, recursively (max depth 2 under the root). A child is a *run* — its own workspace, attempts and stream — this row is the relationship: which node execution invoked it, with which wait policy, resolved against which revision at run start (never re-resolved mid-flight, `12` case 11's child-side twin).
+     */
+    RunTree: {
+      run: components["schemas"]["RunSummary"];
+      /** @description The invoking node execution's key; null on the root. */
+      node_instance_key?: string | null;
+      /**
+       * @description `detach` exists in the enum because the column's CHECK carries it; M4 refuses it at validate (`unsupported_policy`, ADR-0024 § 4), so no M4 tree shows one.
+       * @enum {string|null}
+       */
+      wait_policy?: "completion" | "started" | "detach" | null;
+      /** @description This child's distance below the root; null on the root itself. */
+      depth?: number;
+      children: components["schemas"]["RunTree"][];
+    };
+    /**
+     * Approval
+     * @description A durable pipeline gate (`approval_requests`) — not an ACP permission prompt (`permission_requests`, M2): different table, different authorizer, different CAS (ADR-0023 § 9). Holds **no worker and no lease**: while a gate is `pending` there is no attempt behind it (§ 5.3, asserted in `12` C9a). `state` is the lifecycle; `decision` only exists with a decider, and the consistency CHECK (`approvals_decided_consistency`) makes `decided` without a decision or `denied` with one unrepresentable. A rejection is a business outcome downstream (`outputs.decision = rejected` on the node), only a timeout is an execution failure.
+     */
+    Approval: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      run_id: string;
+      /** Format: uuid */
+      node_execution_id: string;
+      /** @description Denormalized for list rendering. */
+      node_instance_key?: string | null;
+      /**
+       * @description Only `pipeline_gate` occurs in M4; the other member is M6's, kept so the wire does not rename later.
+       * @enum {string}
+       */
+      kind: "pipeline_gate" | "promotion_deferred";
+      /** @description The gate text in full (the journal carries only its digest). */
+      summary: string;
+      artifact_refs: {
+        [key: string]: unknown;
+      }[];
+      /** @description Project roles evaluated **at decision time**, not snapshotted at gate-open. */
+      approver_roles: ("maintainer" | "contributor" | "viewer")[];
+      approver_user_ids: string[];
+      /** Format: date-time */
+      deadline_at: string;
+      /**
+       * @description `expire` re-requests exactly once (`re_requested` marks the second gate) and then fails — an approval can never hang forever.
+       * @enum {string}
+       */
+      on_timeout: "fail" | "cancel_run" | "expire";
+      re_requested: boolean;
+      /** @enum {string} */
+      state: "pending" | "decided" | "expired" | "cancelled" | "denied";
+      /** @enum {string|null} */
+      decision?: "approved" | "rejected" | null;
+      /** @description The decider's note; never carried in an event (`approval.decided` says `comments_present`). */
+      comments?: string | null;
+      /** Format: uuid */
+      decided_by?: string | null;
+      /** Format: date-time */
+      decided_at?: string | null;
+      /** @description The CAS token `decide` must echo; increments exactly once, for exactly one decision. */
+      version: number;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /** ApprovalList */
+    ApprovalList: {
+      approvals: components["schemas"]["Approval"][];
+    };
+    /**
+     * ApprovalDecide
+     * @description Request body for `decideApproval`.
+     */
+    ApprovalDecide: {
+      /** @enum {string} */
+      decision: "approved" | "rejected";
+      comments?: string;
+      /** @description The `version` the caller last read; a miss is `409` with the winner. */
+      version: number;
+    };
+    /**
+     * ApprovalConflictProblem
+     * @description `409` for a decision: the `Problem` shape plus the current gate state, so the losing click renders the winner's decision instead of guessing (`12` case 9d: exactly one `200`, and both callers see the same truth).
+     */
+    ApprovalConflictProblem: components["schemas"]["Problem"] & {
+      /** Format: uuid */
+      approval_id: string;
+      /** @description The winner, as the loser must render it: state, decision, decider, version — the full gate is a `GET /approvals/{id}` fetch, the conflict body only answers "who beat me and to what". */
+      approval?: {
+        /** @enum {string} */
+        state: "pending" | "decided" | "expired" | "cancelled" | "denied";
+        /** @enum {string|null} */
+        decision?: "approved" | "rejected" | null;
+        /** Format: uuid */
+        decided_by?: string | null;
+        version: number;
+      };
+    };
+    /**
+     * SchedulerWorkerLoad
+     * @description One worker's claim capacity as registered (ADR-0023 § 4's predicate is `active_attempts < capacity`, so the ops page shows the same pair the claim SQL does).
+     */
+    SchedulerWorkerLoad: {
+      /** Format: uuid */
+      worker_id: string;
+      name: string;
+      capacity: number;
+      active_attempts: number;
+    };
+    /**
+     * SchedulerStatus
+     * @description Engine telemetry (ADR-0023 Consequences, `02` Observability): enough to answer "is anything wedged and where?" without names of prompts, secrets or users in any field.
+     */
+    SchedulerStatus: {
+      attempts_by_status: {
+        queued: number;
+        leased: number;
+        running: number;
+      };
+      /** @description Age of the oldest `queued` attempt; null when the queue is empty. The one number that says "the engine is not taking work". */
+      oldest_queued_age_seconds: number | null;
+      /** @description Reconciler-observed attempt lease expirations since this replica started (each one is a `node.attempt.interrupted`). */
+      lease_expirations: number;
+      /** @description Highest live `attempt_number` in flight — the runaway-retry guard's dashboard number. */
+      max_retry_loop_depth: number;
+      /** @description Gates in `pending`; no worker and no lease stand behind any of them. */
+      waiting_approvals: number;
+      /** @description Runs `queued` whose affinity worker is offline/draining/full (§ 5.2) — the single-point-of-failure made visible instead of guessed. */
+      queued_unbindable_runs: number;
+      workers: components["schemas"]["SchedulerWorkerLoad"][];
+    };
     EventEnvelope: components["schemas"]["event-envelope.schema"];
     /**
      * Communication durable event envelope
@@ -1997,6 +3640,32 @@ export interface components {
      *         "name": "communication",
      *         "git_url": "https://github.com/example/communication.git",
      *         "default_branch": "main"
+     *       }
+     *     }
+     * @example {
+     *       "event_id": "01987b10-5a4a-7d3b-9e1f-2c3d4e5f6a70",
+     *       "global_seq": 208441,
+     *       "type": "node.attempt.retry_scheduled",
+     *       "schema_version": 1,
+     *       "occurred_at": "2026-10-15T09:12:00Z",
+     *       "organization_id": "01987a6b-9c1d-7e5f-8a0b-1c2d3e4f5a60",
+     *       "project_id": "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
+     *       "run_id": "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+     *       "node_execution_id": "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d",
+     *       "attempt_id": "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e",
+     *       "actor": {
+     *         "kind": "system",
+     *         "id": "system"
+     *       },
+     *       "payload": {
+     *         "project_id": "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80",
+     *         "run_id": "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+     *         "node_instance_key": "/build_until_verified[2]/test",
+     *         "attempt_number": 1,
+     *         "next_attempt_number": 2,
+     *         "error_class": "interrupted",
+     *         "delay_seconds": 15,
+     *         "scheduled_at": "2026-10-15T09:12:15Z"
      *       }
      *     }
      */
@@ -2032,6 +3701,21 @@ export interface components {
        * @description Conversation the event belongs to, when it is conversation-scoped (M2, ADR-0016: the transcript is this journal read through `conversation_id`). Null otherwise. A conversation-scoped row always carries `project_id` too, so the project stream remains a superset and one gap-safe cursor serves both.
        */
       conversation_id?: string | null;
+      /**
+       * Format: uuid
+       * @description Run the event belongs to, when it is run-scoped (M4, docs/m4-contract.md § 1/§ 3: the `domain_events.run_id` column, indexed `(run_id, global_seq)`, which is what `GET /api/v1/runs/{runId}/events` streams through). Additive per ADR-0014 § 8 — consumers ignore members they do not know. A run-scoped row always carries `project_id` too. Null on every pre-M4 row and on non-run events.
+       */
+      run_id?: string | null;
+      /**
+       * Format: uuid
+       * @description Node execution the event is about (§ 3's correlation rule). A worker row that touches a node execution sets this AND `attempt_id`; a control-plane row may carry this with `attempt_id` null, because control-plane work creates no attempts (ADR-0023 § 3).
+       */
+      node_execution_id?: string | null;
+      /**
+       * Format: uuid
+       * @description Attempt the event is about (`domain_events.attempt_id`, indexed `(attempt_id, global_seq)`). Set on every attempt-lifecycle event, written under the row's fence; null for control-plane events, which have no attempts.
+       */
+      attempt_id?: string | null;
       /** @description Who caused the transition. `id` is the internal id for humans/agents/workers, an integration key for integrations, and the literal `system` for system actions. */
       actor: {
         /** @enum {string} */
@@ -2199,6 +3883,118 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
+    /** @description `409` for a draft route, and the body says what the draft is now so the editor can recover without guessing: `stale_draft_version` (a concurrent writer won; `current_version` is the winner's), `draft_changed_since_validation` (the document's `source_sha256` no longer matches the one the stored `validation` was produced against — revalidate, publish never silently revalidates), `draft_not_valid`, or `revision_already_published` (`existing_revision_id` names the live revision whose `revision_digest` this document collides with, `UNIQUE (organization_id, revision_digest)`). */
+    DraftConflict: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/stale-draft-version",
+         *       "title": "Draft version stale",
+         *       "status": 409,
+         *       "detail": "draft version is 8, not 5.",
+         *       "draft_id": "01987a80-1111-7000-8000-abcdef012345",
+         *       "current_version": 8
+         *     }
+         */
+        "application/problem+json": components["schemas"]["DraftConflictProblem"];
+      };
+    };
+    /** @description `409` for a run action: `run_not_retriable` (the run is `running` or ended successfully — a completed run has nothing to retry), an `idempotency_key_mismatch` on create, `checkpoint_unavailable` on retry (the node declares `restore_checkpoint` but a repository is not committed at that boundary — and nothing was reset), or a pause/resume/ cancel against a run whose state refuses the transition. */
+    RunConflict: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/checkpoint-unavailable",
+         *       "title": "Checkpoint unavailable",
+         *       "status": 409,
+         *       "detail": "/implement declares restore_checkpoint but app is dirty at the boundary.",
+         *       "run_id": "01987a81-2222-7000-8000-abcdef012345",
+         *       "run_status": "failed"
+         *     }
+         */
+        "application/problem+json": components["schemas"]["RunConflictProblem"];
+      };
+    };
+    /** @description `409` for `POST /approvals/{approvalId}/decide`: the gate is already decided (`approval_already_decided`) or a CAS `version` miss — and the body carries the *winner*, so the loser's UI shows who decided and at which version instead of guessing. Also the arm for an approver whose access was revoked between gate-open and decision (with `approval.denied`, `reason: approver_lost_access`); the gate stays `pending` in that case. */
+    ApprovalConflict: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/approval-already-decided",
+         *       "title": "Approval already decided",
+         *       "status": 409,
+         *       "detail": "carol decided approved at version 2.",
+         *       "approval_id": "01987a82-3333-7000-8000-abcdef012345",
+         *       "approval": {
+         *         "state": "decided",
+         *         "decision": "approved",
+         *         "decided_by": "01987a63-3333-7000-8000-abcdef012345",
+         *         "version": 2
+         *       }
+         *     }
+         */
+        "application/problem+json": components["schemas"]["ApprovalConflictProblem"];
+      };
+    };
+    /** @description `422` for `POST /drafts/{draftId}/publish`: the document would publish except for a blocking validation class — today that means a `secret_literal_detected` (ADR-0021 Security / `01` invariant 5: the compiler-side detector, a block not a warning, and the response body **redacts the value** — it names the location and the shape, never the literal). The `errors[]` units are the § 2.2 shape; the envelope path of ADR-0018 stays the only place a value is ever held. */
+    PublishUnprocessable: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/secret-literal-detected",
+         *       "title": "Secret literal detected",
+         *       "status": 422,
+         *       "detail": "a secret-shaped literal sits at /spec/nodes/2/config/prompt; move it to a secret reference."
+         *     }
+         */
+        "application/problem+json": components["schemas"]["Problem"];
+      };
+    };
+    /** @description `422` on run creation: the submitted `inputs` failed validation against the pinned revision's `spec.inputs`. The body reuses the § 2.2 shape — same `errors[]` units with machine-readable `instance_location`s — so one editor component renders both. */
+    ValidateFailed: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/validation-failed",
+         *       "title": "Run inputs invalid",
+         *       "status": 422,
+         *       "detail": "input goal is required.",
+         *       "valid": false,
+         *       "errors": [
+         *         {
+         *           "code": "type_mismatch",
+         *           "source": "schema",
+         *           "message": "input goal expects a string",
+         *           "instance_location": "/inputs/goal",
+         *           "schema_location": "/spec/inputs/1/schema/type",
+         *           "hint": "got null, want string"
+         *         }
+         *       ]
+         *     }
+         */
+        "application/problem+json": components["schemas"]["ValidateProblem"];
+      };
+    };
   };
   parameters: {
     /** @description Same-origin relative path to resume after login (must start with `/` and not with `//`). Anything else is treated as `/`. */
@@ -2227,6 +4023,26 @@ export interface components {
     TurnId: string;
     /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
     ArtifactId: string;
+    /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+    PipelineId: string;
+    /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+    DraftId: string;
+    /** @description Either a `pipeline_revisions` id (`uuid`) or its `revision_digest` (`sha256:<64 hex>`). A digest belonging to another organization is `404`, byte-identical to an unknown one. */
+    RevisionDigestOrId: string;
+    /** @description A `pipeline_revisions` id. Revisions have no mutation route except `deprecate`; the document itself is immutable forever (ADR-0002). */
+    RevisionId: string;
+    /** @description An `assignments` id. Authorization runs through the assignment's own `project_id` (maintainer+); an assignment of another project is `404`. */
+    AssignmentId: string;
+    /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+    RunId: string;
+    /** @description A `node_executions` id. The run id in the path is checked to own this node execution (`node_executions_run_matches`), so a cross-run pairing is `404`, never a leak. */
+    NodeExecutionId: string;
+    /** @description An `attempts` id. Authorized through attempt -> node execution -> run -> project, never through the worker that ran it (`09`: no accidental worker-service surface). */
+    AttemptId: string;
+    /** @description An `approval_requests` (pipeline gate) id. Not a M2 `permission_requests` id — the two never share a route. */
+    ApprovalId: string;
+    /** @description `POST /projects/{projectId}/runs` only (ADR-0023 § 12): an opaque key matching `^[A-Za-z0-9._-]{1,128}$`. The server stores `(project_id, key) -> (run_id, request_sha256)` for 24 h. Re-sending the same key with the same request body re-answers `200` with the stored run (a retried click is not a second run — `12` case 1); the same key with a different body is `409` `idempotency_key_mismatch`, never an update of the mapping. The body's `idempotency` member is the same mechanism for clients that cannot set headers; the header wins when both are present. */
+    IdempotencyKey: string;
   };
   requestBodies: never;
   headers: {
@@ -3488,6 +5304,1059 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
+    };
+  };
+  listPipelines: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Pipelines. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PipelineList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  createPipeline: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PipelineCreate"];
+      };
+    };
+    responses: {
+      /** @description Definition created. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Pipeline"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getPipeline: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+        pipelineId: components["parameters"]["PipelineId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The definition. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Pipeline"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  updatePipeline: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+        pipelineId: components["parameters"]["PipelineId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PipelineUpdate"];
+      };
+    };
+    responses: {
+      /** @description Updated definition. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Pipeline"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  listPipelineRevisions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+        pipelineId: components["parameters"]["PipelineId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Revision summaries. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PipelineRevisionSummaryList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listPipelineDrafts: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+        pipelineId: components["parameters"]["PipelineId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Draft summaries. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DraftSummaryList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createPipelineDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
+        pipelineId: components["parameters"]["PipelineId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DraftCreate"];
+      };
+    };
+    responses: {
+      /** @description Draft created (`status: draft`). */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/drafts/{draftId}` for the new row. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Draft"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+        draftId: components["parameters"]["DraftId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The draft. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Draft"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  putDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+        draftId: components["parameters"]["DraftId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DraftPut"];
+      };
+    };
+    responses: {
+      /** @description Updated draft; `version` is incremented. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Draft"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["DraftConflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  deleteDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+        draftId: components["parameters"]["DraftId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Draft discarded. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  validateDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+        draftId: components["parameters"]["DraftId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The validation body. `valid: true` and `valid: false` are both `200`: the verdict is in the body, the status code answers "was the document acceptable JSON/YAML at all". */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ValidateResponse"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  publishDraft: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
+        draftId: components["parameters"]["DraftId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DraftPublish"];
+      };
+    };
+    responses: {
+      /** @description The immutable revision. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/revisions/{revisionId}` for the new row. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PipelineRevision"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["DraftConflict"];
+      422: components["responses"]["PublishUnprocessable"];
+    };
+  };
+  getRevision: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Either a `pipeline_revisions` id (`uuid`) or its `revision_digest` (`sha256:<64 hex>`). A digest belonging to another organization is `404`, byte-identical to an unknown one. */
+        digestOrId: components["parameters"]["RevisionDigestOrId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The revision record. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PipelineRevision"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getRevisionDocument: {
+    parameters: {
+      query?: {
+        format?: "yaml";
+      };
+      header?: never;
+      path: {
+        /** @description A `pipeline_revisions` id. Revisions have no mutation route except `deprecate`; the document itself is immutable forever (ADR-0002). */
+        revisionId: components["parameters"]["RevisionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The YAML document body. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "text/yaml": string;
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  deprecateRevision: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `pipeline_revisions` id. Revisions have no mutation route except `deprecate`; the document itself is immutable forever (ADR-0002). */
+        revisionId: components["parameters"]["RevisionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The revision with `status: deprecated`. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PipelineRevision"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getPipelineSchema: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The JSON Schema document. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  listProjectAssignments: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Assignments. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssignmentList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createProjectAssignment: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssignmentCreate"];
+      };
+    };
+    responses: {
+      /** @description Assignment created. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Assignment"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
+  deleteAssignment: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `assignments` id. Authorization runs through the assignment's own `project_id` (maintainer+); an assignment of another project is `404`. */
+        assignmentId: components["parameters"]["AssignmentId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Assignment removed. */
+      204: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  patchAssignment: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `assignments` id. Authorization runs through the assignment's own `project_id` (maintainer+); an assignment of another project is `404`. */
+        assignmentId: components["parameters"]["AssignmentId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssignmentPatch"];
+      };
+    };
+    responses: {
+      /** @description Updated assignment; `version` is incremented. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Assignment"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  listProjectRuns: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Runs. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunSummaryList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createRun: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description `POST /projects/{projectId}/runs` only (ADR-0023 § 12): an opaque key matching `^[A-Za-z0-9._-]{1,128}$`. The server stores `(project_id, key) -> (run_id, request_sha256)` for 24 h. Re-sending the same key with the same request body re-answers `200` with the stored run (a retried click is not a second run — `12` case 1); the same key with a different body is `409` `idempotency_key_mismatch`, never an update of the mapping. The body's `idempotency` member is the same mechanism for clients that cannot set headers; the header wins when both are present. */
+        "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+      };
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RunCreate"];
+      };
+    };
+    responses: {
+      /** @description Idempotent replay: the key matched a stored run whose `request_sha256` equals this request's. Body is the stored run. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunCreateResponse"];
+        };
+      };
+      /** @description Run created and queued. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          /** @description `/api/v1/runs/{runId}` for the new run. */
+          Location?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunCreateResponse"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["ValidateFailed"];
+    };
+  };
+  getRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The run. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Run"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listRunNodes: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Node executions. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeExecutionList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getRunNode: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+        /** @description A `node_executions` id. The run id in the path is checked to own this node execution (`node_executions_run_matches`), so a cross-run pairing is `404`, never a leak. */
+        nodeExecutionId: components["parameters"]["NodeExecutionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The node execution detail. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeExecutionDetail"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getRunTree: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The tree. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunTree"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listRunCheckpoints: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Boundary records, oldest first. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RunCheckpointList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  pauseRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The paused run. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Run"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["RunConflict"];
+    };
+  };
+  resumeRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The resumed run. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Run"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["RunConflict"];
+    };
+  };
+  cancelRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Cancellation requested; the body is the run as it stands, with `cancel_requested_at` set. */
+      202: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Run"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["RunConflict"];
+    };
+  };
+  retryRun: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["RunRetryRequest"];
+      };
+    };
+    responses: {
+      /** @description The run re-queued with its retry attempts. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Run"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["RunConflict"];
+    };
+  };
+  streamRunEvents: {
+    parameters: {
+      query?: {
+        /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
+        after?: components["parameters"]["After"];
+      };
+      header?: {
+        /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
+        "Last-Event-ID"?: components["parameters"]["LastEventId"];
+      };
+      path: {
+        /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
+        runId: components["parameters"]["RunId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description An open `text/event-stream` of event envelopes; the stream does not terminate on its own. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["event-envelope.schema"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getAttempt: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `attempts` id. Authorized through attempt -> node execution -> run -> project, never through the worker that ran it (`09`: no accidental worker-service surface). */
+        attemptId: components["parameters"]["AttemptId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The attempt. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Attempt"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  listProjectApprovals: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Gates. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ApprovalList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getApproval: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `approval_requests` (pipeline gate) id. Not a M2 `permission_requests` id — the two never share a route. */
+        approvalId: components["parameters"]["ApprovalId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The gate. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Approval"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  decideApproval: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `approval_requests` (pipeline gate) id. Not a M2 `permission_requests` id — the two never share a route. */
+        approvalId: components["parameters"]["ApprovalId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ApprovalDecide"];
+      };
+    };
+    responses: {
+      /** @description Decision recorded; the body is the gate at its new `version`. The run leaves `waiting_human` through the advancer, not in this response. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Approval"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["ApprovalConflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getSystemScheduler: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Scheduler counters. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SchedulerStatus"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
     };
   };
 }

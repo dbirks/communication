@@ -723,6 +723,7 @@ func trnAppendTx(ctx context.Context, tx pgx.Tx, organizationID, projectID, conv
 		ev.ActorKind, ev.ActorID, payload).
 		Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion, &env.OccurredAt,
 			&env.OrganizationID, &env.ProjectID, &env.ConversationID,
+			&env.RunID, &env.NodeExecutionID, &env.AttemptID,
 			&env.Actor.Kind, &env.Actor.ID, &env.TraceID, &payloadRaw)
 	if err != nil {
 		return events.Envelope{}, fmt.Errorf("postgres: append conversation event (%s): %w", ev.Type, err)

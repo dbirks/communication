@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/dbirks/communication/internal/events"
+	pevents "github.com/dbirks/communication/internal/pipelines/events"
 )
 
 // runAppendTx appends one journal row correlated to the run ledger, inside
@@ -63,6 +64,7 @@ func runAppendTx(ctx context.Context, tx pgx.Tx, runID, nodeExecutionID, attempt
 		runID, nodeExecutionID, attemptID).
 		Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion, &env.OccurredAt,
 			&env.OrganizationID, &env.ProjectID, &env.ConversationID,
+			&env.RunID, &env.NodeExecutionID, &env.AttemptID,
 			&env.Actor.Kind, &env.Actor.ID, &env.TraceID, &payloadRaw)
 	if err != nil {
 		return events.Envelope{}, fmt.Errorf("postgres: append run event (%s): %w", ev.Type, err)
@@ -72,4 +74,75 @@ func runAppendTx(ctx context.Context, tx pgx.Tx, runID, nodeExecutionID, attempt
 		return events.Envelope{}, fmt.Errorf("postgres: append run event outbox row: %w", err)
 	}
 	return env, nil
+}
+
+// ------------------------------------------------------------------ bridge
+
+// RecordEvent bridges one runtime journal record — the pevents.Record the
+// advancer, the worker ops and the reconciler append inside a runtime.State
+// — into this package's append vocabulary. Record's contract is explicit:
+// the adapter "sets the columns AND serialises Payload". The columns half
+// happens here and in the INSERTs (run_id, node_execution_id and attempt_id
+// travel as events.New members and as domain_events columns, per the § 3
+// correlation rule: a worker row that touches a node execution sets all
+// three, a control-plane row may carry node_execution_id with attempt_id
+// NULL). The serialisation half is prjPayloadJSON inside the appenders, so
+// the payload structs stay owned by internal/events and internal/pipelines/events
+// — this store never re-declares a vocabulary, it copies shapes.
+//
+// A reconciler/advancer row carries ActorKind system with no actor id; the
+// envelope's actor.id is NOT NULL, and ADR-0016's implementation note names
+// the literal "system" for exactly these rows. A worker row may legitimately
+// arrive with an empty id (MemStore's actorWorker leaves it blank): the
+// run-scoped adapter resolves it from the attempt's fence owner before the
+// append, and anything still blank at append time is refused there, naming
+// the record.
+func RecordEvent(rec pevents.Record) (runID, nodeExecutionID, attemptID string, ev RunEvent, err error) {
+	if vErr := rec.Validate(); vErr != nil {
+		return "", "", "", RunEvent{}, vErr
+	}
+	actorID := rec.ActorID
+	if actorID == "" && rec.ActorKind == pevents.ActorKindSystem {
+		actorID = "system"
+	}
+	return rec.RunID, rec.NodeExecutionID, rec.AttemptID, RunEvent{
+		Type:      rec.Type,
+		ActorKind: rec.ActorKind,
+		ActorID:   actorID,
+		Payload:   rec.Payload,
+	}, nil
+}
+
+// AppendRecordTx appends one runtime record inside the caller's transaction.
+// A run-scoped record goes through runAppendTx, which resolves
+// organization_id and project_id FROM the run row (correlation cannot be
+// forged); a pipeline.*/assignment.* record has no run and lands through
+// generic AppendEvent with the scope the record itself carries. The three
+// correlation ids are taken as given — translating runtime row ids to uuids
+// (when a store adapter speaks in ledger rows rather than uuids) is the
+// caller's transaction-level job.
+func AppendRecordTx(ctx context.Context, tx pgx.Tx, rec pevents.Record) error {
+	runID, nodeID, attemptID, ev, err := RecordEvent(rec)
+	if err != nil {
+		return err
+	}
+	if runID != "" {
+		_, err = runAppendTx(ctx, tx, runID, nodeID, attemptID, ev)
+		return err
+	}
+	if rec.OrganizationID == "" || rec.ProjectID == "" {
+		return fmt.Errorf("postgres: %s needs organization_id and project_id to be appended uncorrelated", rec.Type)
+	}
+	// A record without a run cannot carry node/attempt correlation either
+	// (§ 3: the run is what scopes them); leaving the three members empty
+	// keeps that honest at the column level.
+	_, err = AppendEvent(ctx, tx, events.New{
+		Type:           ev.Type,
+		OrganizationID: rec.OrganizationID,
+		ProjectID:      rec.ProjectID,
+		ConversationID: rec.ConversationID,
+		Actor:          events.Actor{Kind: ev.ActorKind, ID: ev.ActorID},
+		Payload:        ev.Payload,
+	})
+	return err
 }
