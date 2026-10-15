@@ -20,6 +20,14 @@
 #   @redocly/cli                            2.63.0 (API contract lint, api/README.md)
 #   openapi-typescript                    7.13.0 (ui/tools/apigen only — the API type generator; the app itself builds on TypeScript 7 and keeps its pins in ui/package.json / ui/tools/apigen/package.json)
 #   @playwright/test                        1.64.1 (e2e/ Playwright suite, ADR-0006)
+#   nono                                    0.80.0 (go job: the real sandbox binary
+#                                             the M3 tests exec. Same pin, tarball
+#                                             sha256 and gnu build as
+#                                             worker/Dockerfile's NONO_SHA256 and
+#                                             docs/compatibility/probes/sandbox/
+#                                             README.md — the build every
+#                                             docs/compatibility/SANDBOX.md row
+#                                             was observed against)
 # Container images for the go job's integration services (12-test-strategy:
 # real Postgres/OIDC, never mocks):
 #   postgres                                18.6
@@ -78,6 +86,67 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # The real-nono tests (internal/sandbox/nono) skip when the binary is not
+      # on PATH — an honest gap, never a mock (AGENTS.md). This job is where that
+      # gap is meant to close, so install the pinned build the same way the
+      # worker image does (worker/Dockerfile stage `executionbin`): the gnu build
+      # (not musl — the probe matrix ran against gnu) and `sha256sum -c` against
+      # the digest recorded in that Dockerfile, the probes README and
+      # docs/compatibility/SANDBOX.md.
+      # The digest is pinned *here* rather than read from the release's own
+      # SHA256SUMS.txt, because that file arrives over the same channel as the
+      # tarball and verifies nothing on its own; it is checked as a second,
+      # independent witness all the same, and the *extracted* binary is checked
+      # too so the hash that fails names the layer that drifted.
+      # A failed fetch or a hash mismatch fails this step loudly rather than
+      # degrading to a skip: a silently absent sandbox binary is how these tests
+      # stop being evidence without anyone noticing (AGENTS.md: the compatibility
+      # table is never prefilled with PASS).
+      # The script body below is the one that was run for real before it was
+      # committed: verified fetch + both hashes + `nono 0.80.0` executing out of
+      # $RUNNER_TEMP/nono-bin on the lab host.
+      - name: Install pinned nono (real sandbox tests)
+        run: |
+          set -euo pipefail
+          ver=0.80.0
+          asset="nono-v${ver}-x86_64-unknown-linux-gnu"
+          tarsum=6da665b61999570c10dffc7da78828fe1fb7f3cac53319e505cebecaef17037f
+          binsum=e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d
+          dl="$RUNNER_TEMP/nono-dl"; bin="$RUNNER_TEMP/nono-bin"
+          mkdir -p "$dl" "$bin"
+          curl -fsSL --retry 3 -o "$dl/$asset.tar.gz" \
+            "https://github.com/nolabs-ai/nono/releases/download/v${ver}/$asset.tar.gz"
+          curl -fsSL --retry 3 -o "$dl/SHA256SUMS.txt" \
+            "https://github.com/nolabs-ai/nono/releases/download/v${ver}/SHA256SUMS.txt"
+          ( cd "$dl"
+            printf '%s  %s.tar.gz\n' "$tarsum" "$asset" | sha256sum --strict --check -
+            sha256sum --ignore-missing --check SHA256SUMS.txt
+            tar -xzf "$asset.tar.gz" -C "$bin" )
+          printf '%s  %s/nono\n' "$binsum" "$bin" | sha256sum --strict --check -
+          chmod 0755 "$bin/nono"
+          echo "$bin" >> "$GITHUB_PATH"
+      # What this runner can actually enforce, on the record. The real-nono
+      # tests skip with this same probe's verdict as their reason (see
+      # requireRealNono in internal/sandbox/nono/selftest_test.go), so this is
+      # the log line that distinguishes "enforcement was observed here" from
+      # "the runner cannot enforce and said so". Not a gate: a kernel without
+      # Landlock must not turn a green build red by contradicting the tests'
+      # own skip policy — it must be visible while it is being skipped.
+      # What is *expected* is a Landlock ABI v6 runner: the ubuntu-24.04 image
+      # line runs a 6.x azure kernel and Ubuntu builds `landlock` into its boot
+      # LSM list (landlock.io lists Ubuntu and Azure Linux as enabled by default;
+      # other projects' Landlock CI treats ubuntu-latest as v6-capable and
+      # ubuntu-22.04 as ABI v4). What is *claimed* is only what the line below
+      # prints — the runner is the authority on itself, and the lab's matrix
+      # (docs/compatibility/SANDBOX.md) was measured on Landlock V6.
+      - name: Sandbox capability report
+        run: |
+          set -uo pipefail
+          uname -r
+          echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo UNREADABLE)"
+          nono --version
+          nono setup --check-only -v \
+            || echo 'nono cannot enforce on this runner: the real-nono tests will skip, not pass vacuously'
       - name: go vet
         run: go vet ./...
       - name: gofmt

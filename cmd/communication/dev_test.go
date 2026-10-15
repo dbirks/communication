@@ -56,6 +56,12 @@ func TestRunDevStopsBothWhenOneComponentDies(t *testing.T) {
 	t.Setenv("COMMUNICATION_PUBLIC_URL", "") // serve: config error, exit 2 right away
 	t.Setenv("COMMUNICATION_WORKER_NAME", "dev-worker")
 	t.Setenv("COMMUNICATION_WORKER_HEARTBEAT", "1s")
+	// This test is about dev mode's shared context — one component dying must
+	// stop the other. The worker's `required` sandbox gate would otherwise stop
+	// it earlier, on a missing nono binary, and the assertion below would be
+	// reading a different failure. `dev` itself still honours whatever the
+	// operator sets: runDev is passed no special-cased mode.
+	t.Setenv("COMMUNICATION_SANDBOX_ENFORCEMENT", sandboxMode)
 
 	var stderr bytes.Buffer
 	done := make(chan int, 1)
