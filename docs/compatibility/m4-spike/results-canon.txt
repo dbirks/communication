@@ -1,0 +1,72 @@
+=== parse behaviour + canonical digest per document ===
+key-order              dup=false alias=false merge=false docs=1 canon={"a":1,"b":2,"c":{"x":1,"y":2}} digest=sha256:c0f5a125be13845a
+                         go-types: a=int b=int c=map[string]interface {}
+key-order-shuffled     dup=false alias=false merge=false docs=1 canon={"a":1,"b":2,"c":{"x":1,"y":2}} digest=sha256:c0f5a125be13845a
+                         go-types: a=int b=int c=map[string]interface {}
+comments-and-style     dup=false alias=false merge=false docs=1 canon={"a":1,"b":"2","c":{"x":1,"y":2}} digest=sha256:9d5dcc41885e8420
+                         go-types: a=int b=string c=map[string]interface {}
+block-vs-flow          dup=false alias=false merge=false docs=1 canon={"a":1,"b":"2","c":{"x":1,"y":2}} digest=sha256:9d5dcc41885e8420
+                         go-types: a=int b=string c=map[string]interface {}
+duplicate-keys         decode-err: yaml: unmarshal errors:⏎  line 2: mapping key "a" already defined at line 1
+alias                  dup=false alias=true merge=false docs=1 canon={"a":{"p":1},"b":{"p":1}} digest=sha256:aab956d3aa4c03d8
+                         go-types: a=map[string]interface {} b=map[string]interface {}
+merge-key              dup=false alias=true merge=true docs=1 canon={"base":{"p":1,"q":2},"use":{"p":1,"q":3}} digest=sha256:a53ce092f0232a66
+                         go-types: base=map[string]interface {} use=map[string]interface {}
+billion-laughs         decode-err: yaml: document contains excessive aliasing
+yaml11-bools           dup=false alias=false merge=false docs=1 canon={"no":2,"off":4,"on":3,"true_":true,"yes":1} digest=sha256:0bde0a051ec0d37b
+                         go-types: no=int off=int on=int true_=bool yes=int
+date-scalar            dup=false alias=false merge=false docs=1 canon={"when":"2026-10-14T00:00:00Z"} digest=sha256:b24c03b6e6240c33
+                         go-types: (time.Time) when=time.Time
+time-scalar            dup=false alias=false merge=false docs=1 canon={"when":"2026-10-14T18:00:00Z"} digest=sha256:9d4b934aab73387b
+                         go-types: (time.Time) when=time.Time
+sexagesimal            dup=false alias=false merge=false docs=1 canon={"ratio":"1:30"} digest=sha256:9844de97e61f84ef
+                         go-types: ratio=string
+leading-zero-int       dup=false alias=false merge=false docs=1 canon={"n":83} digest=sha256:b61e2f4dc856678c
+                         go-types: n=int
+octal-0o               dup=false alias=false merge=false docs=1 canon={"n":15} digest=sha256:7f23ddb56d242763
+                         go-types: n=int
+underscore-number      dup=false alias=false merge=false docs=1 canon={"n":1000} digest=sha256:fe1c788f83a7b21b
+                         go-types: n=int
+big-int                dup=false alias=false merge=false docs=1 canon={"n":1.2345678901234568e+29} digest=sha256:cf06dd17e5dab029
+                         go-types: n=float64
+float-forms            dup=false alias=false merge=false docs=1 canon={"a":1,"b":1000,"c":0.5,"d":1} digest=sha256:d5c1ce544f736fe9
+                         go-types: a=float64 b=float64 c=float64 d=int
+null-forms             dup=false alias=false merge=false docs=1 canon={"a":null,"b":null,"c":null,"d":null,"e":null} digest=sha256:3ace9bc888ef4ce1
+                         go-types: a=<nil> b=<nil> c=<nil> d=<nil> e=<nil>
+multi-document         dup=false alias=false merge=false docs=2 canon={"a":1} digest=sha256:015abd7f5cc57a2d
+                         go-types: a=int
+tab-character          parse-err: yaml: line 2: found a tab character that violates indentation
+duplicate-anchor       dup=false alias=true merge=false docs=1 canon={"a":1,"b":2,"c":2} digest=sha256:efc55b7cd6ef9b27
+                         go-types: a=int b=int c=int
+unicode-compose        dup=false alias=false merge=false docs=1 canon={"name":"café"} digest=sha256:645fa443126a8954
+                         go-types: name=string
+unicode-decompose      dup=false alias=false merge=false docs=1 canon={"name":"café"} digest=sha256:4b7186ff40a64bfa
+                         go-types: name=string
+empty-vs-missing       dup=false alias=false merge=false docs=1 canon={"a":{}} digest=sha256:5d8171b9fc362e38
+                         go-types: a=map[string]interface {}
+list-vs-map            dup=false alias=false merge=false docs=1 canon={"a":[]} digest=sha256:50e8660084976a10
+                         go-types: a=[]interface {}
+string-carrying-yaml   dup=false alias=false merge=false docs=1 canon={"expr":"${{ nodes.a.outputs.b }}"} digest=sha256:632fa61f466181bf
+                         go-types: expr=string
+folded-scalar          dup=false alias=false merge=false docs=1 canon={"prompt":"one two\n"} digest=sha256:3c2f240d25ecbc23
+                         go-types: prompt=string
+literal-scalar         dup=false alias=false merge=false docs=1 canon={"prompt":"one\ntwo\n"} digest=sha256:afa25a6617cea537
+                         go-types: prompt=string
+
+=== digest stability of one pipeline written two ways ===
+same-canonical-bytes-regardless-of-key-order=true
+same-canonical-after-yaml-reparse=true
+digest=sha256:a982c5a37f1d17df len=154
+
+=== proposed canonicalization rules, applied ===
+raw-digests-equal-for-NFC-variants=false (false means unnormalized digests split)
+after-NFC-digests-equal=true digest=sha256:645fa443126a8954
+"n: 1e999\n"             canon={"n":"1e999"}      err=<nil>
+"n: .inf\n"              canon=                   err=json: unsupported value: +Inf
+"n: 9223372036854775808\n" canon={"n":9223372036854775808} err=<nil>
+"n: 3.0\n"               canon={"n":3}            err=<nil>
+"flag: yes\n"        -> {"flag":"yes"}
+"flag: on\n"         -> {"flag":"on"}
+"flag: true\n"       -> {"flag":true}
+"flag: True\n"       -> {"flag":true}
+"flag: \"yes\"\n"    -> {"flag":"yes"}

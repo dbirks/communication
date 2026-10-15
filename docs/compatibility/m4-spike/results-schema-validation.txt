@@ -1,0 +1,52 @@
+schema: $schema=https://json-schema.org/draft/2020-12/schema $id=https://example.invalid/communication/v1alpha1/pipeline.schema.json
+schema: required=[apiVersion kind metadata spec] additionalProperties=false
+schema: $defs.node keys=[additionalProperties properties required type]
+schema: $defs.node.properties keys=[config dependsOn id kind outputs]
+schema: node kinds=16 enum=[agent.acp model.chat process.exec condition gate human.approval until for_each parallel join pipeline.invoke artifact.publish git.commit git.publish integration.query integration.action]
+schema: node additionalProperties=false node required=[id kind config]
+schema: spec.properties keys=[inputs nodes outputs policies resultBindings]
+
+=== feature-development.yaml ===
+yaml: duplicate-keys=false anchors/aliases/merge=false parse-err=PASS
+yaml: apiVersion=communication.dev/v1alpha1 kind=Pipeline top-level-keys=[apiVersion kind metadata spec]
+jsonschema/santhosh/v6 (2020-12): PASS
+jsonschema/qri-io         (2019-09 max): PASS
+jsonschema/xeipuuv        (draft-07 max): PASS
+canon: bytes=2102 sha256=4da576d9e99406c1d371d036ac6bb1249354c12ddff403c5fb22b8a01ba43193
+canon: json-is-yaml-round-trip-stable=true
+
+=== node-template-reviewer.yaml ===
+yaml: duplicate-keys=false anchors/aliases/merge=false parse-err=PASS
+yaml: apiVersion=communication.dev/v1alpha1 kind=NodeTemplate top-level-keys=[apiVersion kind metadata spec]
+jsonschema/santhosh/v6 (2020-12): FAIL: {"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#","InstanceLocation":null,"ErrorKind":{"Location":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#"},"Causes":[{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/kind","InstanceLocation":["kind"],"ErrorKind":{"Got":"NodeTemplate","Want":"Pipeline"},"Causes":null},{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{},"Causes":[{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{"Missing":["inputs","nodes"]},"Causes":null},{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{"Properties":["config","implements","outputSchema","parameters"]},"Causes":null}]}]}
+jsonschema/qri-io         (2019-09 max): FAIL: /kind: must equal "Pipeline" | /spec: "inputs" value is required | /spec: "nodes" value is required | /spec: additional properties are not allowed
+jsonschema/xeipuuv        (draft-07 max): FAIL: spec: inputs is required | spec: nodes is required | spec: Additional property parameters is not allowed | spec: Additional property config is not allowed | spec: Additional property implements is not allowed | spec: Additional property outputSchema is not allowed | kind: kind does not match: "Pipeline"
+canon: bytes=762 sha256=fbce1bc566d45fc3322b1b0ac04ecd508d60adddf3522a1d01aa659e20f3fc52
+canon: json-is-yaml-round-trip-stable=true
+
+=== process-ready-issues.yaml ===
+yaml: duplicate-keys=false anchors/aliases/merge=false parse-err=PASS
+yaml: apiVersion=communication.dev/v1alpha1 kind=Pipeline top-level-keys=[apiVersion kind metadata spec]
+jsonschema/santhosh/v6 (2020-12): PASS
+jsonschema/qri-io         (2019-09 max): PASS
+jsonschema/xeipuuv        (draft-07 max): PASS
+canon: bytes=1341 sha256=edb11dad66fc1abb862da90e832cd6db4e710f2819e7f36d5843b1921f224d0e
+canon: json-is-yaml-round-trip-stable=true
+
+=== project-binding.yaml ===
+yaml: duplicate-keys=false anchors/aliases/merge=false parse-err=PASS
+yaml: apiVersion=communication.dev/v1alpha1 kind=PipelineAssignment top-level-keys=[apiVersion kind metadata spec]
+jsonschema/santhosh/v6 (2020-12): FAIL: {"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#","InstanceLocation":null,"ErrorKind":{"Location":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#"},"Causes":[{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/kind","InstanceLocation":["kind"],"ErrorKind":{"Got":"PipelineAssignment","Want":"Pipeline"},"Causes":null},{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{},"Causes":[{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{"Missing":["inputs","nodes"]},"Causes":null},{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/properties/spec","InstanceLocation":["spec"],"ErrorKind":{"Properties":["limits","parameters","project","revision","secretRefs","triggers","concurrency","pipeline","promotionPolicy"]},"Causes":null}]}]}
+jsonschema/qri-io         (2019-09 max): FAIL: /kind: must equal "Pipeline" | /spec: "inputs" value is required | /spec: "nodes" value is required | /spec: additional properties are not allowed
+jsonschema/xeipuuv        (draft-07 max): FAIL: kind: kind does not match: "Pipeline" | spec: inputs is required | spec: nodes is required | spec: Additional property concurrency is not allowed | spec: Additional property limits is not allowed | spec: Additional property parameters is not allowed | spec: Additional property pipeline is not allowed | spec: Additional property project is not allowed | spec: Additional property promotionPolicy is not allowed | spec: Additional property revision is not allowed | spec: Additional property secretRefs is not allowed | spec: Additional property triggers is not allowed
+canon: bytes=618 sha256=f59f38b1c4b6a3d48cc49e0e3489f5ed367b323ea4e254c09896bfb5ff55f6fe
+canon: json-is-yaml-round-trip-stable=true
+
+=== secret-mounts.yaml ===
+yaml: duplicate-keys=false anchors/aliases/merge=false parse-err=PASS
+yaml: apiVersion=<nil> kind=<nil> top-level-keys=[sandbox secret_mounts]
+jsonschema/santhosh/v6 (2020-12): FAIL: {"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#","InstanceLocation":null,"ErrorKind":{"Location":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#"},"Causes":[{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#","InstanceLocation":[],"ErrorKind":{"Missing":["apiVersion","kind","metadata","spec"]},"Causes":null},{"SchemaURL":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#","InstanceLocation":[],"ErrorKind":{"Properties":["sandbox","secret_mounts"]},"Causes":null}]}
+jsonschema/qri-io         (2019-09 max): FAIL: /: "apiVersion" value is required | /: "kind" value is required | /: "metadata" value is required | /: "spec" value is required | /: additional properties are not allowed
+jsonschema/xeipuuv        (draft-07 max): FAIL: (root): apiVersion is required | (root): kind is required | (root): metadata is required | (root): spec is required | (root): Additional property sandbox is not allowed | (root): Additional property secret_mounts is not allowed
+canon: bytes=483 sha256=032c5821a08482c4932809f665a67a06713eadb4456f9835c354b04ef5d95366
+canon: json-is-yaml-round-trip-stable=true

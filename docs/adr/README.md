@@ -39,6 +39,13 @@ exercised — an ADR is not Accepted on the strength of a written intention.
 | ADR-0018 | SecretRef: envelope encryption outside the API surface, `.env` materialization | Proposed | [`ADR-0018-secretref-materialization-and-envelope-encryption.md`](ADR-0018-secretref-materialization-and-envelope-encryption.md) |
 | ADR-0019 | Launching the agent under nono in `required` mode from inside the worker container | Proposed | [`ADR-0019-agent-launch-under-nono-in-required-mode.md`](ADR-0019-agent-launch-under-nono-in-required-mode.md) |
 | ADR-0020 | Artifact store: local backend, S3 contract, sandboxed HTML preview origin | Proposed | [`ADR-0020-artifact-store-and-sandboxed-html-preview.md`](ADR-0020-artifact-store-and-sandboxed-html-preview.md) |
+| ADR-0021 | Pipeline v1alpha1: strict schema, canonicalization and revision digests | Proposed; acceptance requires the M4 exit run and the § 9 correction list in the M4 contract | [`ADR-0021-pipeline-schema-canonicalization-and-revision-digests.md`](ADR-0021-pipeline-schema-canonicalization-and-revision-digests.md) |
+| ADR-0022 | The CEL binding subset: syntax, allowed roots, and resource limits | Proposed; acceptance requires the M4 exit run, and § 2's `loop` root needs the rename contract § 9.1 row 17 records (cel-go reserves the name) | [`ADR-0022-cel-binding-subset-and-resource-limits.md`](ADR-0022-cel-binding-subset-and-resource-limits.md) |
+| ADR-0023 | Pipeline execution model: runs, node executions and attempts on M2's leases | Proposed; acceptance requires the M4 exit run, and § 1's `pipeline_invocations` row needs contract § 9.1 row 20's one-line fix | [`ADR-0023-pipeline-execution-model-runs-node-executions-and-attempts.md`](ADR-0023-pipeline-execution-model-runs-node-executions-and-attempts.md) |
+| ADR-0024 | Node kinds: what M4 must ship to pass its exit, and what stays deferred | Proposed; acceptance requires the M4 exit run, and its prose needs contract § 9.1 row 21's nine/seven counts | [`ADR-0024-node-kind-scope-for-m4.md`](ADR-0024-node-kind-scope-for-m4.md) |
 
-The M3 build contract that these four records share — tables, routes, events, worker duties and the
-exit test — is [`docs/m3-contract.md`](../m3-contract.md).
+The M3 build contract that ADR-0017…ADR-0020 share — tables, routes, events, worker duties and the
+exit test — is [`docs/m3-contract.md`](../m3-contract.md). The M4 build contract that
+ADR-0021…ADR-0024 share is [`docs/m4-contract.md`](../m4-contract.md), whose schema/CEL/
+canonicalization claims rest on the checked-in spike evidence in
+[`docs/compatibility/m4-spike/`](../compatibility/m4-spike/README.md).

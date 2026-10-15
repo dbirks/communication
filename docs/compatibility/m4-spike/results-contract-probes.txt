@@ -1,0 +1,32 @@
+# contract-phase probes (NOT part of the copied spike evidence; see README § 'Contract-phase addendum')
+# commands, run in this directory (go1.27.2-X:nodwarf5, cel-go v0.31.0, santhosh-tekuri/jsonschema/v6 v6.0.3):
+#   go test ./contractprobe -count=1 -v
+#   M4SPIKE_CANDIDATE_DIR=<dir holding candidate/feature-development-contract.yaml as feature-development.yaml> go run ./cmd/probes
+#   (only the '--- sample feature-development.yaml' block of that output is kept below)
+=== RUN   TestLoopRootIsReserved
+    probes_test.go:104: declared, restricted env       -> ERROR: <input>:1:1: reserved identifier: loop
+    probes_test.go:104: undeclared, restricted env     -> ERROR: <input>:1:1: reserved identifier: loop
+    probes_test.go:104: guarded by has()               -> ERROR: <input>:1:5: reserved identifier: loop
+    probes_test.go:104: declared as a typed map        -> ERROR: <input>:1:1: reserved identifier: loop
+    probes_test.go:121: nodes['loop'] -> allowlist refusal (no `_[_]` in § 5), not a parser refusal
+    probes_test.go:126: nodes['loop'] compiles with index enabled -> the reservation is identifier-level only
+--- PASS: TestLoopRootIsReserved (0.00s)
+=== RUN   TestEveryDeclaredRootCompiles
+    probes_test.go:153: env declares `loop` happily; only the parser knows it is reserved
+--- PASS: TestEveryDeclaredRootCompiles (0.00s)
+=== RUN   TestNormalizedAstTextWraps
+    probes_test.go:179: input 86 chars -> normalized 86 chars with 1 wrap newline(s); unwrapped 86 chars
+--- PASS: TestNormalizedAstTextWraps (0.00s)
+=== RUN   TestContractSampleExpressionsCompile
+    probes_test.go:243: 16 distinct expressions compiled and normalized (contract § 9.3 sample)
+--- PASS: TestContractSampleExpressionsCompile (0.00s)
+PASS
+ok  	communicationlab/m4spike/contractprobe	0.008s
+exit=0
+
+=== the § 9.3 sample (candidate/feature-development-contract.yaml) through cmd/probes ===
+--- sample feature-development.yaml
+    provisional/santhosh: FAIL: jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+    provisional/qri:      FAIL: /spec/nodes/0: additional properties are not allowed | /spec/nodes/1: additional properties are not allowed | /spec/nodes/2: additional properties are not allowed | /spec/nodes/4: additional properties are not allowed | /spec/nodes/5: additional properties are not allowed
+    provisional/xeipuuv:  FAIL: spec.nodes.0: Additional property retry is not allowed | spec.nodes.0: Additional property timeoutSeconds is not allowed | spec.nodes.1: Additional property retry is not allowed | spec.nodes.2: Additional property timeoutSeconds is not allowed | spec.nodes.4: Additional property when is not allowed | spec.nodes.5: Additional property when is not allowed
+    candidate/santhosh:   PASS

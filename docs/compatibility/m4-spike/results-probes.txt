@@ -1,0 +1,197 @@
+provisional schema: 2682 bytes; candidate schema: 24618 bytes
+schema-compile/provisional: PASS (santhosh v6 compiles it as 2020-12)
+schema-compile/candidate: PASS (santhosh v6 compiles it as 2020-12)
+
+--- probe vacuous-config
+    why: unknown node config keys are accepted by the provisional schema (no per-kind config schema exists)
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/config': additional properties 'prompt2', 'typo' not allowed
+    - at '/spec': missing properties 'implements', 'parameters', 'config'
+    - at '/spec': additional properties 'inputs', 'nodes' not allowed
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe typed-literal-vs-expression
+    why: expression string where an integer budget is required (examples/process-ready-issues maxConcurrency)
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/config/maxConcurrency': got string, want integer
+    - at '/metadata': missing property 'version'
+    - at '/spec': missing properties 'implements', 'parameters', 'config'
+    - at '/spec': additional properties 'inputs', 'nodes' not allowed
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe duplicate-node-id
+    why: same node id twice: NOT catchable structurally (JSON Schema cannot compare array items) — compiler job
+    provisional: PASS
+    candidate:     PASS
+    expected-under-candidate-valid=true => MATCHES
+
+--- probe self-dependency
+    why: a node depending on itself: NOT catchable structurally — compiler job (DAG check)
+    provisional: PASS
+    candidate:     PASS
+    expected-under-candidate-valid=true => MATCHES
+
+--- probe dangling-depends-on
+    why: dependsOn naming a nonexistent node: NOT catchable structurally — compiler job
+    provisional: PASS
+    candidate:     PASS
+    expected-under-candidate-valid=true => MATCHES
+
+--- probe inputs-not-json-schema
+    why: spec.inputs as a map of names (not a JSON Schema) passes the provisional schema
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    - at '/spec': missing properties 'implements', 'parameters', 'config'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe unconstrained-policies
+    why: spec.policies is a free object in the provisional schema: a nonsense budget passes
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/policies/maxConcurrentNodes': minimum: got -1, want 1
+    - at '/spec/policies': additional properties 'timeoutSeconds' not allowed
+    - at '/metadata': missing property 'version'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe until-body-unvalidated
+    why: nested body.nodes inside until.config are unvalidated by the provisional schema (config is a free object)
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/config/body/nodes/0/id': '1' does not match pattern '^[a-z][a-z0-9_]{0,62}$'
+    - at '/spec/nodes/0/config/body/nodes/0/kind': value must be one of 'agent.acp', 'model.chat', 'process.exec', 'condition', 'gate', 'human.approval', 'until', 'for_each', 'parallel', 'join', 'pipeline.invoke', 'artifact.publish', 'git.commit', 'git.publish', 'integration.query', 'integration.action'
+    - at '/kind': value must be 'NodeTemplate'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe kind-name-drift
+    why: roadmap/M4 language says "human gate"; the enum has `gate` and `human.approval`, so `human.gate` is a hard schema error
+    provisional: FAIL:
+jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+    - at '/spec/nodes/0/kind': value must be one of 'agent.acp', 'model.chat', 'process.exec', 'condition', 'gate', 'human.approval', 'until', 'for_each', 'parallel', 'join', 'pipeline.invoke', 'artifact.publish', 'git.commit', 'git.publish', 'integration.query', 'integration.action'
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/kind': value must be one of 'agent.acp', 'model.chat', 'process.exec', 'condition', 'gate', 'human.approval', 'until', 'for_each', 'parallel', 'join', 'pipeline.invoke', 'artifact.publish', 'git.commit', 'git.publish', 'integration.query', 'integration.action'
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe yaml-1.1-boolean
+    why: `yes` is a string under YAML 1.2 core schema (yaml.v3): a boolean-typed field written 1.1-style is a type error
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/config/carryForward': got string, want boolean
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe secret-literal-in-config
+    why: an inline secret value passes structurally under BOTH schemas: invariant 5 is compiler-only, not schema
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    - at '/spec': missing properties 'implements', 'parameters', 'config'
+    expected-under-candidate-valid=true => MISMATCH
+
+--- probe secretrefs-shape
+    why: secretRefs must be `project/<slug>`|`org/<slug>` references; a URL-shaped value is rejected structurally
+    provisional: PASS
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/spec/inputs': missing property 'type'
+    - at '/spec/nodes/0/config/secretRefs/0': 'postgres://u:p@h/d' does not match pattern '^(project|org)/[a-z0-9][a-z0-9_-]{0,63}$'
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe template-kind
+    why: examples/node-template-reviewer.yaml kind NodeTemplate: rejected by the provisional schema (Pipeline-only), accepted by the candidate
+    provisional: FAIL:
+jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+    - at '/kind': value must be 'Pipeline'
+    - at '/spec': missing properties 'inputs', 'nodes'
+    - at '/spec': additional properties 'parameters', 'config', 'implements' not allowed
+    basic-output: {"valid":false,"keywordLocation":"","instanceLocation":"","errors":[{"valid":false,"keywordLocation":"/properties/kind/const","instanceLocation":"/kind","error":"value must be 'Pipeline'"},{"valid":false,"keywordLocation":"/properties/spec","instanceLocation":"/spec","error":"validation failed"},{"valid":false,"keywordLocation":"/properties/spec/required","instanceLocation":"/spec","error":"missing properties 'inputs', 'nodes'"},{"valid":false,"keywordLocation":"/properties/spec/additionalProperties","instanceLocation":"/spec","error":"additional properties 'parameters', 'config', 'implements' not allowed"}]}
+    candidate:     PASS
+    expected-under-candidate-valid=true => MATCHES
+
+--- probe assignment-kind
+    why: examples/project-binding.yaml kind PipelineAssignment: NO schema exists for it in either candidate (07 makes assignments first-class)
+    provisional: FAIL:
+jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+    - at '/kind': value must be 'Pipeline'
+    - at '/spec': missing properties 'inputs', 'nodes'
+    - at '/spec': additional properties 'project' not allowed
+    basic-output: {"valid":false,"keywordLocation":"","instanceLocation":"","errors":[{"valid":false,"keywordLocation":"/properties/kind/const","instanceLocation":"/kind","error":"value must be 'Pipeline'"},{"valid":false,"keywordLocation":"/properties/spec","instanceLocation":"/spec","error":"validation failed"},{"valid":false,"keywordLocation":"/properties/spec/required","instanceLocation":"/spec","error":"missing properties 'inputs', 'nodes'"},{"valid":false,"keywordLocation":"/properties/spec/additionalProperties","instanceLocation":"/spec","error":"additional properties 'project' not allowed"}]}
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '/kind': value must be 'Pipeline'
+    - at '/spec': missing properties 'inputs', 'nodes'
+    - at '/spec': additional properties 'project' not allowed
+    - at '/kind': value must be 'NodeTemplate'
+    expected-under-candidate-valid=false => MATCHES
+
+--- probe secret-mounts-document
+    why: examples/secret-mounts.yaml is not an apiVersion/kind document at all, so nothing validates it
+    provisional: FAIL:
+jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+    - at '': missing properties 'apiVersion', 'kind', 'metadata', 'spec'
+    - at '': additional properties 'sandbox', 'secret_mounts' not allowed
+    basic-output: {"valid":false,"keywordLocation":"","instanceLocation":"","errors":[{"valid":false,"keywordLocation":"/required","instanceLocation":"","error":"missing properties 'apiVersion', 'kind', 'metadata', 'spec'"},{"valid":false,"keywordLocation":"/additionalProperties","instanceLocation":"","error":"additional properties 'sandbox', 'secret_mounts' not allowed"}]}
+    candidate:     FAIL:
+jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+    - at '': missing properties 'apiVersion', 'kind', 'metadata', 'spec'
+    - at '': additional properties 'sandbox', 'secret_mounts' not allowed
+    expected-under-candidate-valid=false => MATCHES
+
+--- sample feature-development.yaml
+    provisional/santhosh: PASS
+    provisional/qri:      PASS
+    provisional/xeipuuv:  PASS
+    candidate/santhosh:   FAIL: jsonschema validation failed with 'https://communication.dev/schemas/pipeline-v1alpha1.candidate.schema.json#'
+- at '': 'oneOf' failed, none matched
+  - at '': validation failed
+    - at '/spec/nodes': validation failed
+      - at '/spec/nodes/1': 'allOf' failed
+        - at '/spec/nodes/1/config': additional properties 'timeoutSeconds' not allowed
+      - at '/spec/nodes/2': 'allOf' failed
+        - at '/spec/nodes/2/config/body/nodes/1': 'allOf' failed
+          - at '/spec/nodes/2/config/body/nodes/1/config/cwd': 'oneOf' failed, none matched
+            - at '/spec/nodes/2/config/body/nodes/1/config/cwd': value must be ''
+            - at '/spec/nodes/2/config/body/nodes/1/config/cwd': '${{ workspace.repo.root }}' does not match pattern '^[A-Za-z0-9][A-Za-z0-9._ +@/-]{0,511}$'
+    - at '/spec/policies': additional properties 'timeoutSeconds' not allowed
+  - at '': validation failed
+    - at '/kind': value must be 'NodeTemplate'
+    - at '/metadata': missing property 'version'
+    - at '/spec': validation failed
+      - at '/spec': missing properties 'implements', 'parameters', 'config'
+      - at '/spec': additional properties 'inputs', 'nodes', 'outputs', 'policies', 'resultBindings' not allowed
+  basic-output: {"valid":false,"keywordLocation":"","instanceLocation":"","errors":[{"valid":false,"keywordLocation":"/oneOf","instanceLocation":"","error":"'oneOf' failed, none matched"},{"valid":false,"keywordLocation":"/oneOf/0/$ref","AbsoluteKeywordLocation":"https://communica…(truncated)
+
+--- sample feature-development-corrected.yaml
+    provisional/santhosh: FAIL: jsonschema validation failed with 'https://example.invalid/communication/v1alpha1/pipeline.schema.json#'
+- at '/spec/nodes/0': additional properties 'timeoutSeconds', 'retry' not allowed
+- at '/spec/nodes/1': additional properties 'retry' not allowed
+- at '/spec/nodes/2': additional properties 'timeoutSeconds' not allowed
+  basic-output: {"valid":false,"keywordLocation":"","instanceLocation":"","errors":[{"valid":false,"keywordLocation":"/properties/spec/properties/nodes/items/$ref/additionalProperties","AbsoluteKeywordLocation":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/$defs/node/additionalProperties","instanceLocation":"/spec/nodes/0","error":"validation failed"},{"valid":false,"keywordLocation":"/properties/spec/properties/nodes/items/$ref/additionalProperties","AbsoluteKeywordLocation":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/$defs/node/additionalProperties","instanceLocation":"/spec/nodes/1","error":"validation failed"},{"valid":false,"keywordLocation":"/properties/spec/properties/nodes/items/$ref/additionalProperties","AbsoluteKeywordLocation":"https://example.invalid/communication/v1alpha1/pipeline.schema.json#/$defs/node/additionalProperties","instanceLocation":"/spec/nodes/2","error":"validation failed"}]}
+    provisional/qri:      FAIL: /spec/nodes/0: additional properties are not allowed | /spec/nodes/1: additional properties are not allowed | /spec/nodes/2: additional properties are not allowed
+    provisional/xeipuuv:  FAIL: spec.nodes.0: Additional property retry is not allowed | spec.nodes.0: Additional property timeoutSeconds is not allowed | spec.nodes.1: Additional property retry is not allowed | spec.nodes.2: Additional property timeoutSeconds is not allowed
+    candidate/santhosh:   PASS

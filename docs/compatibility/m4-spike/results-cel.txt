@@ -1,0 +1,52 @@
+=== A. restricted env: macros cleared, has() only, function allowlist ===
+nodes.review.outputs.approved == true                          ACCEPTED result=true     cost=5 err=-
+nodes.test.outputs.exit_code == 0 && nodes.review.outputs.appr… ACCEPTED result=*types.Err cost=7 err=no such key: test
+size(inputs.goal) <= 4096                                      ACCEPTED result=true     cost=4 err=-
+has(nodes.review.outputs.approved) && nodes.review.outputs.app… ACCEPTED result=true     cost=9 err=-
+nodes.review.outputs.findings.size() > 0                       ACCEPTED result=true     cost=6 err=-
+nodes.review.outputs.findings.exists(f, f != "")               REJECTED at compile: ERROR: <input>:1:37: undeclared reference to 'exists' (in container '')  | nodes.review.outputs.findings.exists(f, f != "")  | ....................................^ ERROR: <input>:1:38: unde…
+nodes.review.outputs.findings.map(f, f)                        REJECTED at compile: ERROR: <input>:1:34: undeclared reference to 'map' (in container '')  | nodes.review.outputs.findings.map(f, f)  | .................................^ ERROR: <input>:1:35: undeclared referenc…
+"x".matches(".*")                                              REJECTED at compile: ERROR: <input>:1:12: function "matches" is outside the Communication CEL subset  | "x".matches(".*")  | ...........^
+now() > 0                                                      REJECTED at compile: ERROR: <input>:1:4: undeclared reference to 'now' (in container '')  | now() > 0  | ...^
+type(nodes.review.outputs.approved) == bool                    REJECTED at compile: ERROR: <input>:1:5: function "type" is outside the Communication CEL subset  | type(nodes.review.outputs.approved) == bool  | ....^
+nodes.review.outputs.approved ? "go" : "stop"                  ACCEPTED result=go       cost=4 err=-
+"approved" in nodes.review.outputs                             ACCEPTED result=true     cost=4 err=-
+unknown_root.field == 1                                        REJECTED at compile: ERROR: <input>:1:1: undeclared reference to 'unknown_root' (in container '')  | unknown_root.field == 1  | ^
+nodes.review.status == 'succeeded' && nodes.review.outputs.app… ACCEPTED result=true     cost=9 err=-
+inputs.max_retries > 4 - 1                                     ACCEPTED result=false    cost=4 err=-
+
+=== B. evaluation semantics: missing key, wrong type, null, JSON numbers ===
+approved-true        result=true       cost=5      eval-err=-
+missing-node         result=*types.Err cost=2      eval-err=no such key: review
+missing-output-key   result=*types.Err cost=4      eval-err=no such key: approved
+string-not-bool      result=false      cost=5      eval-err=-
+json-float-vs-int    result=true       cost=5      eval-err=-
+null-output          result=false      cost=5      eval-err=-
+guarded-missing      result=false      cost=4      eval-err=-
+unguarded-missing-and result=*types.Err cost=9      eval-err=no such key: missing
+wrong-root-shape     result=*types.Err cost=2      eval-err=no such key: goal
+
+=== C. cost: cleared macros vs. permissive env, budget=%d ===
+restricted-long-chained-eq         result=true     cost=20       eval-err=-
+restricted-comprehension           compile-err=ERROR: <input>:1:13: undeclared reference to 'exists' (in container '')  | items.exists(i, i == 4999)  | ............^ ERROR: <input>:1:14: undeclared…
+permissive-comprehension-5000      result=<nil>    cost=201      eval-err=operation cancelled: actual cost limit exceeded
+permissive-nested-comprehension    result=<nil>    cost=206      eval-err=operation cancelled: actual cost limit exceeded
+
+=== D. ${{ }} splitting: what the tokenizer must survive ===
+"Produce a plan for: ${{ inputs.goal }}"                                 -> segments=2 [Produce a plan for:  EXPR:inputs.goal] err=-
+"${{ nodes.a.outputs.x }}/${{ nodes.b.outputs.y }}"                      -> segments=3 [EXPR:nodes.a.outputs.x / EXPR:nodes.b.outputs.y] err=-
+"literal with no binding"                                                -> segments=1 [literal with no binding] err=-
+"unterminated ${{ inputs.goal"                                           -> segments=0 [] err=unterminated binding
+"nested index ${{ nodes.a.outputs[\"x\"] }}"                             -> segments=2 [nested index  EXPR:nodes.a.outputs["x"]] err=-
+"${{ }}"                                                                 -> segments=0 [] err=empty binding
+"$${{ escaped-looking }}"                                                -> segments=2 [$ EXPR:escaped-looking] err=-
+"${{ inputs.goal }} ${{ inputs.goal }}"                                  -> segments=3 [EXPR:inputs.goal   EXPR:inputs.goal] err=-
+"${{ inputs.a }} and ${{ inputs.b }} and ${{ inputs.c }} and ${{ inputs.d }} and ${{ inputs.e }}" -> segments=9 [EXPR:inputs.a  and  EXPR:inputs.b  and  EXPR:inputs.c  and  EXPR:inputs.d  and  EXPR:inputs.e] err=-
+
+=== E. AST round-trip (what a revision digest would pin for expressions) ===
+"nodes.review.outputs.approved == true"        -> canonical="nodes.review.outputs.approved == true"              err=-
+"nodes.review.outputs.approved==true"          -> canonical="nodes.review.outputs.approved == true"              err=-
+"(nodes.review.outputs.approved) == true"      -> canonical="nodes.review.outputs.approved == true"              err=-
+"nodes.review.outputs.approved != false"       -> canonical="nodes.review.outputs.approved != false"             err=-
+
+allowlist (25 entries): !_ @in _!=_ _%_ _&&_ _*_ _+_ _-_ _/_ _<=_ _<_ _==_ _>=_ _>_ _?_:_ _||_ bool contains double endsWith has int size startsWith string
