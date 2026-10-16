@@ -3481,6 +3481,407 @@ def c12():
     skip("C12", "validate-time refusals; runs pinned to (revision_digest, plan_digest)")
 
 
+# --- C13 pure logic — unit-tested offline by e2e/m4/test_c13_logic.py --------
+# The refusal algebra for docs/m4-contract.md § 7.1 C13: every verdict is computed
+# from a canned § 2.2 validate body, so the live gate only has to POST a document
+# and hand the response over. `ok is None` is a GAP (the lab produced no body to
+# read); a document that comes back VALID is always a FAIL — C13's whole subject is
+# the refusal that must exist (12 case 13: nothing silently half-works).
+
+C13_DEFERRED_KINDS = [("parallel", "M5"), ("join", "M5"), ("gate", "M5"),
+                      ("git.commit", "M6"), ("git.publish", "M6"),
+                      ("integration.query", "M6"), ("integration.action", "M6")]
+C13_ROOTS = ("inputs", "nodes", "item", "items", "run", "previous", "iteration",
+             "parameters")                       # ADR-0022 § 2 after § 9.1 row 17
+C13_RESERVED_ROOT = "loop"
+C13_SECRET_LITERAL = "postgres://u:p@h/d"        # § 7.1 C13c's placeholder shape
+# Codes that prove the ROOT resolved and only its member was refused: the root
+# table accepted the expression, so the compile arm is satisfied by these.
+C13_ROOT_RESOLVED = {"unknown_field", "type_mismatch", "non_boolean_expression",
+                     "undeclared_output_schema"}
+C13_NO_ROUTE = (404, 405, 501)
+
+
+def c13_validate_ok(vresp):
+    """True only for a § 2.2 ValidateResponse body carrying an errors ARRAY."""
+    return isinstance(vresp, dict) and isinstance(vresp.get("errors"), list)
+
+
+def c13_errors_at(vresp, location, code=None):
+    """Errors whose instance_location IS `location`: exact, a path-prefix of it (the
+    block a node-level refusal is reported inside), or its document suffix (what an
+    editor highlights). `location` may be a tuple of candidate spellings when the
+    contract names a block rather than a leaf. Never fuzzy: the location is half of
+    what is asserted, and a prefix only counts at a `/` boundary."""
+    if not c13_validate_ok(vresp):
+        return []
+    locs = (location,) if isinstance(location, str) else tuple(location)
+    out = []
+    for e in vresp["errors"]:
+        if not isinstance(e, dict):
+            continue
+        loc = str(e.get("instance_location") or "")
+        if not any(loc == x or loc.startswith(x + "/") or loc.endswith(x) for x in locs):
+            continue
+        if code is not None and e.get("code") != code:
+            continue
+        out.append(e)
+    return out
+
+
+def c13_brief(errors):
+    return ", ".join(f"{e.get('source')}/{e.get('code')}@{e.get('instance_location')}"
+                     for e in errors[:6] if isinstance(e, dict)) or "(no errors)"
+
+
+def c13_refusal_verdict(label, vresp, location, codes=()):
+    """PASS = an error at `location`, its code one of `codes` when the contract
+    names it; FAIL = the document was accepted, or the refusal landed somewhere no
+    editor can highlight; GAP = no validate body at all."""
+    if not c13_validate_ok(vresp):
+        return (label, None, "no § 2.2 validate body came back — the refusal is unmeasured")
+    if vresp.get("valid") is True:
+        return (label, False, f"valid=true: the document it must refuse was ACCEPTED "
+                              f"(errors={c13_brief(vresp['errors'])})")
+    hits = c13_errors_at(vresp, location)
+    if not hits:
+        return (label, False, f"no error at {location} — the editor has nothing to "
+                              f"highlight; got {c13_brief(vresp['errors'])}")
+    if codes:
+        named = [e for e in hits if e.get("code") in codes]
+        if not named:
+            return (label, False, f"at {location}: expected one of {sorted(codes)}, "
+                                  f"got {c13_brief(hits)}")
+        hits = named
+    e = hits[0]
+    why = str(e.get("hint") or e.get("message") or "").replace("\n", " ")[:130]
+    return (label, True, f"{e.get('source')}/{e.get('code')} at {e.get('instance_location')} "
+                         f"— {why}")
+
+
+def c13_deferred_kind_verdicts(vresp, draft_status):
+    """C13a — seven kind_not_implemented errors (one per /spec/nodes/<i>, the
+    probe document's fixed order) each naming the milestone that owns the kind,
+    and the DRAFT's own status: an invalid draft must be recorded invalid."""
+    if not c13_validate_ok(vresp):
+        return [("C13a validate returns a § 2.2 body", None,
+                 "no validate body — the seven refusals are unmeasured")]
+    out = [("C13a valid=false for the seven deferred kinds (ADR-0024 § 2)",
+            vresp.get("valid") is False,
+            f"valid={vresp.get('valid')!r}; {c13_brief(vresp['errors'])}")]
+    for i, (kind, ms) in enumerate(C13_DEFERRED_KINDS):
+        label = f"C13a `kind: {kind}` refused by kind_not_implemented naming {ms}"
+        hits = c13_errors_at(vresp, f"/spec/nodes/{i}", "kind_not_implemented")
+        if not hits:
+            noise = [e for e in vresp["errors"]
+                     if isinstance(e, dict) and e.get("code") == "schema_shape"]
+            if noise:
+                out.append((label, None,
+                            f"no verdict for {kind} while schema_shape errors stood on the "
+                            f"document ({c13_brief(vresp['errors'])}) — the probe document is "
+                            "the suspect, not the engine: no PASS, no FAIL either way"))
+            else:
+                out.append((label, False, f"nothing refused the node: "
+                                          f"{c13_brief(vresp['errors'])}"))
+            continue
+        said = f"{hits[0].get('message') or ''} {hits[0].get('hint') or ''}"
+        out.append((label, ms in said, c13_brief(hits) + f" — {said[:120]}"))
+    n = len([e for e in vresp["errors"] if isinstance(e, dict)
+             and e.get("code") == "kind_not_implemented"])
+    out.append(("C13a exactly seven kind_not_implemented errors (ADR-0024's deferred "
+                "count is the observable arithmetic)", n == 7, f"observed {n}"))
+    if draft_status:
+        out.append(("C13a the draft is recorded status='invalid' (never 'valid but broken "
+                    "at attempt 6')", draft_status == "invalid", f"status={draft_status}"))
+    else:
+        out.append(("C13a the draft is recorded status='invalid'", None,
+                    "pipeline_drafts.status unreadable for this draft"))
+    return out
+
+
+def c13_secret_verdicts(vresp, raw_body, pub_status, pub_body):
+    """C13c — the compiler's invariant-5 detector is a BLOCK: the finding is
+    located, the VALUE is redacted everywhere in the response, and publish cannot
+    succeed while it stands (the § 2.2 letter: a 422 naming secret_literal_detected)."""
+    out = [c13_refusal_verdict("C13c config.env literal refused by secret_literal_detected",
+                               vresp, ("/spec/nodes/0/config/env/DATABASE_URL",
+                                       "/spec/nodes/0/config/env"),
+                               ("secret_literal_detected",))]
+    if raw_body is None:
+        out.append(("C13c the validate response redacts the literal value", None,
+                    "no response body to scan"))
+    else:
+        leaked = C13_SECRET_LITERAL in raw_body or "u:p@" in raw_body
+        out.append(("C13c the validate response redacts the literal value (ADR-0021 Security)",
+                    not leaked, "the value appears verbatim in the body" if leaked
+                    else f"{len(raw_body)} bytes scanned, no plaintext occurrence"))
+    if pub_status is None:
+        out.append(("C13c publish cannot succeed while the finding stands", None,
+                    "no publish was attempted (the draft never reached a publishable state)"))
+    else:
+        code = pub_body.get("code") if isinstance(pub_body, dict) else None
+        out.append(("C13c publish cannot succeed while the finding stands (invariant 5)",
+                    pub_status != 201, f"POST /drafts/:id/publish -> {pub_status} code={code}"))
+        if pub_status == 201:
+            out.append(("C13c the secret finding itself blocks publish", False,
+                        "publish SUCCEEDED on a document carrying a secret literal"))
+        elif pub_status == 422 and code == "secret_literal_detected":
+            out.append(("C13c the secret finding itself blocks publish", True,
+                        "422 secret_literal_detected — § 2.2's letter exactly"))
+        else:
+            out.append(("C13c the secret finding itself blocks publish", None,
+                        f"publish refused at {pub_status} code={code}: the finding stands on the "
+                        "draft's recorded validation, so the publish gate short-circuited before "
+                        "re-deriving the detector — the block is observable, the 422 spelling of "
+                        "it is not measurable from a draft that is already invalid"))
+        if pub_status is not None and C13_SECRET_LITERAL in json.dumps(pub_body or {}):
+            out.append(("C13c the publish response redacts the literal value", False,
+                        "the rejected publish echoed the secret value back"))
+    return out
+
+
+def c13_root_verdict(root, vresp, location):
+    """C13d — a declared root must COMPILE. Refusal codes naming the root
+    (undeclared_root / cel_compile_error / cel_function_not_allowed) are a FAIL;
+    codes that only refuse the MEMBER (unknown_field, type_mismatch) prove the
+    root itself resolved, so they accept — with the observed code in the detail."""
+    label = f"C13d declared CEL root `{root}` compiles (one `${{{root}.x}}` expression)"
+    if not c13_validate_ok(vresp):
+        return (label, None, "no validate body — this root is unmeasured")
+    hits = c13_errors_at(vresp, location)
+    if not hits:
+        return (label, True, "no finding at the root's own prompt location"
+                             + (" (valid=true)" if vresp.get("valid") else ""))
+    refused = [e for e in hits if e.get("code") in
+               ("undeclared_root", "cel_compile_error", "cel_function_not_allowed",
+                "binding_syntax_error", "expression_too_large")]
+    if refused:
+        return (label, False, f"the engine refused its own declared root: {c13_brief(refused)}")
+    return (label, True, f"root resolved, member refused separately: {c13_brief(hits)}")
+
+
+def c13_reserved_root_verdict(vresp, location):
+    """C13d's other half: `loop` is parser-reserved, so the compiler must refuse it
+    by name with undeclared_root — no future ADR can add an unnameable root."""
+    label = f"C13d reserved root `{C13_RESERVED_ROOT}` refused by undeclared_root"
+    if not c13_validate_ok(vresp):
+        return (label, None, "no validate body — the reserved-name refusal is unmeasured")
+    hits = c13_errors_at(vresp, location)
+    named = [e for e in hits if e.get("code") == "undeclared_root"]
+    if not hits:
+        return (label, False, f"`{C13_RESERVED_ROOT}.x` compiled cleanly — the reserved "
+                              "identifier is nameable after all")
+    if not named:
+        return (label, False, f"refused, but not as undeclared_root: {c13_brief(hits)}")
+    said = f"{named[0].get('message') or ''} {named[0].get('hint') or ''}"
+    return (label, True, f"undeclared_root at {named[0].get('instance_location')} "
+                         f"naming the engine's own reason — {said[:130]}")
+
+
+def c13_override_verdict(status, event_types):
+    """C13e's second half: `run.override` beyond retry-time inputs has NO route,
+    and the reserved event type is never emitted (ADR-0024 § 3)."""
+    out = [("C13e POST /runs/:id/override has no route "
+            f"(statuses accepted as no-route: {list(C13_NO_ROUTE)})",
+            status in C13_NO_ROUTE,
+            f"observed {status}" + (" — a 2xx/3xx here would be a half-built override path"
+                                    if status not in C13_NO_ROUTE else ""))]
+    if event_types is None:
+        out.append(("C13e run.override.applied is reserved and NOT emitted", None,
+                    "domain_events unreadable — the never-emitted claim is unmeasured"))
+    else:
+        out.append(("C13e run.override.applied is reserved and NOT emitted",
+                    "run.override.applied" not in event_types,
+                    f"{len(event_types)} journal types observed"))
+    return out
+
+
+def c13_route_verdict(label, status, resolves_ok):
+    """Immutable revisions: PUT/PATCH/DELETE under /api/v1/revisions must have no
+    route. A 404 counts ONLY when the same id still GETs 200 — otherwise a missing
+    row would read as an immutable API."""
+    if not resolves_ok:
+        return (label, None, "the revision id does not resolve by GET, so a 404 here cannot "
+                             "be read as 'no route' rather than 'no row'")
+    return (label, status in C13_NO_ROUTE,
+            f"{status}" + ("" if status in C13_NO_ROUTE else " — a writable revision endpoint"))
+
+
+def c13_limit_verdict(sched):
+    """C13f — the node-limit-free world stated honestly: no cpu/memory/disk field
+    anywhere in the scheduler body (M3 D10's rule: absent, not zero)."""
+    if not isinstance(sched, dict):
+        return [("C13f /system/scheduler answers with an object", None,
+                 "no JSON body — the honesty claim is unmeasured")]
+    blob = json.dumps(sched).lower()
+    leak = [w for w in ("cpu", "memory", "mem_bytes", "disk") if w in blob]
+    return [("C13f the scheduler body carries NO cpu/memory/disk field (nothing is "
+             "silently capped)", not leak, f"fields seen: {sorted(sched)}" +
+             (f"; leak={leak}" if leak else ""))]
+
+
+def c13_deprecate_verdicts(snap_before, snap_after, runs_before, runs_after, revised_ok):
+    """Route 15's own invariant: deprecate flips the revision's status and touches
+    NO existing run (ADR-0002) — measured over every run row, not just one."""
+    if not revised_ok:
+        return [("C13g deprecate is the ONLY mutation offered on a revision",
+                 None, "no scratch revision could be published, so deprecation is unmeasured")]
+    out = [("C13g POST /revisions/:id/deprecate sets status='deprecated'",
+            snap_before != snap_after and "deprecated" in str(snap_after),
+            f"{snap_before or '(none)'} -> {snap_after or '(none)'}")]
+    if runs_before is None or runs_after is None:
+        out.append(("C13g deprecate touches no existing run (ADR-0002)", None,
+                    "the runs table was unreadable on one side of the call"))
+    else:
+        out.append(("C13g deprecate touches no existing run (every runs row byte-identical, "
+                    f"{len(runs_before.splitlines())} rows)", runs_before == runs_after,
+                    "" if runs_before == runs_after else
+                    f"before={runs_before[:160]!r} after={runs_after[:160]!r}"))
+    return out
+
+
+# --- C13 live helpers — documents the gate authors itself, refusals via API --
+
+C13_DOC = """apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: @@NAME@@
+  description: C13 refusal probe (docs/m4-contract.md § 7.1).
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+@@POLICIES@@
+  nodes:
+@@NODES@@
+"""
+
+C13_POLICIES = """    maxConcurrentNodes: 1
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade"""
+
+C13_COND = {"when": 'inputs.goal == "x"'}
+C13_SEVENTH = """  - id: k01
+    kind: parallel
+    config:
+      branches:
+      - nodes: [{id: b1, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+  - id: k02
+    kind: join
+    config:
+      branches:
+      - nodes: [{id: b2, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+  - id: k03
+    kind: gate
+    config: {judge: human}
+  - id: k04
+    kind: git.commit
+    config: {mode: commit}
+  - id: k05
+    kind: git.publish
+    config: {mode: push_branch}
+  - id: k06
+    kind: integration.query
+    config: {provider: github, operation: get_issue}
+  - id: k07
+    kind: integration.action
+    config: {provider: github, operation: add_comment}
+"""
+C13_ROOT_NODE = """  - id: r{n}
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: 'root {root} -> ${{{{ {root}.x }}}}'
+"""
+
+
+def c13_doc(name, nodes, policies=C13_POLICIES):
+    """A minimal Pipeline document with the probe nodes spliced in verbatim."""
+    return (C13_DOC.replace("@@NAME@@", name).replace("@@POLICIES@@", policies)
+            .replace("@@NODES@@", nodes))
+
+
+def c13_root_doc(name):
+    """One node per declared root plus the reserved `loop`, in document order."""
+    ids = list(C13_ROOTS) + [C13_RESERVED_ROOT]
+    return c13_doc(name, "".join(C13_ROOT_NODE.format(n=i + 1, root=r) for i, r in enumerate(ids)))
+
+
+def c13_draft_probe(admin, pipeline_id, tag, doc, publish=False):
+    """POST the draft as the library role, validate it, and hand back everything the
+    verdicts read: draft id/version, the § 2.2 body, the raw text, the draft's own
+    status, and (when asked) the publish response. None = no draft could be created."""
+    r = admin.post(LB, f"/api/v1/pipelines/{pipeline_id}/drafts", {"document_yaml": doc})
+    show(f"C13 {tag}: POST /api/v1/pipelines/{{id}}/drafts -> {r.status}", r.text[:300])
+    if r.status != 201:
+        return None
+    try:
+        d = r.json()
+    except ValueError:
+        return None
+    did, ver = str(d.get("id")), d.get("version")
+    v = admin.post(LB, f"/api/v1/drafts/{did}/validate")
+    try:
+        vresp = v.json() if v.status == 200 else None
+    except ValueError:
+        vresp = None
+    show(f"C13 {tag}: POST /api/v1/drafts/{{id}}/validate -> {v.status}", v.text[:700])
+    out = {"draft_id": did, "version": ver, "validate_status": v.status,
+           "vresp": vresp, "raw": v.text, "status": c13_draft_status(did)}
+    if publish:
+        p = admin.post(LB, f"/api/v1/drafts/{did}/publish", {"version": ver})
+        out["publish_status"], out["publish_body"] = p.status, (p.json() if p.text[:1] == "{"
+                                                               else {"raw": p.text[:200]})
+        out["raw"] += "\n" + p.text
+        show(f"C13 {tag}: POST /api/v1/drafts/{{id}}/publish -> {p.status}", p.text[:400])
+    else:
+        out["publish_status"], out["publish_body"] = None, None
+    return out
+
+
+def c13_draft_status(draft_id):
+    """pipeline_drafts.status — what the editor and publish read, not just the body."""
+    try:
+        return psql(f"SELECT status FROM pipeline_drafts WHERE id = '{draft_id}'").strip() or None
+    except RuntimeError as e:
+        show("C13 draft status read (psql)", str(e)[:200])
+        return None
+
+
+def c13_journal_types():
+    try:
+        return set(psql("SELECT DISTINCT type FROM domain_events").split())
+    except RuntimeError as e:
+        show("C13 journal type read (psql)", str(e)[:200])
+        return None
+
+
+def c13_all_runs():
+    """Every run row, id+status, sorted — the 'no existing run is touched' snapshot."""
+    try:
+        return psql("SELECT id || '|' || status FROM runs ORDER BY id")
+    except RuntimeError as e:
+        show("C13 runs snapshot (psql)", str(e)[:200])
+        return None
+
+
+def c13_revision_row(rev_id):
+    try:
+        return psql(f"SELECT status || '|' || revision_digest FROM pipeline_revisions "
+                    f"WHERE id = '{rev_id}'").strip()
+    except RuntimeError as e:
+        show("C13 revision row (psql)", str(e)[:200])
+        return ""
+
+
 def c13():
     """C13 — the refusals are real (12 case 13's genre: nothing silently half-works).
     Acceptance: parallel/join/gate/git.commit/git.publish/integration.query/
@@ -3490,7 +3891,215 @@ def c13():
     unpublishable; one expression per declared CEL root compiles and `loop` is
     refused with undeclared_root; sessionMode continue_live => unsupported_session_mode;
     /system/scheduler says resource limits are NOT implemented, in words."""
-    skip("C13", "every deferred kind, typo and literal is refused at validate, loudly")
+    if not CTX.get("stack_up"):
+        skip("C13", "every deferred kind, typo and literal is refused at validate, loudly")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C13", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                   "there is no pipeline to hold a draft and no library role to POST it "
+                   "(C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None:
+        check("C13: admin signed in", False, "no session — the library role cannot post a draft")
+        return
+    CTX["admin"] = admin
+    users = c9_manifest_users(c9_manifest_json())
+    pid_pipe = facts["twin"]["pipeline_id"]
+    show("C13 draft host", f"pipeline {pid_pipe} (§ 7.0 seed); org admin user id "
+                           f"{users.get('admin') or '(from the session)'}")
+
+    # ---- C13a: the seven deferred kinds, refused at validate ----
+    a = c13_draft_probe(admin, pid_pipe, "C13a deferred kinds",
+                        c13_doc("m4x-c13a-deferred", C13_SEVENTH))
+    c5_emit(c13_deferred_kind_verdicts(a["vresp"] if a else None,
+                                       a["status"] if a else None))
+
+    # ---- C13b: the loader/schema probes, each at its own document location ----
+    agent_typo = """  - id: t1
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 'hello'
+      typo: 1
+"""
+    fc = """  - id: t2
+    kind: for_each
+    config:
+      items: '${{ inputs.goal }}'
+      maxConcurrency: '${{ inputs.goal }}'
+      body:
+        nodes: [{id: t2b, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+"""
+    until = """  - id: t4
+    kind: until
+    config:
+      maxIterations: 2
+      passWhen: 'inputs.goal == "x"'
+      carryForward: yes
+      body:
+        nodes: [{id: t4b, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+"""
+    esc = """  - id: t5
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 'literal $${{ inputs.goal }} stays text'
+"""
+    cwd = """  - id: t6
+    kind: process.exec
+    timeoutSeconds: 60
+    config:
+      executable: git
+      cwd: '${{ workspace.repo.root }}'
+"""
+    date = """  - id: t7
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 2026-10-14
+"""
+    for tag, slug, nodes, loc, codes in (
+            ("C13b typo", "m4x-c13b-typo", agent_typo, "/spec/nodes/0/config/typo",
+             ("schema_shape",)),
+            ("C13b maxConcurrency binding", "m4x-c13b-maxconc", fc,
+             "/spec/nodes/0/config/maxConcurrency", ("schema_shape",)),
+            ("C13b carryForward unquoted bool", "m4x-c13b-carry", until,
+             "/spec/nodes/0/config/carryForward", ()),
+            ("C13b escaped binding", "m4x-c13b-esc", esc,
+             "/spec/nodes/0/config/prompt", ("escape_not_supported",)),
+            ("C13b cwd binding", "m4x-c13b-cwd", cwd, "/spec/nodes/0/config/cwd", ()),
+            ("C13b unquoted date", "m4x-c13b-date", date, "/spec/nodes/0/config/prompt",
+             ("unquoted_date",))):
+        res = c13_draft_probe(admin, pid_pipe, tag, c13_doc(slug, nodes))
+        c5_emit([c13_refusal_verdict(f"C13b {tag.split(' ', 1)[1]} refused at {loc}",
+                                     res["vresp"] if res else None, loc, codes)])
+    # policies.maxConcurrentNodes: -1 — the same rule on the spec-level block.
+    neg = c13_doc("m4x-c13b-negpol", """  - id: t3
+    kind: condition
+    config: {when: 'inputs.goal == "x"'}
+""", policies=C13_POLICIES.replace("maxConcurrentNodes: 1", "maxConcurrentNodes: -1"))
+    res = c13_draft_probe(admin, pid_pipe, "C13b negative policy", neg)
+    c5_emit([c13_refusal_verdict("C13b policies.maxConcurrentNodes: -1 refused at its own "
+                                 "location", res["vresp"] if res else None,
+                                 "/spec/policies/maxConcurrentNodes", ("schema_shape",))])
+
+    # ---- C13c: a secret literal is a BLOCK, redacted, and unpublishable ----
+    envdoc = f"""  - id: s1
+    kind: process.exec
+    timeoutSeconds: 60
+    config:
+      executable: python3
+      env:
+        DATABASE_URL: "{C13_SECRET_LITERAL}"
+"""
+    res = c13_draft_probe(admin, pid_pipe, "C13c secret literal", c13_doc("m4x-c13c-literal", envdoc),
+                          publish=True)
+    c5_emit(c13_secret_verdicts(res["vresp"] if res else None, res["raw"] if res else None,
+                               res["publish_status"] if res else None,
+                               res["publish_body"] if res else None))
+
+    # ---- C13d: the CEL root table, executed as eight accepts + one refusal ----
+    res = c13_draft_probe(admin, pid_pipe, "C13d root table", c13_root_doc("m4x-c13d-roots"))
+    out = []
+    for i, root in enumerate(C13_ROOTS):
+        out.append(c13_root_verdict(root, res["vresp"] if res else None,
+                                    f"/spec/nodes/{i}/config/prompt"))
+    out.append(c13_reserved_root_verdict(res["vresp"] if res else None,
+                                         f"/spec/nodes/{len(C13_ROOTS)}/config/prompt"))
+    c5_emit(out)
+
+    # ---- C13e: sessionMode continue_live, and the override route that is not ----
+    live = """  - id: e1
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 'hi'
+      sessionMode: continue_live
+"""
+    res = c13_draft_probe(admin, pid_pipe, "C13e sessionMode", c13_doc("m4x-c13e-session", live))
+    c5_emit([c13_refusal_verdict("C13e sessionMode: continue_live refused by "
+                                 "unsupported_session_mode", res["vresp"] if res else None,
+                                 "/spec/nodes/0/config/sessionMode",
+                                 ("unsupported_session_mode",))])
+    run_id = facts["twin"]["run_id"]
+    ov = admin.post(LB, f"/api/v1/runs/{run_id}/override", {"inputs": {}})
+    show(f"C13e POST /api/v1/runs/{{id}}/override -> {ov.status}", ov.text[:200])
+    c5_emit(c13_override_verdict(ov.status, c13_journal_types()))
+
+    # ---- C13f: the scheduler page says what it does NOT do ----
+    r = admin.get(LB, "/api/v1/system/scheduler")
+    show(f"C13f GET /api/v1/system/scheduler -> {r.status}", r.text[:500])
+    try:
+        sched = r.json() if r.status == 200 else None
+    except ValueError:
+        sched = None
+    c5_emit(c13_limit_verdict(sched))
+    gap("C13f the OPS PAGE says 'resource limits: not implemented' in words",
+        "rendered UI text is W7's subject (a browser has to read it); C13 asserts the "
+        "API half — that no cpu/memory/disk field exists to imply a limit")
+
+    # ---- C13g: revisions are immutable; deprecate is the only mutation ----
+    rev = facts["twin"]["revision_id"]
+    g = admin.get(LB, f"/api/v1/revisions/{rev}")
+    show(f"C13g GET /api/v1/revisions/{{id}} -> {g.status}", g.text[:160])
+    resolves = g.status == 200
+    for method in ("PUT", "PATCH"):
+        rr = admin.call(LB + f"/api/v1/revisions/{rev}", method=method, body={"spec": {}},
+                        headers={"Origin": LB, "X-CSRF-Token": admin.csrf or ""})
+        show(f"C13g {method} /api/v1/revisions/{{id}} -> {rr.status}", rr.text[:160])
+        c5_emit([c13_route_verdict(f"C13g {method} /api/v1/revisions/{{id}} has no route "
+                                   "(revisions are immutable)", rr.status, resolves)])
+    rd = admin.call(LB + f"/api/v1/revisions/{rev}", method="DELETE",
+                    headers={"Origin": LB, "X-CSRF-Token": admin.csrf or ""})
+    show(f"C13g DELETE /api/v1/revisions/{{id}} -> {rd.status}", rd.text[:160])
+    c5_emit([c13_route_verdict("C13g DELETE /api/v1/revisions/{{id}} has no route", rd.status,
+                              resolves)])
+
+    # Deprecation needs a revision THIS gate owns: deprecating a § 7.0 seed revision
+    # would mutate state C12/C14 read, so a scratch pipeline holds the probe instead.
+    scratch = admin.post(LB, "/api/v1/pipelines", {"slug": "m4x-c13-scratch",
+                                                   "display_name": "m4x-c13-scratch",
+                                                   "description": "C13 deprecate probe"})
+    show(f"C13g POST /api/v1/pipelines (scratch) -> {scratch.status}", scratch.text[:200])
+    src = admin.get(LB, f"/api/v1/revisions/{rev}/document?format=yaml")
+    doc = src.text if src.status == 200 and src.text.startswith("apiVersion") else None
+    if doc:
+        doc = doc.replace("name: " + TW_SLUG, "name: m4x-c13-scratch", 1)
+    pub = None
+    if scratch.status in (201, 409) and doc:
+        sid = str(scratch.json().get("id")) if scratch.status == 201 else ""
+        if not sid:
+            lst = admin.get(LB, "/api/v1/pipelines")
+            for p in (lst.json().get("pipelines") or []):
+                if p.get("slug") == "m4x-c13-scratch":
+                    sid = str(p.get("id"))
+        pub = c13_draft_probe(admin, sid, "C13g scratch revision", doc, publish=True)
+    elif not doc:
+        show("C13g scratch document read", f"GET /revisions/{{id}}/document -> {src.status}: "
+                                           "the exported bytes are not usable as a scratch draft")
+    ok_rev = bool(pub and pub["publish_status"] == 201)
+    srev = str((pub["publish_body"] or {}).get("id")) if ok_rev else ""
+    if not ok_rev:
+        gap("C13g deprecate is the ONLY mutation offered on a revision",
+            f"no scratch revision to deprecate (publish -> "
+            f"{pub['publish_status'] if pub else 'no draft'}: a shared seed revision is "
+            "not C13's to mutate — § 7.0 disturbs only what the gate created)")
+    else:
+        before, runs_before = c13_revision_row(srev), c13_all_runs()   # read BEFORE the call
+        dep = admin.post(LB, f"/api/v1/revisions/{srev}/deprecate")
+        show(f"C13g POST /api/v1/revisions/{{scratch}}/deprecate -> {dep.status}", dep.text[:200])
+        runs_after = c13_all_runs()
+        c5_emit(c13_deprecate_verdicts(before, c13_revision_row(srev), runs_before, runs_after,
+                                       True))
+    CTX["c13"] = {"drafts": [a["draft_id"]] if a else []}
+
 
 
 def c14():
