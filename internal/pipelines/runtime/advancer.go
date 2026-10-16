@@ -614,7 +614,7 @@ func (ac *advanceCtx) workerNode(pn *compiler.Node, row *NodeExecution) error {
 			// continue_workspace is the default (ADR-0023 § 6): the retry is
 			// TOLD what the interrupted attempt left behind. The repo facts
 			// come from the last durable checkpoint, never from a memory.
-			if rc, ok := ac.lastCheckpointContext(); ok {
+			if rc, ok := ac.lastCheckpointContext(row.ID); ok {
 				for k, v := range rc {
 					ctx[k] = v
 				}
@@ -1937,10 +1937,15 @@ func (ac *advanceCtx) failRunWithEvidence(cause, class, nodeKey string, evidence
 
 // lastCheckpointContext reads the newest durable boundary for a retry's
 // continue_workspace context (the facts come from the checkpoint row, never
-// from a memory — ADR-0023 § 6, C5e's retry_context shape).
-func (ac *advanceCtx) lastCheckpointContext() (map[string]any, bool) {
+// from a memory — ADR-0023 § 6, C5e's retry_context shape). `exceptNodeExecID`
+// is the node being retried: a retry inherits the boundary BEFORE it, never one
+// it wrote itself (the same rule runtime.RetryPlan applies on the manual route).
+func (ac *advanceCtx) lastCheckpointContext(exceptNodeExecID string) (map[string]any, bool) {
 	var last *CheckpointRecord
 	for i, c := range ac.st.Checkpoints {
+		if c.NodeExecutionID == exceptNodeExecID {
+			continue
+		}
 		if last == nil || c.CreatedAt.After(last.CreatedAt) {
 			cc := ac.st.Checkpoints[i]
 			last = &cc
@@ -1951,10 +1956,13 @@ func (ac *advanceCtx) lastCheckpointContext() (map[string]any, bool) {
 	}
 	out := map[string]any{}
 	for _, r := range last.RepoStates {
-		if r.HeadCommit != "" {
-			out["head_commit"] = r.HeadCommit
+		// The same facts and the same honesty as runtime.RetryPlan (the manual
+		// route): the commit the retry resumes from, and the working-tree count
+		// only where a capture actually measured it (contract § 7.1 C5e).
+		if head := r.CommitIdentity(); head != "" {
+			out["head_commit"] = head
 		}
-		if r.ModifiedPathCount > 0 {
+		if r.CaptureRecorded || r.ModifiedPathCount > 0 {
 			out["modified_path_count"] = r.ModifiedPathCount
 		}
 	}

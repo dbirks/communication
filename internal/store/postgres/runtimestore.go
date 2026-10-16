@@ -985,11 +985,15 @@ func insertCheckpointTx(ctx context.Context, tx pgx.Tx, runID string, c runtime.
 	states := make([]map[string]any, 0, len(c.RepoStates))
 	for _, r := range c.RepoStates {
 		m := map[string]any{
-			"repository_id":       r.RepositoryID,
-			"base_commit":         r.BaseCommit,
-			"head_commit":         r.HeadCommit,
-			"committed":           r.Committed,
-			"modified_path_count": r.ModifiedPathCount,
+			"repository_id": r.RepositoryID,
+			"base_commit":   r.BaseCommit,
+			// head_commit is never empty on the wire: a boundary whose ref was
+			// not read back names the commit the worktree started at (C5e).
+			"head_commit": r.CommitIdentity(),
+		}
+		if r.CaptureRecorded {
+			m["committed"] = r.Committed
+			m["modified_path_count"] = r.ModifiedPathCount
 		}
 		if r.ModifiedPathsArtifact != "" {
 			m["modified_paths_artifact"] = r.ModifiedPathsArtifact

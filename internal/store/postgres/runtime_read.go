@@ -171,22 +171,32 @@ func rteRepoStates(raw []byte) ([]runtime.RepoState, error) {
 		BaseCommit            string `json:"base_commit"`
 		HeadCommit            string `json:"head_commit"`
 		ModifiedPathsArtifact string `json:"modified_paths_artifact"`
-		ModifiedPathCount     int64  `json:"modified_path_count"`
-		Committed             bool   `json:"committed"`
+		// Pointers, because the absence of the key is the fact "no capture read
+		// this repository at the boundary" and a zero value would read as
+		// "clean" to restore_checkpoint (ADR-0023 § 6).
+		ModifiedPathCount *int64 `json:"modified_path_count"`
+		Committed         *bool  `json:"committed"`
 	}
 	if err := json.Unmarshal(raw, &docs); err != nil {
 		return nil, fmt.Errorf("postgres: decode checkpoint repo_states: %w", err)
 	}
 	out := make([]runtime.RepoState, 0, len(docs))
 	for _, d := range docs {
-		out = append(out, runtime.RepoState{
+		rs := runtime.RepoState{
 			RepositoryID:          d.RepositoryID,
 			BaseCommit:            d.BaseCommit,
 			HeadCommit:            d.HeadCommit,
 			ModifiedPathsArtifact: d.ModifiedPathsArtifact,
-			ModifiedPathCount:     d.ModifiedPathCount,
-			Committed:             d.Committed,
-		})
+		}
+		if d.ModifiedPathCount != nil {
+			rs.ModifiedPathCount = *d.ModifiedPathCount
+			rs.CaptureRecorded = true
+		}
+		if d.Committed != nil {
+			rs.Committed = *d.Committed
+			rs.CaptureRecorded = true
+		}
+		out = append(out, rs)
 	}
 	return out, nil
 }

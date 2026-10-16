@@ -102,11 +102,39 @@ type AttemptEvent struct {
 // CheckpointRepoState is one repository at a checkpoint boundary: commits and
 // a modified-paths artifact reference, never paths (contract § 1's
 // run_checkpoints.repo_states shape, ADR-0017 D8).
+//
+// The json names are the wire names and they are load-bearing, twice over.
+// They are the shape `api/openapi.yaml`'s CheckpointRepoState and contract
+// § 9.1 row 304 publish (`repository_id, base_commit, head_commit,
+// modified_paths_artifact`), and the same row is what the ENGINE hydrates back
+// into `runtime.RepoState` to answer "what does this retry inherit?"
+// (ADR-0023 § 6). A boundary written with Go field names hydrates as empty
+// states, and an empty state silently drops `head_commit` from every
+// continue_workspace retry_context (lab live13 C5e).
 type CheckpointRepoState struct {
-	RepositoryID          string
-	BaseCommit            string
-	HeadCommit            string
-	ModifiedPathsArtifact string
+	RepositoryID          string `json:"repository_id"`
+	BaseCommit            string `json:"base_commit"`
+	HeadCommit            string `json:"head_commit"`
+	ModifiedPathsArtifact string `json:"modified_paths_artifact,omitempty"`
+	// ModifiedPathCount and Committed are the ADR-0017 D8 capture's bookkeeping,
+	// part of the record so a retry names the working tree it inherits and
+	// `restore_checkpoint` can refuse a dirty one. They are nil when no capture
+	// ever recorded this repository: "nobody measured" must not be written as
+	// `0`/`true`, because both of those are promises something destructive is
+	// allowed to act on.
+	ModifiedPathCount *int64 `json:"modified_path_count,omitempty"`
+	Committed         *bool  `json:"committed,omitempty"`
+}
+
+// RepoStateCapture builds the two capture pointers for a boundary record from
+// a manifest that a capture actually wrote. It returns pointers rather than
+// plain values because the honest third state — "no capture had read this
+// repository" — must be expressible as nil, and neither `0` nor `true` is a
+// substitute for it.
+func RepoStateCapture(paths int, committed bool) (*int64, *bool) {
+	n := int64(paths)
+	c := committed
+	return &n, &c
 }
 
 // AttemptCheckpoint is the run_checkpoints row the boundary transaction

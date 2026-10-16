@@ -57,6 +57,13 @@ type step struct {
 	// uncommitted records the repo state as uncommitted at the checkpoint
 	// (the flag that makes restore_checkpoint illegal — C6d).
 	uncommitted bool
+	// bareBoundary records the checkpoint an M4 boundary whose git capture never
+	// ran looks like: the repository's only recorded identity is its base
+	// commit, and no working-tree facts were measured (lab live13 C5e's row).
+	bareBoundary bool
+	// cleanBoundary records a captured boundary with a clean tree — a MEASURED
+	// zero, which C5e's retry_context must carry rather than omit.
+	cleanBoundary bool
 }
 
 // driver scripted outcomes + a store + an advancer, all in memory.
@@ -214,15 +221,34 @@ func (dv *driver) runAttempt(a *runtime.Attempt) {
 			InputsDigest:  "sha256:" + strings.Repeat("1", 64),
 			OutputsDigest: "sha256:" + strings.Repeat("2", 64),
 			ArtifactRefs:  []any{},
-			RepoStates: []runtime.RepoState{{
-				RepositoryID: "app", BaseCommit: "base1", HeadCommit: "head-" + key,
-				Committed: !s.uncommitted, ModifiedPathCount: 2,
-			}},
-			WorkspaceID: "ws1", VolumeID: "vol-a", WorkerID: "worker-a",
+			RepoStates:    []runtime.RepoState{dv.repoState(key, s)},
+			WorkspaceID:   "ws1", VolumeID: "vol-a", WorkerID: "worker-a",
 		}
 		if err := dv.ms.Complete(dv.run.ID, a.ID, a.WorkerID, a.FencingToken,
 			outs, "sha256:"+"out-"+key, []any{}, s.outcome, ck); err != nil {
 			dv.t.Fatalf("complete: %v", err)
+		}
+	}
+}
+
+// bareHead is the commit identity of a boundary that never captured: the
+// repository is where it started, and "started at" is a real 12-hex commit the
+// same way the lab's HEAD_BEFORE was.
+const bareHead = "3acceb6285f2"
+
+func (dv *driver) repoState(key string, s step) runtime.RepoState {
+	switch {
+	case s.bareBoundary:
+		return runtime.RepoState{RepositoryID: "app", BaseCommit: bareHead}
+	case s.cleanBoundary:
+		return runtime.RepoState{
+			RepositoryID: "app", BaseCommit: "base1", HeadCommit: "head-" + key,
+			Committed: true, CaptureRecorded: true,
+		}
+	default:
+		return runtime.RepoState{
+			RepositoryID: "app", BaseCommit: "base1", HeadCommit: "head-" + key,
+			Committed: !s.uncommitted, ModifiedPathCount: 2, CaptureRecorded: true,
 		}
 	}
 }

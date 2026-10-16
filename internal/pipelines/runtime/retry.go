@@ -100,12 +100,15 @@ func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, err
 	}
 	if last != nil {
 		for _, r := range last.RepoStates {
-			if r.HeadCommit != "" {
+			// continue_workspace facts (ADR-0023 § 6): the commit the retry
+			// resumes from, and — only where a capture measured it — how much of
+			// the interrupted attempt was uncommitted.
+			if head := r.CommitIdentity(); head != "" {
 				if d.Context["head_commit"] == nil {
-					d.Context["head_commit"] = r.HeadCommit
+					d.Context["head_commit"] = head
 				}
 			}
-			if r.ModifiedPathCount > 0 {
+			if r.CaptureRecorded || r.ModifiedPathCount > 0 {
 				d.Context["modified_path_count"] = r.ModifiedPathCount
 			}
 		}
@@ -116,13 +119,21 @@ func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, err
 				Reason: "no completed boundary exists to restore to"}
 		}
 		for _, r := range last.RepoStates {
-			if !r.Committed {
+			if r.CaptureRecorded && !r.Committed {
 				return d, ErrCheckpointUnavailable{NodeInstanceKey: instanceKey,
 					Reason: "repository " + r.RepositoryID + " has uncommitted changes at the boundary"}
 			}
+			if !r.CaptureRecorded {
+				// ADR-0023 § 6 admits the reset only when every repo is provably
+				// committed; an un-captured boundary cannot prove it, and a
+				// destructive default is the failure mode C6d names.
+				return d, ErrCheckpointUnavailable{NodeInstanceKey: instanceKey,
+					Reason: "repository " + r.RepositoryID + " was not captured at the boundary: " +
+						"its committed state is unrecorded, so nothing may be reset away"}
+			}
 		}
 		if len(last.RepoStates) > 0 {
-			d.FromCommit = last.RepoStates[0].HeadCommit
+			d.FromCommit = last.RepoStates[0].CommitIdentity()
 		}
 	}
 	return d, nil

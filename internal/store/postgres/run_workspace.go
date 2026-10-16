@@ -22,6 +22,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -322,12 +323,31 @@ func (s *RunWorkspaces) recoveryLostTx(ctx context.Context, tx pgx.Tx, runID, wo
 }
 
 // runWorkspaceRepoStates reads workspace_repos back as commit identity.
+//
+// `head_commit` is the column ADR-0017 D8's capture writes after reading the
+// ref, so it is NULL until anyone has captured this repository. A NULL is not
+// "no commit identity": the repository IS at its base commit, and that is the
+// commit a retry resumes from and the commit `retry_context.head_commit` must
+// name (ADR-0023 § 6, contract § 7.1 C5e). Reporting the empty string instead
+// is what made a continue_workspace retry on the lab describe nothing.
+//
+// The same argument does NOT run for `modified_paths`. Its NOT NULL DEFAULT
+// '[]' is the schema's default, and RecordRepos writes the row with it, so an
+// empty manifest alone means "nobody measured the tree", not "the tree is
+// clean". The capture marker is `head_commit` itself: RecordCommit — the only
+// post-capture writer — always writes the ref it read (ADR-0017 D8: "a ref
+// read, never an exit status"), and prepare leaves it NULL. A row with a ref
+// and an EMPTY manifest is therefore a capture that measured a clean tree —
+// committed:true, count 0 — which is exactly the state ADR-0023 § 6 lets
+// restore_checkpoint reset to. A row with paths in its manifest is a measured
+// dirty tree (committed:false). A NULL ref with no manifest is unmeasured:
+// both pointers stay nil and neither may license anything destructive.
 func runWorkspaceRepoStates(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }, workspaceID string) ([]worker.CheckpointRepoState, error) {
 	rows, err := q.Query(ctx, `
-		SELECT repository_id::text, base_commit, COALESCE(head_commit, '')
+		SELECT repository_id::text, base_commit, head_commit, modified_paths::text
 		FROM workspace_repos WHERE workspace_id = $1::uuid ORDER BY repository_id`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: read workspace %s repo states: %w", workspaceID, err)
@@ -336,8 +356,27 @@ func runWorkspaceRepoStates(ctx context.Context, q interface {
 	var out []worker.CheckpointRepoState
 	for rows.Next() {
 		var st worker.CheckpointRepoState
-		if err := rows.Scan(&st.RepositoryID, &st.BaseCommit, &st.HeadCommit); err != nil {
+		var head, modified *string
+		if err := rows.Scan(&st.RepositoryID, &st.BaseCommit, &head, &modified); err != nil {
 			return nil, fmt.Errorf("postgres: scan workspace %s repo state: %w", workspaceID, err)
+		}
+		st.HeadCommit = st.BaseCommit
+		captured := head != nil && *head != ""
+		if captured {
+			st.HeadCommit = *head
+		}
+		var paths []string
+		if modified != nil {
+			if err := json.Unmarshal([]byte(*modified), &paths); err != nil {
+				return nil, fmt.Errorf("postgres: workspace %s repo %s modified_paths is not a path array: %w",
+					workspaceID, st.RepositoryID, err)
+			}
+		}
+		if captured || len(paths) > 0 {
+			// The ref is the capture marker; paths in the manifest are direct
+			// evidence of a dirty tree even on a row nobody ref-read.
+			st.ModifiedPathCount, st.Committed =
+				worker.RepoStateCapture(len(paths), captured && len(paths) == 0)
 		}
 		out = append(out, st)
 	}

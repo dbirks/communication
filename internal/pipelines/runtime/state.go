@@ -918,6 +918,25 @@ type RepoState struct {
 	// (ADR-0023 § 6), which is why the flag is part of the record and not a
 	// guess made at retry time.
 	Committed bool
+	// CaptureRecorded says ADR-0017 D8's capture actually read this repository
+	// at the boundary, so Committed and ModifiedPathCount are measurements and
+	// not column defaults. An unrecorded repository is NOT a clean one:
+	// restore_checkpoint refuses it ("nobody measured" cannot license destroying
+	// a working tree) and continue_workspace omits modified_path_count rather
+	// than promising a zero (contract § 7.1 C5e).
+	CaptureRecorded bool
+}
+
+// CommitIdentity is the commit a retry inherits from one repository: the
+// recorded HEAD where a capture read one, otherwise the base commit the
+// worktree was created at. A boundary that names no head still names its
+// starting point, which is what ADR-0023 § 6's "left exactly as the interrupted
+// attempt left it" resumes from — and what retry_context.head_commit reports.
+func (r RepoState) CommitIdentity() string {
+	if r.HeadCommit != "" {
+		return r.HeadCommit
+	}
+	return r.BaseCommit
 }
 
 // Check enforces run_checkpoints_volume_required.
