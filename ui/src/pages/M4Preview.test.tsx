@@ -3,7 +3,7 @@
  * fell back to a live endpoint would screenshot like a real run.
  */
 import { afterEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import M4Preview from "./M4Preview";
 import { mockFetch } from "../test/fakes";
@@ -11,6 +11,35 @@ import { renderApp } from "../test/render";
 
 // Vitest globals are off, so testing-library cannot register its own cleanup.
 afterEach(cleanup);
+
+/**
+ * Await the route's real async boundary instead of polling for it.
+ *
+ * `App` mounts the preview through `lazy()`, so the first paint sits behind a
+ * dynamic import plus React's pass over ~twenty panels. `findBy*` waits 1000 ms
+ * by default, which measures the machine rather than the code: on an idle box
+ * this mount takes ~320 ms, and 1.6 s was observed with the CPU oversubscribed
+ * ~2x — i.e. the default loses the race in CI. Resolving the same module the
+ * `lazy()` wrapper imports and then draining React's queue settles the paint
+ * before the assertion runs, so no timeout is part of the proof.
+ */
+async function flushLazyChunk(): Promise<void> {
+  await act(async () => {
+    await import("./M4Preview");
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+}
+
+/**
+ * Wall-clock ceiling for a test whose only work is painting this page. The
+ * await above is deterministic, but vitest's 5000 ms watchdog still kills a
+ * runner that is legitimately still rendering: the fixture page alone paints in
+ * ~225 ms idle and was observed past 5 s with three full suites competing for
+ * the same 22 cores. A ceiling, never a wait.
+ */
+const PAINT_TEST_TIMEOUT = 20_000;
 
 describe("M4Preview", () => {
   it("renders every building block without contacting the API", () => {
@@ -50,14 +79,20 @@ describe("M4Preview", () => {
     expect(screen.getByTestId("run-tree-row-more:/verify_each").textContent).toContain("15 more");
   });
 
-  it("is reachable through the app at its dev path, with no session check", async () => {
-    // Shell asks the API who the user is; the preview renders outside it, so
-    // mounting the whole app at this path must still touch the network zero
-    // times. That is the guard against a fixture page quietly gaining a
-    // `/session` call and screenshotting like a live screen.
-    const { requests } = renderApp({ path: "/__m4-preview" });
-    // Lazy, so it arrives a tick late; the assertion is that it arrives at all.
-    await screen.findByTestId("m4-preview");
-    expect(requests).toHaveLength(0);
-  });
+  it(
+    "is reachable through the app at its dev path, with no session check",
+    async () => {
+      // Shell asks the API who the user is; the preview renders outside it, so
+      // mounting the whole app at this path must still touch the network zero
+      // times. That is the guard against a fixture page quietly gaining a
+      // `/session` call and screenshotting like a live screen.
+      const { requests } = renderApp({ path: "/__m4-preview" });
+      // Lazy, so it arrives a tick late; the assertion is that it arrives at all —
+      // awaited, not raced.
+      await flushLazyChunk();
+      expect(screen.getByTestId("m4-preview")).toBeTruthy();
+      expect(requests).toHaveLength(0);
+    },
+    PAINT_TEST_TIMEOUT,
+  );
 });

@@ -16,6 +16,17 @@ const unauthenticated: RouteStub = {
   },
 };
 
+/**
+ * Wait budget for a test that is waiting on a mocked request, not on the
+ * machine's clock: `findBy*` waits 1000 ms by default, and that is a race
+ * against CPU. Sign-out alone was measured at 150 ms idle and 1075 ms with the
+ * runner oversubscribed ~2x (several vitest workers on one box), which is how
+ * the sign-out test flakes in CI. Applied where a real boundary exists — a
+ * `/api/v1` round trip through the fake fetch, or the navigation it answers —
+ * and never as a retry.
+ */
+const READ_MS = 5_000;
+
 const projectRoutes: RouteStub[] = [
   me,
   { path: "/api/v1/projects", method: "GET", body: { items: [projectFixture] } },
@@ -107,18 +118,26 @@ describe("auth", () => {
     );
   });
 
-  it("signs out through POST /auth/logout and lands on the login page", async () => {
-    const { requests } = renderApp({
-      path: "/",
-      routes: [...projectRoutes, { path: "/auth/logout", method: "POST", status: 204 }],
-    });
+  it(
+    "signs out through POST /auth/logout and lands on the login page",
+    async () => {
+      const { requests } = renderApp({
+        path: "/",
+        routes: [...projectRoutes, { path: "/auth/logout", method: "POST", status: 204 }],
+      });
 
-    fireEvent.click(await screen.findByTestId("sign-out"));
-    await screen.findByRole("heading", { name: "Sign in" });
+      // The button exists only once `/api/v1/me` has answered.
+      const signOut = await screen.findByTestId("sign-out", undefined, { timeout: READ_MS });
+      fireEvent.click(signOut);
+      // ...and sign out navigates only after `POST /auth/logout` resolves, so the
+      // login page is a second round trip away, not a render away.
+      await screen.findByRole("heading", { name: "Sign in" }, { timeout: READ_MS });
 
-    const [request] = requestsTo(requests, "/auth/logout", "POST");
-    expect(request.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
-  });
+      const [request] = requestsTo(requests, "/auth/logout", "POST");
+      expect(request.headers.get("x-csrf-token")).toBe(meFixture.csrf_token);
+    },
+    READ_MS * 3,
+  );
 
   it("renders the login page for a signed-out visitor", async () => {
     renderApp({ path: "/login", routes: [unauthenticated] });
