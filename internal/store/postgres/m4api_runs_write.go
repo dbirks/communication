@@ -771,7 +771,7 @@ func (a APIRunStore) CancelRun(ctx context.Context, c api.Caller, runID string) 
 // m4ChildRunIDs lists the live children of one run from pipeline_invocations
 // (§ 5.5's cascade targets).
 func m4ChildRunIDs(ctx context.Context, pool *pgxpool.Pool, runID string) ([]string, error) {
-	rows, err := pool.Query(ctx, `
+	rows, err := runOn(ctx, pool).Query(ctx, `
 		SELECT i.child_run_id::text
 		FROM pipeline_invocations i
 		JOIN runs cr ON cr.id = i.child_run_id
@@ -905,13 +905,15 @@ func m4NonSucceededTerminalKeys(ctx context.Context, pool *pgxpool.Pool, runID s
 // ------------------------------------------------------------- M4Children
 
 // M4Children is the runtime.ChildResolver behind pipeline.invoke (ADR-0023
-// § 10, contract § 5.5). The advancer owns the invocation bookkeeping and the
-// cascade; this owns starting the run, because that is an API-transaction
-// act: the child pins the revision resolved at ITS start (assignment pin
-// first, then the newest published revision of the target pipeline), lives in
-// the parent's project with depth = parent.depth + 1, and is idempotent per
-// (parentRunID, nodeExecutionID) so a retried advancer pass never spawns a
-// second child.
+// § 10, contract § 5.5). The advancer owns the invocation row, the waiting
+// state and the cascade; this owns starting the run AND resolving the target,
+// because both are API-transaction acts: the child pins the revision resolved at
+// ITS start (assignment pin first, then the newest published revision of the
+// target pipeline), lives in the parent's project with depth = parent.depth + 1,
+// and answers from an existing booking so a retried advancer pass never spawns a
+// second child. The authored target is a pipeline NAME (`pipeline:
+// issue-implementation`), so only here — where the organization's pipeline
+// library is reachable — does the invocation get a pipeline_id to carry.
 type M4Children struct {
 	Runs    *RunStore
 	Runtime *RuntimeStore
@@ -920,46 +922,58 @@ type M4Children struct {
 var _ runtime.ChildResolver = (*M4Children)(nil)
 
 // CreateChild starts (or replays) the child run of one pipeline.invoke node
-// execution.
-func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest) (string, error) {
+// execution. Inside an advancer pass the caller's context carries that pass's
+// transaction (see withPassTx), so the child run row and the parent's
+// node-execution rows commit together or not at all; a direct caller (an API
+// route, a test) gets its own transaction as it always did.
+func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest) (runtime.ChildOutcome, error) {
 	if ch == nil || ch.Runs == nil {
-		return "", errors.New("postgres: M4Children has no run store")
+		return runtime.ChildOutcome{}, errors.New("postgres: M4Children has no run store")
 	}
 	pool := ch.Runs.Pool
 	parent, err := ch.Runs.GetRun(ctx, req.ParentRunID)
 	if errors.Is(err, ErrRunNotFound) {
-		return "", fmt.Errorf("postgres: create child of unknown parent run %s: %w", req.ParentRunID, err)
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: create child of unknown parent run %s: %w", req.ParentRunID, err)
 	}
 	if err != nil {
-		return "", err
+		return runtime.ChildOutcome{}, err
 	}
 	if req.Depth == 0 {
 		req.Depth = parent.Depth + 1
 	}
 	if req.Depth != parent.Depth+1 {
-		return "", fmt.Errorf("postgres: child depth %d disagrees with parent %d + 1", req.Depth, parent.Depth)
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: child depth %d disagrees with parent %d + 1", req.Depth, parent.Depth)
 	}
 	if req.Depth > 2 {
 		// runs_depth_check says the same thing in the database; saying it here
 		// turns a CHECK failure into a named failure (§ 6's child_depth_exceeded).
-		return "", fmt.Errorf("postgres: child_depth_exceeded at depth %d", req.Depth)
-	}
-	if !prjValidUUID(req.Target) {
-		return "", fmt.Errorf("postgres: pipeline.invoke target %q is not a pipeline id", req.Target)
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: child_depth_exceeded at depth %d", req.Depth)
 	}
 
-	// Idempotence per (parentRunID, nodeExecutionID): the invocation row is
-	// the record that the child was ever started, so it answers first.
-	var existing string
-	err = pool.QueryRow(ctx, `
-		SELECT child_run_id::text FROM pipeline_invocations
+	// Idempotence per (parentRunID, nodeExecutionID): the invocation row is the
+	// record that a child was ever booked for this node execution, so it
+	// answers first. The node execution is named by its LEDGER uuid — inside an
+	// advance it is still a minted id (advancer.go's NewID("ne")) and the row it
+	// refers to lives in the parent's open transaction — so the lookup hashes it
+	// the way the write-back will (rteColID), rather than handing "ne2" to a uuid
+	// column and aborting the pass.
+	var (
+		existing   string
+		bookedPipe string
+		bookedRev  string
+	)
+	err = runOn(ctx, pool).QueryRow(ctx, `
+		SELECT child_run_id::text, pipeline_id::text, resolved_revision_id::text
+		FROM pipeline_invocations
 		WHERE run_id = $1::uuid AND node_execution_id = $2::uuid`,
-		req.ParentRunID, req.NodeExecutionID).Scan(&existing)
+		req.ParentRunID, rteColID(req.ParentRunID, req.NodeExecutionID)).Scan(&existing, &bookedPipe, &bookedRev)
 	if err == nil {
-		return existing, nil
+		return runtime.ChildOutcome{
+			ChildRunID: existing, PipelineID: bookedPipe, ResolvedRevisionID: bookedRev,
+		}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("postgres: look up invocation of node execution %s: %w", req.NodeExecutionID, err)
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: look up invocation of node execution %s: %w", req.NodeExecutionID, err)
 	}
 
 	// The target revision is resolved AT RUN START (§ 5.5): the project's
@@ -967,11 +981,11 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 	// of the target pipeline in the parent's organization.
 	pin, err := m4ResolveChildRevision(ctx, pool, parent.OrganizationID, parent.ProjectID, req.Target)
 	if err != nil {
-		return "", err
+		return runtime.ChildOutcome{}, err
 	}
 	inputs, err := m4ChildInputs(pin.plan, req.Inputs)
 	if err != nil {
-		return "", err
+		return runtime.ChildOutcome{}, err
 	}
 	kind, actor := m4RunActor("")
 	created := NewRun{
@@ -1002,30 +1016,24 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 	}
 	child, _, err := ch.Runs.CreateRun(ctx, created)
 	if err != nil {
-		return "", fmt.Errorf("postgres: create child run of %s for node execution %s: %w",
+		return runtime.ChildOutcome{}, fmt.Errorf("postgres: create child run of %s for node execution %s: %w",
 			parent.ID, req.NodeExecutionID, err)
 	}
-	if _, err := ch.Runs.InsertInvocation(ctx, NewInvocation{
-		RunID: parent.ID, NodeExecutionID: req.NodeExecutionID,
-		ChildRunID: child.ID, ChildProjectID: parent.ProjectID,
-		PipelineID: pin.pipelineID, ResolvedRevisionID: pin.revisionID,
-		Depth: req.Depth,
-	}); err != nil {
-		// A concurrent pass booked the invocation first (UNIQUE
-		// node_execution_id): its child is the answer, and this run is the
-		// loser — reported, not hidden, because an orphan queued run is an
-		// operator-visible fact.
-		var winner string
-		if qErr := pool.QueryRow(ctx, `
-			SELECT child_run_id::text FROM pipeline_invocations
-			WHERE run_id = $1::uuid AND node_execution_id = $2::uuid`,
-			req.ParentRunID, req.NodeExecutionID).Scan(&winner); qErr == nil {
-			return winner, fmt.Errorf("postgres: invocation of node execution %s raced; returning child %s, run %s is unreferenced: %w",
-				req.NodeExecutionID, winner, child.ID, err)
-		}
-		return "", err
-	}
-	return child.ID, nil
+	// ONE writer books the pipeline_invocations row: the PARENT's advance
+	// transaction (postgres.RuntimeStore.writeRowsTx -> insertInvocationTx).
+	// It has to be that one, because the row references the node execution that
+	// transaction created and no other transaction can see it yet — a booking
+	// made here would fail its foreign key on every first pass. What this owns
+	// is the RESOLUTION (§ 5.5: at run start, once), and it reports the ids it
+	// resolved so the booking carries them instead of the authored name.
+	//
+	// The retried-pass guarantee stays intact: a pass that committed is answered
+	// by the hydrated invocation row (advancer.go's InvocationFor, so this
+	// resolver is never called again), and a caller that arrives with a node
+	// execution whose booking is already visible is answered above.
+	return runtime.ChildOutcome{
+		ChildRunID: child.ID, PipelineID: pin.pipelineID, ResolvedRevisionID: pin.revisionID,
+	}, nil
 }
 
 // ChildStatus reports a child run's status for the advancer's poll. A child
@@ -1091,10 +1099,16 @@ type m4ChildPin struct {
 }
 
 // m4ResolveChildRevision resolves a pipeline.invoke target at run start.
-func m4ResolveChildRevision(ctx context.Context, pool *pgxpool.Pool, orgID, projectID, pipelineID string) (m4ChildPin, error) {
+// The target arrives as the author wrote it, so it goes through
+// m4ResolveChildTarget first; everything after that is the pin (§ 5.5).
+func m4ResolveChildRevision(ctx context.Context, pool *pgxpool.Pool, orgID, projectID, target string) (m4ChildPin, error) {
+	pipelineID, err := m4ResolveChildTarget(ctx, pool, orgID, target)
+	if err != nil {
+		return m4ChildPin{}, err
+	}
 	var pin m4ChildPin
 	var overrides []byte
-	err := pool.QueryRow(ctx, `
+	err = runOn(ctx, pool).QueryRow(ctx, `
 		SELECT a.id::text, a.budget_overrides::text, a.pinned_revision_id::text,
 		       r.revision_digest, r.plan_digest, r.digest_scope, r.compiled_plan::text
 		FROM assignments a
@@ -1115,7 +1129,7 @@ func m4ResolveChildRevision(ctx context.Context, pool *pgxpool.Pool, orgID, proj
 		return pin, nil
 	}
 	// No assignment in the parent's project: the newest published revision.
-	err = pool.QueryRow(ctx, `
+	err = runOn(ctx, pool).QueryRow(ctx, `
 		SELECT r.id::text, r.revision_digest, r.plan_digest, r.digest_scope, r.compiled_plan::text
 		FROM pipeline_revisions r
 		JOIN pipelines pl ON pl.id = r.pipeline_id
@@ -1134,10 +1148,34 @@ func m4ResolveChildRevision(ctx context.Context, pool *pgxpool.Pool, orgID, proj
 	return pin, nil
 }
 
-// m4ChildInputs coerces the advancer's resolved child inputs (already CEL
-// values) through the same declared-input rules as route 22, with origin
-// 'submitted'. A child whose inputs do not validate is the node's failure,
-// not a partial run.
+// m4ResolveChildTarget turns an authored pipeline.invoke target into a pipeline
+// id inside the parent's organization. The authored value is a pipeline NAME:
+// `pipeline: issue-implementation` (docs/compatibility/probes/m4/pipeline.yaml:
+// 222) is what an author writes and what the compiler checks against
+// compiler.Registries.PipelineRevs, which the API layer owns — so the name
+// reaches here unresolved, and pipelines' unique key is
+// (organization_id, slug) (migration 00005:58-68), which is exactly the scope
+// this lookup uses: a parent can invoke a sibling definition in ITS
+// organization and nothing else. A literal uuid is accepted too, so an author
+// who wrote the id still resolves.
+func m4ResolveChildTarget(ctx context.Context, pool *pgxpool.Pool, orgID, target string) (string, error) {
+	if prjValidUUID(target) {
+		return target, nil
+	}
+	var id string
+	err := runOn(ctx, pool).QueryRow(ctx, `
+		SELECT id::text FROM pipelines
+		WHERE organization_id = $1::uuid AND slug = $2`, orgID, target).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("%w: pipeline.invoke target %q is not a pipeline of organization %s",
+			ErrPipelineNotFound, target, orgID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("postgres: resolve pipeline.invoke target %q: %w", target, err)
+	}
+	return id, nil
+}
+
 func m4ChildInputs(plan json.RawMessage, in map[string]any) (map[string]RunInput, error) {
 	submitted := map[string]json.RawMessage{}
 	for name, v := range in {

@@ -17,19 +17,43 @@ import (
 // ChildResolver is how the control plane creates and polls child runs for
 // pipeline.invoke (ADR-0023 § 10). The runtime owns the bookkeeping (the
 // pipeline_invocations row, the waiting state, the cascade); the host owns
-// actually starting a run, because that is an API-transaction act. The
-// in-memory tests script this; the Postgres serve loop will implement it over
-// the real runs table.
+// actually starting a run AND resolving the target, because both are
+// API-transaction acts and only the host holds the organization's pipeline
+// library. The in-memory tests script this; the Postgres serve loop implements
+// it over the real runs table.
+//
+// Each call arrives on the context the deployment handed AdvancerDeps, and a
+// real host acts within whatever scope that context names: inside a pass the
+// deployment gives it the parent run's own transaction, so the child run it
+// starts commits or rolls back AS ONE FACT with the parent's node-execution rows
+// (contract § 5.5, ADR-0023 § 10) and a pass that aborts leaves no orphan child
+// behind.
 type ChildResolver interface {
-	// CreateChild starts a child run and returns its id. It must be
-	// idempotent per (parentRunID, nodeExecutionID): the advancer may retry
-	// a pass that aborted.
-	CreateChild(ctx context.Context, req ChildRequest) (childRunID string, err error)
+	// CreateChild starts a child run and reports what it resolved to. It must
+	// be idempotent per (parentRunID, nodeExecutionID): the advancer may retry
+	// a pass that aborted, and a retry may not spawn a second child.
+	CreateChild(ctx context.Context, req ChildRequest) (ChildOutcome, error)
 	// ChildStatus reports the child run's current status (the run.status
 	// enum) and its failed cause when failed.
 	ChildStatus(ctx context.Context, childRunID string) (status string, failedCause string, err error)
 	// CancelChild requests cancellation of a live child.
 	CancelChild(ctx context.Context, childRunID string, reason string) error
+}
+
+// ChildOutcome is the host's answer for a child it started: the run id plus
+// the pipeline and revision the authored target RESOLVED to (ADR-0023 § 10's
+// "resolved once and stored on the invocation"). A pipeline.invoke's authored
+// target is a pipeline name (a slug in the parent's organization, e.g.
+// issue-implementation in docs/compatibility/probes/m4/pipeline.yaml), never a
+// uuid, so the ids are the host's to know and the engine's to book: it writes
+// them on pipeline_invocations in the parent's own transaction, which is the
+// only transaction that has seen the node execution the row references. A host
+// that resolves nothing (an in-memory script) leaves them empty and no row is
+// written.
+type ChildOutcome struct {
+	ChildRunID         string
+	PipelineID         string
+	ResolvedRevisionID string
 }
 
 // ChildRequest names what the host needs to start a child.
@@ -39,10 +63,13 @@ type ChildRequest struct {
 	OrganizationID  string
 	NodeExecutionID string
 	NodeInstanceKey string
-	Target          string
-	Inputs          map[string]any
-	Depth           int
-	Priority        int
+	// Target is the authored `pipeline:` value: a pipeline NAME (slug) in the
+	// parent's organization, or, when an author wrote one, a pipeline id — the
+	// host resolves name-or-id (contract § 5.5, ADR-0023 § 10).
+	Target   string
+	Inputs   map[string]any
+	Depth    int
+	Priority int
 }
 
 // AdvancerDeps wires the outside capabilities the advancer may ask for.
@@ -1222,7 +1249,7 @@ func (ac *advanceCtx) advanceInvoke(pn *compiler.Node, row *NodeExecution, scope
 		if ctx == nil {
 			ctx = context.TODO()
 		}
-		childID, err := ac.deps.Children.CreateChild(ctx, ChildRequest{
+		child, err := ac.deps.Children.CreateChild(ctx, ChildRequest{
 			ParentRunID: ac.st.Run.ID, ParentProjectID: ac.st.Run.ProjectID,
 			OrganizationID: ac.st.Run.OrganizationID, NodeExecutionID: row.ID,
 			NodeInstanceKey: row.InstanceKey, Target: target, Inputs: inputs,
@@ -1231,10 +1258,16 @@ func (ac *advanceCtx) advanceInvoke(pn *compiler.Node, row *NodeExecution, scope
 		if err != nil {
 			return err
 		}
+		// The host resolved the authored name and started the child; this record
+		// is the parent's booking of that fact, written by THIS transaction (see
+		// postgres.insertInvocationTx) and carried so the rest of this pass can
+		// poll it. The invocation row's existence is also what makes a retried
+		// pass answer from hydration instead of spawning a second child.
 		inv := Invocation{
 			ID: ac.st.NewID("inv"), RunID: ac.st.Run.ID, NodeExecutionID: row.ID,
-			ChildRunID: childID, ChildProjectID: ac.st.Run.ProjectID,
-			PipelineID: target, WaitPolicy: "completion", Depth: ac.st.Run.Depth + 1,
+			ChildRunID: child.ChildRunID, ChildProjectID: ac.st.Run.ProjectID,
+			PipelineID: child.PipelineID, ResolvedRevisionID: child.ResolvedRevisionID,
+			WaitPolicy: "completion", Depth: ac.st.Run.Depth + 1,
 			CreatedAt: ac.now,
 		}
 		if err := inv.Check(); err != nil {

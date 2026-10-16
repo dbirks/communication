@@ -314,25 +314,56 @@ func TestM4APIRunsWriteChild(t *testing.T) {
 	}
 
 	children := &M4Children{Runs: f.runs}
+	// The authored target is a pipeline NAME — the shape contract § 7.1 C8 and
+	// docs/compatibility/probes/m4/pipeline.yaml:222 write, and the shape that
+	// used to abort the whole advance transaction.
+	var slug string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT slug FROM pipelines WHERE id = $1::uuid`, f.pipelineID).Scan(&slug); err != nil {
+		t.Fatalf("read the target's slug: %v", err)
+	}
+	if slug == "" || slug == f.pipelineID {
+		t.Fatalf("fixture slug = %q, want a name distinct from the uuid", slug)
+	}
 	req := runtime.ChildRequest{
 		ParentRunID: parent.ID, ParentProjectID: f.projectID, OrganizationID: f.orgID,
-		NodeExecutionID: neID, NodeInstanceKey: "/invoke", Target: f.pipelineID,
+		NodeExecutionID: neID, NodeInstanceKey: "/invoke", Target: slug,
 		Depth: parent.Depth + 1, Inputs: map[string]any{},
 	}
-	childID, err := children.CreateChild(ctx, req)
+	out, err := children.CreateChild(ctx, req)
 	if err != nil {
 		t.Fatalf("CreateChild: %v", err)
 	}
+	childID := out.ChildRunID
 	if childID == "" || childID == parent.ID {
 		t.Fatalf("CreateChild returned %q for parent %q", childID, parent.ID)
+	}
+	if out.PipelineID != f.pipelineID || out.ResolvedRevisionID != f.revisionID {
+		t.Errorf("CreateChild reported pipeline %s / revision %s, want %s / %s (the ids the target resolved to)",
+			out.PipelineID, out.ResolvedRevisionID, f.pipelineID, f.revisionID)
+	}
+	// ONE writer books the row: the parent's own advance transaction
+	// (writeRowsTx -> insertInvocationTx), with the ids this resolver reported.
+	// Simulate the committed pass, then replay: the booking answers, so no
+	// second child run appears.
+	if _, err := f.runs.InsertInvocation(ctx, NewInvocation{
+		RunID: parent.ID, NodeExecutionID: neID, ChildRunID: childID,
+		ChildProjectID: f.projectID, PipelineID: out.PipelineID,
+		ResolvedRevisionID: out.ResolvedRevisionID, Depth: parent.Depth + 1,
+	}); err != nil {
+		t.Fatalf("book the invocation as the parent's transaction does: %v", err)
 	}
 	again, err := children.CreateChild(ctx, req)
 	if err != nil {
 		t.Fatalf("replayed CreateChild: %v", err)
 	}
-	if again != childID {
+	if again.ChildRunID != childID {
 		t.Errorf("CreateChild replay returned child %s, want the booked %s (idempotent per node execution)",
-			again, childID)
+			again.ChildRunID, childID)
+	}
+	if again.PipelineID != f.pipelineID || again.ResolvedRevisionID != f.revisionID {
+		t.Errorf("replayed CreateChild reported pipeline %s / revision %s, want %s / %s",
+			again.PipelineID, again.ResolvedRevisionID, f.pipelineID, f.revisionID)
 	}
 
 	var (

@@ -243,13 +243,38 @@ type RunInput struct {
 // one transaction: the run either exists pinned, with every input row and
 // the key claiming it, or nothing happened. A duplicate idempotency key is
 // resolved against the stored request hash, never by silently updating.
+//
+// Inside an advancer pass it rides that pass's transaction instead (see
+// withPassTx): a child run a pipeline.invoke starts is one fact with the
+// parent's node-execution rows, and on a second connection its parent_run_id
+// foreign key would wait for the pass that is waiting for it.
 func (s *RunStore) CreateRun(ctx context.Context, in NewRun) (run Run, created bool, err error) {
+	if tx, ok := passTx(ctx); ok {
+		return s.createRunTx(ctx, tx, in)
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: begin create run tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	run, created, err = s.createRunTx(ctx, tx, in)
+	if err != nil {
+		return Run{}, false, err
+	}
+	if !created {
+		// Idempotent replay: the stored run is the answer and the ephemeral
+		// insert this transaction made must NOT survive — the deferred rollback
+		// discards it, exactly as CreateRun did before the pass-tx refactor.
+		return run, false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Run{}, false, fmt.Errorf("postgres: commit create run: %w", err)
+	}
+	return run, true, nil
+}
 
+// createRunTx is CreateRun's body on a transaction the caller owns.
+func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run Run, created bool, err error) {
 	if run, err = s.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
@@ -317,15 +342,14 @@ func (s *RunStore) CreateRun(ctx context.Context, in NewRun) (run Run, created b
 			return Run{}, false, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return Run{}, false, fmt.Errorf("postgres: commit create run: %w", err)
-	}
 	return run, true, nil
 }
 
-// GetRun reads one run.
+// GetRun reads one run — on the pass's transaction when the caller is inside
+// one, so a child row this pass created but has not committed yet is visible to
+// the parent's next poll rather than reporting a missing child.
 func (s *RunStore) GetRun(ctx context.Context, id string) (Run, error) {
-	r, err := s.scanRun(s.Pool.QueryRow(ctx, `
+	r, err := s.scanRun(runOn(ctx, s.Pool).QueryRow(ctx, `
 		SELECT `+runColumns+` FROM runs WHERE id = $1::uuid`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Run{}, ErrRunNotFound
@@ -503,8 +527,21 @@ func (s *RunStore) BumpExpressionEvaluations(ctx context.Context, runID string, 
 }
 
 // withRunLock is the single-transaction shape every run-scoped mutation
-// shares: lock the run row, act, commit.
+// shares: lock the run row, act, commit. Inside an advancer pass the pass's own
+// transaction is the only one that may write the row (see withPassTx), so the
+// lock is taken there and the CALLER commits.
 func (s *RunStore) withRunLock(ctx context.Context, runID string, fn func(context.Context, pgx.Tx, Run) error) error {
+	if pass, ok := passTx(ctx); ok {
+		run, err := s.scanRun(pass.QueryRow(ctx, `
+			SELECT `+runColumns+` FROM runs WHERE id = $1::uuid FOR UPDATE`, runID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrRunNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: lock run %s in the pass: %w", runID, err)
+		}
+		return fn(ctx, pass, run)
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres: begin run tx: %w", err)

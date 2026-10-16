@@ -211,6 +211,15 @@ func (s *RuntimeStore) advancerForTx(ctx context.Context, tx pgx.Tx, runID strin
 		cp := *s.Adv
 		adv = &cp
 	}
+	// The capabilities the advancer calls mid-pass ride THIS transaction (see
+	// withPassTx): the child resolver's CreateChild cannot take KEY SHARE on the
+	// parent run row from a second connection while this one holds it FOR UPDATE,
+	// and contract § 5.5's child run plus invocation row are one fact with the
+	// parent's rows anyway. The pass's own context is the parent — the caller's
+	// cancellation is what must stop the in-pass writes — so a deployment
+	// context on AdvancerDeps is not carried into a pass (nothing in this build
+	// sets one; grep AdvancerDeps{ shows Children only).
+	adv.Deps.Context = withPassTx(ctx, tx)
 	prog, err := hydrateProgramTx(ctx, tx, runID)
 	if err != nil {
 		return nil, err
@@ -1008,6 +1017,33 @@ func insertCheckpointTx(ctx context.Context, tx pgx.Tx, runID string, c runtime.
 }
 
 func insertInvocationTx(ctx context.Context, tx pgx.Tx, runID string, iv runtime.Invocation) error {
+	// This is the ONE writer of pipeline_invocations (ADR-0023 § 10's
+	// "resolved once and stored on the invocation", runtime/advancer.go's
+	// ChildResolver contract): the parent's own advance transaction, because the
+	// row references the node execution that only this transaction has created.
+	// The host child resolver owns the RESOLUTION and reports the ids it
+	// resolved (postgres.M4Children.CreateChild -> runtime.ChildOutcome); an
+	// invocation whose target nobody resolved is the in-memory record of a
+	// scripted host, and there is nothing truthful to write into NOT NULL
+	// pipeline_id / resolved_revision_id.
+	//
+	// The insert is idempotent rather than fatal: § 8's "calling Advance twice
+	// has one effect" means a retried pass may not be stopped by a booking that
+	// already exists.
+	if iv.PipelineID == "" || iv.ResolvedRevisionID == "" {
+		return nil
+	}
+	// A booking this transaction already made (or one a previous pass committed
+	// and the caller did not hydrate) answers before the insert.
+	var booked bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pipeline_invocations WHERE node_execution_id = $1::uuid)`,
+		rteColID(runID, iv.NodeExecutionID)).Scan(&booked); err != nil {
+		return fmt.Errorf("postgres: check invocation of node execution %s: %w", iv.NodeExecutionID, err)
+	}
+	if booked {
+		return nil
+	}
 	waitPolicy := iv.WaitPolicy
 	if waitPolicy == "" {
 		waitPolicy = "completion"
@@ -1016,7 +1052,8 @@ func insertInvocationTx(ctx context.Context, tx pgx.Tx, runID string, iv runtime
 		INSERT INTO pipeline_invocations
 			(id, run_id, node_execution_id, child_run_id, child_project_id, pipeline_id,
 			 resolved_revision_id, wait_policy, depth, created_at, updated_at)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10, $10)`,
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10, $10)
+		ON CONFLICT (node_execution_id) DO NOTHING`,
 		rteColID(runID, iv.ID), runID, rteColID(runID, iv.NodeExecutionID),
 		iv.ChildRunID, iv.ChildProjectID, iv.PipelineID, iv.ResolvedRevisionID,
 		waitPolicy, iv.Depth, iv.CreatedAt.UTC())

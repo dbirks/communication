@@ -410,7 +410,7 @@ type scriptedChildren struct {
 	active    int
 }
 
-func (c *scriptedChildren) CreateChild(_ context.Context, req runtime.ChildRequest) (string, error) {
+func (c *scriptedChildren) CreateChild(_ context.Context, req runtime.ChildRequest) (runtime.ChildOutcome, error) {
 	c.created = append(c.created, req.NodeInstanceKey)
 	// The instance key carries the index: /fan_out[i]/invoke.
 	idx := indexFromKey(req.NodeInstanceKey)
@@ -428,7 +428,9 @@ func (c *scriptedChildren) CreateChild(_ context.Context, req runtime.ChildReque
 		c.settled = map[string]bool{}
 	}
 	c.live[id] = idx
-	return id, nil
+	// A script resolves nothing: the ids belong to a real host's pipeline
+	// library, so the invocation row it represents is the host's booking.
+	return runtime.ChildOutcome{ChildRunID: id}, nil
 }
 
 func (c *scriptedChildren) ChildStatus(_ context.Context, childRunID string) (string, string, error) {
