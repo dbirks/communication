@@ -958,8 +958,19 @@ func (ac *advanceCtx) expireApprovals() error {
 		}
 		switch ap.OnTimeout {
 		case "cancel_run":
+			// § 7.1 C9f: cancel_run "cancels the run and cascades (C8g's
+			// path)" — the SAME arm a POST /runs/{id}/cancel rides, which means
+			// run.cancel_requested is journalled before anything else the cancel
+			// does. Setting the flag alone let this pass's own settleRun end the
+			// run 'cancelled' with only run.cancelled in the journal: a cancel
+			// nobody was told about, and no cascade marker (children, the live
+			// attempts owed a cancel) at all.
 			t := ac.now
 			ac.st.Run.CancelRequestedAt = &t
+			if err := ac.cascadeCancel(); err != nil {
+				return err
+			}
+			return nil // the cascade owns the rest of this run's settles
 		default: // fail
 			if row != nil && !NodeTerminal(row.Status) {
 				if err := row.Move(NodeFailed, ac.now); err != nil {

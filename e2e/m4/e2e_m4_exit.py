@@ -8550,7 +8550,25 @@ def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
 # shapes the leg can actually read — the take-control RESPONSE body, the
 # conversation_turns / attempts / runs ledger rows, and the journal payload — never
 # a re-derived guess. `None` anywhere means the read failed, and the arm GAPs.
-C9G_TAKE_TYPES = ("conversation.control.transferred", "conversation.turn.cancelled")
+# ADR-0016 § 5 / openapi /conversations/{id}/cancel: a takeover REQUESTS the live
+# turn's cancel and journals conversation.control.transferred; it does NOT write the
+# turn's terminal, because "this response is not proof that the agent stopped". The
+# terminal arrives from whoever answers the request — the worker holding the fencing
+# token (conversation.turn.cancelled, § 4 step 11's ack) or the reconciler's turn-
+# lease arm (conversation.turn.interrupted{lease_expired}) — and for a takeover the
+# worker CANNOT answer: the same transaction that moved control interrupted its
+# attempt, so its next renew is ErrLeaseLost and it writes nothing (abandon rule).
+# The lease arithmetic says the ack-free arm wins: 30 s turn lease (ADR-0016 § 3) +
+# up to 10 s until the worker stops renewing + a 5 s reconciler pass with 5 s of
+# safety ≈ 50 s. So the arm accepts EITHER word, and waits C9G_TURN_CLOSE_MIN_S
+# before it is allowed to say anything — a turn that outlives its attempt for real
+# is the bug worth FAILing (conversation_turns_one_active_idx then refuses the
+# retry's turn stamp); a turn measured two seconds too early is not.
+C9G_TAKE_TYPE = "conversation.control.transferred"
+C9G_TURN_TERMINAL_TYPES = ("conversation.turn.cancelled", "conversation.turn.interrupted")
+C9G_TURN_CLOSED_STATUSES = ("completed", "failed", "cancelled", "interrupted")
+C9G_TURN_CLOSE_MIN_S = 90
+C9G_TURN_CLOSE_POLL_S = 180
 
 
 def c9g_takeover_verdicts(take, turn, att, run_row, interrupted_ev, bob_id):
@@ -8644,25 +8662,51 @@ def c9g_return_verdicts(ret, run_row, resumed_ev, next_att, intervention):
     ]
 
 
-def c9g_transcript_verdicts(before_seq, after_seq, journal_types, cursor_tables):
+def c9g_transcript_verdicts(before_seq, after_seq, journal_types, cursor_tables,
+                            turn_row=None, waited=None):
     """§ 7.1 C9g's last sentence: 'GET /conversations/$CID still replays the full "
     "transcript from M1/M2's mechanism — the run adds rows, never a second cursor'.
       before_seq / after_seq  max(global_seq) of the conversation's transcript rows
                               read before take-control and after return-control
       journal_types           the types the run actually appended for this conversation
       cursor_tables           names of any NEW per-conversation cursor table in the
-                              schema (the second cursor the contract forbids)"""
+                              schema (the second cursor the contract forbids)
+      turn_row                {status, cancel_requested} of the turn the takeover found
+                              live, read AFTER the arm's bounded wait
+      waited                  seconds actually spent waiting for that turn's terminal
+                              row; short of C9G_TURN_CLOSE_MIN_S the arm has not EARNED
+                              a FAIL and GAPs instead"""
     b, a = count_or_none(before_seq), count_or_none(after_seq)
+    seen = set(journal_types or [])
+    acked = seen & set(C9G_TURN_TERMINAL_TYPES)
+    truncated = waited is None or int(waited) < C9G_TURN_CLOSE_MIN_S
+    if acked:
+        closed = True
+    elif journal_types is None or turn_row is None or truncated:
+        # Nothing readable to judge, or the arm never got its full lease arithmetic:
+        # an unearned FAIL is this gate's own bug, so it GAPs.
+        closed = None
+    else:
+        # Either the request went unanswered (the turn is still leased after 30 s +
+        # 10 s + 5 s + 5 s of lease arithmetic) or the row went terminal with no
+        # conversation.turn.* beside it (§ 4 step 12's pairing). Both are the bug.
+        closed = False
     out = [
         ("C9g the run's conversation writes into the SAME domain_events journal M1/M2 "
          "replay from (max global_seq only grows)",
          None if (b is None or a is None) else a >= b,
          f"before_seq={before_seq!r} after_seq={after_seq!r}"),
-        ("C9g the takeover appended its own transcript rows (control transferred / "
-         "turn cancelled are conversation-scoped journal rows, not a side channel)",
-         None if journal_types is None else
-         all(t in set(journal_types) for t in C9G_TAKE_TYPES),
-         f"observed={sorted(set(journal_types or []))} want={list(C9G_TAKE_TYPES)}"),
+        ("C9g the takeover appended its own transcript row (" + C9G_TAKE_TYPE + " is a "
+         "conversation-scoped journal row, not a side channel — ADR-0016 § 5)",
+         None if journal_types is None else C9G_TAKE_TYPE in seen,
+         f"observed={sorted(seen)} want={C9G_TAKE_TYPE!r}"),
+        ("C9g the cancel the takeover REQUESTED reached its honest terminal in the "
+         "SAME journal — the worker's ACP ack (conversation.turn.cancelled) or the "
+         "reconciler's lease arm (conversation.turn.interrupted): a takeover may ask, "
+         "never pretend the turn finished (ADR-0016 § 5)",
+         closed,
+         f"turn={turn_row} waited={waited!r}s seen={sorted(acked)} "
+         f"want_any={list(C9G_TURN_TERMINAL_TYPES)}"),
     ]
     if cursor_tables is None:
         out.append(("C9g the run adds rows, never a SECOND transcript cursor (§ 7.1's "
@@ -9377,8 +9421,36 @@ def c9g_takeover(alice, facts):
     check("C9g GET /conversations/$CID still answers after the takeover (M1/M2's replay "
           "route, not a run-scoped one)", replay_st == 200,
           f"status={replay_st}")
+    # The turn's own terminal row. § 7.1 C9g asks the live turn to be CANCEL-
+    # REQUESTED (the verdict above reads that flag in the takeover's transaction);
+    # the turn's TERMINAL is somebody else's debt — the worker's ACP ack or the
+    # reconciler's lease arm (ADR-0016 § 5) — and it lands ~50 s later. Wait for it
+    # inside the seconds the leg's envelope still holds, then read the journal once.
+    want = max(C9G_TURN_CLOSE_MIN_S, min(C9G_TURN_CLOSE_POLL_S, C9G_CLOSE_POLL_S))
+    left = c9_budget_left()
+    if left is not None:
+        want = min(want, max(0, left))
+    t0 = time.time()
+    trow2, types = None, None
+    while True:
+        trow2, types = c9_turn_row(turn), c9_conv_journal_types(conv)
+        seen = set(types or [])
+        # Only the JOURNAL row ends the wait: the turn's terminal and its
+        # conversation.turn.* ride one transaction, so a row that is terminal
+        # without its event is exactly what the full window must go on to prove.
+        if seen & set(C9G_TURN_TERMINAL_TYPES):
+            break
+        if time.time() - t0 >= want:
+            break
+        time.sleep(5)
+    waited = int(time.time() - t0)
+    tstat = str((trow2 or {}).get("status") or "")
+    show("C9g the turn's terminal after the cancel the takeover asked for",
+         f"waited={waited}s (want <= {want}s) turn={trow2} "
+         f"row_is_terminal={tstat in C9G_TURN_CLOSED_STATUSES} "
+         f"turn_rows={sorted(seen & set(C9G_TURN_TERMINAL_TYPES)) or '(none)'}")
     c5_emit(c9g_transcript_verdicts(seq_before, c9_conv_transcript_seq(conv),
-                                   c9_conv_journal_types(conv), c9_cursor_tables()))
+                                   types, c9_cursor_tables(), trow2, waited))
     r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
                    {"reason": "M4 exit C9g: the takeover arms are measured; the retry would "
                               "spend another real Claude turn"})

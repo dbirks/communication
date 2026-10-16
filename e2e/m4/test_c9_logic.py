@@ -769,29 +769,73 @@ class GReturnTest(unittest.TestCase):
 
 
 class GTranscriptTest(unittest.TestCase):
-    """§ 7.1 C9g's last sentence: one journal, rows only added, never a second cursor."""
+    """§ 7.1 C9g's last sentence: one journal, rows only added, never a second
+    cursor — plus the promise the takeover itself keeps: it JOURNALS the transfer and
+    only REQUESTS the turn's cancel (ADR-0016 § 5: 'a takeover cancels without
+    pretending the turn finished'), so the turn's terminal is the worker's ack
+    (conversation.turn.cancelled) or the reconciler's lease arm
+    (conversation.turn.interrupted), never the takeover's own row."""
     TYPES = ["conversation.message.agent", "conversation.control.transferred",
              "conversation.turn.cancelled"]
+    CLOSED = {"status": "cancelled", "cancel_requested": "2026-10-16 23:10:11"}
 
     def test_a_journal_that_grows_on_one_cursor_passes(self):
-        v = m.c9g_transcript_verdicts("4100", "4137", self.TYPES, [])
+        v = m.c9g_transcript_verdicts("4100", "4137", self.TYPES, [], self.CLOSED, 120)
         self.assertTrue(all(ok for _, ok, _ in v), v)
 
+    def test_the_reconciler_word_for_the_turn_counts_too(self):
+        # The takeover already interrupted the attempt, so the worker's next renew
+        # is ErrLeaseLost and it writes NOTHING: in practice the reconciler's lease
+        # arm closes the turn ~50 s later. The arm must read that as the answered
+        # request it is, not as a missing conversation.turn.cancelled.
+        types = ["conversation.control.transferred", "conversation.turn.interrupted"]
+        v = m.c9g_transcript_verdicts("4100", "4137", types, [],
+                                      {"status": "interrupted"}, 120)
+        self.assertTrue(ok_of(v, "honest terminal"), v)
+        self.assertTrue(ok_of(v, "control.transferred"), v)
+
     def test_a_shrinking_transcript_fails(self):
-        self.assertFalse(ok_of(m.c9g_transcript_verdicts("4137", "4100", self.TYPES, []),
-                              "domain_events journal"))
+        self.assertFalse(ok_of(m.c9g_transcript_verdicts(
+            "4137", "4100", self.TYPES, [], self.CLOSED, 120), "domain_events journal"))
 
     def test_a_missing_takeover_row_fails_the_control_arm(self):
-        v = m.c9g_transcript_verdicts("4100", "4137", ["conversation.message.agent"], [])
-        self.assertFalse(ok_of(v, "control transferred"), v)
+        v = m.c9g_transcript_verdicts("4100", "4137", ["conversation.message.agent"], [],
+                                      self.CLOSED, 120)
+        self.assertFalse(ok_of(v, "control.transferred"), v)
+
+    def test_a_turn_still_live_after_the_full_wait_fails(self):
+        # 90 s of waiting covers 30 s lease + 10 s renew + 5 s pass + 5 s safety:
+        # a turn still leased past that is a request nobody ever answered, and it is
+        # the row conversation_turns_one_active_idx then refuses the retry against.
+        v = m.c9g_transcript_verdicts("4100", "4137", ["conversation.control.transferred"],
+                                      [], {"status": "leased"}, 120)
+        self.assertFalse(ok_of(v, "honest terminal"), v)
+
+    def test_a_terminal_turn_row_with_no_journal_row_fails(self):
+        v = m.c9g_transcript_verdicts("4100", "4137", ["conversation.control.transferred"],
+                                      [], {"status": "cancelled"}, 120)
+        self.assertFalse(ok_of(v, "honest terminal"), v)
+
+    def test_a_truncated_wait_gaps_rather_than_fails_the_terminal_arm(self):
+        # An unearned FAIL is the gate's own bug: with less than the lease arithmetic
+        # the leg has not measured the arm, it has measured its own clock.
+        for waited in (None, 0, 20, m.C9G_TURN_CLOSE_MIN_S - 1):
+            v = m.c9g_transcript_verdicts("4100", "4137", ["conversation.control.transferred"],
+                                         [], {"status": "leased"}, waited)
+            self.assertIsNone(ok_of(v, "honest terminal"), f"waited={waited}: {v}")
+        # The same read at the full floor is an earned FAIL, not a GAP.
+        self.assertFalse(ok_of(m.c9g_transcript_verdicts(
+            "4100", "4137", ["conversation.control.transferred"], [],
+            {"status": "leased"}, m.C9G_TURN_CLOSE_MIN_S), "honest terminal"))
 
     def test_a_new_cursor_table_fails_the_last_arm(self):
-        v = m.c9g_transcript_verdicts("4100", "4137", self.TYPES, ["run_transcript_cursor"])
+        v = m.c9g_transcript_verdicts("4100", "4137", self.TYPES, ["run_transcript_cursor"],
+                                      self.CLOSED, 120)
         self.assertFalse(ok_of(v, "SECOND transcript cursor"), v)
 
     def test_unreadable_reads_gap(self):
-        v = m.c9g_transcript_verdicts("", "", None, None)
-        self.assertEqual([ok for _, ok, _ in v], [None, None, None], v)
+        v = m.c9g_transcript_verdicts("", "", None, None, None, None)
+        self.assertEqual([ok for _, ok, _ in v], [None, None, None, None], v)
 
 
 class SchemaTruthTest(unittest.TestCase):

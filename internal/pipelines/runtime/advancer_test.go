@@ -146,6 +146,137 @@ func TestGateExpiryReRequestsExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestGateTimeoutCancelRunJournalsTheCancelRequestFirst is the live19 C9f
+// regression in the shape the lab actually ran: a gate whose deadline expires
+// with NOTHING live behind it (the work upstream is terminal, the branches
+// behind the gate were never claimed). Before the fix the timeout arm only set
+// runs.cancel_requested_at, this same pass's settleRun ended the run, and the
+// pass-1 cascade that would have journalled the request never got another turn
+// — runs.status='cancelled' with no run.cancel_requested anywhere, i.e. a cancel
+// § 3 row 11 never heard about.
+func TestGateTimeoutCancelRunJournalsTheCancelRequestFirst(t *testing.T) {
+	plan := loadPlan(t, "testdata/gate_cancel_run.yaml")
+	dv := newDriver(t, plan, map[string]any{"goal": "cancel me"})
+	dv.gate = nil // nobody decides; the deadline does
+	dv.pump(30)
+	st := dv.state()
+	if st.Run.Status != runtime.RunWaitingHuman {
+		t.Fatalf("run = %s before the deadline, want waiting_human", st.Run.Status)
+	}
+	if len(st.LiveAttempts()) != 0 {
+		t.Fatalf("live attempts = %d, want none (the lab's gate holds nothing)",
+			len(st.LiveAttempts()))
+	}
+	dv.now = dv.now.Add(61 * time.Second)
+	dv.advance() // one pass, as the reconciler's § 5.4 pass 2 does it
+	st = dv.state()
+
+	types := eventTypes(st)
+	reqAt, doneAt := -1, -1
+	for i, typ := range types {
+		if typ == pevents.TypeRunCancelRequested && reqAt < 0 {
+			reqAt = i
+		}
+		if typ == pevents.TypeRunCancelled && doneAt < 0 {
+			doneAt = i
+		}
+	}
+	if reqAt < 0 {
+		t.Fatalf("run.cancel_requested was never journalled: %v", types)
+	}
+	if doneAt < 0 {
+		t.Fatalf("run.cancelled was never journalled: %v", types)
+	}
+	if reqAt > doneAt {
+		t.Errorf("run.cancel_requested at %d must precede run.cancelled at %d", reqAt, doneAt)
+	}
+	if c := countType(st, pevents.TypeRunCancelRequested); c != 1 {
+		t.Errorf("run.cancel_requested = %d, want exactly 1 however many passes follow", c)
+	}
+	if c := countType(st, pevents.TypeRunFailed); c != 0 {
+		t.Errorf("run.failed = %d, want 0 — a timeout cancel is not an execution failure", c)
+	}
+	if st.Run.Status != runtime.RunCancelled {
+		t.Fatalf("run = %s/%s, want cancelled", st.Run.Status, st.Run.FailedCause)
+	}
+	if got := st.Node("/after").Status; got != runtime.NodeCancelled {
+		t.Errorf("/after = %s, want cancelled by the cascade", got)
+	}
+	ev := lastRecord(t, st, pevents.TypeApprovalExpired).Payload.(pevents.ApprovalExpired)
+	if ev.OnTimeout != "cancel_run" || ev.ReRequested {
+		t.Errorf("approval.expired = %+v, want on_timeout=cancel_run re_requested=false", ev)
+	}
+	if st.Approvals[0].State != runtime.ApprovalExpired {
+		t.Errorf("gate = %s, want expired — a cancel never leaves a pending gate", st.Approvals[0].State)
+	}
+}
+
+// TestGateTimeoutCancelRunAsksTheLiveAttempt is the same arm with a worker
+// holding a row: C8g's path REQUESTS the live attempt's cancel (§ 4 step 11 —
+// its owner writes the honest terminal) and the run stays non-terminal until
+// that owner answers, with the request row already journalled.
+func TestGateTimeoutCancelRunAsksTheLiveAttempt(t *testing.T) {
+	plan := loadPlan(t, "testdata/gate_cancel_run.yaml")
+	dv := newDriver(t, plan, map[string]any{"goal": "cancel me"})
+	dv.script("/sibling", step{skipClaim: true}) // claimed, leased, never started
+	dv.gate = nil                                // nobody decides; the deadline does
+	dv.pump(30)
+	st := dv.state()
+	if st.Run.Status != runtime.RunWaitingHuman {
+		t.Fatalf("run = %s before the deadline, want waiting_human", st.Run.Status)
+	}
+	live := st.LiveAttempts()
+	if len(live) != 1 {
+		t.Fatalf("live attempts = %d, want the leased sibling the cascade must name", len(live))
+	}
+	dv.now = dv.now.Add(61 * time.Second)
+	dv.advance()
+	st = dv.state()
+
+	if countType(st, pevents.TypeRunCancelRequested) != 1 {
+		t.Fatalf("run.cancel_requested = %d, want exactly 1 (C8g's path opens with it): %v",
+			countType(st, pevents.TypeRunCancelRequested), eventTypes(st))
+	}
+	if live[0].CancelRequested == nil {
+		t.Error("the live attempt carries no cancel_requested_at: C8g's path asks its owner to stop")
+	}
+	if st.Run.Status == runtime.RunCancelled {
+		t.Error("run cancelled over a leased attempt it never asked to close (§ 4 step 11)")
+	}
+	if err := dv.ms.CancelAttempt(dv.run.ID, live[0].ID, live[0].WorkerID, live[0].FencingToken,
+		"acp_cancel_ack"); err != nil {
+		t.Fatalf("cancel attempt: %v", err)
+	}
+	dv.advance()
+	st = dv.state()
+
+	reqAt, doneAt := -1, -1
+	for i, typ := range eventTypes(st) {
+		if typ == pevents.TypeRunCancelRequested && reqAt < 0 {
+			reqAt = i
+		}
+		if typ == pevents.TypeRunCancelled && doneAt < 0 {
+			doneAt = i
+		}
+	}
+	if reqAt < 0 || doneAt < 0 {
+		t.Fatalf("cancel rows missing: request=%d cancelled=%d types=%v", reqAt, doneAt, eventTypes(st))
+	}
+	if reqAt > doneAt {
+		t.Errorf("run.cancel_requested at %d must precede run.cancelled at %d", reqAt, doneAt)
+	}
+	if c := countType(st, pevents.TypeRunCancelRequested); c != 1 {
+		t.Errorf("run.cancel_requested = %d, want exactly 1 however many passes follow", c)
+	}
+	if st.Run.Status != runtime.RunCancelled {
+		t.Fatalf("run = %s/%s, want cancelled", st.Run.Status, st.Run.FailedCause)
+	}
+	if ids, _ := lastPayload(t, st, pevents.TypeRunCancelled)["cancelled_attempts"].([]any);
+		len(ids) != 1 {
+		t.Errorf("run.cancelled cancelled_attempts = %v, want the one cancelled attempt", ids)
+	}
+}
+
 // TestApprovalDenialKeepsGateOpen: 12 case 9's revoked grant — a denied
 // decision writes approval.denied and changes NOTHING else; the gate waits.
 func TestApprovalDenialKeepsGateOpen(t *testing.T) {

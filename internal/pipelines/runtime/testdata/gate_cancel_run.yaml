@@ -1,0 +1,40 @@
+# onTimeout: cancel_run — contract § 7.1 C9f's third arm: "cancels the run and
+# cascades (C8g's path)". The sibling is scripted either as already finished
+# (the lab's shape: the gate holds nothing) or as claimed-and-leased (the shape
+# where the cascade must cancel-REQUEST a worker's attempt instead of ending
+# over it), so one graph covers both halves of C8g's path.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: gate-cancel-run
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 2
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 20
+    cancelPolicy: cascade
+  nodes:
+  - id: gate
+    kind: human.approval
+    config:
+      summary: ${{ inputs.goal }}
+      approverRoles: [maintainer]
+      deadlineSeconds: 60
+      onTimeout: cancel_run
+  - id: sibling
+    kind: process.exec
+    config:
+      executable: side
+  - id: after
+    kind: process.exec
+    dependsOn: [gate]
+    when: nodes.gate.outputs.decision == 'approved'
+    config:
+      executable: go_on
+  resultBindings:
+    gate_decision: ${{ nodes.gate.outputs.decision }}
