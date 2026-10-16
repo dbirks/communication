@@ -5,8 +5,8 @@ import { Mark } from "./Mark";
 /**
  * NAV-I — 52px app bar: white, one ink hairline below. C mark on the left,
  * a section track in the middle (active = flat white tab on the fill track),
- * you on the right. The Ask box and the project dropdown are slots kept for
- * when those features exist (avatars/Ask are still open per the handoff).
+ * the Ask box next, you on the right. The project dropdown stays a slot for
+ * when that feature exists (avatars are still open per the handoff).
  */
 
 export interface AppBarNavItem {
@@ -18,10 +18,12 @@ export interface AppBarNavItem {
 export interface AppBarProps {
   items: AppBarNavItem[];
   left?: ReactNode;
+  /** The Ask box / command palette trigger, between the nav and the user area. */
+  ask?: ReactNode;
   right?: ReactNode;
 }
 
-export function AppBar({ items, left, right }: AppBarProps) {
+export function AppBar({ items, left, ask, right }: AppBarProps) {
   return (
     <header className="sticky top-0 z-20 border-b border-ink bg-surface">
       <div className="mx-auto flex h-[52px] w-full max-w-5xl items-center gap-[14px] px-4">
@@ -42,7 +44,12 @@ export function AppBar({ items, left, right }: AppBarProps) {
             </NavLink>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-3">{right}</div>
+        {ask ? <div className="ml-auto flex min-w-0 justify-end">{ask}</div> : null}
+        <div
+          className={ask ? "flex shrink-0 items-center gap-3" : "ml-auto flex items-center gap-3"}
+        >
+          {right}
+        </div>
       </div>
     </header>
   );

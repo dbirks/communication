@@ -4,6 +4,7 @@ import { useLogout, useMe } from "../api/queries";
 import { useReplicaName } from "../api/replica";
 import { problemOf } from "../api/client";
 import { AppBar, InitialsBox } from "./ds/AppBar";
+import CommandPalette from "./CommandPalette";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
@@ -17,6 +18,17 @@ const NAV_ITEMS = [
 
 export interface ShellProps {
   children: ReactNode;
+}
+
+/** The Ask box's context chip: the section the current path belongs to. A nav
+ * item wins; anything outside the track is named by its own first segment
+ * (`/projects/p-1` is `projects`, `/login` is `login`) rather than guessed at. */
+export function sectionOf(pathname: string): string {
+  const hit = NAV_ITEMS.find((item) =>
+    item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`),
+  );
+  const first = pathname.split("/")[1] ?? "";
+  return (hit?.label ?? (first || "projects")).toLowerCase();
 }
 
 /** App shell: NAV-I app bar (C mark, section track, signed-in user, sign
@@ -41,6 +53,7 @@ export default function Shell({ children }: ShellProps) {
     <div className="flex min-h-screen flex-col bg-paper text-ink">
       <AppBar
         items={NAV_ITEMS}
+        ask={<CommandPalette context={sectionOf(location.pathname)} />}
         right={
           me.data ? (
             <>
