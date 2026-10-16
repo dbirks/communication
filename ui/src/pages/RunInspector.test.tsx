@@ -4,9 +4,15 @@
  * that lives in `?node=` so a pane is linkable. Served by the fake fetch and
  * the fake EventSource — the same doubles that prove `/__m4-preview?source=live`.
  */
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import {
+  FakeEventSource,
+  meFixture,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
 import { renderApp } from "../test/render";
 import { attentionNodeId } from "./RunInspector";
 import type { NodeExecution } from "../api/types";
@@ -26,6 +32,7 @@ import {
   wireProjectId,
   wireRevision,
   wireRun,
+  wireRunEvent,
   wireRunList,
   wireTree,
 } from "../test/fixtures/m4/wire";
@@ -33,6 +40,44 @@ import {
 const RUN_PATH = `/api/v1/runs/${WIRE_RUN_ID}`;
 const PAUSE_PATH = `${RUN_PATH}/pause`;
 const WIRE_NODE_APPROVE = "01987b24-0009-7000-8000-abcdef012345";
+const WIRE_NODE_EACH = "01987b24-000a-7000-8000-abcdef012345";
+const WIRE_NODE_MOD_1 = "01987b24-000b-7000-8000-abcdef012345";
+const WIRE_NODE_MOD_2 = "01987b24-000c-7000-8000-abcdef012345";
+
+/** The same run fanned out instead of looped: `/verify_each` declared 3 items,
+ * item 1 came back clean, item 2 is red, item 3 has not started. The grid's
+ * cell count is the scope's own `items`, so the third cell must be drawn. */
+const wireFanOutNodes: NodeExecution[] = [
+  {
+    ...wireNodeList.node_executions[1],
+    id: WIRE_NODE_EACH,
+    node_id: "verify_each",
+    kind: "for_each",
+    node_instance_key: "/verify_each",
+    status: "running",
+    iterations: undefined,
+    items: 3,
+    in_flight: 1,
+    attempt_count: 0,
+  },
+  {
+    ...wireNodeList.node_executions[2],
+    id: WIRE_NODE_MOD_1,
+    node_id: "check_module",
+    node_instance_key: "/verify_each[1]/check_module",
+    scope_key: "/verify_each[1]",
+    status: "succeeded",
+  },
+  {
+    ...wireNodeList.node_executions[2],
+    id: WIRE_NODE_MOD_2,
+    node_id: "check_module",
+    node_instance_key: "/verify_each[2]/check_module",
+    scope_key: "/verify_each[2]",
+    status: "failed",
+    failed_cause: "module check exited 1",
+  },
+];
 
 /** The same run held at its gate: `approve` waits for a human and nothing else
  * has started. The wire fixture is a run mid-loop, which proves the other
@@ -56,6 +101,7 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
     ...extra,
     { path: PAUSE_PATH, method: "POST", body: { ...wireRun, status: "paused" } },
     { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/users", body: { items: [meFixture] } },
     { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}`, body: wirePipeline },
@@ -261,6 +307,155 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.getByTestId("run-timeline-empty").textContent).toContain("No run events yet");
   });
 
+  it("draws the branch grid for the run's for_each scope under the strip", async () => {
+    mountRun("?tab=execution", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireFanOutNodes } },
+    ]);
+    const strip = await screen.findByTestId("run-stage-strip");
+    const grid = await screen.findByTestId("branch-grid");
+
+    // The grid goes under the stage strip, not instead of it.
+    expect(strip.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // One cell per declared item — the third has no rows yet and is still drawn.
+    expect(screen.getAllByTestId(/^branch-cell-/)).toHaveLength(3);
+    expect(screen.getByTestId("branch-cell-3").getAttribute("data-branch-state")).toBe("queued");
+    expect(screen.getByTestId("branch-counts").textContent).toContain("3 branches");
+    expect(screen.getByTestId("branch-counts").textContent).toContain("1 failed");
+    // Stuck first by default, so the red item leads the grid.
+    expect(cells()[0]).toBe("branch-cell-2");
+    // Nothing picked, so no history — an empty strip would claim the branch ran nothing.
+    expect(screen.getByTestId("branch-history-empty").textContent).toContain("select a branch");
+  });
+
+  it("a branch cell click selects that branch's latest execution and keeps the branch in the URL", async () => {
+    const { requests } = mountRun("?tab=execution", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireFanOutNodes } },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_MOD_1}`, body: wireNodeDetail },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_MOD_2}`, body: wireNodeDetail },
+    ]);
+    await screen.findByTestId("branch-grid");
+
+    fireEvent.click(screen.getByTestId("branch-cell-1"));
+
+    // `?node=` moved to the branch's own execution: the pane reads that row.
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_MOD_1}`)).toHaveLength(1),
+    );
+    // `?branch=` rides along: the cell stays raised after the selection lands,
+    // and the history strip names it — both read the URL, not local state.
+    expect(screen.getByTestId("branch-cell-1").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("branch-history").textContent).toContain("task 1");
+    expect(screen.getByTestId("branch-history").textContent).toContain("check_module");
+    // And it survives the tab switch a shared link forces.
+    fireEvent.click(screen.getByTestId("run-tab-definition"));
+    fireEvent.click(screen.getByTestId("run-tab-execution"));
+    await screen.findByTestId("branch-grid");
+    expect(screen.getByTestId("branch-cell-1").getAttribute("aria-current")).toBe("true");
+  });
+
+  it("raises a queued branch on click even though it owns no execution yet", async () => {
+    const { requests } = mountRun("?tab=execution", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireFanOutNodes } },
+    ]);
+    await screen.findByTestId("branch-grid");
+
+    fireEvent.click(screen.getByTestId("branch-cell-3"));
+
+    expect(screen.getByTestId("branch-cell-3").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("branch-history-none").textContent).toContain("queued");
+    // No row is invented for a branch the run has not reached — the pane keeps
+    // reading the node the run is actually stopped on.
+    expect(requestsTo(requests, `${RUN_PATH}/nodes/nx_verify_each_3`)).toHaveLength(0);
+  });
+
+  it("reads ?branch= on first paint, so a branch view is linkable", async () => {
+    const { requests } = mountRun(`?tab=execution&branch=1&node=${WIRE_NODE_MOD_1}`, [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireFanOutNodes } },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_MOD_1}`, body: wireNodeDetail },
+    ]);
+    await screen.findByTestId("branch-grid");
+
+    expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_MOD_1}`).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("branch-cell-1").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("branch-history").textContent).toContain("task 1");
+  });
+
+  it("filters the timeline to failures, and selects a row's node on click", async () => {
+    const { requests } = mountRun("?tab=timeline");
+    await screen.findByTestId("run-title");
+
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "node.attempt.started",
+          {
+            node_instance_key: "/plan",
+            attempt_number: 1,
+          },
+          { node_execution_id: WIRE_NODE_PLAN, global_seq: 9101 },
+        ),
+      );
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "node.attempt.failed",
+          {
+            node_instance_key: "/plan",
+            attempt_number: 1,
+            error_class: "agent_error",
+            detail: "agent exited 1",
+          },
+          { node_execution_id: WIRE_NODE_PLAN, global_seq: 9102 },
+        ),
+      );
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "approval.requested",
+          {
+            node_instance_key: "/approve",
+            approval_id: wireApproval.id,
+          },
+          {
+            node_execution_id: WIRE_NODE_APPROVE,
+            global_seq: 9103,
+            actor: { kind: "human", id: meFixture.id },
+          },
+        ),
+      );
+    });
+
+    const rows = await screen.findAllByTestId(/^run-timeline-row-/);
+    expect(rows).toHaveLength(3);
+    expect(screen.getByTestId("run-timeline-count").textContent).toContain("3 of 3");
+    // Each row says when, what, where and who.
+    expect(screen.getByTestId("run-timeline-row-9102").textContent).toContain(
+      "node.attempt.failed",
+    );
+    expect(screen.getByTestId("run-timeline-row-9102").textContent).toContain("/plan");
+    expect(screen.getByTestId("run-timeline-row-9102").textContent).toContain("the system");
+    await waitFor(() =>
+      expect(screen.getByTestId("run-timeline-row-9103").textContent).toContain("Ada Lovelace"),
+    );
+
+    // The stage chip comes from the node the frames name; failures keeps one row.
+    fireEvent.click(screen.getByTestId("run-timeline-filter-failures"));
+    expect(timelineRows()).toHaveLength(1);
+    expect(screen.getByTestId("run-timeline-row-9102").textContent).toContain("agent exited 1");
+    expect(screen.queryByTestId("run-timeline-row-9101")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("run-timeline-filter-human"));
+    expect(timelineRows()).toHaveLength(1);
+    expect(screen.getByTestId("run-timeline-row-9103").textContent).toContain("approval.requested");
+
+    fireEvent.click(screen.getByTestId("run-timeline-stage-plan"));
+    expect(timelineRows()).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId("run-timeline-filter-all"));
+    fireEvent.click(screen.getByTestId("run-timeline-row-9101"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`)).toHaveLength(1),
+    );
+  });
+
   it("Pause asks the pause route once per click", async () => {
     const { requests } = mountRun();
     await screen.findByTestId("run-title");
@@ -284,6 +479,13 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.queryByTestId("run-stage-strip")).toBeNull();
   });
 });
+
+const cells = () =>
+  [...screen.getByTestId("branch-grid").querySelectorAll("button")].map(
+    (button) => button.getAttribute("data-testid") ?? "",
+  );
+
+const timelineRows = () => screen.getAllByTestId(/^run-timeline-row-/);
 
 describe("attentionNodeId", () => {
   const row = (

@@ -23,6 +23,9 @@ import { Button } from "../components/ds/Button";
 import { ApprovalCard } from "../components/m4/ApprovalCard";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { AttemptDetail } from "../components/m4/AttemptDetail";
+import { BranchGrid } from "../components/m4/BranchGrid";
+import { branchPlaceOf, branchesOf, findBranch } from "../lib/pipeline/branches";
+import { useActorNames } from "../api/actors";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
 import { RunStageStrip } from "../components/m4/RunStageStrip";
 import { RunTree } from "../components/m4/RunTree";
@@ -54,7 +57,7 @@ import {
   viewRunCheckpoint,
   viewRunTree,
 } from "../api/m4view";
-import { projectRun, toRunEvent } from "../lib/pipeline/runEvents";
+import { normalizeRunFrames, projectRun, toRunEvent } from "../lib/pipeline/runEvents";
 import {
   isScopeKind,
   scopeBody,
@@ -64,9 +67,10 @@ import {
 import type {
   NodeExecutionStatus,
   NodeExecutionSummary,
+  RunEventType,
   RunTreeRoot,
 } from "../lib/pipeline/contract";
-import type { EventEnvelope } from "../api/types";
+import type { EventActor, EventEnvelope } from "../api/types";
 import {
   ProjectSectionNav,
   RunStatusChip,
@@ -87,6 +91,7 @@ export default function RunInspector() {
   const [params, setParams] = useSearchParams();
   const tab = readTab(params.get("tab"));
   const selectedNodeId = params.get("node");
+  const selectedBranch = readBranchIndex(params.get("branch"));
   // The run view owns the whole viewport: the shell's centred reading column is
   // about 64rem wide, and a graph squeezed into what is left of it shows one
   // node. So this page measures the column it was handed and bleeds out of it.
@@ -186,6 +191,25 @@ export default function RunInspector() {
       (node) => node.node_id === handle || node.node_instance_key === `/${handle}`,
     );
     selectNodeById((exact ?? byGraph ?? byNodeId)?.id ?? null);
+  };
+  /**
+   * A branch cell click. `?branch=` carries the index so the grid view is
+   * linkable on its own, and `?node=` moves to that branch's latest node
+   * execution, so the right pane shows the work the cell stands for. A branch
+   * the run has not started has no row yet — the index is still the truth the
+   * reader asked for, so only `?branch=` changes.
+   */
+  const selectBranch = (scope: string, index: number) => {
+    const target = branchTargetNode(projection.nodes, scope, index);
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.set("branch", String(index));
+        if (target) next.set("node", target.id);
+        return next;
+      },
+      { replace: true },
+    );
   };
   const setTab = (next: Tab) =>
     setParams(
@@ -352,10 +376,21 @@ export default function RunInspector() {
             tree={tree}
             selectedNodeId={selectedNode?.node_id ?? null}
             selectedKey={instanceKey}
+            selectedBranch={selectedBranch}
+            onSelect={selectNode}
+            onSelectBranch={selectBranch}
+          />
+        ) : null}
+        {tab === "timeline" ? (
+          <RunTimelineTab
+            runId={runId}
+            projectId={projectId}
+            events={stream.events}
+            nodes={projection.nodes}
+            selectedExecutionId={selectedNode?.id ?? null}
             onSelect={selectNode}
           />
         ) : null}
-        {tab === "timeline" ? <RunTimelineTab runId={runId} events={stream.events} /> : null}
       </main>
 
       <aside
@@ -486,7 +521,9 @@ function RunExecutionTab({
   tree,
   selectedNodeId,
   selectedKey,
+  selectedBranch,
   onSelect,
+  onSelectBranch,
 }: {
   projectId: string;
   digest: string;
@@ -496,7 +533,10 @@ function RunExecutionTab({
    * select by it, and the URL still carries the execution id. */
   selectedNodeId: string | null;
   selectedKey: string | null;
+  /** `?branch=` — which fan-out branch the reader picked, or null. */
+  selectedBranch: number | null;
   onSelect: (handle: string | null) => void;
+  onSelectBranch: (scope: string, index: number) => void;
 }) {
   const [expanded, setExpanded] = useState<string[]>([]);
   // The strip and the tree read against the pinned graph, not against the order
@@ -510,6 +550,14 @@ function RunExecutionTab({
         : undefined,
     [revision.data],
   );
+  // One grid per fan-out / loop scope the run actually has a row for, under the
+  // strip: the strip says which stage the run is in, the grid says which of its
+  // items a person owes attention to. `parallel` scopes are left out — they
+  // have no item index, so there is no branch to select.
+  const scopes = nodes.filter((node) => BRANCH_SCOPE_KINDS.has(node.kind));
+  // With two grids on screen only the one the selected row lives inside raises
+  // a cell, so the outline always names the node the right pane shows.
+  const branchOwner = branchOwnerOf(scopes, selectedKey);
   return (
     <div className="space-y-[10px]">
       <RunStageStrip
@@ -519,6 +567,19 @@ function RunExecutionTab({
         onSelectNode={onSelect}
         headingId="run-stage-strip-heading"
       />
+      {scopes.map((scope) => (
+        <BranchGrid
+          key={scope.node_instance_key}
+          scope={scope.node_instance_key}
+          nodes={nodes}
+          selectedBranch={
+            branchOwner === null || branchOwner === scope.node_instance_key ? selectedBranch : null
+          }
+          onSelectBranch={(index) => onSelectBranch(scope.node_instance_key, index)}
+          definitionOrder={definitionOrder}
+          headingId={`run-branch-grid-heading-${scope.node_instance_key.replaceAll(/\W+/g, "-")}`}
+        />
+      ))}
       <RunTree
         nodes={nodes}
         definitionOrder={definitionOrder}
@@ -540,41 +601,224 @@ function RunExecutionTab({
 
 /* ---------------------------------------------------------- timeline tab */
 
-function RunTimelineTab({ runId, events }: { runId: string; events: readonly EventEnvelope[] }) {
-  const frames = useMemo(
-    () =>
-      events
-        .map(toRunEvent)
-        .filter((event): event is NonNullable<typeof event> => event !== null)
-        .sort((a, b) => a.global_seq - b.global_seq),
-    [events],
+/** The filter chips' vocabulary: `all`, the two fixed lenses, one per stage. */
+type TimelineFilter = "all" | "failures" | "human" | `stage:${string}`;
+
+/** One journal frame as the timeline draws it (`10` line 49: events correlated
+ * by run/node/attempt, filtered by failure, actor and stage). */
+interface TimelineRow {
+  seq: number;
+  type: RunEventType;
+  occurredAt: string;
+  actor: string;
+  actorKind: EventActor["kind"];
+  /** What `?node=` takes for this row — the execution id when the run has that
+   * row, else the instance key the event names. */
+  handle: string | null;
+  nodeKey: string | null;
+  stage: string | null;
+  attempt: string | null;
+  detail: string | null;
+  failure: boolean;
+  human: boolean;
+}
+
+/** `failure` and `human` are read off the frame, never guessed from prose. */
+function isFailureFrame(type: RunEventType, payload: Record<string, unknown>): boolean {
+  return (
+    type.endsWith(".failed") ||
+    type.endsWith(".interrupted") ||
+    payload.error_class !== undefined ||
+    payload.failed_cause !== undefined
   );
-  if (frames.length === 0) {
+}
+
+/** A person did it, or a person is owed the answer: approval traffic,
+ * `run.waiting_human`, anything a human actor wrote, and a human takeover. */
+function isHumanFrame(
+  type: RunEventType,
+  actorKind: EventActor["kind"],
+  payload: Record<string, unknown>,
+): boolean {
+  if (type.startsWith("approval.") || type === "run.waiting_human") return true;
+  if (actorKind === "human") return true;
+  return type === "run.paused" && payload.paused_reason === "human_takeover";
+}
+
+/** `/build_until_verified[2]/implement` → `implement` — the stage an event
+ * about a place inside a loop still belongs to. */
+function leafOf(key: string | null): string | null {
+  if (!key) return null;
+  const leaf = key.split("/").filter(Boolean).pop() ?? null;
+  if (!leaf) return null;
+  return leaf.replace(/\[\d+\]$/, "");
+}
+
+function RunTimelineTab({
+  runId,
+  projectId,
+  events,
+  nodes,
+  selectedExecutionId,
+  onSelect,
+}: {
+  runId: string;
+  projectId: string;
+  events: readonly EventEnvelope[];
+  nodes: NodeExecutionSummary[];
+  selectedExecutionId: string | null;
+  onSelect: (handle: string | null) => void;
+}) {
+  const { actorLabel } = useActorNames(projectId);
+  const [filter, setFilter] = useState<TimelineFilter>("all");
+  const [query, setQuery] = useState("");
+
+  // Journal order, deduped on `event_id`/`global_seq` — the same gap-safety
+  // fold the projection uses, so a replay paints one row, not two.
+  const rows = useMemo<TimelineRow[]>(() => {
+    return normalizeRunFrames(events).reduce<TimelineRow[]>((out, envelope) => {
+      const event = toRunEvent(envelope);
+      if (!event) return out; // a type this screen has no words for (ADR-0014 § 8)
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      const known =
+        nodes.find((node) => node.id === event.node_execution_id) ??
+        nodes.find((node) => node.node_instance_key === payload.node_instance_key);
+      const nodeKey =
+        known?.node_instance_key ?? (payload.node_instance_key as string | undefined) ?? null;
+      const attemptNumber = payload.attempt_number ?? payload.next_attempt_number;
+      out.push({
+        seq: event.global_seq,
+        type: event.type,
+        occurredAt: event.occurred_at,
+        actor: actorLabel(envelope.actor),
+        actorKind: envelope.actor.kind,
+        handle: known?.id ?? nodeKey,
+        nodeKey,
+        stage: known?.node_id ?? leafOf(nodeKey),
+        attempt:
+          typeof attemptNumber === "number"
+            ? `att ${attemptNumber}`
+            : event.attempt_id
+              ? `att ${event.attempt_id.slice(-4)}`
+              : null,
+        detail:
+          (payload.detail as string | undefined) ??
+          (payload.reason as string | undefined) ??
+          (payload.failed_cause as string | undefined) ??
+          null,
+        failure: isFailureFrame(event.type, payload),
+        human: isHumanFrame(event.type, envelope.actor.kind, payload),
+      });
+      return out;
+    }, []);
+  }, [events, nodes, actorLabel]);
+
+  // Stage chips are the stages the frames actually name, in first-seen order —
+  // a chip that filters to nothing would be a button that lies.
+  const stages = useMemo(() => {
+    const seen: string[] = [];
+    for (const row of rows) if (row.stage && !seen.includes(row.stage)) seen.push(row.stage);
+    return seen;
+  }, [rows]);
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (filter === "failures" && !row.failure) return false;
+      if (filter === "human" && !row.human) return false;
+      if (filter !== "all" && filter.startsWith("stage:") && row.stage !== filter.slice(6))
+        return false;
+      if (!needle) return true;
+      return `${row.type} ${row.nodeKey ?? ""} ${row.stage ?? ""} ${row.actor} ${row.detail ?? ""}`
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [rows, filter, query]);
+
+  if (rows.length === 0) {
     return (
       <p className="font-mono text-[11px] text-muted" data-testid="run-timeline-empty">
         No run events yet on the stream for {runId} — this list is the journal, not a guess.
       </p>
     );
   }
+  const chip = (value: TimelineFilter, label: string, testid: string) => (
+    <button
+      key={value}
+      type="button"
+      aria-pressed={filter === value}
+      data-testid={testid}
+      onClick={() => setFilter(value)}
+      className={`rounded-[2px] border px-[7px] py-[2px] font-mono text-[10.5px] ${
+        filter === value
+          ? "border-ink bg-ink text-paper"
+          : "border-line-strong bg-surface text-muted hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
+  );
   return (
-    <ol className="space-y-[2px]" data-testid="run-timeline">
-      {frames.map((event) => (
-        <li
-          key={`${event.global_seq}`}
-          className="flex flex-wrap items-baseline gap-2 border-b border-line px-1 py-[5px] font-mono text-[11.5px]"
-          data-testid={`run-timeline-row-${event.global_seq}`}
-        >
-          <span className="text-faint">{event.occurred_at.slice(11, 19)}</span>
-          <span className="font-semibold">{event.type}</span>
-          {event.payload?.node_instance_key ? (
-            <code className="text-muted">{event.payload.node_instance_key}</code>
-          ) : null}
-          {(event.payload?.detail ?? event.payload?.reason) ? (
-            <span className="text-muted">{event.payload.detail ?? event.payload.reason}</span>
-          ) : null}
-        </li>
-      ))}
-    </ol>
+    <div className="space-y-[6px]">
+      <div
+        role="group"
+        aria-label="Timeline filters"
+        className="flex flex-wrap items-center gap-[5px]"
+        data-testid="run-timeline-filters"
+      >
+        {chip("all", "all", "run-timeline-filter-all")}
+        {chip("failures", "failures", "run-timeline-filter-failures")}
+        {chip("human", "human", "run-timeline-filter-human")}
+        {stages.map((stage) => chip(`stage:${stage}`, stage, `run-timeline-stage-${stage}`))}
+        <input
+          type="search"
+          aria-label="Search timeline events"
+          placeholder="search"
+          value={query}
+          data-testid="run-timeline-search"
+          onChange={(event) => setQuery(event.target.value)}
+          className="ml-auto w-[11rem] rounded-[2px] border border-line-strong bg-surface px-[6px] py-[2px] font-mono text-[10.5px] text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        />
+      </div>
+      <p className="font-mono text-[10.5px] text-faint" data-testid="run-timeline-count">
+        {visible.length} of {rows.length} events
+      </p>
+      {visible.length === 0 ? (
+        <p className="font-mono text-[11px] text-muted" data-testid="run-timeline-none">
+          No events match this filter — the journal holds {rows.length}, none of them named here.
+        </p>
+      ) : (
+        <ol className="space-y-[2px]" data-testid="run-timeline">
+          {visible.map((row) => (
+            <li
+              key={`${row.seq}`}
+              className="border-b border-line px-1 py-[3px] font-mono text-[11.5px]"
+              data-testid={`run-timeline-item-${row.seq}`}
+            >
+              <button
+                type="button"
+                data-testid={`run-timeline-row-${row.seq}`}
+                aria-current={row.handle && row.handle === selectedExecutionId ? "true" : undefined}
+                onClick={() => onSelect(row.handle)}
+                className="flex w-full flex-wrap items-baseline gap-2 text-left hover:bg-fill focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+              >
+                <span className="text-faint">{row.occurredAt.slice(11, 19)}</span>
+                <span className="font-semibold">{row.type}</span>
+                {row.nodeKey ? <code className="text-muted">{row.nodeKey}</code> : null}
+                {row.attempt ? <span className="text-faint">{row.attempt}</span> : null}
+                <span className="text-muted">{row.actor}</span>
+                {row.failure ? (
+                  <span aria-hidden className="text-st-failed-tag-fg">
+                    !
+                  </span>
+                ) : null}
+                {row.detail ? <span className="text-muted">{row.detail}</span> : null}
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
   );
 }
 
@@ -724,6 +968,50 @@ export function attentionNodeId(
       work.find((node) => node.status === "running")
     )?.id ?? null
   );
+}
+
+/** The scope kinds whose rows carry a 1-based `[n]` item/iteration index. */
+const BRANCH_SCOPE_KINDS = new Set(["for_each", "until"]);
+
+/**
+ * The row a branch cell selects: the branch's latest node execution — the last
+ * step `branchesOf` ordered — falling back to the branch's own place row
+ * (`/verify_each[14]`) when nothing inside it has run yet.
+ */
+function branchTargetNode(
+  nodes: readonly NodeExecutionSummary[],
+  scope: string,
+  index: number,
+): NodeExecutionSummary | null {
+  const branch = findBranch(branchesOf(nodes, scope), index);
+  if (!branch) return null;
+  const last = branch.steps.at(-1);
+  const step = last ? nodes.find((node) => node.node_instance_key === last.key) : undefined;
+  return step ?? nodes.find((node) => node.node_instance_key === branch.key) ?? null;
+}
+
+/** Which scope a selected row's `[n]` belongs to — the innermost one, so a loop
+ * nested inside a branch does not steal the highlight from its own grid. */
+function branchOwnerOf(
+  scopes: readonly NodeExecutionSummary[],
+  selectedKey: string | null,
+): string | null {
+  if (!selectedKey) return null;
+  let owner: string | null = null;
+  for (const scope of scopes) {
+    if (!branchPlaceOf(selectedKey, scope.node_instance_key)) continue;
+    if (owner === null || scope.node_instance_key.length > owner.length) {
+      owner = scope.node_instance_key;
+    }
+  }
+  return owner;
+}
+
+/** `?branch=` is a 1-based index or nothing — a junk value reads as "none". */
+function readBranchIndex(value: string | null): number | null {
+  if (!value) return null;
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 1 ? index : null;
 }
 
 /** Definition is the tab a run opens on: the reader orients on the graph the run
