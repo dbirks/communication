@@ -157,11 +157,16 @@ var (
 //   - waiting_approvals counts pending gates, behind which no worker and no
 //     lease stand (ADR-0023 § 6).
 //   - queued_unbindable_runs mirrors runClaimPredicate's worker half
-//     (status='online' AND active_attempts < capacity) onto a queued run's
-//     affinity: § 5.2's honest "still queued" number. It intentionally does
-//     NOT judge a run whose affinity is NULL — that run is claimable by any
-//     worker, and counting it would blame the scheduler for a state it is
-//     about to resolve.
+//     (status='online' AND active_attempts < capacity) onto a queued or
+//     running run's affinity: § 5.2's honest "still queued" number.
+//     The advancer moves every queued run to 'running' on its first pass
+//     (contract § 4 step 3, hermetic model), so a run with an unsatisfied
+//     affinity whose READY attempts cannot be claimed is 'running' in the
+//     database. The second OR arm catches that: the run is effectively
+//     stuck because its only eligible worker is offline/draining/full.
+//     It intentionally does NOT judge a run whose affinity is NULL — that
+//     run is claimable by any worker, and counting it would blame the
+//     scheduler for a state it is about to resolve.
 const m4SchedulerStatusSQL = `
 	SELECT
 		(SELECT COUNT(*) FROM attempts WHERE status = 'queued')::int8,
@@ -175,7 +180,13 @@ const m4SchedulerStatusSQL = `
 		(SELECT COUNT(*) FROM approval_requests WHERE state = 'pending')::int8,
 		(SELECT COUNT(*) FROM runs r
 		 JOIN workers w ON w.id = r.worker_affinity
-		 WHERE r.status = 'queued'
+		 WHERE (r.status = 'queued'
+		    OR (r.status = 'running'
+		        AND EXISTS (SELECT 1 FROM attempts a
+		                    JOIN node_executions ne ON ne.id = a.node_execution_id
+		                    WHERE ne.run_id = r.id
+		                      AND a.status = 'queued'
+		                      AND a.scheduled_at <= now())))
 		   AND (w.status <> 'online' OR w.active_attempts >= w.capacity))::int8`
 
 // m4SchedulerWorkersSQL is the per-worker load pair the claim predicate

@@ -426,6 +426,63 @@ func TestM4APIStreamSchedulerStatus(t *testing.T) {
 			got, freeRun.ID)
 	}
 
+	// § 5.2's other arm: the advancer moves every queued run to 'running'
+	// on its first pass (contract § 4 step 3), so the honest "still queued"
+	// state materialises as status='running' with ready attempts that
+	// cannot be claimed. A running run whose affinity worker is offline/full
+	// and has a queued attempt (scheduled_at <= now) is counted.
+	advRun, _, err := f.runs.CreateRun(ctx, NewRun{
+		OrganizationID: f.orgID, ProjectID: f.projectID, PipelineID: f.pipelineID,
+		PipelineRevisionID: f.revisionID, RevisionDigest: f.digest, PlanDigest: f.planDigest,
+		PlanSnapshot: json.RawMessage(`{"nodes":[]}`), PoliciesSnapshot: json.RawMessage(`{}`),
+		TriggeredBy: f.userID,
+	})
+	if err != nil {
+		t.Fatalf("CreateRun (advancer arm): %v", err)
+	}
+	// Simulate the advancer: queued → running.
+	if _, err := f.runs.SetRunStatus(ctx, advRun.ID, RunStatusInput{Status: "running"}); err != nil {
+		t.Fatalf("SetRunStatus running: %v", err)
+	}
+	if bound, err := f.runs.SetRunAffinity(ctx, advRun.ID, offlineID, "vol-adv-arm"); err != nil || !bound {
+		t.Fatalf("SetRunAffinity adv run = %v, %v", bound, err)
+	}
+	// Seed a ready queued attempt (the work the affinity worker should take).
+	advNode, err := f.runs.InsertNodeExecution(ctx, NewNodeExecution{
+		RunID: advRun.ID, NodeID: "adv_stuck", Kind: "agent.acp",
+		NodeInstanceKey: "/adv_stuck", ExecutionLocation: "worker",
+	})
+	if err != nil {
+		t.Fatalf("InsertNodeExecution: %v", err)
+	}
+	if _, err := f.runs.SetNodeStatus(ctx, advNode.ID, NodeStatusInput{Status: "ready"}); err != nil {
+		t.Fatalf("SetNodeStatus ready: %v", err)
+	}
+	if _, err := f.runs.QueueAttempt(ctx, NewAttempt{NodeExecutionID: advNode.ID, AttemptNumber: 1}); err != nil {
+		t.Fatalf("QueueAttempt: %v", err)
+	}
+	afterAdv, err := store.SchedulerStatus(ctx)
+	if err != nil {
+		t.Fatalf("SchedulerStatus after advancer arm: %v", err)
+	}
+	if got := afterAdv.QueuedUnbindableRuns - base.QueuedUnbindableRuns; got != 2 {
+		t.Errorf("queued_unbindable_runs after advancer arm delta = %d, want 2"+
+			" (stuckRun queued+offline, advRun running+offline with ready attempt)", got)
+	}
+	// Bring the offline worker back online: the affinity is now satisfiable,
+	// both runs drop from the counter. Only Register (upsert) brings a worker
+	// online (SetStatus refuses it — worker_registry.go:187).
+	if _, err := (&WorkerRegistry{Pool: f.pool, Capacity: 1}).Register(ctx, offlineName, "lab", "contract-test"); err != nil {
+		t.Fatalf("Register (bring online): %v", err)
+	}
+	afterOnline, err := store.SchedulerStatus(ctx)
+	if err != nil {
+		t.Fatalf("SchedulerStatus after worker back online: %v", err)
+	}
+	if got := afterOnline.QueuedUnbindableRuns - base.QueuedUnbindableRuns; got != 0 {
+		t.Errorf("queued_unbindable_runs after worker online delta = %d, want 0 (affinity satisfiable)", got)
+	}
+
 	// The lease-expiration counter is the reconciler's own, injected: a store
 	// wired without one honestly reports 0.
 	if base.LeaseExpirations != 0 {
