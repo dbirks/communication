@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import {
   useAddRepository,
@@ -298,8 +298,19 @@ function ProjectArtifacts({ project }: { project: Project }) {
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
+  const navigate = useNavigate();
   const project = useProject(id);
   const [activeSection, setActiveSection] = useState("#repos");
+  // `SubNav` owns its clicks (deep-link fragments without a jump-cut), so a
+  // route-shaped item navigates here: the two M4 screens live at their own
+  // routes, not in a section this page could hold.
+  const onNavigateSection = (href: string) => {
+    if (href.startsWith("/")) {
+      navigate(href);
+      return;
+    }
+    setActiveSection(href);
+  };
 
   if (project.isPending) return <Spinner label="Loading project" />;
 
@@ -374,8 +385,10 @@ export default function Project() {
         <SubNav
           className="md:sticky md:top-[64px]"
           active={activeSection}
-          onNavigate={setActiveSection}
+          onNavigate={onNavigateSection}
           items={[
+            { href: `/projects/${id}/runs`, label: "Runs" },
+            { href: `/projects/${id}/pipelines`, label: "Pipelines" },
             { href: "#repos", label: "Repositories" },
             { href: "#members", label: "Members" },
             { href: "#conversations", label: "Conversations" },

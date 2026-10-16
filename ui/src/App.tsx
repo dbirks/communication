@@ -9,6 +9,9 @@ import ConversationPage from "./pages/Conversation";
 import NotFound from "./pages/NotFound";
 import Operations from "./pages/Operations";
 import Project from "./pages/Project";
+import ProjectPipelines from "./pages/ProjectRunsPipelines";
+import ProjectRuns from "./pages/ProjectRuns";
+import RunInspector from "./pages/RunInspector";
 import ProjectSettings from "./pages/ProjectSettings";
 import Projects from "./pages/Projects";
 
@@ -67,6 +70,30 @@ export default function App() {
           element={
             <RequireAuth>
               <Artifacts />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/projects/:projectId/runs"
+          element={
+            <RequireAuth>
+              <ProjectRuns />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/projects/:projectId/runs/:runId"
+          element={
+            <RequireAuth>
+              <RunInspector />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/projects/:projectId/pipelines"
+          element={
+            <RequireAuth>
+              <ProjectPipelines />
             </RequireAuth>
           }
         />
