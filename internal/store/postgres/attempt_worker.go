@@ -357,6 +357,25 @@ type planShapeNode struct {
 	// (exit_code/stdout_*) ride in the envelope alongside the payload, so an
 	// author who forbids unknown properties must declare them (§ 4 step 7).
 	DeclaredOutputs any `json:"outputs,omitempty"`
+	// Retry is read only for the one field a worker is allowed to act on
+	// destructively: the compiled `workspacePolicy` (compiler/policy.go, the
+	// same value runtime.RetryPlan reads to answer route 27). Everything else
+	// about retries is the engine's arithmetic and stays opaque here.
+	Retry struct {
+		WorkspacePolicy string `json:"workspacePolicy,omitempty"`
+	} `json:"retry,omitempty"`
+}
+
+// nodeWorkspacePolicy reads one plan node's compiled retry.workspacePolicy
+// (ADR-0023 § 6). An empty answer means the snapshot holds no entry for the
+// node — the caller must treat that as "no destructive policy", never as a
+// guess.
+func (p *planShape) nodeWorkspacePolicy(scope, id string) string {
+	n := p.find(scope, id)
+	if n == nil {
+		return ""
+	}
+	return n.Retry.WorkspacePolicy
 }
 
 // nodeOutputs reads one plan node's declared outputs schema. A nil answer

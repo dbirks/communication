@@ -508,51 +508,29 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid artifact byte backend", slog.String("error", err.Error()))
 		return 2
 	}
-	attemptExecs := worker.AttemptExecutors{
-		// Every wired kind is wrapped: the first attempt of a run prepares
-		// its workspace on this worker's volume and closes ADR-0023 § 4's
-		// one-way affinity door, and an attempt that reaches this worker
-		// while the run belongs to another worker is refused with
-		// workspace.recovery_lost / different_worker rather than cloning a
-		// second copy (contract § 4 step 3).
-		worker.NodeKindProcessExec: &worker.RunWorkspaceExecutor{
-			Inner:   procExec,
-			Prepare: prepareRunWorkspace,
-			Logger:  log,
+	// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
+	// others: a workspace_path publish reads the run tree, so that tree
+	// has to exist first even when this worker only publishes.
+	//
+	// The scan is no longer M3's unit-scoped one. Materialized.Redact
+	// knows only what THIS unit materialized, and a publishing attempt
+	// materializes nothing — so an attempt whose upstream echoed a
+	// node_attempt `env` value into its outputs would have published it
+	// verbatim with redaction_count 0 (17ffa32's honest nil). Now the
+	// scanner reads secret_materializations for every attempt of the run
+	// and re-resolves those versions through the same keyring path the
+	// materializer used: what the run ever held is what the artifact is
+	// scanned for, and a value that cannot be resolved fails the attempt
+	// (sandbox_enforcement_failed) instead of publishing unscanned.
+	artifactPublish := worker.AttemptExecutor(&postgres.ArtifactPublishSecretScan{
+		Publish: &worker.ArtifactPublish{
+			Bytes:      attemptArtifactBytes,
+			Rows:       &postgres.AttemptArtifacts{Pool: pool},
+			Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
+			Logger:     log,
 		},
-		worker.NodeKindAgentACP: &worker.RunWorkspaceExecutor{
-			Inner:   agentTurn,
-			Prepare: prepareRunWorkspace,
-			Logger:  log,
-		},
-		// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
-		// others: a workspace_path publish reads the run tree, so that tree
-		// has to exist first even when this worker only publishes.
-		//
-		// The scan is no longer M3's unit-scoped one. Materialized.Redact
-		// knows only what THIS unit materialized, and a publishing attempt
-		// materializes nothing — so an attempt whose upstream echoed a
-		// node_attempt `env` value into its outputs would have published it
-		// verbatim with redaction_count 0 (17ffa32's honest nil). Now the
-		// scanner reads secret_materializations for every attempt of the run
-		// and re-resolves those versions through the same keyring path the
-		// materializer used: what the run ever held is what the artifact is
-		// scanned for, and a value that cannot be resolved fails the attempt
-		// (sandbox_enforcement_failed) instead of publishing unscanned.
-		worker.NodeKindArtifactPublish: &worker.RunWorkspaceExecutor{
-			Inner: &postgres.ArtifactPublishSecretScan{
-				Publish: &worker.ArtifactPublish{
-					Bytes:      attemptArtifactBytes,
-					Rows:       &postgres.AttemptArtifacts{Pool: pool},
-					Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
-					Logger:     log,
-				},
-				Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
-			},
-			Prepare: prepareRunWorkspace,
-			Logger:  log,
-		},
-	}
+		Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
+	})
 	// § 4 step 8's model.chat is registered ONLY when an endpoint is configured.
 	// With no base URL the kind stays unregistered, so refusalExecutor's honest
 	// "no executor for node kind model.chat on this worker" remains the answer —
@@ -560,13 +538,24 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// somewhere. When it IS configured the endpoint host is logged once at
 	// startup (never the key): this is a new egress path and the operator has to
 	// be able to see where it points (ADR-0024 Security).
+	var modelChat worker.AttemptExecutor
 	if mc := opts.newModelChat(log, pool, unitsSecrets, attemptArtifactBytes); mc != nil {
-		attemptExecs[worker.NodeKindModelChat] = &worker.RunWorkspaceExecutor{
-			Inner:   mc,
-			Prepare: prepareRunWorkspace,
-			Logger:  log,
-		}
+		modelChat = mc
 	}
+	// Every wired kind is wrapped twice: the first attempt of a run prepares
+	// its workspace on this worker's volume and closes ADR-0023 § 4's one-way
+	// affinity door (contract § 4 step 3), and inside that tree a retried
+	// attempt whose compiled policy is restore_checkpoint is reset to its
+	// boundary before the kind launches (ADR-0023 § 6). continue_workspace —
+	// M4's default — passes the second decorator through untouched: no read of
+	// git, no reset, no event.
+	chain, err := newAttemptChain(opts, pool, prepareRunWorkspace, log)
+	if err != nil {
+		stop()
+		log.Error("invalid checkpoint restore wiring", slog.String("error", err.Error()))
+		return 2
+	}
+	attemptExecs := newAttemptExecutors(chain, procExec, agentTurn, artifactPublish, modelChat)
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
@@ -1234,4 +1223,88 @@ func modelChatDetail(s string) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// ---------------------------------------------------------- § 6 restore chain
+
+// attemptChain is the fixed decorator order every launchable node kind
+// travels on this worker:
+//
+//	RunWorkspaceExecutor{Prepare, Inner: CheckpointRestorer{Inner: <kind>}}
+//
+// The order is not cosmetic. ADR-0023 § 6's reset happens *before* anything
+// launches, and only inside a tree § 4 step 3 prepared — so the preparer must
+// run first and the reset must land between it and the kind's exec/launch.
+// One chain value is shared by every kind for the same reason the preparer is
+// shared: the boundary a retried attempt inherits is a fact about the run, and
+// two copies of the resolver would be two chances to disagree about it.
+type attemptChain struct {
+	prepare  worker.RunWorkspacePreparer
+	boundary worker.BoundaryResolver
+	git      worker.RestoreGit
+	log      *slog.Logger
+}
+
+// wrap nests the two decorators around one kind's executor.
+func (c attemptChain) wrap(inner worker.AttemptExecutor) worker.AttemptExecutor {
+	return &worker.RunWorkspaceExecutor{
+		Prepare: c.prepare,
+		Logger:  c.log,
+		Inner: &worker.CheckpointRestorer{
+			Inner:    inner,
+			Boundary: c.boundary,
+			Git:      c.git,
+			Logger:   c.log,
+		},
+	}
+}
+
+// newAttemptChain wires the chain for one worker: § 4 step 3's preparer,
+// § 6's boundary read (postgres — the store type stops here, per AGENTS.md's
+// dependency rule), and the git half (wsgit.Manager, running UNSANDBOXED in
+// this process, which is what § 6 means and what AGENTS.md requires: no
+// Landlock ever wraps the worker's own git plumbing).
+//
+// A git manager this worker cannot build (a refused root path) is NOT a boot
+// failure: the restorer reports the missing seam on the attempts that asked
+// for restore_checkpoint and continue_workspace — M4's default, 100 % of the
+// runs today — keeps running exactly as it did before this arm existed.
+func newAttemptChain(opts workerOptions, pool *pgxpool.Pool, prepare worker.RunWorkspacePreparer,
+	log *slog.Logger) (attemptChain, error) {
+	mgr, err := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	if err != nil {
+		log.Warn("checkpoint restore has no git manager: restore_checkpoint attempts will be refused, "+
+			"continue_workspace is unaffected", slog.String("error", err.Error()))
+		return attemptChain{prepare: prepare, boundary: newBoundaryResolver(pool), log: log}, nil
+	}
+	return attemptChain{prepare: prepare, boundary: newBoundaryResolver(pool), git: mgr, log: log}, nil
+}
+
+// newBoundaryResolver adapts the store's read to internal/worker's func seam.
+func newBoundaryResolver(pool *pgxpool.Pool) worker.BoundaryResolver {
+	runs := &postgres.RunWorkspaces{Pool: pool}
+	return func(ctx context.Context, c worker.AttemptClaim) (worker.RestoreBoundary, bool, error) {
+		return runs.RestoreBoundary(ctx, c.RunID, c.NodeExecutionID)
+	}
+}
+
+// newAttemptExecutors routes every wired kind through the same chain, so no
+// kind can be added later that skips the reset it must not skip, and no kind
+// is wrapped by a second, drifting copy of it.
+//
+// artifact.publish is wrapped like the rest on purpose: a retried publish that
+// its author marked restore_checkpoint publishes what the BOUNDARY holds, not
+// what the interrupted attempt left in the tree. model.chat registers only
+// when an endpoint is configured — a worker that never promised egress must
+// not quietly start sending content somewhere (ADR-0024 Security).
+func newAttemptExecutors(chain attemptChain, procExec, agentTurn, artifactPublish, modelChat worker.AttemptExecutor) worker.AttemptExecutors {
+	execs := worker.AttemptExecutors{
+		worker.NodeKindProcessExec:     chain.wrap(procExec),
+		worker.NodeKindAgentACP:        chain.wrap(agentTurn),
+		worker.NodeKindArtifactPublish: chain.wrap(artifactPublish),
+	}
+	if modelChat != nil {
+		execs[worker.NodeKindModelChat] = chain.wrap(modelChat)
+	}
+	return execs
 }
