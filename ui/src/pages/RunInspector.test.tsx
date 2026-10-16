@@ -206,6 +206,42 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     );
   });
 
+  it("shows the gate card for a node with no attempts at all", async () => {
+    // A control-plane approval gate never has attempts (attempt_count=0), so
+    // the pane must not spin on "Reading attempts…" forever — the decision is
+    // the only thing there to read.
+    mountRun("", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [{ ...wireApproval, node_execution_id: WIRE_NODE_APPROVE }],
+        },
+      },
+      {
+        path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`,
+        body: { ...wireNodeDetail, attempts: [], checkpoint: null },
+      },
+    ]);
+
+    expect(await screen.findByTestId("approval-summary")).toBeTruthy();
+    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.queryByTestId("run-detail-pending")).toBeNull();
+    expect(screen.queryByTestId("attempt-status")).toBeNull();
+  });
+
+  it("says so honestly for a loaded node with no attempts and no gate", async () => {
+    mountRun(`?node=${WIRE_NODE_PLAN}`, [
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: { ...wireNodeDetail, attempts: [] } },
+    ]);
+
+    const line = await screen.findByTestId("run-detail-no-attempts");
+    expect(line.textContent).toContain("/plan");
+    expect(line.textContent).toContain("succeeded");
+    expect(screen.queryByTestId("run-detail-pending")).toBeNull();
+  });
+
   it("a graph click on a scoped node fills the pane for that iteration", async () => {
     const { requests } = mountRun();
     await screen.findByTestId("definition-graph");

@@ -862,6 +862,39 @@ function RunNodeDetail({
     .map(viewApproval)
     .find((approval) => approval.node_execution_id === nodeId);
 
+  /** One copy of the gate card: a control-plane gate has no attempts, so both
+   * the with-attempt and the no-attempt paths below render this same block. */
+  const gateCard = gate ? (
+    <ApprovalCard
+      approval={gate}
+      canDecide={canDecide(
+        gate.approver_roles,
+        gate.approver_user_ids,
+        me.data,
+        project.data?.my_role,
+      )}
+      pending={decide.isPending}
+      conflictError={conflict}
+      onDecide={({ approvalId, decision, comments, version }) =>
+        decide.mutate(
+          { approvalId, body: { decision, version, ...(comments ? { comments } : {}) } },
+          {
+            onSuccess: () => setConflict(null),
+            onError: (error) => {
+              if (approvalConflictOf(error)) {
+                adoptApprovalConflict(queryClient, error);
+                setConflict("someone decided this gate first — what you see now is the winner's");
+              } else {
+                setConflict(problemOf(error).title);
+              }
+            },
+          },
+        )
+      }
+      headingId={`run-approval-heading-${gate.id}`}
+    />
+  ) : null;
+
   if (!node || !nodeId) {
     return (
       <p className="font-mono text-[11px] text-muted" data-testid="run-detail-none">
@@ -873,11 +906,27 @@ function RunNodeDetail({
   if (detail.isError) {
     return <ProblemBanner error={detail.error} fallback="This node execution could not be read." />;
   }
-  if (detail.isPending || !lastAttempt) {
+  // A gate has no attempts, so an absent attempt is a fact, not a loading
+  // state: only the live queries hold the pane. Approvals are checked too so a
+  // gate does not flash "No attempts yet" before its card can appear.
+  if (detail.isPending || (!lastAttempt && approvalsQuery.isPending)) {
     return (
       <p className="font-mono text-[11px] text-muted" data-testid="run-detail-pending">
         Reading attempts for <code className="font-mono">{node.node_instance_key}</code>…
       </p>
+    );
+  }
+  if (!lastAttempt) {
+    return (
+      <div className="space-y-[10px]">
+        {gateCard}
+        {gate ? null : (
+          <p className="font-mono text-[11px] text-muted" data-testid="run-detail-no-attempts">
+            No attempts yet for <code className="font-mono">{node.node_instance_key}</code> — status{" "}
+            {node.status}
+          </p>
+        )}
+      </div>
     );
   }
   return (
@@ -890,38 +939,7 @@ function RunNodeDetail({
         work={<AttemptAgentWork attempt={lastAttempt} projectId={projectId} node={node} />}
         headingId="run-attempt-heading"
       />
-      {gate ? (
-        <ApprovalCard
-          approval={gate}
-          canDecide={canDecide(
-            gate.approver_roles,
-            gate.approver_user_ids,
-            me.data,
-            project.data?.my_role,
-          )}
-          pending={decide.isPending}
-          conflictError={conflict}
-          onDecide={({ approvalId, decision, comments, version }) =>
-            decide.mutate(
-              { approvalId, body: { decision, version, ...(comments ? { comments } : {}) } },
-              {
-                onSuccess: () => setConflict(null),
-                onError: (error) => {
-                  if (approvalConflictOf(error)) {
-                    adoptApprovalConflict(queryClient, error);
-                    setConflict(
-                      "someone decided this gate first — what you see now is the winner's",
-                    );
-                  } else {
-                    setConflict(problemOf(error).title);
-                  }
-                },
-              },
-            )
-          }
-          headingId={`run-approval-heading-${gate.id}`}
-        />
-      ) : null}
+      {gateCard}
     </div>
   );
 }
