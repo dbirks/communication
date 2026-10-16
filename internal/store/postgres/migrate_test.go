@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,133 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// TestMain gives this test binary its own Postgres rather than letting every
+// `go test` run share COMMUNICATION_TEST_DATABASE_URL and each other's
+// cluster-global transaction watermark (migStartEmbeddedCluster), falling back
+// to a per-PID scratch database in the shared cluster, and only then to the
+// shared URL itself. Without this, the suite's own TRUNCATE fixtures and the
+// transactions the gap-safety tests deliberately hold open corrupt any other
+// run overlapping in the same cluster: the events tests' baseline reads come
+// back empty while another session pins the snapshot watermark below their
+// just-committed row.
+func TestMain(m *testing.M) {
+	shared := os.Getenv("COMMUNICATION_TEST_DATABASE_URL")
+	if shared != "" {
+		if url, stop := migStartEmbeddedCluster(); url != "" {
+			if err := os.Setenv("COMMUNICATION_TEST_DATABASE_URL", url); err != nil {
+				panic("postgres test isolation: setenv: " + err.Error())
+			}
+			code := m.Run()
+			stop()
+			os.Exit(code)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if db, err := migIsolateDatabase(ctx, shared); err == nil {
+			if err := os.Setenv("COMMUNICATION_TEST_DATABASE_URL", db.url); err != nil {
+				panic("postgres test isolation: setenv: " + err.Error())
+			}
+			code := m.Run()
+			db.drop(shared)
+			os.Exit(code)
+		}
+	}
+	os.Exit(m.Run())
+}
+
+// migStartEmbeddedCluster boots a throwaway Postgres cluster (initdb into a
+// temp dir, started on a free port over a temp-dir socket, trust auth) and
+// returns its URL plus a stopper, or "" when the server tools are unusable.
+// It exists because the journal reader's gap-safety watermark is not merely
+// database-global but CLUSTER-global: one session holding an open writing
+// transaction anywhere in the cluster keeps pg_snapshot_xmin behind every
+// later commit, so a second `go test` run of this suite (which by design
+// holds transactions open for half a second at a time) makes a first run's
+// journal reads return nothing — the exact cross-test interference this suite
+// suffered. Only a cluster of its own gives each run a watermark no one else
+// can pin. Failure to boot is not fatal: the caller falls back to a scratch
+// database, then to the shared URL.
+func migStartEmbeddedCluster() (string, func()) {
+	bin, err := exec.LookPath("initdb")
+	if err != nil {
+		return "", nil
+	}
+	pgctl, err := exec.LookPath("pg_ctl")
+	if err != nil {
+		return "", nil
+	}
+	dir, err := os.MkdirTemp("", "comm-pgtest-*")
+	if err != nil {
+		return "", nil
+	}
+	data := dir + "/data"
+	if out, err := exec.Command(bin, "-D", data, "-U", "postgres", "-A", "trust", "--no-sync").CombinedOutput(); err != nil {
+		_ = os.RemoveAll(dir)
+		_, _ = os.Stderr.WriteString("postgres tests: initdb failed, using the shared database\n" + string(out) + "\n")
+		return "", nil
+	}
+	for port := 30000 + (os.Getpid() % 20000); port < 60000; port++ {
+		cmd := exec.Command(pgctl, "-D", data, "-l", dir+"/log", "-o",
+			fmt.Sprintf("-p %d -k %s -c listen_addresses=127.0.0.1 -c fsync=off", port, dir),
+			"-w", "-t", "30", "start")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			_ = out
+			continue
+		}
+		url := fmt.Sprintf("postgres://postgres@127.0.0.1:%d/postgres", port)
+		return url, func() {
+			_ = exec.Command(pgctl, "-D", data, "-m", "immediate", "stop").Run()
+			_ = os.RemoveAll(dir)
+		}
+	}
+	_ = os.RemoveAll(dir)
+	_, _ = os.Stderr.WriteString("postgres tests: no free port for an embedded cluster, using the shared database\n")
+	return "", nil
+}
+
+// migTestDatabase is a per-run scratch database; drop is best-effort — an
+// undropped database leaves the shared instance no worse than a crashed run
+// would, and the next run's PID differs.
+type migTestDatabase struct {
+	url, name string
+}
+
+func migIsolateDatabase(ctx context.Context, sharedURL string) (*migTestDatabase, error) {
+	admin, err := pgx.Connect(ctx, sharedURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	name := fmt.Sprintf("comm_test_%d", os.Getpid())
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		return nil, err
+	}
+	u, err := neturl.Parse(sharedURL)
+	if err != nil {
+		return nil, err
+	}
+	u.Path = "/" + name
+	return &migTestDatabase{url: u.String(), name: name}, nil
+}
+
+func (d *migTestDatabase) drop(sharedURL string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, sharedURL)
+	if err != nil {
+		return
+	}
+	defer func() { _ = admin.Close(ctx) }()
+	// FORCE needs PG13+; terminate first so even older servers see no
+	// connected users, then try FORCE and fall back to a plain drop.
+	_, _ = admin.Exec(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, d.name)
+	stmt := "DROP DATABASE IF EXISTS " + pgx.Identifier{d.name}.Sanitize()
+	if _, err := admin.Exec(ctx, stmt+" WITH (FORCE)"); err != nil {
+		_, _ = admin.Exec(ctx, stmt)
+	}
+}
 
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()

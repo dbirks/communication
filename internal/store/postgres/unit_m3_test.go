@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,22 @@ func u3Setup(t *testing.T) *u3Fixture {
 	t.Helper()
 	f := &u3Fixture{secFixture: secSetup(t)}
 
-	f.root = t.TempDir()
+	// Must live under the user cache dir: ADR-0019 P9 rejects /tmp roots, so
+	// t.TempDir() is not an option. MkdirTemp keeps each test's root distinct,
+	// including across `go test` runs of this package in parallel.
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cacheDir = os.Getenv("HOME")
+	}
+	lab := filepath.Join(cacheDir, "communication-lab")
+	if err := os.MkdirAll(lab, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.root, err = os.MkdirTemp(lab, "m3-unit-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(f.root) })
 	f.agentRoot = filepath.Join(f.root, "work")
 	mustExec(t, f.pool, `UPDATE workspaces SET root_path = $2 WHERE id = $1::uuid`, f.wsA, f.root)
 
@@ -445,7 +461,10 @@ func u3ArtifactRoot(t *testing.T) string {
 	if err != nil {
 		base = os.Getenv("HOME")
 	}
-	dir := filepath.Join(base, "communication-lab", "m3-unit-artifact-tests")
+	// PID-suffixed: another `go test` of this package running concurrently
+	// would otherwise have its cleanup RemoveAll wipe this run's live spool
+	// mid-Put (and the rejection rule below still forbids /tmp roots).
+	dir := filepath.Join(base, "communication-lab", fmt.Sprintf("m3-unit-artifact-tests-%d", os.Getpid()))
 	if strings.HasPrefix(dir, "/tmp/") {
 		t.Fatalf("artifact root %q under /tmp is forbidden by ADR-0019 P9", dir)
 	}
