@@ -33,7 +33,12 @@ function row(overrides: Partial<NodeExecutionSummary>): NodeExecutionSummary {
 }
 
 const fanOut: NodeExecutionSummary[] = [
-  row({ node_id: "verify_each", kind: "for_each", node_instance_key: "/verify_each", status: "running" }),
+  row({
+    node_id: "verify_each",
+    kind: "for_each",
+    node_instance_key: "/verify_each",
+    status: "running",
+  }),
   row({
     node_id: "check_module",
     node_instance_key: "/verify_each[14]/check_module",
@@ -42,7 +47,11 @@ const fanOut: NodeExecutionSummary[] = [
   }),
 ];
 const loop: NodeExecutionSummary[] = [
-  row({ node_id: "build_until_verified", kind: "until", node_instance_key: "/build_until_verified" }),
+  row({
+    node_id: "build_until_verified",
+    kind: "until",
+    node_instance_key: "/build_until_verified",
+  }),
   row({
     node_id: "implement",
     node_instance_key: "/build_until_verified[2]/implement",
@@ -87,9 +96,7 @@ describe("NodePaneHeader", () => {
     );
     // The identity line carries the run's own name for the place — the wire
     // serves no human title, so none is invented.
-    expect(screen.getByTestId("node-pane-key").textContent).toBe(
-      "/verify_each[14]/check_module",
-    );
+    expect(screen.getByTestId("node-pane-key").textContent).toBe("/verify_each[14]/check_module");
     expect(screen.getByTestId("node-pane-status").textContent).toContain("running");
   });
 

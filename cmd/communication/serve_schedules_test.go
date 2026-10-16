@@ -105,7 +105,7 @@ func TestServeStackStartsScheduleTickerOnlyWhenOn(t *testing.T) {
 		t.Cleanup(pool.Close)
 
 		started := make(chan struct{}, 1)
-		var logs bytes.Buffer
+		var logs syncBuffer
 		_, closeStack, err := serveStack(serveStackDeps{
 			Pool:                 pool,
 			DatabaseURL:          "postgres://invalid.invalid:5432/communication",
@@ -154,6 +154,14 @@ type fakeTicker struct {
 	done chan struct{}
 }
 
+// calls reads the beat count under the same lock TickSchedules updates it
+// with; a bare f.hits read from the test goroutine races the loop's last beat.
+func (f *fakeTicker) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hits
+}
+
 func (f *fakeTicker) TickSchedules(context.Context, time.Time) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -176,7 +184,7 @@ func (f *fakeTicker) TickSchedules(context.Context, time.Time) (int, error) {
 }
 
 func TestRunScheduleTickerLoggingAndErrorRetry(t *testing.T) {
-	var logs bytes.Buffer
+	var logs syncBuffer
 	log := slog.New(slog.NewJSONHandler(&logs, nil))
 	f := &fakeTicker{res: []int{2, -1, 0, 1}, err: context.DeadlineExceeded, done: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -211,8 +219,8 @@ func TestRunScheduleTickerLoggingAndErrorRetry(t *testing.T) {
 			t.Errorf("a zero-fire beat must not log INFO: %s", text)
 		}
 	}
-	if f.hits < 4 {
-		t.Errorf("the loop stopped after %d beats; an error must not end it", f.hits)
+	if hits := f.calls(); hits < 4 {
+		t.Errorf("the loop stopped after %d beats; an error must not end it", hits)
 	}
 }
 

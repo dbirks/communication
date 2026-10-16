@@ -29,12 +29,7 @@ const ACTIVE_STATES: readonly RunStatus[] = ["queued", "preparing", "running"];
 const WAITING_STATES: readonly RunStatus[] = ["waiting_human", "paused"];
 /** 4a's first lens: a person owes an answer, or the run broke and nobody has
  * cleaned it up. A union of states the wire already reports — never a guess. */
-const ATTENTION_STATES: readonly RunStatus[] = [
-  "waiting_human",
-  "paused",
-  "failed",
-  "interrupted",
-];
+const ATTENTION_STATES: readonly RunStatus[] = ["waiting_human", "paused", "failed", "interrupted"];
 
 export type RunsFilter = "attention" | "active" | "waiting" | "all";
 

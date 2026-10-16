@@ -120,7 +120,7 @@ func TestServeStackStartsPipelineDriverOnlyWhenOn(t *testing.T) {
 		t.Cleanup(pool.Close)
 
 		started := make(chan struct{}, 1)
-		var logs bytes.Buffer
+		var logs syncBuffer
 		handler, closeStack, err := serveStack(serveStackDeps{
 			Pool:                 pool,
 			DatabaseURL:          "postgres://invalid.invalid:5432/communication",

@@ -455,7 +455,7 @@ export default function RunInspector() {
         className="min-w-0 border-t border-line bg-surface px-3 py-3 xl:border-l xl:border-t-0"
         data-testid="run-inspector-detail"
       >
-      <RunNodeDetail
+        <RunNodeDetail
           runId={runId}
           projectId={projectId}
           node={selectedNode}
@@ -987,11 +987,7 @@ function RunNodeDetail({
   }
   return (
     <div className="space-y-[10px]">
-      <NodePaneHeader
-        node={node}
-        nodes={nodes}
-        attemptNumber={lastAttempt.attempt_number}
-      />
+      <NodePaneHeader node={node} nodes={nodes} attemptNumber={lastAttempt.attempt_number} />
       <AttemptDetail
         attempt={lastAttempt}
         node={node}
