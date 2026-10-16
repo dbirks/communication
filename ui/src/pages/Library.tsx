@@ -53,9 +53,13 @@ import {
   viewPipelineSummary,
   viewRevisionSummary,
 } from "../api/m4view";
-import type { AssignmentList } from "../api/types";
+import type { Assignment, AssignmentList, Project } from "../api/types";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
-import { hasLibraryRole, LIBRARY_AUTHORING_HINT } from "../lib/pipeline/authoring";
+import {
+  hasLibraryRole,
+  LIBRARY_AUTHORING_HINT,
+  LIBRARY_ROLE_LABEL,
+} from "../lib/pipeline/authoring";
 import {
   PIPELINE_TEMPLATES,
   templateById,
@@ -118,6 +122,10 @@ export function LibraryPage() {
           onOpen={(pipeline) => navigate(`/library/${pipeline.id}`)}
         />
       ) : null}
+      {/* Below the definitions, never above them: the templates are the same
+          vetted samples the authoring form offers, and a reader without the
+          library role has no picker to find them behind. */}
+      <PipelineTemplateList canCreate={canAuthor} />
     </div>
   );
 }
@@ -292,6 +300,67 @@ function NewPipelineForm() {
           </Button>
         </div>
       ) : null}
+    </Panel>
+  );
+}
+
+/**
+ * The vetted starting points, shown read-only.
+ *
+ * Before this panel the only place a template was mentioned was the "start
+ * from" select inside `NewPipelineForm`, which is rendered for the library
+ * role alone — so an org member looking at `/library` had no way to learn that
+ * two working samples exist, and no way to name where they came from. The list
+ * is the same `PIPELINE_TEMPLATES` the authoring form offers (one source of the
+ * truth, one drift risk removed), and the same authoring predicate decides
+ * whether it is an introduction or a dead end: `canCreate` says pick one above,
+ * everyone else is told creating from one needs the library role.
+ *
+ * Nothing here writes. A template is a document waiting to be posted into a
+ * draft (`07` "Sample pipelines"); the two YAMLs are the byte-identical copies
+ * of `docs/samples/home/` that Go compiles in CI, which is what makes them
+ * worth naming.
+ */
+function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
+  return (
+    <Panel
+      title="PIPELINE TEMPLATES"
+      headingId="library-templates-heading"
+      headingLevel={2}
+      meta={
+        <span className="font-mono text-[10px] font-normal" data-testid="library-templates-note">
+          {canCreate
+            ? "New pipeline above starts a draft from one of these"
+            : `read-only — creating a pipeline from one needs ${LIBRARY_ROLE_LABEL}`}
+        </span>
+      }
+    >
+      <ul className="divide-y divide-line" data-testid="library-templates">
+        {PIPELINE_TEMPLATES.map((template) => (
+          <li
+            key={template.id}
+            className="px-[10px] py-[8px]"
+            data-testid={`library-template-${template.id}`}
+          >
+            <span className="flex flex-wrap items-baseline gap-[6px]">
+              <span className="text-[12.5px] font-semibold">{template.label}</span>
+              <span className="font-mono text-[10px] text-faint">
+                {template.documentYaml ? "docs/samples/home" : "no document posted"}
+              </span>
+            </span>
+            <span className="block text-[12px] text-muted">{template.description}</span>
+            {canCreate ? null : (
+              // The exact verb that is missing, on the row it would apply to.
+              <span
+                className="block font-mono text-[10px]"
+                data-testid={`library-template-${template.id}-needs-role`}
+              >
+                needs {LIBRARY_ROLE_LABEL} to create
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
     </Panel>
   );
 }
@@ -668,8 +737,20 @@ function AssignToProjectPanel({
   const listsLoaded =
     maintainerProjects.length > 0 && assignmentResults.every((result) => result.data !== undefined);
   // Nothing left to assign: the honest end of the form, not a select with no
-  // options and a Confirm that can never enable.
+  // options and a Confirm that can never enable. It still names every project
+  // and its state, because "already assigned" without saying *where* is the
+  // answer that told M5 QA nothing about the assignment they could see.
   const nothingToAssign = open && listsLoaded && candidates.length === 0;
+
+  /** Per-project assignment state, read off the lists that have arrived. */
+  const states = maintainerProjects.map((project, index) => {
+    const list = assignmentResults[index]?.data;
+    return {
+      project,
+      loaded: list !== undefined,
+      assignment: list?.assignments.find((a) => a.pipeline_id === pipelineId) ?? null,
+    };
+  });
 
   // Resolve the newest published revision digest → uuid (route 13). Armed only
   // while the form is open and a project is chosen.
@@ -716,16 +797,19 @@ function AssignToProjectPanel({
 
   if (nothingToAssign && !assignedName) {
     return (
-      <AssignDeadEnd headingId="assign-every-heading" testid="assign-every-project">
-        Already assigned to every project you maintain —{" "}
-        <Link
-          to="/"
-          className="font-mono text-[11.5px] text-accent-text"
-          data-testid="assign-projects-link"
-        >
-          your projects
-        </Link>
-      </AssignDeadEnd>
+      <Panel title="ASSIGN TO A PROJECT" headingId="assign-every-heading" headingLevel={2}>
+        <p className="p-[10px] text-[12.5px]" data-testid="assign-every-project">
+          Already assigned to every project you maintain —{" "}
+          <Link
+            to="/"
+            className="font-mono text-[11.5px] text-accent-text"
+            data-testid="assign-projects-link"
+          >
+            your projects
+          </Link>
+        </p>
+        <AssignProjectStateList states={states} newestPublishedDigest={newestPublishedDigest} />
+      </Panel>
     );
   }
 
@@ -765,6 +849,14 @@ function AssignToProjectPanel({
         ) : null}
         {assignmentResults.some((result) => result.isPending) ? (
           <Spinner label="Checking which projects already have this pipeline" />
+        ) : null}
+        {maintainerProjects.length > 0 ? (
+          <AssignProjectStateList
+            states={states}
+            newestPublishedDigest={newestPublishedDigest}
+            chosenProjectId={projectId}
+            onPick={(picked) => setProjectId(picked)}
+          />
         ) : null}
         {maintainerProjects.length > 0 ? (
           <Field
@@ -836,6 +928,72 @@ function AssignToProjectPanel({
         {create.isError ? <FormError error={create.error} testid="assign-error" /> : null}
       </form>
     </Panel>
+  );
+}
+
+/**
+ * One row per project the caller maintains, saying what it pins today.
+ *
+ * The assign form used to answer "is it already assigned?" by hiding the
+ * projects that were — a reader could not see the assignment they were looking
+ * for, and an all-assigned caller saw a sentence about a set they could not
+ * inspect (`lib | polish`). This is that set, stated per project: assigned (with
+ * the pin the project actually runs) or not assigned (with the row's pick
+ * feeding the existing form below). No new write path: `onPick` only chooses the
+ * project the form posts for.
+ */
+function AssignProjectStateList({
+  states,
+  newestPublishedDigest,
+  chosenProjectId = null,
+  onPick,
+}: {
+  states: {
+    project: Project;
+    loaded: boolean;
+    assignment: Assignment | null;
+  }[];
+  /** The revision this panel would pin, so an older pin can say so. */
+  newestPublishedDigest: string;
+  chosenProjectId?: string | null;
+  onPick?: (projectId: string) => void;
+}) {
+  return (
+    <ul className="divide-y divide-line border-y border-line" data-testid="assign-project-states">
+      {states.map(({ project, loaded, assignment }) => (
+        <li
+          key={project.id}
+          className="flex flex-wrap items-center gap-[6px] px-[10px] py-[7px]"
+          data-testid={`assign-project-state-${project.id}`}
+        >
+          <span className="text-[12.5px] font-semibold">{project.name}</span>
+          <span
+            className="font-mono text-[10.5px]"
+            data-testid={`assign-project-pin-${project.id}`}
+          >
+            {assignment
+              ? `assigned · pins ${assignment.pinned_version_label ?? `r${shortDigest(assignment.pinned_revision_digest)}`}${
+                  assignment.pinned_revision_digest === newestPublishedDigest
+                    ? " (newest published)"
+                    : " (an older revision)"
+                }${assignment.enabled ? "" : " · disabled"}`
+              : loaded
+                ? "not assigned"
+                : "checking…"}
+          </span>
+          {!assignment && loaded && onPick ? (
+            <Button
+              variant="secondary"
+              compact
+              data-testid={`assign-pick-${project.id}`}
+              onClick={() => onPick(project.id)}
+            >
+              {chosenProjectId === project.id ? "picked — confirm below" : "Assign here"}
+            </Button>
+          ) : null}
+        </li>
+      ))}
+    </ul>
   );
 }
 

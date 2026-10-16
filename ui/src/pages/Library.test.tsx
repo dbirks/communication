@@ -258,6 +258,66 @@ describe("/library", () => {
     // The form is ready for the next slug.
     expect((screen.getByTestId("library-new-slug-input") as HTMLInputElement).value).toBe("");
   });
+
+  // M5 QA (`lib | polish`): the only place a template was ever mentioned was
+  // the "start from" select inside `NewPipelineForm`, which is rendered for the
+  // library role alone — so an org member could not learn the samples exist,
+  // let alone where they come from. The list is now its own panel, and the one
+  // authoring predicate decides whether it reads as an invitation or a refusal.
+  describe("template discoverability", () => {
+    const member: Me = { ...meFixture, is_org_admin: false };
+
+    it("lists the vetted starting points read-only for a member who cannot create", async () => {
+      const { requests } = mount("/library", [{ path: "/api/v1/me", body: member }]);
+
+      const list = await screen.findByTestId("library-templates");
+      expect(within(list).getByText("Plan with approval")).toBeTruthy();
+      expect(within(list).getByText("Security review")).toBeTruthy();
+      expect(within(list).getByText("Blank")).toBeTruthy();
+      // Named where they live, not just what they are called.
+      expect(within(list).getByTestId("library-template-plan-with-approval").textContent).toContain(
+        "docs/samples/home",
+      );
+      // The reason the picker is missing, in the page's own vocabulary — and
+      // only once `me` has been read: loading is not authoring.
+      await waitFor(
+        () =>
+          expect(screen.getByTestId("library-templates-note").textContent).toContain(
+            "needs the library role",
+          ),
+        settled,
+      );
+      // Each row says which verb is missing, not just the panel.
+      expect(
+        within(list).getByTestId("library-template-plan-with-approval-needs-role").textContent,
+      ).toContain("needs the library role to create");
+      // Reading the list is not authoring: no form, and no write attempted.
+      expect(screen.queryByTestId("library-new-pipeline")).toBeNull();
+      expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
+    });
+
+    it("points an admin at the picker rather than repeating a refusal they do not need", async () => {
+      mount("/library");
+
+      const list = await screen.findByTestId("library-templates");
+      await waitFor(
+        () =>
+          expect(screen.getByTestId("library-templates-note").textContent).toContain(
+            "New pipeline above",
+          ),
+        settled,
+      );
+      // An admin is never handed the refusal they do not need.
+      expect(screen.queryAllByTestId(/-needs-role$/)).toHaveLength(0);
+      // The same list the picker offers — one source, not a second copy that can drift.
+      expect(within(list).getAllByTestId(/^library-template-/)).toHaveLength(
+        PIPELINE_TEMPLATES.length,
+      );
+      expect(within(list).getByTestId("library-template-blank").textContent).toContain(
+        "no document posted",
+      );
+    });
+  });
 });
 
 describe("/library/:pipelineId", () => {
@@ -585,6 +645,105 @@ describe("/library/:pipelineId", () => {
       // Not the form with a candidate-less select behind it.
       expect(screen.queryByTestId("assign-project-select")).toBeNull();
       expect(screen.getByTestId("assign-projects-link").getAttribute("href")).toBe("/");
+      // …but the sentence is not the whole answer: the project that pins it, and
+      // what it pins, are stated (`lib | polish`: an existing assignment was
+      // invisible).
+      expect(
+        screen.getByTestId(`assign-project-pin-${maintainerProject2.id}`).textContent,
+      ).toContain("assigned");
+      expect(
+        screen.getByTestId(`assign-project-pin-${maintainerProject2.id}`).textContent,
+      ).toContain("7.0.0");
+    });
+
+    it("states each maintained project's assignment state, not just the assignable ones", async () => {
+      mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture, maintainerProject2, viewerProject] },
+        },
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: wireAssignmentList },
+        { path: secondProjectPath, body: emptyAssignments },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      await screen.findByTestId("assign-project-states");
+
+      // Widgets is not hidden for having the pin — it says what it runs.
+      const assigned = screen.getByTestId(`assign-project-pin-${wireProjectId}`);
+      expect(assigned.textContent).toContain("assigned");
+      expect(assigned.textContent).toContain("7.0.0");
+      expect(assigned.textContent).toContain("newest published");
+      expect(screen.queryByTestId(`assign-pick-${wireProjectId}`)).toBeNull();
+      // Gadgets is offered, with the action that assigns it.
+      expect(
+        screen.getByTestId(`assign-project-pin-${maintainerProject2.id}`).textContent,
+      ).toContain("not assigned");
+      expect(screen.getByTestId(`assign-pick-${maintainerProject2.id}`).textContent).toContain(
+        "Assign here",
+      );
+      // A project the caller only views is not hers to assign, and is not listed.
+      expect(screen.queryByTestId(`assign-project-states-${viewerProject.id}`)).toBeNull();
+      expect(
+        within(screen.getByTestId("assign-project-states")).getAllByTestId(/assign-project-state-/),
+      ).toHaveLength(2);
+    });
+
+    it("picking a project from its state row arms the existing assign action", async () => {
+      const createPath = `/api/v1/projects/${maintainerProject2.id}/assignments`;
+      const { requests } = mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture, maintainerProject2, viewerProject] },
+        },
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: wireAssignmentList },
+        { path: secondProjectPath, body: emptyAssignments },
+        {
+          path: createPath,
+          method: "POST",
+          status: 201,
+          body: { ...wireAssignmentList.assignments[0], project_id: maintainerProject2.id },
+        },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      fireEvent.click(await screen.findByTestId(`assign-pick-${maintainerProject2.id}`));
+
+      // The row chooses the project the form posts for — one action, one write.
+      expect((screen.getByTestId("assign-project-select") as HTMLSelectElement).value).toBe(
+        maintainerProject2.id,
+      );
+      await waitFor(
+        () =>
+          expect((screen.getByTestId("assign-confirm") as HTMLButtonElement).disabled).toBe(false),
+        settled,
+      );
+      fireEvent.click(screen.getByTestId("assign-confirm"));
+      await waitFor(
+        () => expect(requestsTo(requests, createPath, "POST")).toHaveLength(1),
+        settled,
+      );
+      const body = JSON.parse(requestsTo(requests, createPath, "POST")[0].body ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      expect(body.pipeline_id).toBe(WIRE_PIPELINE_ID);
+    });
+
+    it("does not claim a project whose assignments could not be read", async () => {
+      mount(detail, [
+        { path: "/api/v1/projects", body: { items: [maintainerProject2] } },
+        {
+          path: secondProjectPath,
+          status: 500,
+          body: { title: "Internal Server Error", status: 500 },
+        },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      // Neither "assigned" nor "not assigned" — the read failed, so the row says
+      // it is checking rather than guessing the project's state.
+      expect(
+        (await screen.findByTestId(`assign-project-pin-${maintainerProject2.id}`)).textContent,
+      ).toContain("checking");
+      expect(screen.queryByTestId(`assign-pick-${maintainerProject2.id}`)).toBeNull();
     });
   });
 });
