@@ -19,7 +19,11 @@
 # What it seeds, in order:
 #   1. lab users via the mock IdP form (e2e_m3_exit.py login()'s exact shape:
 #      /auth/login?return_to -> IdP form POST (username + claims) -> callback
-#      -> /api/v1/me; cookie jar per user under the probe cache dir)
+#      -> /api/v1/me; cookie jar per user under the probe cache dir).
+#      "admin" is the lab's bootstrap ORG ADMIN (compose.yml
+#      COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS) and is the only identity holding
+#      the library role, so step 6's library calls run as admin; alice must
+#      stay a plain project maintainer for gate C9c.
 #   2. project m4-exit (alice creates -> implicit maintainer) + members:
 #      bob contributor, carol dan maintainers (C9b/c/d arms)
 #   3. repository app -> file:///srv/m4/fixtures/app.git (e2e/m4/make_fixture_repo.sh)
@@ -31,7 +35,9 @@
 #      lifecycle=node_attempt
 #   6. pipeline.yaml documents 1-3 (agent variant, deterministic twin, C8 child):
 #      draft -> validate (errors abort loudly, verbatim) -> publish (revision_digest
-#      and plan_digest captured from the response) -> project assignment
+#      and plan_digest captured from the response) -> project assignment.
+#      The library calls (create/draft/validate/publish + their lookups) are
+#      admin-only (requireLibraryRole); the assignment stays project-scoped as alice.
 #   7. POST a run of the agent variant AND of the twin (fanout=false so C1's key
 #      set is clean; C8 arms re-POST with fanout=true against the same revision —
 #      runs are contributor+ and the Idempotency-Key shape makes re-seeds replay 200)
@@ -246,14 +252,14 @@ split_docs() {
     done
 }
 
-seed_pipeline() { # seed_pipeline <slug> <docfile>
+seed_pipeline() { # seed_pipeline <slug> <docfile> — library calls run as admin (org admin holds the library role; see compose.yml BOOTSTRAP_ADMIN_SUBJECTS), the project assignment as alice
     local slug="$1" docfile="$2" body draft version vd
-    req alice POST /api/v1/pipelines \
+    req admin POST /api/v1/pipelines \
         "{\"slug\":\"$slug\",\"display_name\":\"$slug\",\"description\":\"M4 exit seed pipeline (docs/compatibility/probes/m4/pipeline.yaml)\"}"
     if ok 201 || ok 409; then
         if ok 201; then PIPE_ID[$slug]=$(jget "$LAST_BODY_FILE" id); say "pipeline: $slug created"
         else
-            req alice GET /api/v1/pipelines || loud "$slug reuse: list"
+            req admin GET /api/v1/pipelines || loud "$slug reuse: list"
             need "$slug reuse: list pipelines" 200
             PIPE_ID[$slug]=$(jfind "$LAST_BODY_FILE" pipelines slug "$slug" id) \
                 || loud "pipeline $slug: 409 on create but absent from the library"
@@ -264,13 +270,13 @@ seed_pipeline() { # seed_pipeline <slug> <docfile>
     fi
 
     body=$(json_escape_file "$docfile") || loud "$slug: encode document_yaml"
-    req alice POST "/api/v1/pipelines/${PIPE_ID[$slug]}/drafts" "$body"
+    req admin POST "/api/v1/pipelines/${PIPE_ID[$slug]}/drafts" "$body"
     need "$slug: create draft (POST /pipelines/\$id/drafts)" 201
     draft=$(jget "$LAST_BODY_FILE" id); version=$(jget "$LAST_BODY_FILE" version)
     [ -n "$draft" ] && [ -n "$version" ] || loud "$slug: draft create lacks id/version"
     say "pipeline $slug: draft $draft version $version"
 
-    req alice POST "/api/v1/drafts/$draft/validate"
+    req admin POST "/api/v1/drafts/$draft/validate"
     need "$slug: validate draft (POST /drafts/\$id/validate)" 200
     if [ "$(jget "$LAST_BODY_FILE" valid)" != "true" ]; then
         LAST_NOTE="validate says valid=false; the error list is the body below (codes + locations, docs/m4-contract.md § 2.2)"
@@ -279,19 +285,19 @@ seed_pipeline() { # seed_pipeline <slug> <docfile>
     vd=$(jget "$LAST_BODY_FILE" revision_digest)
     say "pipeline $slug: validate OK revision_digest=$vd plan_digest=$(jget "$LAST_BODY_FILE" plan_digest)"
 
-    req alice POST "/api/v1/drafts/$draft/publish" "{\"version\":$version}"
+    req admin POST "/api/v1/drafts/$draft/publish" "{\"version\":$version}"
     if ok 201; then
         REV_ID[$slug]=$(jget "$LAST_BODY_FILE" id)
         say "pipeline $slug: published revision ${REV_ID[$slug]}"
     elif ok 409 && grep -q 'revision_already_published' "$LAST_BODY_FILE"; then
         REV_ID[$slug]=$(jget "$LAST_BODY_FILE" existing_revision_id) || REV_ID[$slug]=""
         if [ -z "${REV_ID[$slug]}" ]; then
-            req alice GET "/api/v1/pipelines/${PIPE_ID[$slug]}/revisions" || loud "$slug revision lookup"
+            req admin GET "/api/v1/pipelines/${PIPE_ID[$slug]}/revisions" || loud "$slug revision lookup"
             need "$slug: list revisions" 200
             REV_ID[$slug]=$(jfind "$LAST_BODY_FILE" revisions revision_digest "$vd" id) \
                 || loud "$slug: revision_already_published but no resolvable revision"
         fi
-        req alice GET "/api/v1/revisions/${REV_ID[$slug]}" || loud "$slug: GET existing revision"
+        req admin GET "/api/v1/revisions/${REV_ID[$slug]}" || loud "$slug: GET existing revision"
         need "$slug: resolve existing revision" 200
         say "pipeline $slug: digest collision — using existing revision ${REV_ID[$slug]}"
     else
@@ -340,6 +346,7 @@ write_manifest() {
     mkdir -p "$(dirname "$MANIFEST")"
     M4_SEED_USERS_ALICE="${UID_OF[alice]}" M4_SEED_USERS_BOB="${UID_OF[bob]}" \
     M4_SEED_USERS_CAROL="${UID_OF[carol]}" M4_SEED_USERS_DAN="${UID_OF[dan]}" \
+    M4_SEED_USERS_ADMIN="${UID_OF[admin]}" \
     M4_SEED_PROJECT_ID="$PROJECT_ID" M4_SEED_PROJECT_SLUG="$PROJECT_SLUG" \
     M4_SEED_REPO_ID="$REPO_ID" M4_SEED_REPO_URL="$REPO_URL" \
     M4_SEED_PLANNER_ID="${PROFILE_IDS[m4-planner]}" M4_SEED_IMPLEMENTER_ID="${PROFILE_IDS[m4-implementer]}" \
@@ -378,7 +385,8 @@ manifest = {
     "seeded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     "stack": {"compose_project": "communication-m4", "url": e["M4_URL"]},
     "users": {"alice": e["M4_SEED_USERS_ALICE"], "bob": e["M4_SEED_USERS_BOB"],
-              "carol": e["M4_SEED_USERS_CAROL"], "dan": e["M4_SEED_USERS_DAN"]},
+              "carol": e["M4_SEED_USERS_CAROL"], "dan": e["M4_SEED_USERS_DAN"],
+              "admin": e["M4_SEED_USERS_ADMIN"]},
     "project": {"id": e["M4_SEED_PROJECT_ID"], "slug": e["M4_SEED_PROJECT_SLUG"]},
     "repositories": {"app": {"id": e["M4_SEED_REPO_ID"], "git_url": e["M4_SEED_REPO_URL"]}},
     "profiles": {"m4-planner": e["M4_SEED_PLANNER_ID"],
@@ -422,7 +430,7 @@ if ! m4_stack_up; then
 fi
 say "readiness: both replicas 200"
 
-login alice; login bob; login carol; login dan
+login alice; login bob; login carol; login dan; login admin
 create_project
 put_member bob contributor
 put_member carol maintainer

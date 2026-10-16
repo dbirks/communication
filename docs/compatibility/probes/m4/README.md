@@ -69,7 +69,12 @@ manifest. The login dance is `e2e_m3_exit.py`'s `login()` shape (mock-IdP form:
 `/auth/login?return_to` → `username` + `claims` POST → callback → `/api/v1/me`;
 cookie jars under `$M4_PROBE_ROOT_BASE/jars/`). Lab users: **alice** (creates
 the project ⇒ maintainer, decides the gate), **bob** (contributor — C9b),
-**carol** + **dan** (maintainers — C9d). W9's "carol, project B only" arm is
+**carol** + **dan** (maintainers — C9d), and **admin** (the lab's bootstrap
+org admin — `COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS` in compose.yml — the
+only identity holding the pipeline **library role**, so the draft → validate
+→ publish calls and their library lookups run as admin while alice stays a
+plain project maintainer, which is exactly what gate C9c needs when it
+removes her). W9's "carol, project B only" arm is
 the gate implementer's sequencing (remove her afterwards or use a second
 project); the manifest records the seeded membership truthfully.
 
@@ -82,7 +87,8 @@ SQL because there is no profile-write API — M3 D10) → secret
 `test-database-url` = the § 7.0 contract sentinel (write-only, never echoed;
 `allowed_agent_profile_ids` = m4-implementer only) + mount `env` /
 `DATABASE_URL` / `lifecycle=node_attempt` → the three `pipeline.yaml`
-documents through draft → validate → publish → assignment → then **POST the
+documents through draft → validate → publish (library-role calls, as **admin**)
+→ assignment (project-scoped, as alice) → then **POST the
 agent run and the twin run** (fixed `idempotency` body members per
 ADR-0023 § 12, so a re-seed replays 200 with the stored run). Reseeds are
 idempotent end to end; an assignment pinned to a *different* revision is a
@@ -98,7 +104,7 @@ keyed so gates never re-derive ids:
 ```json
 { "schema": "m4-seed-manifest/1", "seeded_at": "…",
   "stack":  {"compose_project": "communication-m4", "url": "http://localhost:18091"},
-  "users":  {"alice": "<uuid>", "bob": "…", "carol": "…", "dan": "…"},
+  "users":  {"admin": "<uuid>", "alice": "<uuid>", "bob": "…", "carol": "…", "dan": "…"},
   "project": {"id": "<uuid>", "slug": "m4-exit"},
   "repositories": {"app": {"id": "<uuid>", "git_url": "file:///srv/m4/fixtures/app.git"}},
   "profiles": {"m4-planner": "<uuid>", "m4-implementer": "…", "m4-reviewer": "…"},
