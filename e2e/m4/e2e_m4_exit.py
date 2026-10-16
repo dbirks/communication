@@ -1034,16 +1034,578 @@ def c1():
                  "runs": [run_a, tw["run_id"], run_tw]}
 
 
+# --- C2 pure logic — unit-tested offline by e2e/m4/test_c2_logic.py ----------
+# 01 invariant 5 + ADR-0018: the UNIT of secret delivery is the attempt, not the
+# turn. The § 7.0 sentinel must be found in EXACTLY ONE place while the authorized
+# attempt runs (its own live process environment) and in NO place afterwards.
+# These helpers turn canned probe/search output into (label, ok, detail)
+# verdicts — ok=None is a GAP. They prove nothing about a live process by
+# themselves: only reading /proc/<pid>/environ of a real child does (12-test-
+# strategy.md), which is what c2() feeds them.
+
+C2_SECRET_SLUG = "test-database-url"
+C2_ENV_NAME = "DATABASE_URL"                       # § 7.0's delivery env_name
+C2_IMPLEMENT_KEYS = ("/implement", "[1]/implement", "[2]/implement")
+C2_PROC_RE = re.compile(r"^PROC\|(\d+)\|([0-9a-f]{64})\|(.*)$")
+
+
+def c2_proc_scan_sh(env_name=C2_ENV_NAME):
+    """Shell for `docker compose … exec <worker> sh -c`: hash the env var of
+    every readable /proc/<pid>/environ. The VALUE never leaves the container —
+    only its sha256, which the gate compares to sha256(SENTINEL). A grep of the
+    raw value would paste the secret into this report, which is the one thing
+    C2 must not do."""
+    return ("for p in /proc/[0-9]*/environ; do "
+            f"v=$(tr '\\0' '\\n' < \"$p\" 2>/dev/null | grep -m1 '^{env_name}=' || true); "
+            "[ -n \"$v\" ] || continue; "
+            "d=$(basename $(dirname \"$p\")); "
+            "s=$(printf %s \"${v#*=}\" | sha256sum | cut -d' ' -f1); "
+            "c=$(tr '\\0' ' ' < /proc/$d/cmdline 2>/dev/null | cut -c1-60); "
+            "echo \"PROC|$d|$s|$c\"; done; echo SCAN_DONE")
+
+
+def c2_proc_scan(text):
+    """Parse c2_proc_scan_sh output -> [{pid, sha, cmd}]. Ragged lines are dropped,
+    never guessed (psql/docker print notes between rows)."""
+    recs = []
+    for line in (text or "").splitlines():
+        m = C2_PROC_RE.match(line.strip())
+        if m:
+            recs.append({"pid": m.group(1), "sha": m.group(2), "cmd": m.group(3).strip()})
+    return recs
+
+
+def c2_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "nothing to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c2_live_home_verdicts(recs, want_sha, scan_ok=True, authorized=True, holder=""):
+    """THE C2a verdict: the sentinel's digest matches in exactly ONE live process
+    environment of the authorized attempt — one place, not two, not zero.
+    scan_ok=False GAPs (the container refused the read); authorized=False GAPs
+    (no authorized attempt existed to hold it — nothing to measure)."""
+    where = f" ({holder})" if holder else ""
+    if not scan_ok:
+        return [("C2a the worker's /proc scan answered", None,
+                 "the scan inside the worker container never printed SCAN_DONE — the live "
+                 "process environment is unreadable, so 'exactly one place' is unmeasurable")]
+    matches = [r for r in recs if r["sha"] == want_sha]
+    others = [r for r in recs if r["sha"] != want_sha]
+    if not authorized:
+        return [("C2a exactly one live process holds the sentinel", None,
+                 "no attempt was authorized to hold " + C2_ENV_NAME + " on this run" + where
+                 + " — the contract's precondition (an authorized implement attempt) was "
+                 "never produced by the lab"),
+                (f"C2a no un-authorized process carries {C2_ENV_NAME} either",
+                 not others, f"{len(others)} process(es) with a foreign value: "
+                 + ",".join(r["pid"] for r in others) or "none")]
+    return [
+        ("C2a the sentinel is in EXACTLY ONE live process environment — the authorized "
+         "attempt's (matched by digest, the value never printed)",
+         len(matches) == 1,
+         f"{len(matches)} match(es){where}; {len(others)} process(es) hold a different "
+         f"{C2_ENV_NAME} value (pids {','.join(r['pid'] for r in others) or 'none'})"),
+        ("C2a the holder is the process the attempt launched, not the worker daemon's own "
+         "environment (its argv is the agent/exec child)",
+         len(matches) == 1 and bool(matches[0]["cmd"]),
+         f"argv0={matches[0]['cmd'][:60]!r}" if matches else "no matching process"),
+    ]
+
+
+def c2_env_delivery_verdicts(mat_rows, dotenv_rc, dotenv_out, want_name=C2_ENV_NAME):
+    """C2a's other half: delivery is ENV, never a file. mat_rows are the live
+    materialization rows for the attempt {delivery_mode, target, lifecycle};
+    dotenv_rc/dotenv_out are `test -e …/.env.test.local; echo $?` (rc!=0 == absent)."""
+    if not mat_rows:
+        return [("C2a secret_materializations rows for the live attempt",
+                 None, "no materialization row yet for this attempt — the secret was never "
+                       "applied, so there is no delivery to classify")]
+    modes = {str(r.get("delivery_mode")) for r in mat_rows}
+    if dotenv_rc is None:
+        return [("C2a the workspace .env probe answered", None,
+                 "`test -e …/.env.test.local` printed no exit code — the file-delivery arm "
+                 "was never measured"),
+                ("C2a (unreadable) materialization rows", None, f"{len(mat_rows)} row(s) read")]
+    targets = [str(r.get("target")) for r in mat_rows]
+    file_targets = [t for t in targets if "=" not in t and ("/" in t or t.endswith(".env"))]
+    return [
+        (f"C2a delivery is env/{want_name}: the workspace has NO .env.test.local file "
+         "(§ 7.1 C2a's `test -e …; echo $?` == 1)",
+         dotenv_rc != 0, f"test -e .env.test.local -> {dotenv_rc} ({(dotenv_out or '').strip()[-40:]})"),
+        (f"C2a every materialization row is delivery_mode=env with target={want_name} "
+         "(never env_file)",
+         modes == {"env"} and not file_targets and want_name in targets,
+         f"modes={sorted(modes)} targets={sorted(set(targets))}"),
+    ]
+
+
+def c2_absence_verdicts(findings, phase="C2c"):
+    """'The sentinel is nowhere durable': findings = [{place, count}] where count is
+    an int match count, or None when the lab could not read that place at all —
+    which GAPs instead of being counted as a zero (never PASS by inference)."""
+    out = []
+    for f in findings or []:
+        place, count = str(f.get("place", "?")), f.get("count")
+        n = count_or_none(count)
+        out.append((f"{phase} {place}: zero occurrences of the sentinel",
+                    None if n is None else n == 0,
+                    f"count={count!r}" + ("" if n is not None else " — unreadable, so this "
+                                          "place is UNPROVEN, not clean")))
+    return out
+
+
+def c2_materialization_verdicts(rows, attempt_id, unit_attempt_id=None,
+                                want_lifecycle="node_attempt", terminal=True):
+    """§ 7.1 C2b over the materialization rows of one attempt. rows: [{id,
+    delivery_mode, target, lifecycle, attempt_id, turn_id, cleaned, cleaned_by,
+    status}]. The lifecycle belongs to the MOUNT; the ROW must carry
+    attempt_id — the attempt, not the turn — and after the node boundary the
+    worker must have cleaned it. ok=None whenever the lab returned no row."""
+    if not rows:
+        return [("C2b secret_materializations row for the attempt",
+                 None, f"no materialization row references attempt {attempt_id} — the "
+                       "lifecycle/cleanup claim has nothing to be measured against")]
+    unit = unit_attempt_id or attempt_id
+    mine = [r for r in rows if str(r.get("attempt_id")) == str(unit)]
+    turn_only = [r for r in rows if str(r.get("attempt_id")) not in
+                 {str(x) for x in (unit, "-")} and str(r.get("turn_id")) not in ("-", "None")]
+    life = {str(r.get("lifecycle")) for r in rows}
+    out = [
+        ("C2b the materialization row is stamped attempt_id = the attempt it was applied "
+         "for (01 invariant 5: the unit of work is the attempt, not the turn)",
+         len(mine) >= 1, f"{len(mine)}/{len(rows)} rows carry attempt_id={unit}"),
+        ("C2b the secret's lifecycle is node_attempt (§ 7.0's mount, honoured by the row "
+         "that names an attempt)",
+         life == {want_lifecycle}, f"observed lifecycles={sorted(life)}"),
+        ("C2b nothing leaked into the M3 turn-shaped delivery: no row of this secret "
+         "is keyed on a turn while naming a different attempt",
+         not turn_only, f"{len(turn_only)} turn-keyed row(s)"),
+    ]
+    if not terminal:
+        return out
+    cleaned = [r for r in mine if truthy(r.get("cleaned"))]
+    by = {str(r.get("cleaned_by")) for r in cleaned}
+    out.append(("C2b after the node boundary the worker UNMOUNTED it — cleaned_at is set "
+                "with cleaned_by='worker' (§ 7.1 C2b's `t | worker`)",
+                len(cleaned) == len(mine) and len(mine) >= 1 and by == {"worker"},
+                f"cleaned {len(cleaned)}/{len(mine)} rows, cleaned_by={sorted(by)}"))
+    return out
+
+
+def c2_turn_ownership_verdicts(rows, human_count=None):
+    """C2's headline half the contract states in words: agent.acp attempts OWN
+    their conversation_turns rows via conversation_turns.node_attempt_id, while
+    M3's human-initiated turns keep node_attempt_id NULL (00005's pair index).
+    rows: [{attempt, turn, stamp, status}] — stamp = the ledger's t/f that the
+    turn's node_attempt_id equals that attempt."""
+    if not rows:
+        return [("C2 the agent attempts' conversation_turns rows are readable",
+                 None, "no attempt joined to a conversation_turns row — the attempt/turn "
+                       "split has no population to assert over (a run with zero agent.acp "
+                       "nodes leaves this arm to the agent variant)")]
+    out = []
+    for r in rows:
+        st, stamp = str(r.get("status")), str(r.get("stamp")).lower()
+        own = str(r.get("attempt")).lower()
+        stamped = stamp not in ("-", "", "none", "null", "false") and (
+            stamp == own or stamp in ("t", "true"))
+        key = str(r.get("key")) or "?"
+        label = (f"C2 attempt {str(r.get('attempt'))[:8]} [{key}] owns its "
+                 "conversation_turns row via node_attempt_id")
+        if st in ("queued", "leased", "running"):
+            out.append((label, None, f"attempt still {st!r} — the turn row is not final"))
+        else:
+            out.append((label, stamped, f"node_attempt_id={stamp!r} "
+                        f"(attempt {st}, turn {str(r.get('turn'))[:8]})"))
+    n = count_or_none(human_count)
+    out.append(("C2 M3's human-initiated turns are UNTOUCHED — node_attempt_id IS NULL "
+                "for them (00005: the two populations are distinguished by exactly this "
+                "column)", n is not None and n >= 0, f"human turns with node_attempt_id "
+                f"NULL={n}" + ("" if n is not None else " — the ledger gave no count")))
+    return out
+
+
+# --- C2 live helpers — reading a LIVE attempt's process environment ----------
+
+# Every operational text column is searched for the sentinel; the encrypted
+# store's own rows (secret_versions/secret_metadata) are the ONE place a value
+# commitment legitimately lives, so they are excluded from the plaintext sweep
+# and asserted separately as ciphertext + sha256 commitment.
+C2_DB_TABLES = ("runs", "run_inputs", "run_checkpoints", "node_executions", "attempts",
+                "domain_events", "audit_events", "conversations", "conversation_turns",
+                "acp_session_bindings", "permission_requests", "workspaces",
+                "workspace_repos", "worker_volumes", "artifacts", "approval_requests",
+                "pipelines", "pipeline_revisions", "pipeline_drafts", "assignments",
+                "pipeline_invocations", "secret_materializations", "agent_profiles",
+                "workers", "users", "projects", "repositories")
+
+
+def c2_place_inventory_sql(tables=C2_DB_TABLES):
+    """Which (table.column) pairs the sweep can honestly claim to have read."""
+    inc = ", ".join(f"'{t}'" for t in tables)
+    return ("SELECT table_name || '.' || column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND data_type IN ('text','character varying','jsonb') "
+            f"AND table_name IN ({inc}) ORDER BY table_name, column_name")
+
+
+def c2_db_scan_sql(places, needle=SENTINEL):
+    """One query, one row per place: occurrences of the sentinel's literal in
+    every operational text column. places is the information_schema inventory —
+    a column the schema does not have is never silently skipped."""
+    parts = [f"SELECT '{p}' AS place, count(*)::text AS n FROM {p.split('.')[0]} t "
+             f"WHERE t.{p.split('.')[1]}::text LIKE '%{needle}%'" for p in places]
+    return " UNION ALL ".join(parts) if parts else ""
+
+
+def c2_live_attempt(run_id, keys=C2_IMPLEMENT_KEYS, timeout=300):
+    """Poll the ledger for a LIVE attempt on an implement node — the unit of work
+    whose process environment C2 reads. Returns {id,key,worker,status,n} / None."""
+    like = " OR ".join(f"ne.node_instance_key LIKE '%{k}'" for k in keys)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if run_status(run_id) in ("completed", "failed", "cancelled", "interrupted"):
+            return None
+        try:
+            rows = psql_rows(psql(
+                f"SELECT a.id || '|' || ne.node_instance_key || '|' || w.name || '|' || "
+                f"a.status || '|' || a.attempt_number::text FROM attempts a "
+                f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+                f"JOIN workers w ON w.id = a.worker_id "
+                f"WHERE a.run_id = '{run_id}' AND a.status IN ('leased','running') "
+                f"AND ({like}) ORDER BY a.started_at DESC NULLS LAST LIMIT 1"), 5)
+        except RuntimeError as e:
+            show("C2a attempt poll (psql)", str(e)[:240])
+            return None
+        if rows:
+            return dict(zip(("id", "key", "worker", "status", "n"), rows[0]))
+        time.sleep(2)
+    return None
+
+
+def c2_mat_rows(attempt_id):
+    """The materialization rows joined to the mount that authorized them (the
+    lifecycle lives on the mount, the attempt_id on the row - ADR-0018). For env
+    delivery the target column is the env NAME; for a file it is a path."""
+    sql = (f"SELECT m.id::text || '|' || m.delivery_mode || '|' || m.target || '|' || "
+           f"coalesce(mu.lifecycle,'-') || '|' || coalesce(m.attempt_id::text,'-') || '|' || "
+           f"coalesce(m.turn_id::text,'-') || '|' || (m.cleaned_at IS NOT NULL)::text || '|' || "
+           f"coalesce(m.cleaned_by,'-') FROM secret_materializations m "
+           f"LEFT JOIN secret_mounts mu ON mu.secret_id = m.secret_id "
+           f"AND mu.project_id = m.project_id "
+           f"WHERE m.attempt_id::text = '{attempt_id}' OR m.turn_id::text = '{attempt_id}'")
+    cols = ("id", "delivery_mode", "target", "lifecycle", "attempt_id", "turn_id",
+            "cleaned", "cleaned_by")
+    try:
+        return [dict(zip(cols, r)) for r in psql_rows(psql(sql), len(cols))]
+    except RuntimeError as e:
+        show("C2b secret_materializations read", str(e)[:240])
+        return []
+
+
+def c2_compose_svc(container):
+    """`compose exec` addresses SERVICES while the ledger (and CTX) carry this
+    project's prefixed CONTAINER names. Anything not from this project passes
+    through unchanged, so the exec fails loudly and the leg GAPs - never a
+    guessed service name."""
+    c = str(container or "")
+    return c[len("communication-m4-"):] if c.startswith("communication-m4-") else c
+
+
+def c2_probe_worker(svc, run_id):
+    """section 7.1 C2a's two reads inside the OWNING worker container, both
+    through this project's compose (`compose -p communication-m4 exec -T`): the
+    .env file must be absent (`echo $?` == 1) and /proc must say exactly which
+    live process holds the authorized value - by digest, never by value."""
+    rc, out = run(COMPOSE + ["exec", "-T", c2_compose_svc(svc), "sh", "-c",
+                             f"test -e /workspaces/run/{run_id}/repos/app/.env.test.local; "
+                             f"echo rc=$?; " + c2_proc_scan_sh()])
+    body = out.replace("\r", "")
+    dotenv = re.search(r"rc=(\d+)", body)
+    return {"rc": rc, "out": body,
+            "dotenv_rc": int(dotenv.group(1)) if dotenv else None,
+            "scan_ok": "SCAN_DONE" in body and dotenv is not None,
+            "recs": c2_proc_scan(body)}
+
+
+def c2_grep_container(svc, path, needle=SENTINEL):
+    """grep -rl over a container path through this project's compose. Returns
+    (count, listing) or (None, why) when the path is not there to be read - an
+    unreadable place is a GAP, never the NO_MATCH the contract's `|| echo`
+    would also print for a directory that does not exist."""
+    rc, out = run(COMPOSE + ["exec", "-T", c2_compose_svc(svc), "sh", "-c",
+                             f"test -d {path} || echo ABSENT; "
+                             f"grep -rl {needle} {path} >/tmp/c2g 2>/tmp/c2e; echo rc=$?; "
+                             f"echo n=$(wc -l </tmp/c2g); head -5 /tmp/c2g; head -3 /tmp/c2e"])
+    body = out.replace("\r", "")
+    if "ABSENT" in body:
+        return None, f"{svc}:{path} does not exist - nothing was searched"
+    m_ = re.search(r"rc=(\d+)\s+n=(\d+)", body)
+    if m_ is None:
+        return None, f"{svc}: the read of {path} answered nothing parsable (rc={rc}): " \
+                     f"{body[-160:] or '(empty)'}"
+    code, n = int(m_.group(1)), int(m_.group(2))
+    if code not in (0, 1):
+        return None, f"{svc}: grep rc={code} under {path} (not 0/1): {body[-200:]}"
+    return n, (body[m_.end():][:400] if n else f"(no file under {svc}:{path} matches)")
+
+
+def c2_git_mirror_grep(svc, mirror_path, needle=SENTINEL):
+    """section 7.1 C2c's mirror leg: git grep over every ref of the project's bare
+    mirror (the path comes from workspace_repos.mirror_path, never guessed).
+    rc 1 == no match (the wanted answer); an unreadable mirror is None, so the
+    leg GAPs instead of reporting a clean zero it never read."""
+    rc, out = run(COMPOSE + ["exec", "-T", c2_compose_svc(svc), "sh", "-c",
+                             f"test -d {mirror_path} || echo ABSENT; "
+                             f"git --git-dir={mirror_path} grep -I -e '{needle}' "
+                             f"$(git --git-dir={mirror_path} for-each-ref --format='%(refname)'); "
+                             f"echo rc=$?"])
+    body = out.replace("\r", "")
+    if "ABSENT" in body:
+        return None, f"{svc}:{mirror_path} is not a mirror this driver can read"
+    m = re.search(r"rc=(\d+)", body)
+    if m is None:
+        return None, f"{svc}: git grep answered nothing readable (rc={rc}): {body[-120:]}"
+    code = int(m.group(1))
+    if code == 1:
+        return 0, f"git grep over every ref of {mirror_path}: no match (rc=1)"
+    if code == 0:
+        return max(1, len([ln for ln in body.splitlines() if ":" in ln])), body[-400:]
+    return None, f"{svc}: git grep rc={code} (not the 0/1 the contract predicts): {body[-200:]}"
+
+
 def c2():
-    """C2 — the unit of work is the attempt, not the turn (invariant 5 + node_attempt).
-    Acceptance: during the implement attempt the sentinel is in /proc/<agent>/environ
-    and NOT as a .env file; after the boundary secret_materializations.cleaned_at is
-    set by the worker; SENTINEL-m4-7c1e9d42 appears in zero domain_events/audit_events
-    rows, zero artifact bytes, zero container logs, zero mirror refs; the reviewer
-    attempt's prompt contains no DATABASE_URL."""
-    skip("C2", "secret sentinel lives only in the authorized attempt's live environment")
+    """C2 - the unit of work is the attempt, not the turn (01 invariant 5 + ADR-0018).
+    Acceptance: during the implement attempt the sentinel sits in EXACTLY ONE live
+    process environment (/proc/<pid>/environ of the child the attempt launched, read
+    by digest, value never printed) and NOT in any .env file; the materialization row
+    has lifecycle=node_attempt with attempt_id set and, once the node boundary is
+    crossed, cleaned_at with cleaned_by='worker'; the sentinel appears in NO durable
+    place - zero operational text columns outside the encrypted store, zero artifact
+    bytes, zero container logs, zero workspace files, zero mirror refs; the reviewer
+    attempt shows no DATABASE_URL and materialized nothing; agent.acp attempts own
+    their conversation_turns rows via node_attempt_id while M3's human turns keep it
+    NULL."""
+    if not CTX.get("stack_up"):
+        skip("C2", "the sentinel lives only in the authorized attempt's live environment")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C2", f"needs the section 7.0 seed manifest at {MANIFEST_PATH}: without the "
+                  "manifest's frozen revision ids there is no run to drive to an implement "
+                  "attempt, so there is no live process environment to read (C1 seeds on "
+                  "demand; the secret/profile preconditions are asserted from the ledger "
+                  "below the moment a manifest exists)")
+        return
+    CTX["manifest"] = facts
+    tw = facts.get("twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        gap("C2", "the seed manifest carries no twin variant to run (the deterministic twin is "
+                  "the only variant whose implement node is long enough to read a live /proc "
+                  "inside; the agent variant needs a working claude ACP launcher in the image)")
+        return
+    # Precondition: the section 7.0 mount really is env/DATABASE_URL/node_attempt.
+    try:
+        mcount = psql("SELECT count(*)::text FROM secret_mounts mu JOIN secret_metadata m "
+                      "ON m.id = mu.secret_id WHERE m.slug = 'test-database-url' "
+                      "AND mu.delivery_mode = 'env' AND mu.env_name = 'DATABASE_URL' "
+                      "AND mu.lifecycle = 'node_attempt'")
+    except RuntimeError as e:
+        gap("C2", f"the secret_mounts read failed - {str(e)[:180]}: with the mount unreadable "
+                  "there is no authorized delivery to localize")
+        return
+    if _int(mcount) == 0:
+        gap("C2", "the seeded project has no env/DATABASE_URL mount with lifecycle=node_attempt "
+                  f"(secret_mounts count={mcount!r}) - the contract's secret was never mounted, "
+                  "so there is no delivery to localize")
+        return
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        check("C2: alice signed in", False, "no session - the gate cannot start a run")
+        return
+    CTX["alice"] = alice
+    want_sha = hashlib.sha256(SENTINEL.encode()).hexdigest()
+    store_sql = ("SELECT coalesce(string_agg(v.content_sha256, ' '), '') FROM secret_versions v "
+                 "JOIN secret_metadata m ON m.id = v.secret_id "
+                 "WHERE m.slug = 'test-database-url'")
+    try:
+        show("C2 the encrypted store's own commitment (sha256 of the value, computed locally; "
+             "ciphertext and nonce are bytea and never printed)", psql(store_sql) or "(none)")
+        check("C2 the value lives in the encrypted store: secret_versions.content_sha256 = "
+              "sha256(sentinel) - ciphertext plus a commitment, nothing plaintext",
+              want_sha in psql(store_sql), f"sha256={want_sha[:16]}...")
+    except RuntimeError as e:
+        gap("C2 the encrypted store holds the value", str(e)[:180])
 
+    run_id = post_c1_run(alice, tw, f"m4x-c2-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
+                         "c2")
+    if not run_id:
+        return
+    CTX["c2_run"] = run_id
+    approved, deadline = False, time.time() + 300
+    while time.time() < deadline and not approved:
+        st = run_status(run_id)
+        if st == "waiting_human":
+            approved = approve_gate(alice, tw["project_id"], run_id)
+        elif st in ("completed", "failed", "cancelled", "interrupted"):
+            break
+        time.sleep(3)
+    if not approved:
+        dump_run_evidence(alice, run_id)
+        st_now = run_status(run_id)
+        if st_now in ("failed", "cancelled", "interrupted"):
+            check("C2a the run reached its approval gate", False,
+                  f"the run is {st_now!r} without ever reaching an implement attempt - "
+                  "there was no live process to read (evidence above)")
+        else:
+            gap("C2a the run reached its approval gate",
+                f"no approval was decided within 300s (status={st_now!r}) - the run never "
+                "reached an implement attempt, so there was no live process to read")
+        return
+    check("C2a the gate was approved so the implement attempt could run", True, run_id)
+    live = c2_live_attempt(run_id)
+    if live is None:
+        dump_run_evidence(alice, run_id)
+        gap("C2a a live implement attempt to read",
+            f"no /implement attempt was ever held by a worker within the poll window "
+            f"(run status={run_status(run_id)!r}) - with nothing running there is no live "
+            "process environment, so 'exactly one place' is unmeasurable (evidence above)")
+        return
+    svc = c4_worker_container(live["worker"])
+    if svc is None:
+        gap("C2a read the live process environment",
+            f"the claim belongs to worker row {live['worker']!r}, which is not one of this "
+            "project's two lab workers - the driver never execs a container it did not create")
+        return
+    show("C2a the attempt whose environment is about to be read",
+         f"attempt={live['id']} node={live['key']} attempt#{live['n']} status={live['status']} "
+         f"worker={live['worker']} container={svc}")
+    mat_live = c2_mat_rows(live["id"])
+    show(f"C2a secret_materializations rows DURING the attempt ({live['id'][:8]})",
+         "\n".join(f"{r['delivery_mode']} target={r['target']} lifecycle={r['lifecycle']} "
+                    f"attempt={r['attempt_id'][:8]} turn={r['turn_id'][:8]} "
+                    f"cleaned={r['cleaned']}/{r['cleaned_by']}" for r in mat_live) or "(none)")
+    probe = c2_probe_worker(svc, run_id)
+    show(f"C2a /proc scan inside {svc} (pid|sha256(value)|argv0 - the value never leaves "
+         "the container)", probe["out"][-1200:] or f"(rc={probe['rc']})")
+    c2_emit(c2_live_home_verdicts(
+        probe["recs"], want_sha, scan_ok=probe["scan_ok"],
+        authorized=bool(mat_live),
+        holder=f"{svc}, attempt {live['id'][:8]} on {live['key']}"))
+    c2_emit(c2_env_delivery_verdicts(mat_live, probe["dotenv_rc"],
+                                     f"test -e /workspaces/run/{run_id}/repos/app/.env.test.local"))
 
+    # C2b - cross the node boundary: the unit ends with the attempt, so the
+    # materialization must be cleaned by the worker before anything else happens.
+    terminal, deadline = "", time.time() + 600
+    while time.time() < deadline:
+        try:
+            rows = psql_rows(psql(f"SELECT status FROM attempts WHERE id = '{live['id']}'"), 1)
+        except RuntimeError as e:
+            show("C2b attempt poll", str(e)[:200])
+            rows = []
+        terminal = rows[0][0] if rows else ""
+        if terminal in ("succeeded", "failed", "cancelled", "interrupted"):
+            break
+        time.sleep(3)
+    mat_after = c2_mat_rows(live["id"])
+    show(f"C2b secret_materializations rows AFTER the boundary (attempt {terminal or '?':s})",
+         "\n".join(f"{r['delivery_mode']} target={r['target']} lifecycle={r['lifecycle']} "
+                    f"attempt={r['attempt_id'][:8]} turn={r['turn_id'][:8]} "
+                    f"cleaned={r['cleaned']}/{r['cleaned_by']}" for r in mat_after) or "(none)")
+    c2_emit(c2_materialization_verdicts(mat_after, live["id"],
+                                        want_lifecycle="node_attempt",
+                                        terminal=terminal in ("succeeded", "failed",
+                                                              "cancelled", "interrupted")))
+
+    # C2c - the sentinel is nowhere durable. Every place is read; a place the lab
+    # cannot read GAPs rather than counting as a zero.
+    findings = []
+    try:
+        places = [ln.strip() for ln in psql(c2_place_inventory_sql()).splitlines()
+                  if ln.strip() and "." in ln]
+        scan = psql_rows(psql(c2_db_scan_sql(places)), 2) if places else []
+        hits = sum(_int(r[1]) for r in scan)
+        findings.append({"place": f"database: {len(places)} operational text columns across "
+                                  f"{len(scan)} readable places (the encrypted store is excluded)",
+                         "count": hits if scan else None})
+        if scan and hits:
+            show("C2c the columns that DID match",
+                 "\n".join(f"{r[0]}={r[1]}" for r in scan if _int(r[1]))[:800])
+    except RuntimeError as e:
+        findings.append({"place": "database: operational text columns", "count": None})
+        show("C2c database sweep", str(e)[:300])
+    for svc_, path, why in ((svc, f"/workspaces/run/{run_id}",
+                             f"the attempt's workspace tree on {svc} (env delivery writes no "
+                             "file anywhere in it)"),
+                            ("communication-m4-api-a", "/artifacts",
+                             "artifact bytes (\u00a7 7.1's grep -rl /artifacts)"),
+                            (svc, "/artifacts", f"{svc}'s artifact root")):
+        n, listing = c2_grep_container(svc_, path)
+        findings.append({"place": f"{svc_}:{path} ({why})", "count": n})
+        if n:
+            show("C2c matched files", listing[:600])
+        elif n is None:
+            show("C2c unreadable place", listing)
+    logs = compose_logs("worker-a", "worker-b", "api-a", "api-b")
+    findings.append({"place": "compose logs of both workers and both API replicas",
+                     "count": sum(SENTINEL in ln for ln in logs.splitlines()) if logs else None})
+    mirrors = psql(f"SELECT coalesce(string_agg(DISTINCT mirror_path, ' '), '-') FROM "
+                   f"workspace_repos wr JOIN workspaces ws ON ws.id = wr.workspace_id "
+                   f"WHERE ws.run_id::text = '{run_id}'")
+    for mp in [m for m in mirrors.split() if m and m != "-"]:
+        n, listing = c2_git_mirror_grep(svc, mp)
+        findings.append({"place": f"every ref of the mirror {mp} (git grep -I)", "count": n})
+        if n is None:
+            show("C2c mirror leg", listing)
+    if n is None:
+        show("C2c mirror leg", listing)
+    c2_emit(c2_absence_verdicts(findings))
+
+    # C2d - the split the milestone turns on: the reviewer sees neither the env var
+    # nor a materialization, and the turn rows show the attempt as the owner.
+    rev = psql_rows(psql(f"SELECT a.id::text FROM attempts a JOIN node_executions ne "
+                         f"ON ne.id = a.node_execution_id WHERE a.run_id = '{run_id}' "
+                         f"AND ne.node_instance_key LIKE '%/review' ORDER BY a.id DESC "
+                         f"LIMIT 1"), 1)
+    if not rev:
+        gap("C2d the reviewer attempt's read", f"run {run_id} produced no /review attempt row - "
+                                              "nothing unauthorized to compare against")
+    else:
+        revid = rev[0][0]
+        r = alice.get(LB, f"/api/v1/attempts/{revid}")
+        body = r.text if r.status == 200 else ""
+        c2_emit(c2_absence_verdicts([
+            {"place": f"GET /api/v1/attempts/{revid[:8]} body names neither {C2_ENV_NAME} nor "
+                      "the sentinel",
+             "count": (body.count(C2_ENV_NAME) + body.count(SENTINEL)) if body else None}],
+            phase="C2d"))
+        mat_rev = c2_mat_rows(revid)
+        check("C2d the reviewer attempt materialized NOTHING (the allowlist names only "
+              "m4-implementer - the unauthorized profile got no value at all)",
+              len(mat_rev) == 0, f"{len(mat_rev)} materialization row(s) on the review attempt")
+    turns = [dict(zip(("attempt", "key", "turn", "stamp", "status"), row)) for row in psql_rows(
+        psql(f"SELECT a.id || '|' || ne.node_instance_key || '|' || "
+             f"coalesce(a.turn_id::text,'-') || '|' || coalesce(t.node_attempt_id::text,'-') "
+             f"|| '|' || a.status FROM attempts a JOIN node_executions ne "
+             f"ON ne.id = a.node_execution_id LEFT JOIN conversation_turns t ON t.id = a.turn_id "
+             f"WHERE a.run_id = '{run_id}' AND ne.kind = 'agent.acp'"), 5)]
+    human = psql("SELECT count(*)::text FROM conversation_turns WHERE node_attempt_id IS NULL")
+    c2_emit(c2_turn_ownership_verdicts(turns, human))
+    if not turns:
+        gap("C2d the agent leg ('print your environment' produces no sentinel in any tool "
+            "output)", "this run's variant is the deterministic twin - an agent.acp attempt "
+                       "needs the claude ACP launcher plus a model in the worker image; the "
+                       "journal/transcript half of the claim (zero sentinel in every "
+                       "conversation.* row) is asserted by the database sweep above")
+    CTX["c2"] = {"run_id": run_id, "attempt_id": live["id"], "key": live["key"],
+                 "worker": live["worker"], "probe": {"recs": probe["recs"],
+                                                     "dotenv_rc": probe["dotenv_rc"]},
+                 "materializations": mat_after, "findings": findings}
 # --- C3/C4 pure logic — unit-tested offline by e2e/m4/test_c3c4_logic.py -----
 # Claim-hand-out and fence verdicts computed over canned ledger rows, so the
 # live gates only have to feed them real Postgres/API output. Nothing here may
