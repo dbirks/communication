@@ -104,6 +104,53 @@ describe("PipelineLibrary", () => {
     );
   });
 
+  it("reports the project's assignment in place of a channel, when the page has one", () => {
+    // M4's `AssignmentCreate` has no channel member, so a project surface that
+    // knows the assignment must say "assigned", not "no channel set".
+    render(
+      <PipelineLibrary
+        rows={rows}
+        assignmentFor={(pipelineId) =>
+          pipelineId === "pl_01J8FEATUREDEV"
+            ? {
+                revisionNumber: 7,
+                revisionDigest: featureDevelopmentRevisions[0].revision_digest,
+                maxConcurrentRuns: 3,
+                enabled: true,
+              }
+            : null
+        }
+      />,
+    );
+    expect(screen.getByTestId("pipeline-assignment-feature-development").textContent).toContain(
+      "assigned · r7 3f2f6e6a7ad1 · max 3 concurrent",
+    );
+    // The wrong-on-screen line is gone: an assigned row says nothing about channels.
+    expect(screen.queryByTestId("pipeline-no-channel-feature-development")).toBeNull();
+    // Unassigned is still the honest absence, not "latest".
+    expect(screen.getByTestId("pipeline-no-assignment-release-promotion").textContent).toContain(
+      "not assigned to this project",
+    );
+  });
+
+  it("names an assignment it cannot resolve to a revision number by digest alone", () => {
+    render(
+      <PipelineLibrary
+        rows={rows}
+        assignmentFor={() => ({
+          revisionNumber: null,
+          revisionDigest: featureDevelopmentRevisions[0].revision_digest,
+          maxConcurrentRuns: 1,
+          enabled: false,
+        })}
+      />,
+    );
+    // No invented `r<N>`; a disabled pin does not read as a live one.
+    expect(screen.getByTestId("pipeline-assignment-feature-development").textContent).toContain(
+      "assigned · disabled · 3f2f6e6a7ad1 · max 1 concurrent",
+    );
+  });
+
   it("shows channels by default (project scope)", () => {
     render(<PipelineLibrary rows={rows} />);
     expect(screen.getByTestId("pipeline-channels-feature-development")).toBeTruthy();

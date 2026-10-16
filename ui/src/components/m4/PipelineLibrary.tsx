@@ -32,6 +32,25 @@ export interface PipelineLibraryRow {
   channels: AssignmentChannelLabel[];
 }
 
+/**
+ * What a *project's assignment* says about a pipeline.
+ *
+ * M4 has no rollout channels — `AssignmentCreate` carries no channel member
+ * (`07` "Version rollout" is M6), so on a project surface the channel cell has
+ * nothing true to say about a pipeline that *is* assigned to this project. The
+ * assignment is the fact: which revision is pinned, what the concurrency
+ * ceiling is, and whether the pin is enabled.
+ */
+export interface PipelineAssignmentFacts {
+  /** r<N> of the pinned revision, or null when the page cannot resolve the
+   * digest to a number (then only the digest is shown — never a guess). */
+  revisionNumber: number | null;
+  /** `sha256:…` of the pinned revision; rendered through `shortDigest`. */
+  revisionDigest: string;
+  maxConcurrentRuns: number;
+  enabled: boolean;
+}
+
 export interface PipelineLibraryProps {
   rows: PipelineLibraryRow[];
   /** `onOpen` is the row's primary action (detail route); injected so the
@@ -45,6 +64,11 @@ export interface PipelineLibraryProps {
    * project to have channels, so the cell is omitted rather than claiming
    * "no channel set for this project" about nothing. */
   scope?: "project" | "org";
+  /** Present on the project surface: the page joins its own assignments to the
+   * pipeline and the cell reports that pin instead of a channel (`01`: an
+   * assignment is what a run actually inherits). Omitted = the channel labels
+   * are the truth, as the fixtures and the org page still render them. */
+  assignmentFor?: (pipelineId: string) => PipelineAssignmentFacts | null;
   /** Words for a draft's `edited_by` user id — the page passes its actor
    * lookup (same rule as `api/names`: a bare uuid is never a label). The
    * fallback is `shortId`, not the raw id. */
@@ -62,6 +86,7 @@ export function PipelineLibrary({
   onNew,
   emptyCopy = "No pipelines in this organization yet. A pipeline exists once a draft validates and publishes; a draft cannot be published from this screen.",
   scope = "project",
+  assignmentFor,
   nameOf = shortId,
   canCreate = true,
   headingId = "pipeline-library-heading",
@@ -103,6 +128,7 @@ export function PipelineLibrary({
         <ul className="divide-y divide-line" data-testid="pipeline-library">
           {rows.map(({ pipeline, latest, revisions, drafts, channels }) => {
             const draft = drafts[0];
+            const assignment = assignmentFor ? assignmentFor(pipeline.id) : null;
             return (
               <li key={pipeline.id}>
                 <Row
@@ -157,7 +183,7 @@ export function PipelineLibrary({
                       className="flex flex-wrap items-center gap-[6px]"
                       data-testid={`pipeline-channels-${pipeline.slug}`}
                     >
-                      {channels.length === 0 ? (
+                      {channels.length === 0 && !assignmentFor ? (
                         // No channel is not "latest" — it is nothing pinned, said plainly.
                         <span
                           className="font-mono text-[10.5px] text-faint"
@@ -166,13 +192,35 @@ export function PipelineLibrary({
                           no channel set for this project
                         </span>
                       ) : (
-                        channels.map((channel) => (
-                          <StatusChip
-                            key={channel.channel}
-                            state={stateOf(CHANNEL_STATE[channel.channel])}
-                            label={`${channel.channel} ${channel.version_label} ${shortDigest(channel.revision_digest)}`}
-                          />
-                        ))
+                        <>
+                          {channels.map((channel) => (
+                            <StatusChip
+                              key={channel.channel}
+                              state={stateOf(CHANNEL_STATE[channel.channel])}
+                              label={`${channel.channel} ${channel.version_label} ${shortDigest(channel.revision_digest)}`}
+                            />
+                          ))}
+                          {assignmentFor ? (
+                            assignment ? (
+                              <StatusChip
+                                state={stateOf(assignment.enabled ? "done" : "queued")}
+                                label={assignmentWord(assignment)}
+                                labelProps={{
+                                  "data-testid": `pipeline-assignment-${pipeline.slug}`,
+                                }}
+                              />
+                            ) : (
+                              // Assigned nowhere: the reason a run cannot start,
+                              // sitting beside the control that fixes it.
+                              <span
+                                className="font-mono text-[10.5px] text-faint"
+                                data-testid={`pipeline-no-assignment-${pipeline.slug}`}
+                              >
+                                not assigned to this project
+                              </span>
+                            )
+                          ) : null}
+                        </>
                       )}
                     </span>
                   )}
@@ -209,6 +257,19 @@ export function PipelineLibrary({
       )}
     </Panel>
   );
+}
+
+/* ------------------------------------------------------------- fragments */
+
+/** The pin in words: what it points at and the ceiling it carries. The digest
+ * is shortened like every other digest on screen (`shortDigest`), and the r<N>
+ * is dropped rather than invented when the page cannot resolve the digest. */
+function assignmentWord(assignment: PipelineAssignmentFacts): string {
+  const pin =
+    assignment.revisionNumber === null
+      ? shortDigest(assignment.revisionDigest)
+      : `r${assignment.revisionNumber} ${shortDigest(assignment.revisionDigest)}`;
+  return `${assignment.enabled ? "assigned" : "assigned · disabled"} · ${pin} · max ${assignment.maxConcurrentRuns} concurrent`;
 }
 
 /** The draft line is a validation state, so the word is the finding count, not

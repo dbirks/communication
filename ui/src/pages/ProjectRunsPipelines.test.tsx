@@ -9,11 +9,13 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
+import { shortId } from "../api/names";
 import type { Pipeline, PipelineRevision } from "../api/types";
 import {
   WIRE_CHILD_PIPELINE_ID,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
+  WIRE_RUN_ID,
   wireAssignmentList,
   wireDraftSummaries,
   wirePipeline,
@@ -99,8 +101,49 @@ describe("/projects/:projectId/pipelines — assigning a library pipeline", () =
     // `feature-development` already has an assignment here, so it is not on offer.
     expect(within(list).queryByTestId("assign-open-feature-development")).toBeNull();
     // A viewer-only surface must not even show the control; this one does, and
-    // the pin line stays the server's truth until something is assigned.
-    expect(screen.getByTestId("project-pipeline-pin").textContent).toContain(WIRE_REVISION_ID);
+    // the pin line stays the server's truth until something is assigned — in
+    // short form, because a bare uuid is never a label.
+    const pin = screen.getByTestId("project-pipeline-pin").textContent ?? "";
+    expect(pin).toContain("pinned revision r7");
+    expect(pin).toContain(shortId(WIRE_REVISION_ID));
+    expect(pin).not.toContain(WIRE_REVISION_ID);
+  });
+
+  it("reports the project's assignment on the row, not a channel M4 has no word for", async () => {
+    mount("maintainer");
+
+    await screen.findByTestId("pipeline-name-module-check");
+    // `feature-development` is assigned here: the cell says so, with the pin
+    // (r<N> + short digest) and the ceiling the server gave the assignment.
+    const assigned = screen.getByTestId("pipeline-assignment-feature-development").textContent;
+    expect(assigned).toContain("assigned");
+    expect(assigned).toContain("r7");
+    expect(assigned).toContain("3f2f3f2f3f2f");
+    expect(assigned).toContain("max 1 concurrent");
+    // The claim that was wrong on screen: nothing says "no channel set" when
+    // the pipeline *is* assigned to this project.
+    expect(screen.queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);
+    // `module-check` has no assignment: the honest absence, next to the Assign
+    // control that fixes it.
+    expect(screen.getByTestId("pipeline-no-assignment-module-check").textContent).toContain(
+      "not assigned to this project",
+    );
+    expect(screen.getByTestId("assign-open-module-check")).toBeTruthy();
+  });
+
+  it("gives the pinned document the panel's width, with no empty findings column", async () => {
+    mount("maintainer");
+
+    const layout = await screen.findByTestId("yaml-view-layout");
+    expect(layout.getAttribute("data-layout")).toBe("below");
+    // Nothing has been validated here, so the side pane that only apologized is
+    // gone rather than eating half the width.
+    expect(screen.queryByTestId("yaml-validation-none")).toBeNull();
+    expect(screen.getByTestId("yaml-view")).toBeTruthy();
+    // Ids stay short everywhere on this panel.
+    const newest = screen.getByTestId("project-pipeline-newest-run").textContent ?? "";
+    expect(newest).toContain(shortId(WIRE_RUN_ID));
+    expect(newest).not.toContain(WIRE_RUN_ID);
   });
 
   it("shows a viewer no assign control at all", async () => {

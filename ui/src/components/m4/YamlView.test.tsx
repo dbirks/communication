@@ -132,6 +132,42 @@ describe("YamlView", () => {
     expect(note).toContain("draft");
   });
 
+  it("stacks findings below a full-width document in the below layout", () => {
+    render(<YamlView text={w8DraftYaml} validation={w8Validation} layout="below" />);
+    expect(screen.getByTestId("yaml-view-layout").getAttribute("data-layout")).toBe("below");
+    // One column, so the document keeps the panel's whole width.
+    expect(screen.getByTestId("yaml-view-layout").className).toContain("grid-cols-1");
+    // With a validate body served, the findings still render — after the YAML
+    // in the DOM, which is what stacks them underneath it.
+    expect(screen.getByTestId("yaml-validation-verdict").textContent).toBe("14 findings");
+    const layout = screen.getByTestId("yaml-view-layout");
+    const yaml = screen.getByTestId("yaml-view");
+    const findings = screen.getByTestId("yaml-validation-errors");
+    expect(layout.contains(yaml) && layout.contains(findings)).toBe(true);
+    expect(yaml.compareDocumentPosition(findings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Markers on the lines are unaffected by the layout.
+    expect(screen.getAllByTestId(/^yaml-error-marker-/)).toHaveLength(14);
+  });
+
+  it("renders no findings pane at all when the below layout has nothing to mark", () => {
+    render(<YamlView text={samplePipelineYaml} layout="below" />);
+    expect(screen.getByTestId("yaml-view-layout").getAttribute("data-layout")).toBe("below");
+    // The apology box exists only to explain an empty side column; stacked under
+    // a full-width document it is dead weight.
+    expect(screen.queryByTestId("yaml-validation-none")).toBeNull();
+    expect(screen.queryByTestId("yaml-view-more")).toBeNull();
+    // The document itself is untouched.
+    expect(screen.getByTestId("yaml-view").textContent).toContain("apiVersion");
+  });
+
+  it("keeps the side layout by default", () => {
+    render(<YamlView text={samplePipelineYaml} />);
+    const layout = screen.getByTestId("yaml-view-layout");
+    expect(layout.getAttribute("data-layout")).toBe("side");
+    expect(layout.className).toContain("xl:grid-cols-[minmax(0,1fr)_24rem]");
+    expect(screen.getByTestId("yaml-validation-none")).toBeTruthy();
+  });
+
   it("paginates a long document instead of rendering all of it", () => {
     const text = `${samplePipelineYaml}\n${Array.from({ length: 400 }, (_, i) => `# filler ${i}`).join("\n")}`;
     render(<YamlView text={text} validation={w8Validation} />);

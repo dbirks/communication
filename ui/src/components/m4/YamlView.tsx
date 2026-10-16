@@ -22,6 +22,17 @@ import { VALIDATION_SOURCE_STATE, stateOf } from "../ds/states";
  * not put 6,000 nodes in the DOM to show a finding on line 40. */
 const LINE_WINDOW = 220;
 
+/**
+ * How the findings sit against the document.
+ * `side` (the default, and the preview's dense two-pane look) pins them in a
+ * 24rem column beside the YAML; `below` gives the document the panel's full
+ * width and drops the findings underneath — used where the document is the
+ * point and the side column only squeezed it (the project pipelines page).
+ * In `below` mode an unserved validate body renders nothing at all: with no
+ * findings to mark, the explanatory box would be the only thing on screen.
+ */
+export type YamlViewLayout = "side" | "below";
+
 export interface YamlViewProps {
   /** The document text — `document_text` from a revision, `document_yaml` from
    * a draft, or the regenerated canonical export. */
@@ -37,6 +48,8 @@ export interface YamlViewProps {
   onSelectPointer?: (pointer: string) => void;
   headingId?: string;
   className?: string;
+  /** Findings column vs. findings row — see `YamlViewLayout`. */
+  layout?: YamlViewLayout;
 }
 
 export function YamlView({
@@ -47,6 +60,7 @@ export function YamlView({
   onSelectPointer,
   headingId = "yaml-view-heading",
   className = "",
+  layout = "side",
 }: YamlViewProps) {
   const lines = useMemo(() => text.split("\n"), [text]);
   const pointers = useMemo(() => indexPointers(text), [text]);
@@ -89,7 +103,13 @@ export function YamlView({
       }
       className={className}
     >
-      <div className="grid items-start gap-[10px] p-[10px] xl:grid-cols-[minmax(0,1fr)_24rem]">
+      <div
+        className={`grid items-start gap-[10px] p-[10px] ${
+          layout === "below" ? "grid-cols-1" : "xl:grid-cols-[minmax(0,1fr)_24rem]"
+        }`}
+        data-testid="yaml-view-layout"
+        data-layout={layout}
+      >
         <div className="min-w-0">
           {/* A code block, not an editor: no role="textbox", no tabIndex on the
               pre, so nothing pretends to be editable. Scroll is on the region. */}
@@ -160,7 +180,9 @@ export function YamlView({
             as a new revision.
           </p>
         </div>
-        <ValidationFindings validation={validation} findings={findings} />
+        {layout === "below" && !validation ? null : (
+          <ValidationFindings validation={validation} findings={findings} />
+        )}
       </div>
     </Panel>
   );

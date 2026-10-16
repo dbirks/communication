@@ -21,7 +21,11 @@ import { Field, Input } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
-import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
+import {
+  PipelineLibrary,
+  type PipelineAssignmentFacts,
+  type PipelineLibraryRow,
+} from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
 import { ValidatePanel } from "../components/m4/ValidatePanel";
 import { useProjectRuns } from "../api/runs";
@@ -35,6 +39,7 @@ import {
 } from "../api/pipelines";
 import { useMe, useProject } from "../api/queries";
 import { viewDraftSummary, viewPipeline, viewPipelineSummary } from "../api/m4view";
+import { shortId } from "../api/names";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
 import type { PipelineRevisionSummary, PipelineSummary } from "../lib/pipeline/contract";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
@@ -75,6 +80,29 @@ export default function ProjectPipelines() {
     "";
   const revision = useRevision(pin);
   const project = useProject(projectId);
+  // Revision numbers live on the pipeline read, not on the assignment (which
+  // carries only a digest), so the digest → r<N> map is built from the rows.
+  const revisionNumbers = new Map<string, number>();
+  rows.forEach((row) => {
+    row.revisions.forEach((entry) => {
+      if (!revisionNumbers.has(entry.revision_digest))
+        revisionNumbers.set(entry.revision_digest, entry.revision_number);
+    });
+  });
+  // The library cell for a project surface: its assignment to this project, not
+  // a channel M4 does not have (`AssignmentCreate` has no channel member).
+  function assignmentFor(pipelineId: string): PipelineAssignmentFacts | null {
+    const entry = (assignments.data?.assignments ?? []).find(
+      (candidate) => candidate.pipeline_id === pipelineId,
+    );
+    if (!entry) return null;
+    return {
+      revisionNumber: revisionNumbers.get(entry.pinned_revision_digest) ?? null,
+      revisionDigest: entry.pinned_revision_digest,
+      maxConcurrentRuns: entry.max_concurrent_runs,
+      enabled: entry.enabled,
+    };
+  }
   // `01`: `assignment.create` is Maintainer+; an org admin with no explicit
   // membership is *reported* as maintainer by the project read, so `my_role`
   // alone is the whole gate — a viewer (or a read still in flight) sees nothing.
@@ -138,6 +166,7 @@ export default function ProjectPipelines() {
                 canCreate={false}
                 emptyCopy="nothing assigned to this project"
                 headingId="project-pipeline-rows-heading"
+                assignmentFor={assignmentFor}
               />
             ) : null}
             {assignable.length > 0 && canAssign ? (
@@ -154,7 +183,11 @@ export default function ProjectPipelines() {
             ) : null}
             <p className="font-mono text-[11px] text-faint" data-testid="project-pipeline-pin">
               {pin
-                ? `pinned revision ${pin} — runs of this project stay on it until a maintainer re-assigns`
+                ? `pinned revision ${
+                    revision.data
+                      ? `r${revision.data.revision_number} · ${shortDigest(revision.data.revision_digest)} · `
+                      : ""
+                  }id ${shortId(pin)} — runs of this project stay on it until a maintainer re-assigns`
                 : "no pipeline assignment is enabled for this project — there is nothing to run"}
             </p>
             {newestRun ? (
@@ -162,7 +195,7 @@ export default function ProjectPipelines() {
                 className="font-mono text-[11px] text-faint"
                 data-testid="project-pipeline-newest-run"
               >
-                newest run {newestRun.id} · {newestRun.status} ·{" "}
+                newest run {shortId(newestRun.id)} · {newestRun.status} ·{" "}
                 {shortDigest(newestRun.revision_digest)}
               </p>
             ) : null}
@@ -177,6 +210,7 @@ export default function ProjectPipelines() {
               text={revision.data.document_text}
               label={`r${revision.data.revision_number} · ${revision.data.version_label} · ${shortDigest(revision.data.revision_digest)} · regenerated canonical`}
               headingId="project-pipeline-yaml-heading"
+              layout="below"
             />
             <DefinitionGraph
               document={revision.data.canonical_document as unknown as DefinitionDocument}
