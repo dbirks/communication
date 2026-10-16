@@ -2676,16 +2676,653 @@ def c5():
                  "volume_after": ws_after.get("volume_id"), "checkpoints": ck_after}
 
 
+# --- C6 pure logic — unit-tested offline by e2e/m4/test_c6_logic.py -----------
+# Verdict algebra for the restore_checkpoint / honest-loss gate
+# (docs/m4-contract.md § 7.1 C6). Every verdict is computed over canned
+# checkpoint rows, canned journal payloads and canned git readings, so the live
+# half only has to feed it real Postgres/worktree output. `ok is None` is an
+# honest GAP (the lab produced no row to measure — e.g. no
+# run.checkpoint_restored event was ever written); a reset that moved HEAD to
+# the WRONG commit, a dirty worktree after a restore, or a loss story that
+# reads "resumed" is always a FAIL: D-009/D-024 are only honest when the
+# journal says what actually happened to the bytes.
+
+C6_RESTORE_KEY = "/plan"            # the checkpointed boundary the restore resets to
+C6_KILL_KEY = "/build_until_verified[1]/implement"   # the ~40s node C6 kills inside
+C6_RESTORE_POLICY = "restore_checkpoint"
+C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own named repos volume
+C6_RECOVERY_REASONS = ("volume_changed", "different_worker")
+C6_LOSS_SENTENCE = "prior edits lost, rerun required"
+C6_RESTORED_EVENT = "run.checkpoint_restored"
+# § 7.1 C6c's pair-of-events sentence; the report repeats it so a reader can see
+# WHICH mode ran without opening the journal.
+C6_PAIR_SENTENCE = (
+    "both modes are implemented, and the pair of events is what makes \"where is "
+    "the boundary\" answerable from the journal rather than from folklore: "
+    "run.checkpoint_restored (C6, restore_checkpoint) beside retry_context "
+    "(C5, continue_workspace). D-024 stays Open — every checkpoint here is a "
+    "same-volume record, never a portable-checkpoint claim.")
+
+
+def c6_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c6_restore_doc(doc, name):
+    """Re-author the seed twin for C6 WITHOUT editing the fixture (README: 'publish
+    extra revisions, don't widen this one'): splice `workspacePolicy:
+    restore_checkpoint` into the until body's implement node's existing retry block
+    — the ONLY change, so the C6 run's node/key set stays C1's and the only
+    variable is the workspace policy. Returns {doc, applied, missing}."""
+    out = {"doc": None, "applied": [], "missing": []}
+    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
+        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is "
+                              "not a kind: Pipeline document)")
+        return out
+    text, applied, missing = doc, [], []
+    new, k = re.subn(r"(?m)^(  name: ).*$", rf"\g<1>{name}", text, count=1)
+    (applied if k == 1 else missing).append("metadata.name")
+    text = new
+    if C6_RESTORE_POLICY in text:
+        missing.append("the seed twin already declares restore_checkpoint — C6's own "
+                       "revision would prove nothing the seed's does not")
+        out["doc"], out["applied"], out["missing"] = None, applied, missing
+        return out
+    blk = c7_node_block(text, "implement")
+    if not blk:
+        missing.append("the until body's implement node")
+    else:
+        s, e, ind = blk
+        src = text.splitlines(keepends=True)
+        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
+        new, k = re.subn(r"(?m)^( *)retriableErrors: .*$", lambda m: (
+            f"{m.group(1)}retriableErrors: {m.group(0).split(':', 1)[1].strip()}\n"
+            f"{m.group(1)}workspacePolicy: {C6_RESTORE_POLICY}"), body, count=1)
+        (applied if k == 1 else missing).append(
+            f"implement retry.workspacePolicy: {C6_RESTORE_POLICY}")
+        body = new
+        text = head + body + tail
+    out["applied"], out["missing"] = applied, missing
+    out["doc"] = None if missing else text
+    return out
+
+
+def c6_doc_verdicts(splices):
+    """Honesty gate on the re-authored document: the ONE variable is the policy —
+    if any other splice failed or the seed already declared it, nothing downstream
+    proves C6a."""
+    sp = splices or {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    v = [("C6a own revision: retry.workspacePolicy: restore_checkpoint spliced onto "
+          "/implement", any(C6_RESTORE_POLICY in a for a in applied),
+          f"applied={applied[:3]}")]
+    if missing:
+        v.append(("C6a own revision: the single splice applied cleanly", False,
+                  f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append(("C6a authored doc differs from the seed ONLY by the policy",
+                  doc.count(f"workspacePolicy: {C6_RESTORE_POLICY}") == 1
+                  and "args: [implement]" in doc,   # the editing implement step untouched
+                  f"{len(doc)} bytes, 1 policy line"))
+    return v
+
+
+def c6_ckpts_sql(run_id):
+    """run_checkpoints rows with the boundary facts C6 reads: the recorded repo
+    states (committed / modified_path_count / head_commit — D-024's same-volume
+    record), the workspace + volume, and the owning worker, newest first."""
+    return ("SELECT c.node_execution_id::text || '@@' || ne.node_instance_key || '@@' || "
+            "coalesce(c.volume_id,'-') || '@@' || coalesce(c.workspace_id::text,'-') || "
+            "'@@' || coalesce(w.name,'-') || '@@' || "
+            "coalesce(to_jsonb(rs)->>'committed','-') || '@@' || "
+            "coalesce(to_jsonb(rs)->>'modified_path_count','-') || '@@' || "
+            "coalesce(to_jsonb(rs)->>'head_commit','-') FROM run_checkpoints c "
+            "JOIN node_executions ne ON ne.id = c.node_execution_id "
+            "LEFT JOIN workers w ON w.id = c.worker_id "
+            "CROSS JOIN LATERAL jsonb_array_elements(c.repo_states) AS rs "
+            f"WHERE c.run_id = '{run_id}' ORDER BY c.created_at DESC")
+
+
+def c6_ckpts(text):
+    """c6_ckpts_sql output -> [{node, volume_id, worker, committed, mpc, head}].
+    An unparseable committed/mpc flag stays None so the availability verdict
+    GAPs instead of guessing — a checkpoint ledger we cannot read is never read
+    as 'clean'."""
+    out = []
+    for _ne, key, vol, _ws, worker, committed, mpc, head in psql_rows(text or "", 8, sep="@@"):
+        low = committed.strip().lower()
+        c = True if low in ("true", "t") else (False if low in ("false", "f") else None)
+        out.append({"node": key, "volume_id": vol, "worker": worker, "committed": c,
+                    "mpc": count_or_none(mpc), "head": head.strip()})
+    return out
+
+
+def c6_avail_verdicts(cks):
+    """C6d's precondition arm — is there a checkpoint whose OWN recorded state is
+    uncommitted? That is the only state the engine reads at retry time
+    (runtime/retry.go's RetryPlan refuses on repo_states.committed=false). None
+    (GAP) when no such row exists: checkpoints record commits, never paths."""
+    dirty = [c for c in cks if c.get("committed") is False or (c.get("mpc") or 0) > 0]
+    if dirty:
+        return [("C6d precondition: a boundary whose recorded state is uncommitted "
+                 "exists", True, f"dirty-boundary nodes={[c['node'] for c in dirty][:3]}")]
+    known = [c for c in cks if c.get("committed") is True]
+    if known:
+        return [("C6d precondition: an uncommitted recorded boundary exists", None,
+                 f"every run_checkpoints.repo_states row says committed=true "
+                 f"(nodes={[c['node'] for c in known][:3]}) — the engine's refusal reads "
+                 "ONLY the recorded state, and the lab cannot make a committed boundary "
+                 "dirty from outside without forging ledger rows. The 409 arm needs an "
+                 "agent that leaves uncommitted edits inside the checkpointed node.")]
+    return [("C6d precondition: an uncommitted recorded boundary exists", None,
+             "no readable run_checkpoints.repo_states rows (committed flag unreadable or "
+             "no checkpoints) — the refusal arm has nothing to stand on")]
+
+
+def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_before,
+                            dirty_after, restored_after, attempts_after):
+    """C6d — the refusal must be 409 problem+json code=checkpoint_unavailable AND
+    nothing may move: same HEAD, same dirty count, zero restore events, no new
+    attempt. A refusal that reset first would be a data-loss bug wearing a
+    feature badge."""
+    if status in (None, "", 0):
+        return [("C6d the uncommitted-boundary retry refuses 409 checkpoint_unavailable",
+                 None, "no retry request was issued (see the precondition GAP above)")]
+    v = [("C6d the uncommitted-boundary retry -> 409",
+          status == 409, f"observed {status} code={code!r} ctype={ctype!r}")]
+    v.append(("C6d the refusal is problem+json code=checkpoint_unavailable",
+              ("problem+json" in (ctype or "")) and code == "checkpoint_unavailable",
+              f"code={code!r} ctype={ctype!r}"))
+    moved = bool(head_before) and bool(head_after) and head_before != head_after
+    dirtied = "" not in (dirty_before, dirty_after) and dirty_before != dirty_after
+    v.append(("C6d NOTHING was reset on the refusal path — HEAD and the dirty set "
+              "are untouched", not moved and not dirtied,
+              f"HEAD {head_before[:12]!r}->{head_after[:12]!r}, "
+              f"dirty {dirty_before!r}->{dirty_after!r}"))
+    v.append(("C6d zero run.checkpoint_restored events after the refusal",
+              count_or_none(restored_after) == 0, f"count={restored_after!r}"))
+    v.append(("C6d the refusal appended no new attempt", (attempts_after or 0) <= 1,
+              f"attempts={attempts_after!r}"))
+    return v
+
+
+def c6_restored_verdicts(ev, cks, head_boundary, head_after, dirty_after, attempts2,
+                         policy_in_plan=True):
+    """C6b — the restore happened, unsandboxed, BEFORE anything exec'd: the event
+    names the boundary's from_commit and the discarded paths, and the worktree
+    sits on that commit with an EMPTY dirty set."""
+    if not policy_in_plan:
+        return [("C6b the retry ran under restore_checkpoint", None,
+                 "the authored document's policy did not reach the compiled plan — "
+                 "there is no restore to measure")]
+    if not ev:
+        return [("C6b run.checkpoint_restored was emitted", None,
+                 "no such event row — either the worker never took the restore_checkpoint "
+                 "arm or the retry was not issued, so every verdict below is a GAP too")]
+    p = ev.get("payload") or {}
+    return [
+        ("C6b run.checkpoint_restored names the killed node", ev.get("key") == C6_KILL_KEY,
+         f"node_instance_key={ev.get('key')!r}"),
+        ("C6b from_commit is the recorded boundary commit VERBATIM",
+         bool(head_boundary) and p.get("from_commit") == head_boundary,
+         f"from_commit={str(p.get('from_commit'))[:12]!r} vs boundary "
+         f"{head_boundary[:12]!r}"),
+        ("C6b discarded_paths names the uncommitted files the reset destroyed",
+         isinstance(p.get("discarded_paths"), list) and len(p["discarded_paths"]) > 0,
+         f"discarded_paths={p.get('discarded_paths')!r}"),
+        ("C6b the worktree's HEAD equals the boundary after the reset",
+         bool(head_after) and head_after == head_boundary,
+         f"HEAD={head_after[:12]!r} want {head_boundary[:12]!r}"),
+        ("C6b git status --porcelain is EMPTY — the reset really happened",
+         dirty_after is not None and _int(dirty_after) == 0, f"dirty={dirty_after!r}"),
+        ("C6b the boundary restored TO is the /plan checkpoint on the run's own volume "
+         "(D-024: commits, same-volume, never paths)",
+         any(c.get("node") == C6_RESTORE_KEY and c.get("volume_id") not in (None, "-")
+             for c in cks), f"/plan checkpoints={[c for c in cks if c['node'] == C6_RESTORE_KEY][:1]}"),
+        ("C6b the restore rode the retry's own attempt (attempt 2 exists)",
+         (attempts2 or 0) >= 2, f"attempts={attempts2!r}")]
+
+
+def c6_loss_verdicts(recovery, run_st, err_class, attempts, retried_sched, detail,
+                     same_volume, base=1):
+    """C6e — the honest loss case: workspace.recovery_lost with the enum reason the
+    measured facts support, error_class='workspace_lost', NO automatic retry (no
+    attempt numbered above `base`, the attempt that carried the loss, and no
+    node.attempt.retry_scheduled row), the words 'prior edits lost, rerun
+    required', and NEVER 'resumed'. A run that quietly continued on its own
+    volume GAPs the arm — no loss happened."""
+    if not recovery and same_volume:
+        return [("C6e workspace.recovery_lost was journalled", None,
+                 "the run was reclaimed by its OWN worker on the SAME volume — nothing was "
+                 "lost, so there is no loss story to read (that is C5d's arm, not C6e's)")]
+    reason = (recovery or {}).get("reason")
+    v = [("C6e workspace.recovery_lost names the reason from the enum",
+          reason in C6_RECOVERY_REASONS, f"event={recovery!r}")]
+    v.append(("C6e the run carries error_class='workspace_lost'",
+              err_class == "workspace_lost", f"error_class={err_class!r} run={run_st!r}"))
+    extra = [a for a in (attempts or []) if _int(a.get("attempt_number")) > _int(base)]
+    auto = bool(extra) or (_int(retried_sched) or 0) > 0
+    v.append(("C6e NO automatic retry — ADR-0023 § 7/§ 11 pass 5 keeps workspace_lost "
+              "out of every retriableErrors list", not auto,
+              f"later attempts={[a.get('attempt_number') for a in extra]} "
+              f"retry_scheduled={retried_sched!r} base={base!r}"))
+    text = (detail or "").lower()
+    v.append((f"C6e the refusal tells the operator {C6_LOSS_SENTENCE!r}",
+              "lost" in text and "rerun" in text and "required" in text,
+              f"detail={detail[:180]!r}"))
+    v.append(("C6e the loss is NEVER described as 'resumed' (M3 W8's rule, unchanged)",
+              "resumed" not in text, f"detail={detail[:120]!r}"))
+    return v
+
+
+def c6_final_verdicts(status, retried, c1_keys, c6_keys):
+    """C6c — the restore arm completes with C1's key set (retry appends, never
+    rewrites), and run.retried's workspace_policies names WHICH mode ran."""
+    pol = (retried or {}).get("policies") if isinstance((retried or {}).get("policies"),
+                                                        dict) else {}
+    v = [("C6c the restored run reached 'completed'", status == "completed",
+          f"status={status!r}"),
+         (f"C6c run.retried's workspace_policies names {C6_RESTORE_POLICY} for the "
+          f"{C6_KILL_KEY} node", any(v == C6_RESTORE_POLICY for k, v in pol.items()
+                                     if "implement" in k),
+          f"workspace_policies={pol!r}")]
+    ident, only_a, only_b = compare_key_sets(set(c6_keys), set(c1_keys))
+    v.append(("C6c the key set equals C1's (a restore-retry appends, it never rewrites "
+              "history)", bool(c1_keys) and bool(c6_keys) and ident,
+              f"only_c1={sorted(only_a)[:4]} only_c6={sorted(only_b)[:4]}"))
+    return v
+
+
+# --- C6 live helpers -----------------------------------------------------------
+
+
+def c6_row(sql, what):
+    """C6's psql reader: text, or '' (an honest GAP upstream) with the failure
+    printed — a ledger that will not answer is never read as a zero."""
+    try:
+        return psql(sql)
+    except RuntimeError as e:
+        show(f"C6 {what} (psql)", str(e)[:240])
+        return ""
+
+
+def c6_workspaces(run_id):
+    """The run's workspaces rows -> [{state, volume_id, worker}]."""
+    return [dict(zip(("state", "volume_id", "worker"), r)) for r in psql_rows(
+        c6_row(f"SELECT coalesce(state,'-') || '|' || coalesce(volume_id,'-') || '|' || "
+               f"coalesce((SELECT name FROM workers WHERE id = w.worker_id),'-') "
+               f"FROM workspaces w WHERE run_id = '{run_id}'", "workspaces row"), 3)]
+
+
+def c6_attempts_of_key(run_id, key):
+    """Every attempt of one node_instance_key, in attempt_number order."""
+    return [dict(zip(("attempt_number", "status", "error_class", "detail", "worker"), r))
+            for r in psql_rows(c6_row(
+                f"SELECT a.attempt_number::text || chr(9) || a.status || chr(9) || "
+                f"coalesce(a.error_class,'-') || chr(9) || "
+                f"coalesce(left(regexp_replace(a.detail, '[[:space:]]+', ' ', 'g'), 400), "
+                f"'-') "
+                f"|| chr(9) || coalesce((SELECT name FROM workers WHERE id = a.worker_id),'-') "
+                f"FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id "
+                f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+                f"ORDER BY a.attempt_number", "attempts"), 5, sep="\t")]
+
+
+def c6_restore_event(run_id):
+    """The run.checkpoint_restored row {key, payload} — § 7.1 C6b's event, or None.
+    The event is the evidence; the worktree below is its shadow."""
+    rows = psql_rows(c6_row(
+        f"SELECT coalesce(payload->>'node_instance_key','-') || '@@' || "
+        f"coalesce(payload::text,'{{}}') FROM domain_events WHERE run_id = '{run_id}' "
+        f"AND type = '{C6_RESTORED_EVENT}' ORDER BY global_seq LIMIT 1",
+        "checkpoint_restored"), 2, sep="@@")
+    if not rows:
+        return None
+    try:
+        payload = json.loads(rows[0][1])
+    except ValueError:
+        payload = {}
+    return {"key": rows[0][0], "payload": payload}
+
+
+def c6_recovery_event(project_id, run_id):
+    """The run's workspace.recovery_lost row {reason, expected, found, worker} — 12
+    case 20's honest arm, or None when nothing was journalled."""
+    rows = psql_rows(c6_row(
+        f"SELECT coalesce(payload->>'reason','-') || '@@' || "
+        f"coalesce(payload->>'expected_volume_id','-') || '@@' || "
+        f"coalesce(payload->>'found_volume_id','-') || '@@' || "
+        f"coalesce((SELECT name FROM workers WHERE id = e.actor_id),'-') "
+        f"FROM domain_events e WHERE e.project_id = '{project_id}' "
+        f"AND type = 'workspace.recovery_lost' AND (run_id = '{run_id}' OR run_id IS NULL) "
+        f"ORDER BY global_seq DESC LIMIT 1", "recovery_lost"), 4, sep="@@")
+    return dict(zip(("reason", "expected", "found", "worker"), rows[0])) if rows else None
+
+
+def c6_retry_policies(run_id):
+    """run.retried's workspace_policies map — the journal's answer to 'which mode "
+    "ran?' (§ 3 row 6). {} when no run.retried row exists."""
+    rows = psql_rows(c6_row(f"SELECT coalesce(payload->>'workspace_policies','{{}}') "
+                            f"FROM domain_events WHERE run_id = '{run_id}' AND "
+                            f"type = 'run.retried' ORDER BY global_seq DESC LIMIT 1",
+                            "run.retried"), 1)
+    try:
+        return json.loads(rows[0][0]) if rows else {}
+    except ValueError:
+        return {}
+
+
+# The live half below mirrors c5(): the same twin, the same compose kill BY
+# NAME, the worktree read from inside the owning container. worker-c is started
+# ONLY through start_throwaway — compose.m4.yml has no worker-c service, and the
+# driver never stops or starts a container it did not create. Every stop has a
+# finally that restores the lab.
+
+
 def c6():
     """C6 — restore_checkpoint, and the honest loss case (D-009/D-024).
-    Acceptance: a revision with retry.workspacePolicy=restore_checkpoint; after kill+
-    retry, run.checkpoint_restored{from_commit, discarded_paths} and the worktree
-    reset clean BEFORE anything execs; uncommitted-boundary retry => 409
-    checkpoint_unavailable with NOTHING reset; cross-volume arm (worker-c on a new
-    volume): workspace.recovery_lost{volume_changed|different_worker}, error_class
-    workspace_lost, NO auto-retry; D-024 stays Open — no portable-checkpoint claim."""
-    skip("C6", "restore_checkpoint reset is real; the loss arm says 'lost', never 'resumed'")
+    Acceptance: a second published revision of the twin with retry.workspacePolicy:
+    restore_checkpoint on /implement; after `compose kill worker-a` mid-implement and
+    POST /runs/{id}/retry, run.checkpoint_restored{from_commit, discarded_paths}
+    lands and the worktree sits back on the boundary commit with an EMPTY dirty
+    set BEFORE anything execs; the uncommitted-boundary arm answers 409
+    problem+json code=checkpoint_unavailable and resets NOTHING; the cross-worker
+    arm (worker-c, its own named volume, affinity forced) writes
+    workspace.recovery_lost{volume_changed|different_worker}, the attempt carries
+    error_class='workspace_lost' with NO automatic retry, and the words say
+    'prior edits lost, rerun required' — never 'resumed'. D-024 stays Open."""
+    if not CTX.get("stack_up"):
+        skip("C6", "restore_checkpoint reset is real; the loss arm says 'lost', never "
+                   "'resumed'")
+        return
+    facts = load_manifest_facts()
+    twin = (facts or {}).get("twin") or {}
+    if not facts or not twin.get("revision_id"):
+        gap("C6", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                  "there is no twin revision to re-author into the restore_checkpoint arm "
+                  "(C6 publishes its OWN revision rather than edit the fixture), no "
+                  "assignment to run under and no published pipeline to hold a draft")
+        return
+    CTX["manifest"] = facts
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C6", "no admin (library-role) session — the restore_checkpoint revision is an "
+                  "extra PUBLISHED revision and only the library role may draft it")
+        return
+    CTX["admin"] = admin
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        check("C6: alice signed in", False, "no session — the gate cannot start a run")
+        return
+    CTX["alice"] = alice
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
+    # C6a — the gate's OWN revision: the seed twin plus ONE line, the workspace
+    # policy. The seed's published revisions are immutable and stay untouched.
+    src = c7_twin_doc(admin, twin.get("revision_id"))
+    if src is None:
+        gap("C6", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+                  "Pipeline document — the gate refuses to author a restore policy into a "
+                  "document it cannot show the compiler actually read")
+        return
+    res = c6_restore_doc(src, f"m4x-c6-restore-{suffix[-8:]}")
+    c6_emit(c6_doc_verdicts(res))
+    show("C6 splices applied to the seed twin document", " | ".join(res["applied"]) or "(none)")
+    if res["doc"] is None:
+        gap("C6", f"the seed twin document is not the shape C6 splices ({res['missing']}) — a "
+                  "document the gate cannot honestly upgrade to restore_checkpoint would "
+                  "make every reset verdict below a coincidence")
+        return
+    pub = c7_publish(admin, twin.get("pipeline_id"), "C6 restore_checkpoint twin", res["doc"])
+    rev = (pub or {}).get("revision_id") or ""
+    if pub is None or pub.get("validate_status") != 200 or (pub.get("vresp") or {}).get("valid") is False:
+        gap("C6", f"the restore-policy revision could not be drafted+validated "
+                  f"(draft/publish -> {(pub or {}).get('validate_status')}, "
+                  f"{(pub or {}).get('vresp', {}).get('errors') if pub else 'no draft'}[:240]) "
+                  "— with no published restore_checkpoint revision there is no policy for "
+                  "the engine to honour")
+        return
+    if not rev:
+        gap("C6", f"publish -> {pub.get('publish_status')} without a revision id "
+                  f"({(pub.get('raw') or '')[:200]}) — no revision to pin a run to")
+        return
+    check("C6a the restore_checkpoint twin published as its own immutable revision", True,
+          f"revision {rev} (the seed's revision {twin.get('revision_id')} is untouched)")
+    pol = (pub.get("vresp") or {}).get("workspace_policies") or {}
+    policy_in_plan = C6_RESTORE_POLICY in json.dumps((pub.get("vresp") or {}).get("plan") or {})
+    if not policy_in_plan:
+        show("C6a note — the compiled plan the validate returned",
+             "no restore_checkpoint string found in the validate response's plan: the "
+             "restore verdicts below will GAP rather than assume the splice compiled")
+
+    run_id = c7_post_run(alice, twin, rev, f"m4x-c6-restore-{suffix}", "restore twin")
+    if not run_id:
+        gap("C6b/C6c", "the restore run could not be posted through POST /projects/{p}/runs "
+                       "— the ledger has nothing to measure")
+        return
+    CTX["c6_run"] = run_id
+
+    # C6b — the boundary must exist BEFORE the kill, and the attempt must be one
+    # this project's own worker holds; without both, every reset claim is folklore.
+    live = c4_wait_live_attempt(run_id, 300)
+    if live is None:
+        dump_run_evidence(alice, run_id)
+        gap("C6b a live attempt to kill",
+            f"no attempt on run {run_id} was ever held by a worker within 300s (status="
+            f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
+            "the restore is unmeasurable (evidence dumped above)")
+        return
+    att, owner, key = live["id"], live["worker"], live["key"]
+    svc = c4_worker_container(owner)
+    if svc is None:
+        gap("C6b compose kill the owning worker",
+            f"the live claim belongs to worker row {owner!r}, which is not one of this "
+            "project's two lab workers — the driver never kills a container it did not "
+            "create (§ 7.0)")
+        return
+    if key != C6_KILL_KEY:
+        show("C6b note — which node was mid-flight", f"§ 7.1 names {C6_KILL_KEY}; the kill "
+             f"lands on {key}. The restore verdicts read the event's own node_instance_key, " 
+             "so a different node is reported, not renamed.")
+    def gitout(sh):
+        rc, out = wexec(f"git -C /workspaces/run/{run_id}/repos/app {sh}", worker=svc)
+        return out.strip() if rc == 0 and "fatal:" not in out else ""
+    ck_rows = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints before"))
+    ck_before = [f"{c['node']}:{c['volume_id']}:{str(c['head'])[:12]}" for c in ck_rows]
+    head_boundary = ((c6_ckpts(c6_row(c6_ckpts_sql(run_id), "boundary")) or [{}])[0])
+    plan_ck = [c for c in c6_ckpts(c6_row(c6_ckpts_sql(run_id), "boundary"))
+               if c["node"] == C6_RESTORE_KEY]
+    head_bnd = plan_ck[0]["head"] if plan_ck else ""
+    head_before = gitout("rev-parse HEAD")
+    dirty_before = gitout("status --porcelain | wc -l")
+    show("C6b the killed attempt / boundary ckpts / HEAD_BEFORE, DIRTY_BEFORE",
+         f"{att} attempt={live['attempt_number']} worker={owner} node={key} | "
+         f"checkpoints={ck_before} | HEAD={head_before[:12] or '(unreadable)'} "
+         f"dirty={dirty_before or '(unreadable)'} | /plan boundary head="
+         f"{head_bnd[:12] or '(none)'} volume={head_boundary.get('volume_id')!r}")
+    ws_before = c6_workspaces(run_id)
+    loss_arm_owner = owner   # the worker that owns the tree C6e will lose
+
+    # C6b — SIGKILL the owning worker mid-node, then restore FROM the boundary.
+    # The worker is always started again on every exit path (host safety).
+    try:
+        rc, out = run(COMPOSE + ["kill", owner])
+        if rc != 0:
+            gap("C6b compose kill (SIGKILL: the honest case)",
+                f"rc={rc}: {out[-240:]} — without a kill there is no interrupted node to "
+                "restore, so C6b..C6d are all unmeasurable")
+            return
+        show(f"compose kill {owner} — the owning worker and its child die together",
+             out[-240:])
+        time.sleep(50)                             # lease 30s + reconciler tick 15s + margin
+        deadline, ledger = time.time() + 150, {}
+        while time.time() < deadline:
+            row = psql_rows(c6_row(f"SELECT status || '|' || coalesce(error_class,'-') FROM "
+                                   f"attempts WHERE id = '{att}'", "killed attempt"), 2)
+            if row and row[0][0] == "interrupted":
+                ledger = dict(zip(("status", "error_class"), row[0]))
+                break
+            ledger = dict(zip(("status", "error_class"), row[0])) if row else {}
+            time.sleep(3)
+        c5_emit(c5_interrupted_verdicts(ledger))
+        ck_after = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints after kill"))
+        ck_after_view = [f"{c['node']}:{c['volume_id']}:{str(c['head'])[:12]}" for c in ck_after]
+        show("C6b the recorded checkpoint BOUNDARY is unchanged by the kill",
+             f"before={ck_before} after={ck_after_view}")
+        head_killed = gitout("rev-parse HEAD")
+        dirty_killed = gitout("status --porcelain | wc -l")
+        show("C6b run_checkpoints after the kill (recorded repo states)",
+             json.dumps(ck_after[:4]) or "(none)")
+        show("C6b the worktree the kill left behind (HEAD / dirty)",
+             f"{gitout('rev-parse HEAD')[:12] or '(unreadable)'} "
+             f"dirty={gitout('status --porcelain | wc -l') or '(unreadable)'}")
+        c6_emit(c6_avail_verdicts(ck_after))
+
+        # C6d — the refusal path, attempted with the ledger's ACTUAL boundary states.
+        # A committed boundary is C6a's own premise, so the refusal may be honestly
+        # unmeasurable here; the verdicts say which arm was exercised.
+        r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
+                       {"reason": "c6 uncommitted-boundary arm",
+                        "node_instance_keys": [C6_KILL_KEY]})
+        head_ref, dirty_ref = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
+        try:
+            code = str((r.json() or {}).get("code") or "")
+        except ValueError:
+            code = ""
+        show(f"C6d POST /api/v1/runs/{{id}}/retry -> {r.status}",
+             f"ctype={r.headers.get('Content-Type','')} code={code!r} {r.text[:260]}")
+        n_restored = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                            f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'", "restored count")
+        c6_emit(c6_unavailable_verdicts(r.status, r.headers.get("Content-Type", ""), code,
+                                        head_killed, head_ref, dirty_killed, dirty_ref,
+                                        n_restored, len(c6_attempts_of_key(run_id, key))))
+
+        # C6b/C6c — the real retry: the one the contract posts (a 409 above left the
+        # run untouched and retryable, so it is posted again WITHOUT the arm note).
+        r2 = r
+        if r.status == 409:
+            r2 = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "restore"})
+            show(f"C6b POST /api/v1/runs/{{id}}/retry (restore) -> {r2.status}", r2.text[:260])
+        rows = c6_attempts_of_key(run_id, key)
+        c5_emit(c5_retry_api_verdicts(r2.status, r2.text[:200], rows))
+        deadline = time.time() + 180
+        while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1
+                                                 for x in rows):
+            time.sleep(5)
+            rows = c6_attempts_of_key(run_id, key)
+
+        # C6b — read the worktree DURING the retry's own window, before the exec'd
+        # node can move HEAD: the reset must already be a fact (ADR-0023 § 6).
+        for x in rows:
+            if _int(x.get("attempt_number")) > 1 and x.get("status") in C5_LIVE_STATES:
+                time.sleep(3)
+                break
+        head_after = gitout("rev-parse HEAD")
+        dirty_after = gitout("status --porcelain | wc -l")
+        ev = c6_restore_event(run_id)
+        show("C6b the run.checkpoint_restored event",
+             json.dumps(ev) if ev else "(no such event row)")
+        show("C6b HEAD / DIRTY during the retry's window",
+             f"{head_after[:12] or '(unreadable)'} dirty={dirty_after or '(unreadable)'}")
+        c6_emit(c6_restored_verdicts(ev, ck_after, head_bnd, head_after, dirty_after,
+                                     max([_int(x.get("attempt_number")) for x in rows]
+                                         or [0]), policy_in_plan))
+        show("C6c the sentence § 7.1 requires the report to repeat", C6_PAIR_SENTENCE)
+        EVIDENCE["C6c"] = C6_PAIR_SENTENCE
+    finally:
+        rc, out = run(COMPOSE + ["start", owner])
+        show(f"compose start {owner} — the killed worker is brought back (host safety: the "
+             f"gate never leaves the lab down; rc={rc})", out[-240:] or owner)
+        wait_worker_row(owner, 120)
+
+    status = c8_watch(alice, twin, run_id, 900, "restore twin")
+    ne_rows = psql_rows(c6_row(f"SELECT node_instance_key FROM node_executions WHERE "
+                               f"run_id = '{run_id}' ORDER BY node_instance_key", "keys"), 1)
+    c1_keys = ((CTX.get("c1") or {}).get("twin") or {}).get("keys") or set()
+    c6_emit(c6_final_verdicts(status or "", {"policies": c6_retry_policies(run_id)},
+                              c1_keys, {r[0] for r in ne_rows}))
+    if not c1_keys:
+        gap("C6c key-set equality against C1", "C1's twin key set is not in CTX (C1 did not "
+                                               "run in this pass) — the comparison needs two "
+                                               "measured sets, not an invented one")
+    # C6e — cross-worker honesty (12 case 20's second arm). worker-c is a
+    # THROWAWAY with its own named repos volume, started by start_throwaway (this
+    # project's helper — compose has no worker-c service, and the driver never
+    # stops a container it did not create). The affinity flip is a lab-side
+    # precondition with no contract route (the M3 D10 exception § 7.1 C9 already
+    # uses): "point the run at it (drain a, run affinity forced)".
+    show("C6e cross-volume arm against the restore run",
+         f"owner={loss_arm_owner} volume={(ws_before or [{}])[0].get('volume_id')!r} "
+         f"status={run_status(run_id)!r}")
+    loss_verdicts, loss_ctx = [], {"worker": C6_LOSS_WORKER}
+    stopped = True
+    rc, out = run(COMPOSE + ["stop", loss_arm_owner])
+    if rc != 0:
+        stopped = False
+        loss_verdicts.append(("C6e the owning worker is stopped (drained)", False,
+                              f"compose stop {loss_arm_owner} -> rc={rc} {out[-180:]}"))
+    else:
+        time.sleep(40)                             # lease 30s + margin: the row goes stale
+        rc, out = run(COMPOSE + ["start", loss_arm_owner])
+        show(f"compose start {loss_arm_owner} (back for the finally; rc={rc})", out[-160:])
+        wait_worker_row(loss_arm_owner, 120)
+    if stopped:
+        loss_ctx["c_started"] = bool(start_throwaway(C6_LOSS_WORKER, "required", repos_volume=True))
+        cw = wait_worker_row(C6_LOSS_WORKER, 120)
+        loss_ctx["c_worker_id"] = cw[0] if cw and cw[0] else ""
+        if not loss_ctx["c_worker_id"]:
+            loss_verdicts.append(("C6e worker-c registered on its own named volume", False,
+                                  f"row={cw!r} — without a second worker there is no "
+                                  "different-worker arm"))
+        else:
+            show("C6e worker-c's row", f"{cw[0]} enforcement={cw[1]} capacity={cw[2]}")
+            flip = c9_lab_write(
+                f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
+                f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
+                f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
+                f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}' "
+                f"AND worker_affinity = (SELECT id FROM workers WHERE name = "
+                f"'{loss_arm_owner}')", "point the run at worker-c (contract § 7.1 C6e: "
+                "'drain a, run affinity forced' — no public route writes affinity)")
+            show("C6e runs row after the affinity flip", c6_row(
+                f"SELECT worker_affinity || ' volume=' || coalesce(worker_volume_id,'-') "
+                f"FROM runs WHERE id = '{run_id}'", "affinity"))
+            rr = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "cross-worker arm"})
+            show(f"C6e POST /api/v1/runs/{{id}}/retry -> {rr.status}", rr.text[:240])
+            time.sleep(45)                             # c claims, prepares, refuses
+            ev_c = c6_recovery_event(mf(facts, "project_id"), run_id)
+            latest = [x for x in c6_attempts_of_key(run_id, key) if x.get("error_class") != "-"]
+            err_c = latest[-1].get("error_class") if latest else ""
+            det_c = (latest[-1].get("detail") if latest else "") or ""
+            base_c = _int(latest[-1].get("attempt_number")) if latest else 1
+            show("C6e workspace.recovery_lost + the refused attempt",
+                 f"event={json.dumps(ev_c) if ev_c else '(none)'} | attempt="
+                 f"{json.dumps(latest[-1]) if latest else '(none)'}")
+            c8_watch(alice, twin, run_id, 180, "cross-worker arm")
+            run_st, cause = (psql_rows(c6_row(f"SELECT status || '|' || "
+                                              f"coalesce(failed_cause,'-') FROM runs WHERE "
+                                              f"id = '{run_id}'", "run row"), 2) or [[""]])[0]
+            sched = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                           f"'{run_id}' AND type = 'node.attempt.retry_scheduled'",
+                           "retry_scheduled")
+            c6_emit(c6_loss_verdicts(ev_c, run_st, err_c, c6_attempts_of_key(run_id, key),
+                                     sched, det_c, same_volume=False, base=base_c))
+            loss_verdicts.append(("C6e worker-c registered on its own named volume", True,
+                                  f"{loss_ctx['c_worker_id']}"))
+            loss_ctx.update({"event": ev_c, "error_class": err_c, "detail": det_c,
+                             "affinity_flipped": bool(flip)})
+        c6_emit(loss_verdicts)
+        stop_throwaway(C6_LOSS_WORKER, repos_volume=True)
+    CTX["c6_loss"] = loss_ctx
+    CTX["c6"] = {"run_id": run_id, "revision_id": rev, "attempt_id": att, "owner": owner,
+                 "key": key, "head_boundary": head_bnd, "events": ev,
+                 "volume_before": (ws_before or [{}])[0].get("volume_id"),
+                 "checkpoints": ck_after}
 
 # --- C7 pure logic — unit-tested offline by e2e/m4/test_c7_logic.py -----------
 # Verdict algebra for the `until`-never-passes gate (docs/m4-contract.md § 7.1 C7).
