@@ -1139,7 +1139,7 @@ func (ac *advanceCtx) advanceForEach(pn *compiler.Node, row *NodeExecution, scop
 		ac.changed = true
 	}
 	if st.StopRequested {
-		if err := ac.cancelUnsettledIndices(&sub, pn, idx, st.NextIndex); err != nil {
+		if err := ac.cancelUnsettledIndices(&sub, pn, idx, st.NextIndex, len(st.Items)); err != nil {
 			return err
 		}
 	} else {
@@ -1490,21 +1490,60 @@ func (ac *advanceCtx) indexResult(sub *compiler.Scope, idx map[string]int, i int
 	return res
 }
 
-func (ac *advanceCtx) cancelUnsettledIndices(sub *compiler.Scope, pn *compiler.Node, idx map[string]int, upto int) error {
-	for i := 0; i < upto; i++ {
+// cancelUnsettledIndices applies a fired `stop` across the WHOLE item list.
+//
+// The started-but-unsettled indices are cancelled in place (§ 4 step 11: a
+// leased/running row is only marked, its owner writes the honest terminal).
+// The QUEUED indices — the ones the maxConcurrency window never reached — are
+// materialized as terminal `cancelled` executions, one node.execution_cancelled
+// per body node, reason on_child_failure_stop. Contract § 7 C8e names that
+// journal row for "queued siblings", and ADR-0023 § 8 says stop "cancels queued
+// siblings": while a queued sibling left no row at all the promise was
+// unobservable (live C8e measured 0 such rows — the in-flight siblings had all
+// settled before the failure was recorded, so the started set was empty).
+//
+// Materializing is bounded by the runaway guard: `maxNodeExecutions` may be
+// smaller than items × body nodes, and turning the scope's child_failed into
+// node_execution_budget_exceeded would trade a named policy for a spurious
+// cap. The loop stops short of the ceiling instead of failing the run.
+func (ac *advanceCtx) cancelUnsettledIndices(sub *compiler.Scope, pn *compiler.Node, idx map[string]int, started, total int) error {
+	for i := 0; i < started; i++ {
 		bi := childIdx(idx, pn.ID, i)
 		if ac.indexSettled(sub, bi) {
 			continue
 		}
-		for _, cid := range sub.TopologicalOrder {
-			cpn := ac.prog.nodes[sub.Key][cid]
-			crow := ac.st.Node(buildInstanceKey(cpn.Path, bi))
-			if crow == nil || NodeTerminal(crow.Status) {
-				continue
-			}
-			if err := ac.cancelNode(crow, "on_child_failure_stop"); err != nil {
-				return err
-			}
+		if err := ac.cancelIndexBodies(sub, bi); err != nil {
+			return err
+		}
+	}
+	body := ac.prog.ScopeNodes(sub.Key)
+	for i := started; i < total; i++ {
+		if limit := ac.prog.plan.Policies.MaxNodeExecutions; limit > 0 && len(ac.st.Nodes)+len(body) > limit {
+			break
+		}
+		bi := childIdx(idx, pn.ID, i)
+		if err := ac.enterScope(sub.Key, bi, scopeKeyOf(pn.Path, idx, i)); err != nil {
+			return err
+		}
+		if err := ac.cancelIndexBodies(sub, bi); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cancelIndexBodies terminalizes every non-terminal body row of one fan-out
+// index with the stop reason. A row that never existed is not created here —
+// the caller decides whether a queued index gets a row at all.
+func (ac *advanceCtx) cancelIndexBodies(sub *compiler.Scope, idx map[string]int) error {
+	for _, cid := range sub.TopologicalOrder {
+		cpn := ac.prog.nodes[sub.Key][cid]
+		crow := ac.st.Node(buildInstanceKey(cpn.Path, idx))
+		if crow == nil || NodeTerminal(crow.Status) {
+			continue
+		}
+		if err := ac.cancelNode(crow, "on_child_failure_stop"); err != nil {
+			return err
 		}
 	}
 	return nil

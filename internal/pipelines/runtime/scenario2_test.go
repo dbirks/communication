@@ -296,11 +296,24 @@ func TestFanoutStopPreservesCompletedSiblings(t *testing.T) {
 	// already requested but before cancel reaches it) keeps its results —
 	// preserved, not rewritten (C8e).
 	_ = succeeded
-	if _, ok := lookupNode(st, "/fan_out[2]/invoke"); ok {
-		t.Error("stop must not start indices beyond the in-flight window")
-	}
-	if _, ok := lookupNode(st, "/fan_out[4]/invoke"); ok {
-		t.Error("stop must not start indices beyond the in-flight window")
+	// The queued siblings (2..4) were never DISPATCHED, and now read as
+	// cancelled rather than as nothing at all (C8e — see
+	// TestFanoutStopJournalsQueuedSiblingsCancelled).
+	for _, key := range []string{"/fan_out[2]/invoke", "/fan_out[4]/invoke"} {
+		queued, ok := lookupNode(st, key)
+		if !ok {
+			t.Errorf("%s: stop must leave a cancelled row for a queued sibling", key)
+			continue
+		}
+		if queued.Status != runtime.NodeCancelled {
+			t.Errorf("%s = %s, want cancelled", key, queued.Status)
+		}
+		if n := len(st.AttemptsFor(queued.ID)); n != 0 {
+			t.Errorf("%s booked %d attempts, want 0 (a queued sibling is cancelled before dispatch)", key, n)
+		}
+		if indexOfKey(cr.created, key) >= 0 {
+			t.Errorf("%s booked a child run (%v), want no child at all", key, cr.created)
+		}
 	}
 	n1 := st.Node("/fan_out[1]/invoke")
 	if n1 == nil || n1.Status != runtime.NodeCancelled {
@@ -329,6 +342,78 @@ func TestFanoutStopPreservesCompletedSiblings(t *testing.T) {
 	sf := lastRecord(t, st, pevents.TypeNodeScopeFailed)
 	if pl := sf.Payload.(pevents.NodeScopeFailed); pl.FailedCause != "child_failed" {
 		t.Errorf("scope failed_cause = %s, want child_failed", pl.FailedCause)
+	}
+}
+
+// TestFanoutStopJournalsQueuedSiblingsCancelled is C8e's live shape (lab
+// live10): with maxConcurrency 2 the whole in-flight window settles in the
+// same pass that records the failing child, so NOT ONE started sibling is
+// still open when the stop fires. Everything the contract calls a "queued
+// sibling" is an index the window never reached — and § 7 C8e promises those
+// siblings cancel via node.execution_cancelled{reason:'on_child_failure_stop'}.
+// Before the fix the engine simply never started them, left no row, and the
+// live gate counted 0 such journal rows for a run that had stopped 10 siblings.
+func TestFanoutStopJournalsQueuedSiblingsCancelled(t *testing.T) {
+	plan := loadPlan(t, "testdata/fanout_stop.yaml")
+	// Index 0 fails and index 1 completes with no delay: at the pass that
+	// records index 0's failure the started set is fully settled, so the ONLY
+	// siblings left to cancel are the queued ones (2, 3, 4).
+	cr := &scriptedChildren{status: map[int]string{0: runtime.RunFailed}}
+	dv := newDriverWith(t, plan, map[string]any{"goal": "stop me"}, runtime.AdvancerDeps{Children: cr})
+	dv.script("/seed", step{outputs: worklist(5)})
+	dv.pump(100)
+	st := dv.state()
+
+	if st.Run.Status != runtime.RunFailed {
+		t.Fatalf("run = %s, want failed (scope failed under stop)", st.Run.Status)
+	}
+	sf := lastRecord(t, st, pevents.TypeNodeScopeFailed).Payload.(pevents.NodeScopeFailed)
+	if sf.FailedCause != "child_failed" {
+		t.Errorf("scope failed_cause = %s, want child_failed", sf.FailedCause)
+	}
+	// The completed sibling is PRESERVED, not rewritten by the stop.
+	if n := st.Node("/fan_out[1]/invoke"); n == nil || n.Status != runtime.NodeSucceeded {
+		t.Errorf("completed sibling = %+v, want succeeded", n)
+	}
+	// Every queued sibling is a cancelled row naming the stop reason, and the
+	// journal says so once each (C8e's cancelled=None -> cancelled=3).
+	want := []string{"/fan_out[2]/invoke", "/fan_out[3]/invoke", "/fan_out[4]/invoke"}
+	seen := map[string]int{}
+	for _, e := range st.Events {
+		if e.Type != pevents.TypeNodeExecutionCancelled {
+			continue
+		}
+		pl := e.Payload.(pevents.NodeExecutionCancelled)
+		if pl.Reason != "on_child_failure_stop" {
+			continue
+		}
+		seen[pl.NodeInstanceKey]++
+	}
+	for _, key := range want {
+		if seen[key] != 1 {
+			t.Errorf("node.execution_cancelled{reason:on_child_failure_stop} for %s = %d, want exactly 1", key, seen[key])
+		}
+		if n := st.Node(key); n == nil || n.Status != runtime.NodeCancelled || n.CancelReason != "on_child_failure_stop" {
+			t.Errorf("queued sibling %s = %+v, want cancelled/on_child_failure_stop", key, n)
+		}
+	}
+	// Queued siblings are cancelled BEFORE dispatch: no attempt, no child run.
+	for _, key := range want {
+		n := st.Node(key)
+		if n == nil {
+			continue
+		}
+		if got := len(st.AttemptsFor(n.ID)); got != 0 {
+			t.Errorf("%s booked %d attempts, want 0", key, got)
+		}
+		if indexOfKey(cr.created, key) >= 0 {
+			t.Errorf("%s booked a child run (%v), want none", key, cr.created)
+		}
+	}
+	// The stop still honours the fan-out bound: materializing queued siblings
+	// books no child and opens no slot.
+	if cr.maxActive > 2 {
+		t.Errorf("peak live children = %d, want <= maxConcurrency 2", cr.maxActive)
 	}
 }
 
