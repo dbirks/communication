@@ -38,6 +38,26 @@ environment:
   COMMUNICATION_LISTEN_ADDR             listen address (default ":8080")
   COMMUNICATION_PUBLIC_URL              required, browser-facing base URL
   COMMUNICATION_REPLICA_NAME            replica id (default: hostname)
+  COMMUNICATION_PIPELINE_SCHEDULER      "on" (default) | "off" — ADR-0023's
+                                        rollback switch for THIS replica. With
+                                        "off" the M4 pipeline engine does not
+                                        start here: the run/approval routes
+                                        carry no advancer trigger and the
+                                        driver's backstop tick never runs, so a
+                                        run POSTed to this replica stays
+                                        "queued" and a replica with the flag on
+                                        advances it (docs/m4-contract.md
+                                        § 7.1 C14c). Reads, SSE, M2
+                                        conversations and M3 surfaces are
+                                        untouched. Any other value is a startup
+                                        refusal. Scope note: the M4 *attempt
+                                        claimer* lives in worker mode
+                                        (internal/worker's attempt loop) and is
+                                        NOT switched off by this serve-side
+                                        variable — a run stays queued because
+                                        no replica advances it into claimable
+                                        attempts, not because claims were
+                                        disabled. Case-insensitive.
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -133,6 +153,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	pipelineSchedulerOff, err := servePipelineScheduler(os.Getenv)
+	if err != nil {
+		// A typo in ADR-0023's rollback switch must not decide the deployment's
+		// behaviour by accident: refuse to start and name the variable.
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	listenAddr := os.Getenv("COMMUNICATION_LISTEN_ADDR")
 	if listenAddr == "" {
 		listenAddr = ":8080"
@@ -183,10 +210,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	handler, closeStack, err := serveStack(serveStackDeps{
-		Pool:            pool,
-		DatabaseURL:     databaseURL,
-		Auth:            authCfg,
-		WorkerHeartbeat: workerHeartbeat,
+		Pool:                 pool,
+		DatabaseURL:          databaseURL,
+		Auth:                 authCfg,
+		WorkerHeartbeat:      workerHeartbeat,
+		PipelineSchedulerOff: pipelineSchedulerOff,
 		API: api.Config{
 			ReplicaName: replica,
 			Version:     version,
@@ -385,6 +413,19 @@ type serveStackDeps struct {
 	// keeps every M1/M2 route working: secrets refuse through the absent
 	// keyring, artifacts serve no bytes, and the preview origin stays shut.
 	M3 serveM3
+
+	// PipelineSchedulerOff is COMMUNICATION_PIPELINE_SCHEDULER=off resolved
+	// (servePipelineScheduler). With it set this replica runs no M4 engine: no
+	// advancer trigger on the run/approval routes and no driver backstop tick,
+	// so writes still land and reads still serve while the run stays 'queued'
+	// for another replica (ADR-0023 Migration/rollback, contract § 7.1 C14c).
+	// Worker mode's attempt claim loop is a different process and unaffected.
+	PipelineSchedulerOff bool
+
+	// m4DriverRunner overrides the M4 driver loop; nil means production's
+	// driver.Run at the 2 s tick. It exists so a test can observe whether the
+	// stack started the advancer at all without a database to advance against.
+	m4DriverRunner func(ctx context.Context) error
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -405,6 +446,46 @@ func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
 		return 0, fmt.Errorf("COMMUNICATION_WORKER_HEARTBEAT must be positive, got %s", d)
 	}
 	return d, nil
+}
+
+// envPipelineScheduler is ADR-0023 Migration/rollback's feature flag: the M4
+// engine is configuration, never a schema revert.
+const envPipelineScheduler = "COMMUNICATION_PIPELINE_SCHEDULER"
+
+// servePipelineScheduler reads COMMUNICATION_PIPELINE_SCHEDULER. Empty or "on"
+// means the engine runs on this replica (a fresh install's default);
+// "off" is ADR-0023's rollback arm. Anything else is a startup refusal rather
+// than a silent fallback: an operator who typos the rollback switch and gets a
+// replica that quietly kept advancing runs would learn about it from the
+// database, not from the log (same rule as COMMUNICATION_WORKER_HEARTBEAT).
+func servePipelineScheduler(getenv func(string) string) (off bool, err error) {
+	raw := strings.TrimSpace(getenv(envPipelineScheduler))
+	switch strings.ToLower(raw) {
+	case "", "on":
+		return false, nil
+	case "off":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s %q is not \"on\" or \"off\"", envPipelineScheduler, raw)
+	}
+}
+
+// startPipelineDriver is the whole decision the flag makes on a serve replica:
+// does the in-process M4 advancer run here? One function so the routes' trigger
+// and the driver's ticker can never disagree about the answer, and so both arms
+// are assertable without a database.
+func startPipelineDriver(schedulerOff bool) bool { return !schedulerOff }
+
+// m4RunTrigger returns the advancer trigger the run and approval routes fire
+// after a state write, or nil on a replica where the engine is off. A nil
+// trigger is legal by api.M4Trigger's own contract (the write is complete
+// without it); here it is not merely a latency choice but the C14c guarantee
+// that an off replica never advances a run itself.
+func m4RunTrigger(drv *postgres.M4Driver, schedulerOff bool) api.M4Trigger {
+	if schedulerOff || drv == nil {
+		return nil
+	}
+	return drv.Trigger
 }
 
 // serveStack builds the HTTP handler for one replica and returns it with a
@@ -433,7 +514,8 @@ func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
 //	postgres.M4Driver         in-process advancer: api.M4Trigger nudges one
 //	                          run, the 2 s tick catches dropped triggers,
 //	                          one replica at a time under its own advisory
-//	                          lock (docs/m4-contract.md § 5)
+//	                          lock (docs/m4-contract.md § 5). Neither path
+//	                          starts when COMMUNICATION_PIPELINE_SCHEDULER=off
 //	postgres.Reconciler       turn-lease reconciliation, one replica at a time
 //	                          under a Postgres advisory lock (ADR-0016 §4)
 //
@@ -523,15 +605,25 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	m4Children.Runtime = m4Runtime // the advancer needs the children; the children, the runtime store
 	m4Driver := postgres.NewM4Driver(d.Pool, m4Runtime,
 		log.With(slog.String("component", "m4-driver")))
+	// ADR-0023's rollback switch, decided once: the routes' trigger and the
+	// driver's ticker both read this same answer, so an off replica cannot
+	// advance a run by either path.
+	startDriver := startPipelineDriver(d.PipelineSchedulerOff)
+	var m4Trigger api.M4Trigger
+	if startDriver {
+		m4Trigger = m4RunTrigger(m4Driver, d.PipelineSchedulerOff)
+	} else {
+		log.Info("pipeline scheduler disabled on this replica (COMMUNICATION_PIPELINE_SCHEDULER=off)")
+	}
 	api.RegisterPipelines(handler, postgres.APIPipelineStore{S: pipelineStore}, definitionService)
 	api.RegisterRuns(handler,
 		postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		postgres.APIAssignmentStore{S: pipelineStore},
 		apiProjects,
 		postgres.APIRunEventStream{Journal: projectStore, Wakes: wakes},
-		m4Driver.Trigger)
+		m4Trigger)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
-		apiProjects, m4Driver.Trigger)
+		apiProjects, m4Trigger)
 	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool})
 	api.RegisterSandbox(handler,
 		postgres.APITurnSandboxStore{Pool: d.Pool},
@@ -571,15 +663,23 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	}()
 
 	// The M4 driver ticks on every replica and advances on one: the same
-	// advisory-lock pattern as the reconciler below, its own lock name.
+	// advisory-lock pattern as the reconciler below, its own lock name. With
+	// COMMUNICATION_PIPELINE_SCHEDULER=off it does not tick here at all — the
+	// goroutine is never started (see serveStackDeps.PipelineSchedulerOff).
 	driverCtx, stopDriver := context.WithCancel(context.Background())
-	go func() {
-		if err := m4Driver.Run(driverCtx, 2*time.Second); err != nil {
-			log.Error("m4 driver stopped", slog.String("error", err.Error()))
-			return
+	if startDriver {
+		runDriver := d.m4DriverRunner
+		if runDriver == nil {
+			runDriver = func(ctx context.Context) error { return m4Driver.Run(ctx, 2*time.Second) }
 		}
-		log.Info("m4 driver stopped")
-	}()
+		go func() {
+			if err := runDriver(driverCtx); err != nil {
+				log.Error("m4 driver stopped", slog.String("error", err.Error()))
+				return
+			}
+			log.Info("m4 driver stopped")
+		}()
+	}
 
 	var closeOnce sync.Once
 	closeStack := func() {

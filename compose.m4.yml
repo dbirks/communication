@@ -67,9 +67,15 @@ services:
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
       COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
       COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18094
-      # ADR-0023 Migration/rollback: the engine is a configuration flag.
-      # C14c flips it to `off` on a restarted replica; default is on.
-      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER:-on}"
+      # ADR-0023 Migration/rollback: the engine is a configuration flag, read
+      # per serve replica by cmd/communication/serve.go. § 7.1 C14c needs ONE
+      # replica off while the other keeps advancing, so each replica gets its
+      # own variable (both default to on):
+      #   COMMUNICATION_PIPELINE_SCHEDULER_A=off docker compose ... up -d api-a
+      # `off` stops that replica's advancer trigger and driver tick only — runs
+      # posted there stay 'queued' for the other replica. The M4 attempt claim
+      # loop lives in worker mode (worker-b below) and is not switched here.
+      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER_A:-on}"
     ports: !override
       - "127.0.0.1:18092:8080"
 
@@ -79,7 +85,9 @@ services:
       COMMUNICATION_OIDC_BROWSER_ISSUER: http://localhost:18095/default
       COMMUNICATION_PREVIEW_HOST: preview.localhost:18094
       COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18094
-      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER:-on}"
+      # Per-replica engine flag; see api-a. COMMUNICATION_PIPELINE_SCHEDULER_B
+      # =off leaves this replica serving reads and never advancing (C14c).
+      COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER_B:-on}"
     ports: !override
       - "127.0.0.1:18093:8080"
 
