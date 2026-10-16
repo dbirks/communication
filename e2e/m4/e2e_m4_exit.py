@@ -658,7 +658,9 @@ def compare_key_sets(a, b):
 # so the literal sets differed by exactly c1_only=[…[2]/{implement,review,test}]
 # while both runs followed the identical graph). Comparing the raw sets there made
 # C5g and C6c FAIL a claim the run actually satisfied; C1's cross-variant check
-# already normalizes with collapse_iterations, so C5g/C6c use that same helper now.
+# already normalizes with collapse_iterations, so C5g/C6c use that same helper now —
+# and C1's cross-variant arm itself now goes through c1_cross_variant_keyset_verdicts
+# below, i.e. the same normalizer PLUS the same hole guard.
 #
 # The append-only claim stays FALSIFIABLE: a retry that RENAMES a key (a body node
 # appears under a new id) or REMOVES one entirely still differs in the normalized
@@ -729,6 +731,58 @@ def key_set_identity_verdicts(claim, c1_keys, run_keys, gap_detail):
          f"holes={holes[:4]}" if holes else
          f"every body node's iteration suffixes run 1..N over "
          f"{observed_iterations(b)} iteration(s)"),
+    ]
+
+
+C1_XVARIANT_NORM_RULE = (
+    "the [n] until-loop suffix is an iteration count, not a node id — § 7.1 C1g "
+    "expects 'iterations=2 (twin) / >=2 (agent)', so the two C1 variants are ALLOWED "
+    "to loop different numbers of times; compared with the same collapse_iterations() "
+    "C5g/C6c use")
+C1_XVARIANT_APPEND_RULE = (
+    "the twin claim is still falsifiable: the normalized sets must match AND each "
+    "leg's own iteration suffixes run 1..N contiguously, so a variant that REMOVED or "
+    "RENAMED a node_instance_key row — or deleted a row out of the middle of its own "
+    "loop history — fails here")
+
+
+def c1_cross_variant_keyset_verdicts(agent_keys, twin_keys):
+    """(label, ok, detail) for "the agent variant and its deterministic twin walked
+    the same graph" — the claim pipeline.yaml's twin document makes.
+
+    Same shared normalizer and history-hole guard as C5g/C6c (collapse_iterations +
+    loop_history_holes), graded on BOTH legs because both sides here are C1's own
+    runs. Equal normalized sets PASS whatever the iteration counts; a node missing
+    outright, a renamed node, or a hole in either leg's history still FAILs. The
+    literal (un-normalized) comparison is reported inside the detail instead of as
+    its own FAIL arm — a differing loop count is a fact about the model, not a
+    broken twin, and § 7.1 never claims the variants loop equally. Exact key "
+    "identity IS still FAILed where the contract demands it: C1d's per-leg expected "
+    "key/status map, and C1i's twin re-run of the SAME revision (raw sets)."""
+    a, b = set(agent_keys or set()), set(twin_keys or set())
+    label = "C1 cross-variant key set identical"
+    if not a or not b:
+        return [(f"{label}, iteration-normalized", None,
+                 f"agent_keys={len(a)} twin_keys={len(b)} — the equality needs TWO "
+                 "ledger-complete runs; inventing the missing one would prove nothing "
+                 "(the FAILs above say which leg did not reach completed)")]
+    ident_raw, raw_a, raw_b = compare_key_sets(a, b)
+    ident, only_a, only_b = compare_key_sets(collapse_iterations(a), collapse_iterations(b))
+    holes = loop_history_holes(a) + loop_history_holes(b)
+    detail = (f"iteration-normalized agent_only={only_a[:4]} twin_only={only_b[:4]} — the "
+              f"agent loop spent {observed_iterations(a)} iteration(s), the twin "
+              f"{observed_iterations(b)}; literal sets "
+              + ("identical" if ident_raw
+                 else f"differ (agent_only={raw_a[:4]} twin_only={raw_b[:4]}) — "
+                     "expected whenever the model looped a different number of times"))
+    return [
+        (f"{label}, iteration-normalized ({C1_XVARIANT_NORM_RULE})", ident, detail),
+        (f"{label}: no hole in either leg's until-loop history ({C1_XVARIANT_APPEND_RULE})",
+         not holes,
+         f"agent holes={loop_history_holes(a)[:4]} twin holes={loop_history_holes(b)[:4]}"
+         if holes else
+         f"agent 1..{observed_iterations(a)} / twin 1..{observed_iterations(b)}, "
+         "contiguous from [1] in both legs"),
     ]
 
 
@@ -1800,18 +1854,19 @@ def c1():
         gap("C1i twin replay identity", "twin seed or replay leg did not reach completed "
                                         "(see the FAILs above — identity is asserted only "
                                         "over two ledger-complete runs)")
-    if res_a and res_tw:
-        ident, oa, ob = compare_key_sets(res_a["keys"], res_tw["keys"])
-        check("C1 cross-variant key set identical, EXACT (both variants spent "
-              f"{res_a['iterations']}/{res_tw['iterations']} iterations — § 9.4: the agent "
-              "leg earns this only when the model actually looped like the fixture)",
-              ident, f"agent_only={oa} twin_only={ob}")
-    ident_n, oa, ob = compare_key_sets(
-        collapse_iterations(res_a["keys"]) if res_a else set(),
-        collapse_iterations(res_tw["keys"]) if res_tw else set())
-    check("C1 cross-variant key set identical, iteration-normalized (the equal-node-ids "
-          "claim pipeline.yaml's twin makes)", res_a is not None and res_tw is not None
-          and ident_n, f"agent_only={oa} twin_only={ob}" if res_a and res_tw else "a leg failed")
+    # Cross-variant identity (pipeline.yaml's twin claim) goes through the SHARED
+    # normalizer + hole guard — see c1_cross_variant_keyset_verdicts. The old
+    # "…identical, EXACT (both variants spent N/M iterations)" arm is gone: § 7.1
+    # C1g expects iterations=2 (twin) / >=2 (agent), so the literal sets are only
+    # equal when the model happens to loop like the fixture (live12: 2/2), and that
+    # arm PASSed/FAILed on the model's mood rather than on the engine. The literal
+    # comparison now prints inside the normalized verdict's detail; exact key
+    # identity stays FAILed where the contract actually claims it — C1d's expected
+    # key/status map per leg and C1i's twin re-run of the SAME revision, just above.
+    for label, ok, detail in c1_cross_variant_keyset_verdicts(
+            res_a["keys"] if res_a else None,
+            res_tw["keys"] if res_tw else None):
+        gap(label, detail) if ok is None else check(label, ok, detail)
     CTX["c1"] = {"agent": res_a, "twin_seed": res_tw_seed, "twin": res_tw,
                  "runs": [run_a, tw["run_id"], run_tw]}
 

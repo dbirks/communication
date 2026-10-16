@@ -148,6 +148,92 @@ class KeySetTest(unittest.TestCase):
         self.assertEqual(m.collapse_iterations(agent), m.collapse_iterations(twin))
 
 
+def ok_of(verdicts, needle):
+    hits = [ok for label, ok, _ in verdicts if needle in label]
+    assert hits, f"no verdict matching {needle!r} in {[l for l, _, _ in verdicts]}"
+    return hits[0]
+
+
+def detail_of(verdicts, needle):
+    return [d for label, _, d in verdicts if needle in label][0]
+
+
+class CrossVariantKeySetTest(unittest.TestCase):
+    """§ 7.1 C1's cross-variant arm: the agent variant and its deterministic twin
+    walked the same GRAPH. Graded on the shared normalizer + hole guard, so the
+    verdict follows the graph and not the model's iteration count (live12 passed
+    only because both legs happened to loop twice)."""
+
+    AGENT = set(m.expected_node_keys(3))     # the model looped three times
+    TWIN = set(m.expected_node_keys(2))      # the fixture loops twice (§ 7.1 C1d)
+
+    def test_different_loop_counts_pass_on_equal_normalized_sets(self):
+        v = m.c1_cross_variant_keyset_verdicts(self.AGENT, self.TWIN)
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertTrue(ok_of(v, "no hole"), v)
+        d = detail_of(v, "iteration-normalized")
+        self.assertIn("agent loop spent 3 iteration(s), the twin 2", d)
+        self.assertIn("literal sets differ", d)
+
+    def test_equal_loop_counts_still_pass(self):
+        v = m.c1_cross_variant_keyset_verdicts(self.TWIN, set(self.TWIN))
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertIn("literal sets identical", detail_of(v, "iteration-normalized"))
+
+    def test_a_node_missing_from_one_leg_still_fails(self):
+        v = m.c1_cross_variant_keyset_verdicts(self.AGENT - {"/verdict"}, self.TWIN)
+        self.assertFalse(ok_of(v, "iteration-normalized"), v)
+        v = m.c1_cross_variant_keyset_verdicts(self.AGENT, self.TWIN | {"/extra_node"})
+        self.assertFalse(ok_of(v, "iteration-normalized"), v)
+
+    def test_a_renamed_node_still_fails(self):
+        twin = {k.replace("/implement", "/impl") for k in self.TWIN}
+        self.assertFalse(ok_of(m.c1_cross_variant_keyset_verdicts(self.AGENT, twin),
+                               "iteration-normalized"))
+
+    def test_a_hole_in_either_legs_history_fails_the_guard(self):
+        """The hole guard keeps the claim falsifiable under normalization: [*]/test
+        still exists (under [2]), so set equality alone would PASS a leg whose row
+        was deleted out of the MIDDLE of its own iteration history."""
+        v = m.c1_cross_variant_keyset_verdicts(self.AGENT, self.TWIN - {"/build_until_verified[1]/test"})
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertFalse(ok_of(v, "no hole"), v)
+        self.assertIn("never at [1]", detail_of(v, "no hole"))
+
+        v = m.c1_cross_variant_keyset_verdicts(self.AGENT - {"/build_until_verified[2]/test"},
+                                               self.TWIN)
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertFalse(ok_of(v, "no hole"), v)
+        self.assertIn("missing [2]", detail_of(v, "no hole"))
+
+    def test_a_loop_that_did_not_finish_its_last_iteration_is_not_a_hole(self):
+        """Rows never written are not rows removed (the agent leg killed mid-[4])."""
+        agent = self.AGENT | {f"/build_until_verified[4]/{n}" for n in ("implement",)}
+        v = m.c1_cross_variant_keyset_verdicts(agent, self.TWIN)
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertTrue(ok_of(v, "no hole"), v)
+
+    def test_a_missing_leg_is_a_gap_not_a_pass(self):
+        for pair in ((None, self.TWIN), (self.AGENT, None), (set(), self.TWIN)):
+            v = m.c1_cross_variant_keyset_verdicts(*pair)
+            self.assertIsNone(ok_of(v, "iteration-normalized"), pair)
+            self.assertIn("TWO ledger-complete runs", detail_of(v, "iteration-normalized"))
+
+    def test_exact_keys_are_still_asserted_where_the_contract_demands_them(self):
+        """§ 7.1 C1i: "replay the whole thing a second time (fresh run, same
+        revision) and assert an identical node_instance_key set and an identical
+        plan_digest" — same revision, so the RAW set comparison is the claim, and it
+        must survive. The cross-variant exact arm must not."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        self.assertIn('check("C1i twin re-run: node_instance_key SET identical '
+                      '(ledger rows, exact)",', src)
+        self.assertNotIn("cross-variant key set identical, EXACT", src,
+                         "the arm that PASSed only when both legs looped equally")
+        self.assertIn("c1_cross_variant_keyset_verdicts(", src)
+        self.assertIn('check(f"C1d {label}: no unexpected node kinds/keys', src)
+
+
 def row(seq, typ, node=None, attempt=None):
     return {"global_seq": seq, "type": typ, "node_execution_id": node, "attempt_id": attempt}
 
