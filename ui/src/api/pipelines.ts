@@ -12,7 +12,7 @@
  */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
-import { queryKeys } from "./queries";
+import { queryKeys, type RefetchOptions } from "./queries";
 import type {
   Assignment,
   AssignmentCreate,
@@ -55,10 +55,11 @@ export function pipelineDraftsQueryOptions(pipelineId: string) {
 }
 
 /** `GET /api/v1/pipelines` — the org library, ordered by slug, no documents. */
-export function usePipelines() {
+export function usePipelines(options: RefetchOptions = {}) {
   return useQuery({
     queryKey: queryKeys.pipelines,
     queryFn: () => apiFetch<PipelineList>("/api/v1/pipelines"),
+    refetchInterval: options.refetchInterval,
   });
 }
 

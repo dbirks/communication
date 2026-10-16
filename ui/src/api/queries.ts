@@ -126,10 +126,23 @@ export function useUsers() {
   });
 }
 
-export function useProjects() {
+/**
+ * Options a read caller may pass to make *its own* copy of a shared query
+ * refresh on a timer. Only the caller that passes it is affected — every other
+ * page using the same hook keeps the fetch-on-mount-and-invalidate behavior.
+ * TanStack's default `refetchIntervalInBackground: false` means the timer only
+ * fires while the tab is visible.
+ */
+export interface RefetchOptions {
+  /** Milliseconds between background refreshes; omit to never poll. */
+  refetchInterval?: number;
+}
+
+export function useProjects(options: RefetchOptions = {}) {
   return useQuery({
     queryKey: queryKeys.projectList,
     queryFn: () => apiFetch<ProjectList>("/api/v1/projects"),
+    refetchInterval: options.refetchInterval,
   });
 }
 

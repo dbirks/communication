@@ -4,8 +4,8 @@
  * you, decisions and retries acted on inline. The fixture wires are the frozen
  * M4 ones — nothing here invents a field the API does not carry.
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
 import {
   WIRE_APPROVAL_ID,
@@ -22,12 +22,14 @@ import {
   conversationId,
   conversationSummaryFixture,
   meFixture,
+  mockFetch,
   permissionRequestFixture,
   projectFixture,
   requestsTo,
   type RouteStub,
 } from "../test/fakes";
 import { testidOf } from "../lib/format";
+import { INBOX_POLL_MS } from "./Inbox";
 
 const PROJECTS_PATH = "/api/v1/projects";
 const APPROVALS_PATH = `/api/v1/projects/${wireProjectId}/approvals`;
@@ -261,5 +263,94 @@ describe("/inbox", () => {
     mountInbox({ approvals: [] }, { runs: [] });
     expect((await screen.findByTestId("inbox-empty")).textContent).toContain("Nothing needs you.");
     expect(screen.queryByTestId("inbox-decisions")).toBeNull();
+  });
+});
+
+/**
+ * The Inbox is left open, so a gate or a prompt that turns pending afterwards
+ * has to arrive on the page's own timer rather than by reload. Each test mounts
+ * under fake timers, lets the first fetch land, then changes what the server
+ * answers and advances one `INBOX_POLL_MS` tick — and checks the node it drew
+ * first is still the node on screen, i.e. the page refreshed in place.
+ */
+describe("/inbox live refresh", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** Let the mount's fetches settle while every clock is fake: each tick is a
+   * fraction of `INBOX_POLL_MS`, so no interval has fired by the end. */
+  async function settle() {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+    }
+  }
+
+  it("draws a gate that turns pending while the page sits open", async () => {
+    vi.useFakeTimers();
+    const { requests } = mountInbox({ approvals: [] }, { runs: [] });
+    await settle();
+
+    // First paint: the wire asked for nothing, and the gates were read once.
+    expect(screen.getByTestId("inbox-empty").textContent).toContain("Nothing needs you.");
+    expect(requestsTo(requests, APPROVALS_PATH, "GET")).toHaveLength(1);
+    const greeting = screen.getByTestId("inbox-greeting");
+
+    // A gate goes pending underneath the open page.
+    const poll = mockFetch(routes(wireApprovalList, { runs: [] }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+    });
+
+    const row = screen.getByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    expect(row.textContent).toContain("The plan is ready");
+    expect(screen.getByTestId("inbox-summary").textContent).toContain("1 decision");
+    // Proven by a re-read, not a remount: one fresh approvals request, and the
+    // header element from the first paint is still the element on screen.
+    expect(requestsTo(poll.requests, APPROVALS_PATH, "GET")).toHaveLength(1);
+    expect(screen.getByTestId("inbox-greeting")).toBe(greeting);
+  });
+
+  it("tags a permission prompt that appears on the detail re-read", async () => {
+    vi.useFakeTimers();
+    const withTurn = [{ ...conversationSummaryFixture, has_active_turn: true }];
+    const { requests } = mountInbox(
+      { approvals: [] },
+      { runs: [] },
+      [{ path: CONVERSATION_PATH, body: { ...conversationFixture, pending_permissions: [] } }],
+      { items: withTurn },
+    );
+    await settle();
+
+    const testid = `inbox-conversation-tag-${testidOf(conversationId)}`;
+    const row = screen.getByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    expect(within(row).getByTestId(testid).textContent).toContain("active");
+    // The list row says a turn is open, so its detail is the one read that can
+    // answer a prompt — and the only detail read in flight.
+    expect(requestsTo(requests, CONVERSATION_PATH, "GET")).toHaveLength(1);
+
+    // The agent asks for permission while the page is open.
+    const poll = mockFetch(
+      routes(
+        { approvals: [] },
+        { runs: [] },
+        [
+          {
+            path: CONVERSATION_PATH,
+            body: { ...conversationFixture, pending_permissions: [permissionRequestFixture] },
+          },
+        ],
+        { items: withTurn },
+      ),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+    });
+
+    expect(requestsTo(poll.requests, CONVERSATION_PATH, "GET")).toHaveLength(1);
+    const tagged = screen.getByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    expect(within(tagged).getByTestId(testid).textContent).toContain("permission");
+    // Same row element, re-labelled in place.
+    expect(tagged).toBe(row);
   });
 });

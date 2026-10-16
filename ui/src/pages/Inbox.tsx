@@ -13,6 +13,16 @@
  * is read for the conversations reporting `has_active_turn` and nobody else: a
  * PERMISSION tag is always an observed pending row, and every other row wears
  * the status word the wire serves. No "needs you" signal is composed here.
+ *
+ * The Inbox is the one screen meant to sit open: a gate or a permission prompt
+ * that turns pending while a member is already looking at it has to arrive on
+ * its own. So its reads poll on `INBOX_POLL_MS` — the same mechanism as
+ * `useHealth`'s 15s ticker (no SSE feed exists for attention yet) — while the
+ * pages sharing these hooks and asking for nothing keep the fetch-on-mount
+ * behavior they always had. TanStack's default `refetchIntervalInBackground:
+ * false` means the ticker only runs while the tab is visible; `useMe` is not
+ * polled, because who you are does not change under a page asking "what needs
+ * me now?".
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -38,15 +48,19 @@ import {
   type RunItem,
 } from "../lib/attention";
 
+/** How often an open Inbox re-reads what asks something of you. */
+export const INBOX_POLL_MS = 7_500;
+
 export default function Inbox() {
   const me = useMe();
-  const projects = useProjects();
+  const projects = useProjects({ refetchInterval: INBOX_POLL_MS });
   const pipelines = usePipelines();
 
   const list = projects.data?.items ?? [];
   // The same reduction the project overview reads (../lib/attention.ts), so a
-  // stalled run is never attention on one screen and "going fine" on the other.
-  const attention = useProjectAttention(list);
+  // stalled run is never attention on one screen and "going fine" on the other
+  // — polled here so a prompt that turns pending shows up without a reload.
+  const attention = useProjectAttention(list, { refetchInterval: INBOX_POLL_MS });
 
   const slugs = useMemo(
     () =>

@@ -18,7 +18,7 @@
 import { useMemo } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { apiFetch, problemOf } from "../api/client";
-import { queryKeys } from "../api/queries";
+import { queryKeys, type RefetchOptions } from "../api/queries";
 import type {
   Approval,
   ApprovalList,
@@ -88,19 +88,33 @@ const NO_PROJECTS: readonly Project[] = [];
  * Conversations are a three-level read — project list, project conversations,
  * then the detail of only those reporting `has_active_turn` — because the list
  * row carries no pending-prompt field and inventing one is not on the table.
+ *
+ * `options.refetchInterval` is opt-in per caller: a screen that sits open while
+ * the server changes under it (Inbox) asks for a timer so a gate or prompt that
+ * turns pending appears without a reload; the pages that pass nothing keep the
+ * fetch-on-mount-and-invalidate behavior they always had. TanStack's default
+ * `refetchIntervalInBackground: false` means the timer only ticks while the tab
+ * is visible, and the prompt-detail fan-out stays narrowed to `has_active_turn`
+ * rows, so polling it costs one read per row that could hold a prompt.
  */
-export function useProjectAttention(projects: readonly Project[]): Attention {
+export function useProjectAttention(
+  projects: readonly Project[],
+  options: RefetchOptions = {},
+): Attention {
+  const refetchInterval = options.refetchInterval;
   const empty = projects.length === 0;
   const gateResults = useQueries({
     queries: projects.map((project) => ({
       queryKey: queryKeys.approvals(project.id),
       queryFn: () => apiFetch<ApprovalList>(`/api/v1/projects/${project.id}/approvals`),
+      refetchInterval,
     })),
   });
   const runResults = useQueries({
     queries: projects.map((project) => ({
       queryKey: queryKeys.runs(project.id),
       queryFn: () => apiFetch<RunSummaryList>(`/api/v1/projects/${project.id}/runs`),
+      refetchInterval,
     })),
   });
   const conversationResults = useQueries({
@@ -108,6 +122,7 @@ export function useProjectAttention(projects: readonly Project[]): Attention {
       queryKey: queryKeys.conversations(project.id),
       queryFn: () =>
         apiFetch<ConversationSummaryList>(`/api/v1/projects/${project.id}/conversations`),
+      refetchInterval,
     })),
   });
 
@@ -129,6 +144,7 @@ export function useProjectAttention(projects: readonly Project[]): Attention {
     queries: prompting.map(({ conversation }) => ({
       queryKey: queryKeys.conversation(conversation.id),
       queryFn: () => apiFetch<Conversation>(`/api/v1/conversations/${conversation.id}`),
+      refetchInterval,
     })),
   });
 
@@ -334,7 +350,10 @@ function looksLikeJsonObject(text: string): boolean {
  * `null` project (still loading) asks for nothing rather than fetching a blank
  * id.
  */
-export function useAttentionForProject(project: Project | null | undefined): Attention {
+export function useAttentionForProject(
+  project: Project | null | undefined,
+  options: RefetchOptions = {},
+): Attention {
   const projects = useMemo(() => (project ? [project] : NO_PROJECTS), [project]);
-  return useProjectAttention(projects);
+  return useProjectAttention(projects, options);
 }
