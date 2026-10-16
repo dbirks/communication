@@ -15,9 +15,12 @@ Contract authority: `docs/m4-contract.md` § 7.1 (gates C1–C14, sub-cases name
 | pass 7 | `live7/` | `04f53fd` | C8 (rerun on a build that finally contains the `04f53fd` driver fixes) |
 | pass 8 | `live8/` | `522a82b` | C1, C4, C5, C6, W2, W5, W6 (first pass with the `hold_seconds` hold-open fixture) |
 | pass 9 | `live9/` | `1e75c23` | C1, C4, C5, C6, W2, W3, W5, W6 (first pass on a build containing `4b4bfb8`/`35a9acf`/`13b81fb`/`1e75c23`; the fixture regenerated so `hold_seconds` really holds) |
+| pass 10 | `live10/` | `b2bfe62` | C1, C8 (C8's stop/fail_after_all revisions published by the gate itself; C8e's stop arm FAILed and is fixed in `d8b927c`) |
+| pass 11 | `live11/` | `9be68fd` | C1, C4, C5, C6, C8, W2, W5, W6, W11 (first pass with `13dd742`'s container resolver: the fault legs finally read and kill real containers; W6 crashed in the driver, W11 ran live for the first time) |
+| pass 12 | `live12/` | `5820aab` | C1, W3 (the rerun after `5820aab`'s review-prompt fix — **C1 98 PASS / 0 FAIL / 0 GAP**, the real-Claude agent run completing end to end) |
 
-A fresh lab reset + seed ran before EACH gate of passes 4–9 (`_seed-<GATE>.out` is that gate's seed
-manifest and `_build.out` the lab commit it was built from), so no pass-4/5/6/7/8/9 verdict inherits another
+A fresh lab reset + seed ran before EACH gate of passes 4–12 (`_seed-<GATE>.out` is that gate's seed
+manifest and `_build.out` the lab commit it was built from), so no pass-4/…/12 verdict inherits another
 gate's stack state. RC4's concurrency caveat still bites inside a gate wherever a foreign run happened
 to hold a lease — that is precisely why C9a's restart arm GAPs (`live4/C9.out:40`) instead of proceeding.
 
@@ -42,15 +45,15 @@ Fixes that landed **after** the pass that produced a verdict are named inline as
 
 | Item | What it proves | Verdict | Measured at | Evidence |
 |---|---|---|---|---|
-| C1a | run POST returns 201 queued | PASS — the agent arm and both twins | pass 9 @ 1e75c23 | live9/C1.out:24, :26, :129, :131 |
-| C1b | designated approver's decide posts 200 | PASS — all three legs | pass 9 @ 1e75c23 | live9/C1.out:27, :71, :132 (also `live9/C4.out:63`) |
-| C1c | run reaches terminal `completed` | FAIL — the agent arm ends `failed` `node_execution_failed:/build_until_verified` (`:70`); both twin arms completed (`:72, :133`). **`4b4bfb8` + `35a9acf` killed the old mechanism and the run got far further this time**: `/plan` `succeeded` (`:50`), `/approve` `succeeded` (`:37`), then three real iterations — `[1]` and `[2]` implement/review/test all `succeeded` (`:39-44`) — and the death is **`/build_until_verified[3]/review` at attempt 2** (`:46`), with `[3]/implement` and `[3]/test` `succeeded` around it (`:45, :47`) and `/verdict` + both publishes cancelled (`:51-53`). The attempt's own trail is `conversation.message.agent` → `agent.session.disconnected` → `sandbox.egress_observed` → `node.attempt.failed` (seqs 276/277/278/280, `:62-65`) and the ADR-0016 permission trail printed nothing (`:69`) — **the cause is still under capture, not diagnosed in this pass** | pass 9 @ 1e75c23 | live9/C1.out:70 (tree: :46; trail: :62-65; twins: :72, :133) |
-| C1d | full node key set, statuses, execution locations | PASS — on both twins: 14 keys exact (`ledger_only=[] expected_only=[]`), every node terminal at its expected status, `/approve`,`/verdict` control_plane vs loop bodies worker (ADR-0023 § 3), no unexpected node kinds with the loop spending 2 iterations. The agent leg's own key-set probe never ran — it died at C1c and only its ledger tree is printed (`:36-53`) | pass 9 @ 1e75c23 | live9/C1.out:88-90, :128 (replay: :149-151, :189; agent tree printed: :36-53) |
-| C1e | digests, checkpoint count, attempt_count=1 | PASS — **promoted this pass**: the input-count arm now counts what the pinned revision DECLARES (`1e75c23`), so `count=6 declared=6` with `hold_seconds=default` named among the origins instead of being scored as an extra row (`:91, :152`) — pass 8's FAIL was a stale driver expectation. All substantive arms PASS on both twins: digests match the manifest verbatim (`:92, :153`), API agrees with the ledger (`:93, :154`), 8 checkpoints == 8 succeeded worker nodes (`:94, :155`), `attempt_count = 1` (`:95, :156` — RC1's double-count proven dead again) | pass 9 @ 1e75c23 | live9/C1.out:91-95 (replay: :152-156) |
-| C1f | artifact bytes readable, redaction_count 0 | PASS — every arm ran and passed on both twins: published exactly once, `redaction_count=0`/`ready`, `GET /artifacts/{id}` + `/content` bytes hash to the row's sha256, `artifact.created` journaled | pass 9 @ 1e75c23 | live9/C1.out:98-100, :103 (replay arms: :159-161, :164) |
-| C1g | run.completed carries result_bindings | PASS — summary non-empty, review_approved true, iterations 2 == ledger, both twins | pass 9 @ 1e75c23 | live9/C1.out:106-109, :167-170 |
-| C1h | journal sequence contiguous for the run | PASS — every arm passes on both twins, the milestone chain included (in-order subsequence match, `dfff98e`): 46 rows, `run.created` first / `run.completed` last, run slice strictly ascending, attempt rows carry `node_execution_id` + `attempt_id`, gate rows carry NULL `attempt_id`, 8 `run.checkpoint_saved` == 8 worker nodes, and the SSE stream saw the opening and closing frames | pass 9 @ 1e75c23 | live9/C1.out:110-118, :126-127 (replay: :171-179, :187-188) |
-| C1i | replay reproduces the key set and plan_digest | PASS — identical 14-key set (`seed_only=[] replay_only=[]`), `plan_digest` seed == replay == manifest; the cross-variant comparison still FAILs (`:192` "a leg failed") because its agent leg is C1c's | pass 9 @ 1e75c23 | live9/C1.out:190-191 (FAIL arm: :192) |
+| C1a | run POST returns 201 queued | PASS — all three legs | pass 12 @ 5820aab | live12/C1.out:24, :26, :143, :145 |
+| C1b | designated approver's decide posts 200 | PASS — all three legs | pass 12 @ 5820aab | live12/C1.out:27, :85, :146 (also `live11/C4.out:62`) |
+| C1c | run reaches terminal `completed` | PASS — **promoted: the real-Claude agent run completes.** The agent leg ends `completed` (`:28`) after 2 iterations with `result_bindings.review_approved == true` and an SSE stream that saw the opening and closing frames (128 frames, `:83`); both twins complete as before (`:86, :147`). History of this row: pass 9 died at `/build_until_verified[3]/review` attempt 2 (`failed node_execution_failed:/build_until_verified`), live10 the same (`live10/C1.out:67`), and live11's agent arm ended `failed cause=until_exhausted` (`live11/C1.out:73`) because the reviewer could not see the plan the implementer published — **fixed in `5820aab`** (the review prompt approves on the goal, criteria and this iteration's implement/test results), and pass 12 is the rerun that proves it | pass 12 @ 5820aab | live12/C1.out:28 (SSE: :83; twins: :86, :147; live11 FAIL: live11/C1.out:73) |
+| C1d | full node key set, statuses, execution locations | PASS — on all three legs, and the agent leg's own key-set probe runs for the first time (it had died before it at passes 4–11): 14 keys exact (`ledger_only=[] expected_only=[]`), every node terminal at its expected status, `/approve`,`/verdict` control_plane vs loop bodies worker (ADR-0023 § 3), no unexpected node kinds with the loop spending 2 iterations | pass 12 @ 5820aab | live12/C1.out:44-46, :84 (twin seed: :102-104, :142; replay: :163-165, :203) |
+| C1e | digests, checkpoint count, attempt_count=1 | PASS — on all three legs: the input arm counts what the pinned revision DECLARES (agent leg `5 declared` — the twin adds `hold_seconds=default` as a 6th, `:47, :105, :166`), digests match the manifest verbatim (`:48, :106, :167`), API agrees with the ledger (`:49, :107, :168`), 8 checkpoints == 8 succeeded worker nodes (`:50, :108, :169`), `attempt_count = 1` (`:51, :109, :170` — RC1's double-count proven dead again) | pass 12 @ 5820aab | live12/C1.out:47-51 (twin seed: :105-109; replay: :166-170) |
+| C1f | artifact bytes readable, redaction_count 0 | PASS — every arm on all three legs: published exactly once, `redaction_count=0`/`ready`, `GET /artifacts/{id}` + `/content` bytes hash to the row's sha256, `artifact.created` journaled | pass 12 @ 5820aab | live12/C1.out:54-56, :59 (twin seed: :112-114, :117; replay: :173-175, :178) |
+| C1g | run.completed carries result_bindings | PASS — agent leg: summary non-empty ("The add() function in app/hello.py was already correct and documented…"), `review_approved == true`, `iterations 2` == the ledger's last suffix; both twins likewise | pass 12 @ 5820aab | live12/C1.out:62-65 (twin seed: :120-123; replay: :181-184) |
+| C1h | journal sequence contiguous for the run | PASS — every arm on every leg, the milestone chain included (in-order subsequence match, `dfff98e`): the **agent run's 128-row slice** opens `run.created` / closes `run.completed`, strictly ascending, 16 attempt rows carrying `node_execution_id` + `attempt_id`, gate rows NULL `attempt_id`, 8 `run.checkpoint_saved` == 8 worker nodes, and its SSE stream saw the opening and closing frames; the 46-row twin slices likewise | pass 12 @ 5820aab | live12/C1.out:66-74, :82-83 (twin seed: :124-132, :140-141; replay: :185-193, :201-202) |
+| C1i | replay reproduces the key set and plan_digest | PASS — identical 14-key set (`seed_only=[] replay_only=[]`), `plan_digest` seed == replay == manifest, **and the cross-variant comparison PASSes on both spellings now (`agent_only=[] twin_only=[]`)** — that arm FAILed at live10/C1.out:189 and live11/C1.out:195 only because its agent leg was C1c's | pass 12 @ 5820aab | live12/C1.out:204-207 |
 | C2a | secret reaches only the live authorized process | GAP — the gate WAS approved and `/implement` ran (run status `'completed'`), but no attempt was still worker-held when the poll looked, so "exactly one place" was unmeasurable | pass 4 @ 854b2ef | live4/C2.out:63 (approval arm :30) |
 | C2b | worker unmounts the env at the node boundary | NOT RUN — blocked behind C2a's GAP | — | live4/C2.out:63 |
 | C2c | sentinel absent from every durable surface | GAP — only the encrypted-store arm ran (the value lives in `secret_versions.content_sha256`, no plaintext); the live-surface sweep needs C2a's held attempt | pass 4 @ 854b2ef | live4/C2.out:63 (arm that ran: :26) |
@@ -59,36 +62,36 @@ Fixes that landed **after** the pass that produced a verdict are named inline as
 | C3b | never two live claims of one attempt | PASS — held=1, one distinct worker, on both inspected runs | pass 6 @ 382d42b | live6/C3.out:32-33, :36-37 |
 | C3c | one /implement claim, one fencing token drawn | GAP — no `/implement` attempt row carries a worker_id in any inspected run: the twin's steps finish in <1s, so no claim is ever worker-held to count over — test setup, not product; the hold-open input now exists (`cefe995`, driven by `522a82b`, proven on C4's lease at `live8/C4.out:41-44`) but C3 did not rerun with it, rerun pending. The `attempt_fencing_seq` arm PASSed | pass 6 @ 382d42b | live6/C3.out:38 (arm that passed: :39) |
 | C3d | negative control sentence recorded | NOT RUN — a report line, not an assertion (C4 is the proof) | — | live4/C3.out:44 |
-| C4a | a live lease exists to freeze | PASS — `1e75c23` proves the fixture honours `hold_seconds` before faulting: the leg decided its own gate, the live claim landed on **worker-b** so worker-b (not worker-a) was paused for 45s of frozen renewals and unpaused — and the report says so (`:27-30`) — with the fenced attempt still held when it woke (`:36-38`) | pass 9 @ 1e75c23 | live9/C4.out:34 (gate arms: :24, :26; which-container note: :27-30) |
-| C4b | frozen lease becomes interrupted with a retry | PASS — on the re-frozen lease: `node.attempt.interrupted` with `reason=lease_expired` and `actor_kind=system`, followed by `node.attempt.retry_scheduled`, in the fenced attempt's own journal slice | pass 9 @ 1e75c23 | live9/C4.out:43-46 (journal slice: :40-42) |
-| C4c | a stale owner cannot publish success | FAIL — thirteen arms PASS on the real fence: the fenced attempt reads `interrupted` with NULL outputs, zero ready artifacts, zero `run_checkpoints`, zero `node.attempt.completed` (`:47-51`), API and ledger agree (`interrupted` in both, `error_class` matching, `:58-59`), no lease machinery in the API body (`:60`), and a replacement attempt exists with a strictly greater fencing token (`:61-62`). The one FAIL is the observation arm (matched 0 lines, `:55`) and **this pass it is a DRIVER bug, not the worker**: the leg greps `docker logs communication-m4-worker-a`, which is compose's PREFIX — the container is `communication-m4-worker-a-1`, so `docker logs` reads nothing (`e2e/m4/e2e_m4_exit.py:92-93`), even though `ef33f8d` (an ancestor of `1e75c23`) makes the worker log the refusal once per attempt. **Container-name driver fix in progress** (guarded offline by `e2e/m4/test_container_names_logic.py`). One arm GAPs: `finished_at IS NULL` is unrepresentable under 00005's `attempts_terminal_timestamped` CHECK, so § 7.1's literal expectation cannot be met by any terminal row (`:52`) | pass 9 @ 1e75c23 | live9/C4.out:55 (PASS arms: :47-51, :58-62; GAP: :52) |
-| C4d | replacement attempt succeeds, run completes | PASS — "the retry (attempt N+1) succeeded and the run completed — ownership moved, no process died" (`:65`), the run `completed` (`:64`) | pass 9 @ 1e75c23 | live9/C4.out:64-65 |
-| C4e | fenced turn appends no transcript rows | GAP — unchanged in kind: the fenced attempt is `/plan` with `attempts.turn_id` NULL — a `process.exec` node owns no ACP turn, so `conversation.turn.interrupted` and the transcript-timing arm are unmeasurable on it (needs an `agent.acp` attempt — C6/C7's territory) | pass 9 @ 1e75c23 | live9/C4.out:66 |
-| C5a | a live attempt exists to SIGKILL | PASS (the arm that ran) — pass 9 released the run from the gate (`:27`) and the pick is finally on the node § 7.1 names: attempt 1 of `/build_until_verified[1]/implement` leased to **worker-a at token=4** (`:29`), with the `/plan` checkpoint boundary captured BEFORE the fault (`:31`). What is not proven is that it stayed held: the SIGSTOP freeze GAPs below on the container-name driver bug (`:34`), so pass 8's "nothing worker-held in 300s" (`live8/C5.out:61`) is dead, but `42187e7`'s race-free SIGSTOP→prove-live→SIGKILL arm has still never executed | pass 9 @ 1e75c23 | live9/C5.out:27, :29 (boundary: :31; freeze GAP: :34) |
-| C5b | kill reads interrupted, never completed | PASS where the kill really landed — C6's leg killed the owning worker with `compose kill worker-a`, which does reach the container (`Container communication-m4-worker-a-1 Killed`, live9/C6.out:46-47), and the killed attempt reads `interrupted`, the write coming from the reconciler and never the dead process (`:49`), with `error_class='interrupted'` (§ 7.1's literal ask, `:50`) and the recorded checkpoint boundary identical before/after (`:52`). In C5's own leg the same sub-case still GAPs because there the freeze never happened (`live9/C5.out:34, :36` — the same container-name driver bug) | pass 9 @ 1e75c23 | live9/C6.out:49-50 (kill: :46-47; boundary: :52; C5's own GAP: live9/C5.out:34, :36) |
-| C5c | checkpoints and artifacts survive the kill | PASS — `run_checkpoints` identical before/after the kill, last completed boundary still queryable, ready artifact count unchanged, nothing left `uploading` | pass 4 @ 854b2ef | live4/C5.out:52-55 |
-| C5d | same-volume workspace is reclaimed, not rebuilt | PASS — workspace `ready`, `volume_id` byte-identical across the kill (ADR-0017's reclaim rule), no `workspace.recovery_lost` event | pass 4 @ 854b2ef | live4/C5.out:66-68 |
-| C5e | retry posts from the last checkpoint | FAIL — the retry never gets its 200: `POST /runs/{id}/retry` reads **409** `{"detail":"a running run is not retriable…","run_status":"running"}` (`live9/C6.out:67`) — the killed attempt's replacement (attempt 2 with `retry_scheduled='1'`, `:111`) had already moved the run back to `running` before the leg POSTed, so the leg is racing the reconciler rather than the API. Pass 8's **500** is gone: `13b81fb` (ADR-0037) makes a retry naming a node execution the run lacks answer **404** `node-execution-not-found`. The remaining blocker is driver sequencing — **driver fix in progress**. RC1's halved budget (`0a0e6bb`) is separately proven dead again at live9/C1.out:95 | pass 9 @ 1e75c23 | live9/C6.out:67 (replacement already scheduled: :111; pass-4 original: live4/C5.out:71, :80) |
-| C5f | continue_workspace is the observed default | GAP — git HEAD was unreadable across the restart in the retry window (`before='' after=''`), so the not-reset claim is unmeasured | pass 4 @ 854b2ef | live4/C5.out:82 |
-| C5g | retry appends, never rewrites history | FAIL — 7 of 8 node keys read `attempts=0` (that killed run's remaining nodes were cancelled/skipped, not attempted), while `/plan` appended exactly 1 attempt and the run reached `completed` after the checkpointed retry; the key-set-vs-C1 identity arm GAPped because C1 crashed in that pass and had no key set to compare | pass 4 @ 854b2ef | live4/C5.out:85-92 (PASS arms: :89, :95; GAP: :96) |
-| C5h | exhausted budget fails the run honestly | GAP — every node the worker can be killed mid-way through is authored `maxAttempts: 3`; the lab ships no long-running `maxAttempts: 1` twin node, so the refusal arm has nothing to measure | pass 4 @ 854b2ef | live4/C5.out:99 |
-| C6a | revision carrying retry.workspacePolicy | PASS — the restore_checkpoint twin published as its own immutable revision with exactly one policy line changed (8853 bytes), the seed's revision untouched | pass 9 @ 1e75c23 | live9/C6.out:27, :28, :37 |
-| C6b | restore_checkpoint really resets the worktree | GAP — pass 9's kill finally landed on the right node (`940e09e6… attempt=1 worker=worker-a node=/build_until_verified[1]/implement`, `:43`), but there was still no restore to measure: the compiled plan the validate returned carries no `restore_checkpoint` string at all (`:38-39`), so the arm GAPs by design (`:72`), the retry 409'd before any restore could post (`:67`, C5e), no `run.checkpoint_restored` row exists (`:68-69`) and HEAD/dirty were unreadable across both the kill and the retry windows (`:55-56, :70-71`) | pass 9 @ 1e75c23 | live9/C6.out:72 (kill on the right node: :43; plan note: :38-39; restored row: :68-69) |
-| C6c | restore-mode retry completes the run | FAIL — the run reached `completed` (`:81`), but `run.retried`'s `workspace_policies` named nothing for `/build_until_verified[1]/implement` (`:82`, `{}`) and the key-set-vs-C1 identity arm FAILed (`:83`, `only_c1` = the four pre-fan-out keys, `only_c6=[]`) — both downstream of the retry never posting (`:67`, C5e's race); the CTX comparison GAPped because C1 did not run inside this gate (`:84`). Driver sequencing fix in progress, rerun pending | pass 9 @ 1e75c23 | live9/C6.out:82-83 (PASS arm: :81; GAP arm: :84) |
-| C6d | dirty boundary refuses, resets nothing | FAIL — the refusal is 409 again (`:60`) instead of pass 8's 500, but it is the WRONG 409: `run-not-retriable` ("a running run is not retriable", `run_status='running'`, `:59`) where § 7.1 wants `checkpoint_unavailable`, so the problem+json `code` came back empty (`:61`) and "the refusal appended no new attempt" FAILed with attempts=2 (`:64`) — the leg measured a run that the reconciler had already restarted, not a checkpoint refusal. The arms on the refusal path PASS (nothing reset `:62`, zero `run.checkpoint_restored` `:63`), and the uncommitted-boundary precondition still GAPs (no readable `run_checkpoints.repo_states` rows, `:57`) | pass 9 @ 1e75c23 | live9/C6.out:61, :64 (PASS arms: :60, :62-63; GAP: :57) |
-| C6e | cross-volume loss says recovery_lost | FAIL — the throwaway worker started on its own named volume (`:92`, `:114`) and the never-`resumed` arm PASSes (`:113`), but the loss never bit: the run had already reached `completed` (`:81`, `:86`) so the cross-volume retry read 409 "a completed run is not retriable" (`:99-100`), there is no `workspace.recovery_lost` event (`:109`), the run carries `error_class='interrupted'` not `workspace_lost` (`:110`), a later attempt 2 with `retry_scheduled='1'` exists where § 7.1 wants no auto-retry (`:111`) and the operator refusal detail is empty (`:112`). The leg's own `recovery_lost` read also crashed — `psql rc=1: operator does not exist: uuid = text` (`:101-105`) — a driver read bug on top of the sequencing one | pass 9 @ 1e75c23 | live9/C6.out:109-112 (PASS arms: :113, :114; retry read: :99-100; psql crash: :101-105) |
+| C4a | a live lease exists to freeze | PASS — the leg decides its own gate (`:24, :26`), the claim is attempt 1 of `/plan` on **worker-a** at token=2 (`:28`), `compose pause` freezes `communication-m4-worker-a-1` for 45s of stopped renewals and unpauses it (`:31-:33`), and the fenced attempt is still held when it wakes (`interrupted` in both ledger and Postgres, `:34-:35`) | pass 11 @ 9be68fd | live11/C4.out:32 (gate arms: :24, :26; the pick: :28; row after the wake: :34-35) |
+| C4b | frozen lease becomes interrupted with a retry | PASS — on the re-frozen lease: `node.attempt.interrupted` with `reason=lease_expired` and `actor_kind=system`, followed by `node.attempt.retry_scheduled`, in the fenced attempt's own journal slice | pass 11 @ 9be68fd | live11/C4.out:41-44 (journal slice: :38-40) |
+| C4c | a stale owner cannot publish success | PASS — **promoted**: `13dd742`'s container resolver makes the observation arm real — `docker logs communication-m4-worker-a-1 matched 2 lines` (`:54`), i.e. `ef33f8d`'s once-per-attempt refusal is now actually read from the right container. Everything else PASSes too: the fenced attempt reads `interrupted` with NULL outputs, zero ready artifacts, zero `run_checkpoints`, zero `node.attempt.completed` (`:45-:49`), API and ledger agree (`:57-:58`), no lease machinery in the API body (`:59`), and a replacement attempt exists with a strictly greater fencing token (`:60-:61`). One arm still GAPs: `finished_at IS NULL` is unrepresentable under 00005's `attempts_terminal_timestamped` CHECK, so § 7.1's literal expectation cannot be met by any terminal row (`:50`) | pass 11 @ 9be68fd | live11/C4.out:45-49, :54, :57-61 (GAP arm: :50) |
+| C4d | replacement attempt succeeds, run completes | PASS — "the retry (attempt N+1) succeeded and the run completed — ownership moved, no process died" (`:64`), the run `completed` (`:63`) | pass 11 @ 9be68fd | live11/C4.out:63-64 |
+| C4e | fenced turn appends no transcript rows | GAP — unchanged in kind: the fenced attempt is `/plan` with `attempts.turn_id` NULL — a `process.exec` node owns no ACP turn, so `conversation.turn.interrupted` and the transcript-timing arm are unmeasurable on it (needs an `agent.acp` attempt — C6/C7's territory) | pass 11 @ 9be68fd | live11/C4.out:65 |
+| C5a | a live attempt exists to SIGKILL | PASS — the leg releases the run from its gate (`:27`) and the pick is the node § 7.1 names: attempt 1 of `/build_until_verified[1]/implement` leased to **worker-a** at token=3 (`:29`), with the checkpoint boundary captured BEFORE the fault (`:30-:31`). The freeze then proves it stayed live: `docker kill -s STOP communication-m4-worker-a-1` with `status@stop=running status+3s=running proved=True` (`:34-:35`) — the container-name bug that GAPped this arm at pass 9 is dead (`13dd742`) | pass 11 @ 9be68fd | live11/C5.out:27 (pick: :29; boundary: :31; freeze proof: :35) |
+| C5b | kill reads interrupted, never completed | PASS — now on **C5's own leg** (pass 9 could only show it on C6's): the worker died holding a live lease (`kill #1`: the reconciler wrote `interrupted` while the lease was still live 3s after SIGSTOP, `:38`), the killed attempt reads `interrupted` with the write coming from the reconciler and never the dead process (`:41`), `error_class='interrupted'` (§ 7.1's literal ask, `:42`), `node.attempt.interrupted{reason:lease_expired} actor=system` present (`:46`), no `node.attempt.completed` for it (`:47`), run still `running` with the retry armed (`:48`). C6's leg repeats the same two verdicts (`live11/C6.out:49-50`) | pass 11 @ 9be68fd | live11/C5.out:38, :41-42, :46-48 (C6's copy: live11/C6.out:49-50) |
+| C5c | checkpoints and artifacts survive the kill | PASS — `run_checkpoints` identical before/after the kill (`before=1 after=1 diff=[]`), the last completed boundary still queryable, ready artifact count unchanged, nothing left `uploading` | pass 11 @ 9be68fd | live11/C5.out:53-56 |
+| C5d | same-volume workspace is reclaimed, not rebuilt | PASS — workspace `ready`, `volume_id` byte-identical across the kill (ADR-0017's reclaim rule), no `workspace.recovery_lost` event | pass 11 @ 9be68fd | live11/C5.out:67-69 |
+| C5e | retry posts from the last checkpoint | FAIL — the retry still races the reconciler: `POST /runs/{id}/retry` reads **409** `a running run is not retriable…` (`:72`) because the killed attempt's replacement (attempt 2, armed, `:84`) had already moved the run back to `running`; `retry_context.modified_path_count` then reads `None` on that path (`:87`). The arms that ran PASS: attempt 1 `interrupted` (`:83`), attempt 2 `running` (`:84`), `retry_context.attempt=1` (`:85`), `retry_context.error_class=interrupted` (`:86`). **Driver sequencing fix in progress**, rerun pending; pass 8's 500 remains dead (`13b81fb`, ADR-0037) | pass 11 @ 9be68fd | live11/C5.out:72, :87 (PASS arms: :83-86; C6's copy: live11/C6.out:67) |
+| C5f | continue_workspace is the observed default | GAP — git HEAD was unreadable across the restart (`before='' after=''`), so the not-reset claim is unmeasured | pass 11 @ 9be68fd | live11/C5.out:88 |
+| C5g | retry appends, never rewrites history | PASS — **promoted**: all 11 node keys check their own append rule with no FAIL — control-plane/gate rows 0 attempts (`/approve`, `/fan_out`, `/verdict`, `/build_until_verified`), `/plan` 1, `/build_until_verified[1]/implement` 2 (the killed attempt + the retry), unreached worker nodes 0 (`:91-:101`), and the killed run reached `completed` after the checkpointed retry (`:103`). Pass 4's "7 of 8 keys read `attempts=0`" FAIL is gone. One arm GAPs: the key-set-vs-C1 identity comparison had no C1 key set in this pass (`CTX['c1']` empty, `:104`) | pass 11 @ 9be68fd | live11/C5.out:91-103 (GAP arm: :104) |
+| C5h | exhausted budget fails the run honestly | GAP — re-worded, same limit: the killed node is authored `attempt_limit=2` in the § 7.0 twin, so the exhausted-budget refusal arm has no long-running `maxAttempts: 1` node to measure | pass 11 @ 9be68fd | live11/C5.out:107 |
+| C6a | revision carrying retry.workspacePolicy | PASS — the restore_checkpoint twin published as its own immutable revision with exactly one policy line changed (8853 bytes), the seed's revision untouched | pass 11 @ 9be68fd | live11/C6.out:27, :28, :37 |
+| C6b | restore_checkpoint really resets the worktree | GAP — the kill now lands on the right node (attempt 1 of `/build_until_verified[1]/implement` on worker-a, `:43-:44`, `compose kill` reaching `Container communication-m4-worker-a-1 Killed`, `:45-:47`, and the killed attempt reads `interrupted`/`error_class=interrupted`, `:49-:50`), but there is still no restore to measure: the authored `retry.workspacePolicy` never reaches the compiled plan (the driver's own note: `no restore_checkpoint string found in the validate response's plan`, `:39-:40`, `:72`), so no `run.checkpoint_restored` row and no readable HEAD/dirty across the windows | pass 11 @ 9be68fd | live11/C6.out:72 (kill: :43-47; attempts: :49-50) |
+| C6c | restore-mode retry completes the run | FAIL — the run reached `completed` (`:81`), but `run.retried`'s `workspace_policies` named nothing for `/build_until_verified[1]/implement` (`:82`, `{}`) and the key-set-vs-C1 identity arm FAILed (`:83`, `only_c1` = the four pre-fan-out keys) — both downstream of the retry never posting (`:67`, C5e's race); the CTX comparison GAPs because C1 did not run inside this gate (`:84`). Driver sequencing fix in progress, rerun pending | pass 11 @ 9be68fd | live11/C6.out:82-83 (PASS arm: :81; GAP arm: :84) |
+| C6d | dirty boundary refuses, resets nothing | FAIL — the refusal is 409 (`:60`) but the WRONG 409: `run-not-retriable` ("a running run is not retriable", `run_status='running'`) where § 7.1 wants `checkpoint_unavailable`, so the problem+json `code` came back empty (`:61`) and "the refusal appended no new attempt" FAILed with attempts=2 (`:64`) — the leg measured a run the reconciler had already restarted, not a checkpoint refusal. The arms on the refusal path PASS (nothing reset `:62`, zero `run.checkpoint_restored` `:63`), and the uncommitted-boundary precondition still GAPs (no readable `run_checkpoints.repo_states` rows, `:57`) | pass 11 @ 9be68fd | live11/C6.out:61, :64 (PASS arms: :60, :62-63; GAP: :57) |
+| C6e | cross-volume loss says recovery_lost | FAIL — the throwaway worker started on its own named volume (`:92`, `:114`) and the never-`resumed` arm PASSes (`:113`), but the loss never bit: the run had already reached `completed` (`:81`) so the cross-volume retry read 409 "a completed run is not retriable" (`:99-:100`), there is no `workspace.recovery_lost` event (`:109`), the run carries `error_class='interrupted'` not `workspace_lost` (`:110`), an auto-retried attempt 2 with `retry_scheduled='1'` exists where § 7.1 wants none (`:111`) and the operator refusal detail is empty (`:112`). The leg's own `recovery_lost` read also crashed — `psql rc=1: operator does not exist: uuid = text` (`:101-:106`) — a driver read bug on top of the sequencing one | pass 11 @ 9be68fd | live11/C6.out:109-112 (PASS arms: :113, :114; retry read: :99-100; psql crash: :101-106) |
 | C7a | until_exhausted ends the run after 3 iterations | PASS — `failed`/`until_exhausted` (P3's cause fix, `94f0ce3`), exactly 3 iterations, 9 terminal body rows, the exhausted loop's descendants cancelled with no route taken; the until scope's own `iterations == 3` row GAPs (:70) | pass 4 @ 854b2ef | live4/C7.out:46-48, :66-69 |
 | C7b | per-iteration evidence stays readable | PASS — one row per iteration key, outputs preserved, 3 `node.scope.iteration` with `pass_when_result=false`, evidence attached to both scope and run failures; the "3 distinct `test-*` artifact rows" arm GAPs (no artifact rows for the exhausted run) | pass 4 @ 854b2ef | live4/C7.out:49-58 (GAP arm: :59) |
 | C7c | indeterminate predicate is predicate_error | GAP — the schema-declared field is refused at publish (`unknown_field` PASS), so no published document reaches the eval-time `predicate_error` arm; that half is only proven offline (`e2e/m4/test_c7_logic.py`) | pass 4 @ 854b2ef | live4/C7.out:124 (schema arm: :123) |
 | C7d | carryForward observed across iterations | PASS — `previous` empty on iteration 1 (probe skipped), non-empty on 2 and 3 (probe succeeded), over a real exhaustion run; the prompt-echo half of the sentence GAPs because the twin is `process.exec` with no transcript | pass 4 @ 854b2ef | live4/C7.out:76 (transcript GAP: :77) |
-| C8a | zero-item fan-out succeeds and completes | PASS — every arm PASSes on a build that contains `04f53fd`: `/fan_out` with 0 items `succeeded`, `node.scope.completed {scope:'/fan_out', items:0}` journaled, `outputs.children` reads the EMPTY array `[]` (pass 6's `'[[]]'` was the driver's read, fixed in `04f53fd`), the run `completed` | pass 7 @ 04f53fd | live7/C8.out:11-14 (POST arm: :9) |
-| C8b | 25 children, one run each, depth 1 | PASS — 25 invoke keys, 25 `pipeline_invocations` joined to child runs, 25 terminal rows split 24 succeeded + 1 failed, distinct child depth 1, and the project-inheritance comparison now matches (`:54` observed `['t']` — pass 6's uuid mismatch was the driver's read, fixed in `04f53fd`) | pass 7 @ 04f53fd | live7/C8.out:48-50, :53, :54 |
-| C8c | maxConcurrency 3 measured | PASS — `04f53fd` re-measures invoke concurrency over `node_executions` commit points instead of the journal: peak=3 at seqs [1, 3, 26], the sample really saw parallelism (>1 in flight), over 3 sampled commit points | pass 7 @ 04f53fd | live7/C8.out:55-57 |
-| C8d | one failing child, siblings preserved | PASS — exactly 1 failed child of 25 with 24 non-failed preserved, `collect_and_continue` scope `succeeded` with the failure collected, all 25 children ran, `outputs.children` carries 25 entries each naming its own `child_run_id`, and `/tree` shows 25 distinct children keyed under `/fan_out` at depth 1 with the parent as root | pass 7 @ 04f53fd | live7/C8.out:51-52, :58-61, :64-68 |
-| C8e | stop / fail_after_all child policies | GAP — unchanged in kind: the published § 7.0 revision authors `collect_and_continue` on `/fan_out` and pipeline revisions are immutable, so a stop/fail_after_all measurement needs a second published parent revision plus its assignment, which the seed contract does not create (`:69`); the verdict algebra over canned rows is proven offline (`e2e/m4/test_c8_logic.py`) | pass 7 @ 04f53fd | live7/C8.out:69 |
-| C8f | depth guard refuses self-invocation | PASS — the self-invoking pipeline is refused at validate with `child_depth_exceeded` (`:75`): `04f53fd`'s corrected document meeting `b977ee4`'s compiler guard, both confirmed live (pass 6's `invalid_yaml` was the driver's malformed document). One arm GAPs: the third-level `runs_depth_check` refusal (a 2-level chain is the ceiling) POSTed → None (`:76`) | pass 7 @ 04f53fd | live7/C8.out:75 (GAP arm: :76) |
-| C8g | parent cancel cascades to every child | PASS — `run.cancel_requested{cascade:true}` journaled, every child reached a terminal state, the run ends `cancelled` with `cancelled_attempts[]` populated | pass 7 @ 04f53fd | live7/C8.out:86-88 |
-| C8h | detach cancel policy is refused at validate | PASS — `cancelPolicy: detach` refused `unsupported_policy` at `/spec/policies/cancelPolicy` | pass 7 @ 04f53fd | live7/C8.out:81 |
+| C8a | zero-item fan-out succeeds and completes | PASS — `/fan_out` with 0 items `succeeded`, `node.scope.completed {scope:'/fan_out', items:0}` journaled, `outputs.children` reads the EMPTY array `[]`, the run `completed` | pass 11 @ 9be68fd | live11/C8.out:11-14 (POST arm: :9) |
+| C8b | 25 children, one run each, depth 1 | PASS — 25 invoke keys, 25 `pipeline_invocations` joined to child runs, 25 terminal rows split 24 succeeded + 1 failed, distinct child depth 1, children inherit the parent's project | pass 11 @ 9be68fd | live11/C8.out:48-50, :53, :54 |
+| C8c | maxConcurrency 3 measured | PASS — invoke concurrency measured over `node_executions` commit points: peak=3 at seqs [1, 3, 26], the sample really saw parallelism (>1 in flight), over 3 sampled commit points | pass 11 @ 9be68fd | live11/C8.out:55-57 |
+| C8d | one failing child, siblings preserved | PASS — exactly 1 failed child of 25 with 24 non-failed preserved, `collect_and_continue` scope `succeeded` with the failure collected, all 25 children ran, `outputs.children` carries 25 entries each naming its own `child_run_id`, and `/tree` shows 25 DISTINCT children keyed under `/fan_out` at depth 1 with the parent as root | pass 11 @ 9be68fd | live11/C8.out:51-52, :58-61, :64-68 |
+| C8e | stop / fail_after_all child policies | PASS — **promoted**: `b2bfe62` publishes each mode as its own parent revision (revisions immutable, § 7.0) and `d8b927c` gives the stop leg its siblings, so both modes are measured live. **stop**: scope `failed{child_failed}` (`:80`), 10 queued siblings cancelled via `node.execution_cancelled{reason:'on_child_failure_stop'}` (`:81, :83`), the 14 already-`succeeded` siblings preserved (`:82`); pass 10's FAIL there (0 such journal rows, `live10/C8.out:83`) is what `d8b927c` fixed. **fail_after_all**: all 25 children run, then the scope fails (`:92`) | pass 11 @ 9be68fd | live11/C8.out:78, :80-83, :90, :92 (pass-10 FAIL: live10/C8.out:83) |
+| C8f | depth guard refuses self-invocation | PASS — the self-invoking pipeline is refused at validate with `child_depth_exceeded` (`:111`): `04f53fd`'s corrected document meeting `b977ee4`'s compiler guard, both confirmed live again. Two arms GAP: the leg's new 3-level chain never published — the l3 draft was refused by the schema (`schema_shape: got number, want string` at `/spec/nodes/0/config/in…`, `:105-:110`) — so the two-level "root completes" arm has no root (`:112`) and the third-level `runs_depth_check` arm has no depth-3 booking to refuse (`:113`). Driver fixture fix, rerun pending | pass 11 @ 9be68fd | live11/C8.out:111 (GAP arms: :112, :113; the fixture refusal: :105-110) |
+| C8g | parent cancel cascades to every child | PASS — `run.cancel_requested{cascade:true}` journaled with the child ids, every child reached a terminal state (`cancelled`), the run ends `cancelled` with `cancelled_attempts[]` populated | pass 11 @ 9be68fd | live11/C8.out:123-125 (POST arm: :119) |
+| C8h | detach cancel policy is refused at validate | PASS — `cancelPolicy: detach` refused `unsupported_policy` at `/spec/policies/cancelPolicy` | pass 11 @ 9be68fd | live11/C8.out:118 |
 | C9a | gate waits as a row with zero attempts | PASS — `/approve` `waiting` with 0 attempts, `waiting_human`, no lease, seen by the ops counters and by both API replicas at the same version; the restart arm GAPped because a foreign run held a live lease (§ 7.0: disturb only what you created) | pass 4 @ 854b2ef | live4/C9.out:32-36, :46 (restart GAP: :40, :43) |
 | C9b | non-approver refused, gate unmoved | PASS — bob: 403 `approval-denied`, `approval.denied{not_a_designated_approver}` journaled, version unmoved, still `waiting_human` | pass 4 @ 854b2ef | live4/C9.out:55-61 |
 | C9c | approver removed from project cannot decide | PASS — alice after removal: 403, `approver_lost_access` journaled, no decision written | pass 4 @ 854b2ef | live4/C9.out:76-81 |
@@ -117,18 +120,18 @@ Fixes that landed **after** the pass that produced a verdict are named inline as
 | C14b | two replicas cannot commit one transition twice | PASS — the safety proof § 7.1 itself names: no journal seq duplicated or lost, run slice ascending, `run.completed` once, ZERO node keys with two `succeeded` rows. Two observation arms GAP by design: the advisory-lock handover is unobservable (the log mark is released every tick — D6's unfalsifiable probe now GAPs instead of FAILing) and forcing a simultaneous advance needs a store seam § 7.1 disclaims | pass 4 @ 854b2ef | live4/C14.out:48-50, :53-54 (GAPs: :59, :68) |
 | C14c | SCHEDULER=off leaves a run queued | GAP — the flag is no longer inert (`9af17dc` makes it stop a replica's engine, so P2 is fixed, and the run never even got to compare), but `compose.m4.yml` feeds api-a and api-b from ONE shell variable, so there is no single off-replica to compare against without a container recreate § 7.0 keeps out of the gates | pass 4 @ 854b2ef | live4/C14.out:69 |
 | W1 | New run form comes from spec.inputs | PASS — fields, required-ness, declared default and repository list all rendered from the pinned revision; double-click Submit → one run + one stored `X-Idempotency-Key` | pass 4 @ 854b2ef | live4/W1.out:37-46 |
-| W2 | live stream renders iterations, not duplicate nodes | PASS — **promoted** (`1e75c23` holds the twin open 10s for this leg): 17 PASS / 0 FAIL / 2 GAP, and its **core mid-lease arm now PASSes** — the poll caught attempt `d207d20c…` of `/build_until_verified[1]/implement` leased to worker-a (`:31`), so the page watched real in-flight work: journal panel rendered (`:29`), 7 samples of one document with no reload (`:46`), `run.created` → `node.attempt.started` → `run.checkpoint_saved` drawn in journal order (`:47-51`), all 38 journalled run-vocabulary rows drawn at least once and never more often than written (`:53-54`), and both `/build_until_verified[1]` and `[2]` under ONE stage cell for the loop (`:57-61`). The two remaining GAPs are both `conversation.turn.*` on a `process.exec` twin that owns no ACP turn (`:49, :52`) — that arm additionally sits outside `M4_RUN_EVENT_TYPES`, so the Timeline tab drops it (`RunInspector.tsx:720`) | pass 9 @ 1e75c23 | live9/W2.out:31 (rendering arms: :29, :46-54, :57-61; turn GAPs: :49, :52) |
-| W3 | gate card: roles, countdown, approve, bob has no button | PASS — **21 PASS / 0 FAIL / 0 GAP** (`:55`), the whole card rendered off a real Claude plan for the first time: the run parked on a pending approval (`:26`) with roles + deadline exposed (`:27`), the control-plane card mounts with no attempt (`:37`), bob sees `approver_roles='maintainer'`, the countdown, the evidence list, NO Approve button and the not-a-designated-approver copy (`:31-35`), alice's Approve click posts `/approvals/{id}/decide` (`:48`) and the card then reads decided (`:49-52`). The `4b4bfb8` schema fix plus `35a9acf`'s plan-card rendering are what unblocked it — pass 6's GAP and pass 3's PASS are both superseded | pass 9 @ 1e75c23 | live9/W3.out:26-27, :31-35, :37, :38-42, :48-52 (summary: :55) |
+| W2 | live stream renders iterations, not duplicate nodes | PASS — 17 PASS / 0 FAIL / 2 GAP, and its **core mid-lease arm PASSes again**: the poll caught attempt `a65a8dec…` of `/build_until_verified[1]/implement` leased to worker-a (`:31`), so the page watched real in-flight work — journal panel rendered (`:29`), 21 samples of one document with no reload (`:74`), `run.created` → `node.attempt.started` → `run.checkpoint_saved` drawn in journal order (`:75-:79`), all 38 journalled run-vocabulary rows drawn at least once and never more often than written (`:81-:82`), and both `/build_until_verified[1]` and `[2]` under ONE stage cell for the loop (`:85-:89`). The two remaining GAPs are both `conversation.turn.*` on a `process.exec` twin that owns no ACP turn (`:77, :80`) — that arm additionally sits outside `M4_RUN_EVENT_TYPES`, so the Timeline tab drops it (`RunInspector.tsx:720`) | pass 11 @ 9be68fd | live11/W2.out:31 (rendering arms: :29, :74-82, :85-89; turn GAPs: :77, :80) |
+| W3 | gate card: roles, countdown, approve, bob has no button | PASS — **21 PASS / 0 FAIL / 0 GAP** (`:55`) re-confirmed on pass 12's build: the run parks on a pending approval (`:26`) with roles + deadline exposed (`:27`), the control-plane card mounts with no attempt (`:37`), bob sees `approver_roles='maintainer'`, the countdown, the evidence list, NO Approve button and the not-a-designated-approver copy (`:30-:35`), alice's Approve click posts `/approvals/{id}/decide` (`:48`) and the card then reads decided (`:49-:52`). `4b4bfb8`'s schema fix plus `35a9acf`'s plan-card rendering are what unblocked it | pass 12 @ 5820aab | live12/W3.out:26-27, :31-35, :37, :38-42, :48-52 (summary: :55) |
 | W4 | pinned-digest notice after a mid-run publish | PASS — the run page renders the pinned r1 digest before and after a live r2 publish, does not move onto r2, keeps "pinned r1" (not r2), and the notice "revision 2 published since this run started — this run is pinned to 1" renders. The leg exists since `d1bbcc3`, and the pinned-digest/notice copy it asserts is `3654c18`'s — both are already ancestors of pass 4's `854b2ef`, so neither is an unrun fix. Pass 4's crash was the exit stack not being up at all (`live4/_seed-W4.out:2 SEED FAIL stack not ready`) — an environment failure, not a leg failure; pass 5 is the rerun that measures it | pass 5 @ 42187e7 | live5/W4.out:30, :46-52 (pass-4 crash: live4/W4.out:23) |
-| W5 | kill renders honest interrupted wording | GAP — ran again on pass 9 with the same four arms PASSing (run started `:24`, alice signed in `:26`, the run page open BEFORE the kill with status `running` `:27`, gate decided `:30`), but the kill is blocked by a newly named **driver bug**: the live claim belongs to worker row `worker-a`, whose container the leg reads as `communication-m4-worker-a` — a compose PREFIX, not a container (`…-worker-a-1` is) — so per § 7.0 it refuses to kill anything (`:31`). Interrupted wording, countdown and attempt 2 stay unmeasured; **container-name driver fix in progress**, rerun pending | pass 9 @ 1e75c23 | live9/W5.out:31 (arms that ran: :24, :26-27, :30) |
-| W6 | cross-volume run says "prior edits lost" | GAP — same container-name driver bug on pass 9: the run started (`:26`) and the gate was decided (`:28`), but nothing was killed because the owning worker's container could not be resolved to this compose project (`:29`), so no workspace was ever left behind (`:30`) and there is no provable mid-node death at `/build_until_verified[1]/implement` (`:31`); the throwaway worker-c was created and removed cleanly (`:32-33`). **Driver fix in progress**, rerun pending. Still no scripted substitute — C6e is blocked above | pass 9 @ 1e75c23 | live9/W6.out:29-31 (run/gate arms: :26, :28) |
+| W5 | kill renders honest interrupted wording | FAIL — the kill finally lands (`13dd742`'s container resolver): the run started (`:24`), alice signed in (`:26`), the page open BEFORE the kill with status `running` (`:27`), the gate decided (`:30`), the worker frozen and killed holding a live lease (`:45`), the retry countdown drawn from `scheduled_at` (`:49`), attempt 2 rendered after the countdown (`:52`), no 'resumed/restored/no data lost' anywhere (`:53`), no spinner left (`:54`), console clean (`:55`). The one FAIL is § 7.1's literal ask: `node.attempt.interrupted` never renders as 'interrupted — the worker disappeared mid-node' — the page holds no line mentioning 'interrupt' at all (`:46`). **UI fix in progress**, rerun pending | pass 11 @ 9be68fd | live11/W5.out:46 (PASS arms: :24, :26-27, :30, :45, :49, :52-55) |
+| W6 | cross-volume run says "prior edits lost" | FAIL — the leg crashed in the driver: the run started (`:26`), the gate was decided (`:28`), the freeze proved the lease live and `docker kill communication-m4-worker-a-1` landed (`:29-:32`), then the throwaway-worker-c arm died on `TypeError: show() missing 1 required positional argument: 'out'` (`:35`) and every check after it GAPped (`:42`) — no workspace was ever left behind, so W6's copy stays unmeasured. **Driver fix in progress**, rerun pending. Still no scripted substitute — C6e is blocked above | pass 11 @ 9be68fd | live11/W6.out:35, :42 (arms that ran: :26, :28) |
 | W7 | ops page counters and per-worker load | PASS — 30/0/0: every counter, both per-worker load rows and the offline→restored arms render, and the arm that FAILed at pass 4 now PASSes — `queued_unbindable_runs` counts the affinity-bound run (`counter=1`) and the Ops page says 'waiting for its worker' in those words: `5ade2c5`'s fix confirmed live | pass 6 @ 382d42b | live6/W7.out:29-38, :51-52 (rerender arms: :53-62; restored: :71, :80) |
 | W8 | validate panel renders located errors by source | PASS — all 7 `kind_not_implemented` rows render at their `/spec/nodes/N/kind` location naming M5/M6, the schema/loader/compiler findings render with source + hint, and the secret-literal finding renders redacted | pass 4 @ 854b2ef | live4/W8.out:40-53, :68-72, :87, :102, :119-120 |
 | W9 | cross-project deep links 404 with zero leakage | PASS — outsider session gets 404 + not-found copy on run, `/nodes` and the SSE URL, SSE never opens, and no project name / node name / digest value appears in the DOM, console clean. Two arms GAP: the row names carol but § 7.1 C9d needs carol as an M4 maintainer, so the outsider is the seeded `erin`; and the `/approvals/{id}` deep link had no approval to link to | pass 4 @ 854b2ef | live4/W9.out:35, :43-44, :46-51 (GAPs: :26, :45) |
 | W10 | stream continuity across a replica roll | NOT RUN — the driver leg exists since `d91f4fc`/`74ea274` (SSE resumes with `?after=` and dedupes) but has never run live on HEAD; C14a's scripted SSE arm covers the mechanism, not the browser | — | e2e/m4/e2e_m4_exit.py (w10 leg, not run) |
-| W11 | child tree renders, internals absent from the DOM | NOT RUN — the driver leg exists since `d91f4fc`/`74ea274` (RunTree renders `/tree` children under run) but has never run live on HEAD; its scripted precondition now exists — C8's tree renders 25 distinct children at live7/C8.out:64-68 | — | e2e/m4/e2e_m4_exit.py (w11 leg, not run) |
+| W11 | child tree renders, internals absent from the DOM | FAIL — **first live run** (the leg landed in `d91f4fc`/`74ea274`): the execution tab renders the `/fan_out` tree (`:33`), the count itself is right — 25 of 25 child rows rendered, none naming a foreign child (`:36`), nothing stranded (`:37`), the node pane opens on `?node=…` with attempt copy and the right crumb (`:42, :44`), and no fencing token, lease expiry or worker id appears anywhere in the DOM (`:47-:49`). The FAIL is § 7.1's own claim: all 25 child rows carry **no status word**, though the route reports `completed`/`failed` for them (`:36`) — **UI fix queued**. Two arms GAP: the leg sampled no mid-lease attempt (`:27`), so the "attempt 1 interrupted + attempt 2 succeeded" arm had only `#1 succeeded` to read (`:43`) | pass 11 @ 9be68fd | live11/W11.out:36 (PASS arms: :24, :26, :32-33, :37, :42, :44, :47-49; GAPs: :27, :43) |
 
-Totals: 85 items (74 § 7.1 sub-cases + 11 § 7.2 legs) — **PASS 54, FAIL 8, GAP 17, NOT RUN 6** (counted mechanically over the Verdict column above: 54 + 8 + 17 + 6 = 85).
+Totals: 85 items (74 § 7.1 sub-cases + 11 § 7.2 legs) — **PASS 58, FAIL 8, GAP 14, NOT RUN 5** (counted mechanically over the Verdict column above: 58 + 8 + 14 + 5 = 85).
 
 For comparison, the same scoreboard at pass 3 (commit `8f58157`) read PASS 20, FAIL 9, GAP 13,
 NOT RUN 43. Passes 4–5 promoted 18 items to PASS — C1e, C1g, C1i, C5c, C5d, C6a, C7a, C7b, C7d, C10a,
@@ -202,6 +205,44 @@ already guarded offline by `e2e/m4/test_container_names_logic.py`. `5145bcb` (no
 404 as an unknown project on project runs/schedules routes) also landed after pass 8's lab commit and
 has not been re-run live.
 
+Pass 10 (`b2bfe62`) ran C1 and C8. C8 came back **36 PASS / 1 FAIL / 6 GAP**: the gate now publishes its own
+stop and fail_after_all parent revisions and asserts each mode (`live10/C8.out:78-:92`), which took C8e out of
+its long GAP — but the stop arm FAILed there: 0 `node.execution_cancelled{reason:'on_child_failure_stop'}` rows
+(`live10/C8.out:83`), **fixed in `d8b927c`** (queued siblings get cancelled rows plus the journal event) and
+proven at pass 11. C8f's new 3-level chain never published, so its two depth arms GAP (`live10/C8.out:112-:113`).
+C1 was 67 PASS / 2 FAIL: the agent arm still ended `failed`
+(`node_execution_failed:/build_until_verified`, `live10/C1.out:67`) and took the cross-variant key-set arm with
+it (`:189`).
+
+Pass 11 (`9be68fd`) is the first pass with `13dd742`'s container resolver (compose service → real container
+`…-worker-a-1`), i.e. the fix pass 9 called "in progress", and it moved six items: **C4c FAIL → PASS** — the
+stale owner's refusal is finally *observed*, `docker logs communication-m4-worker-a-1 matched 2 lines`
+(`live11/C4.out:54`), leaving only the `finished_at IS NULL` schema GAP (`:50`); **C5b PASS on C5's own leg**
+(freeze proves the lease live at the signal and 3s later `:35`, then SIGKILL `:38`); **C5c and C5d re-PASS**
+there (`:53-:56, :67-:69`); **C5g FAIL → PASS** — all 11 node keys check their own append rule and the killed
+run completes after the checkpointed retry (`:91-:103`); **C8e GAP → PASS** with `d8b927c` proven live (10
+siblings cancelled via `node.execution_cancelled{on_child_failure_stop}`, `live11/C8.out:81, :83`); and **W5 /
+W6 GAP → FAIL** because the kills now land — W5 loses only § 7.1's literal interrupted wording
+(`live11/W5.out:46`, **UI fix in progress**) and W6 died mid-leg on a driver `TypeError: show() missing 1
+required positional argument: 'out'` (`live11/W6.out:35`, **fix in progress**). **W11 NOT RUN → FAIL** on its
+first live run: the tree renders all 25 children and leaks no fencing token / lease / worker id
+(`live11/W11.out:33, :37, :47-:49`), but every child row carries no status word (`:36`, **UI fix queued**).
+C1 again read 67/2: the agent arm ended `failed cause=until_exhausted` (`live11/C1.out:73`) — the reviewer could
+not see the plan the implementer published, fixed in `5820aab`. What did *not* move is the retry sequencing:
+C5e (`live11/C5.out:72`), C6c/C6d/C6e (`live11/C6.out:61, :64, :67, :99-:112`) still FAIL because the retry
+POSTs land after the reconciler has restarted the run, C6e's `recovery_lost` read still crashes on
+`operator does not exist: uuid = text` (`live11/C6.out:101-:106`), and C6b still GAPs because the authored
+`restore_checkpoint` never reaches the compiled plan (`live11/C6.out:39-:40, :72`).
+
+Pass 12 (`5820aab`) reran C1 and W3 and is the milestone's turning point: **C1 98 PASS / 0 FAIL / 0 GAP**
+(`live12/C1.out:210` summary). The agent arm — FAILing since pass 1 — reached `completed` (`live12/C1.out:28`)
+after 2 iterations with `result_bindings.review_approved == true` (`:63`), a 128-row journal that opens with
+`run.created` and closes with `run.completed` (`:66-:74`), and an SSE stream that saw the opening and closing
+frames (128 frames, `:83`). That promotes **C1c FAIL → PASS**, completes **C1d** (the agent leg's own key-set
+probe has never executed before, `:44-:46`), cleans **C1i**'s cross-variant arm (`:206-:207`) and leaves the
+gate with no FAIL and no GAP at all. W3 re-confirmed **21 PASS / 0 FAIL / 0 GAP** on that build
+(`live12/W3.out:55`).
+
 **M5 browser legs (not § 7 items, recorded for continuity).** `e2e/tests/m5-journey.spec.ts` ran
 12 passed / 1 failed / 4 not run on the lab — the single failure is step 6, whose assumption (exit 1 is
 a failure) is wrong for the engine, since exit 1 alone is a business outcome that completes the run;
@@ -214,20 +255,34 @@ Finding ids (`P*`, `D*`, `RC*`) are `docs/m4-live-findings.md` (written from pas
 
 **Product bugs — open**
 
+- No longer open: **the real-Claude agent run reaches `completed`** — the failure that has chased C1c since
+  pass 1 (`/plan` permission prompts → `invalid_output` → `node_execution_failed:/build_until_verified` on the
+  third iteration → `until_exhausted`) is closed. `5820aab` made the review prompt approve on the goal, the
+  criteria and *this iteration's* implement/test results (so the reviewer is no longer blind to what the
+  implementer published), and pass 12 proves it live: the agent run `completed` (`live12/C1.out:28`) with
+  `review_approved == true` (`:63`), 2 iterations (`:64`), a 128-row journal (`:66-:74`) and an SSE stream that
+  saw both frames (`:83`) — **C1 98 PASS / 0 FAIL / 0 GAP** (`:210`). That promotes C1c, completes C1d's agent
+  probe and cleans C1i's cross-variant arm.
+- The two UI copy bugs are open product work, both surfaced by the new browser legs: **W5** — after a real kill
+  the run page never renders § 7.1's `interrupted — the worker disappeared mid-node` wording (no line mentions
+  'interrupt' at all, `live11/W5.out:46`, while the countdown `:49`, attempt 2 `:52` and the honesty rule `:53`
+  all render) — **UI fix in progress**; and **W11** — all 25 fan-out child rows render, but none carries a status
+  word even though `/tree` reports `completed`/`failed` for them (`live11/W11.out:36`) — **UI fix queued**.
 - **No longer open: the retry 500 is dead** — pass 8's `POST /runs/{id}/retry` → **500** `about:blank`
   (`live8/C6.out:61-62, :66`) is fixed in `13b81fb` (ADR-0037): a retry naming a node execution the run
   lacks now answers **404** `node-execution-not-found`. Pass 9 never reached that arm — its retries read
   409 `run-not-retriable` because the run was already `running` (or, by C6e, `completed`) again
   (`live9/C6.out:60, :67, :99-100`), which is the driver-sequencing bug below rather than a product
   defect. No product retry bug is currently open; C5e/C6c/C6d/C6e stay FAIL on the driver side.
-- C8 is closed as a product question — pass 7 ran the gate on a build containing `04f53fd` and came back
-  **31 PASS / 0 FAIL / 2 GAP** (`live7/C8.out:91`). `21656f6`'s children are proven end to end: 25 invoke
-  rows, 25 `pipeline_invocations`, depth 1, 25 `child_run_id`s in `outputs.children`, 25 distinct `/tree`
-  children (`live7/C8.out:48-50, :53-54, :60-68`), the cancel cascade works (C8g `:86-88`) and
-  `b977ee4`'s `child_depth_exceeded` guard fires live (C8f `:75`). Two GAPs remain and neither is a bug:
-  C8e (the immutable published revision authors only `collect_and_continue`, so stop/fail_after_all is
-  offline-only algebra in `e2e/m4/test_c8_logic.py`, `:69`) and C8f's third-level `runs_depth_check` arm
-  (`:76`).
+- C8 is closed as a product question — pass 11 re-ran the gate and it came back **38 PASS / 0 FAIL / 2 GAP**
+  (`live11/C8.out:128`), improving on pass 7's 31/0/2 (`live7/C8.out:91`). `21656f6`'s children are proven end to
+  end: 25 invoke rows, 25 `pipeline_invocations`, depth 1, 25 `child_run_id`s in `outputs.children`, 25 distinct
+  `/tree` children (`live11/C8.out:48-50, :53-:54, :60-:68`), the cancel cascade works (C8g `:123-:125`) and
+  `b977ee4`'s `child_depth_exceeded` guard fires live (C8f `:111`). **C8e's long GAP is closed** — `b2bfe62`
+  publishes a parent revision per child policy instead of asking an immutable one for a mode it never authored,
+  and `d8b927c` makes the stop mode cancel its queued siblings with `node.execution_cancelled{on_child_failure_stop}`
+  (10 cancelled rows, `live11/C8.out:81, :83`; pass 10's FAIL at `live10/C8.out:83` is what that commit fixed).
+  The two GAPs that remain are C8f's unpublished depth chain (`:112, :113` — a driver fixture bug, not the guard).
 - No longer blocking: **W7 is dead** — `5ade2c5` counts runs whose ready attempt cannot be bound, and
   pass 6 reads `queued_unbindable_runs=1` for the affinity-bound run with the Ops page saying
   'waiting for its worker' in those words (`live6/W7.out:51-52`, W7 PASS 30/0). C12b (`e0ee333` named
@@ -239,33 +294,51 @@ Finding ids (`P*`, `D*`, `RC*`) are `docs/m4-live-findings.md` (written from pas
 
 **Driver bugs — open (the probes are broken, not the product)**
 
-- ~~C1f~~ and ~~C1h~~ PASS at pass 6 (`dfff98e`'s fixes re-confirmed live at pass 9, `live9/C1.out:98-100, :103; :110-118, :126`)
-  — `dfff98e` fixed the 7-field parse of the 8-column artifact row
+- ~~C1f~~ and ~~C1h~~ PASS at pass 6 (`dfff98e`'s fixes re-confirmed live at passes 9 and 12,
+  `live12/C1.out:54-:59; :66-:74, :82-:83`) — on pass 12 they PASS on the **agent** leg too, which had never
+  reached them `dfff98e` fixed the 7-field parse of the 8-column artifact row
   and replaced the fixed-order milestone-chain conjunct with an in-order-subsequence match
   (`live6/C1.out:82-84, :87`; `:94-102, :110`).
-- ~~C4a / C4b / C4d~~ PASS again at pass 9 (`live9/C4.out:34, :43-46, :64-65`) on the re-run fence, having
-  first PASSed at pass 8 — `cefe995`'s `hold_seconds` input, driven by `522a82b` and proven-before-faulting
-  since `1e75c23`, held the twin open and the fence landed on a live lease (`node.attempt.interrupted{lease_expired,system}` + `node.attempt.retry_scheduled`, `live9/C4.out:40-46`) and the replacement attempt succeeded with "ownership moved, no process died" (`:65`). C4c is down to the one observation arm — the stale owner's refusal matched 0 lines in its own log (`:55`) — and that arm is the container-name driver bug below, **not** the worker (`ef33f8d`'s log line is in the pass-9 build).
+- ~~C4a / C4b / C4d~~ PASS again at pass 11 (`live11/C4.out:32, :41-:44, :63-:65`) on the re-run fence, having
+  first PASSed at pass 8 and pass 9 — `cefe995`'s `hold_seconds` input, driven by `522a82b` and proven-before-
+  faulting since `1e75c23`, held the twin open and the fence landed on a live lease
+  (`node.attempt.interrupted{lease_expired,system}` + `node.attempt.retry_scheduled`, `live11/C4.out:38-:44`) and
+  the replacement attempt succeeded with "ownership moved, no process died" (`:64`). C4c left this list at pass
+  11 — the observation arm is now real (`:54`) and only the `finished_at IS NULL` schema GAP (`:50`) remains.
 - ~~The remaining fault-injection legs pick the wrong attempt~~ — **fixed in `1e75c23` and proven live at
   pass 9**: C5's kill pick, C6's kill and W2's mid-lease sample all name `/build_until_verified[1]/implement`
   (`live9/C5.out:29`, `live9/C6.out:43`, `live9/W2.out:31`) — no more pre-gate `/plan` deaths — and W2, W3,
   C5b and C1e moved on the strength of it.
-- **New, open: raw `docker` calls address compose's PREFIX, not the container.** The lab's containers are
-  `communication-m4-worker-a-1` / `…-worker-b-1`, but the legs name `communication-m4-worker-a`, so the
-  command reads or kills nothing: C4c's stale-owner log arm matched 0 lines (`live9/C4.out:53-55`) even
-  though `ef33f8d` makes the worker log the refusal once per attempt; C5b's SIGSTOP answered `cannot kill
-  container: communication-m4-worker-a: No such container` (`live9/C5.out:34`) and the rest of C5 GAPed
-  behind it (`:36-37`); W5 and W6 refused to kill anything at all because § 7.0 only lets them kill a
-  container they can prove belongs to the project (`live9/W5.out:31`, `live9/W6.out:29-31`). The rule and
-  the resolver are written down at `e2e/m4/e2e_m4_exit.py:90-95` and guarded offline by
-  `e2e/m4/test_container_names_logic.py` — **driver fix in progress, rerun pending**.
-- **New, open: the retry POSTs race the reconciler.** C5e FAILs at 409 "a running run is not retriable"
-  (`live9/C6.out:67`) because the killed attempt's replacement (attempt 2, `retry_scheduled='1'`, `:111`)
-  had already restarted the run; C6d therefore measured the wrong refusal (`code=''` where § 7.1 wants
-  `checkpoint_unavailable`, `:61`) and its "appended no new attempt" arm saw attempt 2 (`:64`); C6e's
-  cross-volume retry read "a completed run is not retriable" (`:99-100`) and its `workspace.recovery_lost`
-  read crashed on `operator does not exist: uuid = text` (`:101-105`) — a second driver read bug in the
-  same leg. **Driver fix in progress, rerun pending**.
+- ~~**New, open: raw `docker` calls address compose's PREFIX, not the container.**~~ **Fixed in `13dd742` and
+  proven live at pass 11** — this is what moved C4c, C5b, C5c, C5d, C5g, W5 and W6. The lab's containers are
+  `communication-m4-worker-a-1` / `…-worker-b-1`, while the legs named the compose PREFIX
+  `communication-m4-worker-a`, so the command read or killed nothing: C4c's stale-owner log arm matched 0 lines
+  (`live9/C4.out:53-:55`) even though `ef33f8d` makes the worker log the refusal once per attempt; C5's SIGSTOP
+  answered `No such container` (`live9/C5.out:34`); W5 and W6 refused to kill anything at all because § 7.0 only
+  lets them kill a container they can prove belongs to the project (`live9/W5.out:31`, `live9/W6.out:29-:31`).
+  The rule and the resolver live at `e2e/m4/e2e_m4_exit.py`, guarded offline by
+  `e2e/m4/test_container_names_logic.py`. Pass 11 observes `docker logs communication-m4-worker-a-1` matching
+  **2 lines** (`live11/C4.out:54`), freezes and kills `communication-m4-worker-a-1` with the lease proved live at
+  the signal (`live11/C5.out:34-:38`), and kills the same container in W5 and W6 (`live11/W5.out:35-:45`,
+  `live11/W6.out:29-:32`).
+- **New, open: the fault legs now name the right container but crash on their own helper.** W6 died mid-leg on
+  `TypeError: show() missing 1 required positional argument: 'out'` while bringing up the throwaway worker-c
+  (`live11/W6.out:35`), so everything after it — the workspace left behind, the drain, the forced affinity and
+  W6's "prior edits lost" copy — never ran (`:42`). **Driver fix in progress, rerun pending.**
+- **New, open: C8f's depth-chain fixture does not publish.** The leg builds a real l1→l2→l3 chain, but the l3
+  draft is refused by the schema (`schema_shape: got number, want string` at `/spec/nodes/0/config/…`,
+  `live11/C8.out:105-:108`), so `l3: draft/publish gave no revision` (`:110`) and the two arms that need a live
+  chain — the two-level root completing, and the third level refused by `runs_depth_check` — have nothing to
+  measure (`:112, :113`). Fixture fix, rerun pending; the `child_depth_exceeded` guard itself still PASSes (`:111`).
+- **Still open: the retry POSTs race the reconciler.** C5e FAILs at 409 "a running run is not retriable"
+  (`live11/C5.out:72`, C6's copy at `live11/C6.out:67`) because the killed attempt's replacement (attempt 2,
+  armed, `live11/C5.out:84`) has already restarted the run; C6d therefore measures the wrong refusal (`code=''`
+  where § 7.1 wants `checkpoint_unavailable`, `live11/C6.out:61`) and its "appended no new attempt" arm sees
+  attempt 2 (`:64`); C6c's `run.retried.workspace_policies` stays `{}` for the killed node (`:82`); C6e's
+  cross-volume retry reads "a completed run is not retriable" (`:99-:100`) and its `workspace.recovery_lost`
+  read crashes on `operator does not exist: uuid = text` (`:101-:106`) — a second driver read bug in the same
+  leg. C5e's `retry_context.modified_path_count` also reads `None` on that path (`live11/C5.out:87`). **Driver
+  fix in progress, rerun pending.**
 - ~~C1e's stale input count~~ — **fixed in `1e75c23` and PASS at pass 9**: the arm scores `run_inputs`
   against what the pinned revision DECLARES, so `hold_seconds=default` is one of the six rather than an
   extra row (`live9/C1.out:91, :152`).
@@ -297,18 +370,18 @@ decided_by:'node_policy:ask_unattended'}`, the agent's tool call gets the ACP ca
 titles are the agent's own `find …`/`cat hello.py` calls), and the run ends
 `node_execution_failed:/plan` (`live5/C1.out:27`).
 
-- C1c `live9/C1.out:70` and the cross-variant key set `live9/C1.out:192` — the agent leg still cannot
-  reach terminal `completed`, and it is still **not this design limit**: `4b4bfb8`'s schema fix worked —
-  `/plan` `succeeded` (`:50`), `/approve` `succeeded` (`:37`) and iterations 1–2 of implement/review/test
-  all `succeeded` (`:39-44`) — before `/build_until_verified[3]/review` failed at attempt 2 (`:46`). The
-  attempt's trail is the same shape as pass 8's (`conversation.message.agent` → `agent.session.disconnected`
-  → `sandbox.egress_observed` → `node.attempt.failed`, seqs 276/277/278/280, `:62-65`) with an empty ADR-0016
-  permission trail (`:69`), so `ask_unattended` is not involved; **the cause is under capture — this pass
-  records only where it died.** The `ask_unattended` trail below predates the ADR-0036 flip and stands for
-  C9g/C11.
-- ~~W3 `live6/W3.out:53`~~ — **PASS at pass 9, 21/0/0** (`live9/W3.out:55`): the leg parks its run on a
-  real pending gate off a real Claude plan and the card renders for both users (`:26-52`). It left this
-  group for good.
+- ~~C1c `live9/C1.out:70` and the cross-variant key set `live9/C1.out:192`~~ — **closed at pass 12, and it was
+  never this design limit.** The agent leg reaches terminal `completed` (`live12/C1.out:28`) with
+  `review_approved == true` (`:63`), 2 iterations (`:64`), a 128-row journal (`:66-:74`) and SSE open+close
+  (`:83`), and the cross-variant key set now PASSes (`live12/C1.out:206-:207`). The trail through passes 8–11 —
+  `4b4bfb8`'s schema fix letting `/plan` succeed, then iteration 3's `review` (`node_execution_failed`,
+  `live10/C1.out:67`) and finally `failed cause=until_exhausted` (`live11/C1.out:73`) — was the reviewer being
+  blind to the plan and this iteration's results, fixed in `5820aab`; `ask_unattended` was not involved (the
+  ADR-0016 permission trail printed nothing, `live9/C1.out:69`). The `ask_unattended` trail below predates the
+  ADR-0036 flip and stands for C9g/C11.
+- ~~W3 `live6/W3.out:53`~~ — **PASS at pass 9 (21/0/0, `live9/W3.out:55`) and re-confirmed at pass 12 (21/0/0,
+  `live12/W3.out:55`)**: the leg parks its run on a real pending gate off a real Claude plan and the card renders
+  for both users (`:26-:52`). It left this group for good.
 - C9g `live4/C9.out:132` — take-control needs a live `agent.acp` turn; the twin's attempts carry no
   `conversation_id`.
 - C11's agent arm `live4/C11.out:43` — the injected-body claim against a real ACP turn is exactly the
@@ -331,31 +404,33 @@ arm as proof.
   attempt is still worker-held when the poll looks, so "the secret lives in exactly one place, live" and
   the durable-surface sweep stay unmeasured (only the encrypted-store commitment PASSes, `:26`);
   C2b/C2d ride on it.
-- C6b `live9/C6.out:72` — targeting is fixed and proven (`1e75c23`: C5's pick names
-  `/build_until_verified[1]/implement` at `live9/C5.out:29`, C6's kill the same node at `live9/C6.out:43`
-  and C5b PASSes there, `:49-50`), but the legs stop one step later: C5's own SIGSTOP names a container
-  that does not exist (`live9/C5.out:34`) so its kill arms GAP (`:36-37`), and on C6 the compiled plan the
-  validate returned carries no `restore_checkpoint` string at all (`:38-39`), so there is no restore to
-  measure, no `run.checkpoint_restored` row (`:68-69`) and no readable HEAD/dirty across the kill or the
-  retry (`:55-56, :70-71`). These remain the milestone's exit sentence: **the container-name driver fix is
-  in progress and those legs need a rerun**; C5e/C6c/C6d/C6e ride on the retry-sequencing bug above.
-- W5 `live9/W5.out:31`, W6 `live9/W6.out:29-31` — both still GAP, now for the container-name reason
-  above: the legs name `communication-m4-worker-a`, cannot prove a container belongs to the project, and
-  § 7.0 forbids the kill, so nothing is ever left behind for W5's interrupted wording or W6's "prior edits
-  lost" copy to describe. W2 left this group at pass 9 — its mid-lease core arm PASSes
-  (`live9/W2.out:31`) — and its two remaining `conversation.turn.*` GAPs (`:49, :52`) are fixture shape: a
-  `process.exec` twin owns no ACP turn, and `conversation.*` sits outside `M4_RUN_EVENT_TYPES`
-  (`RunInspector.tsx:720`, ADR-0014 § 8).
+- C6b `live11/C6.out:72` — targeting and the kill are both proven now (`13dd742`: C5's pick names
+  `/build_until_verified[1]/implement` at `live11/C5.out:29`, C6's `compose kill` reaches
+  `Container communication-m4-worker-a-1 Killed` at `live11/C6.out:45-:47` and the killed attempt reads
+  `interrupted` at `:49-:50`), but the restore itself still does not exist to measure: the compiled plan the
+  validate returned carries no `restore_checkpoint` string at all (`:39-:40`), so the arm GAPs by design (`:72`),
+  no `run.checkpoint_restored` row exists, and HEAD/dirty stay unreadable across the kill and the retry. C5's own
+  freeze/kill arms no longer GAP here — they PASS (`live11/C5.out:35, :38`) — but C5e/C6c/C6d/C6e ride on the
+  retry-sequencing bug above.
+- ~~W5 `live9/W5.out:31`, W6 `live9/W6.out:29-31`~~ — **both left this group at pass 11**: the container resolver
+  makes the kills land, so neither is a GAP any more — W5 is a **FAIL** on the one thing the group never got to
+  measure (§ 7.1's interrupted wording never renders, `live11/W5.out:46`, **UI fix in progress**) and W6 is a
+  **FAIL** on a driver crash before the loss is ever produced (`live11/W6.out:35`, **fix in progress**).
+  W2 left this group at pass 9 and holds: its mid-lease core arm PASSes again (`live11/W2.out:31`) and its two
+  remaining `conversation.turn.*` GAPs (`:77, :80`) are fixture shape — a `process.exec` twin owns no ACP turn,
+  and `conversation.*` sits outside `M4_RUN_EVENT_TYPES` (`RunInspector.tsx:720`, ADR-0014 § 8).
 - C3a `live6/C3.out:29` — C8's queue exists and is proven (`21656f6` + `04f53fd`: 25 invoke rows at
-  `live7/C8.out:48-50`), but the C3 leg still does not consume it ("C8 prints SKIP" in its own text);
+  `live11/C8.out:48-50`), but the C3 leg still does not consume it ("C8 prints SKIP" in its own text);
   C3c `live6/C3.out:38` — no `/implement` attempt row carries a worker_id (the <1s twin race C4's leg
   has since been fixed around, so both are re-testable with `hold_seconds`). Both are test setup, rerun
-  pending.
-- C5f `live4/C5.out:82` (git HEAD unreadable across the restart) and C5h `live4/C5.out:99` (no
-  long-running `maxAttempts: 1` twin node exists to exhaust) stay pass-4 GAPs — C5 has not got past its
-  freeze since. C4e `live9/C4.out:66` still GAPs (the fenced attempt is `/plan`, `turn_id` NULL, so no ACP
-  transcript exists to time); C6d's uncommitted-boundary precondition `live9/C6.out:57` still GAPs. C8's
-  two GAPs (`live7/C8.out:69, :76`) are rows above, no longer downstream of a crash.
+  pending — C3 has not run since pass 6.
+- C5f `live11/C5.out:88` (git HEAD unreadable across the restart) and C5h `live11/C5.out:107` (the twin authors
+  the killable node `attempt_limit=2`, so no long-running `maxAttempts: 1` node exists to exhaust) stay GAPs even
+  though C5's kill now lands. C4e `live11/C4.out:65` still GAPs (the fenced attempt is `/plan`, `turn_id` NULL, so
+  no ACP transcript exists to time); C6d's uncommitted-boundary precondition `live11/C6.out:57` still GAPs. C8 is
+  now **38 PASS / 0 FAIL / 2 GAP** (`live11/C8.out:128`): C8e's stop/fail_after_all GAP is closed (`:78-:92`,
+  `b2bfe62` + `d8b927c`) and the two that remain are C8f's unpublished depth chain (`:112, :113`, fixture bug
+  above).
 - C7b's artifact arm `live4/C7.out:59` (no artifact rows on the exhausted run), C7a's scope-iterations
   row `:70`, C7c's eval-time arm `:124` (the schema refuses the undeclared field first, so the
   `predicate_error` half is only proven offline), C7d's transcript half `:77` (a `process.exec` twin has
@@ -383,13 +458,14 @@ arm as proof.
   project-B-only outsider, so the seeded `erin` plays the outsider (the row's copy says so), and the run
   the deep link needed had no approval to link.
 
-**Driver legs exist, not yet run live — W10, W11**
+**Browser legs that still have not run live — W10**
 
 `w1`, `w3`, `w4`, `w7`, `w8` and `w9` are implemented Playwright legs that have run, pass 8
-added W2, W5 and W6 to that list, and pass 9 re-ran all three (W2 **PASS**, W5/W6 GAP on the
-container-name bug above, none FAILs). Only **W10 and W11** remain NOT RUN: their legs landed in
-`d91f4fc`/`74ea274` (SSE resume with `?after=` and dedupe, `/tree` children rendered under run) but
-have never executed live on HEAD, so they are NOT RUN, not GAPs. W11's scripted precondition is
-proven: C8's tree renders 25 distinct children at `live7/C8.out:64-68`. W5's and W6's scripted
-substitutes (C5b/C6e) are still blocked on the driver fixes above.
-`live7/C8.out:64-68`. W5's and W6's scripted substitutes are still blocked on the same pick.
+added W2, W5 and W6 to that list, pass 9 re-ran all three (W2 **PASS**, W5/W6 GAP on the
+container-name bug), pass 11 re-ran them on the resolver (W2 **PASS**; W5 and W6 now **FAIL** for the named
+reasons above) and ran **W11 live for the first time** — **FAIL**: the tree renders all 25 children and leaks no
+fencing token / lease / worker id (`live11/W11.out:33, :37, :47-:49`), but no child row carries a status word
+(`:36`, **UI fix queued**). Only **W10** remains NOT RUN: its leg landed in `d91f4fc`/`74ea274` (SSE resume with
+`?after=` and dedupe) and has never executed live on HEAD, so it is NOT RUN, not a GAP. W11's scripted
+precondition is proven: C8's tree renders 25 distinct children at `live11/C8.out:64-68`. W6's scripted substitute
+(C6e) is still blocked on the retry-sequencing and `uuid = text` read bugs above.
