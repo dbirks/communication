@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -165,8 +166,31 @@ func (s *recordingSink) types() []string {
 	return out
 }
 
+// shScript is the schema's shape for "run this body under sh": a bare
+// executable plus its args (configProcessExec declares no argv). The executor
+// resolves `sh` on the worker's PATH and execs it directly — argv only, never a
+// shell built by one process out of a string.
 func shScript(body string) map[string]any {
-	return map[string]any{"argv": []any{"/bin/sh", "-c", body}}
+	return map[string]any{"executable": "sh", "args": []any{"-c", body}}
+}
+
+// execArgs is the same shape for a command named by its bare executable.
+func execArgs(name string, args ...string) map[string]any {
+	list := make([]any, len(args))
+	for i, a := range args {
+		list[i] = a
+	}
+	return map[string]any{"executable": name, "args": list}
+}
+
+// extraction is outputExtraction in the shape the schema publishes: an object
+// with a mode and, for json_from_path, a path beside it.
+func extraction(mode string, path ...string) map[string]any {
+	ex := map[string]any{"mode": mode}
+	if len(path) > 0 {
+		ex["path"] = path[0]
+	}
+	return ex
 }
 
 // TestProcExecExitMapping is the contract § 4 step 7 table, asserted one
@@ -214,10 +238,10 @@ func TestProcExecExitMapping(t *testing.T) {
 			}
 		})
 	}
-	t.Run("unable to start is infra", func(t *testing.T) {
+	t.Run("an executable that is not on the worker PATH is unable to start", func(t *testing.T) {
 		f := newProcExecFixture(t, domain.EnforceDisabled)
 		res, err := f.proc.Execute(context.Background(), f.claim(map[string]any{
-			"argv": []any{"/definitely/not/here"},
+			"executable": "definitely-not-here-9a7c",
 		}), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -231,7 +255,7 @@ func TestProcExecExitMapping(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		start := time.Now()
-		res, err := f.proc.Execute(ctx, f.claim(map[string]any{"argv": []any{"/bin/sleep", "30"}}), f.sink)
+		res, err := f.proc.Execute(ctx, f.claim(execArgs("sleep", "30")), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -250,7 +274,7 @@ func TestProcExecExitMapping(t *testing.T) {
 			cancel()
 		}()
 		start := time.Now()
-		res, err := f.proc.Execute(ctx, f.claim(map[string]any{"argv": []any{"/bin/sleep", "30"}}), f.sink)
+		res, err := f.proc.Execute(ctx, f.claim(execArgs("sleep", "30")), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -279,6 +303,116 @@ func outputsCode(t *testing.T, outputs any) (int64, bool) {
 	return 0, false
 }
 
+// procExecLookPath is the worker's own PATH lookup, asserted from the test
+// process — the same search the executor performs.
+func procExecLookPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Skipf("%s is required on the test process's PATH for this assertion: %v", name, err)
+	}
+	return path
+}
+
+// TestProcExecExecutableResolvedOnPath pins the schema's shape of § 4 step 7:
+// the plan names a BARE executable (configProcessExec.executable's pattern
+// forbids a separator), the worker resolves it against its own PATH, and the
+// arguments are the plan's `args` verbatim. An executable the PATH does not
+// carry is the contract's unable-to-start arm — infra, before any child exists —
+// never a command that "failed".
+func TestProcExecExecutableResolvedOnPath(t *testing.T) {
+	t.Run("a bare name on PATH resolves and the exit maps normally", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		res, err := f.proc.Execute(context.Background(), f.claim(map[string]any{"executable": "true"}), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded || res.Outcome != "passed" {
+			t.Fatalf("res = %+v, want succeeded/passed (`true` found on the worker PATH)", res)
+		}
+		if code, ok := outputsCode(t, res.Outputs); !ok || code != 0 {
+			t.Errorf("exit_code = %v, want 0", res.Outputs)
+		}
+	})
+
+	t.Run("args reach the command verbatim", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		if err := os.WriteFile(filepath.Join(f.layout.Scratch, "present.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// `test -e <file>` exits 0 when the argument arrived intact and 1 when it
+		// did not — the two arms are what prove args are passed, not dropped or
+		// re-parsed by a shell.
+		res, err := f.proc.Execute(context.Background(), f.claim(
+			execArgs("test", "-e", filepath.Join(f.layout.Scratch, "present.txt"))), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded || res.Outcome != "passed" {
+			t.Fatalf("res = %+v, want succeeded/passed (the args arrived)", res)
+		}
+		res, err = f.proc.Execute(context.Background(), f.claim(
+			execArgs("test", "-e", filepath.Join(f.layout.Scratch, "absent.txt"))), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded || res.Outcome != "failed" {
+			t.Fatalf("res = %+v, want succeeded/failed (exit 1 is the command's verdict, not infra)", res)
+		}
+	})
+
+	t.Run("an executable off the PATH is unable to start", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		res, err := f.proc.Execute(context.Background(), f.claim(
+			map[string]any{"executable": "m4-helper-that-does-not-exist"}), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want failed/infra (§ 4 step 7's unable-to-start arm)", res)
+		}
+		if !strings.Contains(res.Detail, "unable to start") || !strings.Contains(res.Detail, "PATH") {
+			t.Errorf("detail = %q, want it to name unable to start and the worker PATH", res.Detail)
+		}
+	})
+
+	t.Run("a path, not a bare name, is refused as a plan bug", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		res, err := f.proc.Execute(context.Background(), f.claim(
+			map[string]any{"executable": "/bin/true"}), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra ||
+			!strings.Contains(res.Detail, "bare executable name") {
+			t.Fatalf("res = %+v, want the schema pattern's infra refusal", res)
+		}
+	})
+
+	t.Run("the plan's own env declarations reach the child", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		t.Setenv("COMMUNICATION_TEST_ONLY", "worker-side-only")
+		cfg := map[string]any{"executable": "env", "env": map[string]any{"M4_PLAN_VAR": "from-the-plan"}}
+		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v", res)
+		}
+		preview, _ := res.Outputs.(map[string]any)["stdout_preview"].(string)
+		if !strings.Contains(preview, "M4_PLAN_VAR=from-the-plan") {
+			t.Errorf("the plan's env declaration did not reach the child: %s", preview)
+		}
+		if strings.Contains(preview, "COMMUNICATION_TEST_ONLY") {
+			t.Error("the child inherited the worker's environment (§ 4 step 7)")
+		}
+	})
+}
+
 // TestProcExecOutputsAreBoundedAndScratchEnv pins the § 6 envelope caps and
 // the ADR-0019 D1 leak class: nothing from the worker's environment reaches
 // the command, the envelope carries exit_code + previews + digests under
@@ -291,7 +425,7 @@ func TestProcExecOutputsAreBoundedAndScratchEnv(t *testing.T) {
 		f := newProcExecFixture(t, domain.EnforceDisabled)
 		f.proc.Checkpoints = stubCheckpoints{}
 		cfg := shScript(`printf '{"score":7}'`)
-		cfg["outputExtraction"] = "json_from_stdout"
+		cfg["outputExtraction"] = extraction("json_from_stdout")
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -316,7 +450,7 @@ func TestProcExecOutputsAreBoundedAndScratchEnv(t *testing.T) {
 	t.Run("invalid json is invalid_output evidence", func(t *testing.T) {
 		f := newProcExecFixture(t, domain.EnforceDisabled)
 		cfg := shScript(`printf 'not json at all'`)
-		cfg["outputExtraction"] = "json_from_stdout"
+		cfg["outputExtraction"] = extraction("json_from_stdout")
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -335,7 +469,7 @@ func TestProcExecOutputsAreBoundedAndScratchEnv(t *testing.T) {
 		// dropped the envelope cannot fit the 32 KiB inline cap, and the
 		// honest § 6 answer is outputs_too_large — never a truncation.
 		cfg := shScript(`printf '{"a":"'; dd if=/dev/zero bs=1 count=40000 2>/dev/null | tr '\0' 'x'; printf '"}'`)
-		cfg["outputExtraction"] = "json_from_stdout"
+		cfg["outputExtraction"] = extraction("json_from_stdout")
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -371,8 +505,7 @@ func TestProcExecOutputsAreBoundedAndScratchEnv(t *testing.T) {
 	t.Run("output path escaping the workspace is refused", func(t *testing.T) {
 		f := newProcExecFixture(t, domain.EnforceDisabled)
 		cfg := shScript(`exit 0`)
-		cfg["outputExtraction"] = "json_from_path"
-		cfg["path"] = "../../etc/passwd"
+		cfg["outputExtraction"] = extraction("json_from_path", "../../etc/passwd")
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -390,8 +523,7 @@ func TestProcExecOutputsAreBoundedAndScratchEnv(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg := shScript(`exit 0`)
-		cfg["outputExtraction"] = "json_from_path"
-		cfg["path"] = filepath.Join(f.layout.Work, "scratch", "result.json")
+		cfg["outputExtraction"] = extraction("json_from_path", filepath.Join(f.layout.Work, "scratch", "result.json"))
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
@@ -431,7 +563,7 @@ func TestProcExecRequiredUsesTheCommandProfile(t *testing.T) {
 	f.proc.Sandbox = fake
 	f.proc.SandboxPath = "/bin/echo" // echoes the nono argv and exits 0
 	f.proc.Checkpoints = stubCheckpoints{}
-	claim := f.claim(map[string]any{"argv": []any{"/bin/true"}})
+	claim := f.claim(map[string]any{"executable": "true"})
 
 	res, err := f.proc.Execute(context.Background(), claim, f.sink)
 	if err != nil {
@@ -453,8 +585,8 @@ func TestProcExecRequiredUsesTheCommandProfile(t *testing.T) {
 	if !spec.Profile.NetworkEnforced {
 		t.Error("communication-command must carry its own NetworkEnforced claim")
 	}
-	if spec.AdapterPath != "/bin/true" {
-		t.Errorf("adapter = %q", spec.AdapterPath)
+	if spec.AdapterPath != procExecLookPath(t, "true") {
+		t.Errorf("adapter = %q, want the worker-PATH resolution of `true`", spec.AdapterPath)
 	}
 	types := strings.Join(f.sink.types(), ",")
 	if !strings.Contains(types, events.TypeSandboxVerified) {
@@ -477,7 +609,7 @@ func TestProcExecRequiredRefusalIsHonestAndJournalled(t *testing.T) {
 		Stage: "grant_assert", Reason: "grant_mismatch", Err: errors.New("resolved grant set is not the recorded one"),
 	}}
 	f.proc.SandboxPath = "/bin/echo"
-	res, err := f.proc.Execute(context.Background(), f.claim(map[string]any{"argv": []any{"/bin/true"}}), f.sink)
+	res, err := f.proc.Execute(context.Background(), f.claim(map[string]any{"executable": "true"}), f.sink)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -510,9 +642,9 @@ func TestProcExecRefusesUnpreparedWorkspaceAndBadConfig(t *testing.T) {
 			t.Fatalf("res = %+v, want the infra refusal naming § 4 step 3", res)
 		}
 	})
-	t.Run("unresolved argv is a binding_error", func(t *testing.T) {
+	t.Run("unresolved executable is a binding_error", func(t *testing.T) {
 		f := newProcExecFixture(t, domain.EnforceDisabled)
-		cfg := map[string]any{"argv": map[string]any{
+		cfg := map[string]any{"executable": map[string]any{
 			"$unresolved": true, "expr_ids": []any{"e1"},
 		}}
 		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
@@ -563,7 +695,7 @@ func TestProcExecDispatchAndDrainThroughLoop(t *testing.T) {
 
 	t.Run("drain stops the group and writes the honest terminal", func(t *testing.T) {
 		store := newFakeAttemptStore(1)
-		store.queueExec(fakeAttemptID, fakeRunID, map[string]any{"argv": []any{"/bin/sleep", "30"}})
+		store.queueExec(fakeAttemptID, fakeRunID, execArgs("sleep", "30"))
 		l, err := NewAttemptLoop(fastAttemptConfig(1), store, AttemptExecutors{NodeKindProcessExec: f.proc},
 			func() string { return "worker-1" },
 			WithAttemptLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))

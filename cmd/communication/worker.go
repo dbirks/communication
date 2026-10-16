@@ -398,6 +398,15 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		Logger:        log,
 		Checkpoints:   runWorkspaces,
 	}
+	// Contract § 4 step 4 names no node kind: a node_attempt mount belongs to the
+	// attempt that owns its lifecycle, whichever kind ran. process.exec therefore
+	// drives the same adapter as agent.acp — one materializer, one keyring, one
+	// ledger (ADR-0018 D4) — and not a second copy of the machinery. Which mounts
+	// that attempt may hold is still its own decision: a process.exec claim names
+	// no agent profile, so it is authorized for no profile-allowlisted mount and
+	// delivers none (worker.ProcExec.materializeSecrets) — the wiring is shared,
+	// the authorization is not widened by it.
+	procExec.Secrets = unitsSecrets
 	agentTurn := newAgentTurn(opts, pool, units, log)
 	agentTurn.Checkpoints = runWorkspaces
 	// Contract § 4 step 4: the attempt's node_attempt mounts materialize through

@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,6 +23,7 @@ import (
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/sandbox/nono"
+	"github.com/dbirks/communication/internal/secrets"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
@@ -117,6 +120,27 @@ type ProcExec struct {
 	// the missing step — a claim about the wiring, not about the command.
 	Checkpoints RunWorkspaceResolver
 
+	// Secrets materializes this attempt's `node_attempt` mounts (contract § 4
+	// step 4 names no node kind, so the rule is the attempt's, not the agent's):
+	// env entries join the from-scratch command environment below, env_file
+	// writes land inside the run tree, and the ledger row carries this
+	// attempt_id. Same seam and same materializer agent.acp's attempt drives —
+	// one materializer per process (ADR-0018 D4), never a second one here.
+	// Nil means unwired, which is unit.go's precedent for "nothing
+	// materialized", not a refusal of every command attempt.
+	Secrets AttemptSecrets
+
+	// AttemptProfile reports the agent profile an attempt holds for secret
+	// authorization — ADR-0018 D3's allowlist axis. Process.exec claims name no
+	// profile (attemptport.go's AttemptClaim has no such field), so the default
+	// is "" and the attempt is authorized for no profile-allowlisted mount.
+	// The hook exists so that answer stays a *rule* read from the claim rather
+	// than a hard-coded "never": when this kind grows a profile axis, the claim
+	// grows the field and this is the line that reads it. Test-wired for the
+	// same reason — the authorized-delivery path below is reachable only for an
+	// attempt a mount's allowlist names.
+	AttemptProfile func(AttemptClaim) string
+
 	// KillGrace bounds SIGTERM→SIGKILL for the process group (§ 4 step 11).
 	KillGrace time.Duration
 
@@ -174,16 +198,56 @@ func (p *ProcExec) profile() (*nono.Profile, error) {
 }
 
 // procExecSpec is one parsed process.exec config. The Config map is
-// executor-owned per kind (attemptport.go); these are § 4 step 7's members.
+// executor-owned per kind (attemptport.go); these are the members the canonical
+// schema's configProcessExec declares — `executable` + `args` (argv, never a
+// shell), `cwd`, `env`, `outputExtraction` — as § 4 step 7 names them.
 type procExecSpec struct {
-	argv       []string
+	// executable is the bare name the plan declared (schema pattern
+	// ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$): a name to resolve, never a path with
+	// separators and never a shell word.
+	executable string
+	// args are the declared arguments verbatim; bindings were resolved by the
+	// control plane before the claim (§ 4 step 14).
+	args []string
+	// argv is the launch form: `executable` resolved to an absolute path
+	// against the worker's own PATH, followed by args. It is what exec.Command
+	// receives, so the resolution failure surfaces before any child exists.
+	argv []string
+	// env holds the config's own `env` declarations as KEY=VALUE, sorted so one
+	// plan execs the same environment every run. It joins the from-scratch
+	// launch environment; it never *is* one (step 7 forbids os.Environ()).
+	env        []string
 	cwd        string
 	extraction string // none | json_from_stdout | json_from_path
 	path       string // json_from_path's file, resolved under work/
 }
 
+// execNamePattern is the schema's configProcessExec.executable pattern, restated
+// here so a plan that slipped a validator (or a loader that hydrates a snapshot
+// written by an older engine) is refused as the plan bug it is instead of being
+// LookPath'd — a name containing a separator is a path, and a path is not what
+// the schema's `executable` promises.
+var execNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
+
 // Execute runs one attempt body. Every refusal names itself; none pretends.
+//
+// As in AgentTurn.Execute, the wrapper exists only to apply the materializer's
+// redaction to what the attempt produced: the values this attempt delivered are
+// known to the materializer alone, and neither the terminal result nor any
+// journalled payload may carry them (12-test-strategy case 12). The hook travels
+// in a per-call variable rather than a field — one *ProcExec serves concurrent
+// attempts, so per-attempt state on the struct would race and leak redaction
+// from one attempt into another's.
 func (p *ProcExec) Execute(ctx context.Context, c AttemptClaim, sink AttemptSink) (AttemptResult, error) {
+	var redact func(string) (string, int)
+	res, err := p.executeAttempt(ctx, c, sink, &redact)
+	if redact != nil {
+		res = redactResult(redact, res)
+	}
+	return res, err
+}
+
+func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink AttemptSink, redactHook *func(string) (string, int)) (AttemptResult, error) {
 	spec, refusal := p.parseConfig(c)
 	if refusal != nil {
 		return *refusal, nil
@@ -252,6 +316,32 @@ func (p *ProcExec) Execute(ctx context.Context, c AttemptClaim, sink AttemptSink
 		return failedResult(ErrorClassInfra, "command launch plan: "+p.redact(err.Error())), nil
 	}
 
+	// The run workspace row is what makes a mount target authorizable: its
+	// repositories come from § 4 step 3's preparation, and an attempt never
+	// invents a checkout path to write a secret into.
+	workspaceID := ""
+	if p.Checkpoints != nil {
+		if ref, ok, err := p.Checkpoints.RunWorkspace(context.WithoutCancel(ctx), c.RunID); err == nil && ok {
+			workspaceID = ref.WorkspaceID
+		}
+	}
+
+	// § 4 step 4 runs in the contract's order: materialize, then verify, then
+	// launch — so a mount that cannot be delivered means no child process and no
+	// partial set (ADR-0018 D4), and nothing sandboxed ever ran holding a value
+	// the ledger does not record.
+	materialized, refusal := p.materializeSecrets(ctx, c, workspaceID, layout)
+	if refusal != nil {
+		return *refusal, nil
+	}
+	if materialized != nil {
+		defer p.cleanupSecrets(c, materialized, layout)
+		if redactHook != nil && materialized.Redact != nil {
+			*redactHook = materialized.Redact
+			sink = redactingAttemptSink{inner: sink, redact: materialized.Redact}
+		}
+	}
+
 	required := p.enforcement() == domain.EnforceRequired
 	adapterEnv, err := acp.LaunchEnv(acp.EnvRequest{
 		Home:    homeDir,
@@ -265,6 +355,22 @@ func (p *ProcExec) Execute(ctx context.Context, c AttemptClaim, sink AttemptSink
 	})
 	if err != nil {
 		return failedResult(ErrorClassInfra, "build command environment: "+bounded(err.Error(), 400)), nil
+	}
+	// The env-delivered mounts join that from-scratch environment here and nowhere
+	// else — not the journal, not a log line, not the capture files (seams.go's
+	// rule for `env` values, ADR-0018 D4). Appended last, so what the platform
+	// authorized for this attempt outranks anything LaunchEnv sets for itself; the
+	// from-scratch discipline (§ 4 step 7, never os.Environ()) is what makes
+	// "this is the command's whole environment" a true statement afterwards.
+	// The plan's own `env` declarations join next, then the mounts the platform
+	// authorized for this attempt — so an authorized value outranks the pipeline
+	// text, and neither of them is os.Environ(): the from-scratch discipline of
+	// § 4 step 7 is what makes "this is the command's whole environment" a true
+	// statement afterwards, and nothing here reaches the journal, a log line, or
+	// the capture files (seams.go's rule for `env` values, ADR-0018 D4).
+	adapterEnv = append(adapterEnv, spec.env...)
+	if materialized != nil {
+		adapterEnv = append(adapterEnv, materialized.Env...)
 	}
 
 	path, args, env := spec.argv[0], spec.argv[1:], adapterEnv
@@ -304,6 +410,149 @@ type wrappedLaunch struct {
 	argv []string
 }
 
+// materializeSecrets is contract § 4 step 4 at process.exec scope: the
+// node_attempt mounts this attempt is authorized to hold, delivered before the
+// command launches, never half a set (ADR-0018 D4).
+//
+// Which mounts those are is decided HERE, before the materializer is asked,
+// because for a process.exec attempt the answer is structural. A process.exec
+// claim carries no agent profile, so p.agentProfile reports ""; every mount's
+// allowlist is keyed by profile id and the resolver denies the empty profile
+// outright (internal/secrets/resolver.go:231's `a.AgentProfileID == "" ||
+// !slices.Contains(allowed, …)` → secrets.ErrNotAuthorized; ADR-0018 D3's
+// "empty means denied to all", and an empty allowlist denies too). So a
+// profile-less attempt is authorized for *no* node_attempt mount, and the
+// contract's distinction — a mount that is not this attempt's is simply not
+// delivered, only a mount that is this attempt's and then fails is an attempt
+// failure — is applied as:
+//
+//   - no profile: nothing is asked for. Materialize is not called, so nothing is
+//     delivered, nothing is recorded as materialized, and no
+//     secret.materialization_failed is journalled for a delivery nobody claimed.
+//     The command runs exactly as it did before this kind had a secrets seam;
+//   - a profile, and the materializer answers secrets.ErrNotAuthorized: the same
+//     skip, recognised on the error's type rather than its text;
+//   - a profile, and any other failure: the attempt fails as infra, naming step
+//     4 and carrying no path (the reason is journalled by the materializer in
+//     its own transaction).
+//
+// Delivering a value whose allowlist is written in profile ids to an unprofiled
+// command would be the leak; refusing the *delivery* while running the command
+// is the boundary. PolicyDigest is left empty for the agentturn reason: under
+// `required` the policy is verified at step 5, after materialization, and a
+// digest claimed here would be a promise about a launch not yet checked.
+func (p *ProcExec) materializeSecrets(ctx context.Context, c AttemptClaim, workspaceID string, layout wsgit.Layout) (*Materialized, *AttemptResult) {
+	if p.Secrets == nil {
+		return nil, nil
+	}
+	profile := p.agentProfile(c)
+	if profile == "" {
+		p.logger().Debug("no node_attempt mount is deliverable to this attempt: it holds no agent profile",
+			slog.String("attempt_id", c.AttemptID), slog.String("project_id", c.ProjectID))
+		return nil, nil
+	}
+	// The checkouts a mount may target are § 4 step 3's, never this executor's
+	// guess: no workspace row, no repos, and an attempt with no authorized root
+	// delivers nothing rather than writing into a directory the database never
+	// named.
+	repos, err := p.Secrets.ReposForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"read the run workspace's repositories for node_attempt secret mounts: "+p.redact(err.Error())))
+	}
+	var extra []string
+	m, err := p.Secrets.Materialize(ctx, MaterializeRequest{
+		OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
+		WorkspaceID: workspaceID, WorkerID: c.WorkerID,
+		AttemptID: c.AttemptID, AgentProfileID: profile,
+		Lifecycle: LifecycleNodeAttempt,
+		Repos:     repos,
+		// This executor captures stdout/stderr and a json extraction only — it
+		// builds no tree artifact, so nothing here consumes the exclusion list.
+		// It is still passed: an env_file mount written into the run tree must
+		// reach whoever captures that tree next, and the materializer's
+		// reporting should not depend on which kind asked (ADR-0017 D6).
+		ExtraExclusions: &extra,
+	})
+	if err != nil {
+		if errors.Is(err, secrets.ErrNotAuthorized) {
+			// A mount that is not this attempt's: not delivered, and nothing
+			// recorded as materialized for it (step 4). The command is not the
+			// one that failed to be authorized, so it does not fail for it.
+			p.logger().Debug("node_attempt mount is not authorized for this attempt: delivering nothing",
+				slog.String("attempt_id", c.AttemptID), slog.String("project_id", c.ProjectID))
+			return nil, nil
+		}
+		// The reason is already journalled by the materializer in its own
+		// transaction; the attempt's detail names the step and carries no path.
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"node_attempt secret materialization refused (contract § 4 step 4): the reason is in secret.materialization_failed"))
+	}
+	if len(m.Env) == 0 && len(m.Files) == 0 && m.Done == nil {
+		// No node_attempt mount applies — the ordinary case, and nothing to
+		// clean up or redact.
+		return nil, nil
+	}
+	// An env_file write outside this run's tree is a materializer bug, and the
+	// command must not launch on it: the sandbox grants the run workspace, so a
+	// file elsewhere is a value in a tree this attempt's grants do not cover.
+	for _, file := range m.Files {
+		if !inside(layout.Work, file) {
+			return nil, ptrResult(failedResult(ErrorClassInfra,
+				"a node_attempt secret was materialized outside the run workspace (contract § 4 step 4): refusing to launch"))
+		}
+	}
+	return &m, nil
+}
+
+// agentProfile reports the agent profile this attempt holds for secret
+// authorization. A process.exec claim names none, so the answer is "" — and
+// "" is denied every mount (see materializeSecrets). The hook is the extension
+// point the claim must grow, not this executor's invention.
+func (p *ProcExec) agentProfile(c AttemptClaim) string {
+	if p.AttemptProfile == nil {
+		return ""
+	}
+	return p.AttemptProfile(c)
+}
+
+// cleanupSecrets runs at the attempt boundary — env deliveries included, whose
+// ledger row must close even though no file was written — in M3's order:
+// assert the files gone, *then* journal secret.removed, so "cleanup happened"
+// and "the journal says so" are one claim. The teardown outlives a cancelled
+// or killed attempt (defer + WithoutCancel): a value must not survive because
+// its process was interrupted, and § 4 step 11's SIGKILL is exactly the case
+// where a child dies without clearing its own environment's footprint.
+//
+// A file that cannot be removed is logged, never journalled — the path names
+// where a secret lives and attempts.detail is browser-visible. The uncleaned
+// row is left standing, which is the finding the worker's startup sweep exists
+// to close (ADR-0018 D1).
+func (p *ProcExec) cleanupSecrets(c AttemptClaim, m *Materialized, layout wsgit.Layout) {
+	if m == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
+	defer cancel()
+	for _, file := range m.Files {
+		if !inside(layout.Work, file) {
+			p.logger().Error("refusing to remove a materialized secret outside the run workspace",
+				slog.String("attempt_id", c.AttemptID), slog.String("path", file))
+			continue
+		}
+		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.logger().Error("materialized node_attempt secret survived attempt cleanup",
+				slog.String("attempt_id", c.AttemptID), slog.String("path", file),
+				slog.String("error", err.Error()))
+		}
+	}
+	if m.Done != nil {
+		if err := m.Done(ctx); err != nil {
+			p.logger().Warn("secret.removed could not be journalled for the attempt",
+				slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
+		}
+	}
+}
 func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string) (*wrappedLaunch, *AttemptResult) {
 	if p.Sandbox == nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail,
@@ -408,34 +657,84 @@ func (p *ProcExec) parseConfig(c AttemptClaim) (procExecSpec, *AttemptResult) {
 	if cfg == nil {
 		return fail(ErrorClassInfra, "process.exec attempt carries no config: the claim did not hydrate a plan node")
 	}
-	rawArgv, ok := cfg["argv"]
-	if !ok {
-		return fail(ErrorClassInfra, "process.exec config has no argv")
-	}
-	if isUnresolved(rawArgv) {
-		return fail(ErrorClassBindingError, "process.exec argv still carries unresolved expression bindings; the advancer resolves bindings — the worker never evaluates them (§ 4 step 14)")
-	}
-	list, ok := rawArgv.([]any)
-	if !ok {
-		if strs, strOK := rawArgv.([]string); strOK {
-			list = make([]any, len(strs))
-			for i, s := range strs {
-				list[i] = s
+	// `executable` is the schema's only required member. A whole `argv` is
+	// accepted for exactly one thing: the in-repo real-sandbox proofs of
+	// procexec_nono_test.go, which hand the executor an argv directly. Nothing
+	// in this repository *produces* the key in a claim (grep `"argv"`: the
+	// compiler, the advancer and the claim hydration never name it) and
+	// canonical validation rejects it at publish time, so a claim carrying it is
+	// a hand-built one, not a pipeline's. Its target is resolved by the same
+	// lookup as `executable`, so "not runnable" is the same infra refusal.
+	rawExec, hasExec := cfg["executable"]
+	rawArgv, hasArgv := cfg["argv"]
+	switch {
+	case hasExec:
+		if isUnresolved(rawExec) {
+			return fail(ErrorClassBindingError, "process.exec executable still carries an unresolved expression binding; the advancer resolves bindings — the worker never evaluates them (§ 4 step 14)")
+		}
+		name, ok := rawExec.(string)
+		if !ok || name == "" {
+			return fail(ErrorClassInfra, "process.exec executable is not a non-empty string")
+		}
+		if !execNamePattern.MatchString(name) {
+			return fail(ErrorClassInfra, fmt.Sprintf(
+				"process.exec executable %q is not a bare executable name: the schema's pattern is ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ — a name to resolve, never a path and never a shell word", p.redact(name)))
+		}
+		spec.executable = name
+		resolved, rerr := p.resolveExecutable(name)
+		if rerr != nil {
+			// § 4 step 7's unable-to-start arm, answered before the fork: a name
+			// the worker cannot find is an infra refusal (a plan/deployment gap),
+			// never a command that "failed".
+			return fail(ErrorClassInfra, "unable to start "+name+": "+p.redact(rerr.Error()))
+		}
+		spec.argv = append(spec.argv, resolved)
+		if v, ok := cfg["args"]; ok {
+			if isUnresolved(v) {
+				return fail(ErrorClassBindingError, "process.exec args still carry unresolved expression bindings; the advancer resolves bindings — the worker never evaluates them (§ 4 step 14)")
 			}
+			list, ok := anyList(v)
+			if !ok {
+				return fail(ErrorClassInfra, "process.exec args is not a list")
+			}
+			for i, el := range list {
+				s, ok := el.(string)
+				if !ok {
+					return fail(ErrorClassInfra, fmt.Sprintf("process.exec args[%d] is not a string (argv is data for one execve, never a shell to expand)", i))
+				}
+				// An empty argument is legal argv (`--msg=` with ""); only a
+				// non-string (a plan's null left in place) is a shape error.
+				spec.args = append(spec.args, s)
+			}
+			spec.argv = append(spec.argv, spec.args...)
 		}
-	}
-	if list == nil {
-		return fail(ErrorClassInfra, "process.exec argv is not a list")
-	}
-	if len(list) == 0 {
-		return fail(ErrorClassInfra, "process.exec argv is empty: there is nothing to exec, and an empty command is a plan bug, not a no-op")
-	}
-	for i, el := range list {
-		s, ok := el.(string)
-		if !ok || s == "" {
-			return fail(ErrorClassInfra, fmt.Sprintf("process.exec argv[%d] is not a non-empty string (argv only, never a shell)", i))
+	case hasArgv:
+		if isUnresolved(rawArgv) {
+			return fail(ErrorClassBindingError, "process.exec argv still carries unresolved expression bindings; the advancer resolves bindings — the worker never evaluates them (§ 4 step 14)")
 		}
-		spec.argv = append(spec.argv, s)
+		list, ok := anyList(rawArgv)
+		if !ok || list == nil {
+			return fail(ErrorClassInfra, "process.exec argv is not a list")
+		}
+		if len(list) == 0 {
+			return fail(ErrorClassInfra, "process.exec argv is empty: there is nothing to exec, and an empty command is a plan bug, not a no-op")
+		}
+		for i, el := range list {
+			s, ok := el.(string)
+			if !ok || s == "" {
+				return fail(ErrorClassInfra, fmt.Sprintf("process.exec argv[%d] is not a non-empty string (argv only, never a shell)", i))
+			}
+			spec.argv = append(spec.argv, s)
+		}
+		spec.executable = spec.argv[0]
+		spec.args = append(spec.args, spec.argv[1:]...)
+		resolved, rerr := p.resolveExecutable(spec.argv[0])
+		if rerr != nil {
+			return fail(ErrorClassInfra, "unable to start "+filepath.Base(spec.argv[0])+": "+p.redact(rerr.Error()))
+		}
+		spec.argv[0] = resolved
+	default:
+		return fail(ErrorClassInfra, "process.exec config has no executable: the claim's plan node declared none (schema configProcessExec requires one)")
 	}
 	if v, ok := cfg["cwd"]; ok {
 		if isUnresolved(v) {
@@ -443,11 +742,52 @@ func (p *ProcExec) parseConfig(c AttemptClaim) (procExecSpec, *AttemptResult) {
 		}
 		spec.cwd, _ = v.(string)
 	}
+	if v, ok := cfg["env"]; ok {
+		if isUnresolved(v) {
+			return fail(ErrorClassBindingError, "process.exec env carries an unresolved binding")
+		}
+		decl, ok := v.(map[string]any)
+		if !ok {
+			return fail(ErrorClassInfra, "process.exec env is not a map of string values")
+		}
+		keys := make([]string, 0, len(decl))
+		for k := range decl {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // one plan, one deterministic environment
+		for _, k := range keys {
+			if k == "" {
+				return fail(ErrorClassInfra, "process.exec env has an empty key")
+			}
+			s, ok := decl[k].(string)
+			if !ok {
+				return fail(ErrorClassInfra, fmt.Sprintf("process.exec env[%s] is not a string", k))
+			}
+			spec.env = append(spec.env, k+"="+s)
+		}
+	}
 	if v, ok := cfg["outputExtraction"]; ok {
 		if isUnresolved(v) {
 			return fail(ErrorClassBindingError, "process.exec outputExtraction carries an unresolved binding")
 		}
-		spec.extraction, _ = v.(string)
+		// The schema declares an object, { mode, path }. The bare mode string is
+		// the shape a hand-built claim has always used; both mean the same thing
+		// and both are read — but a reader that understood only the string would
+		// run every published json_from_path node as `none`, silently.
+		switch ex := v.(type) {
+		case string:
+			spec.extraction = ex
+		case map[string]any:
+			spec.extraction, _ = ex["mode"].(string)
+			if pv, ok := ex["path"]; ok {
+				if isUnresolved(pv) {
+					return fail(ErrorClassBindingError, "process.exec output path carries an unresolved binding")
+				}
+				spec.path, _ = pv.(string)
+			}
+		default:
+			return fail(ErrorClassInfra, "process.exec outputExtraction is neither the schema's object nor a mode string")
+		}
 	}
 	if spec.extraction == "" {
 		spec.extraction = "none"
@@ -457,23 +797,58 @@ func (p *ProcExec) parseConfig(c AttemptClaim) (procExecSpec, *AttemptResult) {
 	default:
 		return fail(ErrorClassInfra, fmt.Sprintf("process.exec outputExtraction %q is not none | json_from_stdout | json_from_path (§ 4 step 7)", spec.extraction))
 	}
-	if spec.extraction == "json_from_path" {
+	if spec.extraction == "json_from_path" && spec.path == "" {
+		// Legacy shape: the path beside the mode rather than inside it.
 		pv, ok := cfg["path"]
 		if !ok {
 			pv, ok = cfg["outputPath"]
 		}
-		if !ok {
-			return fail(ErrorClassInfra, "json_from_path requires a path")
+		if ok {
+			if isUnresolved(pv) {
+				return fail(ErrorClassBindingError, "process.exec output path carries an unresolved binding")
+			}
+			spec.path, _ = pv.(string)
 		}
-		if isUnresolved(pv) {
-			return fail(ErrorClassBindingError, "process.exec output path carries an unresolved binding")
-		}
-		spec.path, _ = pv.(string)
 		if spec.path == "" {
-			return fail(ErrorClassInfra, "json_from_path requires a non-empty path")
+			return fail(ErrorClassInfra, "json_from_path requires a path")
 		}
 	}
 	return spec, nil
+}
+
+// anyList accepts both the JSON-hydrated ([]any) and the Go-native ([]string)
+// array: the claim's Config is hydrated from the run's plan snapshot, while a
+// caller inside this process (a test, a hand-built claim) hands over typed
+// slices.
+func anyList(v any) ([]any, bool) {
+	switch t := v.(type) {
+	case []any:
+		return t, true
+	case []string:
+		out := make([]any, len(t))
+		for i, s := range t {
+			out[i] = s
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+// resolveExecutable turns the plan's bare name into the absolute path
+// exec.Command requires by searching the WORKER process's own PATH
+// (exec.LookPath). That is the deployment's knob: the M4 worker image mounts its
+// helper at /opt/m4/bin and prepends it to the worker's PATH, so the name
+// resolves exactly where the operator installed it while the plan stays
+// portable across hosts. It is the worker's environment that is searched, not
+// the child's — the child's environment is built from scratch (§ 4 step 7) and
+// is neither this lookup's input nor its output.
+func (p *ProcExec) resolveExecutable(name string) (string, error) {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%s is not runnable from the worker PATH: %w", name, err)
+	}
+	return path, nil
 }
 
 // isUnresolved recognizes the marker claim hydration leaves for bindings
@@ -839,8 +1214,13 @@ func (p *ProcExec) checkpointFor(ctx context.Context, c AttemptClaim, spec procE
 	if err != nil || !ok || ref.WorkspaceID == "" || ref.VolumeID == "" {
 		return AttemptCheckpoint{}
 	}
+	// The plan's own words, not the resolved ones: `executable`+`args` are what
+	// the run's snapshot declared and they are host-portable, while argv[0] is a
+	// path on this volume. The digest identifies the inputs the boundary was
+	// taken over, and two workers resolving one plan must agree on it.
 	inputs, err := json.Marshal(map[string]any{
-		"argv": spec.argv, "cwd": spec.cwd, "extraction": spec.extraction, "path": spec.path,
+		"executable": spec.executable, "args": spec.args,
+		"cwd": spec.cwd, "extraction": spec.extraction, "path": spec.path,
 	})
 	if err != nil {
 		return AttemptCheckpoint{}
