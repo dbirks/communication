@@ -144,8 +144,38 @@ func (ac *advanceCtx) pass() error {
 	if err := ac.advanceScope(ScopeRoot, nil); err != nil {
 		return err
 	}
-	// 4. Run outcome.
+	// 4. The scope waits, not the run (contract § 5.3): once no gate is
+	// still pending, the run leaves waiting_human so workers can claim.
+	if err := ac.resumeIfNoGates(); err != nil {
+		return err
+	}
+	// 5. Run outcome.
 	return ac.settleRun()
+}
+
+// resumeIfNoGates returns a waiting_human run to running the moment no
+// approval gate is still pending (contract § 5.3: the run header and the
+// worker claim predicate both read runs.status='running'). The journal row
+// is run.resumed (§ 3 row 4) naming waiting_human as the reason cleared.
+// Runs with a remaining pending gate keep waiting_human untouched.
+func (ac *advanceCtx) resumeIfNoGates() error {
+	run := ac.st.Run
+	if run.Status != RunWaitingHuman {
+		return nil
+	}
+	for _, ap := range ac.st.Approvals {
+		if ap.State == ApprovalPending {
+			return nil // another gate is still live: the run keeps waiting
+		}
+	}
+	if err := run.MoveRun(RunRunning, "", "", ac.now); err != nil {
+		return err
+	}
+	ac.event(pevents.TypeRunResumed, nil, "", pevents.RunResumed{
+		ProjectID: run.ProjectID, RunID: run.ID, PausedReason: RunWaitingHuman,
+	})
+	ac.changed = true
+	return nil
 }
 
 // ------------------------------------------------------------------- scopes

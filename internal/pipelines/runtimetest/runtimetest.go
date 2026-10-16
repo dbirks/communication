@@ -229,6 +229,7 @@ func ConformanceTests(t *testing.T, f Factory) {
 	t.Run("Boundary_CompletePersistsEverythingOrNothing", func(t *testing.T) { testBoundaryAtomicity(t, f) })
 	t.Run("Decide_AuthorizationRefusalAndVersionCAS", func(t *testing.T) { testDecideRefusalAndCAS(t, f) })
 	t.Run("Decide_DoubleDecideRefused", func(t *testing.T) { testDecideDouble(t, f) })
+	t.Run("Decide_ResumedRunIsRunningAndClaimable", func(t *testing.T) { testDecideResumesRun(t, f) })
 	t.Run("Retry_FailedNode_AppendOnlyNeverRewritesKeys", func(t *testing.T) { testRetryAppendOnly(t, f) })
 	t.Run("Advance_TwiceNoNewInputs_IsJournalNoOp", func(t *testing.T) { testAdvanceIdempotence(t, f) })
 	t.Run("Skip_ConditionFalse_TerminalRowsAreLedgerLegal", func(t *testing.T) { testSkipLedgerLegal(t, f) })

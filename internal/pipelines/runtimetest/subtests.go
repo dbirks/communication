@@ -1,6 +1,7 @@
 package runtimetest
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -692,3 +693,86 @@ func testSkipLedgerLegal(t *testing.T, f Factory) {
 func sameAttempt(a, b *runtime.Attempt) bool { return reflect.DeepEqual(*a, *b) }
 
 var allowAll = func(*runtime.Approval, string) (bool, string) { return true, "" }
+
+// testDecideResumesRun: after the LAST pending gate is decided, the run must
+// leave waiting_human for running with a run.resumed journal row, and the
+// dependant's queued attempt must be claimable (contract § 5.3: the scope
+// waits, not the run; the worker claim predicate reads runs.status —
+// live-lab evidence: a decided run stuck in waiting_human never gets picked
+// up and the header shows WAITING HUMAN forever).
+func testDecideResumesRun(t *testing.T, f Factory) {
+	s := f.Open(t, Config{Pipeline: PipelineGate})
+	_ = s.Advance()
+	st := s.State(t)
+	if len(st.Approvals) != 1 {
+		t.Fatalf("gate must materialize one approval, got %d", len(st.Approvals))
+	}
+	ap := st.Approvals[0]
+	if st.Run.Status != runtime.RunWaitingHuman {
+		t.Fatalf("run=%s before the decision, want waiting_human", st.Run.Status)
+	}
+	// While a gate is pending the run KEEPS waiting_human: an advance with
+	// the gate undecided must not resume it.
+	if err := s.Advance(); err != nil {
+		t.Fatalf("advance with a live gate: %v", err)
+	}
+	if st.Run.Status != runtime.RunWaitingHuman {
+		t.Fatalf("run resumed while a gate was still pending: %s", st.Run.Status)
+	}
+
+	if err := s.Decide(GateDecision{ApprovalID: ap.ID, Decision: "approved",
+		Decider: "alice", Version: ap.Version, Authorize: allowAll}); err != nil {
+		t.Fatalf("decide approve: %v", err)
+	}
+	if got := s.State(t).Run.Status; got != runtime.RunRunning {
+		t.Fatalf("run=%s after approving the last gate, want running "+
+			"(contract § 5.3 — a decided run must leave waiting_human)", got)
+	}
+	// run.resumed names the reason cleared, exactly once, appended after
+	// the decision's approval.decided (append-only journal).
+	events := s.Events(t)
+	if n := countType(events, string(pevents.TypeRunResumed)); n != 1 {
+		t.Fatalf("run.resumed = %d after the decision, want 1 (§ 3 row 4)", n)
+	}
+	last := -1
+	for i, e := range events {
+		if e.Type == string(pevents.TypeApprovalDecided) {
+			last = i
+		}
+	}
+	resumedAfter := false
+	for i, e := range events {
+		if e.Type == string(pevents.TypeRunResumed) && i > last {
+			resumedAfter = true
+			// MemStore keeps the typed payload; an adapter that hydrates the
+			// journal from domain_events returns the stored JSON (the runtimetest
+			// Events seam), so accept either shape.
+			switch p := e.Payload.(type) {
+			case pevents.RunResumed:
+				if p.PausedReason != runtime.RunWaitingHuman {
+					t.Fatalf("run.resumed payload must name waiting_human as the reason cleared: %+v", e.Payload)
+				}
+			case json.RawMessage:
+				var rr pevents.RunResumed
+				if err := json.Unmarshal(p, &rr); err != nil || rr.PausedReason != runtime.RunWaitingHuman {
+					t.Fatalf("run.resumed payload must name waiting_human as the reason cleared: %s (%v)", string(p), err)
+				}
+			default:
+				t.Fatalf("unexpected run.resumed payload shape %T", e.Payload)
+			}
+		}
+	}
+	if !resumedAfter {
+		t.Fatalf("run.resumed must be appended after approval.decided (journal order)")
+	}
+
+	// The dependant's attempt is CLAIMABLE: this is the whole point — the
+	// worker's claim SQL requires runs.status='running'.
+	a, err := s.Claim(WorkerA)
+	if err != nil {
+		t.Fatalf("claim after the decision must succeed: %v", err)
+	}
+	if a == nil {
+		t.Fatalf("claim after the decision returned no attempt")
+	}
+}
