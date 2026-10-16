@@ -28,6 +28,11 @@
 // Skipped unless COMMUNICATION_E2E_M5=1, so CI (which has no M4 lab) is
 // unaffected — the same gate idiom as M2's harness flag. Every wait is bounded:
 // a run that never reaches its gate fails the suite rather than hanging it.
+// One test needs a gate whose deadline PASSES (the gate arm of route 31), so it
+// authors and assigns a second, scratch pipeline (`GATE_SLUG`) with the schema's
+// 60-second deadline floor and one deterministic node behind it. That is a
+// second definition this suite authors and a second run it starts — added, like
+// everything here, never reset.
 import { test, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import {
@@ -53,9 +58,15 @@ const ALICE = { subject: "alice", name: "alice", projectSlug: "m4-exit", project
 
 const REPO_BINDING = "app";
 const GOAL = "Document and fix add() in hello.py";
+/** The scratch pipeline's own goal, so its gate summary is identifiable. */
+const GATE_GOAL = "Let the scratch gate's deadline pass, then retry the run";
 const PLAN_LINE = "Document add() with a docstring";
 const stamp = process.env.E2E_M5_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `m5-journey-${stamp}`;
+// Deliberately NOT `${SLUG}-gate`: the UI's test ids are keyed by slug
+// (`assign-open-<slug>`) and Playwright matches test ids by substring, so a
+// prefixed child would collide with the journey's own rows.
+const GATE_SLUG = `m5-gate-${stamp}`;
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -254,6 +265,89 @@ spec:
         exit_code: {type: integer, const: 0}
   resultBindings:
     plan: \${{ nodes.plan.outputs.text }}
+`;
+
+/**
+ * The scratch copy the gate-retry test needs and the journey's own run cannot
+ * give it: a `human.approval` gate whose deadline actually PASSES inside the
+ * suite's time budget. `deadlineSeconds: 60` is the schema's floor
+ * (`internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json`,
+ * `deadlineSeconds.minimum`); the journey's own gate is 600s precisely so the
+ * person decides it rather than the clock. `onTimeout: fail` is the arm that
+ * closes the gate `expired` on the FIRST deadline — `expire` re-requests
+ * exactly once before it expires (§ 5.4 pass 2, `Expire` in
+ * internal/pipelines/runtime/state.go), which would need two windows.
+ *
+ * The gate is the ROOT node, so `waiting_human` costs no worker turn and the
+ * 60s window starts the moment the run is created; the single `process.exec`
+ * node behind it is the same `printf` twin trick, and it is what makes
+ * "approving let the run proceed" an observed fact rather than a chip colour.
+ * Authored and published through the library's own draft path (the way the
+ * journey authors its pipeline), and used by no other test — a 60-second
+ * deadline would be spent by anything slower than this one.
+ */
+const GATE_TWIN = `# scratch gate: plan-with-approval's approval node at the schema's shortest
+# deadline, plus the one process.exec node it holds back.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: __GATE_SLUG__
+  description: >-
+    Scratch: one maintainer approval gate with the shortest deadline the schema
+    admits, and the process.exec node that runs only once it is answered.
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: What the gate is asking about.
+  outputs:
+    type: object
+    required: [after]
+    properties:
+      after: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 7200
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: approve
+    kind: human.approval
+    retry:
+      maxAttempts: 1
+    config:
+      summary: |
+        Scratch gate for \${{ inputs.goal }} — let this deadline pass, then retry the run.
+      approverRoles: [maintainer]
+      # The schema floor, and the point of this document: the deadline has to
+      # pass while the test is watching it.
+      deadlineSeconds: 60
+      onTimeout: fail
+  - id: after_gate
+    kind: process.exec
+    dependsOn: [approve]
+    timeoutSeconds: 120
+    retry:
+      maxAttempts: 1
+    config:
+      executable: printf
+      args:
+      - '%s\\n'
+      - '{"after":"ran off the re-armed gate"}'
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [after]
+      properties:
+        after: {type: string, minLength: 1}
+  resultBindings:
+    after: \${{ nodes.after_gate.outputs.after }}
 `;
 
 test.describe("M5 clone, customize, stall, take control, retry, evidence", () => {
@@ -647,27 +741,213 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
   });
 
-  test("a retried run whose retriable node is a gate comes back", async () => {
-    // The gate arm of the retry question, kept separate from step 6 on purpose:
-    // only a gate that FAILED (the `approval_expired` timeout, § 5.4 pass 2) is
-    // a retry target at all; a gate that answered `rejected` is `succeeded` and
-    // route 31 has nothing to re-arm (see step 6's contract note).
-    //
-    // FINDING, observed while building this journey: retrying a run whose only
-    // retriable node execution is a `human.approval` gate answers 500 —
-    //   postgres: insert approval … (pending): duplicate key value violates
-    //   unique constraint "approval_requests_node_execution_id_key"
-    // (api-a request_id 4128cffa494a6f9f8ced9cc23f86e538, 2026-10-16): the
-    // reopened gate wants a fresh approval row and the table allows one per
-    // node execution, so an unanswered-then-expired gate is a dead end — the
-    // run stays `failed` and the Inbox shows `inbox-retry-error-*`. The journey
-    // therefore retries a run that failed on a worker node, which does work.
-    test.fixme(
-      true,
-      "product bug: POST /runs/{id}/retry of a run whose retriable node is a human.approval gate 500s on approval_requests_node_execution_id_key (unique per node execution)",
-    );
-    await gotoApp(alice, "/inbox");
-    await expect(alice.getByTestId(`inbox-retry-error-${testidOf(runId)}`)).toHaveCount(0);
+  /**
+   * The gate arm of the retry question, kept separate from step 6 on purpose:
+   * only a gate that FAILED (the `approval_expired` timeout, § 5.4 pass 2) is a
+   * retry target at all; a gate that answered `rejected` is `succeeded` and
+   * route 31 has nothing to re-arm (see step 6's contract note and the
+   * rejection arm below, which 14e8ff5 leaves untouched — a decided row is one
+   * of the states `checkGateRetry` refuses to re-ask, now with the typed
+   * `run_not_retriable` instead of the unique-violation 500).
+   *
+   * FINDING, observed while building this journey, and now the bug that is
+   * fixed rather than the one that is open: retrying a run whose only retriable
+   * node execution is a `human.approval` gate used to answer 500 —
+   *   postgres: insert approval … (pending): duplicate key value violates
+   *   unique constraint "approval_requests_node_execution_id_key"
+   * (api-a request_id 4128cffa494a6f9f8ced9cc23f86e538, 2026-10-16). The
+   * reopened gate asked for a FRESH approval row and ADR-0023 § 9 admits ONE
+   * per node execution, so an unanswered-then-expired gate was a dead end.
+   * 14e8ff5 re-arms that same row instead (`Rearm` in
+   * internal/pipelines/runtime/state.go): state back to `pending`, a new
+   * deadline, the CAS `version` bumped so a decide posted against the expired
+   * gate cannot land, `created_at` kept, and `re_requested` marking the re-ask
+   * — which is the ONLY re-request marker the table carries, and the one thing
+   * the card can show to prove the ask is new while the row is not. Proven at
+   * engine level by internal/pipelines/runtime/retry_gate_test.go; this is the
+   * same claim driven through the browser, on a gate whose deadline can pass
+   * inside the suite's own budget (the 60s schema floor, `GATE_TWIN`).
+   */
+  test("a retried run whose retriable node is an expired gate comes back live", async () => {
+    let gatePath = ""; // /projects/{id}/runs/{scratch run id}
+    let gateRunId = "";
+    let askedRow = ""; // the inbox decision row's own testid, id and all
+    const gateId = () => testidOf(gateRunId);
+
+    await test.step("publish a scratch copy whose gate deadline is the schema floor", async () => {
+      await gotoApp(admin, "/library");
+      await expect(admin.getByTestId("library-page")).toBeVisible();
+      await admin.getByTestId("library-new-slug-input").fill(GATE_SLUG);
+      await admin.getByTestId("library-new-name-input").fill(GATE_SLUG);
+      await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
+      await admin.getByTestId("library-new-submit").click();
+      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
+      await admin
+        .getByTestId("draft-editor-input")
+        .fill(GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG));
+      await admin.getByTestId("draft-editor-save").click();
+      await expect(admin.getByTestId("draft-editor-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("draft-editor-validate").click();
+      await expect(admin.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+        timeout: 30_000,
+      });
+      await admin.getByTestId("draft-editor-publish").click();
+      await expect(admin.getByTestId("draft-editor-published")).toContainText("published r1", {
+        timeout: 30_000,
+      });
+      await shot(admin, "m5-08-scratch-gate-published");
+    });
+
+    await test.step("run it: the gate is the root node, so waiting_human needs no worker", async () => {
+      await gotoApp(alice, `${projectPath}/pipelines`);
+      await expect(alice.getByTestId("project-pipelines")).toBeVisible();
+      await alice.getByTestId(`assign-open-${GATE_SLUG}`).click();
+      await expect(alice.getByTestId(`assign-pinning-${GATE_SLUG}`)).toContainText("r1", {
+        timeout: 30_000,
+      });
+      await alice.getByTestId(`assign-confirm-${GATE_SLUG}`).click();
+      await expect(alice.getByTestId(`assign-form-${GATE_SLUG}`)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await gotoApp(alice, `${projectPath}/runs`);
+      await alice.getByTestId("runs-new").click();
+      await expect(alice.getByTestId("new-run-form")).toBeVisible();
+      await selectByOptionText(alice, "new-run-assignment", GATE_SLUG);
+      await alice.getByTestId("new-run-input-goal").fill(GATE_GOAL);
+      await alice.getByTestId("new-run-submit").click();
+      await alice.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/);
+      gatePath = new URL(alice.url()).pathname;
+      gateRunId = gatePath.split("/").pop() ?? "";
+      expect(gateRunId).toMatch(/^[0-9a-f-]{36}$/);
+      // This wait starts the 60s clock, so it is the only budget the deadline
+      // itself needs.
+      await expectRunStatus(alice, /waiting human/, RUN_TIMEOUT_MS);
+      await alice.getByTestId("run-stage-cell-approve").click();
+      await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
+        timeout: 30_000,
+      });
+      // The clock is now running, so the identity of the ASK is read here,
+      // before anything can close it: `approval_requests` admits ONE row per
+      // node execution (ADR-0023 § 9), so the row named now is the row 14e8ff5
+      // has to re-arm later — a second row would carry a different id.
+      await gotoApp(alice, "/inbox");
+      const openAsk = alice
+        .getByTestId("inbox-decisions")
+        .locator('[data-testid^="inbox-decision-"]')
+        .filter({ hasText: `run ${shortRefOf(gateRunId)}` });
+      await expect(openAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
+      askedRow = (await openAsk.getAttribute("data-testid")) ?? "";
+      expect(askedRow).toMatch(/^inbox-decision-[0-9a-z]{13}$/);
+      await shot(alice, "m5-08-scratch-gate-open");
+    });
+
+    await test.step("nobody answers: the deadline passes and the gate fails the run", async () => {
+      await gotoApp(alice, gatePath);
+      // The wait is bounded by the run budget, and it is a real 60s: the
+      // driver's own tick (~5s, internal/store/postgres/m4driver.go) is what
+      // reads the deadline, so expiry lands seconds after it, not a cadence away.
+      await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
+      await alice.getByTestId("run-stage-cell-approve").click();
+      await expect(alice.getByTestId("approval-state")).toHaveText("expired", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      await expect(alice.getByTestId("approval-expired-reason")).toContainText("deadline passed");
+      // Not yet marked as a re-ask: on_timeout is `fail`, so this window is the
+      // gate's first and only ask so far. Whatever sets `re_requested` later is
+      // therefore the retry, not the deadline.
+      await expect(alice.getByTestId("approval-re-requested")).toHaveCount(0);
+      // The closed gate is NOT decidable — so "live again" below cannot be the
+      // old card having simply stayed open.
+      await expect(alice.getByTestId("approval-decision-form")).toHaveCount(0);
+      await shot(alice, "m5-08-scratch-gate-expired");
+    });
+
+    await test.step("route 31 names the gate as its target, so the page arms Retry", async () => {
+      await gotoApp(alice, gatePath);
+      await expect(alice.getByTestId("run-retry")).toBeVisible();
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      // `retryVerdict` (ui/src/pages/RunInspector.tsx) reads the target set off
+      // `/runs/{id}/nodes`: the expired gate's node execution is `failed`, so
+      // the button is live and names the node it will re-run — no reason line.
+      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/approve/);
+      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
+      await shot(alice, "m5-08-retry-armed-on-a-gate");
+    });
+
+    await test.step("the retry is accepted — the dead end is gone", async () => {
+      await gotoApp(alice, "/inbox");
+      await expect(alice.getByTestId(`inbox-stalled-${gateId()}`)).toBeVisible({
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      await alice.getByTestId(`inbox-retry-${gateId()}`).click();
+      // The whole finding. This control used to answer the 500
+      // (`approval_requests_node_execution_id_key`) and paint itself
+      // `inbox-retry-error-*`; a 4xx refusal is allowed to do that, a 500 is
+      // not, and a silent no-op is neither.
+      await expect(alice.getByTestId(`inbox-retry-error-${gateId()}`)).toHaveCount(0, {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      // The run left STALLED and came back to the human as a decision — on the
+      // row read before the deadline passed, which is the one-per-node-
+      // execution model made visible: the gate was re-asked THROUGH its row.
+      const reAsk = alice
+        .getByTestId("inbox-decisions")
+        .locator(`[data-testid="${askedRow}"]`)
+        .filter({ hasText: `run ${shortRefOf(gateRunId)}` });
+      await expect(reAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
+      await shot(alice, "m5-08-inbox-re-asked");
+    });
+
+    await test.step("the gate card is live again: the same ask, re-armed", async () => {
+      await gotoApp(alice, gatePath);
+      await expectRunStatus(alice, /waiting human/, DECISION_TIMEOUT_MS);
+      await alice.getByTestId("run-stage-cell-approve").click();
+      await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      await expect(alice.getByTestId("approval-decided")).toHaveCount(0);
+      await expect(alice.getByTestId("approval-decision-form")).toBeVisible();
+      // re_requested is the mark `Rearm` leaves on the row, and this card is
+      // the only place a person can learn the ask is a second one.
+      await expect(alice.getByTestId("approval-re-requested")).toContainText("asked for again");
+      // The deadline moved with it: a gate counting down is a live wait, not a
+      // reopened-looking row whose window had already passed.
+      await expect(alice.getByTestId("approval-countdown")).toContainText(/left/, {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      // The ask survived the reopen: the summary is still the row's own text.
+      await expect(alice.getByTestId("approval-summary")).toContainText(GATE_GOAL);
+      await shot(alice, "m5-08-gate-re-armed");
+    });
+
+    await test.step("approving the re-armed gate lets the run proceed", async () => {
+      await alice.getByTestId("approval-comment").fill("Decided after the retry — go ahead.");
+      await alice.getByTestId("approval-approve").click();
+      await expect(alice.getByTestId("approval-decided")).toBeVisible({
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      // Not just an unblocked gate: the node behind it RAN, so the decision is
+      // what carried the run to `completed`. That attempt is worker work, so
+      // the wait is the run's budget rather than the advancer's.
+      await expectRunStatus(alice, /completed/, RUN_TIMEOUT_MS);
+      await alice.getByTestId("run-stage-cell-after_gate").click();
+      await expect(alice.getByTestId("node-pane-crumb")).toContainText("after_gate", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      const att = attemptPane(alice, await newestAttemptNumber(alice, DECISION_TIMEOUT_MS));
+      await expect(att.getByTestId("attempt-exit-code")).toHaveText("0", {
+        timeout: RUN_TIMEOUT_MS,
+      });
+      // The journal tells the whole arc in one pane: asked, expired, retried,
+      // asked again.
+      await alice.getByTestId("run-tab-timeline").click();
+      for (const type of ["approval.requested", "approval.expired", "run.retried"]) {
+        await expect(alice.getByTestId("run-timeline")).toContainText(type, {
+          timeout: DECISION_TIMEOUT_MS,
+        });
+      }
+      await shot(alice, "m5-08-gate-approved-run-completed");
+    });
   });
 
   /**
