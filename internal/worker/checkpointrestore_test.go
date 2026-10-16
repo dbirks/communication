@@ -123,6 +123,44 @@ func TestCheckpointRestoreResetsBeforeLaunchAndEvents(t *testing.T) {
 	}
 }
 
+func TestCheckpointRestoreFirstAttemptOfARestoreNodeIsNotReset(t *testing.T) {
+	// ADR-0023 § 6 states the arm as retry.workspacePolicy: it governs what a
+	// RETRY does with the tree the interrupted attempt left behind. The first
+	// attempt of a restore-policy node — e.g. iteration 2 of an `until` whose
+	// iteration 1 just completed — has no interrupted attempt to restore
+	// from, and its predecessor's uncommitted edits are exactly what the next
+	// iteration inherits. Resetting it destroyed live work (lab live19 C6c:
+	// every /implement iteration was reset to the /plan boundary, the loop
+	// replayed iteration 1 until it exhausted, and the run failed). Attempt 1
+	// must launch with no git call and no event.
+	gitFake := &fakeRestore{}
+	inner := &launchProbe{}
+	sink := &recordingSink{}
+	e := &CheckpointRestorer{Inner: inner, Git: gitFake,
+		Boundary: func(context.Context, AttemptClaim) (RestoreBoundary, bool, error) {
+			return RestoreBoundary{
+				Mode:       WorkspacePolicyRestore,
+				RepoStates: []CheckpointRepoState{committedState(t, "repo-app", "aaaa1111")},
+				Checkouts:  map[string]string{"repo-app": "/ws/work/repos/app"},
+			}, true, nil
+		}}
+	claim := restoreClaim()
+	claim.AttemptNumber = 1
+	res, err := e.Execute(context.Background(), claim, sink)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded || !inner.ran {
+		t.Fatalf("result = %+v, inner.ran = %v, want the first attempt to launch normally", res, inner.ran)
+	}
+	if len(gitFake.calls) != 0 {
+		t.Errorf("restore calls = %v, want none for an attempt that is not a retry", gitFake.calls)
+	}
+	if len(sink.events) != 0 {
+		t.Errorf("events = %v, want no run.checkpoint_restored for a reset that never happened", sink.types())
+	}
+}
+
 func TestCheckpointRestoreContinueLeavesTheTreeAlone(t *testing.T) {
 	gitFake := &fakeRestore{}
 	inner := &launchProbe{}

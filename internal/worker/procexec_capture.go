@@ -68,6 +68,7 @@ func (p *ProcExec) captureBoundary(ctx context.Context, c AttemptClaim, material
 			RowID: r.RowID, RepositoryID: r.RepositoryID, RepoName: r.RepositoryID,
 			CheckoutPath: r.CheckoutPath, RunRef: r.RunRef,
 			BaseCommit: r.BaseCommit, RecordedHead: r.RecordedHead,
+			RecordedPaths: r.RecordedPaths,
 		})
 	}
 	if len(repos) == 0 {

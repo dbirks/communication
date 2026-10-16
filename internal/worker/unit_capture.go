@@ -82,6 +82,15 @@ type CaptureRepo struct {
 	RunRef       string
 	BaseCommit   string
 	RecordedHead string
+	// RecordedPaths is the modified_paths manifest already on the row (nil/
+	// empty when nobody wrote one). It is what lets a capture tell "this
+	// dirty tree was already recorded" from "this dirty tree has never been
+	// measured": without it, a process.exec boundary whose HEAD did not move
+	// but whose tree just got dirty keeps the row's stale clean manifest
+	// forever — and runWorkspaceRepoStates derives the `committed` flag from
+	// that manifest, so restore_checkpoint reads a freshly-dirty boundary as
+	// committed:true and resets uncommitted work away (lab live19 C6c).
+	RecordedPaths []string
 }
 
 // captureRepos is the unit-boundary capture's per-repo read and record, run
@@ -112,10 +121,15 @@ func captureRepos(ctx context.Context, git BoundaryGit, excluded []string,
 			Dirty: sum.Dirty, Summary: sum.Summary, Manifest: sum.Paths,
 			Committed: head != "" && head != repo.BaseCommit,
 		}
-		if res.Committed || repo.RecordedHead != head {
-			// The run ref moved (or this is the first time anyone read it back):
-			// that is the workspace.committed fact, and it is written from the
-			// read rather than from a command's status.
+		if res.Committed || repo.RecordedHead != head || !sameCapturePaths(sum.Paths, repo.RecordedPaths) {
+			// The run ref moved, or this is the first time anyone read it back,
+			// OR the working tree's manifest no longer matches what the row
+			// claims: that is the workspace.committed fact, and it is written
+			// from the read rather than from a command's status. The manifest
+			// arm is what a capture-only boundary (process.exec, or an agent
+			// without commit_granted) needs to stay truthful: HEAD does not
+			// move there, so a guard that only watched the ref would freeze a
+			// freshly-dirty tree at its previous clean record.
 			if record != nil && repo.RowID != "" {
 				rec := CommitRecord{
 					RowID:       repo.RowID,
@@ -128,10 +142,30 @@ func captureRepos(ctx context.Context, git BoundaryGit, excluded []string,
 				}
 			}
 			repo.RecordedHead = head
+			repo.RecordedPaths = append([]string(nil), sum.Paths...)
 		}
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// sameCapturePaths compares two modified_paths manifests for the record-vs-
+// measure question only. Nil and empty are the same fact (nobody claimed any
+// path), and git's status order is stable, so an element-wise compare is the
+// whole question.
+func sameCapturePaths(a, b []string) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (u *Unit) Capture(ctx context.Context) ([]CaptureOutcome, error) {

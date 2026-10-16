@@ -128,7 +128,17 @@ func (e *CheckpointRestorer) Execute(ctx context.Context, c AttemptClaim, sink A
 		return failedResult(ErrorClassInfra,
 			"checkpoint boundary read failed (ADR-0023 § 6): "+err.Error()), nil
 	}
-	if !ok || b.Mode != WorkspacePolicyRestore {
+	// § 6's arm is a RETRY workspace policy: `retry.workspacePolicy` states
+	// what the retry does with the tree the interrupted attempt left behind.
+	// A node's FIRST attempt has no interrupted attempt — and under
+	// restore_checkpoint it is often a fresh until-loop iteration whose
+	// predecessor's uncommitted edits are the point of the next iteration.
+	// Resetting there destroys work § 6 never licensed (lab live19 C6c: every
+	// iteration of /implement was reset to the /plan boundary, the loop
+	// replayed iteration 1 until it exhausted, and the run failed). A
+	// restore-policy node's attempt 1 therefore runs on the tree it inherits,
+	// untouched and un-evented, exactly like continue_workspace.
+	if !ok || b.Mode != WorkspacePolicyRestore || c.AttemptNumber <= 1 {
 		// continue_workspace (the M4 default) leaves the tree exactly as the
 		// interrupted attempt left it: no read of git, no write, no event.
 		return e.delegate(ctx, c, sink)

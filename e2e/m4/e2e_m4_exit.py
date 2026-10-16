@@ -5297,6 +5297,22 @@ C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own workspaces + rep
 C6_RECOVERY_REASONS = ("volume_changed", "different_worker")
 C6_LOSS_SENTENCE = "prior edits lost, rerun required"
 C6_RESTORED_EVENT = "run.checkpoint_restored"
+# The untracked file the live leg plants in the checkout during the killed
+# attempt's hold, so the reset has real uncommitted work to destroy (§ 7.1
+# C6b's claim is about the files the reset destroyed — the hold sleeps BEFORE
+# the step touches anything, so an unplanted kill always leaves a clean tree
+# and an honest empty discarded_paths proves nothing, live19).
+C6_DISCARD_SEED = "m4-c6-uncommitted.txt"
+
+
+def _c6_discards_name(discarded, seed):
+    """discarded_paths verdict shape: a real list always; with `seed` planted,
+    the list must name the planted file."""
+    if not isinstance(discarded, list) or not discarded:
+        return False
+    if not seed:
+        return True
+    return any(seed in str(x) for x in discarded)
 # § 7.1 C6c's pair-of-events sentence; the report repeats it so a reader can see
 # WHICH mode ran without opening the journal.
 C6_PAIR_SENTENCE = (
@@ -5682,11 +5698,16 @@ def c6_avail_verdicts(cks):
 
 def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_before,
                             dirty_after, restored_after, attempts_after,
-                            body="", attempts_before=None):
+                            body="", attempts_before=None, restored_before=None):
     """C6d — the refusal must be 409 problem+json code=checkpoint_unavailable AND
     nothing may move: same HEAD, same dirty count, zero restore events, no new
     attempt. A refusal that reset first would be a data-loss bug wearing a
-    feature badge. TWO 409 doors answer a POST /retry: the run-status door
+    feature badge. The restore-event arm is WINDOWED (live19): the engine owns
+    this pass's retry (§ 7.1 C5b), so the reset the worker journals for attempt 2
+    is a legitimate event that is NOT this refusal's output — what C6d forbids is
+    the REFUSAL appending events, so the count just after the POST must equal the
+    count just before it (restored_before). Without a before-count the arm falls
+    back to the all-time zero. TWO 409 doors answer a POST /retry: the run-status door
     (run-not-retriable, fires FIRST — live11/C6.out: the engine's auto-retry kept
     the run 'running (retry armed)' per § 7.1 C5b, so the per-node checkpoint plan
     — the only thing that can answer checkpoint_unavailable — was never evaluated)
@@ -5719,8 +5740,11 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
               "are untouched", not moved and not dirtied,
               f"HEAD {head_before[:12]!r}->{head_after[:12]!r}, "
               f"dirty {dirty_before!r}->{dirty_after!r}"))
+    after_n, before_n = count_or_none(restored_after), count_or_none(restored_before)
+    zero_after_refusal = (after_n == before_n) if before_n is not None else after_n == 0
     v.append(("C6d zero run.checkpoint_restored events after the refusal",
-              count_or_none(restored_after) == 0, f"count={restored_after!r}"))
+              zero_after_refusal,
+              f"count={restored_after!r} before={restored_before!r}"))
     label = "C6d the refusal appended no new attempt"
     if hit_status_door:
         v.append((label, None,
@@ -5737,10 +5761,15 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
 
 
 def c6_restored_verdicts(ev, cks, head_boundary, head_after, dirty_after, attempts2,
-                         policy_in_plan=True):
+                         policy_in_plan=True, seed=None):
     """C6b — the restore happened, unsandboxed, BEFORE anything exec'd: the event
     names the boundary's from_commit and the discarded paths, and the worktree
-    sits on that commit with an EMPTY dirty set."""
+    sits on that commit with an EMPTY dirty set. `seed` is the untracked file the
+    live leg planted into the checkout before the kill so the reset has something
+    real to destroy: with it, discarded_paths must NAME that file (§ 7.1's claim
+    is about the files the reset destroyed, not about a non-empty list — the
+    honest empty list of a clean tree is what live19 produced and what nothing
+    proves)."""
     if not policy_in_plan:
         return [("C6b the retry ran under restore_checkpoint", None,
                  "the authored document's policy did not reach the compiled plan — "
@@ -5758,8 +5787,8 @@ def c6_restored_verdicts(ev, cks, head_boundary, head_after, dirty_after, attemp
          f"from_commit={str(p.get('from_commit'))[:12]!r} vs boundary "
          f"{head_boundary[:12]!r}"),
         ("C6b discarded_paths names the uncommitted files the reset destroyed",
-         isinstance(p.get("discarded_paths"), list) and len(p["discarded_paths"]) > 0,
-         f"discarded_paths={p.get('discarded_paths')!r}"),
+         _c6_discards_name(p.get("discarded_paths"), seed),
+         f"discarded_paths={p.get('discarded_paths')!r} seed={seed!r}"),
         ("C6b the worktree's HEAD equals the boundary after the reset",
          bool(head_after) and head_after == head_boundary,
          f"HEAD={head_after[:12]!r} want {head_boundary[:12]!r}"),
@@ -6058,16 +6087,17 @@ def c6():
         show("C6b note — which node was mid-flight", f"§ 7.1 names {C6_KILL_KEY}; the kill "
              f"lands on {key}. The restore verdicts read the event's own node_instance_key, " 
              "so a different node is reported, not renamed.")
-    def gitout(sh):
+    def checkout_root():
         # Same layout fact as C5: the worktree lives at workspaces.agent_root
         # (= root_path || '/work') /repos/app, not at § 7.1's shorthand
         # /workspaces/run/$RUN/repos/app — the live11 '(unreadable)' reads were
         # the driver's path, not the product's.
         root = (c6_row(f"SELECT coalesce(agent_root,'') FROM workspaces WHERE run_id = "
                       f"'{run_id}' ORDER BY created_at DESC LIMIT 1", "agent_root") or "").strip()
-        if not root:
-            root = f"/workspaces/run/{run_id}/work"
-        rc, out = wexec(f"git -C {root}/repos/app {sh}", worker=svc)
+        return root or f"/workspaces/run/{run_id}/work"
+
+    def gitout(sh):
+        rc, out = wexec(f"git -C {checkout_root()}/repos/app {sh}", worker=svc)
         return out.strip() if rc == 0 and "fatal:" not in out else ""
     ck_rows = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints before"))
     ck_before = [f"{c['node']}:{c['volume_id']}:{str(c['head'])[:12]}" for c in ck_rows]
@@ -6075,6 +6105,19 @@ def c6():
     plan_ck = [c for c in c6_ckpts(c6_row(c6_ckpts_sql(run_id), "boundary"))
                if c["node"] == C6_RESTORE_KEY]
     head_bnd = plan_ck[0]["head"] if plan_ck else ""
+    # C6b — § 7.1's claim is that discarded_paths NAMES the uncommitted files
+    # the reset destroyed. The hold sleeps before m4-exit.sh touches anything,
+    # so the tree the kill leaves is honestly CLEAN and the restore's honest
+    # event discards nothing (live19: discarded_paths=[]). The gate PRODUCES
+    # the disclosure's subject instead: an untracked file planted in the
+    # checkout while the attempt is held. The /plan boundary that licenses the
+    # reset is read from the RECORDED checkpoint (committed=true), never from
+    # this working tree, so planting does not skip the arm — and `git clean
+    # -fd` must now destroy the file and name it.
+    rc_seed, out_seed = wexec(f"sh -c 'echo c6-discarded > "
+                              f"{checkout_root()}/repos/app/{C6_DISCARD_SEED}'", worker=svc)
+    show("C6b planted the uncommitted file the reset must destroy",
+         f"{C6_DISCARD_SEED} rc={rc_seed}" + (f": {out_seed.strip()[:80]}" if rc_seed else ""))
     head_before = gitout("rev-parse HEAD")
     dirty_before = gitout("status --porcelain | wc -l")
     show("C6b the killed attempt / boundary ckpts / HEAD_BEFORE, DIRTY_BEFORE",
@@ -6123,6 +6166,13 @@ def c6():
         # A committed boundary is C6a's own premise, so the refusal may be honestly
         # unmeasurable here; the verdicts say which arm was exercised.
         n_before = len(c6_attempts_of_key(run_id, key))
+        # The refusal's event window OPENS here: attempt 2's own reset (the
+        # engine's retry, not this POST's doing) is a legitimate
+        # run.checkpoint_restored that must not be charged to the refusal
+        # (live19 C6d counted the run's whole history and FAILed on 1).
+        n_restored_before = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                                   f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'",
+                                   "restored count before")
         r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
                        {"reason": "c6 uncommitted-boundary arm",
                         "node_instance_keys": [C6_KILL_KEY]})
@@ -6141,7 +6191,7 @@ def c6():
             r.status, r.headers.get("Content-Type", ""), code,
             head_killed, head_ref, dirty_killed, dirty_ref, n_restored,
             len(c6_attempts_of_key(run_id, key)), body=r.text[:300],
-            attempts_before=n_before))
+            attempts_before=n_before, restored_before=n_restored_before))
 
         # C6b/C6c — the real retry: the one the contract posts (a 409 above left the
         # run untouched and retryable, so it is posted again WITHOUT the arm note).
@@ -6163,30 +6213,39 @@ def c6():
                         f"'{run_id}' AND type = 'node.attempt.retry_scheduled' "
                         f"AND attempt_id = '{att}'", "retry_scheduled")
         c5_emit(c5_auto_retry_verdicts(count_or_none(sched6), rows, r2.status))
-
-        # C6b — read the worktree DURING the retry's own window, before the exec'd
-        # node can move HEAD: the reset must already be a fact (ADR-0023 § 6).
-        for x in rows:
-            if _int(x.get("attempt_number")) > 1 and x.get("status") in C5_LIVE_STATES:
-                time.sleep(3)
-                break
-        head_after = gitout("rev-parse HEAD")
-        dirty_after = gitout("status --porcelain | wc -l")
-        ev = c6_restore_event(run_id)
-        show("C6b the run.checkpoint_restored event",
-             json.dumps(ev) if ev else "(no such event row)")
-        show("C6b HEAD / DIRTY during the retry's window",
-             f"{head_after[:12] or '(unreadable)'} dirty={dirty_after or '(unreadable)'}")
-        c6_emit(c6_restored_verdicts(ev, ck_after, head_bnd, head_after, dirty_after,
-                                     max([_int(x.get("attempt_number")) for x in rows]
-                                         or [0]), policy_in_plan))
-        show("C6c the sentence § 7.1 requires the report to repeat", C6_PAIR_SENTENCE)
-        EVIDENCE["C6c"] = C6_PAIR_SENTENCE
     finally:
         rc, out = run(COMPOSE + ["start", owner])
         show(f"compose start {owner} — the killed worker is brought back (host safety: the "
              f"gate never leaves the lab down; rc={rc})", out[-240:] or owner)
         wait_worker_row(owner, 120)
+
+    # C6b — the reset's own evidence is read AFTER the owning worker is back
+    # and while ITS retried attempt holds: ADR-0023 § 4's claim predicate pins
+    # attempt 2 to the worker the run's workspace belongs to, so no worker-side
+    # unsandboxed reset can exist while that container is dead — live19 read
+    # HEAD inside the corpse (HEAD='', and the dirty-set check passed on the
+    # empty read) and FAILed a claim about a reset that had not happened yet.
+    # The 45s hold is the observation window: the worker has reset the tree and
+    # the exec'd step has not touched it.
+    ev = None
+    deadline = time.time() + hold_window(180)
+    while time.time() < deadline:
+        ev = c6_restore_event(run_id)
+        if ev:
+            break
+        time.sleep(3)
+    head_after = gitout("rev-parse HEAD")
+    dirty_after = gitout("status --porcelain | wc -l")
+    rows2 = c6_attempts_of_key(run_id, key)
+    show("C6b the run.checkpoint_restored event",
+         json.dumps(ev) if ev else "(no such event row)")
+    show("C6b HEAD / DIRTY during the retry's window",
+         f"{head_after[:12] or '(unreadable)'} dirty={dirty_after or '(unreadable)'}")
+    c6_emit(c6_restored_verdicts(ev, ck_after, head_bnd, head_after, dirty_after,
+                                 max([_int(x.get("attempt_number")) for x in rows2]
+                                     or [0]), policy_in_plan, seed=C6_DISCARD_SEED))
+    show("C6c the sentence § 7.1 requires the report to repeat", C6_PAIR_SENTENCE)
+    EVIDENCE["C6c"] = C6_PAIR_SENTENCE
 
     status = c8_watch(alice, twin, run_id, 900, "restore twin")
     ne_rows = psql_rows(c6_row(f"SELECT node_instance_key FROM node_executions WHERE "

@@ -174,6 +174,22 @@ class C6bRestored(unittest.TestCase):
         v = m.c6_restored_verdicts(restored_ev(), cks, BOUNDARY, BOUNDARY, "0", 2)
         self.assertNotIn(False, [ok for _l, ok, _d in v], f"a real restore must PASS: {v}")
 
+    def test_seed_planted_must_be_named_by_the_disclosure(self):
+        """§ 7.1 C6b is about the FILES the reset destroyed: with the live leg's
+        planted untracked file, an honest disclosure that does not name it (the
+        empty list of a tree nobody dirtied, live19, or some other file) FAILs."""
+        cks = m.c6_ckpts(ckpt())
+        named = m.c6_restored_verdicts(restored_ev(discarded=("m4-c6-uncommitted.txt",)),
+                                       cks, BOUNDARY, BOUNDARY, "0", 2,
+                                       seed="m4-c6-uncommitted.txt")
+        self.assertTrue(one(named, "discarded_paths"))
+        empty = m.c6_restored_verdicts(restored_ev(discarded=()), cks, BOUNDARY,
+                                       BOUNDARY, "0", 2, seed="m4-c6-uncommitted.txt")
+        self.assertIs(False, one(empty, "discarded_paths"))
+        wrong = m.c6_restored_verdicts(restored_ev(discarded=("other.txt",)), cks, BOUNDARY,
+                                       BOUNDARY, "0", 2, seed="m4-c6-uncommitted.txt")
+        self.assertIs(False, one(wrong, "discarded_paths"))
+
     def test_missing_event_is_a_gap(self):
         v = m.c6_restored_verdicts(None, m.c6_ckpts(ckpt()), BOUNDARY, BOUNDARY, "0", 2)
         self.assertTrue(all(ok is None for _l, ok, _d in v), f"no event => GAP: {v}")
@@ -360,6 +376,29 @@ class C6dTwoDoorsTest(unittest.TestCase):
                                       "3", "3", "0", 2, body="{}", attempts_before=1)
         self.assertIs(False, one(v, "no new attempt"))
 
+    def test_windowed_count_charges_the_refusal_not_the_engines_own_reset(self):
+        """live19/C6.out: 'GAP … the ENGINE owns the auto-retry' beside 'FAIL C6d
+        zero run.checkpoint_restored events — count=1' — the single event was
+        attempt 2's own reset, which the refusal did not append. The arm is
+        BEFORE against AFTER: same count across the POST proves the refusal wrote
+        nothing; a count that grows in the window still FAILs."""
+        v = m.c6_unavailable_verdicts(409, "application/problem+json",
+                                      "checkpoint_unavailable", BOUNDARY, BOUNDARY,
+                                      "3", "3", "1", 1, body="{}", attempts_before=1,
+                                      restored_before="1")
+        self.assertTrue(one(v, "zero run.checkpoint_restored"),
+                        "the engine's pre-existing restore is not this refusal's output")
+        grew = m.c6_unavailable_verdicts(409, "application/problem+json",
+                                         "checkpoint_unavailable", BOUNDARY, BOUNDARY,
+                                         "3", "3", "2", 1, body="{}", attempts_before=1,
+                                         restored_before="1")
+        self.assertIs(False, one(grew, "zero run.checkpoint_restored"))
+        legacy = m.c6_unavailable_verdicts(409, "application/problem+json",
+                                           "checkpoint_unavailable", BOUNDARY, BOUNDARY,
+                                           "3", "3", "0", 1, body="{}")
+        self.assertTrue(one(legacy, "zero run.checkpoint_restored"),
+                        "no before-count falls back to the all-time zero")
+
 
 def calls_and_args(fn_name, path=DRIVER):
     """(called_names, {name: [literal-arg-lists]}) for one driver function."""
@@ -513,6 +552,42 @@ class C6GateFirstSequencingTest(unittest.TestCase):
             called, _args = calls_and_args(fn)
             self.assertNotIn("c4_wait_live_attempt", called, f"{fn} still waits on a "
                                                              "lease without the gate")
+
+
+class C6ResetWindowTest(unittest.TestCase):
+    """live19/C6.out graded the reset from the DEAD worker's container: the run's
+    affinity (§ 4's claim predicate) pins the engine's retry to the owning worker,
+    so while `compose kill` held it down no worker-side reset could have happened
+    — HEAD read '' (the empty read also passed the dirty-set check vacuously), and
+    the one event the ledger held predated every observation. These pins keep the
+    disclosure produced BEFORE the kill (so the reset has real files to name) and
+    the reset's evidence read AFTER the worker is back."""
+
+    def _c6_src(self):
+        src = open(DRIVER, encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)
+                  and n.name == "c6")
+        return ast.get_source_segment(src, fn)
+
+    def test_the_seed_is_planted_before_the_kill(self):
+        body = self._c6_src()
+        self.assertLess(body.index("C6_DISCARD_SEED"), body.index('COMPOSE + ["kill", owner]'),
+                        "the uncommitted file must exist while the attempt is held, "
+                        "so the reset has something real to destroy and disclose")
+
+    def test_the_reset_is_observed_from_the_live_retry_not_the_corpse(self):
+        body = self._c6_src()
+        self.assertLess(body.index('COMPOSE + ["start", owner]'),
+                        body.index("c6_restore_event(run_id)"),
+                        "the reset's evidence can only exist once the owning worker "
+                        "is back and its retried attempt has run the reset")
+        self.assertIn("restored_before=n_restored_before", body,
+                      "C6d's event arm must be windowed around the refusal")
+
+    def test_the_verdict_carries_the_seed_into_the_disclosure_claim(self):
+        body = self._c6_src()
+        self.assertIn("seed=C6_DISCARD_SEED", body,
+                      "c6_restored_verdicts must be shown the planted file")
 
 
 if __name__ == "__main__":

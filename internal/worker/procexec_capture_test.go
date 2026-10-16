@@ -188,6 +188,39 @@ func TestProcExecBoundaryCaptureSkipsAnAlreadyRecordedCleanTree(t *testing.T) {
 	}
 }
 
+func TestProcExecBoundaryCaptureRecordsAHeadStillButNewlyDirtyTree(t *testing.T) {
+	// The live19 C6c case: the previous boundary captured this checkout clean
+	// (RecordedHead == HEAD, manifest empty), and THIS command node's edit
+	// dirtied the tree without moving HEAD. A guard that only watches the ref
+	// keeps the row's stale clean manifest — and runWorkspaceRepoStates then
+	// derives committed:true for a dirty tree, which is the record
+	// restore_checkpoint trusts before it resets uncommitted work away.
+	repo := capRepo()
+	repo.RecordedHead = "aaaa1111"
+	res := &capResolver{ref: RunWorkspaceRef{WorkspaceID: "ws-1", VolumeID: "vol-1", Repos: []BoundaryRepo{repo}}}
+	ck := capRepo().CheckoutPath
+	git := &capGitStub{heads: map[string]string{ck: "aaaa1111"}, summaries: map[string]wsgit.Summary{
+		ck: {Dirty: true, Paths: []string{"hello.py"}}}}
+	capProc(git, res).captureBoundary(context.Background(), capClaim, nil)
+	if len(res.records) != 1 || len(res.records[0].ModifiedPaths) != 1 ||
+		res.records[0].ModifiedPaths[0] != "hello.py" || res.records[0].HeadCommit != "aaaa1111" {
+		t.Fatalf("records = %+v, want the still-HEAD read written with the new dirty manifest", res.records)
+	}
+	st := checkpointForStates(t, res, capClaim)
+	if st[0].Committed == nil || *st[0].Committed {
+		t.Fatalf("boundary committed = %v, want the captured false that makes restore_checkpoint refuse", st[0].Committed)
+	}
+	if st[0].ModifiedPathCount == nil || *st[0].ModifiedPathCount != 1 {
+		t.Fatalf("modified_path_count = %v, want 1", st[0].ModifiedPathCount)
+	}
+	// The same capture again (nothing moved since): the manifest is already
+	// what the row says, so no second workspace.committed is journalled.
+	capProc(git, res).captureBoundary(context.Background(), capClaim, nil)
+	if len(res.records) != 1 {
+		t.Fatalf("records = %+v, want the unchanged dirty manifest recorded once", res.records)
+	}
+}
+
 func TestProcExecBoundaryCaptureFailureKeepsTheAttempt(t *testing.T) {
 	// A capture that cannot read git is a warning, never a reclass of the
 	// succeeded command: no error escapes, and the boundary record still
