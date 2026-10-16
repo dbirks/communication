@@ -273,18 +273,136 @@ class CancelAndRefusalTest(unittest.TestCase):
             self.assertIsNone(one(m.c8_detach_verdict(junk), "detach is refused"))
 
     def test_self_invoke_depth_guard(self):
-        vs = m.c8_depth_guard_verdicts(vbody([err("child_depth_exceeded", "/spec/nodes/0")]), 409)
+        chain = {"two_root_status": "completed", "two_depths": ["1", "2"],
+                 "third_attempted": True, "depth3_rows": 0}
+        vs = m.c8_depth_guard_verdicts(vbody([err("child_depth_exceeded", "/spec/nodes/0")]),
+                                       chain)
         self.assertTrue(one(vs, "child_depth_exceeded"))
+        self.assertTrue(one(vs, "two-level chain succeeds"))
         self.assertTrue(one(vs, "third level refused"))
 
     def test_depth_guard_without_a_body_gaps(self):
         vs = m.c8_depth_guard_verdicts(None, None)
         self.assertIsNone(one(vs, "child_depth_exceeded"))
+        self.assertIsNone(one(vs, "two-level chain succeeds"))
         self.assertIsNone(one(vs, "third level refused"))
 
     def test_valid_self_invoke_is_a_fail(self):
         self.assertFalse(one(m.c8_depth_guard_verdicts(vbody([], True), None),
                              "child_depth_exceeded"))
+
+    def test_a_depth_3_row_is_a_fail_never_a_refusal(self):
+        """If the product BOOKED a depth-3 run it did not refuse — the gate reports
+        that, it does not hide it behind a status code."""
+        chain = {"two_root_status": "completed", "two_depths": ["1", "2"],
+                 "third_attempted": True, "depth3_rows": 1}
+        self.assertFalse(one(m.c8_depth_guard_verdicts(None, chain), "third level refused"))
+
+    def test_third_level_never_attempted_gaps(self):
+        for chain in ({"two_root_status": "completed", "two_depths": ["1", "2"],
+                       "third_attempted": False, "depth3_rows": 0},
+                      {"two_root_status": "completed", "two_depths": ["1", "2"],
+                       "third_attempted": True, "depth3_rows": None}):
+            self.assertIsNone(one(m.c8_depth_guard_verdicts(None, chain),
+                                  "third level refused"), str(chain))
+
+    def test_two_level_arm_needs_depth_2_and_a_completed_root(self):
+        base = {"third_attempted": True, "depth3_rows": 0}
+        shallow = dict(base, two_root_status="completed", two_depths=["1"])
+        self.assertFalse(one(m.c8_depth_guard_verdicts(None, shallow),
+                             "two-level chain succeeds"))
+        stuck = dict(base, two_root_status="running", two_depths=["1", "2"])
+        self.assertFalse(one(m.c8_depth_guard_verdicts(None, stuck),
+                             "two-level chain succeeds"))
+        unreadable = dict(base, two_root_status=None, two_depths=None)
+        self.assertIsNone(one(m.c8_depth_guard_verdicts(None, unreadable),
+                              "two-level chain succeeds"))
+
+
+class PolicyArmDocTest(unittest.TestCase):
+    """C8e's own parent revision: the copy is ONLY the policy line (plus the
+    schema-legal rename) or the arm measures nothing."""
+
+    def twin(self, policy="collect_and_continue"):
+        return {"apiVersion": "communication.dev/v1alpha1", "kind": "Pipeline",
+                "metadata": {"name": m.TW_SLUG},
+                "spec": {"nodes": [
+                    {"id": "fan_out", "kind": "for_each",
+                     "config": {"items": "x", "maxConcurrency": 3,
+                                "onChildFailure": policy}},
+                    {"id": "plan", "kind": "process.exec",
+                     "config": {"executable": "m4-exit.sh"}}]}}
+
+    def test_stop_copy_swaps_only_the_policy(self):
+        src = self.twin()
+        res = m.c8e_policy_doc(src, "m4x-c8e-stop-1", "stop")
+        self.assertIsNotNone(res["doc"])
+        self.assertIn("onChildFailure: stop", res["doc"])
+        self.assertNotIn("collect_and_continue", res["doc"])
+        self.assertEqual(["metadata.name",
+                          "/fan_out onChildFailure: collect_and_continue -> stop"],
+                         res["applied"])
+        self.assertEqual(m.TW_SLUG, src["metadata"]["name"], "the seed copy stays untouched")
+        self.assertEqual("collect_and_continue",
+                         src["spec"]["nodes"][0]["config"]["onChildFailure"])
+
+    def test_fail_after_all_copy_and_source_sanity_guards(self):
+        res = m.c8e_policy_doc(self.twin(), "m4x-c8e-faa-1", "fail_after_all")
+        self.assertIn("onChildFailure: fail_after_all", res["doc"])
+        already = m.c8e_policy_doc(self.twin("fail_after_all"), "x", "fail_after_all")
+        self.assertIsNone(already["doc"])       # measuring the seed's own value proves nothing
+        seed_arm = m.c8e_policy_doc(self.twin(), "x", "collect_and_continue")
+        self.assertIsNone(seed_arm["doc"])      # that arm is C8d's, already live
+        nofan = m.c8e_policy_doc({"apiVersion": "a", "kind": "Pipeline",
+                                  "metadata": {"name": "n"}, "spec": {"nodes": []}},
+                                 "x", "stop")
+        self.assertIsNone(nofan["doc"])
+        self.assertIsNone(m.c8e_policy_doc(None, "x", "stop")["doc"])
+
+    def test_counts_by_status(self):
+        self.assertEqual({"succeeded": 24, "failed": 1},
+                         m.c8_counts_by_status("succeeded|24\nfailed|1\n"))
+        self.assertEqual({}, m.c8_counts_by_status(None))
+        self.assertEqual({"cancelled": 12}, m.c8_counts_by_status("cancelled|12\nnotarow\n"))
+        self.assertNotIn("succeeded", m.c8_counts_by_status("succeeded|x"))
+
+    def test_stop_event_verdict_is_tri_state(self):
+        self.assertTrue(one(m.c8_stop_event_verdict(3), "on_child_failure_stop"))
+        self.assertFalse(one(m.c8_stop_event_verdict(0), "on_child_failure_stop"))
+        self.assertIsNone(one(m.c8_stop_event_verdict(None), "on_child_failure_stop"))
+
+
+class ChainLevelDocTest(unittest.TestCase):
+    """C8f's chain levels are seed-header documents with only inputs/outputs and the
+    single invoke node swapped — the shape known to publish, not an invented one."""
+
+    def test_chain_doc_shape_round_trips(self):
+        import yaml
+        doc = m.c8_chain_doc("m4x-c8f-l2", "m4x-c8f-l3")
+        self.assertIn("apiVersion: communication.dev/v1alpha1", doc)
+        parsed = yaml.safe_load(doc)
+        self.assertEqual("m4x-c8f-l2", parsed["metadata"]["name"])
+        spec = parsed["spec"]
+        self.assertEqual(1, spec["policies"]["maxChildDepth"])
+        self.assertNotIn("required", spec["inputs"], "POST /runs {} must pin it")
+        self.assertEqual(1, spec["inputs"]["properties"]["number"]["default"])
+        self.assertEqual(1, len(spec["nodes"]))
+        node = spec["nodes"][0]
+        self.assertEqual("pipeline.invoke", node["kind"])
+        self.assertEqual("m4x-c8f-l3", node["config"]["pipeline"])
+        self.assertEqual(1, node["config"]["inputs"]["number"],
+                         "issue-implementation declares number as an INTEGER")
+        self.assertEqual("cascade", spec["policies"]["cancelPolicy"])
+
+    def test_empty_when_header_unreadable(self):
+        keep = m._C13_HEADER.get("header")
+        try:
+            m._C13_HEADER["header"] = ""
+            self.assertEqual("", m.c8_chain_doc("n", "t"))
+        finally:
+            m._C13_HEADER.pop("header", None)
+            if keep is not None:
+                m._C13_HEADER["header"] = keep
 
 
 class SeedShapeTest(unittest.TestCase):

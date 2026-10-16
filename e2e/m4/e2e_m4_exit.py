@@ -5311,6 +5311,73 @@ def c8_policy_verdicts(policy, scope_status, failed_cause, ran, succeeded, cance
              f"ran={ran} scope={scope_status!r} cause={failed_cause!r}")]
 
 
+def c8e_policy_doc(canonical, name, policy):
+    """C8e's own parent revision: a copy of the fan-out parent's canonical document
+    with EXACTLY two edits — metadata.name and /fan_out's config.onChildFailure —
+    re-emitted as YAML for POST /drafts. The seed's published revision authors
+    collect_and_continue and revisions are immutable (docs/m4-contract.md § 7 C8e),
+    so the stop/fail_after_all arms can only be measured against revisions the gate
+    publishes itself; C6/C7 established this route (c6_restore_doc's honesty rule
+    applies: if the splice cannot be shown to be the only change, measure nothing).
+    {doc: yaml|None, applied: [...], missing: [...], policy} — doc None = refuse."""
+    out = {"doc": None, "applied": [], "missing": [], "policy": policy}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document)")
+        return out
+    if policy not in ("stop", "fail_after_all"):
+        out["missing"].append(f"policy {policy!r} is not a C8e arm (the seed's own "
+                              "revision already measures collect_and_continue)")
+        return out
+    doc = json.loads(json.dumps(canonical))        # deep copy; the seed stays untouched
+    if not isinstance(doc.get("metadata"), dict):
+        out["missing"].append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        out["applied"].append("metadata.name")
+    nodes = (doc.get("spec") or {}).get("nodes") or []
+    fans = [n for n in nodes if isinstance(n, dict) and n.get("id") == "fan_out"
+            and n.get("kind") == "for_each" and isinstance(n.get("config"), dict)]
+    if len(fans) != 1:
+        out["missing"].append(f"the one top-level fan_out for_each node (found {len(fans)})")
+    else:
+        had = fans[0]["config"].get("onChildFailure")
+        if had == policy:
+            out["missing"].append(f"the source already authors onChildFailure: {policy} "
+                                  "— this arm would measure the seed, not the gate's copy")
+        else:
+            fans[0]["config"]["onChildFailure"] = policy
+            out["applied"].append(f"/fan_out onChildFailure: {had} -> {policy}")
+    out["doc"] = None if out["missing"] else doc_yaml_emit(doc)
+    return out
+
+
+def c8_counts_by_status(text):
+    """c8_child_counts' 'status|count' lines -> {status: int}; {} on no rows. A
+    garbage count stays out rather than reading as a zero (count_or_none's rule)."""
+    out = {}
+    for line in (text or "").splitlines():
+        st, sep, cnt = line.partition("|")
+        if not sep:
+            continue
+        n = count_or_none(cnt)
+        if n is not None:
+            out[st.strip()] = n
+    return out
+
+
+def c8_stop_event_verdict(n):
+    """C8e stop's journal line (§ 7 C8e): queued siblings are cancelled VIA
+    node.execution_cancelled{reason:'on_child_failure_stop'} — n is the count of
+    such rows. None = the journal was unreadable (GAP), 0 = the siblings stopped
+    without naming the reason the contract fixes (FAIL), >0 = PASS."""
+    label = ("C8e stop: queued siblings cancelled via node.execution_cancelled"
+             "{reason:'on_child_failure_stop'}")
+    return [(label, None if n is None else n > 0,
+             "the journal is unreadable for this run" if n is None
+             else f"observed {n} such journal rows")]
+
+
 def c8_cancel_verdicts(run_status, cascade_event, child_statuses, cancelled_attempts):
     """C8g — parent cancelled mid-fan-out cascades: every child terminal, the run
     cancelled, cancelled_attempts populated."""
@@ -5345,21 +5412,38 @@ def c8_detach_verdict(vresp, location="/spec/policies/cancelPolicy"):
              f"no error located at {location}; " + c13_brief(vresp.get("errors")))]
 
 
-def c8_depth_guard_verdicts(validate_body, third_level_status):
-    """C8f — self-invoke refused at validate (child_depth_exceeded); a 2-level chain
-    builds while a 3rd level is refused by runs_depth_check."""
+def c8_depth_guard_verdicts(validate_body, chain):
+    """C8f — self-invoke refused at validate (child_depth_exceeded); a two-level
+    chain builds and runs while a third level is refused by runs_depth_check.
+    `chain` is the live run's measurement (c8f_chain): {two_root_status, two_depths,
+    third_depth2, depth3_rows, third_attempted}, or None/{}/409-era-None when the
+    chain never ran — which GAPs the run-time arms, because a refusal nobody
+    attempted is not a refusal that was earned."""
     codes = {str(e.get("code")) for e in (validate_body or {}).get("errors") or []} \
         if c13_validate_ok(validate_body) else set()
-    return [
+    out = [
         ("C8f self-invoking pipeline -> validate child_depth_exceeded",
          None if not c13_validate_ok(validate_body) else
          (validate_body.get("valid") is False and "child_depth_exceeded" in codes),
          f"codes={sorted(codes) or 'none'}"),
-        ("C8f third level refused by runs_depth_check (2-level chain is the ceiling)",
-         None if third_level_status is None else
-         third_level_status in (400, 409, 422),
-         f"third-level POST -> {third_level_status}"),
     ]
+    ch = chain if isinstance(chain, dict) else {}
+    two_st, two_d = ch.get("two_root_status"), ch.get("two_depths")
+    out.append(
+        ("C8f two-level chain succeeds (child runs at depth 1 and 2, root completes)",
+         None if two_st is None or two_d is None
+         else (two_st == "completed" and {"1", "2"} <= set(two_d)),
+         f"root={two_st!r} child depths={sorted({str(d) for d in two_d}) if two_d else 'none'}"))
+    d3, att = ch.get("depth3_rows"), ch.get("third_attempted")
+    refused = None if d3 is None else (True if att and d3 == 0 else
+                                       (False if d3 and d3 > 0 else None))
+    out.append(
+        ("C8f third level refused by runs_depth_check (2-level chain is the ceiling)",
+         refused,
+         f"depth-3 child runs={d3}; a depth-2 run was live and its own invoke armed "
+         f"(attempted={att}) — the engine ceiling is 2, so a depth-3 row is the product "
+         "not refusing"))
+    return out
 
 
 # --- C8 live helpers — the stack-facing half -----------------------------------
@@ -5607,6 +5691,231 @@ C8_SELF_DOC_NODE = """  - id: fan
 """
 
 
+# --- C8f's run-time half: a published chain the engine walks to its ceiling -----
+# A chain level is derived from the § 7.0 seed HEADER (the bytes known to publish)
+# with only the inputs/outputs swapped (so POST /runs {} can pin it — the seed's
+# spec.inputs REQUIRES goal/repository, and a child run posting unknown inputs is a
+# 422) and the graph swapped for the single invoke node. Depth is measured off the
+# runs tree, never assumed.
+C8F_IO = """
+  inputs:
+    type: object
+    properties:
+      number: {type: integer, minimum: 1, default: 1}
+      title: {type: string, default: ''}
+  outputs:
+    type: object
+    properties:
+      child: {type: string}
+"""
+
+C8F_LEVEL_NODES = """  - id: invoke
+    kind: pipeline.invoke
+    timeoutSeconds: 300
+    config:
+      pipeline: @@TARGET@@
+      inputs:
+        number: 1
+        title: m4x-c8f chain
+  resultBindings:
+    child: ${{ nodes.invoke.outputs.child_run_id }}
+"""
+
+
+def c8_chain_doc(name, target):
+    """One published chain level named `name`, invoking pipeline slug `target`.
+    '' when the seed header is unreadable (the caller GAPs — an invented document
+    the loader refuses for another reason proves nothing)."""
+    head = c13_base_header()
+    if not head:
+        return ""
+    head = re.sub(r"(?m)^  name: .*$", "  name: " + name, head, count=1)
+    try:
+        i0, i1 = head.index("\n  inputs:"), head.index("\n  policies:")
+    except ValueError:
+        return ""
+    return (head[:i0] + C8F_IO + head[i1:] + "\n  nodes:\n"
+            + C8F_LEVEL_NODES.replace("@@TARGET@@", target))
+
+
+def c8f_tree_depths_sql(root_id, min_depth=1):
+    """Depths present in one run's whole descendant tree (recursive over
+    parent_run_id). Read-only over the ledger — the same shape as C8b's depth arm,
+    one level deeper."""
+    return (f"WITH RECURSIVE t AS (SELECT id, depth FROM runs WHERE id = '{root_id}' "
+            f"UNION ALL SELECT c.id, c.depth FROM runs c JOIN t ON c.parent_run_id = t.id) "
+            f"SELECT DISTINCT depth::text FROM t WHERE depth >= {min_depth} ORDER BY 1")
+
+
+def c8e_live_arms(alice, admin, facts):
+    """C8e — publish the gate's OWN parent revisions (draft -> validate -> publish,
+    the C6/C7 route: the seed's revision authors collect_and_continue and revisions
+    are immutable) carrying onChildFailure stop and fail_after_all, run each against
+    the 25-item fan-out whose child fails on number 13, and hand the ledger to
+    c8_policy_verdicts. § 7 C8e verbatim: 'onChildFailure=stop -> queued siblings
+    cancelled (node.execution_cancelled{reason:\'on_child_failure_stop\'}), completed
+    siblings PRESERVED (their results and artifacts are still readable), and the
+    scope fails node.scope.failed{failed_cause:\'child_failed\'}; onChildFailure=
+    fail_after_all -> all 25 run, then fail'."""
+    src = doc_revision_canonical(admin, mf(facts, "revision_id"))
+    if src is None:
+        gap("C8e stop / fail_after_all arms",
+            f"GET /api/v1/revisions/{mf(facts, 'revision_id')!r} served no canonical "
+            "Pipeline document — the gate will not author a policy into bytes it cannot "
+            "show the compiler actually read (the route-14 YAML is regenerated, not "
+            "authored: c7_twin_doc's RC3 rule)")
+        return
+    for policy in ("stop", "fail_after_all"):
+        label = f"C8e {policy}"
+        res = c8e_policy_doc(src, schema_name(f"m4x-c8e-{policy}"), policy)
+        if res["doc"] is None:
+            gap(f"C8e {policy}: own parent revision",
+                f"the splice refused ({res['missing']}) — a copy that is not provably "
+                "the seed PLUS the one policy line measures nothing")
+            continue
+        pub = c7_publish(admin, mf(facts, "pipeline_id"), label, res["doc"])
+        rev = str((pub or {}).get("revision_id") or "")
+        if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+            c8_emit([(f"C8e {policy}: its own parent revision published",
+                      None, f"draft/publish -> validate={((pub or {}).get('validate_status'))} "
+                            f"rev={rev!r} errors={str((pub or {}).get('vresp') or "")[:240]}")])
+            continue
+        body = {"pipeline_revision_id": rev,
+                "inputs": c8_inputs(mf(facts, "inputs"), C8_ITEMS),
+                "idempotency": idem_key(f"m4x-c8e-{policy}")}
+        r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs", body)
+        if not check(f"C8e {policy}: POST runs (own revision {rev[:8]} + "
+                     f"fanout_count={C8_ITEMS}) -> 201", r.status in (200, 201),
+                     f"{r.status} {r.text[:200]}"):
+            continue
+        rid = (r.json() or {}).get("run_id")
+        st = c8_watch(alice, facts, rid, 2400, label)
+        if st is None:
+            continue
+        row = c8_scope_row(rid)
+        counts = c8_counts_by_status(c8_child_counts(rid))
+        ran = sum(counts.values()) if counts else None
+        c8_emit(c8_policy_verdicts(policy, row.get("status"), row.get("failed_cause"),
+                                   ran, counts.get("succeeded"), counts.get("cancelled")))
+        if policy == "stop":
+            c8_emit(c8_stop_event_verdict(c8_stop_reason_count(rid)))
+
+
+def c8_stop_reason_count(run_id):
+    """How many node.execution_cancelled journal rows name reason
+    on_child_failure_stop for this run (None = ledger unreadable)."""
+    text = c8_sql(f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' "
+                  f"AND type = 'node.execution_cancelled' "
+                  f"AND payload->>'reason' = 'on_child_failure_stop'", "stop-cancel events")
+    return count_or_none(text) if text is not None else None
+
+
+C8F_LEVELS = ("l1", "l2", "l3")
+C8F_SETTLE_SECONDS = 180     # how long a live depth-2 run gets to grow a depth-3
+                             # child before "none appeared" reads as refusal; shorter
+                             # would mistake advancer latency for a guard
+C8F_ARM_CAP = 900            # per-arm watch cap
+
+
+def c8f_chain(alice, admin, facts):
+    """C8f's run-time half — publish a three-level chain (l1 -> l2 -> l3 ->
+    issue-implementation) on its own scratch pipelines (invoke targets resolve by
+    ORG slug — m4ResolveChildTarget — so sibling pipelines created through
+    POST /api/v1/pipelines are legal targets, the same route C13g uses), then run
+    it twice. The 2-level arm roots l2: l3 lands at depth 1 and issue-
+    implementation at depth 2 and the root completes ('a two-level chain
+    succeeds'). The 3-level arm roots l1: depth 1 and 2 are created and l3's own
+    invoke must NOT book a depth-3 child — runs_depth_check caps runs at depth 2
+    and the store names the same rule in Go (child_depth_exceeded at depth 3).
+    Refusal therefore measures as: a depth-2 run went live with its invoke armed
+    and no depth-3 run ever appeared. If one DOES appear the product is not
+    refusing — that is the FAIL. Returns the c8_depth_guard_verdicts chain dict;
+    unreadable arms stay None so the verdict GAPs rather than guessing."""
+    out = {"two_root_status": None, "two_depths": None, "third_depth2": None,
+           "depth3_rows": None, "third_attempted": None}
+    ids, slugs = {}, {}
+    for lvl in C8F_LEVELS:
+        slug = schema_name(f"m4x-c8f-{lvl}")
+        r = admin.post(LB, "/api/v1/pipelines", {"slug": slug,
+                                                 "display_name": slug,
+                                                 "description": "C8f depth chain level"})
+        show(f"C8f POST /api/v1/pipelines ({lvl}) -> {r.status}", r.text[:160])
+        pid = str((r.json() or {}).get("id") or "") if r.status in (201, 409) else ""
+        if r.status == 409 and not pid:
+            lst = admin.get(LB, "/api/v1/pipelines")
+            for p in (lst.json() or {}).get("pipelines") or []:
+                if p.get("slug") == slug:
+                    pid = str(p.get("id") or "")
+        if not pid:
+            show("C8f chain build", f"{lvl}: no pipeline id from POST /pipelines "
+                                    f"({r.status}) — the chain cannot be authored")
+            return out
+        ids[lvl], slugs[lvl] = pid, slug
+    revs = {}
+    for lvl, target in (("l3", II_SLUG), ("l2", slugs["l3"]), ("l1", slugs["l2"])):
+        pub = c7_publish(admin, ids[lvl], f"C8f {lvl} -> {target}",
+                         c8_chain_doc(slugs[lvl], target))
+        rev = str((pub or {}).get("revision_id") or "")
+        if not rev:
+            show("C8f chain publish", f"{lvl}: draft/publish gave no revision "
+                                      f"(validate={str((pub or {}).get('vresp') or '')[:200]})")
+            return out
+        revs[lvl] = rev
+
+    def post(rev, tag):
+        r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                       {"pipeline_revision_id": rev, "inputs": {},
+                        "idempotency": idem_key(f"m4x-c8f-{tag}")})
+        show(f"C8f {tag}: POST runs (chain revision) -> {r.status}", r.text[:160])
+        return (r.json() or {}).get("run_id") if r.status in (200, 201) else None
+
+    def tree_depths(rid, min_depth=1):
+        text = c8_sql(c8f_tree_depths_sql(rid, min_depth), "chain depth tree")
+        return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+    # 2-level arm: root l2 — children at depth 1 and 2 must complete.
+    rid2 = post(revs["l2"], "two-level")
+    if rid2:
+        st2 = c8_watch(alice, facts, rid2, C8F_ARM_CAP, "two-level chain")
+        out["two_root_status"] = st2
+        ds = tree_depths(rid2) if st2 else None
+        out["two_depths"] = ds
+        show("C8f two-level chain tree", f"root={st2!r} child depths={ds}")
+    else:
+        show("C8f two-level chain", "the chain run could not be posted — nothing to measure")
+
+    # 3-level arm: root l1 — depth 2 must go live and depth 3 must never book.
+    rid3 = post(revs["l1"], "three-level")
+    if not rid3:
+        show("C8f three-level chain", "the ceiling run could not be posted")
+        return out
+    deadline, settle_from = time.time() + 2 * C8F_ARM_CAP, None
+    while time.time() < deadline:
+        deep = tree_depths(rid3, min_depth=3)
+        if deep:
+            out["depth3_rows"], out["third_attempted"] = len(deep), True
+            break                                # a depth-3 row EXISTS: not a refusal
+        if "2" in tree_depths(rid3):
+            out["third_attempted"] = True
+            settle_from = settle_from or time.time() + C8F_SETTLE_SECONDS
+            if settle_from and time.time() >= settle_from:
+                out["depth3_rows"] = 0
+                break
+        time.sleep(10)
+    if out["depth3_rows"] is None and out["third_attempted"]:
+        out["depth3_rows"] = len(tree_depths(rid3, min_depth=3))   # last honest recount
+    if out["depth3_rows"] is None:
+        show("C8f three-level arm", "never produced a live depth-2 run inside the cap — "
+                                    "the refusal has nothing to stand on (GAP)")
+    # The stuck arm leaves a live run tree behind; cancel it so the lab does not
+    # carry a permanently advancing orphan into the next gate.
+    r = alice.post(LB, f"/api/v1/runs/{rid3}/cancel", {"reason": "M4 exit C8f ceiling arm"})
+    show(f"C8f cleanup POST /runs/{rid3}/cancel -> {r.status}", r.text[:160])
+    show("C8f three-level arm", f"depth-2 run live: {out['third_attempted']} "
+                                f"depth-3 child runs: {out['depth3_rows']}")
+    return out
+
+
 def c8():
     """C8 — fan-out: zero items, and 25 children with one failing (12 case 8).
     Acceptance: issue-implementation pipeline via for_each -> pipeline.invoke,
@@ -5707,20 +6016,17 @@ def c8():
             fan = {"run_id": run25, "status": st25, "scope": row25, "peak": c8_max_in_flight(
                 samples or []), "policy": authored, "children": children}
 
-    # ---- C8e the OTHER policies: the seed authors exactly one ----
-    gap("C8e onChildFailure=stop / fail_after_all arms",
-        "the § 7.0 published revision authors collect_and_continue on /fan_out and pipeline "
-        "revisions are immutable; a stop/fail_after_all measurement needs a second published "
-        "parent revision plus its assignment, which the seed contract does not create — the "
-        "verdict algebra over canned rows is proven offline in test_c8_logic.py")
-
-    # ---- C8f depth guard (validate-time half) + C8h detach refusal ----
+    # ---- C8f/C8e/C8h — the library-role arms: C8e publishes the gate's own parent
+    # revisions (the seed's are immutable and author only collect_and_continue),
+    # C8f probes the validate refusals and walks the depth chain, C8h the detach ----
     admin = CTX.get("admin") or Client("admin")
     if login(admin) is None and "communication_session" not in admin.cookies:
-        gap("C8f/C8h validate-time refusals", "no admin session — the library role cannot "
-                                              "post a probe draft")
+        gap("C8e stop / fail_after_all arms and C8f/C8h validate-time refusals",
+            "no admin session — the library role cannot draft the extra parent "
+            "revisions or post a probe draft")
     else:
         CTX["admin"] = admin
+        c8e_live_arms(alice, admin, facts)
         host = mf(facts, "child_pipeline_id") or mf(facts, "pipeline_id")
         # The document is built from the § 7.0 seed header (c13_doc), NOT by splicing
         # into GET /revisions/{id}/document: that export is yaml.Marshal output with
@@ -5728,13 +6034,19 @@ def c8():
         # invalid_yaml before the compiler ever saw the self-invoke (live C8f).
         self_doc = c13_doc("issue-implementation", C8_SELF_DOC_NODE.replace(
             "@@NAME@@", "issue-implementation"))
+        probe = None
         if self_doc:
             probe = c13_draft_probe(admin, host, "C8f self-invoke", self_doc)
-            c8_emit(c8_depth_guard_verdicts(probe["vresp"] if probe else None, None))
         else:
             gap("C8f self-invoking pipeline refused by child_depth_exceeded",
                 "no exported seed document to splice a self-invoke into — a probe "
                 "document the loader refuses for another reason proves nothing")
+        # The run-time half: a published chain walked to the ceiling (§ 7 C8f's
+        # 'two-level chain succeeds while a third level is refused by the
+        # runs_depth_check'). The old arm passed a literal None here — it never
+        # built the chain first, so the refusal could only ever GAP.
+        chain = c8f_chain(alice, admin, facts)
+        c8_emit(c8_depth_guard_verdicts(probe["vresp"] if probe else None, chain))
         detach = c13_draft_probe(admin, host, "C8h cancelPolicy detach", c13_doc(
             "m4x-c8-detach", """  - id: e1
     kind: process.exec
