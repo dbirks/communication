@@ -8,12 +8,16 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
+import { attentionNodeId } from "./RunInspector";
+import type { NodeExecution } from "../api/types";
+import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import {
   WIRE_NODE_IMPLEMENT,
   WIRE_NODE_PLAN,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
   WIRE_RUN_ID,
+  wireApproval,
   wireApprovalList,
   wireNodeDetail,
   wireNodeList,
@@ -28,6 +32,24 @@ import {
 
 const RUN_PATH = `/api/v1/runs/${WIRE_RUN_ID}`;
 const PAUSE_PATH = `${RUN_PATH}/pause`;
+const WIRE_NODE_APPROVE = "01987b24-0009-7000-8000-abcdef012345";
+
+/** The same run held at its gate: `approve` waits for a human and nothing else
+ * has started. The wire fixture is a run mid-loop, which proves the other
+ * half of the auto-select rule. */
+const wireWaitingNodes: NodeExecution[] = [
+  {
+    ...wireNodeList.node_executions[0],
+    id: WIRE_NODE_APPROVE,
+    node_id: "approve",
+    kind: "human.approval",
+    node_instance_key: "/approve",
+    status: "waiting",
+    waiting_reason: "approval",
+    finished_at: null,
+  },
+  ...wireNodeList.node_executions,
+];
 
 function routes(extra: RouteStub[] = []): RouteStub[] {
   return [
@@ -52,10 +74,10 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   ];
 }
 
-function mountRun(search = "") {
+function mountRun(search = "", extra: RouteStub[] = []): ReturnType<typeof renderApp> {
   return renderApp({
     path: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}${search}`,
-    routes: routes(),
+    routes: routes(extra),
   });
 }
 
@@ -74,17 +96,77 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
   });
 
-  it("opens on Definition: the graph the run is pinned to, with an empty right pane", async () => {
+  it("opens on Definition with the graph, and pre-selects what the run waits on", async () => {
     const { requests } = mountRun();
     await screen.findByTestId("run-title");
 
     expect(await screen.findByTestId("definition-graph")).toBeTruthy();
     expect(requestsTo(requests, `/api/v1/revisions/${wireRun.revision_digest}`)).toHaveLength(1);
-    expect(screen.getByTestId("run-detail-none").textContent).toContain("Select a node");
+    // This run is mid-loop, so the node in flight is what the pane shows — the
+    // scope row above it owns no attempt of its own and is skipped.
+    expect(await screen.findByTestId("attempt-status")).toBeTruthy();
+    expect(screen.queryByTestId("run-detail-none")).toBeNull();
+    // The pick is raised on the canvas too, so graph and pane agree.
+    expect(
+      (
+        await screen.findByTestId("definition-graph-node-build_until_verified-implement")
+      ).getAttribute("aria-pressed"),
+    ).toBe("true");
     // Execution is one tab away, not the first thing a reader meets.
     fireEvent.click(screen.getByTestId("run-tab-execution"));
     expect(await screen.findByTestId("run-stage-strip")).toBeTruthy();
     expect(screen.getByTestId("run-tree")).toBeTruthy();
+  });
+
+  it("opens a run waiting at its gate on the gate, with the decision wired", async () => {
+    const { requests } = mountRun("", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [{ ...wireApproval, node_execution_id: WIRE_NODE_APPROVE }],
+        },
+      },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`, body: wireNodeDetail },
+      {
+        path: `/api/v1/approvals/${wireApproval.id}/decide`,
+        method: "POST",
+        body: { ...wireApproval, state: "approved", decision: "approved" },
+      },
+    ]);
+
+    // The reader lands on the thing they owe an answer to: no click first.
+    expect(await screen.findByTestId("approval-summary")).toBeTruthy();
+    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    expect(
+      (await screen.findByTestId("definition-graph-node-approve")).getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    fireEvent.click(screen.getByTestId("approval-approve"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/approvals/${wireApproval.id}/decide`, "POST"),
+      ).toHaveLength(1),
+    );
+  });
+
+  it("a graph click on a scoped node fills the pane for that iteration", async () => {
+    const { requests } = mountRun();
+    await screen.findByTestId("definition-graph");
+
+    // The graph's key drops the `[1]` the run's instance key carries; the click
+    // still has to land on a node execution, or the pane stays empty.
+    fireEvent.click(screen.getByTestId("definition-graph-node-build_until_verified-implement"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_IMPLEMENT}`)).toHaveLength(1),
+    );
+    expect(screen.getByTestId("attempt-status").textContent).toContain("running");
+    // The selection survives a tab change — it lives in `?node=`, not in
+    // component state a tab switch would drop.
+    fireEvent.click(screen.getByTestId("run-tab-execution"));
+    expect(screen.getByTestId("attempt-status").textContent).toContain("running");
   });
 
   it("uses the whole viewport, with the panes at the run view's widths", async () => {
@@ -200,5 +282,51 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     });
     expect(await screen.findByTestId("run-not-found")).toBeTruthy();
     expect(screen.queryByTestId("run-stage-strip")).toBeNull();
+  });
+});
+
+describe("attentionNodeId", () => {
+  const row = (
+    id: string,
+    kind: string,
+    status: NodeExecutionSummary["status"],
+    waiting_reason: NodeExecutionSummary["waiting_reason"] = null,
+  ): Pick<NodeExecutionSummary, "id" | "kind" | "status" | "waiting_reason"> => ({
+    id,
+    kind,
+    status,
+    waiting_reason,
+  });
+
+  it("prefers the gate a human owes an answer at over everything else", () => {
+    expect(
+      attentionNodeId([
+        row("n-plan", "agent.acp", "succeeded"),
+        row("n-implement", "agent.acp", "failed"),
+        row("n-approve", "human.approval", "waiting", "approval"),
+        row("n-loop", "until", "waiting", "approval"),
+      ]),
+    ).toBe("n-approve");
+  });
+
+  it("takes a failure when nobody is being asked, and the work in flight after that", () => {
+    expect(
+      attentionNodeId([
+        row("n-plan", "agent.acp", "succeeded"),
+        row("n-implement", "agent.acp", "failed"),
+        row("n-test", "agent.acp", "running"),
+      ]),
+    ).toBe("n-implement");
+    expect(
+      attentionNodeId([
+        row("n-loop", "until", "running"),
+        row("n-implement", "agent.acp", "running"),
+      ]),
+    ).toBe("n-implement");
+  });
+
+  it("says nothing is owed on a run with no open work", () => {
+    expect(attentionNodeId([row("n-plan", "agent.acp", "succeeded")])).toBeNull();
+    expect(attentionNodeId([])).toBeNull();
   });
 });

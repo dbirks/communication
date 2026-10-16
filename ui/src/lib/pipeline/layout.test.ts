@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { layoutDefinition } from "./layout";
+import {
+  GROUP_GAP,
+  layoutDefinition,
+  separateSiblingGroups,
+  type GraphGroupView,
+  type GraphNodeView,
+} from "./layout";
 import { nodeBindings, rootWords, scopeBody, scopeEntryNodes, scopeExitNodes } from "./definition";
 import {
   fanOutPipelineDocument,
@@ -224,5 +230,203 @@ describe("definition model", () => {
   it("does not turn the nested body into bindings of its parent", () => {
     const slots = nodeBindings(until).map((binding) => binding.slot);
     expect(slots.some((slot) => slot.startsWith("config.body"))).toBe(false);
+  });
+});
+
+describe("sibling scope boxes", () => {
+  /** The shape the live `feature-development` revision has: two scopes entered
+   * from the same gate, one a short vertical chain, one a wider loop body. Its
+   * children land in different ranks, so dagre's `nodesep` spaces the children
+   * and leaves the bar and the foot of one box over the other. */
+  const twoScopes = {
+    apiVersion: "communication.dev/v1alpha1",
+    kind: "Pipeline",
+    metadata: { name: "two-scopes" },
+    spec: {
+      nodes: [
+        { id: "plan", kind: "process.exec", config: { executable: "ls" } },
+        {
+          id: "approve",
+          kind: "human.approval",
+          dependsOn: ["plan"],
+          config: { summary: "ok?", approver_roles: ["maintainer"] },
+        },
+        {
+          id: "fan_out",
+          kind: "for_each",
+          dependsOn: ["approve"],
+          config: {
+            items: "${{ nodes.plan.outputs.rows }}",
+            maxConcurrency: 3,
+            invokePolicy: "per_item",
+            body: {
+              nodes: [
+                { id: "emit_items", kind: "process.exec", config: { executable: "ls" } },
+                {
+                  id: "invoke",
+                  kind: "pipeline.invoke",
+                  dependsOn: ["emit_items"],
+                  config: { pipeline: "child", inputs: {} },
+                },
+              ],
+            },
+          },
+        },
+        {
+          id: "build_until_verified",
+          kind: "until",
+          dependsOn: ["approve"],
+          config: {
+            maxIterations: 5,
+            until: "previous.passed == true",
+            body: {
+              nodes: [
+                { id: "implement", kind: "process.exec", config: { executable: "ls" } },
+                {
+                  id: "test",
+                  kind: "process.exec",
+                  dependsOn: ["implement"],
+                  config: { executable: "ls" },
+                },
+                {
+                  id: "review",
+                  kind: "process.exec",
+                  dependsOn: ["test"],
+                  config: { executable: "ls" },
+                },
+              ],
+            },
+          },
+        },
+        {
+          id: "verdict",
+          kind: "condition",
+          dependsOn: ["build_until_verified", "fan_out"],
+          config: { condition: "previous.passed == true", true: "publish_verified" },
+        },
+      ],
+    },
+  } as unknown as DefinitionDocument;
+
+  const layout = layoutDefinition(twoScopes)!;
+
+  it("draws the two scopes the document declares", () => {
+    expect(layout.groups.map((group) => group.ownerId).sort()).toEqual([
+      "build_until_verified",
+      "fan_out",
+    ]);
+  });
+
+  it("keeps sibling scope boxes and their bars clear of each other", () => {
+    const [a, b] = layout.groups;
+    const separated =
+      a.x + a.width <= b.x ||
+      b.x + b.width <= a.x ||
+      a.y + a.height <= b.y ||
+      b.y + b.height <= a.y;
+    // A box's title bar lives inside its own rect, so a rect that does not
+    // intersect is a label that is not sitting on another scope's children.
+    expect(
+      separated,
+      `${a.ownerId} ${a.x},${a.y},${a.width}x${a.height} vs ${b.ownerId} ${b.x},${b.y},${b.width}x${b.height}`,
+    ).toBe(true);
+  });
+
+  it("keeps every node inside the box it belongs to after the push", () => {
+    for (const group of layout.groups) {
+      for (const node of layout.nodes.filter((item) => item.groupKey === group.key)) {
+        expect(node.x).toBeGreaterThanOrEqual(group.x);
+        expect(node.y).toBeGreaterThanOrEqual(group.y);
+        expect(node.x + node.width).toBeLessThanOrEqual(group.x + group.width);
+        expect(node.y + node.height).toBeLessThanOrEqual(group.y + group.height);
+      }
+    }
+  });
+
+  it("grows the reported canvas over whatever was pushed down", () => {
+    const bottom = Math.max(
+      ...layout.nodes.map((node) => node.y + node.height),
+      ...layout.groups.map((group) => group.y + group.height),
+    );
+    expect(layout.height).toBeGreaterThanOrEqual(bottom);
+    const right = Math.max(
+      ...layout.nodes.map((node) => node.x + node.width),
+      ...layout.groups.map((group) => group.x + group.width),
+    );
+    expect(layout.width).toBeGreaterThanOrEqual(right);
+  });
+
+  it("routes every edge onto the boxes it connects, dagre points or not", () => {
+    // After a push the library's own polyline no longer ends where the node is;
+    // the router that replaces it must still start and stop on the endpoints.
+    const byKey = new Map(layout.nodes.map((node) => [node.key, node]));
+    for (const edge of layout.edges) {
+      expect(edge.points.length).toBeGreaterThan(1);
+      const from = byKey.get(edge.from)!;
+      const to = byKey.get(edge.to)!;
+      const first = edge.points[0];
+      const last = edge.points.at(-1)!;
+      expect(first.y).toBeCloseTo(from.y + from.height / 2);
+      expect(last.y).toBeCloseTo(to.y + to.height / 2);
+      expect(first.x).toBeCloseTo(from.x + from.width);
+      expect(last.x).toBeCloseTo(to.x);
+    }
+  });
+});
+
+describe("separateSiblingGroups", () => {
+  const scope = (key: string, x: number, y: number, width: number, height: number) =>
+    ({
+      key,
+      ownerId: key.replace(/^#\//, "").split("/").pop(),
+      x,
+      y,
+      width,
+      height,
+    }) as GraphGroupView;
+  const box = (key: string, y: number) =>
+    ({ key, x: 0, y, width: 108, height: 60 }) as GraphNodeView;
+
+  it("pushes a scope out of the one above it, its members riding along", () => {
+    // The shape the live `feature-development` revision produced: the `for each`
+    // box's foot reaches 20px into the `until` box below it, which is the
+    // `until` title bar sitting behind the `↻ one place per item` line.
+    const groups = [
+      scope("#/fan_out", 513, 259, 100, 146),
+      scope("#/build_until_verified", 470, 371, 340, 126),
+    ];
+    const nodes = [box("/fan_out/emit_items", 293), box("/build_until_verified/implement", 405)];
+    expect(separateSiblingGroups(groups, nodes)).toBe(true);
+    const [upper, lower] = groups;
+    expect(lower.y).toBe(upper.y + upper.height + GROUP_GAP);
+    // The pushed box's member moved with it, by exactly the overlap plus the gap.
+    expect(nodes[1].y).toBe(405 + (lower.y - 371));
+    // Nothing above the pushed box moves.
+    expect(nodes[0].y).toBe(293);
+  });
+
+  it("carries a nested scope and its members with the box they sit in", () => {
+    const groups = [
+      scope("#/outer", 0, 0, 100, 200),
+      scope("#/outer/inner", 10, 30, 60, 80),
+      scope("#/sibling", 20, 190, 60, 80),
+    ];
+    const nodes = [box("/outer/inner/deep", 50), box("/sibling/shallow", 210)];
+    expect(separateSiblingGroups(groups, nodes)).toBe(true);
+    // The sibling moves; the box it was pushed out of, and what sits inside that
+    // box, do not.
+    expect(groups[2].y).toBe(212);
+    expect(nodes[1].y).toBe(232);
+    expect(groups[0].y).toBe(0);
+    expect(groups[1].y).toBe(30);
+    expect(nodes[0].y).toBe(50);
+    // And the pushed box now clears its sibling's children too, not just its box.
+    expect(groups[2].y + groups[2].height).toBeGreaterThan(nodes[1].y);
+  });
+
+  it("leaves scopes that already clear each other exactly where they are", () => {
+    const groups = [scope("#/a", 0, 0, 100, 100), scope("#/b", 0, 112, 100, 100)];
+    expect(separateSiblingGroups(groups, [])).toBe(false);
+    expect(groups[1].y).toBe(112);
   });
 });

@@ -94,9 +94,17 @@ export interface DefinitionGraphLayout {
   edges: GraphEdgeView[];
 }
 
-export const NODE_SIZE = { width: 128, height: 52 };
+/** Narrower and taller than the first cut: the graph is drawn into a pane that
+ * is far wider than it is tall, so width is the scarce axis and the one the
+ * fit-to-pane scale is divided by. */
+export const NODE_SIZE = { width: 108, height: 60 };
 export const GROUP_BAR = 20;
 export const GROUP_PAD = 14;
+/** Least clear space two sibling scope boxes may keep between them. dagre only
+ * spaces the *children* (`nodesep`), so the title bar and the `↻ …` foot added
+ * after layout belong to nobody — without this a lower scope's label sits under
+ * the upper scope's foot. */
+export const GROUP_GAP = 12;
 /** Room under the children for the `↻ …` line, so the annotation never sits
  * behind a node. */
 export const GROUP_FOOT = 18;
@@ -179,8 +187,8 @@ export function layoutDefinition(
   const graph = new Graph({ compound: true });
   graph.setGraph({
     rankdir: options.rankdir ?? "LR",
-    nodesep: 14,
-    ranksep: 30,
+    nodesep: 24,
+    ranksep: 34,
     marginx: 12,
     marginy: 12,
     acyclicer: "greedy",
@@ -298,7 +306,60 @@ export function layoutDefinition(
     groupViews.set(view.key, view);
   }
 
-  const nodes: GraphNodeView[] = all
+  const groups = [...groupViews.values()].sort((a, b) => a.depth - b.depth);
+  const nodes = layoutNodes(graph, all);
+  // 4. dagre spaced the children; the bar and foot belong to the group. Two
+  // sibling scopes whose children fall in different ranks can end up with one
+  // box's foot over the next box's label (`for each` over `until` in the
+  // feature-development revision), so push siblings apart, deepest descendants
+  // riding along with the box they live in.
+  const moved = separateSiblingGroups(groups, nodes);
+  const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
+
+  const edges: GraphEdgeView[] = graph.edges().map((edge) => {
+    const label = graph.edge(edge) as
+      | { kind?: string; points?: { x?: number; y?: number }[] }
+      | undefined;
+    return {
+      from: edge.v,
+      to: edge.w,
+      // The label's own kind and nothing else. Inferring "error" from "this
+      // node has an error route somewhere" would paint every dependency leaving
+      // that node as a failure path — a dashed red line the document never
+      // declared (`onFailure.errorRoute` is one edge, not a property of a node).
+      kind: label?.kind === "error" ? "error" : "depends",
+      // Once a box has been pushed down the dagre polyline no longer touches
+      // its endpoints, so every edge is re-run through the same elbow router —
+      // one routing rule for both cases beats a mix of two.
+      points: moved
+        ? routePoints(nodeByKey, edge.v, edge.w)
+        : (label?.points ?? []).map((point) => ({ x: point.x ?? 0, y: point.y ?? 0 })),
+    };
+  });
+
+  const bottom = Math.max(
+    0,
+    ...nodes.map((node) => node.y + node.height),
+    ...groups.map((group) => group.y + group.height),
+  );
+  const right = Math.max(
+    0,
+    ...nodes.map((node) => node.x + node.width),
+    ...groups.map((group) => group.x + group.width),
+  );
+
+  return {
+    width: Math.max(graph.graph().width ?? 0, right + (graph.graph().marginx ?? 12)),
+    height: Math.max(graph.graph().height ?? 0, bottom + (graph.graph().marginy ?? 12)),
+    nodes,
+    groups,
+    edges,
+  };
+}
+
+/** Placed boxes for every concrete node, in declaration order. */
+function layoutNodes(graph: Graph, all: Placement[]): GraphNodeView[] {
+  return all
     .filter((placement) => !placement.clusterKey)
     .map((placement) => {
       const box = graph.node(placement.key);
@@ -323,30 +384,6 @@ export function layoutDefinition(
         gate: isGateKind(placement.node.kind),
       };
     });
-
-  const edges: GraphEdgeView[] = graph.edges().map((edge) => {
-    const label = graph.edge(edge) as
-      | { kind?: string; points?: { x?: number; y?: number }[] }
-      | undefined;
-    return {
-      from: edge.v,
-      to: edge.w,
-      // The label's own kind and nothing else. Inferring "error" from "this
-      // node has an error route somewhere" would paint every dependency leaving
-      // that node as a failure path — a dashed red line the document never
-      // declared (`onFailure.errorRoute` is one edge, not a property of a node).
-      kind: label?.kind === "error" ? "error" : "depends",
-      points: (label?.points ?? []).map((point) => ({ x: point.x ?? 0, y: point.y ?? 0 })),
-    };
-  });
-
-  return {
-    width: graph.graph().width ?? 0,
-    height: graph.graph().height ?? 0,
-    nodes,
-    groups: [...groupViews.values()].sort((a, b) => a.depth - b.depth),
-    edges,
-  };
 }
 
 /** Bounding box of a group's placed children (nested groups included). */
@@ -382,4 +419,114 @@ function childBox(
     return { x: 0, y: 0, width: NODE_SIZE.width, height: NODE_SIZE.height };
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The scope path a group key encodes: `#/build_until_verified` → `/build_until_verified`. */
+function groupPath(key: string): string {
+  return key.replace(/^#/, "");
+}
+
+/** The enclosing scope path of a group — `''` for a root-level one. */
+function parentPath(key: string): string {
+  const path = groupPath(key);
+  const cut = path.lastIndexOf("/");
+  return cut <= 0 ? "" : path.slice(0, cut);
+}
+
+/** Does `key` (a node key or a group path) live inside the scope `path`? */
+function isInside(key: string, path: string): boolean {
+  return key.startsWith(`${path}/`);
+}
+
+function overlaps(a: Box, b: Box, gap: number): boolean {
+  return (
+    a.x < b.x + b.width + gap &&
+    b.x < a.x + a.width + gap &&
+    a.y < b.y + b.height + gap &&
+    b.y < a.y + a.height + gap
+  );
+}
+
+/**
+ * Push sibling scope boxes apart until no two of them — bar and foot included —
+ * intersect. Moving a box moves everything inside it, and a box pushed down
+ * once can collide with its own successor, hence the repeat until stable.
+ * Returns whether anything moved, because a moved box invalidates the dagre
+ * edge routing. Exported for its own test: the overlap it repairs is a geometry
+ * dagre produced on a real revision, and a fixture that happens to reproduce a
+ * library's ranking is not a proof of the rule.
+ */
+export function separateSiblingGroups(groups: GraphGroupView[], nodes: GraphNodeView[]): boolean {
+  const shift = (path: string, dy: number) => {
+    for (const group of groups) {
+      const own = groupPath(group.key);
+      if (own === path || isInside(own, path)) group.y += dy;
+    }
+    for (const node of nodes) if (isInside(node.key, path)) node.y += dy;
+  };
+
+  let moved = false;
+  for (let pass = 0; pass < 16; pass += 1) {
+    let changed = false;
+    const byParent = new Map<string, GraphGroupView[]>();
+    for (const group of groups) {
+      const parent = parentPath(group.key);
+      const list = byParent.get(parent) ?? [];
+      list.push(group);
+      byParent.set(parent, list);
+    }
+    for (const list of byParent.values()) {
+      list.sort((a, b) => a.y - b.y || a.x - b.x);
+      for (let i = 0; i < list.length; i += 1) {
+        for (let j = i + 1; j < list.length; j += 1) {
+          const upper = list[i];
+          const lower = list[j];
+          // Sorted by y: once a box clears the gap, everything after it does.
+          if (lower.y >= upper.y + upper.height + GROUP_GAP) break;
+          if (!overlaps(upper, lower, GROUP_GAP)) continue;
+          const dy = upper.y + upper.height + GROUP_GAP - lower.y;
+          if (dy <= 0) continue;
+          shift(groupPath(lower.key), dy);
+          changed = true;
+          moved = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  return moved;
+}
+
+/**
+ * A three-segment elbow between two placed boxes. Used once any group has moved
+ * (dagre's own polyline would no longer end on its node); the back-edge case —
+ * a loop that returns to an earlier node — leaves to the right and comes back in
+ * from the right rather than cutting through the boxes between them.
+ */
+function routePoints(
+  nodes: Map<string, GraphNodeView>,
+  from: string,
+  to: string,
+): { x: number; y: number }[] {
+  const source = nodes.get(from);
+  const target = nodes.get(to);
+  if (!source || !target) return [];
+  const x1 = source.x + source.width;
+  const y1 = source.y + source.height / 2;
+  const x2 = target.x;
+  const y2 = target.y + target.height / 2;
+  const mid = x2 > x1 + 16 ? (x1 + x2) / 2 : Math.max(x1, target.x + target.width) + 14;
+  return [
+    { x: x1, y: y1 },
+    { x: mid, y: y1 },
+    { x: mid, y: y2 },
+    { x: x2, y: y2 },
+  ];
 }

@@ -56,6 +56,7 @@ import {
 } from "../api/m4view";
 import { projectRun, toRunEvent } from "../lib/pipeline/runEvents";
 import {
+  isScopeKind,
   scopeBody,
   type DefinitionDocument,
   type DefinitionNode,
@@ -150,7 +151,10 @@ export default function RunInspector() {
     [treeQuery.data, slugsById],
   );
 
-  const selectedNode = projection.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedNode =
+    projection.nodes.find((node) => node.id === selectedNodeId) ??
+    projection.nodes.find((node) => node.id === attentionNodeId(projection.nodes)) ??
+    null;
   /** The graph keys a node by its instance key without iteration suffixes, the
    * tree keys a row by the full instance key; the URL carries the execution id
    * and both handles are derived from it. */
@@ -287,6 +291,12 @@ export default function RunInspector() {
                 Run #{shortId(run.id)}
               </h1>
               <RunStatusChip status={run.status} testid="run-header-status" />
+              {!run.placement.scheduled &&
+              run.placement.reason === "volume_affinity_unsatisfied" ? (
+                <span className="text-[11.5px] text-muted" data-testid="run-waiting-for-worker">
+                  waiting for its worker
+                </span>
+              ) : null}
               <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">
                 {stream.status}
               </span>
@@ -688,6 +698,32 @@ function canDecide(
  * graph's key is the instance key without its iteration suffixes. */
 function graphKeyOf(key: string): string {
   return key.replaceAll(/\[\d+\]/g, "");
+}
+
+/**
+ * What the run is stopped on, in the order a reader cares about: the gate a
+ * human owes an answer at, then a failure, then the work in flight. A run that
+ * is waiting on somebody must not open on an empty pane, so the inspector
+ * pre-selects it before anyone clicks. A scope row (`until`, `for each`) is
+ * skipped — it owns no attempt of its own, so its children are what the reader
+ * can act on. Declaration order breaks ties, so the pick is stable.
+ */
+export function attentionNodeId(
+  nodes: readonly Pick<NodeExecutionSummary, "id" | "kind" | "status" | "waiting_reason">[],
+): string | null {
+  const work = nodes.filter((node) => !isScopeKind(node.kind));
+  const gate = work.find(
+    (node) =>
+      node.status === "waiting" &&
+      (node.kind === "human.approval" || node.waiting_reason === "approval"),
+  );
+  if (gate) return gate.id;
+  return (
+    (
+      work.find((node) => node.status === "failed") ??
+      work.find((node) => node.status === "running")
+    )?.id ?? null
+  );
 }
 
 /** Definition is the tab a run opens on: the reader orients on the graph the run

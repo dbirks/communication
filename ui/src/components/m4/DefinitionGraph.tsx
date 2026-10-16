@@ -65,6 +65,18 @@ export interface DefinitionGraphProps {
   className?: string;
 }
 
+/** Smallest type drawn inside the scaled canvas — the kind line of a node and a
+ * scope box's label. */
+export const SMALLEST_CANVAS_FONT_PX = 11;
+/** Below this on-screen size the graph stops being readable. */
+export const MIN_LABEL_PX = 11;
+/** The floor the fit may not go under: at 68% a 12.5px node title is 8px and a
+ * scope label is 7px, which is decoration, not a graph. A definition too wide
+ * for the pane pans (the frame already scrolls) rather than shrinking. */
+export const MIN_READABLE_SCALE = MIN_LABEL_PX / SMALLEST_CANVAS_FONT_PX;
+/** Tallest the canvas frame gets before it scrolls vertically. */
+const FRAME_MAX_HEIGHT = 560;
+
 export function DefinitionGraph({
   document,
   label,
@@ -110,13 +122,20 @@ export function DefinitionGraph({
   }
 
   const selected = shown.nodes.find((node) => node.key === selectedKey) ?? null;
-  // Fit by default: the pane's width over the graph's width, clamped at the
-  // bottom — below ~40% a node's kind line is smaller than the hairline around
-  // it, and an unreadable whole is worse than a readable pane with a scrollbar.
-  // The graph never upscales past 100%.
-  const fitScale = pane > 0 && shown.width > 0 ? Math.min(1, pane / shown.width) : 1;
-  const scale = Math.min(2, Math.max(0.4, fitScale) * zoom);
-  const frameHeight = Math.round(Math.min(560, Math.max(200, shown.height * scale + 14)));
+  // Fit the pane by default — down to the readable floor and no further. Width
+  // is the scarce axis, so the old width-only fit landed at ~68% and put every
+  // label under 9px; the floor makes a wide graph pan horizontally and a tall
+  // one scroll vertically instead (`fit` re-fits, `−` can still go under the
+  // floor on an explicit click).
+  const widthFit = pane > 0 && shown.width > 0 ? pane / shown.width : 1;
+  const heightFit = shown.height > 0 ? FRAME_MAX_HEIGHT / shown.height : 1;
+  const fitScale = Math.max(MIN_READABLE_SCALE, Math.min(1, widthFit, heightFit));
+  const scale = Math.min(2, fitScale * zoom);
+  const frameHeight = Math.round(
+    Math.min(FRAME_MAX_HEIGHT, Math.max(200, shown.height * scale + 14)),
+  );
+  /** True when the graph is wider than the frame at this scale. */
+  const pans = pane > 0 && shown.width * scale > pane + 1;
 
   return (
     <Panel
@@ -136,7 +155,7 @@ export function DefinitionGraph({
             className="flex flex-wrap items-center gap-x-[8px] font-mono text-[10.5px] text-faint"
             data-testid="definition-graph-hint"
           >
-            {`${shown.nodes.length} nodes · ${shown.edges.length} edges · ${shown.width}×${shown.height}px · arrow keys move, the list is all of it`}
+            {`${shown.nodes.length} nodes · ${shown.edges.length} edges · ${shown.width}×${shown.height}px · arrow keys move, the list is all of it${pans ? " · drag to pan" : ""}`}
             <span className="ml-auto flex items-center gap-[3px]">
               <ZoomButton
                 label="Zoom out"
@@ -207,7 +226,7 @@ export function DefinitionGraph({
                     }}
                   >
                     <span
-                      className="absolute font-mono text-[10px] font-semibold tracking-[0.04em] text-ink-2"
+                      className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
                       style={{ left: 8, top: 5 }}
                     >
                       {group.word} · {group.ownerId}
@@ -215,7 +234,7 @@ export function DefinitionGraph({
                     </span>
                     {group.loopNote ? (
                       <span
-                        className="absolute font-mono text-[10px] text-muted"
+                        className="absolute font-mono text-[11px] text-muted"
                         data-testid={`definition-graph-scope-note-${group.ownerId}`}
                         style={{ left: 8, bottom: 4 }}
                       >
@@ -339,7 +358,7 @@ function GraphNode({
         {/* <n> is the design's binding marker, and n is the real count. A node
             with no bindings shows nothing rather than an empty box. */}
         {node.bindings.length > 0 ? (
-          <span aria-hidden className="shrink-0 font-mono text-[10px] text-ink-2">
+          <span aria-hidden className="shrink-0 font-mono text-[11px] text-ink-2">
             {`<${node.bindings.length}>`}
           </span>
         ) : null}
@@ -347,8 +366,8 @@ function GraphNode({
       {/* Row 2: the kind in the few words a box can carry, then the state in
           glyph + word. The catalogue name — what the API and an expression use —
           travels in the `title`, the `aria-label` and the node list below. */}
-      <span className="flex min-w-0 items-center gap-[4px] font-mono text-[10.5px] text-muted">
-        <span aria-hidden className="shrink-0 text-[10px] text-ink-2">
+      <span className="flex min-w-0 items-center gap-[4px] font-mono text-[11px] text-muted">
+        <span aria-hidden className="shrink-0 text-[11px] text-ink-2">
           {kindGlyph(node.kind)}
         </span>
         <span

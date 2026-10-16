@@ -6,7 +6,12 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { DefinitionGraph } from "./DefinitionGraph";
+import {
+  DefinitionGraph,
+  MIN_LABEL_PX,
+  MIN_READABLE_SCALE,
+  SMALLEST_CANVAS_FONT_PX,
+} from "./DefinitionGraph";
 import {
   fanOutPipelineDocument,
   samplePipelineDocument,
@@ -129,22 +134,33 @@ describe("DefinitionGraph", () => {
     ).toContain("in build_until_verified");
   });
 
-  it("fits the whole graph to the pane by default, and zooms past it on request", () => {
+  it("fits the pane but never past the readable floor: a wide graph pans, it does not shrink", () => {
     // Unmeasured (jsdom reports no layout at all), the graph keeps its natural
     // scale rather than scaling to nothing.
     render(<DefinitionGraph document={samplePipelineDocument} />);
     expect(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")).toBe("1.000");
     cleanup();
-    // A pane narrower than the graph scales it down to fit; zooming goes past it.
+    // A pane much narrower than the graph. Scaling to fit would put a node's
+    // kind line under 9px — the live view landed at 68% — so the floor holds and
+    // the frame gains a horizontal scrollbar instead.
     Object.defineProperty(HTMLElement.prototype, "clientWidth", {
       configurable: true,
-      value: 640,
+      value: 320,
     });
     render(<DefinitionGraph document={samplePipelineDocument} />);
-    const fitted = Number(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale"));
-    expect(fitted).toBeGreaterThan(0.3);
-    expect(fitted).toBeLessThanOrEqual(1);
+    const canvas = screen.getByTestId("definition-graph-canvas");
+    const fitted = Number(canvas.getAttribute("data-scale"));
+    expect(fitted).toBeGreaterThanOrEqual(MIN_READABLE_SCALE);
+    // The invariant in the reader's units, not in scale numbers.
+    expect(SMALLEST_CANVAS_FONT_PX * fitted).toBeGreaterThanOrEqual(MIN_LABEL_PX);
+    // So the graph must overflow the frame, and the sized box says by how much.
+    const sized = canvas.parentElement as HTMLElement;
+    expect(Number(sized.style.width.replace("px", ""))).toBeGreaterThan(320);
+    expect(screen.getByTestId("definition-graph").className).toContain("overflow-auto");
     expect(screen.getByTestId("definition-graph-scale").textContent).toContain("%");
+    expect(screen.getByTestId("definition-graph-hint").textContent).toContain("drag to pan");
+    // Zoom still belongs to the reader: `+` goes up, `−` may go below the floor
+    // on an explicit click, and `fit` returns to it.
     fireEvent.click(screen.getByTestId("definition-graph-zoom-in"));
     expect(
       Number(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")),
@@ -153,6 +169,10 @@ describe("DefinitionGraph", () => {
     expect(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")).toBe(
       fitted.toFixed(3),
     );
+    fireEvent.click(screen.getByTestId("definition-graph-zoom-out"));
+    expect(
+      Number(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")),
+    ).toBeLessThan(fitted);
     delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
   });
 
