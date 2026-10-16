@@ -202,6 +202,13 @@ const (
 	// reason="sandbox_enforcement_failed".
 	TypeSandboxVerified          = "sandbox.verified"
 	TypeSandboxEnforcementFailed = "sandbox.enforcement_failed"
+	// TypeSandboxEgressObserved is ADR-0035's evidence row: the turn is over, the
+	// child is gone, and THIS run's own nono audit journal has been read. The
+	// `allowlisted:<hosts>` label a run earns can only live here, because
+	// sandbox.verified is written before the child exists — the journal is
+	// append-only and a run that reached nothing has nothing to have been
+	// refused against.
+	TypeSandboxEgressObserved = "sandbox.egress_observed"
 
 	// Secret lifecycle. Metadata only at every step — there is no field in any
 	// of these structs that could receive a value.
@@ -761,6 +768,59 @@ type SandboxEnforcementFailedPayload struct {
 	Verified       bool   `json:"verified"`
 	ChildStarted   bool   `json:"child_started"`
 	Detail         string `json:"detail,omitempty"`
+}
+
+// EgressAuditStatus values for sandbox.egress_observed. There are exactly two:
+// the audit was read, or it was not. "unavailable" is the bounded-failure row —
+// a timeout, a missing backend surface, or an unattributable session — and it
+// always travels with NetworkOpen/NetworkEnforced=false, because "I could not
+// look" is never evidence that an allowlist held (ADR-0035 § 3).
+const (
+	EgressAuditStatusObserved    = "observed"
+	EgressAuditStatusUnavailable = "unavailable"
+)
+
+// ValidEgressAuditStatus reports whether status is one of the two spellings.
+func ValidEgressAuditStatus(status string) bool {
+	switch status {
+	case EgressAuditStatusObserved, EgressAuditStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// SandboxEgressObservedPayload is sandbox.egress_observed: the run's own egress
+// audit, read once after its sandboxed child exited (ADR-0035 § 3). Allowed and
+// Denied are the counts of the audit journal's network_events; DeniedHosts
+// carries hostnames ONLY (never a URL, path or query string — the journal is
+// browser-visible and nono's audit target field can carry a glob-URL entry's
+// path). Network repeats the run's ADR-0035 label as the audit changed it:
+// "allowlisted:<hosts>" only when Status is observed and Denied > 0.
+//
+// It never fails a turn. A run whose audit could not be read is reported with
+// Status="unavailable", Detail naming why (redacted, bounded), and the same
+// open/false pair a run with no denials gets — the absence of evidence is not
+// evidence of enforcement.
+type SandboxEgressObservedPayload struct {
+	ProjectID   string `json:"project_id"`
+	TurnID      string `json:"turn_id,omitempty"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	WorkerID    string `json:"worker_id"`
+	Backend     string `json:"backend,omitempty"`
+	// PolicyDigest is the digest the run launched under, so a reader can tie the
+	// label to the host set the profile committed to.
+	PolicyDigest string `json:"policy_digest"`
+	// SandboxSession is nono's opaque audit session id this was read from — the
+	// row a lab operator quotes. Empty when Status is unavailable.
+	SandboxSession  string   `json:"sandbox_session,omitempty"`
+	Status          string   `json:"status"`
+	Network         string   `json:"network"`
+	NetworkEnforced bool     `json:"network_enforced"`
+	Allowed         int      `json:"allowed"`
+	Denied          int      `json:"denied"`
+	DeniedHosts     []string `json:"denied_hosts"`
+	Detail          string   `json:"detail,omitempty"`
 }
 
 // ---------------------------------------------------------- M3: secrets ----

@@ -146,6 +146,12 @@ type AgentTurn struct {
 	SandboxPath string
 	// Sandbox is the verify seam; nil only reaches non-required modes.
 	Sandbox AgentSandbox
+	// Egress optionally reads one finished launch's own egress audit, which is
+	// how an allowlisted agent turn earns ADR-0035's `allowlisted:<hosts>` label.
+	// Nil means consult the sandbox backend itself (a real `*nono.Launcher`
+	// answers), and a backend with no audit surface journals the run as
+	// "audit unavailable" rather than failing it.
+	Egress EgressAuditor
 	// Enforcement is this worker's mode; a unit can only ever run in the mode
 	// the worker was started with (no fallback branch exists, § 4 step 14).
 	Enforcement domain.EnforcementMode
@@ -473,7 +479,10 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		Auth:        auth,
 		Extra: []string{
 			"COMMUNICATION_RUN_ID=" + c.RunID,
-			"COMMUNICATION_ATTEMPT_ID=" + c.AttemptID,
+			// The name below is also the egress-audit marker (egressaudit.go):
+			// nono records the child's argv in its audit journal, so this one entry
+			// is what lets a finished run find ITS OWN session.
+			egressMarkerEnv + "=" + c.AttemptID,
 			"COMMUNICATION_WORKSPACE_ID=" + workspaceID,
 		},
 	})
@@ -515,7 +524,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
 	}
 
-	launch, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, required, workspaceID)
+	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, required, workspaceID)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -694,6 +703,12 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 				slog.String("attempt_id", c.AttemptID), slog.String("error", cerr.Error()))
 		}
 	}
+	// ADR-0035's evidence read. The child is gone now, so this run's own audit
+	// journal is complete and only now can an allowlisted profile earn
+	// `allowlisted:<hosts>`. It rides the same detached context as the
+	// disconnect row — a cancelled attempt still has to say what its sandbox
+	// did — under its own 2 s bound, and it can cost a label but never a turn.
+	a.journalEgressAudit(dctx, sink, c, workspaceID, chain)
 	dcancel()
 	return res, nil
 }
@@ -928,22 +943,22 @@ func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (Attemp
 // non-required modes run the adapter directly and LABEL themselves. The
 // agent-turn profile carries network_enforced=false and stays labelled that
 // way (M3's label, § 4 step 5).
-func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, required bool, workspaceID string) (acp.LaunchPlan, *AttemptResult) {
+func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
 	if !required {
 		return acp.LaunchPlan{
 			Path: launcher.Executable, Args: launcher.Args, Env: adapterEnv, Dir: plan.Cwd,
 			Unsandboxed: string(a.enforcement()),
-		}, nil
+		}, nil, nil
 	}
 	if a.Sandbox == nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail,
 			"enforcement is required but no sandbox backend is configured: refusing to launch an agent unsandboxed (ADR-0019 D6, no fallback exists)")
-		return acp.LaunchPlan{}, &r
+		return acp.LaunchPlan{}, nil, &r
 	}
 	prof, err := a.profile()
 	if err != nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail, "materialize the agent-turn profile: "+a.redact(err.Error()))
-		return acp.LaunchPlan{}, &r
+		return acp.LaunchPlan{}, nil, &r
 	}
 	spec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: a.LauncherHome,
@@ -957,7 +972,7 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 			// The stop signal arrived during the chain; reporting that as a
 			// sandbox refusal would be a lie nobody made (procexec's rule).
 			r := failedResult(ErrorClassInfra, "launch interrupted during sandbox verification")
-			return acp.LaunchPlan{}, &r
+			return acp.LaunchPlan{}, nil, &r
 		}
 		a.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, a.enforcementFailedPayload(c, workspaceID, res, verr))
 		msg := "sandbox refused the agent launch"
@@ -966,19 +981,19 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 			msg = "sandbox killed the launched agent"
 		}
 		r := failedResult(ErrorClassSandboxEnforcementFail, msg+": "+a.redact(verr.Error()))
-		return acp.LaunchPlan{}, &r
+		return acp.LaunchPlan{}, res, &r
 	}
 	argv, berr := spec.BuildLaunchArgv()
 	if berr != nil {
 		a.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, a.enforcementFailedPayload(c, workspaceID, res, berr))
 		r := failedResult(ErrorClassSandboxEnforcementFail, "agent launch argv: "+a.redact(berr.Error()))
-		return acp.LaunchPlan{}, &r
+		return acp.LaunchPlan{}, res, &r
 	}
 	a.journal(ctx, sink, c, events.TypeSandboxVerified, a.verifiedPayload(c, workspaceID, plan, res))
 	return acp.LaunchPlan{
 		Path: a.nonoBinary(), Args: argv, Env: a.nonoLauncherEnv(), Dir: plan.Cwd,
 		Verified: verification(res, plan),
-	}, nil
+	}, res, nil
 }
 
 func (a *AgentTurn) verifiedPayload(c AttemptClaim, workspaceID string, plan wsgit.LaunchPlan, res *nono.VerificationResult) events.SandboxVerifiedPayload {

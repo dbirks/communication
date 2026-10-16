@@ -727,6 +727,7 @@ func m3Types() []struct {
 		{TypeWorkspaceRecoveryLost, "workspace.recovery_lost", WorkspaceRecoveryLostPayload{}},
 		{TypeSandboxVerified, "sandbox.verified", SandboxVerifiedPayload{}},
 		{TypeSandboxEnforcementFailed, "sandbox.enforcement_failed", SandboxEnforcementFailedPayload{}},
+		{TypeSandboxEgressObserved, "sandbox.egress_observed", SandboxEgressObservedPayload{}},
 		{TypeSecretCreated, "secret.created", SecretCreatedPayload{}},
 		{TypeSecretVersionAdded, "secret.version.added", SecretVersionAddedPayload{}},
 		{TypeSecretPolicyUpdated, "secret.policy.updated", SecretPolicyUpdatedPayload{}},
