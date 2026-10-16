@@ -73,10 +73,11 @@ describe("/projects/:projectId", () => {
       "Settings",
     ]);
     expect(within(nav).getByText("Overview").getAttribute("aria-current")).toBe("true");
-    // No `/projects/:id/conversations` route exists, so the item points at the
-    // overview's own conversations section rather than a route the app lacks.
+    // The rail is all routes: Conversations has a page of its own now
+    // (`pages/ProjectConversations.tsx`), which is also the canonical form for
+    // every in-app link to the list.
     expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
-      `/projects/${projectId}#conversations`,
+      `/projects/${projectId}/conversations`,
     );
 
     // The page's former left menu (Repositories/Members/Workspaces/Activity as

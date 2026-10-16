@@ -8,10 +8,10 @@
  * navigation, so it lives in `components/` and every project page mounts it.
  *
  * Items are routes, not fragments, so the rail behaves the same wherever it is
- * mounted. The one exception is Conversations: there is no
- * `/projects/:id/conversations` route yet (only per-conversation screens), so
- * that item points at the overview's conversations section — a real anchor
- * rather than a route this app does not serve.
+ * mounted — Conversations included: `/projects/:id/conversations` is a page of
+ * its own (`pages/ProjectConversations.tsx`), which is the canonical form every
+ * in-app link to the list uses. The overview keeps its copy of the section
+ * under `#conversations`, so a bookmarked fragment still lands on a list.
  */
 import { useNavigate } from "react-router";
 import { SubNav } from "./ds/SubNav";
@@ -36,8 +36,6 @@ export function projectSectionHref(projectId: string, section: ProjectSection): 
   switch (section) {
     case "overview":
       return base;
-    case "conversations":
-      return `${base}#conversations`;
     default:
       return `${base}/${section}`;
   }

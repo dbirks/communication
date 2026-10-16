@@ -2,7 +2,7 @@
  * The project page's Conversations section (`10-ui-design-handoff.md` J2: a
  * member sees their conversations and who is driving each one).
  */
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   claudeProfile,
@@ -204,6 +204,125 @@ describe("/projects/:projectId conversations", () => {
 
       // The empty state is the same boundary as the row: one conversations read.
       await screen.findByTestId("conversation-list-empty", undefined, { timeout: READ_MS });
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "still renders the section for a bookmarked #conversations fragment",
+    async () => {
+      renderApp({ path: `/projects/${projectFixture.id}#conversations`, routes: routes() });
+
+      await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+        timeout: READ_MS,
+      });
+      // The overview answers the fragment; its rail points at the route.
+      const nav = screen.getByRole("navigation", { name: "Project sections" });
+      expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
+        `/projects/${projectFixture.id}/conversations`,
+      );
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+/**
+ * The QA walk (`convo-route`): a person, a breadcrumb or the assistant's route
+ * table reaches for the list URL, and until this page existed it rendered the
+ * app's "Not found" screen.
+ */
+describe("/projects/:projectId/conversations", () => {
+  it(
+    "renders the project's conversation list at the literal list URL",
+    async () => {
+      renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes(),
+      });
+
+      const row = await screen.findByTestId("conversation-row-refactor-billing", undefined, {
+        timeout: READ_MS,
+      });
+      expect(row.textContent).toContain("Refactor billing");
+      expect(row.getAttribute("href")).toBe(
+        `/projects/${projectFixture.id}/conversations/${conversationFixture.id}`,
+      );
+      // Not the app's "Not found" page any more, and the rail knows where it is.
+      expect(screen.queryByText("That page does not exist.")).toBeNull();
+      const nav = screen.getByRole("navigation", { name: "Project sections" });
+      expect(within(nav).getByText("Conversations").getAttribute("aria-current")).toBe("true");
+      // One canonical form: the rail's Conversations item is the route itself.
+      expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
+        `/projects/${projectFixture.id}/conversations`,
+      );
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "gives a caller who cannot open the project the same refusal as its siblings",
+    async () => {
+      const problem = (status: number) => ({
+        type: "about:blank",
+        title: status === 403 ? "Forbidden" : "Not Found",
+        status,
+        detail: status === 403 ? "Nope." : "No such project.",
+      });
+      renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes([{ path: projectPath, status: 404, body: problem(404) }]),
+      });
+
+      const refusal = await screen.findByTestId("project-conversations-not-found", undefined, {
+        timeout: READ_MS,
+      });
+      expect(refusal.textContent).toContain("Project not found or you do not have access");
+      // A shell around an unreadable project is the leak: no list, no form,
+      // and no "no conversations yet" confirming more than the API said.
+      expect(screen.queryByTestId("project-conversations")).toBeNull();
+      expect(screen.queryByTestId("conversation-list")).toBeNull();
+      expect(screen.queryByTestId("conversation-new-title")).toBeNull();
+      expect(screen.queryByText(/No conversations yet/)).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "refuses the screen when only the conversations read is refused",
+    async () => {
+      renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes([
+          { path: conversationsPath, method: "GET", status: 403, body: { status: 403 } },
+        ]),
+      });
+
+      expect(
+        await screen.findByTestId("project-conversations-not-found", undefined, {
+          timeout: READ_MS,
+        }),
+      ).toBeTruthy();
+      expect(screen.queryByTestId("conversation-list")).toBeNull();
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "keeps a failure that is not an access refusal a banner, not the refusal",
+    async () => {
+      const problem = { type: "about:blank", title: "Internal Server Error", status: 500 };
+      renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes([{ path: conversationsPath, method: "GET", status: 500, body: problem }]),
+      });
+
+      // The screen is the reader's own project, so it stays up and says what
+      // actually went wrong instead of claiming the project is unreachable.
+      await screen.findByTestId("project-conversations-title", undefined, { timeout: READ_MS });
+      expect(screen.queryByTestId("project-conversations-not-found")).toBeNull();
+      expect((await screen.findAllByRole("alert"))[0].textContent).toContain(
+        "Internal Server Error",
+      );
     },
     TEST_TIMEOUT,
   );
