@@ -7,7 +7,9 @@
  *
  * Editing, publishing and channel rollout stay out of scope: `canCreate={false}`
  * and no draft form, so the page reads the library rather than pretending to
- * operate it.
+ * operate it. The one write allowed here is `§ 7.2` W8's Validate panel — a
+ * textarea and a button that turn pasted YAML into the server's verdict, for
+ * org admins (the library role) only, and no editor.
  */
 import { useMemo, useState } from "react";
 import { useParams } from "react-router";
@@ -17,7 +19,9 @@ import { ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
 import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
+import { ValidatePanel } from "../components/m4/ValidatePanel";
 import { useProjectRuns } from "../api/runs";
+import { useMe } from "../api/queries";
 import {
   pipelineDraftsQueryOptions,
   pipelineQueryOptions,
@@ -35,6 +39,7 @@ export default function ProjectPipelines() {
   const pipelines = usePipelines();
   const assignments = useAssignments(projectId);
   const runs = useProjectRuns(projectId);
+  const me = useMe();
   const ids = useMemo(
     () => (pipelines.data?.pipelines ?? []).map((pipeline) => pipeline.id),
     [pipelines.data],
@@ -146,6 +151,16 @@ export default function ProjectPipelines() {
             />
           </>
         ) : null}
+        <ValidatePanel
+          pipelines={(pipelines.data?.pipelines ?? []).map((pipeline) => ({
+            id: pipeline.id,
+            slug: pipeline.slug,
+            displayName: pipeline.display_name,
+          }))}
+          canValidate={me.data?.is_org_admin === true}
+          initialText={revision.data?.document_text ?? ""}
+          headingId="project-pipeline-validate-heading"
+        />
       </div>
     </div>
   );
