@@ -12,6 +12,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
 import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
+import { PIPELINE_TEMPLATES } from "../lib/pipeline/templates";
 import { meFixture, mockFetch, requestsTo, type RouteStub } from "../test/fakes";
 import {
   WIRE_DRAFT_ID,
@@ -91,6 +92,24 @@ function mount(path: string, overrides: RouteStub[] = []) {
 
 afterEach(cleanup);
 
+/** The `name:` line inside the document's own `metadata:` block. */
+function metadataName(document: string): string | undefined {
+  const lines = document.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "metadata:");
+  if (start < 0) return undefined;
+  return lines
+    .slice(start + 1)
+    .find((line) => /^[ \t]+name:/.test(line))
+    ?.trim();
+}
+
+/** "Start from" is two chained mutations plus the page they land on, and the
+ * pipeline-list invalidation refetches the whole row fan in between; that is
+ * more than testing-library's 1 s default once the suite is 48 jsdom files
+ * deep (kept under vitest's 5 s per-test timeout). Only the waits that cross
+ * those writes are widened. */
+const settled = { timeout: 4000 };
+
 describe("/library", () => {
   it("lists the org pipelines and opens the one you click", async () => {
     mount("/library");
@@ -127,6 +146,114 @@ describe("/library", () => {
     fireEvent.click(screen.getByTestId("library-new-submit"));
     await waitFor(() => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1));
     expect(requestsTo(requests, "/api/v1/pipelines", "POST")[0].body).toContain("nightly-sweep");
+  });
+
+  it("starts from a template: the pipeline first, then a draft of the sample under the new slug", async () => {
+    const plan = PIPELINE_TEMPLATES.find((template) => template.id === "plan-with-approval");
+    // The draft the server would answer with, so the page we land on can open it.
+    const seededDraft: Draft = { ...wireDraft("draft"), document_yaml: plan?.documentYaml ?? "" };
+    const { requests } = mount("/library", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+      { path: draftsPath, method: "POST", status: 201, body: seededDraft },
+      { path: draftPath, body: seededDraft },
+    ]);
+    await screen.findByTestId("library-new-pipeline", undefined, settled);
+    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+      target: { value: "nightly-sweep" },
+    });
+    fireEvent.change(screen.getByTestId("library-new-template-select"), {
+      target: { value: "plan-with-approval" },
+    });
+    // The picker says what the template does before you commit to it.
+    expect(screen.getByTestId("library-new-template-hint").textContent).toContain(
+      "maintainer approval",
+    );
+    fireEvent.click(screen.getByTestId("library-new-submit"));
+
+    await waitFor(
+      () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
+      settled,
+    );
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1), settled);
+    // Definition first, document second — a draft has nowhere to live until the
+    // pipeline exists, and the server accepts exactly one of document/clone.
+    const pipelinePost = requests.findIndex(
+      (request) => request.method === "POST" && request.url === "/api/v1/pipelines",
+    );
+    const draftPost = requests.findIndex(
+      (request) => request.method === "POST" && request.url === draftsPath,
+    );
+    expect(pipelinePost).toBeLessThan(draftPost);
+
+    const body = JSON.parse(requests[draftPost].body ?? "{}") as { document_yaml?: string };
+    const document = body.document_yaml ?? "";
+    // The compiled sample itself, nodes and bindings intact…
+    expect(document).toContain("- id: survey");
+    expect(document).toContain("kind: model.chat");
+    expect(document).toContain("kind: human.approval");
+    expect(document).toContain("kind: artifact.publish");
+    // …with only `metadata.name` rewritten to the new pipeline's slug.
+    expect(metadataName(document)).toBe("name: nightly-sweep");
+    expect(document).not.toContain("name: plan-with-approval");
+
+    // And the library opens that draft, not an empty revision view.
+    expect(await screen.findByTestId("pipeline-page", undefined, settled)).toBeTruthy();
+    const box = (await screen.findByTestId(
+      "draft-editor-input",
+      undefined,
+      settled,
+    )) as HTMLTextAreaElement;
+    expect(box.value).toContain("kind: model.chat");
+  });
+
+  it("keeps a pipeline that exists when only the template draft fails, and retries the draft", async () => {
+    const { requests } = mount("/library", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+      {
+        path: draftsPath,
+        method: "POST",
+        status: 503,
+        body: { title: "Worker offline", status: 503, detail: "no replica could take the write" },
+      },
+    ]);
+    await screen.findByTestId("library-new-pipeline", undefined, settled);
+    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+      target: { value: "nightly-sweep" },
+    });
+    fireEvent.change(screen.getByTestId("library-new-template-select"), {
+      target: { value: "security-review" },
+    });
+    fireEvent.click(screen.getByTestId("library-new-submit"));
+    const banner = await screen.findByTestId("library-new-template-failure", undefined, settled);
+    // The pipeline was created, so the retry must not repeat that POST — the
+    // second click would be a 409 on a slug the server already accepted.
+    expect(banner.textContent).toContain("no replica could take the write");
+    expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1);
+    expect(screen.queryByTestId("pipeline-page")).toBeNull();
+    fireEvent.click(screen.getByTestId("library-new-template-retry"));
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(2), settled);
+    expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1);
+  });
+
+  it("leaves Blank exactly as it was: one POST, no draft, no navigation", async () => {
+    const { requests } = mount("/library", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
+    ]);
+    await screen.findByTestId("library-new-pipeline", undefined, settled);
+    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+      target: { value: "hand-written" },
+    });
+    fireEvent.click(screen.getByTestId("library-new-submit"));
+    await waitFor(
+      () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
+      settled,
+    );
+    expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
+    expect(await screen.findByTestId("library-page", undefined, settled)).toBeTruthy();
+    expect(screen.queryByTestId("pipeline-page")).toBeNull();
+    // The form is ready for the next slug.
+    expect((screen.getByTestId("library-new-slug-input") as HTMLInputElement).value).toBe("");
   });
 });
 

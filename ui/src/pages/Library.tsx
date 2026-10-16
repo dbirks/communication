@@ -17,12 +17,12 @@
  *   publishing to org admins alone.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
 import { Button } from "../components/ds/Button";
-import { Field, Input } from "../components/ds/Field";
+import { Field, Input, Select } from "../components/ds/Field";
 import { DRAFT_STATE, REVISION_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
@@ -52,6 +52,12 @@ import {
   viewRevisionSummary,
 } from "../api/m4view";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
+import {
+  PIPELINE_TEMPLATES,
+  templateById,
+  withMetadataName,
+  type TemplateId,
+} from "../lib/pipeline/templates";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
 
 /* ------------------------------------------------------------- /library */
@@ -112,20 +118,74 @@ export function LibraryPage() {
   );
 }
 
-/** `POST /pipelines` — the logical definition only (ADR-0002): a slug and a
+/**
+ * `POST /pipelines` — the logical definition only (ADR-0002): a slug and a
  * name create nothing that runs, because a pipeline has no revision until a
- * draft validates and publishes. */
+ * draft validates and publishes.
+ *
+ * "Start from" is the exception that proves the rule: a template never
+ * invents a revision either. It posts the **second** write the click path
+ * already required by hand (New pipeline → New draft → paste the sample) —
+ * `POST /pipelines/{id}/drafts` with one of the two `docs/samples/home/`
+ * documents, whose single `metadata.name` line is rewritten to the new slug so
+ * the document agrees with the definition just created. Blank is the old
+ * behavior exactly: one POST, no draft, no navigation. When a template's draft
+ * lands, the page opens at `/library/:id?draft=<id>` with that draft selected,
+ * so the author sees the YAML they can now Validate and Publish. A failed
+ * template post does not retry the pipeline (that would be a `409` on a slug
+ * the server already accepted) — it re-posts only the draft.
+ */
 function NewPipelineForm() {
+  const navigate = useNavigate();
   const create = useCreatePipeline();
   const [slug, setSlug] = useState("");
   const [name, setName] = useState("");
+  const [templateId, setTemplateId] = useState<TemplateId>("blank");
+  // The pipeline exists and its draft does not yet — set only after the
+  // definition POST resolves, and the input for the draft hook's pipeline id.
+  // `run` counts attempts: a failed post is retried only by the explicit
+  // button, never by a re-render (the mutation object is new every render, and
+  // an effect keyed on it would hammer the drafts endpoint forever).
+  const [seed, setSeed] = useState<{
+    pipelineId: string;
+    documentYaml: string;
+    run: number;
+  } | null>(null);
+  const [seedFailure, setSeedFailure] = useState<unknown>(null);
+  const template = templateById(templateId);
+  const createDraft = useCreateDraft(seed?.pipelineId ?? "");
+
+  /** The last attempt this render has already fired; see `run` above. */
+  const startedRun = useRef(0);
+  useEffect(() => {
+    if (!seed || startedRun.current === seed.run) return;
+    startedRun.current = seed.run;
+    createDraft
+      .mutateAsync({ document_yaml: seed.documentYaml })
+      .then((draft) => navigate(`/library/${seed.pipelineId}?draft=${draft.id}`))
+      .catch((error: unknown) => setSeedFailure(error));
+  }, [seed, createDraft, navigate]);
 
   async function submit() {
     if (slug.trim() === "") return;
+    const documentYaml = template?.documentYaml ?? null;
     try {
-      await create.mutateAsync({ slug: slug.trim(), display_name: name.trim() || undefined });
-      setSlug("");
-      setName("");
+      const pipeline = await create.mutateAsync({
+        slug: slug.trim(),
+        display_name: name.trim() || undefined,
+      });
+      if (!documentYaml) {
+        setSlug("");
+        setName("");
+        setTemplateId("blank");
+        return;
+      }
+      setSeedFailure(null);
+      setSeed({
+        pipelineId: pipeline.id,
+        documentYaml: withMetadataName(documentYaml, slug.trim()),
+        run: startedRun.current + 1,
+      });
     } catch {
       // the problem renders below; a duplicate slug is the server's `409`
     }
@@ -180,15 +240,54 @@ function NewPipelineForm() {
             data-testid="library-new-name-input"
           />
         </Field>
+        <Field
+          id="library-new-template"
+          label="start from"
+          hint={<span data-testid="library-new-template-hint">{template?.description}</span>}
+          className="min-w-[16rem] flex-1"
+        >
+          <Select
+            id="library-new-template"
+            value={templateId}
+            onChange={(event) => setTemplateId(event.target.value as TemplateId)}
+            className="font-ui"
+            data-testid="library-new-template-select"
+          >
+            {PIPELINE_TEMPLATES.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
         <Button
           type="submit"
           variant="primary"
-          disabled={create.isPending || slug.trim() === ""}
+          disabled={create.isPending || Boolean(seed) || slug.trim() === ""}
           data-testid="library-new-submit"
         >
-          {create.isPending ? "Creating…" : "Create pipeline"}
+          {create.isPending || seed ? "Creating…" : "Create pipeline"}
         </Button>
       </form>
+      {seedFailure ? (
+        <div className="flex flex-wrap items-center gap-[8px] px-[10px] pb-[10px]">
+          <ProblemBanner
+            error={seedFailure}
+            fallback="The pipeline was created, but its template draft was not."
+            testid="library-new-template-failure"
+          />
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setSeedFailure(null);
+              setSeed((current) => (current ? { ...current, run: current.run + 1 } : current));
+            }}
+            data-testid="library-new-template-retry"
+          >
+            Retry the template draft
+          </Button>
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -204,6 +303,11 @@ function NewPipelineForm() {
  */
 export function PipelinePage() {
   const { pipelineId = "" } = useParams();
+  // A template draft is opened by id: the library form creates the first draft
+  // after the definition POST and lands on `/library/:id?draft=<id>` with it
+  // selected. Read at mount only — the page owns selection from then on, and
+  // the link stays reloadable.
+  const [draftParams] = useSearchParams();
   const me = useMe();
   const actors = useActorNames();
   // Same bleed as `pages/RunInspector.tsx`: the shell's centred reading
@@ -241,7 +345,7 @@ export function PipelinePage() {
   const canAuthor = me.data?.is_org_admin === true;
 
   const [revisionKey, setRevisionKey] = useState<string | null>(null);
-  const [draftId, setDraftId] = useState<string | null>(null);
+  const [draftId, setDraftId] = useState<string | null>(draftParams.get("draft"));
   const [draftCreating, setDraftCreating] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
 

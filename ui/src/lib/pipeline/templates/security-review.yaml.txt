@@ -1,0 +1,145 @@
+# docs/samples/home/security-review.yaml — a first-pass secret/-dangerous-pattern
+# sweep over a real repository checkout, summarised by a chat model and published.
+#
+# Runs on the home-cluster worker with no agent.acp node and no ACP credentials:
+# the sweep is process.exec (sh, git, grep, find — the only tools worker/Dockerfile's
+# runtime image ships besides coreutils/node), the judgement pass is model.chat
+# against the operator's OpenAI-compatible endpoint.
+#
+# Scheduling is not here yet: nothing runs this on a timer. The scheduler's cron/timer
+# triggers arrive in M6 (communication-spec/11-build-roadmap.md); until then a run is
+# started by hand from project → Pipelines → Runs → New run.
+#
+# `repository` is the project repository BINDING name (07 § repositories are project
+# bindings), not a URL. The worker's checkout sits at repos/<name> in the run workspace;
+# cwd is a schema-literal path, so the name rides in as REPO and the script quotes it.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: security-review
+  description: >-
+    Grep a repository checkout for credential-shaped literals, secret-looking
+    assignments, dangerous exec patterns and committed key material, grade the
+    findings by severity with a chat model, and publish the report.
+spec:
+  inputs:
+    type: object
+    required: [repository]
+    properties:
+      repository:
+        type: string
+        minLength: 1
+        description: Project repository binding name, e.g. app.
+  outputs:
+    type: object
+    required: [report]
+    properties:
+      report: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  # 1. The sweep. Grep only reports; nothing here edits the checkout. The report is
+  #    written into the attempt's scratch/ directory (process.exec's default cwd) and
+  #    echoed to stdout, which the worker captures in full and hands back as
+  #    stdout_preview (the bounded 8 KiB head the next node reads, contract § 6).
+  - id: scan
+    kind: process.exec
+    timeoutSeconds: 600
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted]
+    config:
+      executable: sh
+      args:
+      - -c
+      - |
+        for d in "repos/$REPO" "../repos/$REPO"; do
+          test -d "$d" && { REPO_DIR="$d"; break; }
+        done
+        test -n "$REPO_DIR" || { echo "no checkout for $REPO in the run workspace" >&2; exit 1; }
+        section() { echo; echo "## $1"; shift; "$@" || echo "none"; }
+        {
+          echo "# security scan of $REPO_DIR"
+          echo "## recent commits"
+          git -C "$REPO_DIR" log --oneline -n 25 2>/dev/null || echo "(git history unreadable from inside the sandbox grant)"
+          section "credential-shaped literals" grep -rInE \
+            '(AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|AIza[0-9A-Za-z_-]{30,}|-----BEGIN [A-Z0-9 ]*PRIVATE[[:space:]]KEY-----)' \
+            --exclude-dir=.git "$REPO_DIR"
+          section "secret-looking assignments" grep -rInEi \
+            '(pass(word|wd)?|secret|token|api[_-]?key|access[_-]?key|auth)[^-A-Za-z0-9_]{0,2}[=:][[:space:]]*["'"'"']?[A-Za-z0-9/+=_.-]{12,}' \
+            --exclude-dir=.git "$REPO_DIR"
+          section "dangerous execution patterns" grep -rInE \
+            '(eval[[:space:]]|os[.]system|subprocess|child_process|exec[[:space:]]*\(|rm[[:space:]]+-[rRf]{1,2}[[:space:]]+/|curl[^|]*[|][[:space:]]*(ba)?sh|wget[^|]*[|][[:space:]]*(ba)?sh)' \
+            --exclude-dir=.git "$REPO_DIR"
+          section "sensitive files tracked or lying around" find "$REPO_DIR" \
+            -path "*/.git" -prune -o -type f \
+            \( -name '.env' -o -name '*.pem' -o -name '*.key' -o -name 'id_rsa' \
+               -o -name '*.p12' -o -name '*.keystore' -o -name 'credentials' \) -print
+        } | tee scan-report.txt
+      env:
+        REPO: ${{ inputs.repository }}
+      workspace:
+        mode: read_only
+        repositories: ['${{ inputs.repository }}']
+      outputExtraction: {mode: none}
+    outputs:
+      type: object
+      required: [exit_code, stdout_preview]
+      properties:
+        exit_code: {type: integer}
+        stdout_preview: {type: string}
+  # 2. Severity grading. The binding syntax is the probe document's
+  #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.test.outputs.result }}).
+  #    Message content is a binding position (ADR-0029) and resolves at claim time
+  #    (ADR-0027), so the scan output reaches the model interpolated, not verbatim.
+  - id: summarize
+    kind: model.chat
+    dependsOn: [scan]
+    timeoutSeconds: 600
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
+      retriableErrors: [infra, timeout, invalid_output]
+    config:
+      model: qwen3-8-flash-next
+      temperature: 0.1
+      maxTokens: 4000
+      messages:
+      - role: system
+        content: >-
+          You are a security reviewer. Summarize the findings by severity
+          (critical, high, medium, low), name the file and line of each, say why
+          it matters and what to do about it, and end with an overall verdict.
+          Findings with no matches are not reported. No preamble.
+      - role: user
+        content: |
+          Security scan findings for ${{ inputs.repository }}:
+          ${{ nodes.scan.outputs.stdout_preview }}
+    outputs:
+      type: object
+      required: [text]
+      properties:
+        text: {type: string, minLength: 1}
+        model: {type: string}
+  # 3. Publish the report. mode: output_json is the path the M4 probe proved; a
+  #    workspace_path publish of scan-report.txt is not used here because the
+  #    compiler requires an artifacts/-prefixed path and no probe has staged one.
+  - id: publish_report
+    kind: artifact.publish
+    dependsOn: [summarize]
+    config:
+      name: security-review.md
+      kind: markdown
+      mediaType: text/markdown
+      sensitivity: internal
+      from:
+        mode: output_json
+        value: ${{ nodes.summarize.outputs }}
+  resultBindings:
+    report: ${{ nodes.summarize.outputs.text }}
