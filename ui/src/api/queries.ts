@@ -10,7 +10,9 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
+import type { components } from "./schema";
 import type {
+  AgentProfile,
   AgentProfileList,
   Artifact,
   ArtifactList,
@@ -160,6 +162,49 @@ export function useAgentProfiles() {
     queryKey: queryKeys.agentProfiles,
     queryFn: () => apiFetch<AgentProfileList>("/api/v1/agent-profiles"),
     staleTime: 60_000,
+  });
+}
+
+/** `POST /api/v1/agent-profiles` body — two fields, no `permission_mode`, no
+ * `apm_*` (ADR-0030 §5: a new profile pins nothing). */
+export type AgentProfileCreate = components["schemas"]["AgentProfileCreate"];
+
+/** `PATCH /api/v1/agent-profiles/{profileId}` body — the APM triple, written
+ * whole: all three set or all three cleared (`apm_pin_incomplete` otherwise). */
+export type AgentProfileAPMPatch = components["schemas"]["AgentProfileAPMPatch"];
+
+/**
+ * Create a launch descriptor. Organization library role: a member without it
+ * is `403`, a taken name is `409` — both render inline, nothing here guesses
+ * `permission_mode` (ADR-0030 §5).
+ */
+export function useCreateAgentProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AgentProfileCreate) =>
+      apiFetch<AgentProfile>("/api/v1/agent-profiles", { method: "POST", json: body }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+    },
+  });
+}
+
+/**
+ * Set or clear one profile's APM pin. The body must carry the triple as a unit
+ * (`apm_pin_incomplete` is the server's refusal, never something filtered
+ * client-side — the digest is the server's to check).
+ */
+export function usePatchAgentProfile(profileId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AgentProfileAPMPatch) =>
+      apiFetch<AgentProfile>(`/api/v1/agent-profiles/${profileId}`, {
+        method: "PATCH",
+        json: body,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+    },
   });
 }
 

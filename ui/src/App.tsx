@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Route, Routes, useLocation } from "react-router";
 import Shell from "./components/Shell";
 import RequireAuth from "./components/RequireAuth";
+import AgentsPage from "./pages/Agents";
 import Login from "./pages/Login";
 import ArtifactPage from "./pages/Artifact";
 import Artifacts from "./pages/Artifacts";
@@ -72,6 +73,14 @@ export default function App() {
           element={
             <RequireAuth>
               <LibraryPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/agents"
+          element={
+            <RequireAuth>
+              <AgentsPage />
             </RequireAuth>
           }
         />

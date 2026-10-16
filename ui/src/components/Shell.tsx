@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { to: "/inbox", label: "Inbox" },
   { to: "/", label: "Projects", end: true },
   { to: "/library", label: "Library" },
+  { to: "/agents", label: "Agents" },
   { to: "/ops", label: "Operations" },
 ];
 
