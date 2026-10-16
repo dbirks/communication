@@ -18,6 +18,7 @@ import (
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/sandbox/nono"
+	"github.com/dbirks/communication/internal/secrets"
 	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
@@ -746,6 +747,16 @@ func (a *AgentTurn) materializeSecrets(ctx context.Context, c AttemptClaim, prof
 		ExtraExclusions: &extra,
 	})
 	if err != nil {
+		if errors.Is(err, secrets.ErrNotAuthorized) {
+			// A mount this attempt's node declared but its profile was never
+			// granted: not this attempt's to have, so nothing is delivered and
+			// nothing is recorded for it (contract § 4 step 4). The attempt is not
+			// the one that failed to be authorized, so it does not fail for it —
+			// the same skip process.exec already made.
+			a.logger().Debug("node_attempt mount is not authorized for this attempt: delivering nothing",
+				slog.String("attempt_id", c.AttemptID), slog.String("project_id", c.ProjectID))
+			return nil, nil
+		}
 		// The reason is already in the journal (secret.materialization_failed,
 		// written by the materializer in its own transaction); the attempt's
 		// detail says only that the mount was refused, with no path in it.

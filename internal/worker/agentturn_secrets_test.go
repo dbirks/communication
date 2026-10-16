@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/dbirks/communication/internal/domain"
+	"github.com/dbirks/communication/internal/secrets"
 )
 
 // Contract § 4 step 4 at attempt scope: an agent.acp attempt materializes the
@@ -195,4 +197,41 @@ func redactedEnv(env []string) []string {
 		out = append(out, name+"=<elided>")
 	}
 	return out
+}
+
+// TestAgentTurnNotAuthorizedMountIsSkippedNotFailed is contract § 4 step 4's
+// authorization answer seen from the worker: the materializer's ErrNotAuthorized
+// means "this profile was never granted that secret", which is a mount the
+// attempt does not have — not a delivery that failed. The attempt launches, with
+// no value, no ledger row to close, and no infra failure; the refusal that DOES
+// belong to the attempt (the test above) still fails it before launch.
+func TestAgentTurnNotAuthorizedMountIsSkippedNotFailed(t *testing.T) {
+	f := newAgentTurnFixture(t, domain.EnforceDisabled)
+	f.turn.Secrets = &agentSecretsStub{
+		err: fmt.Errorf("agentSecretsStub: profile is not on the mount's allowlist: %w",
+			secrets.ErrNotAuthorized),
+	}
+	f.spawn.queue(newAgentSessionStub(domain.SessionInfo{}))
+
+	res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("work")), f.sink)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("res = %+v, want succeeded: a mount this profile was never granted is skipped, not a failure", res)
+	}
+	if f.spawn.calls() != 1 {
+		t.Errorf("spawn calls = %d, want 1: the attempt must launch without the mount it was not granted",
+			f.spawn.calls())
+	}
+	if plan, ok := f.spawn.lastCtxPlan(); ok {
+		for _, kv := range plan.Env {
+			if strings.HasPrefix(kv, "DATABASE_URL=") {
+				t.Errorf("the unauthorized value reached the child environment: %v", redactedEnv(plan.Env))
+			}
+		}
+	}
+	if _, doneCalls := f.turn.Secrets.(*agentSecretsStub).snapshot(); doneCalls != 0 {
+		t.Errorf("cleanup ran for a unit that materialized nothing")
+	}
 }
