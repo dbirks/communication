@@ -93,7 +93,15 @@ agent run and the twin run** (fixed `idempotency` body members per
 ADR-0023 § 12, so a re-seed replays 200 with the stored run). Reseeds are
 idempotent end to end; an assignment pinned to a *different* revision is a
 loud stop — re-pinning is deliberate promotion (`PATCH /assignments/{id}`),
-never a side effect of seeding.
+never a side effect of seeding. Publishing a byte-identical document is the
+one reusable publish `409`: `revision_already_published` names the live row in
+`existing_revision_id`, the seed `GET /api/v1/revisions/{id}` for its digests
+(the same source the `201` body provides) and carries on — detected on that
+member, because the code only appears in the problem `type` URI
+(`…/errors/revision-already-published`). Every other `409` (stale version, not
+valid, already-published draft) stays fatal. The `validate` step prints
+`valid` / `digest_scope` / `errors` only: `ValidateResponse` carries no digests
+in this build, so printing them there would print empties.
 
 ### seed-manifest format (`m4-seed-manifest/1`)
 
@@ -207,7 +215,15 @@ the two readiness probes and replies `application/problem+json` to everything
 else — `python3 -m http.server`-shaped responder or
 `M4_URL=http://127.0.0.1:PORT M4_API_A=… M4_API_B=… bash seed.sh` — the first
 non-redirect prints the problem detail verbatim and stops cleanly, again with
-no manifest. seed.sh never writes the manifest until every step succeeded.
+no manifest. seed.sh never writes the manifest until every step succeeded, and
+the manifest itself is a step that can fail loudly: the writer runs into
+`$MANIFEST.$$` (which is passed the stack URL through `M4_SEED_STACK_URL`, not
+read from an unexported `M4_URL`), the file is only moved into place on a zero
+exit, and the installed file is re-parsed and checked for `schema` /
+`stack` / `project` / `pipelines` / `runs` and the two seeded run ids plus the
+three revision ids. Any of those failing prints `SEED FAIL manifest: …` and
+exits 1 — `SEED done` never appears over a manifest that does not parse or is
+missing the run ids.
 
 With a live stack, per-claim probes will be added here as `c<N>_*.sh` scripts
 using `lib.sh` (the m3 p1…p6 pattern); until then `run.sh`'s SKIP block is the

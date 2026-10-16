@@ -282,24 +282,35 @@ seed_pipeline() { # seed_pipeline <slug> <docfile> — library calls run as admi
         LAST_NOTE="validate says valid=false; the error list is the body below (codes + locations, docs/m4-contract.md § 2.2)"
         loud "$slug: draft did not validate"
     fi
-    vd=$(jget "$LAST_BODY_FILE" revision_digest)
-    say "pipeline $slug: validate OK revision_digest=$vd plan_digest=$(jget "$LAST_BODY_FILE" plan_digest)"
+    # ValidateResponse (§ 2.2) carries the verdict, digest_scope and the
+    # findings — the digests are NOT its fields (they ride the revision row),
+    # so printing them here would only ever print empties. They are captured
+    # from the publish/GET revision response below.
+    vd=$(jget "$LAST_BODY_FILE" revision_digest) || vd=""
+    say "pipeline $slug: validate OK valid=$(jget "$LAST_BODY_FILE" valid) digest_scope=$(jget "$LAST_BODY_FILE" digest_scope) errors=$(jget "$LAST_BODY_FILE" errors)"
 
     req admin POST "/api/v1/drafts/$draft/publish" "{\"version\":$version}"
     if ok 201; then
         REV_ID[$slug]=$(jget "$LAST_BODY_FILE" id)
         say "pipeline $slug: published revision ${REV_ID[$slug]}"
-    elif ok 409 && grep -q 'revision_already_published' "$LAST_BODY_FILE"; then
+    elif ok 409; then
+        # The ONE reusable publish 409 is revision_already_published: a byte-
+        # identical document is exactly what a re-seed wants, and the body
+        # names the live revision in existing_revision_id
+        # (DraftConflictProblem, api/openapi.yaml). Detection is on that
+        # member, not on a grepped code string: the code travels in the
+        # `type` URI with HYPHENS (.../errors/revision-already-published).
+        # stale_draft_version / draft_not_valid / draft_already_published
+        # carry no existing_revision_id and stay fatal.
         REV_ID[$slug]=$(jget "$LAST_BODY_FILE" existing_revision_id) || REV_ID[$slug]=""
         if [ -z "${REV_ID[$slug]}" ]; then
-            req admin GET "/api/v1/pipelines/${PIPE_ID[$slug]}/revisions" || loud "$slug revision lookup"
-            need "$slug: list revisions" 200
-            REV_ID[$slug]=$(jfind "$LAST_BODY_FILE" revisions revision_digest "$vd" id) \
-                || loud "$slug: revision_already_published but no resolvable revision"
+            LAST_NOTE="409 without existing_revision_id is not the digest collision — only revision_already_published is reusable; every other publish conflict is a real failure (body above)"
+            loud "$slug: publish draft (POST /drafts/\$id/publish)"
         fi
+        # Same digests as the 201 path, from the same place: the revision record.
         req admin GET "/api/v1/revisions/${REV_ID[$slug]}" || loud "$slug: GET existing revision"
         need "$slug: resolve existing revision" 200
-        say "pipeline $slug: digest collision — using existing revision ${REV_ID[$slug]}"
+        say "pipeline $slug: identical document already published — reusing revision ${REV_ID[$slug]}"
     else
         loud "$slug: publish draft (POST /drafts/\$id/publish)"
     fi
@@ -343,7 +354,10 @@ declare -A RUNS
 
 # ---- manifest ------------------------------------------------------------------
 write_manifest() {
-    mkdir -p "$(dirname "$MANIFEST")"
+    mkdir -p "$(dirname "$MANIFEST")" || { LAST_BODY_FILE=""; LAST_NOTE="mkdir -p $(dirname "$MANIFEST") failed"; loud "manifest: cannot create its directory"; }
+    local tmp="$MANIFEST.$$" rc=0
+    rm -f "$tmp"
+    M4_SEED_STACK_URL="$M4_URL" \
     M4_SEED_USERS_ALICE="${UID_OF[alice]}" M4_SEED_USERS_BOB="${UID_OF[bob]}" \
     M4_SEED_USERS_CAROL="${UID_OF[carol]}" M4_SEED_USERS_DAN="${UID_OF[dan]}" \
     M4_SEED_USERS_ADMIN="${UID_OF[admin]}" \
@@ -364,7 +378,7 @@ write_manifest() {
     M4_SEED_II_REVNUM="${REV_NUM[issue-implementation]}" M4_SEED_II_LABEL="${REV_LABEL[issue-implementation]}" \
     M4_SEED_II_RDIGEST="${REV_DIGEST[issue-implementation]}" M4_SEED_II_PDIGEST="${PLAN_DIGEST[issue-implementation]}" \
     M4_SEED_II_ASSIGN="${ASSIGN_ID[issue-implementation]}" \
-    python3 - "$MANIFEST.$$" <<'PYEOF'
+    python3 - "$tmp" <<'PYEOF'
 import datetime, json, os, sys
 e = os.environ
 def pipelines():
@@ -383,7 +397,7 @@ def pipelines():
 manifest = {
     "schema": "m4-seed-manifest/1",
     "seeded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-    "stack": {"compose_project": "communication-m4", "url": e["M4_URL"]},
+    "stack": {"compose_project": "communication-m4", "url": e["M4_SEED_STACK_URL"]},
     "users": {"alice": e["M4_SEED_USERS_ALICE"], "bob": e["M4_SEED_USERS_BOB"],
               "carol": e["M4_SEED_USERS_CAROL"], "dan": e["M4_SEED_USERS_DAN"],
               "admin": e["M4_SEED_USERS_ADMIN"]},
@@ -415,7 +429,45 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
     json.dump(manifest, f, indent=2, sort_keys=True)
     f.write("\n")
 PYEOF
-    mv "$MANIFEST.$$" "$MANIFEST"
+    rc=$?
+    if [ $rc -ne 0 ] || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"; LAST_BODY_FILE=""
+        LAST_NOTE="the manifest writer (inline python) exited rc=$rc and left no $tmp — see the traceback above; $MANIFEST was NOT updated"
+        loud "manifest: write failed"
+    fi
+    if ! mv -f "$tmp" "$MANIFEST"; then
+        rm -f "$tmp"; LAST_BODY_FILE=""
+        LAST_NOTE="mv $tmp -> $MANIFEST failed — the manifest on disk is stale or absent"
+        loud "manifest: install failed"
+    fi
+    # A manifest that does not parse, or lacks the ids the exit driver gates on,
+    # means the seed did not happen. Never report success over one.
+    if ! python3 - "$MANIFEST" "${RUNS[agent]}" "${RUNS[twin]}" \
+        "${REV_ID[feature-development]}" "${REV_ID[feature-development-deterministic]}" \
+        "${REV_ID[issue-implementation]}" <<'PYEOF'
+import json, sys
+path, want = sys.argv[1], sys.argv[2:]
+try:
+    m = json.load(open(path, encoding="utf-8"))
+except Exception as exc:
+    sys.stderr.write(f"manifest {path} does not parse as JSON: {exc}\n"); sys.exit(1)
+missing = [w for w in want if json.dumps(w) not in open(path, encoding="utf-8").read()]
+if missing:
+    sys.stderr.write(f"manifest {path} is missing ids: {missing}\n"); sys.exit(1)
+for key in ("schema", "stack", "project", "pipelines", "runs"):
+    if key not in m:
+        sys.stderr.write(f"manifest {path} lacks member '{key}'\n"); sys.exit(1)
+if m["schema"] != "m4-seed-manifest/1":
+    sys.stderr.write(f"manifest {path}: unexpected schema {m['schema']!r}\n"); sys.exit(1)
+if [r.get("run_id") for r in m.get("runs", [])] != want[:2]:
+    sys.stderr.write(f"manifest {path}: runs[] does not carry the two seeded run ids {want[:2]}\n"); sys.exit(1)
+sys.stderr.write(f"manifest OK: {path} ({len(open(path, encoding='utf-8').read())} bytes, {len(m['pipelines'])} pipelines, {len(m['runs'])} runs)\n")
+PYEOF
+    then
+        LAST_BODY_FILE=""
+        LAST_NOTE="the written manifest is not trustworthy — the exit driver must not gate on it"
+        loud "manifest: validation failed"
+    fi
     say "manifest: $MANIFEST"
     sed 's/^/  /' "$MANIFEST"
 }
