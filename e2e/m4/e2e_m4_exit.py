@@ -1044,6 +1044,249 @@ def c2():
     skip("C2", "secret sentinel lives only in the authorized attempt's live environment")
 
 
+# --- C3/C4 pure logic — unit-tested offline by e2e/m4/test_c3c4_logic.py -----
+# Claim-hand-out and fence verdicts computed over canned ledger rows, so the
+# live gates only have to feed them real Postgres/API output. Nothing here may
+# stand in for the live two-worker run (12-test-strategy.md).
+
+FENCE_REFUSAL_RE = re.compile(r"stale (owner|token)|fenc|lease lost", re.I)
+FENCE_LOG_SAMPLE = 6
+C4_FOLLOWING_TYPES = ("node.attempt.retry_scheduled", "run.failed")
+
+# 12 case 2's negative control, restated verbatim in the report (§ 7.1 C3d).
+C3_NEGATIVE_CONTROL = (
+    "SKIP LOCKED makes the CLAIM single-file, not the execution: two workers can still both "
+    "run one node (slow renewal, frozen clock, killed process). Exactly-once execution is the "
+    "fencing TOKEN's job, and C4 — a stale owner's write refused by the fence, provable "
+    "by token order — is that proof. No line in C3 claims exactly-once execution.")
+
+
+def psql_rows(text, ncols, sep="|"):
+    """Split `psql -tAqc` output into equal-length rows; ragged lines (psql can
+    print notes/errors on stdout between rows) are dropped, never verdicted."""
+    rows = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split(sep)]
+        if len(parts) == ncols and all(p != "" for p in parts):
+            rows.append(parts)
+    return rows
+
+
+def truthy(v):
+    """Postgres `-tA` renders boolean as t/f; accept the Python spellings too."""
+    return str(v).strip().lower() in ("t", "true", "1", "yes")
+
+
+def _int(v):
+    """psql text -> int; anything unreadable is 0 (a count that never passes)."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def count_or_none(v):
+    """A ledger count as int, or None when the text is not a number — garbage then
+    FAILS its verdict instead of reading as a clean zero (never PASS by parse)."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def c3_handout_verdicts(rows):
+    """§ 7.1 C3b over claim-hand-out groups. rows: [{key, held, workers}] where
+    `held` = rows in a claiming/claimed status, `workers` = count(distinct
+    worker_id). [(label, ok, detail)] — pure."""
+    out = []
+    for r in rows:
+        key = str(r.get("key", "?"))
+        held, workers = count_or_none(r.get("held")), count_or_none(r.get("workers"))
+        out.append((f"C3b {key}: leased<=1 (never two live claims of one attempt)",
+                    held is not None and held <= 1, f"held={held}"))
+        out.append((f"C3b {key}: never two distinct workers",
+                    workers is not None and workers <= 1,
+                    f"count(distinct worker_id)={workers}"))
+    return out
+
+
+def c3_claim_verdicts(att):
+    """§ 7.1 C3c over ONE claimed attempt {distinct_workers, fencing_token,
+    status, key}. A queued row is not a claim, so it can only GAP-fail here."""
+    dw = _int(att.get("distinct_workers"))
+    tok = _int(att.get("fencing_token"))
+    key = str(att.get("key", "?"))
+    return [
+        (f"C3c {key}: claimed exactly once — count(distinct worker_id)=1",
+         dw == 1, f"observed {dw} (status={att.get('status')!r})"),
+        (f"C3c {key}: fencing_token > 0 on the claimed row", tok > 0, f"observed {tok}"),
+    ]
+
+
+def c3_token_verdicts(max_token, seq_last):
+    """C3c's sequence arm: the store draws attempt_fencing_seq once per CLAIM
+    (00005's comment: 'drawn at claim time only, never per row'), so the highest
+    token in the ledger equals the number of draws."""
+    try:
+        mx, last = int(max_token), int(seq_last)
+    except (TypeError, ValueError):
+        return [("C3c max(fencing_token) = claims drawn", False,
+                 f"unreadable max={max_token!r} last_value={seq_last!r}")]
+    return [("C3c max(fencing_token) = claim count (attempt_fencing_seq last_value — "
+             "one draw per claim, ADR-0016 § 3)", mx == last and mx > 0,
+             f"max(fencing_token)={mx} last_value={last}")]
+
+
+def c4_live_attempt(text):
+    """Parse the C4a poll row: key|node_instance_key|worker_name|token|
+    attempt_number|turn_id-or-dash. None when nothing is live (pure)."""
+    rows = psql_rows(text, 6)
+    if not rows:
+        return None
+    k = ("id", "key", "worker", "token", "attempt_number", "turn")
+    return dict(zip(k, rows[0]))
+
+
+def c4_fence_log(text):
+    """C4c's log arm: (matched_line_count, sample) over the OWNER worker's own
+    log — a count>0 is an observed refusal, not a simulated one."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if FENCE_REFUSAL_RE.search(ln)]
+    return len(lines), lines[:FENCE_LOG_SAMPLE]
+
+
+def c4_dead_attempt_verdicts(a):
+    """C4c's 'a dead attempt publishes nothing' arm. keys: status,
+    outputs_null, artifacts_ready, checkpoints, completed_events. Pure.
+    NOTE: § 7.1 C4c also expects finished_at NULL, which 00005's
+    attempts_terminal_timestamped CHECK makes unrepresentable for any terminal
+    status — c4() records that conflict as a GAP instead of asserting a lie."""
+    st = str(a.get("status"))
+    arts, cps, done = (count_or_none(a.get("artifacts_ready")),
+                       count_or_none(a.get("checkpoints")),
+                       count_or_none(a.get("completed_events")))
+    return [
+        ("C4c the fenced attempt is interrupted", st == "interrupted", f"observed {st!r}"),
+        ("C4c the fenced attempt published NO outputs",
+         st == "interrupted" and truthy(a.get("outputs_null")),
+         f"status={st!r} outputs is null={a.get('outputs_null')!r}"),
+        ("C4c zero ready artifacts for the fenced attempt",
+         arts == 0, f"count={a.get('artifacts_ready')!r}"),
+        ("C4c zero run_checkpoints for the fenced attempt",
+         cps == 0, f"count={a.get('checkpoints')!r}"),
+        ("C4c zero node.attempt.completed events for the fenced attempt",
+         done == 0, f"count={a.get('completed_events')!r}"),
+    ]
+
+
+def c4_retry_verdicts(gt):
+    """C4c's proof-of-rejection: the replacement attempt drew a STRICTLY greater
+    token, which is what makes the refusal mechanical (01 invariant 3)."""
+    return [("C4c the replacement attempt's fencing_token is strictly greater "
+             "(01 invariant 3 observed)", truthy(gt), f"observed {gt!r}")]
+
+
+def c4_event_verdicts(rows, interrupted_type, need_follow=False):
+    """C4b/C4e over the fenced attempt's journal slice: rows are
+    {type, actor_kind, reason} in global_seq order. [(label, ok, detail)] — pure."""
+    types = [str(r.get("type")) for r in rows]
+    hits = [r for r in rows if str(r.get("type")) == interrupted_type]
+    tail = f"journal={types[-8:]}"
+    out = [
+        (f"{interrupted_type} present", bool(hits), tail),
+        (f"{interrupted_type} reason=lease_expired",
+         bool(hits) and all(str(r.get("reason")) == "lease_expired" for r in hits),
+         "reasons=" + ",".join(sorted({str(r.get("reason")) for r in hits}) or ["-"])),
+        (f"{interrupted_type} actor_kind=system",
+         bool(hits) and all(str(r.get("actor_kind")) == "system" for r in hits),
+         "actors=" + ",".join(sorted({str(r.get("actor_kind")) for r in hits}) or ["-"])),
+    ]
+    if need_follow:
+        last = max((i for i, t in enumerate(types) if t == interrupted_type), default=-1)
+        after = [t for i, t in enumerate(types) if i > last and t in C4_FOLLOWING_TYPES]
+        out.append(("node.attempt.retry_scheduled or run.failed follows the interruption",
+                    bool(after), f"following={after[-3:]}"))
+    return out
+
+
+def c4_transcript_verdicts(before_seq, after_seq, fence_ts_ok, has_turn=True):
+    """C4e: no transcript row appended after the fence. before/after are the
+    max(global_seq) of agent transcript events read either side of the wake-up;
+    fence_ts_ok is Postgres's own `max(occurred_at) <= unpause now()`."""
+    if not has_turn:
+        return []
+    quiet = str(before_seq) == str(after_seq)
+    return [
+        ("C4e no transcript row appended after unpause (max global_seq of "
+         "conversation.message.agent unchanged across the wake-up)", quiet,
+         f"before={before_seq!r} after={after_seq!r}"),
+        ("C4e every agent transcript row predates the unpause (§ 8 timing, "
+         "compared in Postgres's clock)", truthy(fence_ts_ok), f"observed {fence_ts_ok!r}"),
+    ]
+
+
+def c4_api_verdicts(ledger, api):
+    """'Postgres says interrupted and the API says interrupted': the ledger row
+    {status, error_class} against the GET /api/v1/attempts/{id} body."""
+    if not isinstance(api, dict):
+        return [("C4c GET /api/v1/attempts/{ATT} returns the attempt", False,
+                 "no JSON body — the API said nothing to compare")]
+    out = [
+        ("C4c API status matches the ledger (interrupted in both)",
+         api.get("status") == ledger.get("status"),
+         f"api={api.get('status')!r} ledger={ledger.get('status')!r}"),
+        ("C4c API error_class matches the ledger",
+         api.get("error_class") == ledger.get("error_class"),
+         f"api={api.get('error_class')!r} ledger={ledger.get('error_class')!r}"),
+        ("C4c the API body carries no lease machinery (no worker_id, fencing_token "
+         "or lease_expires_at — ADR-0016 § 8)",
+         not any(k in api for k in ("worker_id", "fencing_token", "lease_expires_at")),
+         str(sorted(k for k in api if k in ("worker_id", "fencing_token",
+                                            "lease_expires_at")))),
+    ]
+    return out
+
+
+def c3_run_ids(facts):
+    """Runs whose attempt rows C3 may read: C1's own runs when it produced any,
+    else the seed manifest's. (run_ids, source_label) — never invented ids."""
+    ids = [r for r in (CTX.get("c1") or {}).get("runs", []) if r]
+    if ids:
+        return ids, "C1's runs (this exit pass)"
+    ids = [f["run_id"] for f in (facts or {}).values() if isinstance(f, dict) and f.get("run_id")]
+    return ids, "the § 7.0 seed manifest runs"
+
+
+def c4_wait_live_attempt(run_id, timeout=300):
+    """Poll the ledger for the first attempt a worker actually holds — the row
+    whose lease C4 then freezes. Returns the parsed row or None."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if run_status(run_id) in ("completed", "failed", "cancelled", "interrupted"):
+            return None
+        try:
+            row = c4_live_attempt(psql(
+                f"SELECT a.id || '|' || ne.node_instance_key || '|' || w.name || '|' || "
+                f"a.fencing_token::text || '|' || a.attempt_number::text || '|' || "
+                f"coalesce(a.turn_id::text, '-') FROM attempts a "
+                f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+                f"JOIN workers w ON w.id = a.worker_id "
+                f"WHERE a.run_id = '{run_id}' AND a.status IN ('leased','running') "
+                f"ORDER BY a.started_at DESC NULLS LAST LIMIT 1"))
+        except RuntimeError as e:
+            show("C4a claim poll (psql)", str(e)[:300])
+            return None
+        if row:
+            return row
+        time.sleep(2)
+    return None
+
+
+def c4_worker_container(name):
+    """Compose SERVICE name = the worker row's name; the container is this
+    project's prefixed one. Unknown names return None (never a guessed id)."""
+    return {"worker-a": WORKER_A, "worker-b": WORKER_B}.get(name)
+
+
 def c3():
     """C3 — two workers claim one ready attempt; only one fencing token commits (12 case 2).
     Acceptance: with worker-a capacity 3 / worker-b capacity 1 and the C8 fan-out
@@ -1051,7 +1294,88 @@ def c3():
     one /implement attempt claimed exactly once (count(distinct worker_id)=1),
     fencing_token>0, max(fencing_token) = claim count; record the negative-control
     sentence: the claim is not exactly-once execution — the fence is (C4 proves it)."""
-    skip("C3", "contended claims hand out once; the sequence draws per claim")
+    if not CTX.get("stack_up"):
+        skip("C3", "contended claims hand out once; the sequence draws per claim")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is not None:
+        CTX["manifest"] = facts
+    run_ids, source = c3_run_ids(facts)
+    if not run_ids:
+        gap("C3", f"no attempts to read: the stack answered, but neither C1 produced a run "
+                  f"nor does a § 7.0 seed manifest exist at {MANIFEST_PATH}, so there is no "
+                  "run_id to group claim rows by (attempt rows ARE the evidence)")
+        return
+    show(f"C3 runs under inspection ({source})", " ".join(run_ids))
+    show("workers (the capacity split contention rests on)", psql(
+        "SELECT name || ' ' || status || ' cap=' || capacity::text || ' active=' || "
+        "active_attempts::text FROM workers ORDER BY name"))
+    check("C3a both lab workers online — two claimers must exist to contend",
+          int(psql("SELECT count(*) FROM workers WHERE status = 'online'") or 0) >= 2,
+          psql("SELECT string_agg(name || '=' || status, ' ') FROM workers ORDER BY name"))
+    fan = CTX.get("c8_run")
+    if fan:
+        show(f"C3a hand-out over the C8 fan-out run {fan}", psql(
+            f"SELECT a.worker_id || ' ' || a.status || ' ' || count(*)::text FROM attempts a "
+            f"WHERE a.run_id = '{fan}' GROUP BY 1,2 ORDER BY 3 DESC"))
+    else:
+        gap("C3a deep-queue hand-out (25 queued attempts at once)",
+            "§ 7.1 creates the contention on the C8 fan-out run, which this driver has not "
+            "implemented yet (C8 prints SKIP), so no 25-attempt queue exists to watch; every "
+            "assertion below is measured over the seed/C1 runs, where worker-a (cap 3) and "
+            "worker-b (cap 1) still both draw claims")
+    claims = []
+    for rid in run_ids:
+        show(f"C3b § 7.1's literal per-attempt_number query, run {rid}", psql(
+            f"SELECT attempt_number::text || ' ' || count(*) FILTER (WHERE status='leased')::text "
+            f"|| ' leased ' || coalesce(string_agg(DISTINCT worker_id::text, ','), "
+            f"'(never claimed)') || ' workers' FROM attempts WHERE run_id = '{rid}' "
+            f"GROUP BY attempt_number ORDER BY attempt_number"))
+        rows = psql_rows(psql(
+            f"SELECT ne.node_instance_key || '|' || a.attempt_number::text || '|' || "
+            f"count(*) FILTER (WHERE a.status IN ('leased','running'))::text || '|' || "
+            f"count(DISTINCT a.worker_id)::text FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE a.run_id = '{rid}' GROUP BY ne.node_instance_key, a.attempt_number "
+            f"ORDER BY ne.node_instance_key, a.attempt_number"), 4)
+        if not rows:
+            gap(f"C3b run {rid}: attempt rows exist",
+                f"0 attempt rows (run status={run_status(rid)!r}) — nothing was handed out, "
+                "so the hand-out rule is unmeasurable on this run")
+            continue
+        # Grouped by (node_execution_id, attempt_number), which is strictly stronger
+        # than § 7.1's group-by-attempt_number: attempt 1 exists once per node, so
+        # the contract's grouping would merge unrelated nodes into one row.
+        for label, ok, detail in c3_handout_verdicts(
+                [dict(zip(("key", "attempt_number", "held", "workers"), r)) for r in rows]):
+            check(label, ok, detail)
+        claims += psql_rows(psql(
+            f"SELECT ne.node_instance_key || '|' || a.id || '|' || "
+            f"count(DISTINCT a.worker_id)::text || '|' || a.fencing_token::text || '|' || a.status "
+            f"FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE a.run_id = '{rid}' AND a.worker_id IS NOT NULL "
+            f"AND ne.node_instance_key LIKE '/build_until_verified[%/implement' "
+            f"GROUP BY ne.node_instance_key, a.id, a.fencing_token, a.status, a.attempt_number "
+            f"ORDER BY a.attempt_number"), 5)
+    for r in claims:
+        for label, ok, detail in c3_claim_verdicts(dict(zip(
+                ("key", "id", "distinct_workers", "fencing_token", "status"), r))):
+            check(label, ok, detail)
+    if not claims:
+        gap("C3c one /implement attempt claimed exactly once",
+            "no /implement attempt row with a worker_id exists in any inspected run — the "
+            "runs above never reached a worker-held attempt, so there is no claimed row to "
+            "count workers over (see the C3b lines / run statuses)")
+    try:
+        for label, ok, detail in c3_token_verdicts(
+                psql("SELECT coalesce(max(fencing_token), 0)::text FROM attempts"),
+                psql("SELECT last_value::text FROM attempt_fencing_seq")):
+            check(label, ok, detail)
+    except RuntimeError as e:
+        show("C3c fencing token vs sequence", str(e)[:300])
+    show("C3d NEGATIVE CONTROL (12 case 2 / ADR-0016 § 3 — recorded verbatim, as "
+         "the contract requires)", C3_NEGATIVE_CONTROL)
+    EVIDENCE["C3d"] = C3_NEGATIVE_CONTROL
 
 
 def c4():
@@ -1061,7 +1385,183 @@ def c4():
     the dead attempt has no outputs/finished_at/artifact/checkpoint/completed event;
     the replacement attempt's fencing_token is strictly greater; attempt N+1 succeeds
     and the run completes; the fenced turn adds no transcript after unpause."""
-    skip("C4", "stale-owner writes are refused by the fence, provable by token order")
+    if not CTX.get("stack_up"):
+        skip("C4", "stale-owner writes are refused by the fence, provable by token order")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C4", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: without the twin "
+                  "revision id there is no run to freeze a lease on (C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    tw = facts.get("twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        gap("C4", "the seed manifest carries no twin variant (the deterministic pipeline "
+                  "whose ~40s process.exec gives the freezer a live lease to expire)")
+        return
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        check("C4: alice signed in", False, "no session — the gate cannot start a run")
+        return
+    CTX["alice"] = alice
+    run_id = post_c1_run(alice, tw, f"m4x-c4-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
+                         "c4")
+    if not run_id:
+        return
+    CTX["c4_run"] = run_id
+    live = c4_wait_live_attempt(run_id, 300)
+    if live is None:
+        dump_run_evidence(alice, run_id)
+        gap("C4a a live lease to freeze",
+            f"no attempt on run {run_id} was ever held by a worker within 300s (status="
+            f"{run_status(run_id)!r}) — with no lease there is no stale owner, so nothing "
+            "below is measurable (evidence dumped above)")
+        return
+    att, owner = live["id"], live["worker"]
+    svc = c4_worker_container(owner)
+    if svc is None:
+        gap("C4a pause the owning worker",
+            f"the claim belongs to worker row {owner!r}, which is not one of this project's "
+            "two lab workers — the driver freezes nothing it did not create (§ 7.0 host safety)")
+        return
+    if owner != "worker-a":
+        show("C4a note — which container gets frozen",
+             f"§ 7.1 names worker-a, but the live claim landed on {owner}; the gate is about "
+             f"the OWNER losing its lease, so {owner} is frozen and this report says so")
+    show("C4a the attempt about to be fenced", psql(
+        f"SELECT status || ' worker=' || coalesce((SELECT name FROM workers WHERE id = "
+        f"a.worker_id),'-') || ' token=' || a.fencing_token::text || ' attempt=' || "
+        f"a.attempt_number::text || ' node=' || ne.node_instance_key || ' turn=' || "
+        f"coalesce(a.turn_id::text,'(none, process.exec)') FROM attempts a "
+        f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'"))
+    rc, out = run(COMPOSE + ["pause", owner])
+    if rc != 0:
+        gap("C4a compose pause (freezer, not a kill)",
+            f"rc={rc}: {out[-240:]} — the lease cannot be expired without killing the child, "
+            "and a killed worker is C5's scenario, not C4's")
+        return
+    show(f"compose pause {owner} — leases stop renewing while the child keeps writing", out[-240:])
+    time.sleep(45)                                  # lease 30s + reconciler tick 15s
+    rc, out = run(COMPOSE + ["unpause", owner])
+    unpause_ts = psql("SELECT now()::text")          # Postgres's own clock, § 8's rule
+    check(f"C4a unpause {owner} after 45s of frozen renewals", rc == 0, out[-200:] or unpause_ts)
+    turn = live["turn"] != "-"
+    before = psql(f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events "
+                  f"WHERE attempt_id = '{att}' AND type = 'conversation.message.agent'") \
+        if turn else "0"
+
+    # The reconciler runs in the API, not the frozen worker: the interruption
+    # usually lands DURING the pause. Poll the ledger rather than assume it.
+    deadline = time.time() + 150
+    row = psql_rows(psql(
+        f"SELECT status || '|' || coalesce(error_class,'-') FROM attempts "
+        f"WHERE id = '{att}'"), 2)
+    while time.time() < deadline and not (row and row[0][0] == "interrupted"):
+        time.sleep(3)
+        row = psql_rows(psql(
+            f"SELECT status || '|' || coalesce(error_class,'-') FROM attempts "
+            f"WHERE id = '{att}'"), 2)
+    show(f"C4a the fenced attempt's row after the wake-up ({att})",
+         " | ".join(row[0]) if row else "(no row)")
+    ledger = dict(zip(("status", "error_class"), row[0])) if row else {}
+    show("C4b Postgres says", psql(
+        f"SELECT status || ' | ' || coalesce(error_class,'-') FROM attempts WHERE id = '{att}'"))
+
+    ev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(psql(
+        f"SELECT type || '|' || actor_kind || '|' || coalesce(payload->>'reason','-') "
+        f"FROM domain_events WHERE (attempt_id = '{att}' OR (type = 'run.failed' AND "
+        f"run_id = '{run_id}')) AND type IN ('node.attempt.interrupted', "
+        f"'node.attempt.retry_scheduled', 'node.attempt.completed', 'run.failed') "
+        f"ORDER BY global_seq"), 3)]
+    show(f"C4b the fenced attempt's journal slice ({att})",
+         "\n".join(f"{e['type']} reason={e['reason']} actor={e['actor_kind']}" for e in ev)
+         or "(no attempt-correlated rows)")
+    for label, ok, detail in c4_event_verdicts(ev, "node.attempt.interrupted", need_follow=True):
+        check(label, ok, detail)
+
+    arow = psql_rows(psql(
+        f"SELECT a.status || '|' || (a.outputs IS NULL)::text || '|' || "
+        f"(SELECT count(*) FROM artifacts t WHERE t.attempt_id = a.id AND t.state = 'ready')::text "
+        f"|| '|' || (SELECT count(*) FROM run_checkpoints c WHERE c.attempt_id = a.id)::text || "
+        f"'|' || (SELECT count(*) FROM domain_events de WHERE de.attempt_id = a.id AND "
+        f"de.type = 'node.attempt.completed')::text FROM attempts a WHERE a.id = '{att}'"), 5)
+    dead = dict(zip(("status", "outputs_null", "artifacts_ready", "checkpoints",
+                    "completed_events"), arow[0])) if arow else {}
+    for label, ok, detail in c4_dead_attempt_verdicts(dead):
+        check(label, ok, detail)
+    fa = psql(f"SELECT coalesce(finished_at::text, 'NULL') FROM attempts WHERE id = '{att}'")
+    if fa.strip().upper() == "NULL":
+        check("C4c finished_at IS NULL (§ 7.1 literal)", True, fa)
+    else:
+        gap("C4c finished_at IS NULL (§ 7.1's literal expectation)",
+            f"observed finished_at={fa!r}: 00005's attempts_terminal_timestamped CHECK makes a "
+            "terminal row WITHOUT finished_at unrepresentable, so the schema forbids the NULL "
+            "the contract line expects. The half that matters — the dead attempt published "
+            "nothing — is CHECKed above from outputs/artifacts/checkpoints/completed-events.")
+
+    rc, log = run(["docker", "logs", svc])
+    n_lines, sample = c4_fence_log(log)
+    show(f"C4c fence refusals in {owner}'s OWN log (docker logs | grep -ciE "
+         f"'{FENCE_REFUSAL_RE.pattern}')", "\n".join(sample) or "(no matching line)")
+    check("C4c the stale owner's refusal is OBSERVED in its own log (count > 0, "
+          "never simulated)", n_lines > 0, f"matched {n_lines} lines")
+    r = alice.get(LB, f"/api/v1/attempts/{att}")
+    show(f"GET /api/v1/attempts/{att} — what the API says", f"{r.status} {r.text[:400]}")
+    try:
+        body = r.json() if r.status == 200 else None
+    except ValueError:
+        body = None
+    for label, ok, detail in c4_api_verdicts({"status": "interrupted",
+                                             "error_class": "interrupted"}, body):
+        check(label, ok, detail)
+
+    gt = psql(
+        f"SELECT max(b.fencing_token) > (SELECT fencing_token FROM attempts WHERE id = '{att}') "
+        f"FROM attempts b WHERE b.node_execution_id = (SELECT node_execution_id FROM attempts "
+        f"WHERE id = '{att}') AND b.id <> '{att}'")
+    repl_n = psql(
+        f"SELECT count(*)::text FROM attempts WHERE node_execution_id = "
+        f"(SELECT node_execution_id FROM attempts WHERE id = '{att}') AND id <> '{att}'")
+    check("C4c a replacement attempt exists for the same node execution", _int(repl_n) >= 1,
+          f"replacement rows={_int(repl_n)}")
+    for label, ok, detail in c4_retry_verdicts(gt):
+        check(label, ok, detail)
+
+    status, _watch = watch_run(alice, tw, run_id, 900, "c4")
+    if status:
+        repl = psql(
+            f"SELECT attempt_number::text || ' ' || status FROM attempts WHERE "
+            f"node_execution_id = (SELECT node_execution_id FROM attempts WHERE id = '{att}') "
+            f"AND attempt_number > {live['attempt_number']} ORDER BY attempt_number LIMIT 1")
+        check("C4d the retry (attempt N+1) succeeded and the run completed — ownership "
+              "moved, no process died", repl.split()[-1:] == ["succeeded"], f"{repl!r}")
+    else:
+        gap("C4d attempt N+1 succeeds and the run completes",
+            f"the frozen run never reached a terminal status (see the dump above)")
+
+    if not turn:
+        gap("C4e the fenced turn adds no transcript after unpause",
+            f"the fenced attempt is {live['key']} with attempts.turn_id NULL — a "
+            "process.exec node owns no ACP turn, so conversation.turn.interrupted and the "
+            "transcript-timing arm are unmeasurable on it (they need an agent.acp attempt: "
+            "C6/C7's territory)")
+    else:
+        tev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(psql(
+            f"SELECT type || '|' || actor_kind || '|' || coalesce(payload->>'reason','-') "
+            f"FROM domain_events WHERE attempt_id = '{att}' AND "
+            f"type = 'conversation.turn.interrupted' ORDER BY global_seq"), 3)]
+        for label, ok, detail in c4_event_verdicts(tev, "conversation.turn.interrupted"):
+            check(label, ok, detail)
+        after = psql(f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events "
+                     f"WHERE attempt_id = '{att}' AND type = 'conversation.message.agent'")
+        ts_ok = psql(
+            f"SELECT coalesce(max(occurred_at) <= '{unpause_ts}'::timestamptz, true) "
+            f"FROM domain_events WHERE attempt_id = '{att}' "
+            f"AND type = 'conversation.message.agent'")
+        for label, ok, detail in c4_transcript_verdicts(before, after, ts_ok, has_turn=True):
+            check(label, ok, detail)
+    CTX["c4"] = {"run_id": run_id, "attempt_id": att, "owner": owner,
+                 "fencing_token": live["token"], "unpause_ts": unpause_ts}
 
 
 def c5():
