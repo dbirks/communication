@@ -112,6 +112,25 @@ describe("a workspace_lost attempt (W6)", () => {
     );
   });
 
+  it("leads with the contract's sentence and keeps the engine's raw detail secondary", () => {
+    // live17/W6.out read a page that opened on `workspace.recovery_lost/volume_changed:
+    // …` — a machine sentence. § 7.2 W6 (M3 W8's rule) names the WORDS the operator is
+    // owed, so the canned copy leads and the raw detail stays as secondary evidence.
+    const { container } = show();
+    const copy = screen.getByTestId("attempt-workspace-lost-note");
+    const raw = screen.getByTestId("attempt-detail-text");
+    expect(copy.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(raw.textContent).toContain(workspaceLostAttempt.detail ?? "");
+    expect(raw.className).toContain("text-faint");
+    expect(container.textContent).toContain("prior edits lost, rerun required");
+  });
+
+  it("demotes the detail only where canned copy leads", () => {
+    render(<AttemptDetail attempt={{ ...workspaceLostAttempt, error_class: "agent_error" }} />);
+    expect(screen.queryByTestId("attempt-workspace-lost-note")).toBeNull();
+    expect(screen.getByTestId("attempt-detail-text").className).not.toContain("text-faint");
+  });
+
   it("has no retry countdown and no inheritance claim", () => {
     const { container } = show();
     expect(screen.queryByTestId("attempt-retry-countdown")).toBeNull();

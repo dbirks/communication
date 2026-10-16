@@ -495,12 +495,22 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
   }
   const targets = nodes.filter((n) => RETRIABLE_NODE_STATUSES.includes(n.status));
   if (targets.length > 0) {
+    const lost = targets.filter((n) => n.error_class === "workspace_lost");
     return {
       show: true,
       available: true,
-      reason: `Re-runs ${targets.length} ${targets.length === 1 ? "node" : "nodes"}: ${targets
-        .map((n) => n.node_instance_key)
-        .join(", ")}`,
+      reason:
+        `Re-runs ${targets.length} ${targets.length === 1 ? "node" : "nodes"}: ${targets
+          .map((n) => n.node_instance_key)
+          .join(", ")}` +
+        // § 7.2 W6: the ENGINE never retries a lost workspace (ADR-0023 § 7), so this
+        // control is only ever the operator's own rerun — and it says what that can and
+        // cannot bring back, rather than implying the edits come along with it.
+        (lost.length
+          ? " — manual rerun (route 31): no automatic retry is offered for a lost " +
+            "workspace (ADR-0023 § 7), so prior edits lost, rerun required from this " +
+            "node's inputs."
+          : ""),
     };
   }
   const gate = nodes.find((n) => n.kind === "human.approval" && n.outcome === "rejected");

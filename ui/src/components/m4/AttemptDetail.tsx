@@ -81,6 +81,12 @@ export function AttemptDetail({
     (event) => event.type === "node.attempt.retry_scheduled" && event.attempt_id === attempt.id,
   );
   const continuity = continuityCopy(attempt);
+  // § 7.2 W6 (and W5) grade the WORDS the operator reads: the canned sentences below.
+  // The engine's own `detail` (`workspace.recovery_lost/volume_changed: …`) is a
+  // machine sentence, so once a canned one is drawn it drops to a secondary line
+  // rather than leading the pane with prose no contract asked for.
+  const hasOperatorCopy =
+    attempt.status === "interrupted" || attempt.error_class === "workspace_lost";
 
   return (
     <Panel
@@ -107,12 +113,6 @@ export function AttemptDetail({
           </div>
         ) : null}
 
-        {attempt.detail ? (
-          <p className="text-[12.5px] leading-[18px]" data-testid="attempt-detail-text">
-            {attempt.detail}
-          </p>
-        ) : null}
-
         {attempt.status === "interrupted" ? (
           // W5's assertion is about these words: the outcome is unknown, and
           // nothing here may imply the work carried on by itself.
@@ -137,6 +137,24 @@ export function AttemptDetail({
             prior edits lost, rerun required. No automatic retry is offered: there is no workspace
             to continue in, and pretending otherwise would hide work that has to be done twice.
           </Alert>
+        ) : null}
+
+        {attempt.detail ? (
+          <p
+            className={
+              hasOperatorCopy
+                ? "font-mono text-[11px] leading-[16px] text-faint"
+                : "text-[12.5px] leading-[18px]"
+            }
+            data-testid="attempt-detail-text"
+          >
+            {hasOperatorCopy ? (
+              <span className="mr-[6px] font-semibold uppercase tracking-[.04em]">
+                engine detail
+              </span>
+            ) : null}
+            {attempt.detail}
+          </p>
         ) : null}
 
         <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">

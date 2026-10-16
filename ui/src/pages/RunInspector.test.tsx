@@ -1008,5 +1008,20 @@ describe("the run page's Retry control", () => {
       available: false,
     });
     expect(retryVerdict("running", summaries(wireVerifyFailedNodes)).show).toBe(false);
+    // An ordinary failure's reason stays the plain route-31 re-run sentence.
+    expect(retryVerdict("failed", summaries(wireVerifyFailedNodes)).reason).not.toContain(
+      "manual rerun",
+    );
+    // § 7.2 W6: the node that LOST its workspace keeps the manual rerun (route 31
+    // carries no workspace_lost exclusion) and says what it cannot bring back.
+    const lost = wireVerifyFailedNodes.map((n) =>
+      n.status === "failed" ? { ...n, error_class: "workspace_lost" as const } : n,
+    );
+    const verdict = retryVerdict("failed", summaries(lost));
+    expect(verdict).toMatchObject({ show: true, available: true });
+    expect(verdict.reason).toContain("manual rerun");
+    expect(verdict.reason).toContain("no automatic retry is offered");
+    expect(verdict.reason).toContain("prior edits lost, rerun required");
+    expect(verdict.reason.toLowerCase()).not.toMatch(/resumed|restored|no data lost/);
   });
 });
