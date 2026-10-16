@@ -9085,6 +9085,11 @@ _NODE_LINE = re.compile(r'^\s*-\s*(?P<role>[A-Za-z][\w.-]*)\s*(?P<tail>.*)$')
 _QUOTED = re.compile(r'"(?P<name>[^"]*)"')
 _REF = re.compile(r'ref=(?P<attr>[A-Za-z0-9]*e\d+)\b|(?P<bare>\bf?\d*e\d+)\b')
 _SNAP_FILE = re.compile(r'([\w./+@-]+\.(?:yml|yaml))')
+# The CLI's own spill notice: the path counts only when the line says it IS the
+# snapshot, and only when the file reads like one.
+_SNAP_SPILL = re.compile(r"(?i)\b(?:snapshot|saved|written|dumped|full)\b[^\n]*?"
+                        r"([\w./+@-]+\.(?:yml|yaml))\b")
+_SNAP_SHAPE = re.compile(r"###\s*(?:Page|Snapshot)|\bref=|- generic\b")
 
 
 def pw(*args, session="m4exit", timeout=180):
@@ -9149,19 +9154,25 @@ def pw_text(node):
 def pw_snapshot(session="m4exit", timeout=180):
     """snapshot -> (rc, text). When the CLI spills the full tree to a file (it
     prints the path), that file is the source of truth — inline output is
-    truncated and a truncated tree silently loses assertions."""
+    truncated and a truncated tree silently loses assertions.
+
+    The path is only trusted on a line the CLI itself frames as the snapshot
+    ("saved/written/dumped/full … .yml") AND when the file reads like a tree: W8
+    pastes a YAML that names its own source file (`# docs/…/pipeline.yaml — …`) into
+    a textarea, the snapshot echoes that text, and a bare `.yaml` match happily
+    returned the seed pipeline document as the page — which then had no textarea in
+    it and failed the leg for the wrong reason."""
     rc, out = pw("snapshot", session=session, timeout=timeout)
-    m = _SNAP_FILE.search(out or "")
-    if m:
-        path = m.group(1)
+    for hit in _SNAP_SPILL.finditer(out or ""):
+        path = hit.group(1)
         full = path if os.path.isabs(path) else os.path.join(REPO_DIR, path)
         try:
             with open(full, encoding="utf-8") as f:
                 body = f.read()
-            if body.strip():
-                return rc, body
         except OSError:
-            pass
+            continue
+        if body.strip() and _SNAP_SHAPE.search(body):
+            return rc, body
     return rc, out
 
 
@@ -9449,6 +9460,336 @@ def w_approval_verdicts(approver, decided, nodes, roles="", deadline=True, artif
     return v
 
 
+# ---- W4: "the run page still shows the pinned digests it started with" -------
+# § 7.2 row W4 in full: "while the run is live, publish a new revision through the
+# API in another tab, then reload the run page" → "the run page still shows the
+# PINNED digests it started with, and a 'revision N+1 published since this run
+# started — this run is pinned to N' notice (12 case 11 made visible rather than
+# invisible)".
+
+
+def w4_short(digest):
+    """The 12 hex chars the inspector prints for a digest — mirrors
+    ui/src/pages/ProjectRuns.tsx shortDigest() so the DOM comparison is against
+    what the page can actually render, not against the full sha256."""
+    d = str(digest or "")
+    return d[7:19] if d.startswith("sha256:") else d[:12]
+
+
+def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_number,
+                       before_text, after_text):
+    """Row W4's first half, verbatim: "the run page still shows the PINNED digests
+    it started with". Measured as: the pinned short digest is in the DOM after the
+    reload, the reload did NOT swap it for the newly published revision's, and the
+    revision NUMBER the page names is still N. before_text is the page as it looked
+    before the publish (the baseline the row's 'still' compares against)."""
+    want, got = w4_short(pinned_digest), w4_short(newest_digest)
+    out = []
+    for name, text in (("before", before_text), ("after", after_text)):
+        body = text or ""
+        out.append((f'W4 the run page shows the pinned digest it started with ({name} publish)',
+                    bool(want) and want in body,
+                    f'pinned {want!r} (r{pinned_number}) rendered={bool(want) and want in body} '
+                    f'in the {name}-publish snapshot'))
+    body = after_text or ""
+    out.append(('W4 the reload did not move the run onto the new revision',
+                bool(got) and got not in body,
+                f'newly published r{newest_number} digest {got!r} appears in the reloaded '
+                f'run page={bool(got) and got in body} — row W4: the page shows the PINNED '
+                f'digests, not the library newest'))
+    if pinned_number is not None and newest_number is not None:
+        moved = f"pinned r{newest_number}" in body or f"pinned r{newest_number} " in body
+        out.append((f'W4 the page still names the run pin as r{pinned_number}',
+                    f"pinned r{pinned_number}" in body and not moved,
+                    f'"pinned r{pinned_number}" rendered={f"pinned r{pinned_number}" in body}; '
+                    f'"pinned r{newest_number}" rendered={moved}'))
+    else:
+        out.append(("W4 the page still names the run pin as r<N>", None,
+                    "the gate could not read the pinned/newest revision numbers, so which "
+                    "revision the page names is unmeasured"))
+    return out
+
+
+def w4_notice_verdict(after_text, pinned_number, newest_number):
+    """Row W4's second half: a 'revision N+1 published since this run started —
+    this run is pinned to N' notice ('12 case 11 made visible rather than
+    invisible'). The copy is asserted on its two halves — it says the newer
+    revision exists, and it says the run stays on N. No such banner exists in
+    ui/src (RunInspector renders the pin only), so the honest answer is a FAIL
+    naming the missing UI, never a silent skip."""
+    label = (f'W4 the notice "revision {newest_number} published since this run started '
+             f'— this run is pinned to {pinned_number}" renders')
+    body = " ".join((after_text or "").split()).lower()
+    if not body:
+        return (label, None, "the reloaded run page produced no snapshot text — the notice "
+                            "is unmeasured rather than absent")
+    says_newer = ("since this run started" in body or "published since" in body
+                  or "newer revision" in body
+                  or (newest_number is not None and f"revision {newest_number}" in body))
+    says_pinned = pinned_number is not None and (
+        f"pinned to {pinned_number}" in body or f"run is pinned to {pinned_number}" in body)
+    if says_newer and says_pinned:
+        return (label, True, "both halves of the row's copy observed on the reloaded page")
+    return (label, False,
+            f'says a newer revision exists={says_newer}, says the run is pinned to '
+            f'r{pinned_number}={says_pinned}: the UI named by § 7.2 row W4 does not exist — '
+            f'ui/src/pages/RunInspector.tsx renders the pinned digest only ("pinned r<N> · '
+            f'<digest>"), there is no newer-revision banner anywhere in ui/src to read '
+            f'(grep "since this run started" ui/src: no match)')
+
+
+# ---- W8: "each error renders with instance_location ... source ... hint" ----
+# § 7.2 row W8: an authored YAML with the seven deferred kinds + the config typos,
+# pasted into the YAML viewer's "Validate" panel → "each error renders with
+# `instance_location` on the document, `source` (loader/schema/compiler) and the
+# `hint`; `kind_not_implemented` names the milestone (M5/M6); a secret-literal
+# finding renders redacted".
+
+
+def w8_dom_text(nodes, raw=""):
+    """Everything the browser can show, as text: the snapshot's own lines plus each
+    node's name+text. Finding rows are buttons whose accessible name is their inner
+    copy, so a string present in either place counts as rendered."""
+    parts = [raw or ""] + [pw_text(n) for n in nodes or []]
+    return "\n".join(p for p in parts if p)
+
+
+def w8_error_expectations(vresp):
+    """The § 2.2 errors the SERVER reported for the pasted document — the panel's
+    answer key. Each row is (code, source, instance_location, hint); [] when the
+    validate body is unreadable, which the caller turns into a GAP."""
+    if not c13_validate_ok(vresp):
+        return []
+    out = []
+    for e in vresp.get("errors") or []:
+        if not isinstance(e, dict):
+            continue
+        out.append((str(e.get("code") or ""), str(e.get("source") or ""),
+                    str(e.get("instance_location") or ""),
+                    str(e.get("hint") or "")))
+    return out
+
+
+def w8_render_verdicts(expected, dom_text):
+    """One verdict per server error: the code, its instance_location and its source
+    must all appear in the panel; its hint too when the server sent one. A row the
+    panel dropped entirely is a FAIL — the contract's 'each error renders' leaves no
+    arm for a finding the operator never sees."""
+    body = dom_text or ""
+    out = []
+    for code, source, loc, hint in expected:
+        label = f"W8 error {code or '(no code)'} at {loc or '(no location)'} renders"
+        if not code and not loc:
+            out.append((label, None, "the server sent an error with neither code nor location"))
+            continue
+        has_code = code in body
+        has_loc = bool(loc) and loc in body
+        has_src = bool(source) and source.lower() in body.lower()
+        has_hint = (not hint) or " ".join(hint.split()) in " ".join(body.split())
+        missing = [n for n, ok in (("instance_location", has_loc), ("source", has_src),
+                                   ("hint", has_hint)) if not ok]
+        if not has_code:
+            out.append((label, False, f'"{code}" appears nowhere in the panel — the finding '
+                                      f"was not rendered at all (server said "
+                                      f"{source}/{code}@{loc})"))
+        elif missing:
+            out.append((label, False, f"code rendered but {', '.join(missing)} missing — the "
+                                      f"row must carry {loc!r}, {source!r}"
+                                      + (f", {hint[:60]!r}" if hint else "")))
+        else:
+            out.append((label, True, f"{source}/{code} @ {loc}"
+                                      + (" + hint" if hint else " (no hint served)")))
+    return out
+
+
+def w8_milestone_verdicts(expected, dom_text):
+    """Row W8: 'kind_not_implemented names the milestone (M5/M6)'. Compared against
+    the server's own messages — the panel reads the milestone off the response
+    (ui/src/components/m4/ValidatePanel.tsx milestoneOf), so a message that names no
+    milestone is the engine's miss and a row that drops it is the UI's."""
+    body = dom_text or ""
+    kinds = [(code, loc) for code, _s, loc, _h in expected if code == "kind_not_implemented"]
+    if not kinds:
+        return [("W8 kind_not_implemented names the milestone (M5/M6)", None,
+                 "the pasted document produced no kind_not_implemented error — there is "
+                 "nothing to name a milestone")]
+    out = []
+    for _code, loc in kinds:
+        window = " ".join(body.split())
+        at = loc in window
+        named = bool(re.search(r"lands in M\d", window)) or bool(re.search(r"\bM\d\b", window))
+        out.append((f"W8 the {loc or '(unlocated)'} deferred kind names its milestone",
+                    at and named,
+                    f"row rendered at {loc!r}={at}, a milestone (M5/M6) shown in the "
+                    f"panel={named}"))
+    return out
+
+
+def w8_redaction_verdict(expected, nodes, dom_text, secret):
+    """Row W8: 'a secret-literal finding renders redacted' — scoped to the FINDING
+    row, because that is the claim. The panel also renders the text the operator
+    pasted (a YamlView of it), and that copy legitimately carries the literal the
+    operator typed; what must never appear is the value INSIDE the finding, where
+    only the server's redacted words and the panel's own 'value never shown' marker
+    belong (ADR-0021 Security invariant 5)."""
+    label = "W8 the secret-literal finding renders redacted"
+    if not any(code == "secret_literal_detected" for code, _s, _l, _h in expected):
+        return [(label, None, "the server reported no secret_literal_detected error for the "
+                             "pasted document — there is no finding to redact")]
+    rows = [n for n in nodes or [] if "secret_literal_detected" in pw_text(n)]
+    body = " ".join((dom_text or "").split()).lower()
+    marker = "value never shown" in body
+    if not rows:
+        return [(label, False, "no finding row for secret_literal_detected rendered in the "
+                               "panel — the server refused the literal and the panel "
+                               "dropped the row")]
+    leaked = [pw_text(n)[:140] for n in rows if secret and secret in pw_text(n)]
+    if leaked:
+        return [(label, False, f"the finding row echoes the literal value: {leaked[0]!r}")]
+    return [(label, marker, f"{len(rows)} finding row(s) scanned — the literal {secret!r} "
+                            f"appears in none of them; the panel's redaction copy "
+                            f"('value never shown') rendered={marker}. The pasted YAML the "
+                            f"panel echoes still holds the literal the operator typed — "
+                            f"that is the operator's own text, not the finding")]
+
+
+# ---- W9: "404/not-found states ... SSE never opens, console clean" -----------
+# § 7.2 row W9: "as carol (project B only), deep-link the M4 run id,
+# /runs/{id}/nodes, /approvals/{id} and the run SSE URL" → "404/not-found states,
+# no project name, no node names, no digest values, SSE never opens, console
+# clean — 12 case 15's rule extended to the new surface".
+
+
+def w9_state_verdicts(observations):
+    """One verdict per deep link. observations: [{surface, path, status, found}]
+    where `status` is the control plane's own answer for the underlying resource
+    (None = not read) and `found` is whether the RENDERED page says not-found.
+    None for found is the honest GAP (the page never rendered at all)."""
+    out = []
+    for o in observations or []:
+        surface = str(o.get("surface") or "deep link")
+        label = f"W9 {surface} renders a 404/not-found state"
+        found, status = o.get("found"), o.get("status")
+        detail = f'{o.get("path")} control-plane status={status} not-found copy rendered={found}'
+        if found is None:
+            out.append((label, None, f'{o.get("path")}: no snapshot came back — the state '
+                                     "the row asserts is unmeasured"))
+            continue
+        ok = bool(found) and (status is None or status == 404)
+        if found and status is not None and status != 404:
+            detail += " — the page said not-found but the API answered otherwise"
+        out.append((label, ok, detail))
+    return out
+
+
+def w9_leak_verdicts(dom_text, forbidden):
+    """'no project name, no node names, no digest values'. `forbidden` is
+    [(category, [needles])] gathered from the API as a MEMBER (so the needles are
+    the real names, not invented ones); each category PASSes only when NONE of its
+    needles appears in any outsider-visible DOM. An empty category is a GAP — with
+    nothing to look for the assertion is vacuous."""
+    body = " ".join((dom_text or "").split()).lower()
+    out = []
+    for category, needles in forbidden or []:
+        want = sorted({str(n).strip().lower() for n in needles or [] if str(n).strip()})
+        label = f"W9 no {category} in the DOM of an outsider's session"
+        if not want:
+            out.append((label, None, "the gate collected no values for this category — "
+                                     "there was nothing to search for"))
+            continue
+        hits = [n for n in want if n in body]
+        out.append((label, not hits,
+                    f"searched {len(want)} value(s)"
+                    + ("; leaked: " + ", ".join(h for h in hits)[:180] if hits else "")))
+    return out
+
+
+def w9_sse_verdict(requests_text, run_id, rendered_text):
+    """'SSE never opens'. Measured on the browser's own request log: the events
+    request must be there (the outsider really asked) and its response must not be
+    a 200 event-stream; the rendered page must carry no stream frames either. An
+    absent request line is a GAP — the log is the only witness of what the client
+    actually opened."""
+    label = "W9 the run SSE URL never opens (no event-stream for an outsider)"
+    needle = f"/api/v1/runs/{run_id}/events"
+    lines = [ln for ln in (requests_text or "").splitlines() if needle in ln]
+    if not lines:
+        return (label, None, f"no request for {needle} in the browser's request log — "
+                             "whether the stream opened is unmeasured")
+    last = lines[-1]
+    status = None
+    for hit in re.finditer(r"\b(\d{3})\b", last):
+        status = int(hit.group(1))
+    body = rendered_text or ""
+    framed = '"type":"run.' in body.replace(" ", "") or "data: {" in body
+    if status is None:
+        return (label, None, f"{last[:160]!r} carries no readable status code")
+    opened = status == 200 or "text/event-stream" in last.lower()
+    return (label, not opened and not framed,
+            f"last response for {needle} -> {status}, event frames in the rendered "
+            f"body={framed} ({last[:120]!r})")
+
+
+def w9_console_verdict(text, rc=0, benign=()):
+    """'console clean'. Read off the CLI's own listing: the error-level lines, with
+    `benign` patterns — the browser's own "Failed to load resource … 404" noise from
+    a deep link this leg asked for on purpose — excluded and NAMED in the detail.
+    Unintelligible output is a GAP; an unreadable console log has never proven
+    anything clean."""
+    label = "W9 console clean (no error-level messages)"
+    body = (text or "").strip()
+    if rc != 0 or not body:
+        return (label, None, f"console read rc={rc}: {body[:180]!r}")
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    levelled = [ln for ln in lines if re.search(r"(?i)\[error\]|\berrors?\s*[:=]\s*\d", ln)]
+    if not levelled:
+        quiet = [ln for ln in lines if re.search(r"(?i)\[(warning|info|log|debug)\]", ln)]
+        if quiet or re.search(r"(?i)total messages", body):
+            return (label, True, f"no error-level line in {len(lines)} console line(s) "
+                                 f"({len(quiet)} at other levels)")
+        return (label, None, "neither an error tally nor levelled messages in the CLI "
+                             f"output — unreadable: {body[:180]!r}")
+    errors = [ln for ln in levelled if re.search(r"(?i)\[error\]", ln)]
+    tally = re.search(r"(?i)\berrors?\s*[:=]\s*(\d+)", body)
+    excused = [ln for ln in errors if any(b.lower() in ln.lower() for b in benign or ())]
+    real = [ln for ln in errors if ln not in excused]
+    detail = (f"{len(errors)} error-level line(s), {len(excused)} excused as the browser's "
+              f"own report of a deep link this leg requested on purpose"
+              + (f" ({excused[0][:120]!r})" if excused else "")
+              + (f"; {len(real)} remain: {real[0][:160]!r}" if real else "; none remain")
+              + (f" [CLI tally: {tally.group(0)!r}]" if tally else ""))
+    return (label, not real, detail)
+
+
+def w9_not_found(dom_text):
+    """The row's "404/not-found states" read as copy the outsider can see: the
+    inspector's own "is not visible to you, or does not exist" (ui/src/pages/
+    RunInspector.tsx), the app's Not-found page, or the problem document the API
+    answers an unauthorised deep link with ("No such run.")."""
+    body = " ".join((dom_text or "").split()).lower()
+    if not body:
+        return None
+    return any(k in body for k in ("not found", "does not exist", "not visible", "no such",
+                                   "404"))
+
+
+def w9_outsider_verdict(role, is_org_admin):
+    """Row W9's observer is 'carol (project B only)'. The § 7.0 seed adds carol as a
+    MAINTAINER of the one project it creates (seed.sh `put_member carol maintainer`)
+    and never creates a project B, so the row's outsider does not exist in the lab.
+    `role` is carol's membership row ('' = none). This is always the GAP naming the
+    seed gap — the leg then measures the leakage arms on a provisioned no-membership
+    identity and labels them as such."""
+    label = "W9 the row's observer — carol, a member of project B only"
+    return (label, None,
+            f"the seed gap: memberships says carol holds {role or 'no row'!r} on the M4 "
+            "project (docs/compatibility/probes/m4/seed.sh runs `put_member carol "
+            "maintainer` against the only project the seed creates) and no project B "
+            "exists, so no seeded identity is 'project B only'. The substitute observer "
+            f"used for the arms below is a fresh IdP login (org admin={is_org_admin}, no "
+            "membership) — named in every label, never called carol")
+
+
 def w1():
     """W1 — the New-run form renders from spec.inputs (goal textarea, repository
     select, acceptance-criteria with default); the POST carries the Idempotency-Key
@@ -9730,10 +10071,133 @@ def w3():
 
 
 def w4():
-    """W4 — publish a new revision while the run is live; the run page keeps
-    the PINNED digests and shows the 'revision N+1 published since this run
-    started — pinned to N' notice (12 case 11 made visible)."""
-    _playwright_stub("W4", "pinned-digest notice after a mid-run republish")
+    """W4 — row § 7.2: "while the run is live, publish a new revision through the API
+    in another tab, then reload the run page" → "the run page still shows the PINNED
+    digests it started with, and a 'revision N+1 published since this run started —
+    this run is pinned to N' notice (12 case 11 made visible rather than invisible)".
+
+    The publish is C12c's proven path (export the pinned revision's bytes, change one
+    prompt word, draft → validate → publish as the library role); the run page is
+    snapshotted on either side of it and reloaded."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W4 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no project, "
+                           "no pinned revision and no run to reload")
+        return
+    project_id = mf(facts, "project_id")
+    pid_pipe = mf(facts, "pipeline_id", "agent")
+    rev_pin = mf(facts, "revision_id", "agent")
+    pinned_digest = mf(facts, "revision_digest", "agent")
+    pinned_number = mf(facts, "revision_number", "agent", default=1)
+    admin, alice = CTX.get("admin") or Client("admin"), Client("alice")
+    if login(admin) is None:
+        gap("W4 all arms", "admin could not sign in — the library role is the only identity "
+                           "that can publish the newer revision the row asks for")
+        return
+    CTX["admin"] = admin
+    if login(alice) is None:
+        gap("W4 all arms", "alice could not sign in over the API — no run to reload")
+        return
+    body = {"pipeline_revision_id": rev_pin,
+            "inputs": mf(facts, "inputs", "agent", default={}),
+            "idempotency": f"m4-exit-w4-{int(time.time())}"}
+    r = alice.post(LB, f"/api/v1/projects/{project_id}/runs", body)
+    run_id = r.json().get("run_id") if r.text[:1] == "{" else None
+    if not check("W4 a run is started so the page can be live under a new revision",
+                 r.status in (200, 201) and bool(run_id), f"{r.status} {r.text[:160]}"):
+        gap("W4 browser arms", "no run exists — there is nothing to reload")
+        return
+    CTX["w4_run_id"] = run_id
+    live = ""
+    for _ in range(12):
+        live = run_status(run_id)
+        if live in ("queued", "running", "waiting", "pending"):
+            break
+        time.sleep(5)
+    show(f"W4 run {run_id} status before the publish", f"{live} (pinned {pinned_digest})")
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}", session="m4w4"):
+        gap("W4 browser arms", "the mock IdP did not sign alice in, so the run page was "
+                               "never rendered on either side of the publish")
+        return
+    try:
+        pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w4")
+        landed, nodes = pw_poll(lambda ns: "pinned" in w8_dom_text(ns).lower(),
+                               session="m4w4", tries=10, delay=2)
+        rc, raw_before = pw_snapshot(session="m4w4")
+        before = w8_dom_text(nodes, raw_before)
+        shot_before = pw_shot("w4-before-republish", session="m4w4")
+        check("W4 the run page renders its pin before the new revision exists", landed,
+              f"run {run_id} status={live} 'pinned' copy seen={landed} [{shot_before}]")
+        # "publish a new revision through the API" — C12c's proven path: the pinned
+        # bytes with one prompt word changed, published by the library role while the
+        # page stays open. The word carries this run's id, because revisions are
+        # content-addressed (ADR-0021 § 5): re-pUBLISHING the same bytes is the 409
+        # C12d asserts on, which here would leave no "revision N+1" to test against.
+        newer_digest, newer_number = "", None
+        doc = c7_twin_doc(admin, rev_pin)
+        repl = C12_PROMPT_REPL.replace("${{ inputs.goal }}",
+                                       f"${{{{ inputs.goal }}}} ({run_id})")
+        one = c12_splice(doc, "m4x-w4-newer", C12_PROMPT_NEEDLE, repl,
+                         "one prompt word") if doc else {"doc": None,
+                                                         "missing": ["no export"]}
+        if not one.get("doc"):
+            gap("W4 the newer revision", "no newer revision could be authored: "
+                                        + "; ".join(one.get("missing") or []))
+        else:
+            pub = c12_publish_variant(admin, pid_pipe, "W4 mid-run revision", one["doc"])
+            newer_digest = str(((pub or {}).get("publish_body") or {}).get("revision_digest") or "")
+            show(f"W4 publish (other tab) -> {(pub or {}).get('publish_status')}",
+                 str((pub or {}).get("raw"))[:220])
+            rows = [row for row in (c12_revision_ids(alice, pid_pipe) or [])
+                    if isinstance(row, dict)]
+            pinned_now = next((row for row in rows
+                               if str(row.get("revision_digest") or "") == str(pinned_digest)),
+                              None)
+            if pinned_now is not None:
+                pinned_number = pinned_now.get("revision_number", pinned_number)
+            if not newer_digest and isinstance((pub or {}).get("publish_body") or {}, dict):
+                # a 409 names the existing revision: resolve ITS digest, then judge
+                # whether that revision is actually newer than this run's pin
+                existing = str((pub or {}).get("publish_body") or {})
+                show("W4 the publish collapsed onto an existing revision", existing[:200])
+            newest = max(rows, key=lambda row: row.get("revision_number") or 0, default=None)
+            if newest is not None:
+                newer_number = newest.get("revision_number")
+                newer_digest = str(newest.get("revision_digest") or newer_digest)
+            if not check("W4 a newer revision is published while the run is live",
+                         pub is not None and pub.get("publish_status") in (200, 201)
+                         and bool(newer_digest) and newer_digest != str(pinned_digest)
+                         and isinstance(newer_number, int)
+                         and isinstance(pinned_number, int) and newer_number > pinned_number,
+                         f"publish={pub.get('publish_status') if pub else None} newer "
+                         f"r{newer_number} digest={newer_digest!r} against the run's pinned "
+                         f"r{pinned_number} {pinned_digest!r}; run status now "
+                         f"{run_status(run_id)}"):
+                gap("W4 reload arms", "with no newer revision in the library there is no "
+                                      "'revision N+1' for the page to be tested against")
+                return
+        # "then reload the run page" — the same tab, reloaded, exactly as the row words it
+        pw("reload", session="m4w4")
+        time.sleep(3)
+        again, nodes_after = pw_poll(lambda ns: "pinned" in w8_dom_text(ns).lower(),
+                                    session="m4w4", tries=10, delay=2)
+        rc2, raw_after = pw_snapshot(session="m4w4")
+        after = w8_dom_text(nodes_after, raw_after)
+        shot_after = pw_shot("w4-after-republish", session="m4w4")
+        check("W4 the run page reloads and re-renders its pin", again,
+              f"run {run_id} status={run_status(run_id)} [{shot_after}]")
+        for label, ok, detail in w4_pinned_verdicts(pinned_digest, pinned_number,
+                                                   newer_digest, newer_number, before, after):
+            check(label, ok, f"{detail} [{shot_after}]")
+        label, ok, detail = w4_notice_verdict(after, pinned_number, newer_number)
+        check(label, ok, f"{detail} [{shot_after}]")
+    finally:
+        try:
+            alice.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+        except Exception:  # noqa: BLE001 — housekeeping only, never a verdict
+            pass
+        pw("close", session="m4w4")
+
 
 
 def w5():
@@ -9872,19 +10336,350 @@ def w7():
     pw("close", session="m4w7")
 
 
+# § 7.2 row W8's pasted documents. The seven deferred kinds are C13a's probe
+# (C13_SEVENTH, in the fixed order its verdicts read); the config typos are C13b's
+# probe nodes — which live inside c13()'s body as locals — copied verbatim so the
+# panel is shown the whole set, exactly as the words it: "an authored YAML with the
+# seven deferred kinds + the config typos". § 2.2's loader reports FIRST and nothing
+# behind it runs, so the loader-level typo and the escaped binding are their own
+# pastes rather than documents that swallow the schema rows. Locations are never
+# asserted from here: the server's own § 2.2 body is the answer key
+# (w8_error_expectations), so a shifted index cannot make a verdict drift.
+W8_TYPO_DOC = (
+    """  - id: t1
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 'hello'
+      typo: 1
+  - id: t2
+    kind: for_each
+    config:
+      items: '""" + BIND_OPEN + """inputs.goal""" + BIND_CLOSE + """'
+      maxConcurrency: '""" + BIND_OPEN + """inputs.goal""" + BIND_CLOSE + """'
+      body:
+        nodes: [{id: t2b, kind: process.exec, config: {executable: python3}}]
+  - id: t4
+    kind: until
+    config:
+      maxIterations: 2
+      passWhen: 'inputs.goal == "x"'
+      carryForward: yes
+      body:
+        nodes: [{id: t4b, kind: process.exec, config: {executable: python3}}]
+  - id: t6
+    kind: process.exec
+    timeoutSeconds: 60
+    config:
+      executable: git
+      cwd: '""" + BIND_OPEN + """workspace.repo.root""" + BIND_CLOSE + """'
+""")
+
+# The escaped binding — the one probe whose code (escape_not_supported) is about the
+# delimiters themselves, so it must not be read off a document gated by another.
+W8_ESC_DOC = """  - id: t5
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 'literal $""" + BIND_OPEN + """inputs.goal""" + BIND_CLOSE + """ stays text'
+"""
+
+W8_LOADER_DOC = """  - id: t7
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      prompt: 2026-10-14
+"""
+
+W8_SECRET_DOC = f"""  - id: s1
+    kind: process.exec
+    timeoutSeconds: 60
+    config:
+      executable: python3
+      env:
+        DATABASE_URL: "{C13_SECRET_LITERAL}"
+"""
+
+
+def w8_documents():
+    """(shot-slug, label, document_yaml) for the pastes — '' for any the base header
+    could not produce, which the caller turns into a GAP rather than a paste of
+    nothing."""
+    return (("deferred", "seven deferred kinds", c13_doc("m4x-w8-deferred", C13_SEVENTH)),
+            ("typos", "config typos", c13_doc("m4x-w8-typos", W8_TYPO_DOC)),
+            ("escape", "escaped binding", c13_doc("m4x-w8-esc", W8_ESC_DOC)),
+            ("loader", "loader typo (unquoted date)", c13_doc("m4x-w8-loader", W8_LOADER_DOC)),
+            ("literal", "secret literal", c13_doc("m4x-w8-literal", W8_SECRET_DOC)))
+
+
+def w8_pick_pipeline(session="m4w8"):
+    """Choose the panel's pipeline explicitly. ValidatePanel seeds
+    `useState(pipelines[0]?.id ?? "")` while the library list is still loading, so
+    `selectedOption` stays null and its own Button stays `disabled` — observed in the
+    lab as `TimeoutError … <button disabled … data-testid="validate-panel-submit">`
+    (label: "the panel's Validate button is enabled once the YAML is pasted").
+    Returns the option label picked ('' = nothing picked)."""
+    rc, snap = pw_snapshot(session=session)
+    combo = [n["ref"] for n in pw_snapshot_nodes(snap)
+             if n["role"] == "combobox" and (n["name"] or "").strip().lower() == "pipeline"
+             and n["ref"]]
+    if not combo:
+        return ""
+    rc2, opts = pw("snapshot", combo[0], session=session)
+    lines = [ln for ln in (opts or "").splitlines() if "option" in ln]
+    want = next((ln for ln in lines if FD_SLUG in ln), "") or (lines[0] if lines else "")
+    label = _QUOTED.search(want)
+    if not label:
+        return ""
+    picked = label.group("name")
+    return picked if pw("select", combo[0], picked, session=session)[0] == 0 else ""
+
+
+def w8_click_validate(session="m4w8"):
+    """(clicked, ref, detail) — the panel's own button ("Validate (writes the
+draft)" / "Validate again"), matched by prefix so no nav item steals it."""
+    rc, snap = pw_snapshot(session=session)
+    btn = [n["ref"] for n in pw_snapshot_nodes(snap)
+           if n["role"] == "button" and (n["name"] or n["text"]).strip().lower()
+           .startswith("validate") and n["ref"]]
+    if not btn:
+        return False, None, "no Validate button in the snapshot"
+    rc2, out = pw("click", btn[0], session=session, timeout=60)
+    return rc2 == 0, btn[0], (out or "")[:180]
+
+
 def w8():
-    """W8 — the YAML Validate panel renders every loader/schema/compiler error
-    with instance_location on the document, its source, and the hint;
-    kind_not_implemented names M5/M6; secret-literal findings render redacted."""
-    _playwright_stub("W8", "validate panel: located errors by source, redacted literals")
+    """W8 — row § 7.2: an authored YAML with the seven deferred kinds + the config
+    typos, pasted into the YAML viewer's "Validate" panel → "each error renders with
+    instance_location on the document, source (loader/schema/compiler) and the hint;
+    kind_not_implemented names the milestone (M5/M6); a secret-literal finding
+    renders redacted". The panel the row names is ValidatePanel, mounted on
+    /projects/:id/pipelines (ui/src/pages/ProjectRunsPipelines.tsx)."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W8 all arms", "no seed manifest (§ 7.0 seed has not run) — no project page to "
+                           "carry the panel and no library role to validate a draft")
+        return
+    project_id, pid_pipe = mf(facts, "project_id"), mf(facts, "pipeline_id", "agent")
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None:
+        gap("W8 all arms", "admin (the library role the drafts belong to) could not sign in "
+                           "over the API — the server's error list, the panel's answer key, "
+                           "cannot be read")
+        return
+    CTX["admin"] = admin
+    docs = w8_documents()
+    if not any(text for _slug, _tag, text in docs):
+        gap("W8 all arms", f"no probe document could be built from {SEED_PIPELINE_YAML} — "
+                           "there is nothing to paste into the panel")
+        return
+    if not pw_login("admin", f"/projects/{project_id}/pipelines", session="m4w8"):
+        gap("W8 browser arms", "the mock IdP did not sign admin in, so the Validate panel "
+                               "was never rendered")
+        return
+    try:
+        pw_goto(f"/projects/{project_id}/pipelines", session="m4w8")
+        landed, nodes = pw_poll(lambda ns: "validate yaml" in w8_dom_text(ns).lower()
+                                and pw_refs(ns, role="textbox",
+                                            name="Pipeline YAML to validate"),
+                                session="m4w8", tries=10, delay=2)
+        shot = pw_shot("w8-panel", session="m4w8")
+        check('W8 the "Validate" panel the row names is on the pipelines page', landed,
+              f"VALIDATE YAML panel + its textarea seen={landed} "
+              f"(ui/src/components/m4/ValidatePanel.tsx, mounted by "
+              f"/projects/:id/pipelines) [{shot}]")
+        if not landed:
+            gap("W8 paste arms", "the panel or its textarea never rendered — nothing was "
+                                 "pasted, so nothing can be said about how errors render")
+            return
+        for slug, tag, text in docs:
+            if not text:
+                gap(f"W8 {tag} paste", f"no document could be built from {SEED_PIPELINE_YAML}")
+                continue
+            probe = c13_draft_probe(admin, pid_pipe, f"W8 {tag}", text,
+                                    publish=(tag == "secret literal"))
+            expected = w8_error_expectations((probe or {}).get("vresp"))
+            if not check(f"W8 {tag}: the server reports errors to render",
+                         bool(expected),
+                         f"validate -> {(probe or {}).get('validate_status')} "
+                         f"{c13_brief(((probe or {}).get('vresp') or {}).get('errors') or [])}"):
+                gap(f"W8 {tag}: panel arms", "no § 2.2 error came back, so the panel has "
+                                            "no answer key to be checked against")
+                continue
+            refs = pw_refs(pw_snapshot_nodes(pw_snapshot(session="m4w8")[1]), role="textbox",
+                           name="Pipeline YAML to validate")
+            if not check(f"W8 {tag}: the YAML is pasted into the panel's textarea",
+                         bool(refs), f"textarea ref={refs[:1]}"):
+                continue
+            pw("fill", refs[0], text, session="m4w8", timeout=120)
+            clicked, bref, cdetail = w8_click_validate(session="m4w8")
+            if not clicked and not CTX.get("w8_select_note"):
+                # The panel's own defect, named once rather than worked around in
+                # silence: its pipeline select is empty until it is touched, and its
+                # Button is `disabled` while `selectedOption === null`
+                # (ui/src/components/m4/ValidatePanel.tsx), so a pasted textarea
+                # alone never enables it.
+                CTX["w8_select_note"] = True
+                check("W8 the panel's Validate button is enabled once the YAML is pasted",
+                      False, f"click failed with the textarea filled: {cdetail} — the "
+                             "pipeline select holds no value on mount, so the button "
+                             "stays disabled; the leg picks the pipeline the way an "
+                             "operator would and measures the row's rendering claims on "
+                             "that path")
+            picked = "" if clicked else w8_pick_pipeline(session="m4w8")
+            if not clicked and picked:
+                pw("fill", refs[0], text, session="m4w8", timeout=120)
+                clicked, bref, cdetail = w8_click_validate(session="m4w8")
+            if picked:
+                show("W8 the panel's pipeline select", f"picked {picked!r} "
+                                                      f"(the mount-time default leaves "
+                                                      f"its button disabled)")
+            if not check(f"W8 {tag}: the panel's Validate button is clicked", clicked,
+                         f"ref={bref} {cdetail}"):
+                continue
+            want = expected[0][0]
+            seen, nodes_after = pw_poll(lambda ns: all(code in w8_dom_text(ns)
+                                                       for code, _s, _l, _h in expected),
+                                        session="m4w8", tries=12, delay=2)
+            rc, raw = pw_snapshot(session="m4w8")
+            dom = w8_dom_text(nodes_after, raw)
+            shot = pw_shot(f"w8-{slug}", session="m4w8")
+            show(f"W8 {tag}: the panel answered", f"first code {want!r}; "
+                                                  f"{len(expected)} server error(s); "
+                                                  f"all rendered={seen} [{shot}]")
+            c5_emit(w8_render_verdicts(expected, dom))
+            if tag == "seven deferred kinds":
+                c5_emit(w8_milestone_verdicts(expected, dom))
+            if tag == "secret literal":
+                c5_emit(w8_redaction_verdict(expected, nodes_after, dom,
+                                             C13_SECRET_LITERAL))
+    finally:
+        pw("close", session="m4w8")
 
 
 def w9():
-    """W9 — as carol (project B only), deep-linking the M4 run id, /nodes,
-    /approvals/{id} and the run SSE URL gives 404/not-found states, no project
-    name, no node names, no digests, SSE never opens, console clean
-    (12 case 15 extended to the new surface)."""
-    _playwright_stub("W9", "cross-project deep links 404 with zero leakage")
+    """W9 — row § 7.2: "as carol (project B only), deep-link the M4 run id,
+    /runs/{id}/nodes, /approvals/{id} and the run SSE URL" → "404/not-found states, no
+    project name, no node names, no digest values, SSE never opens, console clean — 12
+    case 15's rule extended to the new surface". The seed has no project-B-only user
+    (carol is a maintainer of the only project it creates), so the observer is named as
+    a GAP and the four arms are measured against a provisioned identity with no
+    membership at all."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W9 all arms", "no seed manifest (§ 7.0 seed has not run) — no project, no run "
+                           "id and no approval to deep-link")
+        return
+    project_id = mf(facts, "project_id")
+    run_id = mf(facts, "run_id", "agent")
+    if not check("W9 the M4 run the row deep-links exists", bool(run_id), f"run_id={run_id!r}"):
+        gap("W9 all arms", "the manifest names no run to link to")
+        return
+    aid = pw_first(psql(f"SELECT id FROM approval_requests WHERE run_id = '{run_id}' "
+                        "ORDER BY created_at LIMIT 1"))
+    carol_id = c9_manifest_users(c9_manifest_json()).get("carol") or ""
+    role = c9_role_of(project_id, carol_id) if carol_id else ""
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        gap("W9 all arms", "alice (a member who CAN see the run) could not sign in — the "
+                           "values that must not leak have nothing to be read from")
+        return
+    CTX["alice"] = alice
+    outsider = Client("erin")
+    me = login(outsider)
+    if me is None:
+        gap("W9 all arms", "no identity without M4-project access could be signed in, so "
+                           "there is no outsider to render the deep links as")
+        return
+    is_admin = bool(me.get("is_org_admin"))
+    _label, _ok, why = w9_outsider_verdict(role, is_admin)
+    gap("W9 carol-as-outsider arm", why)
+    if is_admin:
+        gap("W9 all arms", "the substitute identity holds org admin, and internal/authz "
+                           "CanView lets an org admin see every project — it cannot stand "
+                           "in for the row's outsider")
+        return
+
+    # what must NOT appear, read as a member so the needles are the real values
+    forbidden = []
+    proj = alice.get(LB, f"/api/v1/projects/{project_id}")
+    names = ([str((proj.json() or {}).get("name") or "")] if proj.status == 200 else []) \
+        + [str(mf(facts, "project_slug", default="") or "")]
+    forbidden.append(("project name", [n for n in names if n]))
+    nodes_r = alice.get(LB, f"/api/v1/runs/{run_id}/nodes")
+    node_names = []
+    if nodes_r.status == 200:
+        for row in (nodes_r.json() or {}).get("nodes") or []:
+            if isinstance(row, dict):
+                node_names += [str(row.get(k) or "") for k in
+                               ("node_instance_key", "definition_key", "name", "label")]
+    node_names += sorted(c12_node_keys(run_id) or set())
+    forbidden.append(("node name", [n for n in node_names if n]))
+    digests = [str(mf(facts, "revision_digest", "agent", default="")),
+               str(mf(facts, "plan_digest", "agent", default=""))]
+    digests += [w4_short(d) for d in digests]
+    pin = c12_run_pin(run_id) or {}
+    digests += [str(pin.get("revision_digest") or ""), str(pin.get("plan_digest") or ""),
+                w4_short(pin.get("revision_digest")), w4_short(pin.get("plan_digest"))]
+    forbidden.append(("digest value", [d for d in digests if d]))
+    show("W9 what a member sees and an outsider must not",
+         f"project={names} node names={len(forbidden[1][1])} digests={len(forbidden[2][1])} "
+         f"(approval {aid or '(none for this run)'})")
+
+    # the API's own answer for each surface, read as the outsider
+    api_status = {}
+    for surface, path in (("run", f"/api/v1/runs/{run_id}"),
+                          ("nodes", f"/api/v1/runs/{run_id}/nodes"),
+                          ("approval", f"/api/v1/approvals/{aid}" if aid else ""),
+                          ("sse", f"/api/v1/runs/{run_id}/events")):
+        if not path:
+            continue
+        r = outsider.get(LB, path)
+        api_status[surface] = r.status
+        show(f"W9 as erin (no membership): GET {path}", f"{r.status} {r.text[:140]}")
+    c5_emit([("W9 the control plane answers 404 for every M4 surface it is linked to",
+              all(s == 404 for s in api_status.values()) and bool(api_status),
+              f"outsider API statuses={api_status} — row W9: \"404/not-found states\"")])
+
+    if not pw_login("erin", "/projects", session="m4w9"):
+        gap("W9 browser arms", "the mock IdP did not sign the outsider in — the deep links "
+                               "were never rendered as DOM, so nothing can be said about "
+                               "what the page shows or the console logs")
+        return
+    try:
+        links = [("run id", f"/projects/{project_id}/runs/{run_id}", "run"),
+                 ("nodes route", f"/projects/{project_id}/runs/{run_id}/nodes", "nodes"),
+                 ("approval", f"/approvals/{aid}" if aid else "", "approval"),
+                 ("run SSE URL", f"/api/v1/runs/{run_id}/events", "sse")]
+        observed, dom_all = [], []
+        for surface, path, key in links:
+            if not path:
+                observed.append({"surface": surface, "path": "(no approval for this run)",
+                                 "status": None, "found": None})
+                continue
+            pw_goto(path if path.startswith("http") else LB + path, session="m4w9")
+            time.sleep(2)
+            rc, raw = pw_snapshot(session="m4w9")
+            dom = w8_dom_text(pw_snapshot_nodes(raw), raw)
+            dom_all.append(dom)
+            shot = pw_shot(f"w9-{key}", session="m4w9")
+            observed.append({"surface": surface, "path": path,
+                             "status": api_status.get(key), "found": w9_not_found(dom),
+                             "shot": shot})
+            show(f"W9 the outsider's page for {path}",
+                 f"not-found copy={w9_not_found(dom)} [{shot}]")
+        c5_emit(w9_state_verdicts(observed))
+        c5_emit(w9_leak_verdicts("\n".join(dom_all), forbidden))
+        rc, reqs = pw("requests", session="m4w9")
+        c5_emit([w9_sse_verdict(reqs, run_id, dom_all[-1] if dom_all else "")])
+        rc9, cons = pw("console", session="m4w9")
+        c5_emit([w9_console_verdict(cons, rc9,
+                                   benign=("Failed to load resource", "favicon.ico"))])
+    finally:
+        pw("close", session="m4w9")
 
 
 def w10():
