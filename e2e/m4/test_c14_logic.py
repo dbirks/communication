@@ -250,5 +250,73 @@ class Words(unittest.TestCase):
         self.assertIn("C14Stream", body)
 
 
+    def test_no_other_projection_regressed_the_same_way(self):
+        """Every GROUP BY in the driver must group on columns/expression ordinals that
+        do NOT themselves contain the aggregate (HAVING may, ORDER BY may)."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        for line in src.splitlines():
+            if "GROUP BY" not in line or "count(" not in line:
+                continue
+            before = line.split("GROUP BY")[0]
+            self.assertNotIn("count(", before, f"aggregate left of GROUP BY: {line.strip()}")
+            self.assertIn("HAVING", line.split("GROUP BY")[1],
+                          f"aggregate inside a GROUP BY clause: {line.strip()}")
+
+
+class D4TerminalGroupBy(unittest.TestCase):
+    """live2/C14.out:50-57 — `ERROR: aggregate functions are not allowed in GROUP BY`:
+    the projection ended in `GROUP BY 1`, and ordinal 1 IS the selected expression,
+    which carries count(*), so C14b's terminal-event arm could only ever GAP."""
+
+    def test_the_group_by_names_the_column_not_the_aggregate(self):
+        sql = m.c14_terminal_group_sql("RUN")
+        head, _, tail = sql.partition("GROUP BY")
+        self.assertIn("GROUP BY type", sql)
+        self.assertNotIn("GROUP BY 1", sql)
+        self.assertNotIn("count(", tail, "an aggregate leaked into the GROUP BY clause")
+        self.assertIn("count(*)::text", head)
+        self.assertIn("'run.completed'", head)
+        self.assertIn("RUN", sql)
+
+    def test_the_row_shape_still_feeds_the_verdicts(self):
+        canned = "run.completed|1\nnode.scope.iteration|2\nnode.attempt.retry_scheduled|0"
+        counts = {r[0]: m._int(r[1]) for r in m.psql_rows(canned, 2)}
+        self.assertEqual({"run.completed": 1, "node.scope.iteration": 2,
+                          "node.attempt.retry_scheduled": 0}, counts)
+        self.assertTrue(one(m.c14_terminal_verdicts(counts, 0), "at most once"))
+        for t in m.C14_DUP_TYPES:
+            self.assertIn(f"'{t}'", m.c14_terminal_group_sql("R"))
+
+
+class D6AdvisoryLockProbe(unittest.TestCase):
+    """live2/C14.out:63 — the probe demanded a NEW acquisition line, but noteLeadership
+    logs only a not-held→held transition inside one process and the driver releases the
+    session lock every tick, so 0/0 is what a blind probe produces, not a product bug."""
+
+    def test_zero_before_count_is_a_gap_never_a_fail(self):
+        v = m.c14_lock_verdicts({"api-a": 0, "api-b": 0}, {"api-a": 0, "api-b": 0})
+        self.assertIsNone(one(v, "advisory lock moves to a surviving replica"))
+        d = detail(v, "advisory lock moves to a surviving replica")
+        self.assertIn("unfalsifiable", d)
+        self.assertIn("ledger", d, "the GAP must point at the arms that DO prove safety")
+
+    def test_a_visible_lock_still_gives_a_falsifiable_verdict(self):
+        self.assertFalse(one(m.c14_lock_verdicts({"api-a": 2, "api-b": 0},
+                                                 {"api-a": 2, "api-b": 0}),
+                             "advisory lock moves to a surviving replica"))
+        self.assertTrue(one(m.c14_lock_verdicts({"api-a": 2, "api-b": 0},
+                                                {"api-a": 2, "api-b": 1}),
+                            "advisory lock moves to a surviving replica"))
+
+    def test_compose_log_prefix_is_matched_tolerantly(self):
+        log = ("api-a  | 2026-10-16T03:00:00Z INF m4 driver acquired the advisory lock\n"
+               "api-b  | 2026-10-16T03:00:01Z INF something else\n"
+               "api-a    | m4 driver acquired the advisory lock\n"
+               "worker-a | m4 driver acquired the advisory lock\n")
+        self.assertEqual({"api-a": 2, "api-b": 0}, m.c14_lock_lines(log))
+        self.assertEqual({"api-a": 0}, m.c14_lock_lines("", ("api-a",)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

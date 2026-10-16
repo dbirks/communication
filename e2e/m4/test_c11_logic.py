@@ -198,5 +198,108 @@ class Words(unittest.TestCase):
         self.assertIn("172.17.0.1:18099", m.C11_INJECTION)
 
 
+class D2VectorSurface(unittest.TestCase):
+    """docs/m4-live-findings.md D2: the old probe scanned digested `approval%` event
+    payloads, where the summary is a DIGEST (§ 3 row 26) — the vector could never be
+    found. It reads approval_requests.summary + GET /approvals/{id} now."""
+
+    def test_the_sql_names_the_surface_the_engine_writes(self):
+        self.assertIn("FROM approval_requests", m.C11_SUMMARY_SQL)
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = " ".join(src.split("def c11():")[1].split("# --- C12 pure logic")[0].split())
+        self.assertNotIn("type LIKE 'approval%'", body,
+                         "the digested approval% payload scan is still the vector probe")
+        self.assertIn("C11_SUMMARY_SQL", body)
+        self.assertIn("c11_approval_api_bodies", body)
+
+    def test_surfaces_stack_in_contract_order(self):
+        got = m.c11_vector_surfaces("summary says X", ['body says "summary": "X"'],
+                                    "node-out", "attempt-out")
+        self.assertLess(got.index("summary says X"), got.index("node-out"))
+        self.assertIn("attempt-out", got)
+
+    def test_all_surfaces_unreadable_is_none_not_empty_string(self):
+        self.assertIsNone(m.c11_vector_surfaces(None, None, None, None))
+        self.assertIsNone(m.c11_vector_surfaces("", [], None, ""))
+
+    def test_vector_passes_from_the_approval_summary_alone(self):
+        """The live2 shape: only the gate summary carries the line (6031 chars scanned,
+        none of them the vector) — that now PASSes because the summary is read."""
+        rows = m.c11_vector_verdicts(
+            m.c11_vector_surfaces(f"Plan for {m.C11_INJECTION}", None, None, None),
+            surfaces=["approval_requests.summary"])
+        self.assertTrue(one(rows, "verbatim"))
+
+    def test_matched_line_is_echoed_redacted_and_bounded(self):
+        blob = f"Plan for {m.C11_INJECTION} and the secret {m.SENTINEL}"
+        d = detail(m.c11_vector_verdicts(blob), "verbatim")
+        self.assertIn("matched line (redacted)", d)
+        self.assertNotIn(m.SENTINEL, d, "the secret must never reach the report")
+        self.assertIn("sha256:", d)
+        self.assertLess(len(d), 700)
+
+    def test_surfaces_are_named_in_the_detail(self):
+        d = detail(m.c11_vector_verdicts("x", surfaces=["approval_requests.summary"]),
+                   "verbatim")
+        self.assertIn("surfaces read: approval_requests.summary", d)
+
+
+class D3ReportFiles(unittest.TestCase):
+    """docs/m4-live-findings.md D3: the docstring named two reports but the code opened
+    one — and network_enforced=false is spelled in M3-PROBES.md, not SANDBOX.md."""
+
+    def test_both_report_files_are_named(self):
+        self.assertEqual(("docs/compatibility/SANDBOX.md", "docs/compatibility/M3-PROBES.md"),
+                         m.C11_REPORT_FILES)
+
+    def test_evidence_joins_and_names_what_was_unreadable(self):
+        text, missing = m.c11_report_evidence([("a.md", "first"), ("b.md", ""),
+                                               ("c.md", "second")])
+        self.assertIn("# source: a.md", text)
+        self.assertIn("# source: c.md", text)
+        self.assertEqual(["b.md"], missing)
+        self.assertEqual(("", ["a.md", "b.md"]),
+                         m.c11_report_evidence([("a.md", ""), ("b.md", None)]))
+
+    def test_label_in_the_second_file_alone_is_enough_to_pass(self):
+        rows = m.c11_report_honesty_verdicts(
+            "nothing here\n# source: docs/compatibility/M3-PROBES.md\n"
+            "network_enforced=false on the agent-turn profile", sources=["M3-PROBES.md"],
+            missing=["docs/compatibility/SANDBOX.md"])
+        self.assertTrue(one(rows, "SANDBOX.md"))
+        self.assertIn("sources read: M3-PROBES.md", detail(rows, "SANDBOX.md"))
+        self.assertIn("unreadable: docs/compatibility/SANDBOX.md", detail(rows, "SANDBOX.md"))
+
+    def test_no_readable_file_is_a_gap_that_says_so(self):
+        rows = m.c11_report_honesty_verdicts("", sources=[], missing=list(m.C11_REPORT_FILES))
+        self.assertIsNone(one(rows, "SANDBOX.md"))
+        self.assertIn("unreadable", detail(rows, "SANDBOX.md"))
+
+    def test_json_spelling_of_the_label_counts(self):
+        self.assertTrue(one(m.c11_report_honesty_verdicts('{"network_enforced": false}'),
+                            "SANDBOX.md"))
+        self.assertFalse(one(m.c11_report_honesty_verdicts('{"network_enforced": true}'),
+                             "SANDBOX.md"))
+
+    def test_the_real_repo_reports_answer_the_probe(self):
+        """Offline proof that the probe now reads where the label actually lives: the
+        same verdict function run over the bytes in the repo (no stack, no network)."""
+        root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "..", ".."))
+        reads = []
+        for rel in m.C11_REPORT_FILES:
+            try:
+                with open(os.path.join(root, *rel.split("/")), encoding="utf-8") as f:
+                    reads.append((rel, f.read()))
+            except OSError:
+                reads.append((rel, ""))
+        report, missing = m.c11_report_evidence(reads)
+        self.assertEqual([], missing, f"a named report file is missing: {missing}")
+        self.assertTrue(one(m.c11_report_honesty_verdicts(
+            report, sources=[r for r, t in reads if t], missing=missing), "SANDBOX.md"),
+            "the repo's own sandbox reports do not spell network_enforced=false")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

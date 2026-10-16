@@ -401,6 +401,8 @@ class C12ProbeDocumentsAreValidYaml(unittest.TestCase):
         docs["C12b 65 expressions"] = m.c12_exprs_doc("m4x-c12b", m.C12_EXPR_CAP + 1)
         docs["C12b 64 expressions"] = m.c12_exprs_doc("m4x-c12b", m.C12_EXPR_CAP)
         docs["C12b 1001 literal items"] = m.c12_fanout_doc("m4x-c12b", m.C12_ITEMS_CAP + 1)
+        docs["C12b 1001 evaluated items"] = m.c12_fanout_run_doc("m4x-c12b",
+                                                                  m.C12_ITEMS_CAP + 1)
         docs["C12b wide until body"] = m.c12_exec_budget_doc("m4x-c12b")
         return docs
 
@@ -428,6 +430,12 @@ class C12ProbeDocumentsAreValidYaml(unittest.TestCase):
         fan = list(yaml.safe_load_all(self.probes()["C12b 1001 literal items"]))[0]
         self.assertEqual(m.C12_ITEMS_CAP + 1,
                          len(fan["spec"]["nodes"][0]["config"]["items"]))
+        ev = list(yaml.safe_load_all(self.probes()["C12b 1001 evaluated items"]))[0]
+        self.assertEqual(f"${{{{ inputs.{m.C12_FAN_ITEMS_INPUT} }}}}",
+                         ev["spec"]["nodes"][0]["config"]["items"])
+        self.assertEqual(m.C12_ITEMS_CAP + 1,
+                         len(ev["spec"]["inputs"]["properties"]
+                             [m.C12_FAN_ITEMS_INPUT]["default"]))
         wide = list(yaml.safe_load_all(self.probes()["C12b wide until body"]))[0]
         self.assertEqual(m.C12_BODY_NODES,
                          len(wide["spec"]["nodes"][0]["config"]["body"]["nodes"]))
@@ -472,6 +480,128 @@ class C12dVariantIsContentBlind(unittest.TestCase):
             self.assertEqual([], sem["missing"], label)
             self.assertFalse(m.c12_variant_is_same_doc(base, sem["doc"]), label)
             self.assertNotEqual(yaml.safe_load(base), yaml.safe_load(sem["doc"]), label)
+
+
+class C12bOverCapItemsAreCompact(unittest.TestCase):
+    """live3/C12.out:70 — the arm fanned over `m4-exit.sh items`' {number,title}
+    objects, whose 1001-element outputs envelope was 41893 bytes OVER § 6's 32 KiB
+    inline cap: /emit failed with node_execution_failed:/emit and /fan never started,
+    so the verdict blamed the advancer for the worker's own cap."""
+
+    INLINE_CAP = 32 * 1024
+
+    def setUp(self):
+        self.doc = m.c12_fanout_run_doc("m4x-c12b", m.C12_ITEMS_CAP + 1)
+
+    def test_the_document_still_fans_over_the_named_count(self):
+        self.assertTrue(self.doc)
+        self.assertIn(f"items: '${{{{ inputs.{m.C12_FAN_ITEMS_INPUT} }}}}'", self.doc)
+        self.assertIn(f"{m.C12_FAN_ITEMS_INPUT}:", self.doc)
+        self.assertNotIn("M4_FANOUT_COUNT", self.doc, "the oversized /emit fixture is back")
+        self.assertNotIn("- id: emit", self.doc)
+
+    def test_the_compact_payload_fits_the_inline_cap(self):
+        """The COUNT is the point of the cap, so the items must be the smallest legal
+        thing that still counts: 1001 integers, well inside § 6's inline bound."""
+        import json
+        blob = json.dumps(list(range(1, m.C12_ITEMS_CAP + 2)))
+        self.assertLess(len(blob.encode()), self.INLINE_CAP,
+                        "the over-cap items would themselves need the artifact path")
+        block = m.c12_compact_items_yaml(m.C12_ITEMS_CAP + 1)
+        self.assertIn("type: array", block)
+        parsed = yaml.safe_load("properties:\n" + block)["properties"]
+        self.assertEqual(list(range(1, m.C12_ITEMS_CAP + 2)),
+                         parsed[m.C12_FAN_ITEMS_INPUT]["default"],
+                         "the default array is not 1001 integers")
+
+    def test_the_splice_refuses_a_header_it_does_not_understand(self):
+        self.assertEqual("", m.c12_with_input("kind: Pipeline\nnodes:\n", "      x:\n"))
+        spliced = m.c12_with_input("a: 1\n  inputs:\n    p: 1\n  outputs:\n      q: 2\n",
+                                   "      fan_items:\n        type: array\n")
+        self.assertIn("fan_items", spliced.split("  outputs:")[0])
+        self.assertIn("q: 2", spliced)
+
+    def test_the_scope_cause_is_read_not_hard_coded(self):
+        """Item 4's other half: the arm graded the run row alone with scope_cause="",
+        which could not tell the advancer's named cause from the scope's."""
+        seen = []
+        keep = m.psql
+        try:
+            m.psql = lambda sql: seen.append(sql) or "fanout_items_exceeded"
+            got = m.c12_scope_causes("RUN")
+        finally:
+            m.psql = keep
+        self.assertEqual("fanout_items_exceeded", got)
+        self.assertEqual(1, len(seen))
+        self.assertIn("failed_cause", seen[0])
+        self.assertIn("node_executions", seen[0])
+        self.assertIn("RUN", seen[0])
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = " ".join(src.split("def c12():")[1].split("# --- C13 pure logic")[0].split())
+        self.assertNotIn('C12_FANOUT_RUN_CODE, st or "", cause, "")', body,
+                         "the evaluated-items arm still passes a hard-coded empty cause")
+        self.assertIn("c12_run_cap", body,
+                      "the arm bypasses the reader that takes BOTH causes")
+
+    def test_a_cause_named_only_on_the_scope_row_still_passes(self):
+        ok = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded",
+                                     "failed", "node_execution_failed:/fan",
+                                     "fanout_items_exceeded")
+        self.assertTrue(one(ok, "1001 evaluated items"))
+        self.assertIn("fanout_items_exceeded", detail(ok, "1001 evaluated items"))
+        bad = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded",
+                                      "failed", "node_execution_failed:/emit", "")
+        self.assertFalse(one(bad, "1001 evaluated items"))
+        self.assertIn("scope_cause=''", detail(bad, "1001 evaluated items"))
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
+class C12cPinnedWordingWitness(unittest.TestCase):
+    """live3/C12.out:100 — the witness greped approval_requests.summary for the RAW
+    `Plan for ${{ inputs.goal }}` needle, but the summary is INTERPOLATED at gate
+    creation (`Plan for Document and fix add() in hello.py`, exactly what C9a read
+    back), so the arm could never be true and the run looked unpinned."""
+
+    GOAL = "Document and fix add() in hello.py"
+
+    def test_pinned_wording_is_the_interpolated_prefix(self):
+        pinned, new = m.c12_pinned_wordings(self.GOAL)
+        self.assertEqual(f"Plan for {self.GOAL}", pinned)
+        self.assertEqual(f"Plan written for {self.GOAL}", new)
+
+    def test_a_summary_with_the_pinned_wording_passes(self):
+        summ = f'{{"summary":"{m.c12_pinned_wordings(self.GOAL)[0]}","state":"pending"}}'
+        ok, why = m.c12_pinned_wording_witness(summ, self.GOAL)
+        self.assertIs(True, ok, why)
+
+    def test_the_new_revisions_wording_fails_and_names_both_sides(self):
+        summ = "summary: " + m.c12_pinned_wordings(self.GOAL)[1]
+        ok, why = m.c12_pinned_wording_witness(summ, self.GOAL)
+        self.assertIs(False, ok)
+        self.assertIn("Plan written for", why)
+        self.assertIn("present=False", why)
+
+    def test_the_raw_needle_never_matches_a_real_summary(self):
+        """The regression guard: the OLD comparison, spelled out, is False — which is
+        why the arm reported a product bug it never measured."""
+        summ = f"Plan for {self.GOAL}"
+        self.assertNotIn(m.C12_PROMPT_NEEDLE, summ)
+        self.assertTrue(m.c12_pinned_wording_witness(summ, self.GOAL)[0])
+
+    def test_unreadable_inputs_are_gaps(self):
+        for summ, goal in ((None, self.GOAL), ("", self.GOAL),
+                           (f"Plan for {self.GOAL}", ""),
+                           (f"Plan for {self.GOAL}", None)):
+            ok, why = m.c12_pinned_wording_witness(summ, goal)
+            self.assertIsNone(ok, f"{summ!r}/{goal!r} -> {why}")
+            self.assertTrue(why)
+
+    def test_wordings_that_do_not_differ_cannot_witness_anything(self):
+        ok, why = m.c12_pinned_wording_witness("anything", self.GOAL,
+                                               needle="same", repl="same")
+        self.assertIsNone(ok)
+        self.assertIn("cannot distinguish", why)
 
 
 if __name__ == "__main__":

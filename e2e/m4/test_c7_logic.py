@@ -161,32 +161,66 @@ class C7bArtifacts(unittest.TestCase):
         self.assertIs(None, one(m.c7_artifact_verdicts([]), "distinct"))
 
 
-class C7fRoute(unittest.TestCase):
+class C7aNoRoute(unittest.TestCase):
+    """§ 7.1 C7 has arms a-d — there is NO C7f — and § 5.1 step 5
+    (docs/m4-contract.md:777-779) says a failed stop-policy node "fails the run ... and
+    CANCELS QUEUED DESCENDANTS". The exhausted loop's /verdict therefore never routes
+    (live2/C1.out:49-51 observed: /verdict and both publish arms `cancelled`), which is
+    what these verdicts assert. The old C7f arms demanded the opposite, so /verdict
+    could never satisfy them."""
+
     ROOT = "\n".join([
         "/plan|succeeded|-", "/approve|succeeded|-",
-        f"{K}|failed|-", "/verdict|succeeded|needs_attention",
-        "/publish_verified|skipped|-", "/publish_needs_attention|succeeded|-",
+        f"{K}|failed|-",
+        "/verdict|cancelled|-", "/publish_verified|cancelled|-",
+        "/publish_needs_attention|cancelled|-",
         f"{K}[1]/implement|failed|-"])
 
-    def test_pass_authored_exhausted_path(self):
-        v = m.c7_route_verdicts(self.ROOT, {"iterations": 3})
+    def test_cancelled_descendants_pass(self):
+        v = m.c7_no_route_verdicts(self.ROOT, {"iterations": 3})
         self.assertNotIn(False, [ok for _l, ok, _d in v], str(v))
+        self.assertTrue(any("CANCELLED" in l for l, _o, _d in v), str(v))
 
-    def test_fail_verified_arm_ran(self):
-        bad = self.ROOT.replace("/publish_verified|skipped|-",
-                                "/publish_verified|succeeded|-")
-        self.assertIs(False, one(m.c7_route_verdicts(bad, {"iterations": 3}),
-                                 "/publish_verified skipped"))
+    def test_a_routed_verdict_after_the_run_failed_is_a_fail(self):
+        bad = self.ROOT.replace("/verdict|cancelled|-", "/verdict|succeeded|needs_attention")
+        self.assertIs(False, one(m.c7_no_route_verdicts(bad, {"iterations": 3}),
+                                 "/verdict never ran"))
 
-    def test_fail_wrong_route(self):
-        bad = self.ROOT.replace("/verdict|succeeded|needs_attention",
-                                "/verdict|succeeded|verified")
-        self.assertIs(False, one(m.c7_route_verdicts(bad, {"iterations": 3}), "default route"))
+    def test_a_publish_arm_that_ran_is_a_fail(self):
+        bad = self.ROOT.replace("/publish_needs_attention|cancelled|-",
+                                "/publish_needs_attention|succeeded|-")
+        self.assertIs(False, one(m.c7_no_route_verdicts(bad, {"iterations": 3}),
+                                 "neither publish arm ran"))
 
-    def test_gap_no_rows_and_gap_missing_iterations(self):
-        self.assertIs(None, one(m.c7_route_verdicts("", {"iterations": 3}),
-                                "needs_attention"))
-        self.assertIs(None, one(m.c7_route_verdicts(self.ROOT, {}), "reports iterations"))
+    def test_a_route_outcome_on_a_dead_row_is_a_fail(self):
+        bad = self.ROOT.replace("/verdict|cancelled|-", "/verdict|cancelled|needs_attention")
+        self.assertIs(False, one(m.c7_no_route_verdicts(bad, {"iterations": 3}),
+                                 "no route outcome"))
+
+    def test_gaps_when_the_rows_do_not_exist(self):
+        self.assertIs(None, one(m.c7_no_route_verdicts("", {"iterations": 3}), "CANCELLED"))
+        no_verdict = "\n".join(l for l in self.ROOT.splitlines()
+                               if not l.startswith("/verdict|"))
+        self.assertIs(None, one(m.c7_no_route_verdicts(no_verdict, {"iterations": 3}),
+                                "/verdict never ran"))
+        live = self.ROOT.replace("/verdict|cancelled|-", "/verdict|running|-")
+        self.assertIs(None, one(m.c7_no_route_verdicts(live, {"iterations": 3}),
+                                "/verdict never ran"))
+        self.assertIs(None, one(m.c7_no_route_verdicts(self.ROOT, {}), "reports iterations"))
+
+    def test_the_driver_never_emits_a_c7f_verdict(self):
+        """A verdict the contract does not define cannot be routed by /verdict, and
+        cannot be graded against § 7.1 — no C7f-prefixed LABEL may exist anywhere."""
+        import re as _re
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        whole = " ".join(src.split())
+        self.assertEqual([], _re.findall(r'["\(]\s*C7f\b', src),
+                         "a C7f verdict label survived in the driver")
+        self.assertIn("no C7f arm", whole, "the C7a arm must cite why the label is gone")
+        self.assertIn("5.1 step 5", whole)
+        self.assertNotIn("c7_route_verdicts", whole, "the old C7f helper survived")
+        self.assertIn("c7_no_route_verdicts", whole)
 
 
 class C7gBudget(unittest.TestCase):

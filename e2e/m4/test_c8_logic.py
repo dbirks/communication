@@ -341,5 +341,58 @@ class SeedShapeTest(unittest.TestCase):
         self.assertEqual(3, m.C8_MAX_CONCURRENCY)
 
 
+class SqlReaderTest(unittest.TestCase):
+    """live2/C8.out:11 — `NameError: name 'c8_sql' is not defined` killed the gate at
+    its first ledger read (c8_scope_row), so C8b-C8h never ran and C3a/C3c (which read
+    C8's deep queue) had nothing to contend on. c8_sql is the same honest reader the
+    other gates define (c7_sql/c10_sql/c11_sql): text on success, None + a printed
+    note when psql refuses — a ledger that will not answer is never a zero."""
+
+    def test_c8_sql_exists_and_is_the_reader_the_helpers_call(self):
+        self.assertTrue(callable(getattr(m, "c8_sql", None)),
+                        "c8_sql must be defined: every c8_* reader calls it")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        self.assertIn("def c8_sql(", src)
+        self.assertEqual(0, src.count("\nc8_sql = "), "no shadow assignment")
+
+    def test_reads_psql_text_verbatim(self):
+        keep = m.psql
+        try:
+            m.psql = lambda sql: "succeeded|pending|-|[]"
+            self.assertEqual("succeeded|pending|-|[]",
+                             m.c8_sql("SELECT 1", "scope row"))
+        finally:
+            m.psql = keep
+
+    def test_a_refusing_ledger_is_none_not_a_zero(self):
+        import io
+        import contextlib
+        keep = m.psql
+        buf = io.StringIO()
+        try:
+            def boom(_sql):
+                raise RuntimeError("psql failed rc=1: ERROR: relation does not exist")
+            m.psql = boom
+            with contextlib.redirect_stdout(buf):
+                self.assertIsNone(m.c8_sql("SELECT 1", "scope row"))
+        finally:
+            m.psql = keep
+        self.assertIn("scope row", buf.getvalue(),
+                      "the psql failure must be printed, not swallowed")
+        self.assertNotIn("PASS", buf.getvalue())
+
+    def test_scope_row_survives_an_unreadable_ledger(self):
+        """The exact call that crashed the gate must now return {} (a GAP upstream)."""
+        keep = m.psql
+        try:
+            def boom(_sql):
+                raise RuntimeError("psql failed rc=1")
+            m.psql = boom
+            self.assertEqual({}, m.c8_scope_row("00000000-0000-0000-0000-000000000000"))
+        finally:
+            m.psql = keep
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
