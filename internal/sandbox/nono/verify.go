@@ -26,9 +26,19 @@ type VerificationResult struct {
 	PolicyDigest string
 	// AfUnixMediation is the N-c assertion's observed value.
 	AfUnixMediation string
-	// NetworkEnforced is the profile's own claim, never a guess: false for the
-	// agent-turn policy, which is the whole point of having two names.
-	NetworkEnforced bool
+	// NetworkEnforced is the profile's own claim, never a guess (ADR-0035's
+	// tri-state): denied for the egress-denied policies, allowlisted for a policy
+	// whose digest commits to a host set, open otherwise. What a RUN is allowed to
+	// say is stricter — read it from EgressReport, not from this field.
+	NetworkEnforced NetworkEnforcement
+	// EgressHosts is the allowlist the profile digest commits to, empty unless
+	// NetworkEnforced is NetworkAllowlisted.
+	EgressHosts []string
+	// EgressDenials are the refused connections this run's own audit journal
+	// recorded (`nono audit show <id> --json`). Verify never fills it — there is
+	// no child yet to have been denied anything — so a verification that has not
+	// been followed by an audit read reports its allowlist as unenforced.
+	EgressDenials []EgressDenial
 	// GrantedPaths are the `[user]` grants nono echoed back at N-d — the
 	// resolved set, not the requested one (FC3's silent-drop guard).
 	GrantedPaths []string
@@ -93,6 +103,7 @@ func (l *Launcher) Verify(ctx context.Context, spec LaunchSpec) (*VerificationRe
 		res.PolicyRef = spec.Profile.Kind
 		res.PolicyDigest = spec.Profile.Digest
 		res.NetworkEnforced = spec.Profile.NetworkEnforced
+		res.EgressHosts = append([]string(nil), spec.Profile.EgressHosts...)
 	}
 	res.GrantLabels = spec.Plan.Labels()
 
@@ -111,6 +122,14 @@ func (l *Launcher) Verify(ctx context.Context, spec LaunchSpec) (*VerificationRe
 	}
 	if spec.BlockNet && !caps.Network {
 		return res, &Failure{Stage: StageProbe, Reason: "tcp_unverified", Err: fmt.Errorf("this launch demands denied egress and the probe did not observe TCP network rule support: %s", strings.Join(caps.Notes, "; "))}
+	}
+	if spec.Profile != nil && spec.Profile.NetworkEnforced == NetworkAllowlisted && !caps.Network {
+		// The allowlist is only a boundary because the kernel still refuses a raw
+		// connect: measured under an allowlist, `net.connect(443,"93.184.216.34")`
+		// → EACCES and `dns.lookup` → EAI_AGAIN, i.e. the proxy is the sole path
+		// out. On a host whose probe does not observe TCP rule support there is no
+		// such backstop and the allowlist is a suggestion, so refuse to launch.
+		return res, &Failure{Stage: StageProbe, Reason: "tcp_unverified", Err: fmt.Errorf("this launch claims an egress allowlist and the probe did not observe TCP network rule support, which is what makes a raw socket connect impossible: %s (ADR-0035: an allowlist without that backstop is not a boundary)", strings.Join(caps.Notes, "; "))}
 	}
 
 	// ---- N-b: validate the profile we authored ----------------------------
@@ -503,8 +522,10 @@ func (r *VerificationResult) String() string {
 	if r == nil {
 		return "sandbox:verification<none>"
 	}
-	return fmt.Sprintf("sandbox: verified=%v backend=%s/%s policy=%s@%s af_unix=%s network_enforced=%v grants=%d",
-		r.Verified, r.Backend, r.Version, r.PolicyRef, shortDigest(r.PolicyDigest), r.AfUnixMediation, r.NetworkEnforced, len(r.GrantedPaths))
+	claim, enforced := r.EgressReport()
+	return fmt.Sprintf("sandbox: verified=%v backend=%s/%s policy=%s@%s af_unix=%s network=%s profile_claim=%s enforced=%v grants=%d",
+		r.Verified, r.Backend, r.Version, r.PolicyRef, shortDigest(r.PolicyDigest), r.AfUnixMediation,
+		claim, r.NetworkEnforced, enforced, len(r.GrantedPaths))
 }
 
 func shortDigest(d string) string {

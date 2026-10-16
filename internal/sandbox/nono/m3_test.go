@@ -315,8 +315,13 @@ func TestVerifyChainPassesForARealWorkspace(t *testing.T) {
 	if res.AfUnixMediation != "pathname" {
 		t.Errorf("AF_UNIX mediation = %q", res.AfUnixMediation)
 	}
-	if res.NetworkEnforced {
-		t.Error("the agent-turn profile claims enforced egress: that claim belongs to agent-turn-egress-denied only (ADR-0019 D3, D-021 Provisional)")
+	if res.NetworkEnforced != nono.NetworkAllowlisted {
+		t.Errorf("the agent-turn profile claims network=%q: since ADR-0035 its digest commits to the shipped egress allowlist, and a run whose file carries no host set is a different policy (open) with a different digest", res.NetworkEnforced)
+	}
+	// The profile's claim is not the run's: no audit read has happened, so the
+	// only honest report is "open" + not enforced (design A's rule).
+	if claim, enforced := res.EgressReport(); enforced || claim != string(nono.NetworkOpen) {
+		t.Errorf("EgressReport without an observed denial = (%q, %v), want (%q, false)", claim, enforced, nono.NetworkOpen)
 	}
 	// The recorded labels must be exactly the plan's, and every one of them must
 	// be a role the event schema knows.
@@ -897,11 +902,11 @@ func TestEgressDeniedProfileActuallyDenies(t *testing.T) {
 		case tc.wantOpen && !strings.Contains(got, "CONNECTED"):
 			t.Logf("%s: loopback connect did not succeed under the open profile (%s) — recorded, not asserted: this profile makes no egress claim either way", tc.kind, got)
 		}
-		if tc.kind == nono.ProfileAgentTurn && res.NetworkEnforced {
-			t.Error("the agent-turn profile reported NetworkEnforced=true")
+		if tc.kind == nono.ProfileAgentTurn && res.NetworkEnforced != nono.NetworkAllowlisted {
+			t.Errorf("the agent-turn profile reported network=%q, want %q (ADR-0035)", res.NetworkEnforced, nono.NetworkAllowlisted)
 		}
-		if tc.kind == nono.ProfileEgressDenied && !res.NetworkEnforced {
-			t.Error("the egress-denied profile reported NetworkEnforced=false")
+		if tc.kind == nono.ProfileEgressDenied && res.NetworkEnforced != nono.NetworkDenied {
+			t.Errorf("the egress-denied profile reported network=%q, want %q", res.NetworkEnforced, nono.NetworkDenied)
 		}
 	}
 }
@@ -965,14 +970,21 @@ func TestSandboxVerifiedPayloadMatchesTheChain(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("the profile is not valid JSON: %v", err)
 	}
+	chain := &nono.VerificationResult{
+		NetworkEnforced: prof.NetworkEnforced, EgressHosts: prof.EgressHosts,
+	}
+	claim, enforced := chain.EgressReport()
 	payload := events.SandboxVerifiedPayload{
 		ProjectID: fixtureProject, TurnID: "t", WorkspaceID: "w", WorkerID: "k",
 		PolicyDigest: prof.Digest, Backend: "nono", BackendVersion: nono.PinnedVersion,
-		AfUnixMediation: "pathname", NetworkEnforced: prof.NetworkEnforced,
+		AfUnixMediation: "pathname", NetworkEnforced: enforced, Network: claim,
 		Grants: sandboxGrants(plan), CommitGranted: true, Verified: true,
 	}
 	if payload.NetworkEnforced {
 		t.Error("agent-turn payload claims enforced egress")
+	}
+	if claim != string(nono.NetworkOpen) {
+		t.Errorf("an allowlisted profile with no observed denial reported %q, want %q (ADR-0035: the claim follows the run's audit, never the config)", claim, nono.NetworkOpen)
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

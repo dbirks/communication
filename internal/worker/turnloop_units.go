@@ -294,6 +294,7 @@ func (l *TurnLoop) verifiedEvent(ctx context.Context, c Claim, u *Unit) error {
 	if u == nil || u.Verified == nil {
 		return nil
 	}
+	network, enforced := u.Verified.EgressReport()
 	return l.store.WorkspaceEvent(ctx, c, TurnEvent{
 		Type: events.TypeSandboxVerified, ActorKind: events.ActorKindWorker, ActorID: c.WorkerID,
 		Payload: events.SandboxVerifiedPayload{
@@ -303,7 +304,8 @@ func (l *TurnLoop) verifiedEvent(ctx context.Context, c Claim, u *Unit) error {
 			Backend:         u.Verified.Backend,
 			BackendVersion:  u.Verified.Version,
 			AfUnixMediation: u.Verified.AfUnixMediation,
-			NetworkEnforced: u.Verified.NetworkEnforced,
+			NetworkEnforced: enforced,
+			Network:         network,
 			Grants:          eventGrants(u.Plan),
 			CommitGranted:   u.Plan.CommitGranted,
 			// Verified is the payload's own honesty field: true only when this

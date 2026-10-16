@@ -796,8 +796,8 @@ func TestM3PayloadFieldNames(t *testing.T) {
 		},
 		"SandboxVerifiedPayload": {
 			"af_unix_mediation", "backend", "backend_version", "commit_granted", "grants",
-			"network_enforced", "policy_digest", "project_id", "turn_id", "verified",
-			"worker_id", "workspace_id",
+			"network", "network_enforced", "policy_digest", "project_id", "turn_id",
+			"verified", "worker_id", "workspace_id",
 		},
 		"SandboxGrant": {"access", "role"},
 		"SandboxEnforcementFailedPayload": {
@@ -864,6 +864,7 @@ func TestM3PayloadFieldNames(t *testing.T) {
 			ProjectID: "p-1", TurnID: "t-1", WorkspaceID: "ws-1", WorkerID: "w-1",
 			PolicyDigest: "sha256:" + strings.Repeat("2", 64), Backend: "nono",
 			BackendVersion: "0.80.0", AfUnixMediation: "pathname", NetworkEnforced: false,
+			Network:       "open",
 			Grants:        []SandboxGrant{{Role: GrantRoleWorkspaceRepo, Access: GrantAccessRW}},
 			CommitGranted: true, Verified: true,
 		},

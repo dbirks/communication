@@ -623,10 +623,11 @@ func (p *ProcExec) verifiedPayload(c AttemptClaim, plan wsgit.LaunchPlan, res *n
 			workspaceID = ref.WorkspaceID
 		}
 	}
+	network, enforced := res.EgressReport()
 	return events.SandboxVerifiedPayload{
 		ProjectID: c.ProjectID, WorkspaceID: workspaceID, WorkerID: c.WorkerID,
 		PolicyDigest: res.PolicyDigest, Backend: res.Backend, BackendVersion: res.Version,
-		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: res.NetworkEnforced,
+		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: enforced, Network: network,
 		Grants: grants, CommitGranted: false, Verified: res.Verified,
 	}
 }

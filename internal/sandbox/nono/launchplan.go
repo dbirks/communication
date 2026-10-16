@@ -37,7 +37,9 @@ type LaunchSpec struct {
 	// `env` hop. It is built from scratch by the worker; nothing is inherited
 	// from the worker process.
 	AdapterEnv []string
-	// BlockNet adds --block-net. Only the egress-denied profile should ask.
+	// BlockNet adds --block-net. Only the egress-denied profiles may ask, and an
+	// allowlisted agent-turn profile must never: nono refuses the pair
+	// (ADR-0035; see the argv guard below).
 	BlockNet bool
 	// ToolReads are read-only grants for the *program* the sandbox is asked to
 	// exec, as opposed to the workspace it works on. A process.exec command is
@@ -128,17 +130,26 @@ func (s LaunchSpec) argv(verify bool) ([]string, error) {
 		args = append(args, "--read", p)
 	}
 	// --block-net is emitted only under a profile whose own recorded identity
-	// says egress is denied (ADR-0019 D3: network is an axis with two names,
+	// says egress is denied (ADR-0019 D3: network is an axis with named values,
 	// so a run can never be both), and a profile that says it MUST carry the
 	// flag: the command profile cannot be launched with the network open any
-	// more than the case-13 profile can.
+	// more than the case-13 profile can. An allowlisted profile (ADR-0035) takes
+	// neither branch — its host set is in the profile file, so the argv shape is
+	// unchanged, and `--block-net` alongside `network.allow_domain` is the
+	// contradiction nono's own parser aborts on (measured: "--block-net and
+	// --allow-domain are contradictory: domain filtering requires proxy mode").
 	switch {
-	case s.BlockNet && !s.Profile.NetworkEnforced:
-		return nil, fmt.Errorf("sandbox: --block-net under profile %s would make an egress claim the recorded policy digest does not describe: use an egress-denied profile (%s or %s) (ADR-0019 D3: network is an axis with two names, so a run can never be both)", s.Profile.Kind, ProfileEgressDenied, ProfileCommand)
+	case s.BlockNet && s.Profile.NetworkEnforced != NetworkDenied:
+		return nil, fmt.Errorf("sandbox: --block-net under profile %s (network=%s) would make an egress claim the recorded policy digest does not describe: use an egress-denied profile (%s or %s), and --block-net with an allowlist is the contradiction nono's own parser aborts on (ADR-0019 D3, ADR-0035)", s.Profile.Kind, s.Profile.NetworkEnforced, ProfileEgressDenied, ProfileCommand)
 	case s.BlockNet:
 		args = append(args, "--block-net")
-	case s.Profile.NetworkEnforced:
+	case s.Profile.NetworkEnforced == NetworkDenied:
 		return nil, fmt.Errorf("sandbox: profile %s is an egress-denied policy but the launch did not request --block-net: launching it without the flag would silently widen the recorded policy", s.Profile.Kind)
+	case s.Profile.NetworkEnforced == NetworkAllowlisted && len(s.Profile.EgressHosts) == 0:
+		// Belt and braces: AssertOwnBytes compares the file to this list, and an
+		// allowlisted profile with no hosts in hand would verify a file that
+		// allows nothing while reporting a host set that does not exist.
+		return nil, fmt.Errorf("sandbox: profile %s claims egress %q but carries no host list", s.Profile.Kind, NetworkAllowlisted)
 	}
 	// --allow-cwd is never emitted (C-CWD3: it is a grant, not an assertion —
 	// with it, a launch directory outside the intended set became readable).

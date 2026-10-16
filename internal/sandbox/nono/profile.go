@@ -22,9 +22,10 @@ const PinnedVersion = "0.80.0"
 // difference is a security claim: a run under agent-turn must never be able to
 // say it denied egress.
 const (
-	// ProfileAgentTurn enforces filesystem and AF_UNIX and leaves network
-	// open, which is the only shape a real Claude/Codex turn can run under
-	// (ADR-0019 D3: the harness cannot answer without its model API).
+	// ProfileAgentTurn enforces filesystem and AF_UNIX and (since ADR-0035)
+	// carries the egress allowlist a real Claude/Codex turn runs under —
+	// ADR-0019 D3's "network is an axis" with its third value. An agent-turn
+	// profile authored with no host list is still the open-network shape.
 	ProfileAgentTurn = "communication-agent"
 	// ProfileEgressDenied is the same filesystem policy plus --block-net, used
 	// by the case-13 security gate, which proves egress denial with a
@@ -53,11 +54,20 @@ type Profile struct {
 	// `SandboxPolicyRef` content identity ADR-0019 D5 asks to be recorded per
 	// unit.
 	Digest string
-	// NetworkEnforced is true only for the egress-denied kinds
-	// (ProfileEgressDenied, ProfileCommand). For agent-turn it is false and
-	// always stays false: ADR-0019 keeps D-021 Provisional until a domain
-	// allowlist is observed from inside a real turn.
-	NetworkEnforced bool
+	// NetworkEnforced is the profile's own claim on the egress axis in the
+	// ADR-0035 tri-state: NetworkDenied for the egress-denied kinds
+	// (ProfileEgressDenied, ProfileCommand), NetworkAllowlisted when the file
+	// carries a proxy allowlist, NetworkOpen otherwise. It is committed to the
+	// digest, so a recorded policy_digest identifies the host set as well as
+	// the file. What a RUN may claim is weaker than what the PROFILE claims:
+	// see VerificationResult.EgressReport — a run says "allowlisted" only once
+	// its own audit journal shows a denial (design A's rule, docs/design/
+	// agent-egress.md), so an allowlist nobody exercised keeps reporting
+	// network_enforced=false.
+	NetworkEnforced NetworkEnforcement
+	// EgressHosts is the allowlist the digest commits to, empty unless
+	// NetworkEnforced is NetworkAllowlisted.
+	EgressHosts []string
 	// ProfileVersion is nono's `meta.version` for this file, which is a policy
 	// revision, not a nono release.
 	ProfileVersion string
@@ -76,6 +86,23 @@ type profileSource struct {
 	Security profileSecurity `json:"security"`
 	Groups   profileGroups   `json:"groups"`
 	FS       profileFS       `json:"filesystem"`
+	// Network is the ADR-0035 axis. It is a pointer because encoding/json
+	// never treats a struct value as empty: absent means the key is not in the
+	// file at all, which is the open-network shape (and the shape every
+	// pre-ADR-0035 digest had).
+	Network *profileNetwork `json:"network,omitempty"`
+}
+
+// profileNetwork is the subset of nono's NetworkConfig this product authors.
+// `block` is deliberately absent: egress denial is the --block-net flag on a
+// profile whose kind says denied, and block-plus-allowlist is the contradiction
+// nono's own parser refuses ("--block-net and --allow-domain are
+// contradictory: domain filtering requires proxy mode", measured).
+// `deny_domain` is here because nono evaluates it BEFORE the allowlist, so a
+// policy that could not express it could not be reviewed as a whole.
+type profileNetwork struct {
+	AllowDomain []string `json:"allow_domain,omitempty"`
+	DenyDomain  []string `json:"deny_domain,omitempty"`
 }
 
 type profileMeta struct {
@@ -139,7 +166,11 @@ const GrantModelNote = "static policy in the profile file (mediation, the Landlo
 // git needs wherever that file exists (probe C-GITCFG).
 // 3.3.0 adds the read-only shell startup files that made every shell step of
 // a sandboxed pipeline agent fail (probe C-BASHRC, ADR-0033).
-const profileVersion = "3.3.0"
+// 3.4.0 adds the `network` member: the agent kind is authored with an egress
+// allowlist by default, so the policy digest now commits to a host set
+// (ADR-0035 amending ADR-0019 D3). The egress-denied kinds keep --block-net as
+// a CLI flag and their file shape only changes by version string.
+const profileVersion = "3.4.0"
 
 // systemConfigReads are single system-scoped files the toolchain must be able
 // to *read*, granted read-only by the profile file rather than as per-run flags
@@ -242,13 +273,69 @@ func ExcludedGroups() []string { return append([]string(nil), hostConditionalGro
 // uses to talk about its own stdio; /dev/pts is how Node detects a terminal.
 var profileAllows = []string{"/proc/self/fd", "/dev/pts"}
 
-func profileBody(kind string) (profileSource, error) {
+// resolveNetwork is the one place that decides what a kind's network axis is,
+// so a profile's tri-state claim and its bytes cannot disagree. net == "" means
+// "the caller had no opinion": the agent kind gets the shipped allowlist and
+// the two egress-denied kinds keep --block-net semantics.
+func resolveNetwork(kind string, net NetworkEnforcement, allow []string) (NetworkEnforcement, []string, error) {
 	switch kind {
 	case ProfileAgentTurn, ProfileEgressDenied, ProfileCommand:
 	default:
-		return profileSource{}, fmt.Errorf("sandbox: unknown profile kind %q (want %s, %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied, ProfileCommand)
+		return "", nil, fmt.Errorf("sandbox: unknown profile kind %q (want %s, %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied, ProfileCommand)
+	}
+	if net == "" {
+		if kind == ProfileAgentTurn {
+			if len(allow) == 0 {
+				allow = DefaultEgressHosts()
+			}
+			net = NetworkAllowlisted
+		} else {
+			net = NetworkDenied
+		}
+	}
+	switch net {
+	case NetworkOpen:
+		if len(allow) > 0 {
+			return "", nil, fmt.Errorf("sandbox: an open-network policy cannot carry an allowlist (%d host(s) requested): say %q or %q, never both (ADR-0035)", len(allow), NetworkOpen, NetworkAllowlisted)
+		}
+		if kind != ProfileAgentTurn {
+			return "", nil, fmt.Errorf("sandbox: profile %s is an egress-denied policy and cannot be authored with network %q: that would widen a policy whose whole contract is that commands and the case-13 gate have no egress", kind, NetworkOpen)
+		}
+		return NetworkOpen, nil, nil
+	case NetworkAllowlisted:
+		if kind != ProfileAgentTurn {
+			return "", nil, fmt.Errorf("sandbox: profile %s is an egress-denied policy: an allowlist belongs on the agent-turn kind, and --block-net with --allow-domain is the contradiction nono's own parser refuses (measured: \"--block-net and --allow-domain are contradictory: domain filtering requires proxy mode\")", kind)
+		}
+		hosts, err := NormalizeEgressHosts(allow)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(hosts) == 0 {
+			// An empty allowlist is the silent-degradation case: nono's proxy
+			// with no grant allows nothing, but an author who wrote the list by
+			// accident and got an open profile would never see it. Refuse.
+			return "", nil, fmt.Errorf("sandbox: profile %s requested %q with no host: an allowlist that resolves to nothing is a policy nobody can read off the file (ADR-0035)", kind, NetworkAllowlisted)
+		}
+		return NetworkAllowlisted, hosts, nil
+	case NetworkDenied:
+		if len(allow) > 0 {
+			return "", nil, fmt.Errorf("sandbox: an egress-denied policy cannot carry an allowlist (%d host(s) requested): --block-net and domain filtering are contradictory in nono's own config parser (ADR-0035 keeps the command profile unchanged)", len(allow))
+		}
+		return NetworkDenied, nil, nil
+	default:
+		return "", nil, fmt.Errorf("sandbox: unknown network enforcement %q (want %s, %s or %s)", net, NetworkOpen, NetworkAllowlisted, NetworkDenied)
+	}
+}
+
+func profileBody(kind string, net NetworkEnforcement, allow []string) (profileSource, error) {
+	net, hosts, err := resolveNetwork(kind, net, allow)
+	if err != nil {
+		return profileSource{}, err
 	}
 	desc := "Communication agent sandbox: filesystem + AF_UNIX enforced, network open (ADR-0019 D3 agent-turn)"
+	if kind == ProfileAgentTurn && net == NetworkAllowlisted {
+		desc = "Communication agent sandbox: filesystem + AF_UNIX enforced, egress allowlisted through nono's proxy (network.allow_domain; ADR-0035 amending ADR-0019 D3 agent-turn)"
+	}
 	if kind == ProfileEgressDenied {
 		desc = "Communication agent sandbox: filesystem + AF_UNIX + egress denied (ADR-0019 D3 agent-turn-egress-denied; case 13's gate only)"
 	}
@@ -270,14 +357,34 @@ func profileBody(kind string) (profileSource, error) {
 			WriteFile: append([]string(nil), deviceWrites...),
 			Allow:     append([]string(nil), profileAllows...),
 		},
+		Network: networkBody(net, hosts),
 	}, nil
+}
+
+// networkBody renders the file's `network` member, or nil for the absent
+// (open / flag-only-denied) shape. hosts is the canonical list resolveNetwork
+// already validated, so the bytes and the tri-state claim are one computation.
+func networkBody(net NetworkEnforcement, hosts []string) *profileNetwork {
+	if net != NetworkAllowlisted || len(hosts) == 0 {
+		return nil
+	}
+	return &profileNetwork{AllowDomain: append([]string(nil), hosts...)}
 }
 
 // ProfileJSON renders the canonical bytes of a policy file. Exported because
 // `communication doctor` prints the digest it is about to launch under, and
 // two renderings that disagree would make that number meaningless.
 func ProfileJSON(kind string) ([]byte, error) {
-	body, err := profileBody(kind)
+	return ProfileJSONNetwork(kind, "", nil)
+}
+
+// ProfileJSONNetwork renders the canonical bytes of a policy file with an
+// explicit network axis ("" = the kind's default). Exported alongside
+// ProfileJSON for the same reason: the worker writes these bytes, `doctor`
+// prints their digest, and two renderings that disagree would make that number
+// meaningless.
+func ProfileJSONNetwork(kind string, net NetworkEnforcement, allow []string) ([]byte, error) {
+	body, err := profileBody(kind, net, allow)
 	if err != nil {
 		return nil, err
 	}
@@ -307,10 +414,27 @@ func DigestProfile(data []byte) string {
 // partially written profile makes `nono run` fail closed (C-MISSING/N6), which
 // is the right direction for a failure.
 func WriteProfile(dir, kind string) (*Profile, error) {
+	return WriteProfileNetwork(dir, kind, "", nil)
+}
+
+// WriteProfileNetwork materializes a policy file with an explicit network axis
+// (ADR-0035): net "" takes the kind default, NetworkOpen authors the agent kind
+// with no `network` member at all, and NetworkAllowlisted commits `allow` to the
+// file — and therefore to the digest. Only the worker's own configuration ever
+// reaches this (COMMUNICATION_AGENT_EGRESS_ALLOW); a pipeline document cannot,
+// because an agent must not choose which hosts it may talk to.
+//
+// The file name is still one per kind: the digest, not the path, is what
+// identifies the policy a unit ran under.
+func WriteProfileNetwork(dir, kind string, net NetworkEnforcement, allow []string) (*Profile, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("sandbox: no directory to write profile %s into", kind)
 	}
-	data, err := ProfileJSON(kind)
+	net, hosts, err := resolveNetwork(kind, net, allow)
+	if err != nil {
+		return nil, err
+	}
+	data, err := ProfileJSONNetwork(kind, net, hosts)
 	if err != nil {
 		return nil, err
 	}
@@ -344,8 +468,8 @@ func WriteProfile(dir, kind string) (*Profile, error) {
 	}
 	return &Profile{
 		Kind: kind, Path: path, Digest: DigestProfile(onDisk),
-		NetworkEnforced: kind == ProfileEgressDenied || kind == ProfileCommand,
-		ProfileVersion:  profileVersion,
+		NetworkEnforced: net, EgressHosts: hosts,
+		ProfileVersion: profileVersion,
 	}, nil
 }
 
@@ -412,7 +536,39 @@ func (p *Profile) AssertOwnBytes() error {
 			return fmt.Errorf("sandbox: profile %s reads %q, which is not on this adapter's read-only system-file contract: the list is pinned so no system file starts being readable inside the sandbox without a reviewed change", p.Path, f)
 		}
 	}
+	// The egress axis is asserted against the same bytes as everything else:
+	// the tri-state on the Profile is a claim about this file, and ADR-0035 puts
+	// the host set inside the digest precisely so a run cannot describe a network
+	// policy the recorded digest does not carry.
+	switch p.NetworkEnforced {
+	case NetworkAllowlisted:
+		if body.Network == nil {
+			return fmt.Errorf("sandbox: profile %s claims egress %q but carries no `network` member: the host set lives in the file, so the digest and the claim would disagree (ADR-0035)", p.Path, NetworkAllowlisted)
+		}
+		if !equalStrings(body.Network.AllowDomain, p.EgressHosts) {
+			return fmt.Errorf("sandbox: profile %s allows %v but the Profile reports %v: the allowlist is canonicalized (sorted, deduped) at authoring time, so a file whose list differs from the claim was not written by this adapter", p.Path, body.Network.AllowDomain, p.EgressHosts)
+		}
+		if len(body.Network.DenyDomain) > 0 {
+			return fmt.Errorf("sandbox: profile %s carries deny_domain %v, which this adapter never authors: a deny that beats the allowlist (nono evaluates it first) has to be a reviewed change to the shipped shape, not a stray field", p.Path, body.Network.DenyDomain)
+		}
+	default:
+		if body.Network != nil {
+			return fmt.Errorf("sandbox: profile %s carries a `network` member while its claim is %q: an egress policy that is not in the Profile's tri-state is an egress policy nobody reviewed (ADR-0035)", p.Path, p.NetworkEnforced)
+		}
+	}
 	return nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(hay []string, needle string) bool {

@@ -391,3 +391,37 @@ conversations) and `process.exec` nodes (unattended, no ACP prompt at all — op
 * Workspaces were `released` after each turn, so `inside-note.txt` could not be
   re-inspected on disk after the fact; row 2 rests on the tool output, and the
   negative results rest on post-run `ls`.
+
+## Egress allowlist — mechanism landed, live rows pending (2026-10-18)
+
+ADR-0035 amends ADR-0019 D3: the agent profile now authors nono 0.80's proxy
+allowlist into `network.allow_domain` (`internal/sandbox/nono/profile.go`,
+`profileVersion` **3.4.0**), `Profile.NetworkEnforced` is the tri-state
+`open|allowlisted|denied` committed to the policy digest, and the host list
+comes from the worker's `COMMUNICATION_AGENT_EGRESS_ALLOW` (shipped default
+`api.anthropic.com`, **provisional**) rather than from anything a project can
+edit. `communication-command` and `communication-agent-egress-denied` are
+unchanged: still `--block-net`, still the only kind whose `network_enforced` is
+true by policy, and case 13's denial row still rests on them.
+
+**Nothing in this section is a PASS.** Row 8 above (`http=200` to
+`https://example.com`, `network_enforced: false`) is the last *observed* egress
+result and stays in force until re-run. What exists today is the unit-tested
+mechanism — profile bytes, digest sensitivity, argv guards, audit parsing —
+plus `docs/design/agent-egress.md`'s throwaway-container measurements. Per
+design A's rule the code cannot label an unexercised allowlist:
+`sandbox.verified` reports `network: "allowlisted:<hosts>"` only when **that
+run's own** `nono audit show` journal contains a `{"decision":"deny",
+"denial_category":"host_denied"}` line, and keeps reporting `open` /
+`network_enforced: false` without one.
+
+To flip row 8, rerun the 2026-10-16 evaluation verbatim in
+`communication-m4-worker-a-1` under the 3.4.0 profile and record: rows 1, 2, 3,
+6, 7 unchanged; **8a** `fetch('https://api.anthropic.com/v1/messages')` →
+`http=405`; **8b** `fetch('https://example.com')` → denial, with the deny line
+from that run's `network_events` quoted literally; a completing
+`claude-agent-acp` turn (which is what proves the host set is *sufficient* —
+no such turn has ever run under an allowlist); and the turn's
+`sandbox.verified` showing `network: "allowlisted:…"`. Only then may D-021 move
+off **Provisional**, and only then does the `preapproved_within_sandbox`
+recommendation's condition (b) have evidence.

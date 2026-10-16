@@ -718,7 +718,7 @@ paths:
         | `workspace.quarantined` | `workspace_id`, `project_id`, `reason` |
         | `workspace.released` | `workspace_id`, `project_id`, `repos_pruned` |
         | `workspace.recovery_lost` | `workspace_id`, `project_id`, `expected_volume_id`, `found_volume_id`, `reason` |
-        | `sandbox.verified` | `project_id`, `turn_id`, `workspace_id`, `worker_id`, `policy_digest`, `backend`, `backend_version`, `af_unix_mediation`, `network_enforced`, `grants`, `commit_granted`, `verified` |
+        | `sandbox.verified` | `project_id`, `turn_id`, `workspace_id`, `worker_id`, `policy_digest`, `backend`, `backend_version`, `af_unix_mediation`, `network_enforced`, `network`, `grants`, `commit_granted`, `verified`  (ADR-0035's egress claim: open, denied, or allowlisted:&lt;hosts&gt; — the last only when that run's own audit journal recorded a refusal; absent on rows written before ADR-0035) |
         | `sandbox.enforcement_failed` | `project_id`, `turn_id`, `workspace_id`, `worker_id`, `stage`, `reason`, `backend`, `backend_version`, `policy_digest`, `verified`, `child_started`, `detail` |
         | `secret.created` | `secret_id`, `project_id`, `slug`, `scope`, `purpose`, `delivery_mode`, `version`, `allowed_agent_profile_ids` |
         | `secret.version.added` | `secret_id`, `project_id`, `version`, `key_id`, `previous_version` |

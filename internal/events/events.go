@@ -712,21 +712,33 @@ type SandboxGrant struct {
 // SandboxVerifiedPayload is sandbox.verified, emitted by the worker after the
 // N-a..N-d chain passed for this unit. Verified is a plain bool (never omitted)
 // so a reader can assert the field exists and is true rather than inferring it
-// from absence. NetworkEnforced=false on the agent-turn profile is the observed
+// from absence. NetworkEnforced=false on an agent-turn profile is the observed
 // truth, reported rather than hidden (ADR-0019 D3, D-021 Provisional).
+//
+// Network is ADR-0035's finer label, in the tri-state vocabulary:
+// "denied" (--block-net profile), "allowlisted:<hosts>" (a profile whose digest
+// commits to a host set AND whose own audit journal recorded a refusal), or
+// "open". The AND is the whole point: an allowlist that was never exercised
+// keeps reporting NetworkOpen with NetworkEnforced=false, so no configuration
+// default can buy a run an egress claim. An absent Network on an older row means
+// exactly "this row predates the label", never "enforced".
 type SandboxVerifiedPayload struct {
-	ProjectID       string         `json:"project_id"`
-	TurnID          string         `json:"turn_id"`
-	WorkspaceID     string         `json:"workspace_id"`
-	WorkerID        string         `json:"worker_id"`
-	PolicyDigest    string         `json:"policy_digest"`
-	Backend         string         `json:"backend"`
-	BackendVersion  string         `json:"backend_version"`
-	AfUnixMediation string         `json:"af_unix_mediation"`
-	NetworkEnforced bool           `json:"network_enforced"`
-	Grants          []SandboxGrant `json:"grants"`
-	CommitGranted   bool           `json:"commit_granted"`
-	Verified        bool           `json:"verified"`
+	ProjectID       string `json:"project_id"`
+	TurnID          string `json:"turn_id"`
+	WorkspaceID     string `json:"workspace_id"`
+	WorkerID        string `json:"worker_id"`
+	PolicyDigest    string `json:"policy_digest"`
+	Backend         string `json:"backend"`
+	BackendVersion  string `json:"backend_version"`
+	AfUnixMediation string `json:"af_unix_mediation"`
+	NetworkEnforced bool   `json:"network_enforced"`
+	// Network is the run-level egress claim (ADR-0035): "open" | "denied" |
+	// "allowlisted:<comma-separated hosts>". NetworkEnforced is true exactly when
+	// this is "denied" or "allowlisted:…".
+	Network       string         `json:"network,omitempty"`
+	Grants        []SandboxGrant `json:"grants"`
+	CommitGranted bool           `json:"commit_granted"`
+	Verified      bool           `json:"verified"`
 }
 
 // SandboxEnforcementFailedPayload is sandbox.enforcement_failed: emitted before

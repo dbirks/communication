@@ -63,6 +63,18 @@ environment:
                                  a workspace (probe C-H1's refusal is sticky).
   COMMUNICATION_SANDBOX_POLICY_DIR   where the profile files are written
                                  (default "<workspace root's parent>/sandbox-policy")
+  COMMUNICATION_AGENT_EGRESS_ALLOW   ADR-0035: comma-separated hostnames this
+                                 worker's agent turns may reach (default
+                                 "api.anthropic.com", provisional — the lab turn
+                                 decides the set). They are published into the
+                                 agent profile's network.allow_domain, so the
+                                 policy digest commits to the host set. Set to
+                                 "open" for ADR-0019 D3's unrestricted agent
+                                 network. A run only reports network:
+                                 "allowlisted" once its own audit journal shows a
+                                 denial, and no pipeline document can widen this
+                                 list — it is worker operator configuration, like
+                                 the enforcement mode above.
   COMMUNICATION_AGENT_GIT_NAME / COMMUNICATION_AGENT_GIT_EMAIL
                                  commit identity seeded into each agent home
   COMMUNICATION_SECRET_KEYRING   envelope-encryption keyring directory

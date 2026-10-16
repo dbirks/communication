@@ -1,7 +1,7 @@
 {
   "meta": {
     "name": "communication-command",
-    "version": "3.3.0",
+    "version": "3.4.0",
     "description": "Communication command sandbox: filesystem + AF_UNIX + egress denied (M4 contract § 4 step 5; the process.exec policy — commands run offline against pre-vendored caches)"
   },
   "extends": "default",

@@ -558,7 +558,7 @@ func TestProcExecRequiredUsesTheCommandProfile(t *testing.T) {
 	fake := &recordingSandbox{result: &nono.VerificationResult{
 		Backend: "nono", Version: nono.PinnedVersion,
 		PolicyRef: nono.ProfileCommand, PolicyDigest: "sha256:fake",
-		AfUnixMediation: "pathname", NetworkEnforced: true, Verified: true,
+		AfUnixMediation: "pathname", NetworkEnforced: nono.NetworkDenied, Verified: true,
 	}}
 	f.proc.Sandbox = fake
 	f.proc.SandboxPath = "/bin/echo" // echoes the nono argv and exits 0
@@ -582,8 +582,8 @@ func TestProcExecRequiredUsesTheCommandProfile(t *testing.T) {
 	if !spec.BlockNet {
 		t.Error("the command profile must launch with --block-net (§ 4 step 5: egress denied)")
 	}
-	if !spec.Profile.NetworkEnforced {
-		t.Error("communication-command must carry its own NetworkEnforced claim")
+	if spec.Profile.NetworkEnforced != nono.NetworkDenied {
+		t.Error("communication-command must carry its own egress-denied claim (ADR-0035 left this kind on --block-net)")
 	}
 	if spec.AdapterPath != procExecLookPath(t, "true") {
 		t.Errorf("adapter = %q, want the worker-PATH resolution of `true`", spec.AdapterPath)
@@ -760,7 +760,7 @@ func toolReadsFixture(t *testing.T) (*procExecFixture, *recordingSandbox) {
 	fake := &recordingSandbox{result: &nono.VerificationResult{
 		Backend: "nono", Version: nono.PinnedVersion,
 		PolicyRef: nono.ProfileCommand, PolicyDigest: "sha256:fake",
-		AfUnixMediation: "pathname", NetworkEnforced: true, Verified: true,
+		AfUnixMediation: "pathname", NetworkEnforced: nono.NetworkDenied, Verified: true,
 	}}
 	f.proc.Sandbox = fake
 	f.proc.SandboxPath = "/bin/echo"

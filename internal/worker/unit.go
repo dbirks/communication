@@ -916,10 +916,16 @@ func verification(res *nono.VerificationResult, plan wsgit.LaunchPlan) *acp.Veri
 	if res == nil {
 		return nil
 	}
+	claim, enforced := res.EgressReport()
 	return &acp.Verification{
 		Backend: res.Backend, BackendVersion: res.Version,
 		PolicyRef: res.PolicyRef, PolicyDigest: res.PolicyDigest,
-		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: res.NetworkEnforced,
+		AfUnixMediation: res.AfUnixMediation,
+		// The profile's tri-state claim and the run's evidence-backed claim travel
+		// separately on purpose (ADR-0035): the first is what the digest commits
+		// to, the second is what the journal may say.
+		NetworkEnforcement: string(res.NetworkEnforced), EgressHosts: append([]string(nil), res.EgressHosts...),
+		NetworkClaim: claim, NetworkEnforced: enforced,
 		GrantLabels: plan.Labels(), CommitGranted: plan.CommitGranted,
 	}
 }

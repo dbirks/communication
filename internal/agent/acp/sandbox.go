@@ -73,9 +73,22 @@ type Verification struct {
 	// C-AFU2: the verbose dry-run prints no AF_UNIX line at all, so the two
 	// assertions cannot share a command).
 	AfUnixMediation string
-	// NetworkEnforced is false on the agent-turn policy and stays false until a
-	// domain allowlist is observed from inside a real turn: D-021 remains
-	// Provisional, so no run may claim enforced egress control (ADR-0019 D3).
+	// NetworkEnforcement is the *profile's* claim on the egress axis in the
+	// ADR-0035 tri-state: "open", "allowlisted" or "denied". It is a string and
+	// not a bool because the middle value is a real state a bool cannot name, and
+	// it is the profile's claim, not the run's: what this run may report is the
+	// pair below, and an allowlist whose audit showed no refusal keeps reporting
+	// open / false (D-021 stays Provisional until the lab turn earns it).
+	NetworkEnforcement string
+	// EgressHosts is the allowlist committed to the profile digest.
+	EgressHosts []string
+	// NetworkClaim is what THIS run is allowed to report, in ADR-0035's
+	// vocabulary: "open" | "denied" | "allowlisted:<hosts>". A run whose audit
+	// journal recorded no refusal reports "open" even under an allowlisted
+	// profile — the claim follows the evidence, never the configuration.
+	NetworkClaim string
+	// NetworkEnforced is the run-level bool the journal has always carried: true
+	// only when NetworkClaim is "denied" or "allowlisted:…".
 	NetworkEnforced bool
 	// GrantLabels is the event-safe grant set: {role, access} pairs. Resolved
 	// paths never appear in an event (contract deviation D14 — the journal is

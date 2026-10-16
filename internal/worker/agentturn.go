@@ -137,6 +137,11 @@ type AgentTurn struct {
 	LauncherHome string
 	// PolicyDir materializes the agent-turn profile file (ADR-0009 D4).
 	PolicyDir string
+	// EgressAllow overrides the agent-turn egress allowlist. Empty means read
+	// COMMUNICATION_AGENT_EGRESS_ALLOW, and an unset variable means nono's shipped
+	// default (ADR-0035). It is operator configuration: nothing a pipeline can
+	// write ever reaches this field.
+	EgressAllow []string
 	// SandboxPath is the nono executable, so argv and process agree.
 	SandboxPath string
 	// Sandbox is the verify seam; nil only reaches non-required modes.
@@ -243,9 +248,12 @@ func (a *AgentTurn) askMode(launcherID string) string {
 }
 
 // profile returns the communication-agent policy file, materialized once per
-// process. The agent-turn profile is the one whose NetworkEnforced claim is
-// false and stays false (M3's label carries over verbatim; § 0 names no
-// enforced egress on a real model turn).
+// process. Since ADR-0035 the agent-turn profile carries an egress allowlist, so
+// its NetworkEnforced claim is the worker's own configuration: allowlisted by
+// default (nono.DefaultEgressHosts, provisional pending the live turn), open on
+// an explicit COMMUNICATION_AGENT_EGRESS_ALLOW=open, and whatever host list the
+// operator set otherwise. What the profile *claims* is still not what the run
+// gets to *report* — see nono.VerificationResult.EgressReport.
 func (a *AgentTurn) profile() (*nono.Profile, error) {
 	a.memoMu.Lock()
 	if a.profileOnce == nil {
@@ -256,8 +264,12 @@ func (a *AgentTurn) profile() (*nono.Profile, error) {
 	if a.PolicyDir == "" {
 		return nil, errors.New("worker: no policy directory is configured, so the agent-turn profile cannot be materialized (ADR-0009 D4 requires -p <path>)")
 	}
+	net, hosts, err := agentEgressAllow(a.EgressAllow)
+	if err != nil {
+		return nil, err
+	}
 	return cache.do(nono.ProfileAgentTurn, func() (*nono.Profile, error) {
-		return nono.WriteProfile(a.PolicyDir, nono.ProfileAgentTurn)
+		return nono.WriteProfileNetwork(a.PolicyDir, nono.ProfileAgentTurn, net, hosts)
 	})
 }
 
@@ -974,10 +986,11 @@ func (a *AgentTurn) verifiedPayload(c AttemptClaim, workspaceID string, plan wsg
 	for _, g := range plan.Grants {
 		grants = append(grants, events.SandboxGrant{Role: g.Role, Access: g.Access()})
 	}
+	network, enforced := res.EgressReport()
 	return events.SandboxVerifiedPayload{
 		ProjectID: c.ProjectID, WorkspaceID: workspaceID, WorkerID: c.WorkerID,
 		PolicyDigest: res.PolicyDigest, Backend: res.Backend, BackendVersion: res.Version,
-		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: res.NetworkEnforced,
+		AfUnixMediation: res.AfUnixMediation, NetworkEnforced: enforced, Network: network,
 		Grants: grants, CommitGranted: plan.CommitGranted, Verified: res.Verified,
 	}
 }

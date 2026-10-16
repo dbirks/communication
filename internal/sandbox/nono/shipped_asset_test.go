@@ -33,18 +33,20 @@ func TestShippedCommandProfileAssetIsTheAuthoredBytes(t *testing.T) {
 }
 
 // TestCommandProfileCarriesTheEgressClaim is the axis claim itself: the
-// command profile's NetworkEnforced is true by kind, and a Profile hand-built
+// command profile's NetworkEnforced is denied by kind, and a Profile hand-built
 // without it is refused --block-net pairing in both directions
 // (launchplan.go's guard), because an egress claim the recorded digest does
-// not describe is the exact lie ADR-0019 D3's two names exist to prevent.
+// not describe is the exact lie ADR-0019 D3's named axes exist to prevent.
+// ADR-0035 did not change this kind: the command profile stays the --block-net
+// policy, with no `network` member in its file.
 func TestCommandProfileCarriesTheEgressClaim(t *testing.T) {
 	dir := t.TempDir() // the profile FILE may live anywhere; grants may not
 	prof, err := WriteProfile(dir, ProfileCommand)
 	if err != nil {
 		t.Fatalf("WriteProfile(%s): %v", ProfileCommand, err)
 	}
-	if !prof.NetworkEnforced {
-		t.Fatal("communication-command must carry NetworkEnforced=true: its contract (§ 4 step 5) is egress denied")
+	if prof.NetworkEnforced != NetworkDenied {
+		t.Fatalf("communication-command must carry NetworkEnforced=%s: its contract (§ 4 step 5) is egress denied, got %q", NetworkDenied, prof.NetworkEnforced)
 	}
 	if err := prof.AssertOwnBytes(); err != nil {
 		t.Fatalf("AssertOwnBytes: %v", err)
@@ -52,12 +54,12 @@ func TestCommandProfileCarriesTheEgressClaim(t *testing.T) {
 	plan, launcherHome := assetPlan(t)
 	// A lying Profile of the same kind (enforcement flag dropped) must not
 	// reach --block-net silently.
-	lying := &Profile{Kind: ProfileCommand, Path: prof.Path, Digest: prof.Digest, NetworkEnforced: false}
+	lying := &Profile{Kind: ProfileCommand, Path: prof.Path, Digest: prof.Digest, NetworkEnforced: NetworkOpen}
 	if _, err := (LaunchSpec{
 		Profile: lying, Plan: plan, LauncherHome: launcherHome,
 		AdapterPath: "/bin/true", AdapterEnv: []string{"PATH=/bin"}, BlockNet: true,
 	}).BuildLaunchArgv(); err == nil {
-		t.Error("BuildLaunchArgv accepted --block-net while the Profile denied NetworkEnforced")
+		t.Error("BuildLaunchArgv accepted --block-net while the Profile did not claim NetworkDenied")
 	}
 	// And the true command profile refuses to launch WITHOUT the flag.
 	if _, err := (LaunchSpec{
