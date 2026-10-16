@@ -44,6 +44,24 @@ func NewManager(workspaceRoot, reposRoot string, runner *Runner) (*Manager, erro
 	return &Manager{WorkspaceRoot: workspaceRoot, ReposRoot: reposRoot, Git: runner, locks: newMirrorLocks()}, nil
 }
 
+// NewReadManager returns a Manager for the operations that only ever read a
+// checkout — HeadCommit and Status run `git -C <checkout>` and never touch the
+// mirror root, which is exactly what a node-boundary capture reads after the
+// fact (ADR-0017 D8: the proof is a ref read, never an exit status). The
+// boundary capture in internal/worker needs that pair without being handed the
+// mirror root, and a Manager whose ReposRoot is empty cannot serve any of the
+// mirror-writing operations — Prepare, mirror fetches and Measure all fail on
+// the empty root, so the narrowed capability is structural, not a convention.
+func NewReadManager(workspaceRoot string) (*Manager, error) {
+	if err := checkAbsoluteNoDotDot(workspaceRoot); err != nil {
+		return nil, fmt.Errorf("workspace: %s root: %w", RootKindWorkspaces, err)
+	}
+	if err := RefuseTempPath(workspaceRoot); err != nil {
+		return nil, err
+	}
+	return &Manager{WorkspaceRoot: workspaceRoot, ReposRoot: "", Git: &Runner{}, locks: newMirrorLocks()}, nil
+}
+
 // Measure returns the identity of both configured storage roots, keyed by root
 // kind. Case 20's honest-loss arm depends on these two being distinct rows.
 func (m *Manager) Measure() (map[string]Volume, error) {

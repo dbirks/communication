@@ -59,46 +59,97 @@ type CaptureOutcome struct {
 // and another whose ref update failed at exit 128 while the command looked fine.
 // Capture therefore reads `rev-parse` after the fact and reports what git
 // answered.
-func (u *Unit) Capture(ctx context.Context) ([]CaptureOutcome, error) {
-	if u == nil {
-		return nil, errors.New("worker: no unit to capture")
-	}
+// BoundaryGit is the capture's read pair, split from *wsgit.Manager so the
+// node-boundary capture has one seam to fake and one implementation (the
+// manager itself satisfies it; NewReadManager builds the unsandboxed reader
+// the process.exec path uses).
+type BoundaryGit interface {
+	HeadCommit(ctx context.Context, checkout string) (string, error)
+	Status(ctx context.Context, checkout string, excluded []string) (wsgit.Summary, error)
+}
+
+// CaptureRepo is one checkout's identity at a boundary: where it lives, what
+// it was based on, and what was last *recorded* for it ("" when nobody has
+// ever captured it). Both the agent path (mapped from wsgit.PreparedRepo) and
+// the process.exec boundary (mapped from the run workspace rows) arrive here,
+// which is what makes ADR-0023 § 6's "the same capture ... now attached to a
+// node boundary" one function rather than two.
+type CaptureRepo struct {
+	RowID        string
+	RepositoryID string
+	RepoName     string
+	CheckoutPath string
+	RunRef       string
+	BaseCommit   string
+	RecordedHead string
+}
+
+// captureRepos is the unit-boundary capture's per-repo read and record, run
+// over repos with the declared exclusion set. `record` is the workspace_repos
+// writer (nil means read-only capture); it fires under the agent path's rule:
+// the run ref moved, or this is the first time anyone read it back. Errors
+// return the partial outcomes with the same wrapped messages the turn loop
+// has always produced.
+func captureRepos(ctx context.Context, git BoundaryGit, excluded []string,
+	workspaceID, orgID, projectID string, repos []CaptureRepo,
+	record func(context.Context, CommitRecord) error) ([]CaptureOutcome, error) {
 	var out []CaptureOutcome
-	for i := range u.Repos {
-		repo := &u.Repos[i]
-		head, err := u.svc.Workspaces.HeadCommit(ctx, repo.CheckoutPath)
+	for i := range repos {
+		repo := &repos[i]
+		head, err := git.HeadCommit(ctx, repo.CheckoutPath)
 		if err != nil {
 			// A checkout whose HEAD cannot be read is not "clean": reporting it
 			// as such would be the fiction ADR-0017 D8 exists to prevent.
-			return out, fmt.Errorf("worker: read HEAD of %s: %w", repo.Name, err)
+			return out, fmt.Errorf("worker: read HEAD of %s: %w", repo.RepoName, err)
 		}
-		sum, err := u.svc.Workspaces.Status(ctx, repo.CheckoutPath, u.ExcludedPaths)
+		sum, err := git.Status(ctx, repo.CheckoutPath, excluded)
 		if err != nil {
-			return out, fmt.Errorf("worker: status of %s: %w", repo.Name, err)
+			return out, fmt.Errorf("worker: status of %s: %w", repo.RepoName, err)
 		}
 		res := CaptureOutcome{
-			RepositoryID: repo.RepositoryID, RepoName: repo.Name, RunRef: repo.RunRef,
+			RepositoryID: repo.RepositoryID, RepoName: repo.RepoName, RunRef: repo.RunRef,
 			HeadCommit: head, BaseCommit: repo.BaseCommit,
 			Dirty: sum.Dirty, Summary: sum.Summary, Manifest: sum.Paths,
 			Committed: head != "" && head != repo.BaseCommit,
 		}
-		if res.Committed || repo.HeadCommit != head {
+		if res.Committed || repo.RecordedHead != head {
 			// The run ref moved (or this is the first time anyone read it back):
 			// that is the workspace.committed fact, and it is written from the
 			// read rather than from a command's status.
-			rec := CommitRecord{
-				WorkspaceID: u.WorkspaceID, OrganizationID: u.OrganizationID, ProjectID: u.ProjectID,
-				RepositoryID: repo.RepositoryID, RunRef: repo.RunRef, HeadCommit: head,
-				ModifiedPaths: sum.Paths,
-			}
-			if rowID := u.rowID(repo); rowID != "" {
-				rec.RowID = rowID
-				if err := u.svc.Store.RecordCommit(ctx, rec); err != nil {
+			if record != nil && repo.RowID != "" {
+				rec := CommitRecord{
+					RowID:       repo.RowID,
+					WorkspaceID: workspaceID, OrganizationID: orgID, ProjectID: projectID,
+					RepositoryID: repo.RepositoryID, RunRef: repo.RunRef, HeadCommit: head,
+					ModifiedPaths: sum.Paths,
+				}
+				if err := record(ctx, rec); err != nil {
 					return out, err
 				}
 			}
-			repo.HeadCommit = head
+			repo.RecordedHead = head
 		}
+		out = append(out, res)
+	}
+	return out, nil
+}
+
+func (u *Unit) Capture(ctx context.Context) ([]CaptureOutcome, error) {
+	if u == nil {
+		return nil, errors.New("worker: no unit to capture")
+	}
+	repos := make([]CaptureRepo, 0, len(u.Repos))
+	for _, repo := range u.Repos {
+		repos = append(repos, CaptureRepo{
+			RowID: u.rowID(&repo), RepositoryID: repo.RepositoryID, RepoName: repo.Name,
+			CheckoutPath: repo.CheckoutPath, RunRef: repo.RunRef,
+			BaseCommit: repo.BaseCommit, RecordedHead: repo.HeadCommit,
+		})
+	}
+	out, err := captureRepos(ctx, u.svc.Workspaces, u.ExcludedPaths, u.WorkspaceID,
+		u.OrganizationID, u.ProjectID, repos,
+		func(ctx context.Context, rec CommitRecord) error { return u.svc.Store.RecordCommit(ctx, rec) })
+	for _, res := range out {
 		if err := u.captureArtifact(ctx, res); err != nil {
 			// An artifact that will not store is a warning and a missing row,
 			// never a failed turn: the edits live in git, and failing the turn
@@ -106,9 +157,16 @@ func (u *Unit) Capture(ctx context.Context) ([]CaptureOutcome, error) {
 			u.logger.Warn("unit capture could not be published",
 				slog.String("repo", res.RepoName), slog.String("error", err.Error()))
 		}
-		out = append(out, res)
+		// The unit's own repo rows carry the head the capture read back, so a
+		// second capture inside the same unit does not re-record what it just
+		// recorded (the old in-place write's rule).
+		for i := range u.Repos {
+			if u.Repos[i].RepositoryID == res.RepositoryID {
+				u.Repos[i].HeadCommit = res.HeadCommit
+			}
+		}
 	}
-	return out, nil
+	return out, err
 }
 
 // captureArtifact publishes the checkpoint (the manifest) and, for a dirty

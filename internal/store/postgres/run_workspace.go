@@ -256,7 +256,66 @@ func (s *RunWorkspaces) RunWorkspace(ctx context.Context, runID string) (worker.
 	if err != nil {
 		return worker.RunWorkspaceRef{}, false, err
 	}
-	return worker.RunWorkspaceRef{WorkspaceID: id, VolumeID: volumeID, RepoStates: states}, true, nil
+	repos, err := runWorkspaceBoundaryRepos(ctx, pool, id)
+	if err != nil {
+		return worker.RunWorkspaceRef{}, false, err
+	}
+	return worker.RunWorkspaceRef{WorkspaceID: id, VolumeID: volumeID, RepoStates: states, Repos: repos}, true, nil
+}
+
+// RecordBoundaryCommit is the write half of the node-boundary capture for
+// kinds that run no agent turn (process.exec): the worker read the ref back
+// after the command exited (ADR-0017 D8: a ref read, never an exit status)
+// and this is the same row write, same workspace.committed journal, that
+// WorkspaceStore.RecordCommit performs at a turn boundary — one writer, so
+// run_checkpoints.repo_states cannot mean one thing for an agent node and
+// another for a command node (ADR-0023 § 6, `12cb433`'s wire keys).
+func (s *RunWorkspaces) RecordBoundaryCommit(ctx context.Context, rec worker.CommitRecord) error {
+	if s == nil || s.Pool == nil {
+		return errors.New("postgres: run workspace recorder has no pool")
+	}
+	store := &WorkspaceStore{Pool: s.Pool}
+	return store.RecordCommit(ctx, rec)
+}
+
+// runWorkspaceBoundaryRepos reads the same workspace_repos rows as
+// runWorkspaceRepoStates, but as capture identities: the checkout path and row
+// id the worker needs to read git there, the last-recorded head and manifest
+// it compares against, and the declared exclusions the manifest must subtract
+// (ADR-0017 D6). Paths stay worker-side: they never enter the boundary record
+// — repo_states carries commits and artifact references only.
+func runWorkspaceBoundaryRepos(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, workspaceID string) ([]worker.BoundaryRepo, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id::text, repository_id::text, checkout_path, run_ref, base_commit,
+		       COALESCE(head_commit, ''), modified_paths::text, excluded_paths::text
+		FROM workspace_repos WHERE workspace_id = $1::uuid ORDER BY repository_id`, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read workspace %s boundary repos: %w", workspaceID, err)
+	}
+	defer rows.Close()
+	var out []worker.BoundaryRepo
+	for rows.Next() {
+		var r worker.BoundaryRepo
+		var modified, excluded string
+		if err := rows.Scan(&r.RowID, &r.RepositoryID, &r.CheckoutPath, &r.RunRef,
+			&r.BaseCommit, &r.RecordedHead, &modified, &excluded); err != nil {
+			return nil, fmt.Errorf("postgres: scan workspace %s boundary repo: %w", workspaceID, err)
+		}
+		for _, list := range []struct {
+			raw  string
+			into *[]string
+		}{{modified, &r.RecordedPaths}, {excluded, &r.ExcludedPaths}} {
+			if err := json.Unmarshal([]byte(list.raw), list.into); err != nil {
+				return nil, fmt.Errorf("postgres: workspace %s repo %s path list is not a JSON array: %w",
+					workspaceID, r.RepositoryID, err)
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // RunWorkspaceRepoState answers the preparer's one question about its own

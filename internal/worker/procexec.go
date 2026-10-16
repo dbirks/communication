@@ -53,6 +53,38 @@ type RunWorkspaceRef struct {
 	WorkspaceID string
 	VolumeID    string
 	RepoStates  []CheckpointRepoState
+	// Repos is the capture identity of the same repositories — checkout paths,
+	// row ids and last-recorded heads — the node-boundary capture reads and
+	// records through (procexec_capture.go). Resolvers that do not supply it
+	// leave the boundary un-captured, exactly as before this field existed.
+	Repos []BoundaryRepo
+}
+
+// BoundaryRepo is one run-workspace repository as the boundary capture needs
+// it: where the checkout lives on THIS worker's tree, what it was based on,
+// and what the store last recorded for it. The store derives it from
+// workspace_repos (the rows § 4 step 3 wrote); it is deliberately separate
+// from CheckpointRepoState, whose json keys are the published wire shape and
+// must not grow path fields.
+type BoundaryRepo struct {
+	RowID         string
+	RepositoryID  string
+	CheckoutPath  string
+	RunRef        string
+	BaseCommit    string
+	RecordedHead  string
+	RecordedPaths []string
+	ExcludedPaths []string
+}
+
+// BoundaryCommitRecorder is the optional write half of the run-workspace
+// resolver: the process.exec node-boundary capture records the ref it read
+// through it, reusing the turn capture's writer (postgres.RunWorkspaces
+// delegates to WorkspaceStore.RecordCommit — same row, same event, one
+// derivation). A resolver that does not implement it leaves the boundary
+// un-captured, which restore_checkpoint already refuses honestly.
+type BoundaryCommitRecorder interface {
+	RecordBoundaryCommit(ctx context.Context, rec CommitRecord) error
 }
 
 // RunWorkspaceResolver is the seam to § 4 step 3 (run workspace preparation).
@@ -144,8 +176,18 @@ type ProcExec struct {
 	// KillGrace bounds SIGTERM→SIGKILL for the process group (§ 4 step 11).
 	KillGrace time.Duration
 
+	// BoundaryGit is the node-boundary capture's read seam. Nil builds one
+	// unsandboxed read-only manager from WorkspaceRoot at first use — the
+	// worker's own git plumbing, the same ADR-0023 § 6 exemption that lets
+	// CheckpointRestorer reset a worktree; the launched command stays under
+	// nono either way. Tests inject a fake.
+	BoundaryGit BoundaryGit
+
 	profileOnce *profileCache
 	memoMu      sync.Mutex
+	gitOnce     sync.Once
+	gitReader   BoundaryGit
+	gitErr      error
 }
 
 var _ AttemptExecutor = (*ProcExec)(nil)
@@ -402,6 +444,13 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 	if fail != nil {
 		return *fail, nil
 	}
+	// ADR-0023 § 6: the checkpoint row is "the same capture ... already
+	// produce[d] for a turn, now attached to a node boundary" — and 05's
+	// checkpoint policy saves repo HEAD/base refs and the dirty manifest at
+	// EVERY successful node boundary. A command that committed (or dirtied)
+	// the tree must therefore be captured here, before the boundary record is
+	// resolved, or every restore_checkpoint retry of this run refuses forever.
+	p.captureBoundary(ctx, c, materialized)
 	built.Checkpoint = p.checkpointFor(ctx, c, spec, built.OutputsDigest)
 	if built.Checkpoint.VolumeID == "" {
 		// Honest: there is no boundary to write. The command passed; the
