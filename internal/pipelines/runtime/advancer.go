@@ -1013,8 +1013,12 @@ func (ac *advanceCtx) advanceForEach(pn *compiler.Node, row *NodeExecution, scop
 		}
 		if lim := ac.prog.plan.Budgets.MaxItemsPerForEach; lim > 0 && len(items) > lim {
 			// fanout_items_exceeded is the advancer's named failure at scope
-			// start (contract § 6), not a schema promise that broke late.
-			if err := ac.failScope(row, "fanout_items_exceeded", "", &sub, nil); err != nil {
+			// start (contract § 6), not a schema promise that broke late. The
+			// name must reach BOTH rows: the scope's, and the run's
+			// (`runs.failed_cause`, § 7.1 C12b) — so the scope fails without the
+			// stop-policy escalation, which would put node_execution_failed:<key>
+			// in the run's cause column first and make the named cause a no-op.
+			if err := ac.failScopeNamed(row, "fanout_items_exceeded", "", &sub, nil); err != nil {
 				return err
 			}
 			return ac.failRun("fanout_items_exceeded", "", row.InstanceKey)
@@ -1464,7 +1468,22 @@ func (ac *advanceCtx) completeScope(row *NodeExecution, kind string, iterations,
 	return ac.succeedNode(row, outs, "")
 }
 
+// failScope fails a composite node's scope and applies the node's own failure
+// policy to the escalation (§ 5.1 step 5's node_execution_failed:<key>).
 func (ac *advanceCtx) failScope(row *NodeExecution, cause, class string, sub *compiler.Scope, idx map[string]int) error {
+	return ac.failScopeLevel(row, cause, class, sub, idx, true)
+}
+
+// failScopeNamed fails the scope WITHOUT the generic escalation, so the caller
+// names the run's failed_cause itself. Contract § 6 gives the advancer's own
+// caps a run-level name (`fanout_items_exceeded` at scope start; § 7.1 C12b
+// reads it off `runs.failed_cause`), which step 5's
+// `node_execution_failed:<key>` would silently rename.
+func (ac *advanceCtx) failScopeNamed(row *NodeExecution, cause, class string, sub *compiler.Scope, idx map[string]int) error {
+	return ac.failScopeLevel(row, cause, class, sub, idx, false)
+}
+
+func (ac *advanceCtx) failScopeLevel(row *NodeExecution, cause, class string, sub *compiler.Scope, idx map[string]int, escalate bool) error {
 	var evidence []any
 	st := row.Scope
 	if st != nil {
@@ -1496,6 +1515,9 @@ func (ac *advanceCtx) failScope(row *NodeExecution, cause, class string, sub *co
 	}
 	row.FailedCause = cause
 	ac.changed = true
+	if !escalate {
+		return nil
+	}
 	pn := ac.prog.nodes[row.scopeRef()][row.NodeID]
 	if pn != nil && pn.Failure.OnExecutionError == "stop" {
 		return ac.escalateStop(row, "node_execution_failed:"+row.InstanceKey, class)
