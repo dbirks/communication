@@ -216,12 +216,45 @@ class JournalTest(unittest.TestCase):
         self.assertFalse(self.labels(rows)[
             "control-plane gate rows: node_execution_id set, attempt_id NULL"])
 
-    def test_milestone_order_enforced(self):
-        rows = self.happy()
-        # swap: scope completion before the gate was ever requested
-        rows[0], rows[3] = dict(rows[3], global_seq=10), dict(rows[0], global_seq=13)
+    def test_milestone_chain_is_a_subsequence_not_an_exact_set(self):
+        # § 7.1 C1h names run.created → node.attempt.* → run.checkpoint_saved →
+        # node.scope.* → run.completed. The journal carries ~30 other types
+        # between them (live5/C1.out: 46 rows), so the claim is an ORDERED
+        # SUBSEQUENCE; dropping the scope completion is what breaks it.
+        rows = [r for r in self.happy() if not r["type"].startswith("node.scope.")]
         self.assertFalse(self.labels(rows)[
-            "milestone chain run.created→approval.*→checkpoint→scope→completed"])
+            "milestone chain run.created→node.attempt.*→checkpoint→scope→completed "
+            "appears in order (§ 7.1 C1h, subsequence not exact-set)"])
+
+    def test_checkpoint_before_the_gate_is_not_an_ordering_failure(self):
+        # live5/C1.out FAILed a run that had every milestone: the twin checkpoints
+        # /plan BEFORE the gate opens, so first-occurrence monotonicity is not a
+        # contract rule. Move /plan's checkpoint ahead of approval.requested.
+        rows = self.happy()
+        ck = rows.pop(8)                                  # run.checkpoint_saved n-impl1
+        rows.insert(3, ck)
+        verdicts = self.labels(rows)
+        self.assertTrue(verdicts[
+            "milestone chain run.created→node.attempt.*→checkpoint→scope→completed "
+            "appears in order (§ 7.1 C1h, subsequence not exact-set)"])
+        self.assertTrue(verdicts[
+            "gate milestones approval.requested→approval.decided present and in order"])
+
+    def test_gate_decision_out_of_order_fails_the_gate_verdict(self):
+        rows = self.happy()
+        rows[3], rows[5] = dict(rows[5], global_seq=13), dict(rows[3], global_seq=15)
+        self.assertFalse(self.labels(rows)[
+            "gate milestones approval.requested→approval.decided present and in order"])
+
+    def test_milestone_subsequence_helper_matches_prefixes(self):
+        types = ["run.created", "node.scope.completed", "node.attempt.started",
+                 "run.checkpoint_saved", "node.scope.completed", "run.completed"]
+        hit = m.milestone_subsequence(types, m.JOURNAL_MILESTONES)
+        self.assertEqual([t for _, t in hit], ["run.created", "node.attempt.started",
+                                                "run.checkpoint_saved", "node.scope.completed",
+                                                "run.completed"])
+        self.assertIsNone(m.milestone_subsequence(["run.created", "run.completed"],
+                                                  m.JOURNAL_MILESTONES))
 
     def test_attempt_events_between_terminals_required(self):
         rows = [r for r in self.happy() if r["type"] not in m.ATTEMPT_CORRELATED_TYPES]
@@ -286,6 +319,83 @@ class ResultBindingsTest(unittest.TestCase):
         for junk in (None, "x", []):
             verdicts = [ok for _, ok, _ in m.result_bindings_ok(junk, "twin")]
             self.assertEqual(verdicts, [False, False, False], repr(junk))
+
+
+class C1FArtifactRowsTest(unittest.TestCase):
+    """live5/C1f FAILed a run whose artifact the driver had just PRINTED: the
+    SELECT carries 8 columns but the filter required 7 space-separated parts, so
+    every row was dropped and the check saw []. The rows below are the literal
+    ledger line from that run."""
+
+    LEDGER = ("01a144d3-01ba-773b-9442-e90c8ade4b43|review-evidence.md|markdown|"
+              "text/markdown|f6ed997b6b0a7203fcebe3d3cf6b775edfb112d705033bf7fd9851c15ee6ae12"
+              "|standard|0|ready")
+
+    def test_published_evidence_row_parses_and_passes(self):
+        rows = m.c1f_parse_artifacts(self.LEDGER)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], m.C1F_EVIDENCE_NAME)
+        self.assertEqual(rows[0]["state"], "ready")
+        verdicts = m.c1f_evidence_verdicts(rows)
+        self.assertTrue(verdicts[0][1], str(verdicts))
+
+    def test_wrong_media_type_is_a_fail_with_the_row_in_the_detail(self):
+        rows = m.c1f_parse_artifacts(self.LEDGER.replace("text/markdown", "text/plain"))
+        label, ok, detail = m.c1f_evidence_verdicts(rows)[0]
+        self.assertFalse(ok)
+        self.assertIn("review-evidence.md", detail)
+
+    def test_no_evidence_row_names_what_was_journaled(self):
+        rows = m.c1f_parse_artifacts(
+            "a-1|stdout.log|archive|text/plain|" + "b" * 64 + "|standard|0|ready")
+        label, ok, detail = m.c1f_evidence_verdicts(rows)[0]
+        self.assertFalse(ok)
+        self.assertIn("stdout.log", detail)
+
+    def test_ragged_lines_are_dropped_not_verdicted(self):
+        self.assertEqual(m.c1f_parse_artifacts("|\nnot-an-artifact-line\n" + self.LEDGER),
+                         m.c1f_parse_artifacts(self.LEDGER))
+
+    def test_sql_carries_every_column_the_parser_indexes(self):
+        sql = m.c1f_artifact_sql("run-1")
+        for col in m.C1F_ARTIFACT_COLS:
+            self.assertIn(col, sql, col)
+        self.assertEqual(sql.count("|| '|' ||"), len(m.C1F_ARTIFACT_COLS) - 1, sql)
+        self.assertIn("WHERE run_id = 'run-1'", sql)
+
+
+class C1cUnattendedPermissionTest(unittest.TestCase):
+    """The agent arm's /plan attempt dies on the unattended permission prompt
+    (docs/design/attempt-permissions.md, ADR-0016 ask_unattended) — a known design
+    limit, so C1c reports GAP for that leg, and only for that leg."""
+
+    LIVE5 = [{"global_seq": "39", "type": "conversation.permission.requested",
+              "status": "-", "decided_by": "-"},
+             {"global_seq": "40", "type": "conversation.permission.decided",
+              "status": "cancelled", "decided_by": "node_policy:ask_unattended"}]
+
+    def test_plan_attempt_cancelled_by_unattended_policy_is_a_gap(self):
+        why = m.c1_unattended_permission_gap("failed", "node_execution_failed:/plan", self.LIVE5)
+        self.assertIsNotNone(why)
+        self.assertIn("docs/design/attempt-permissions.md", why)
+        self.assertIn("node_policy:ask_unattended", why)
+
+    def test_same_journal_but_a_different_failed_node_stays_a_fail(self):
+        self.assertIsNone(m.c1_unattended_permission_gap(
+            "failed", "node_execution_failed:/build_until_verified[1]/implement", self.LIVE5))
+
+    def test_no_permission_cancellation_stays_a_fail(self):
+        self.assertIsNone(m.c1_unattended_permission_gap(
+            "failed", "node_execution_failed:/plan",
+            [{"type": "conversation.permission.requested", "status": "-",
+              "decided_by": "-"}]))
+
+    def test_completed_or_timeout_never_goes_soft(self):
+        self.assertIsNone(m.c1_unattended_permission_gap("completed", "", self.LIVE5))
+        self.assertIsNone(m.c1_unattended_permission_gap("failed", "", self.LIVE5))
+        self.assertIsNone(m.c1_unattended_permission_gap("failed", "stale_lease:/plan", self.LIVE5))
+        self.assertIsNone(m.c1_unattended_permission_gap(
+            "failed", "node_execution_failed:/plan", []))
 
 
 MIG05 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",

@@ -423,5 +423,99 @@ class BudgetArmTest(unittest.TestCase):
         self.assertIsNone(ok_of(m.c5_budget_verdicts("", "completed", "-"), "maxAttempts=1"))
 
 
+class GateFirstSequencingTest(unittest.TestCase):
+    """live5/C5 printed `GAP C5a a live attempt to kill — no attempt … was ever
+    held by a worker within 300s (status='waiting_human')`: the deterministic
+    twin parks at /approve BEFORE its long steps, so nothing leases until someone
+    decides the gate. The kill mechanics were fine; the SEQUENCE was missing.
+    These tests pin the sequence against a scripted ledger — no container is
+    killed here, that stays C5's live leg."""
+
+    LIVE = {"id": "a-1", "key": "/build_until_verified[1]/test", "worker": "worker-a",
+            "token": "7", "attempt_number": "1", "turn": "-"}
+
+    class Clock:
+        def __init__(self):
+            self.now = 1000.0
+
+        def time(self):
+            self.now += 1.0
+            return self.now
+
+        def sleep(self, secs):
+            self.now += secs
+
+    def script(self, statuses, rows, decide=True):
+        """Run c5_wait_live_past_gate against canned ledger reads (one status +
+        one live-claim row per poll). Returns (result, gate_calls, checks)."""
+        calls, checks, pos = [], [], [0]
+        pairs = list(zip(statuses, rows))
+
+        def at(i):
+            return pairs[min(i, len(pairs) - 1)]
+
+        def run_status(run_id):
+            return at(pos[0])[0]
+
+        def live_row(run_id):
+            row = at(pos[0])[1]
+            pos[0] += 1
+            return row
+
+        def approve(client, project_id, run_id):
+            calls.append(project_id)
+            return decide
+
+        def check(label, ok, detail=""):
+            checks.append((label, ok))
+            return ok
+
+        orig = (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate, m.check)
+        m.time = self.Clock()
+        m.run_status = run_status
+        m.c5_live_attempt_row = live_row
+        m.approve_gate = approve
+        m.check = check
+        try:
+            out = m.c5_wait_live_past_gate(object(), "p-1", "run-1", 60)
+        finally:
+            (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate,
+             m.check) = orig
+        return out, calls, checks
+
+    def test_gate_is_decided_before_the_driver_waits_for_a_claim(self):
+        out, calls, checks = self.script(
+            ["waiting_human", "waiting_human", "running"], [None, None, self.LIVE])
+        self.assertEqual(out, self.LIVE)
+        self.assertEqual(calls, ["p-1"], "exactly one decide attempt once it succeeded")
+        self.assertTrue(any("approval gate was decided" in lbl and ok
+                            for lbl, ok in checks), str(checks))
+
+    def test_a_live_claim_needs_no_gate_decision(self):
+        out, calls, checks = self.script(["running"], [self.LIVE])
+        self.assertEqual(out, self.LIVE)
+        self.assertEqual(calls, [])
+
+    def test_terminal_run_stops_the_wait_instead_of_burning_the_window(self):
+        out, calls, _ = self.script(["failed"], [None])
+        self.assertIsNone(out)
+        self.assertEqual(calls, [], "a dead run has no gate to decide")
+
+    def test_a_refused_decision_retries_until_the_cap_and_reports_nothing(self):
+        out, calls, _ = self.script(["waiting_human"] * 40, [None] * 40, decide=False)
+        self.assertIsNone(out)
+        self.assertGreater(len(calls), 1, "the decide route is retried, not assumed")
+
+    def test_action_table(self):
+        self.assertEqual(m.c5_gate_then_live_action("running", True, False), ("live", False))
+        self.assertEqual(m.c5_gate_then_live_action("waiting_human", False, False),
+                         ("approve", False))
+        self.assertEqual(m.c5_gate_then_live_action("waiting_human", False, True),
+                         ("wait", True))
+        self.assertEqual(m.c5_gate_then_live_action("completed", False, True),
+                         ("terminal", True))
+        self.assertEqual(m.c5_gate_then_live_action("queued", False, True), ("wait", True))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

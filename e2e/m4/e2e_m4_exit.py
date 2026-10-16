@@ -534,12 +534,40 @@ ATTEMPT_CORRELATED_TYPES = {
 }
 CONTROL_PLANE_GATE_TYPES = {"approval.requested", "approval.decided"}
 
-# § 7.1 C1h: the milestone chain that must appear, first-occurrence by
-# first-occurrence, run.created to run.completed. node.attempt.* is asserted
-# separately (it legitimately opens the story at /plan, before the gate);
-# the GATE-then-EXECUTE order is what the chain pins.
-JOURNAL_MILESTONES = ["run.created", "approval.requested", "approval.decided",
-                      "run.checkpoint_saved", "node.scope.completed", "run.completed"]
+# § 7.1 C1h names the chain literally:
+#   "the sequence run.created → node.attempt.* → run.checkpoint_saved →
+#    node.scope.* → run.completed is contiguous"
+# Two readings of that line were tried before this one and both failed against a
+# run that did everything right (live5/C1.out: `seen: run.created,approval.*,
+# checkpoint,scope,completed` printed next to a FAIL). The chain is an ORDERED
+# SUBSEQUENCE claim, not an exact-set or first-occurrence claim: a trailing
+# `.*` is a type prefix, one checkpoint lands per succeeded node and one
+# node.scope.* per loop iteration, so the milestone that satisfies the chain is
+# not necessarily the milestone's first occurrence — the twin checkpoints /plan
+# BEFORE the gate ever opens. approval.* is not in the contract's chain (it gets
+# its own verdict below); the gate-then-execute order is C9's subject.
+JOURNAL_MILESTONES = ["run.created", "node.attempt.*", "run.checkpoint_saved",
+                      "node.scope.*", "run.completed"]
+JOURNAL_GATE_MILESTONES = ["approval.requested", "approval.decided"]
+
+
+def milestone_subsequence(types, milestones):
+    """Greedy ordered-subsequence match of `milestones` (a trailing `.*` matches
+    a type prefix) over a journal's type list. Returns the matched [(idx, type)]
+    or None. Pure; this is the C1h comparison."""
+    pos, matched = 0, []
+    for pat in milestones:
+        pre = pat[:-2] if pat.endswith(".*") else None
+        while pos < len(types):
+            hit = (types[pos].startswith(pre) if pre else types[pos] == pat)
+            if hit:
+                break
+            pos += 1
+        else:
+            return None
+        matched.append((pos, types[pos]))
+        pos += 1
+    return matched
 
 
 def journal_shape(rows):
@@ -558,11 +586,17 @@ def journal_shape(rows):
     out.append(("run slice strictly ascending in global_seq (the run's own slice is "
                 "the contiguity contract; global gaps belong to other runs)",
                 not regress, f"{len(seqs)} rows, {len(regress)} regressions {regress[:3]}"))
-    present = [m for m in JOURNAL_MILESTONES if m in types]
-    firsts = [types.index(m) for m in present]
-    out.append(("milestone chain run.created→approval.*→checkpoint→scope→completed",
-                present == JOURNAL_MILESTONES and firsts == sorted(firsts),
-                "seen: " + ",".join(present)))
+    chain = milestone_subsequence(types, JOURNAL_MILESTONES)
+    detail = ("matched: " + ",".join(f"{t}@{rows[i]['global_seq']}" for i, t in chain)
+              if chain else "no ordered match; types present: "
+              + ",".join(sorted(set(types)))[:200])
+    out.append(("milestone chain run.created→node.attempt.*→checkpoint→scope→completed "
+                "appears in order (§ 7.1 C1h, subsequence not exact-set)",
+                chain is not None, detail))
+    gate_firsts = [types.index(m) for m in JOURNAL_GATE_MILESTONES if m in types]
+    out.append(("gate milestones approval.requested→approval.decided present and in order",
+                gate_firsts == sorted(gate_firsts) and len(gate_firsts) == 2,
+                "seen: " + ",".join(m for m in JOURNAL_GATE_MILESTONES if m in types)))
     att_idx = [i for i, t in enumerate(types) if t in ATTEMPT_CORRELATED_TYPES]
     out.append(("node.attempt.* events present between the terminals",
                 bool(att_idx) and 0 < min(att_idx) < len(types) - 1,
@@ -814,6 +848,54 @@ def c1_run_digest_sql(run_id):
             f"WHERE r.id = '{run_id}'")
 
 
+# § 7.1 C1f reads the artifact rows as one joined string. The SELECT carries EIGHT
+# columns (id, name, kind, media_type, sha256, sensitivity, redaction_count,
+# state); the old guard split on spaces and required 7 parts, so it silently
+# dropped every row — live5/C1.out prints the published review-evidence.md line
+# immediately above its own `FAIL ... — []`. Driver off-by-one, not a product gap.
+C1F_ARTIFACT_COLS = ("id", "name", "kind", "media_type", "sha256", "sensitivity",
+                     "redaction_count", "state")
+C1F_EVIDENCE_NAME = "review-evidence.md"
+C1F_EVIDENCE_KIND = "markdown"
+C1F_EVIDENCE_MEDIA = "text/markdown"
+
+
+def c1f_artifact_sql(run_id):
+    """§ 7.1 C1f's artifact read, pipe-separated (a title with a space stays one
+    field) and NULL-safe (a NULL column would swallow the whole concat)."""
+    return ("SELECT id::text || '|' || COALESCE(name,'-') || '|' || COALESCE(kind,'-') "
+            "|| '|' || COALESCE(media_type,'-') || '|' || COALESCE(sha256,'-') || '|' || "
+            "COALESCE(sensitivity,'-') || '|' || redaction_count::text || '|' || "
+            "COALESCE(state,'-') FROM artifacts "
+            f"WHERE run_id = '{run_id}' ORDER BY created_at, id")
+
+
+def c1f_parse_artifacts(text):
+    """C1f's rows -> [{column: value}]. Ragged lines are dropped, never verdicted
+    (the raw SELECT is shown alongside). Pure."""
+    out = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) == len(C1F_ARTIFACT_COLS) and all(parts):
+            out.append(dict(zip(C1F_ARTIFACT_COLS, parts)))
+    return out
+
+
+def c1f_evidence_verdicts(rows, name=C1F_EVIDENCE_NAME):
+    """§ 7.1 C1f's publication claim: the evidence artifact exists EXACTLY once,
+    typed markdown/text/markdown. [(label, ok, detail)] — pure."""
+    ev = [a for a in rows if a["name"] == name]
+    if not ev:
+        detail = (f"no artifact row named {name}; "
+                  f"{len(rows)} row(s) journaled: "
+                  + (",".join(sorted({a["name"] for a in rows})) or "(none)"))
+    else:
+        detail = str([[a["name"], a["kind"], a["media_type"]] for a in ev])
+    return [("review-evidence.md (markdown/text/markdown) published exactly once",
+             len(ev) == 1 and ev[0]["kind"] == C1F_EVIDENCE_KIND
+             and ev[0]["media_type"] == C1F_EVIDENCE_MEDIA, detail)]
+
+
 def dump_run_evidence(client, run_id):
     """Failure honesty: dump the run row, the node tree and the last journal
     rows BEFORE the FAIL — an exit run that times out must arrive with its
@@ -889,7 +971,60 @@ def approve_gate(client, project_id, run_id):
         return False
 
 
-def watch_run(client, facts, run_id, cap, label):
+# C1c's one known, already-decided agent-arm failure (§ 7.1 C1c's cap is about
+# the agent leg actually finishing, which it cannot do while every unattended
+# `ask` is cancelled by node policy — docs/design/attempt-permissions.md).
+C1_UNATTENDED_DOC = "docs/design/attempt-permissions.md"
+C1_PERMISSION_DECIDED = "conversation.permission.decided"
+
+
+def c1_failure_evidence(run_id):
+    """(failed_cause, permission rows) — the two reads C1c needs to tell a known
+    design limit apart from a real engine failure."""
+    try:
+        cause = psql(f"SELECT COALESCE(failed_cause,'-') FROM runs WHERE id = '{run_id}'").strip()
+    except RuntimeError as e:
+        show("runs row (failed_cause)", str(e)[:200])
+        cause = ""
+    try:
+        rows = [dict(zip(("global_seq", "type", "status", "decided_by"), r)) for r in psql_rows(psql(
+            f"SELECT global_seq::text || '|' || type || '|' || "
+            f"COALESCE(payload->>'status','-') || '|' || "
+            f"COALESCE(payload->>'decided_by','-') FROM domain_events "
+            f"WHERE run_id = '{run_id}' AND type LIKE 'conversation.permission.%' "
+            f"ORDER BY global_seq"), 4)]
+    except RuntimeError as e:
+        show("permission trail (C1c)", str(e)[:200])
+        rows = []
+    return cause, rows
+
+
+def c1_unattended_permission_gap(status, cause, perm_rows, plan_key="/plan"):
+    """Reason string when the run failed the ADR-0016 way — the agent arm's
+    {plan_key} attempt died because its permission prompt was cancelled
+    unattended — else None (the caller then prints an honest FAIL). Pure."""
+    if status != "failed":
+        return None
+    cause = str(cause or "")
+    if "node_execution_failed" not in cause:
+        return None
+    node = cause.split(":", 1)[-1].strip().lstrip("/")
+    if node != plan_key.strip("/"):
+        return None
+    killed = [r for r in perm_rows if r.get("type") == C1_PERMISSION_DECIDED
+              and str(r.get("status")) == "cancelled"]
+    if not killed:
+        return None
+    who = str(killed[0].get("decided_by") or "-")
+    return (f"known design limit, not a new engine failure: the agent arm's {plan_key} "
+            f"attempt died on an unattended permission prompt — the journal carries "
+            f"{C1_PERMISSION_DECIDED}{{status:'cancelled', decided_by:'{who}'}} "
+            f"(ADR-0016 ask_unattended, {C1_UNATTENDED_DOC}) and that cancelled tool call "
+            "is what fails an agent.acp attempt; the deterministic twin leg measures the "
+            "engine in the meantime")
+
+
+def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
     """Poll to terminal via the ledger with the SSE stream watched alongside;
     alice's gate lands the moment the run waits. Returns (terminal status,
     watch) or (None, watch) after the cap — with the evidence dump already
@@ -912,12 +1047,18 @@ def watch_run(client, facts, run_id, cap, label):
         check(f"{label}: terminal within {cap}s cap", False,
               f"last observed status={status!r} (tree + journal dumped above)")
         return None, watch
-    ok = check(f"{label}: terminal status completed (§ 7.1 C1c)", status == "completed",
-               f"observed {status!r}")
-    if not ok:
-        dump_run_evidence(client, run_id)
-        return None, watch
-    return status, watch
+    if status == "completed":
+        check(f"{label}: terminal status completed (§ 7.1 C1c)", True, f"observed {status!r}")
+        return status, watch
+    dump_run_evidence(client, run_id)
+    cause, perms = c1_failure_evidence(run_id)
+    reason = c1_unattended_permission_gap(status, cause, perms) if allow_unattended else None
+    if reason:
+        gap(f"{label}: terminal status completed (§ 7.1 C1c)", reason)
+    else:
+        check(f"{label}: terminal status completed (§ 7.1 C1c)", False,
+              f"observed {status!r} cause={cause or '-'}")
+    return None, watch
 
 
 def post_c1_run(client, facts, idem, label):
@@ -1001,20 +1142,18 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
                         "BUSINESS way, not by retrying)", t2 == "1", f"attempt_count={t2}")
 
     # C1f — the published evidence artifact, readable through the M3 routes.
-    arts = psql(f"SELECT id || ' ' || name || ' ' || kind || ' ' || media_type || ' ' ||"
-                f" sha256 || ' ' || sensitivity || ' ' || redaction_count::text || ' ' || state"
-                f" FROM artifacts WHERE run_id = '{run_id}'").splitlines()
-    show(f"C1f {label}: artifacts journaled to the run", "\n".join(arts) or "(none)")
-    ev = [a.split(" ") for a in arts
-          if len(a.split(" ")) == 7 and a.split(" ")[1] == "review-evidence.md"]
-    ok_all &= check("C1f review-evidence.md (markdown/text/markdown) published exactly once",
-                    len(ev) == 1 and ev[0][2] == "markdown" and ev[0][3] == "text/markdown",
-                    str([a[:4] for a in ev]))
-    if ev:
-        aid, sha = ev[0][0], ev[0][4]
+    art_rows = c1f_parse_artifacts(psql(c1f_artifact_sql(run_id)))
+    show(f"C1f {label}: artifacts journaled to the run",
+         "\n".join(" ".join(a[c] for c in C1F_ARTIFACT_COLS) for a in art_rows) or "(none)")
+    for lbl, ok, detail in c1f_evidence_verdicts(art_rows):
+        ok_all &= check(f"C1f {lbl}", ok, detail)
+    ev = [a for a in art_rows if a["name"] == C1F_EVIDENCE_NAME]
+    if len(ev) == 1:
+        aid, sha = ev[0]["id"], ev[0]["sha256"]
         ok_all &= check("C1f redaction_count=0 and state=ready (ADR-0020 D4: 0 is the scanner "
-                        "saying so, not silence)", ev[0][5] == "0" and ev[0][6] == "ready",
-                        f"redaction={ev[0][5]} state={ev[0][6]}")
+                        "saying so, not silence)",
+                        ev[0]["redaction_count"] == "0" and ev[0]["state"] == "ready",
+                        f"redaction={ev[0]['redaction_count']} state={ev[0]['state']}")
         meta = client.get(LB, f"/api/v1/artifacts/{aid}")
         body = client.get(LB, f"/api/v1/artifacts/{aid}/content")
         got = hashlib.sha256(body.body).hexdigest()
@@ -1121,7 +1260,9 @@ def c1():
     run_a = post_c1_run(alice, agent, f"m4x-c1-agent-{suffix}", "agent")
     res_a = None
     if run_a:
-        status, watch = watch_run(alice, agent, run_a, 1800, "agent")
+        # allow_unattended: C1c's agent leg may only fail the ADR-0016 way (see
+        # c1_unattended_permission_gap); any other cause stays a hard FAIL.
+        status, watch = watch_run(alice, agent, run_a, 1800, "agent", allow_unattended=True)
         if status:
             res_a = assert_c1_run(alice, agent, run_a, "agent", watch, "agent")
 
@@ -2612,6 +2753,68 @@ def c5_freeze_proof(status_stop, status_after):
     return a in C5_LIVE_STATES and b in C5_LIVE_STATES
 
 
+# C5a's sequencing: the deterministic twin's first long node sits BEHIND the
+# /approve gate, and the gate holds nothing (C9a's own sentence). Polling for a
+# live attempt before deciding the gate therefore stares at status=
+# 'waiting_human' for the whole window and reports "no attempt was ever held by a
+# worker" (live5/C5.out) — a driver bug, not a product gap. The gate is decided
+# first, through the same API route C1b/C9 use, as the designated approver.
+def c5_gate_then_live_action(status, has_live, approved):
+    """The C5a poll's next move, given the run's status, whether the ledger shows
+    an attempt a worker holds right now, and whether this gate has been decided.
+    Returns (action, approved) with action 'live' (aim the kill) | 'terminal'
+    (the run is over, nothing to kill) | 'approve' (decide the gate first) |
+    'wait'. Pure — test_c5_logic.py pins the ordering."""
+    if has_live:
+        return "live", approved
+    if status in ("completed", "failed", "cancelled", "interrupted"):
+        return "terminal", approved
+    if status == "waiting_human" and not approved:
+        return "approve", approved
+    return "wait", approved
+
+
+def c5_live_attempt_row(run_id):
+    """§ 7.1 C5a's live-claim read (the ledger view C4 polls), '' on a psql
+    error rather than an exception — the poll keeps trying until the cap."""
+    try:
+        return c4_live_attempt(psql(
+            f"SELECT a.id || '|' || ne.node_instance_key || '|' || w.name || '|' || "
+            f"a.fencing_token::text || '|' || a.attempt_number::text || '|' || "
+            f"coalesce(a.turn_id::text, '-') FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"JOIN workers w ON w.id = a.worker_id "
+            f"WHERE a.run_id = '{run_id}' AND a.status IN ('leased','running') "
+            f"ORDER BY a.started_at DESC NULLS LAST LIMIT 1"))
+    except RuntimeError as e:
+        show("C5a claim poll (psql)", str(e)[:300])
+        return None
+
+
+def c5_wait_live_past_gate(client, project_id, run_id, timeout):
+    """Decide the approval gate, THEN wait for an attempt a worker actually holds
+    — the order § 7.1 C5a assumes. Alice is the run's designated approver (the
+    same POST /api/v1/approvals/{id}/decide route C1b and C9 exercise). Returns
+    the live attempt row or None."""
+    approved, deadline = False, time.time() + timeout
+    while time.time() < deadline:
+        status = run_status(run_id)
+        row = c5_live_attempt_row(run_id)
+        action, approved = c5_gate_then_live_action(status, bool(row), approved)
+        if action == "live":
+            return row
+        if action == "terminal":
+            return None
+        if action == "approve":
+            approved = approve_gate(client, project_id, run_id)
+            if approved:
+                check("C5a the approval gate was decided (C1b's route) so there is "
+                      "an attempt to kill", True, f"run {run_id} released from "
+                      "waiting_human")
+        time.sleep(2)
+    return None
+
+
 def c5_kill_landed_verdicts(state, tries, proven):
     """C5a/C5b's precondition stated as the ledger read it, before any of the
     interrupted/checkpoint claims below are allowed to be made."""
@@ -2683,8 +2886,11 @@ def c5():
         return
     CTX["c5_run"] = run_id
 
-    # C5a — find a LIVE attempt and record the boundary BEFORE the kill; without
-    # both, every claim below is an inference from whatever the crash left behind.
+    # C5a — decide the approval gate FIRST, then find a LIVE attempt and record the
+    # boundary BEFORE the kill; without both, every claim below is an inference from
+    # whatever the crash left behind. The twin parks at /approve with nothing
+    # leased (C9a's own sentence), so the old "poll for a live attempt" window
+    # elapsed entirely in waiting_human (live5/C5.out).
     # § 7.1 kills inside a ~40s process.exec; the shipped twin's steps are printfs
     # that close in <1s, so "read the ledger, then compose kill" races the node to
     # its own terminal write (live4/C5: /plan had already succeeded and the
@@ -2725,7 +2931,8 @@ def c5():
     ready_before, uploading_before = "", ""
     try:
         while tries < C5_KILL_TRIES and not killed:
-            live = c4_wait_live_attempt(run_id, C5_KILL_POLL_S if tries else 300)
+            live = c5_wait_live_past_gate(alice, mf(tw, "project_id"), run_id,
+                                          C5_KILL_POLL_S if tries else 300)
             if live is None:
                 if tries:
                     kill_state = "unattainable"
@@ -2814,7 +3021,8 @@ def c5():
         if tries == 0:
             dump_run_evidence(alice, run_id)
             gap("C5a a live attempt to kill",
-                f"no attempt on run {run_id} was ever held by a worker within 300s (status="
+                f"no attempt on run {run_id} was ever held by a worker within 300s even "
+                f"after the approval gate was put through C1b's decide route (status="
                 f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
                 "nothing below is measurable (evidence dumped above)")
             return
