@@ -106,6 +106,11 @@ type StagedContext struct {
 	// GeneratedPaths are relative to the checkout: what APM created or rewrote.
 	// The worker appends them to the project exclusion set (ADR-0017 D6).
 	GeneratedPaths []string
+	// ManifestGenerated reports that Stage wrote the checkout's apm.yml itself
+	// from the profile's package ref (ADR-0030 Amendment 1) rather than using a
+	// manifest the repository tracks. It is recorded so the exclusion pass, the
+	// log, and the tests can tell the two staging paths apart.
+	ManifestGenerated bool
 	// HomePaths are the entries APM created inside the per-attempt HOME. They
 	// are recorded for the cleanup assertion rather than for exclusion — the
 	// whole HOME is deleted with the unit.
@@ -128,8 +133,20 @@ var generatedCandidates = []string{
 	".claude", ".agents", ".codex", "apm_modules", LockFileName, ".gitignore", "AGENTS.md", "CLAUDE.md",
 }
 
-// Stage runs `apm install --frozen --target <t>` in the checkout and gates the
-// result on the recorded digest.
+// Stage installs the profile's packages into the checkout and gates the result
+// on the recorded digest.
+//
+// Two checkout shapes, per ADR-0030 Amendment 1 and APM.md F1/F2:
+//
+//   - The checkout carries its own apm.yml: `apm install --frozen --target <t>`,
+//     exactly as before — the repository owns its manifest and its lock.
+//   - The checkout carries no apm.yml but the profile pins a package ref: the
+//     manifest is materialized from the ref and installed *without* --frozen,
+//     because --frozen refuses to bootstrap a lockfile that does not exist yet
+//     (F2), and the resolving install is what writes one. The pin stays
+//     authoritative because the digest gate below runs either way: the lock
+//     records `resolved_commit` (T-tag-2/3/4), so a moved tag moves the digest
+//     and the launch is refused with the same DigestMismatch.
 //
 // The order is deliberate: install first (which is what materializes a lockfile
 // for a fresh checkout), then compare, then refuse. There is no arrangement of
@@ -170,6 +187,14 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 		return nil, err
 	}
 
+	// F1: nothing else in the system turns apm_package_ref into a manifest, so a
+	// checkout that tracks no apm.yml is materialized here rather than failing
+	// the turn with apm's "No apm.yml found".
+	materialized, err := writeManifest(req.Checkout, req.PackageRef)
+	if err != nil {
+		return nil, err
+	}
+
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = 3 * time.Minute
@@ -177,9 +202,14 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	args := []string{"install", "--frozen", "--target", req.Target}
+	if materialized {
+		args = []string{"install", "--target", req.Target}
+	}
+
 	// The env is built from scratch: APM must not see the worker's environment
 	// either, and its HOME is the only HOME in play (probe A1/A2).
-	cmd := exec.CommandContext(cctx, bin, "install", "--frozen", "--target", req.Target) //nolint:gosec // argv only
+	cmd := exec.CommandContext(cctx, bin, args...) //nolint:gosec // argv only
 	cmd.Dir = req.Checkout
 	cmd.Env = []string{
 		"PATH=" + envOr("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
@@ -195,8 +225,18 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	}
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
-		return nil, fmt.Errorf("apm install --frozen --target %s in %s: %w (%s)",
-			req.Target, req.Checkout, runErr, bounded(string(out), 400))
+		return nil, fmt.Errorf("apm %s in %s: %w (%s)",
+			strings.Join(args, " "), req.Checkout, runErr, bounded(string(out), 400))
+	}
+
+	if materialized {
+		// Everything this staging created is the worker's, not the repository's.
+		// Name it in git's project exclusion file *before* the digest gate, so
+		// even a refused launch leaves no diff behind (APM.md C14b: the staged
+		// trees must stay out of the project's tracked surface).
+		if err := excludeGenerated(req.Checkout, materializedExclusions(req.Target)); err != nil {
+			return nil, err
+		}
 	}
 
 	lockPath := filepath.Join(req.Checkout, LockFileName)
@@ -222,6 +262,10 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 		GeneratedPaths: presentGenerated(req.Checkout),
 		HomePaths:      diffNames(homeBefore, homeAfter),
 		Version:        firstToken(string(out)),
+	}
+	if materialized {
+		staged.ManifestGenerated = true
+		staged.GeneratedPaths = append(staged.GeneratedPaths, ManifestFileName)
 	}
 	// An unaccounted generated path is not fatal, but it must not be invisible:
 	// it would ride into a checkpoint. Report it in the same structure the

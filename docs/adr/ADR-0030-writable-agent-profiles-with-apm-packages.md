@@ -78,3 +78,23 @@ equivalence the 422 preserves). `internal/api/agent_profiles_test.go`: status, c
 
 None forward. Rollback removes the two routes; rows and journal entries written meanwhile stay valid,
 and the worker's unverifiable-pin refusal holds the line if the API is bypassed.
+
+## Amendment 1 — 2026-10-16: materialize the manifest from the profile
+
+The M4 exit probe failed every APM-pinned turn at staging (`APM.md` F1): nothing turned
+`apm_package_ref` into an `apm.yml`, so `apm install --frozen` answered "No apm.yml found" — and F2:
+`--frozen` refuses to bootstrap a missing lock at all.
+
+`Stage` now branches on the checkout. With a tracked `apm.yml` nothing changes (`--frozen`). Without
+one, it writes the minimal manifest from the ref — the spike's shape (`name`/`version`/`description`/
+`dependencies.apm`), in the object form `{git:, ref:, path:}` for § 3's subdirectory (skill-subset)
+refs — validates the ref first (revision required, path characters restricted, so no YAML injection),
+runs `apm install --target <t>` *without* `--frozen` so the tag resolves and a lock is written, then
+applies the existing gate.
+
+**The digest check stays the authority:** the lock records `resolved_commit` (T-tag-2/3/4), so a moved
+tag moves `sha256(apm.lock.yaml)` and the launch is refused with the same `DigestMismatch` as before.
+Generated files (`apm.yml`, `apm.lock.yaml`, `apm_modules/`, `.claude/skills/`, or `.agents/skills/` +
+`.codex/`) go into the checkout's `.git/info/exclude` — never a tracked `.gitignore` — before the gate,
+so even a refusal leaves no diff; `DeclareExclusions` and the artifact filter stay the later lines of
+defence. Staging is still not isolation (§ 6): this changes what is installed, not who is confined.
