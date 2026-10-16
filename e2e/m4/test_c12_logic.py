@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""test_c12_logic.py - offline unit proof for e2e_m4_exit.py's C12 pure logic.
+
+Runs WITHOUT a stack (stdlib unittest only): the authoring-subset refusal algebra
+(exists()/now()/matches()/workspace.* and the three § 6 budget caps), the PINNED-run
+verdict from canned run rows either side of a mid-run publish (PASS / FAIL / GAP), the
+re-pin clause, the 409 canonicalization verdict, where the two digests separate, and the
+documents the gate authors (each splice moves exactly one thing over the real seed twin
+bytes).
+
+A green here means the VERDICT ALGEBRA is right. It never substitutes for C12's live
+drafts, publishes and mid-run publish against the real control plane and workers
+(12-test-strategy.md: a mocked green is not done).
+
+usage: python3 e2e/m4/test_c12_logic.py [-v]
+"""
+import os
+import re
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+
+
+def one(rows, needle):
+    vs = [ok for l, ok, _d in rows if needle in l]
+    assert len(vs) == 1, f"{needle!r} produced {len(vs)} verdicts: {[l for l, _o, _d in rows]}"
+    return vs[0]
+
+
+def detail(rows, needle):
+    return [d for l, _o, d in rows if needle in l][0]
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SEED_YAML = os.path.join(REPO, "docs", "compatibility", "probes", "m4", "pipeline.yaml")
+
+
+def twin_doc():
+    """Document #2 of the seed's probe file — the bytes C12 varies (the live gate reads
+    them from GET /revisions/{id}/document?format=yaml)."""
+    with open(SEED_YAML, encoding="utf-8") as f:
+        raw = f.read()
+    docs = [d for d in re.split(r"(?m)^---\s*$", raw) if "kind: Pipeline" in d]
+    assert len(docs) >= 2, f"expected >=2 documents in {SEED_YAML}"
+    return docs[1]
+
+
+def vbody(*errs, valid=False):
+    return {"valid": valid, "errors": [dict(e) for e in errs]}
+
+
+def err(code, loc, hint="nope"):
+    return {"source": "cel", "code": code, "instance_location": loc, "hint": hint}
+
+
+def pin(rd="sha:OLDREV", pd="sha:OLDPLAN", rev="rev-1", status="running"):
+    return {"revision_digest": rd, "plan_digest": pd, "pipeline_revision_id": rev,
+            "status": status}
+
+
+class C12aAuthoringSubset(unittest.TestCase):
+    def test_each_probe_refused_with_the_named_code(self):
+        rows = m.c12_refusal_verdicts([("now()", "cel_function_not_allowed",
+                                        "/spec/nodes/0/config/passWhen",
+                                        vbody(err("cel_function_not_allowed",
+                                                  "/spec/nodes/0/config/passWhen")))])
+        self.assertIs(True, one(rows, "now()"))
+
+    def test_accepted_document_is_a_fail(self):
+        rows = m.c12_refusal_verdicts([("workspace.*", "undeclared_root",
+                                        "/spec/nodes/0/config/passWhen",
+                                        vbody(valid=True))])
+        self.assertIs(False, one(rows, "workspace.*"))
+
+    def test_no_validate_body_is_a_gap(self):
+        rows = m.c12_refusal_verdicts([("matches()", "cel_function_not_allowed", "/spec", None)])
+        self.assertIsNone(one(rows, "matches()"))
+
+    def test_wrong_code_at_the_right_place_fails_naming_both(self):
+        rows = m.c12_refusal_verdicts([("now()", "cel_function_not_allowed",
+                                        "/spec/nodes/0/config/passWhen",
+                                        vbody(err("cel_compile_error",
+                                                  "/spec/nodes/0/config/passWhen")))])
+        self.assertIs(False, one(rows, "now()"))
+        self.assertIn("cel_function_not_allowed", detail(rows, "now()"))
+
+    def test_four_probes_share_one_builder(self):
+        docs = m.c12_forbidden_docs()
+        self.assertEqual(4, len(docs))
+        self.assertEqual(["`exists()` macro", "`now()`", "`matches()`", "`workspace.*` root"],
+                         [d[0] for d in docs])
+        for _l, expr, _c, doc, loc in docs:
+            self.assertIn(f"passWhen: {expr}", doc)
+            self.assertIn("kind: until", doc)
+            self.assertEqual("/spec/nodes/0/config/passWhen", loc)
+
+
+class C12bBudgets(unittest.TestCase):
+    def test_expression_cap_document_carries_exactly_n_bindings(self):
+        self.assertEqual(65, m.c12_exprs_doc("x", 65).count(m.BIND_OPEN))
+        self.assertEqual(64, m.c12_exprs_doc("x", 64).count(m.BIND_OPEN))
+
+    def test_expression_budget_code_is_the_only_pass(self):
+        ok = m.c12_code_verdict("65 compiled expressions",
+                                vbody(err("expression_budget_exceeded", "/spec/nodes/64")),
+                                "expression_budget_exceeded")
+        self.assertIs(True, ok[1])
+        bad = m.c12_code_verdict("65 compiled expressions",
+                                 vbody(err("cel_compile_error", "/spec/nodes/64")),
+                                 "expression_budget_exceeded")
+        self.assertIs(False, bad[1])
+        self.assertIn("cel_compile_error", bad[2])
+        self.assertIsNone(m.c12_code_verdict("65 compiled expressions", None,
+                                             "expression_budget_exceeded")[1])
+
+    def test_literal_fanout_document_holds_the_over_cap_array(self):
+        doc = m.c12_fanout_doc("x", m.C12_ITEMS_CAP + 1)
+        self.assertEqual(m.C12_ITEMS_CAP + 1, doc.count("{n: "))
+        self.assertIn("kind: for_each", doc)
+
+    def test_wide_until_body_lowers_only_its_own_budget(self):
+        doc = m.c12_exec_budget_doc("x")
+        self.assertEqual(m.C12_BODY_NODES, doc.count("- id: b"))
+        self.assertIn(f"maxNodeExecutions: {m.C12_EXEC_BUDGET}", doc)
+        self.assertNotIn(m.BIND_OPEN, doc.split("  nodes:")[1])
+        self.assertIn(f"maxIterations: {m.C12_MAX_ITER}", doc)
+
+    def test_run_owned_cap_reads_the_code_off_the_run(self):
+        v = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded",
+                                    "failed", "fanout_items_exceeded")
+        self.assertIs(True, one(v, "1001 evaluated items"))
+        v = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded",
+                                    "completed", "")
+        self.assertIs(False, one(v, "1001 evaluated items"))
+        v = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded", "", "")
+        self.assertIsNone(one(v, "1001 evaluated items"))
+
+
+class C12cPinnedRun(unittest.TestCase):
+    ROWS = ("sha:OLDREV|sha:OLDPLAN|rev-1|running",)
+
+    def test_c12_row_parses_the_pin(self):
+        got = m.c12_row("sha:R|sha:P|rev-9|running")
+        self.assertEqual("sha:R", got["revision_digest"])
+        self.assertEqual("rev-9", got["pipeline_revision_id"])
+        self.assertEqual("running", got["status"])
+
+    def test_c12_row_refuses_a_half_read(self):
+        for bad in ("", "sha:R|sha:P", "sha:R|<none>|rev-9|running", None):
+            self.assertIsNone(m.c12_row(bad), bad)
+
+    def _emit(self, **kw):
+        base = dict(before=m.c12_row(self.ROWS[0]),
+                    after=m.c12_row(self.ROWS[0]), event_rd="", revisions_ok=True,
+                    nodes_before="{\"nodes\":[]}", nodes_after="{\"nodes\":[]}",
+                    pinned_late=True)
+        base.update(kw)
+        return m.c12_pin_verdicts(**base)
+
+    def test_pinned_run_passes_on_every_member(self):
+        rows = self._emit()
+        for _l, ok, _d in rows:
+            self.assertIs(True, ok, _l)
+
+    def test_a_moved_digest_fails_and_prints_both_sides(self):
+        moved = m.c12_row("sha:OLDREV|sha:NEWPLAN|rev-1|running")
+        rows = self._emit(after=moved)
+        self.assertIs(False, one(rows, "plan_digest"))
+        self.assertIn("sha:NEWPLAN", detail(rows, "plan_digest"))
+        self.assertIs(True, one(rows, "run's revision_digest"), detail(rows, "revision_digest"))
+
+    def test_a_run_row_that_never_arrived_is_a_gap_not_a_pass(self):
+        rows = self._emit(before=None, after=None)
+        self.assertIsNone(one(rows, "run's revision_digest"))
+        self.assertIsNone(one(rows, "plan_digest"))
+        self.assertIsNone(one(rows, "pipeline_revision_id"))
+
+    def test_publish_event_belongs_to_the_org_not_the_run(self):
+        self.assertIs(True, one(self._emit(event_rd=""), "journal carries no revision_digest"))
+        self.assertIs(False, one(self._emit(event_rd="sha:NEWREV"),
+                                "journal carries no revision_digest"))
+        self.assertIsNone(one(self._emit(event_rd=None), "journal carries no revision_digest"))
+
+    def test_node_output_must_be_byte_identical(self):
+        self.assertIs(False, one(self._emit(nodes_after="{\"nodes\":[1]}"), "/nodes output"))
+        self.assertIsNone(one(self._emit(nodes_before=None), "/nodes output"))
+
+    def test_later_nodes_on_the_pinned_plan(self):
+        self.assertIs(True, one(self._emit(pinned_late=True), "LATER nodes"))
+        self.assertIs(False, one(self._emit(pinned_late=False), "LATER nodes"))
+        self.assertIsNone(one(self._emit(pinned_late=None), "LATER nodes"))
+
+    def test_revision_listing_reads_three_ways(self):
+        self.assertIs(True, one(self._emit(revisions_ok=True), "GET /pipelines"))
+        self.assertIs(False, one(self._emit(revisions_ok=False), "GET /pipelines"))
+        self.assertIsNone(one(self._emit(revisions_ok=None), "GET /pipelines"))
+
+    def test_repin_touches_new_runs_only(self):
+        old = m.c12_row("sha:R|sha:P|rev-1|running")
+        rows = m.c12_repin_verdicts(old, old, 200, {"pinned_revision_id": "rev-2"},
+                                   {**m.c12_row("sha:R2|sha:P2|rev-2|queued"),
+                                    "moved": True, "old_revision_id": "rev-1",
+                                    "old_revision_digest": "sha:R"})
+        for _l, ok, _d in rows:
+            self.assertIs(True, ok, _l)
+        rows = m.c12_repin_verdicts(old, m.c12_row("sha:NEW|sha:P|rev-9|running"), 200,
+                                   {"pinned_revision_id": "rev-2"}, None)
+        self.assertIs(False, one(rows, "live run is NOT moved"))
+        self.assertIsNone(one(rows, "NEW run"))
+        rows = m.c12_repin_verdicts(old, old, 403, None, None)
+        self.assertIs(False, one(rows, "PATCH /assignments"))
+        self.assertIsNone(one(rows, "live run is NOT moved"))
+
+
+class C12dCanonicalization(unittest.TestCase):
+    def test_invariance_variant_moves_bytes_not_content(self):
+        base = m.c12_rename(twin_doc(), "m4x-c12d")
+        variant = m.c12_invariance_variant(base)
+        self.assertNotEqual(base, variant)
+        self.assertTrue(m.c12_variant_is_same_doc(base, variant))
+        self.assertIn('name: "m4x-c12d"', variant)
+        self.assertIn("# c12 canonicalization probe", variant)
+
+    def test_a_value_move_is_caught_by_the_probe_itself(self):
+        base = m.c12_rename(twin_doc(), "m4x-c12d")
+        self.assertFalse(m.c12_variant_is_same_doc(base, m.c12_budget_number_doc(base, "x")
+                                                   .get("doc") or ""))
+        self.assertFalse(m.c12_variant_is_same_doc(base, ""))
+        self.assertFalse(m.c12_variant_is_same_doc(base, base))
+
+    def test_republish_verdicts(self):
+        rows = m.c12_republish_verdicts(409, {"code": "revision_already_published",
+                                             "existing_revision_id": "rev-1"}, "rev-1",
+                                       201, {"id": "rev-2"})
+        for _l, ok, _d in rows:
+            self.assertIs(True, ok, _l)
+        rows = m.c12_republish_verdicts(409, {"code": "revision_already_published"},
+                                       "rev-1", 201, {})
+        self.assertIs(False, one(rows, "names the EXISTING revision id"))
+        rows = m.c12_republish_verdicts(201, {"id": "rev-2"}, "rev-1", 201, {})
+        self.assertIs(False, one(rows, "409 revision_already_published"))
+        rows = m.c12_republish_verdicts(None, None, "rev-1", None, None)
+        self.assertIsNone(one(rows, "409 revision_already_published"))
+        self.assertIsNone(one(rows, "budget number publishes normally"))
+
+
+class C12eDigestSplit(unittest.TestCase):
+    def test_whitespace_moves_the_revision_only(self):
+        b, a = m.c12_row("sha:R1|sha:P|rev-1|x"), m.c12_row("sha:R2|sha:P|rev-1|x")
+        rows = m.c12_digest_split_verdicts("whitespace-only prompt wording", ("revision",), b, a)
+        self.assertIs(True, one(rows, "whitespace-only"))
+        rows = m.c12_digest_split_verdicts("whitespace-only prompt wording", ("revision",), b, b)
+        self.assertIs(False, one(rows, "whitespace-only"))
+
+    def test_operator_moves_both(self):
+        b, a = m.c12_row("sha:R1|sha:P1|rev-1|x"), m.c12_row("sha:R2|sha:P2|rev-1|x")
+        rows = m.c12_digest_split_verdicts("a passWhen operator", ("revision", "plan"), b, a)
+        self.assertIs(True, one(rows, "passWhen operator"))
+        rows = m.c12_digest_split_verdicts("a passWhen operator", ("revision", "plan"), b, b)
+        self.assertIs(False, one(rows, "passWhen operator"))
+
+    def test_an_unreadable_row_is_a_gap(self):
+        rows = m.c12_digest_split_verdicts("x", ("revision",), None, m.c12_row("a|b|c|d"))
+        self.assertIsNone(rows[0][1])
+
+
+class C12Documents(unittest.TestCase):
+    def test_each_splice_moves_exactly_one_thing(self):
+        doc = twin_doc()
+        for fn, label in ((m.c12_one_word_doc, "one prompt word"),
+                          (m.c12_ws_doc, "whitespace-only wording"),
+                          (m.c12_operator_doc, "passWhen operator"),
+                          (m.c12_budget_number_doc, "one changed budget number")):
+            got = fn(doc, "m4x-probe")
+            self.assertEqual([], got["missing"], label)
+            self.assertNotEqual(doc, got["doc"], label)
+            self.assertIn("name: m4x-probe", got["doc"])
+
+    def test_a_needle_that_does_not_occur_once_is_a_missing_splice(self):
+        got = m.c12_splice(twin_doc(), "n", "Plan written for", "x", "arm")
+        self.assertIsNone(got["doc"])
+        self.assertTrue(any("arm" in why for why in got["missing"]), got["missing"])
+        got = m.c12_splice("not a pipeline", "n", "Plan for", "x", "arm")
+        self.assertIsNone(got["doc"])
+
+    def test_whitespace_splice_keeps_the_expression_text(self):
+        got = m.c12_ws_doc(twin_doc(), "n")["doc"]
+        self.assertIn("${{  inputs.goal  }}", got)
+        self.assertNotIn(m.C12_WS_FROM, got)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2 if "-v" in sys.argv else 1)

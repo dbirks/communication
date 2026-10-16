@@ -5450,6 +5450,631 @@ def c11():
     skip("C11", "injected fetch reaches the collector with no sentinel and no fence values")
 
 
+# --- C12 pure logic — unit-tested offline by e2e/m4/test_c12_logic.py --------
+#
+# docs/m4-contract.md § 7.1 C12. Two halves, one invariant: the authoring surface
+# is a SUBSET the author cannot widen (C12a's refused expressions, C12b's refused
+# budgets), and a run is PINNED (C12c mid-run publish, C12d byte-identical
+# republish, C12e where the two digests separate — 12 case 11). Every verdict is
+# computed from canned API/SQL readings, so the algebra is proven offline and the
+# live gate only has to produce the readings.
+
+C12_EXPR_CAP = 64                    # § 6 'Compiled expressions per revision'
+C12_ITEMS_CAP = 1000                 # § 6 'for_each.items length'
+C12_BODY_NODES = 200                 # § 7.1 C12b: an `until` body of 200 nodes...
+C12_MAX_ITER = 4                     # ... plus 4 iterations
+C12_EXEC_BUDGET = 8                  # ... under a maxNodeExecutions of 8
+C12_UNDECLARED_ROOT = "workspace.repo.root"
+C12_REFUSAL_CODES = ("cel_function_not_allowed", "undeclared_root")
+# § 7.1 C12a: each expression, and the code the contract names for it.
+C12_FORBIDDEN = (("`exists()` macro", "nodes.review.outputs.findings.exists(f, f != '')",
+                  "cel_function_not_allowed"),
+                 ("`now()`", "now() > 0", "cel_function_not_allowed"),
+                 ("`matches()`", '"x".matches(".*")', "cel_function_not_allowed"),
+                 ("`workspace.*` root", C12_UNDECLARED_ROOT, "undeclared_root"))
+# C12b's fan-out cap: the contract's code is the ADVANCER's (at scope start); the
+# compiler's literal-array refusal is graph_too_large, which is a DIFFERENT
+# assertion and is never credited as C12b's.
+C12_FANOUT_RUN_CODE = "fanout_items_exceeded"
+C12_LITERAL_FANOUT_CODES = ("graph_too_large",)
+C12_TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+# The budgets C12 does NOT test are generous, so the only cap one of these documents
+# can trip is the one its own case names (the seed's policy block is the shape).
+C12_POLICIES = """    maxConcurrentNodes: 2
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 200
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade"""
+# C12c: the one prompt word the mid-run revision changes (twin document's approve
+# summary, which occurs exactly once in it).
+C12_PROMPT_NEEDLE = "Plan for ${{ inputs.goal }}"
+C12_PROMPT_REPL = "Plan written for ${{ inputs.goal }}"
+# C12e: whitespace INSIDE a binding moves the canonical document but not the AST.
+C12_WS_FROM = C12_PROMPT_NEEDLE
+C12_WS_TO = "Plan for ${{  inputs.goal  }}"
+
+
+def c12_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def _c12_plain_node(i, dep=None, pad=4):
+    """One `process.exec` body node with NO `${{ … }}` binding: C12b's wide until body
+    must trip the NODE-execution budget, not the 64-expression cap, so its nodes carry
+    zero expressions by construction. `m4-exit.sh plan` is the seed's own fast, succeeding
+    step — the budget has to be reached by REAL executions, not by infra failures."""
+    p = " " * pad
+    out = [f"{p}- id: b{i:03d}", f"{p}  kind: process.exec"]
+    if dep:
+        out.append(f"{p}  dependsOn: [{dep}]")
+    out += [f"{p}  timeoutSeconds: 60", f"{p}  config:", f"{p}    executable: m4-exit.sh",
+            f"{p}    args: [plan]"]
+    return "\n".join(out) + "\n"
+
+
+def _c12_body_nodes(count, pad=8):
+    """`count` chained body nodes (the until body C12b runs over-budget)."""
+    return "".join(_c12_plain_node(i, dep=(None if i == 0 else f"b{i - 1:03d}"), pad=pad)
+                   for i in range(max(1, count)))
+
+
+def c12_until_doc(name, pass_when, body_nodes=1, max_iter=1, policies=C12_POLICIES):
+    """A seed-header document whose ONLY node is an `until` over `pass_when` with a
+    `body_nodes`-wide body. '' when there is no base header to build on."""
+    nodes = ["  - id: until1", "    kind: until", "    timeoutSeconds: 600", "    config:",
+             f"      maxIterations: {max(1, max_iter)}",
+             f"      passWhen: {pass_when}", "      body:", "        nodes:"]
+    return c13_doc(name, "\n".join(nodes) + "\n" + _c12_body_nodes(body_nodes),
+                   policies=policies)
+
+
+def c12_forbidden_docs(prefix="m4x-c12a"):
+    """[(label, expression, expected_code, document_yaml, pointer)] — one document per
+    refused authoring attempt, all four built by the SAME builder so the only variable
+    is the expression itself."""
+    out = []
+    for i, (label, expr, code) in enumerate(C12_FORBIDDEN):
+        doc = c12_until_doc(f"{prefix}-{i}", expr)
+        out.append((label, expr, code, doc, "/spec/nodes/0/config/passWhen"))
+    return out
+
+
+def c12_exprs_doc(name, count, prefix="m4x-c12b"):
+    """C12a's budget arm: `count` chain-length nodes, each carrying exactly ONE
+    `${{ … }}` binding, so compiled expressions == count (one over the cap = a
+    refusal, at the last expression's own location)."""
+    p, nodes = "    ", []
+    for i in range(count):
+        dep = None if i == 0 else f"n{i - 1}"
+        nodes += [f"  - id: n{i}", "    kind: agent.acp"]
+        if dep:
+            nodes.append(f"{p}  dependsOn: [{dep}]")
+        nodes += [f"{p}  timeoutSeconds: 60", f"{p}  config:",
+                  f"{p}    profile: m4-planner", f"{p}    sessionMode: new",
+                  f"{p}    prompt: 'x{i} -> " + BIND_OPEN + "inputs.goal" + BIND_CLOSE + "'"]
+    return c13_doc(name, "\n".join(nodes) + "\n", policies=C12_POLICIES)
+
+
+def c12_fanout_doc(name, count, prefix="m4x-c12b"):
+    """C12b's fan-out arm as a LITERAL `items` array of `count` entries — the
+    validate-time half only (the runtime 1001-item arm is authored off the seed
+    twin's own emit_items -> fan_out branch, which is what actually evaluates)."""
+    items = "[" + ", ".join("{n: %d}" % i for i in range(count)) + "]"
+    nodes = ["  - id: fan", "    kind: for_each", "    timeoutSeconds: 600", "    config:",
+             "      items: " + items, "      maxConcurrency: 2",
+             "      body:", "        nodes:", _c12_plain_node(0, pad=8).rstrip("\n")]
+    return c13_doc(name, "\n".join(nodes) + "\n", policies=C12_POLICIES)
+
+
+def c12_exec_budget_doc(name, body_nodes=C12_BODY_NODES, max_iter=C12_MAX_ITER,
+                        max_exec=C12_EXEC_BUDGET):
+    """C12b's third arm verbatim: a `body_nodes`-node until body, maxIterations
+    `max_iter`, and `policies.maxNodeExecutions: max_exec` — the run cannot get past
+    the budget, and nothing downstream of it silently half-runs."""
+    pol = re.sub(r"(?m)^    maxNodeExecutions: .*$", f"    maxNodeExecutions: {max_exec}",
+                 C12_POLICIES, count=1)
+    return c12_until_doc(name, "nodes.b000.status == 'succeeded'", body_nodes=body_nodes,
+                         max_iter=max_iter, policies=pol)
+
+
+def c12_refusal_verdicts(results):
+    """C12a — one verdict per authored attempt: the refusal must carry the code the
+    contract names AND a location the editor can highlight. `results` is
+    [(label, expected_code, location, vresp)]; vresp None is a GAP."""
+    out = []
+    for label, code, location, vresp in results:
+        v = c13_refusal_verdict(f"C12a {label} refused by {code}", vresp, location,
+                                (code,) + C12_REFUSAL_CODES)
+        out.append(v)
+    return out
+
+
+def c12_budget_verdict(label, code, results):
+    """C12b's shared shape: `results` = the validate readings of the three budgets
+    (a dict {name: vresp} plus optional run readings). PASS only when the named
+    code is reported at the budget's own location; a refusal under a different code
+    is a FAIL with both names printed — § 6 fixes one code per cap."""
+    name, location, vresp = results
+    return c13_refusal_verdict(f"C12b {label} refused by {code}", vresp, location, (code,))
+
+
+def c12_run_code_verdicts(label, code, run_st, run_cause, scope_cause=""):
+    """A cap the ADVANCER owns (fanout_items_exceeded, node_execution_budget_exceeded)
+    is observed on the run, not on the draft: the run must FAIL, and its
+    failed_cause / scope cause must name the code § 6 fixes. '' readings are a GAP."""
+    if not run_st:
+        return [(f"C12b {label}: run.failed with failed_cause {code}", None,
+                 "no run row — the lab produced no run to measure")]
+    named = code in (run_cause or "", scope_cause or "")
+    return [(f"C12b {label}: run.failed with failed_cause {code}",
+             run_st in C12_TERMINAL and named,
+             f"status={run_st!r} failed_cause={run_cause!r} scope_cause={scope_cause!r}")]
+
+
+# ---- C12 pure logic part 2: the pinned run (C12c/C12d/C12e) ----
+
+
+def c12_row(text):
+    """'rd|pd|rev|status' -> the pin dict; None (an honest GAP upstream) unless all
+    four members are present — a half-read run row is never read as an unchanged one."""
+    parts = str(text or "").strip().split("|")
+    if len(parts) != 4 or not all(p and p != "<none>" for p in parts):
+        return None
+    return {"revision_digest": parts[0], "plan_digest": parts[1],
+            "pipeline_revision_id": parts[2], "status": parts[3]}
+
+
+def c12_pin_sql(run_id):
+    """The pin, read from the authoritative store (C12c's first psql, widened to name
+    the revision too — the contract's two digests plus the id they came with)."""
+    return (f"SELECT revision_digest || '|' || plan_digest || '|' || "
+            f"pipeline_revision_id::text || '|' || status FROM runs WHERE id = '{run_id}'")
+
+
+def c12_pin_verdicts(before, after, event_rd, revisions_ok, nodes_before, nodes_after,
+                     pinned_late=None):
+    """C12c — the mid-run publish must not move anything under the live run.
+
+    before/after   c12_row() dicts read either side of the new publish
+    event_rd       the run's own pipeline.revision.published payload->>'revision_digest'
+                   ('' = NULL as psql prints it, None = the query did not answer)
+    revisions_ok   True/False: the new revision is listed by
+                   GET /pipelines/{id}/revisions; None = that call failed
+    nodes_*        the raw GET /runs/{id}/nodes bodies either side of the publish
+    pinned_late    True/False: after the publish, the run's LATER nodes still executed
+                   the pinned plan (same key set, same pinned revision);
+                   None = the run never got past the publish point
+    """
+    out = []
+    for label, key in (("revision_digest", "revision_digest"),
+                       ("plan_digest", "plan_digest"),
+                       ("pipeline_revision_id", "pipeline_revision_id")):
+        if not before or not after:
+            out.append((f"C12c the live run's {label} is unchanged by a new publish", None,
+                        "no run row either side of the publish — the pin is unmeasured"))
+        else:
+            out.append((f"C12c the live run's {label} is unchanged by a new publish",
+                        before[key] == after[key],
+                        f"before={before[key]!r} after={after[key]!r}"))
+    if event_rd is None:
+        out.append(("C12c the run's journal carries no revision_digest", None,
+                    "the journal query did not answer — the run's event stream is unmeasured"))
+    else:
+        out.append(("C12c the run's journal carries no revision_digest (publish is an "
+                    "ORG event, not this run's)", event_rd == "",
+                    f"payload->>'revision_digest'={event_rd!r} (psql prints NULL as '')"))
+    out.append(("C12c the NEW revision is listed by GET /pipelines/{id}/revisions",
+                revisions_ok, "the revisions route did not answer" if revisions_ok is None
+                else "observed in the listing" if revisions_ok else
+                "the published revision is absent from the pipeline's revision list"))
+    if nodes_before is None or nodes_after is None:
+        out.append(("C12c the run's /nodes output is byte-identical across the publish", None,
+                    "one side of GET /runs/{id}/nodes failed — byte-identity is unmeasured"))
+    else:
+        h = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]  # noqa: E731
+        out.append(("C12c the run's /nodes output is byte-identical across the publish",
+                    nodes_before == nodes_after,
+                    f"sha256[:16] before={h(nodes_before)} after={h(nodes_after)}"))
+    out.append(("C12c the run's LATER nodes still execute the pinned plan (12 case 11)",
+                pinned_late, "the run never reached a node after the publish — the pinned "
+                             "plan could not be observed running" if pinned_late is None
+                else "key set and pin identical after the publish" if pinned_late else
+                "a node after the publish moved off the pinned plan"))
+    return out
+
+
+def c12_repin_verdicts(old_before, old_after, patch_status, assignment, new_run_pin):
+    """C12c's last clause: PATCH /assignments re-pinning is an explicit promotion and
+    touches NEW runs only (07 'current runs remain pinned')."""
+    if patch_status not in (200, 204):
+        return [("C12c PATCH /assignments re-pins (Maintainer+)", False,
+                 f"{patch_status} — no re-pin was made, so the clause is untested"),
+                ("C12c the live run is NOT moved by the re-pin", None, "no re-pin happened"),
+                ("C12c a NEW run created after the re-pin picks up the new pin", None,
+                 "no re-pin happened")]
+    out = [("C12c PATCH /assignments re-pins (Maintainer+)", True, str(patch_status))]
+    if not old_before or not old_after:
+        out.append(("C12c the live run is NOT moved by the re-pin", None,
+                    "the run row could not be read on both sides of the re-pin"))
+    else:
+        same = all(old_before[k] == old_after[k] for k in
+                   ("revision_digest", "plan_digest", "pipeline_revision_id"))
+        out.append(("C12c the live run is NOT moved by the re-pin", same,
+                    f"{old_before['pipeline_revision_id']} {old_before['revision_digest']} "
+                    f"-> {old_after['pipeline_revision_id']} {old_after['revision_digest']}"))
+    if not assignment:
+        out.append(("C12c the assignment row itself carries the new pin", None,
+                     "the assignment could not be read back"))
+    else:
+        out.append(("C12c the assignment row itself carries the new pin",
+                    bool(assignment.get("pinned_revision_id")),
+                    f"pinned_revision_id={assignment.get('pinned_revision_id')!r} "
+                    f"pinned_revision_digest={assignment.get('pinned_revision_digest')!r}"))
+    if not new_run_pin:
+        out.append(("C12c a NEW run created after the re-pin picks up the new pin", None,
+                    "no new run was started against the re-pinned assignment"))
+    else:
+        out.append(("C12c a NEW run created after the re-pin picks up the new pin",
+                    new_run_pin.get("moved") is True,
+                    f"new run pinned {new_run_pin.get('pipeline_revision_id')} "
+                    f"{new_run_pin.get('revision_digest')} vs old "
+                    f"{new_run_pin.get('old_revision_id')} "
+                    f"{new_run_pin.get('old_revision_digest')}"))
+    return out
+
+
+def c12_republish_verdicts(status, body, existing_id, sem_status, sem_body):
+    """C12d — the same DOCUMENT again is a 409 naming the existing revision, while one
+    changed budget number publishes normally (ADR-0021 § 5 canonicalization)."""
+    code = str((body or {}).get("code") or (body or {}).get("type") or "")
+    named = str((body or {}).get("existing_revision_id")
+                or ((body or {}).get("details") or {}).get("existing_revision_id") or "")
+    if status is None:
+        return [("C12d byte-identical republish => 409 revision_already_published", None,
+                 "the re-publish was never posted (the variant document could not be built)"),
+                ("C12d the 409 names the EXISTING revision id", None,
+                 "the re-publish was never posted"),
+                ("C12d one changed budget number publishes normally (201)",
+                 None if sem_status is None else sem_status in (200, 201),
+                 "the semantic variant was never posted" if sem_status is None
+                 else f"{sem_status} {str(sem_body)[:160]}")]
+    out = [("C12d byte-identical republish => 409 revision_already_published",
+            status == 409 and code == "revision_already_published",
+            f"{status} code={code!r} body={str(body)[:160]}")]
+    out.append(("C12d the 409 names the EXISTING revision id",
+                None if status != 409 else bool(named) and named == existing_id,
+                f"existing_revision_id={named!r} want {existing_id!r}"))
+    if sem_status is None:
+        out.append(("C12d one changed budget number publishes normally (201)", None,
+                    "the semantic variant was never posted"))
+    else:
+        out.append(("C12d one changed budget number publishes normally (201)",
+                    sem_status in (200, 201), f"{sem_status} {str(sem_body)[:160]}"))
+    return out
+
+
+def c12_digest_split_verdicts(label, want, before, after):
+    """C12e — where the two digests separate (ADR-0021 § 6). `want` is which of
+    ('revision', 'plan') are expected to MOVE; a missing reading is a GAP, never a 0==0
+    PASS."""
+    if not before or not after or not before.get("revision_digest") or \
+            not after.get("revision_digest"):
+        return [(f"C12e {label}: digests move as ADR-0021 § 6 requires", None,
+                 "a revision row was unreadable on one side — the digests are unmeasured")]
+    moved = {"revision": before["revision_digest"] != after["revision_digest"],
+             "plan": before["plan_digest"] != after["plan_digest"]}
+    ok = moved["revision"] == ("revision" in want) and moved["plan"] == ("plan" in want)
+    return [(f"C12e {label}: revision_digest {'moves' if 'revision' in want else 'holds'}, "
+             f"plan_digest {'moves' if 'plan' in want else 'holds'}", ok,
+             f"observed {moved} rd {before['revision_digest'][:18]} -> "
+             f"{after['revision_digest'][:18]}; pd {before['plan_digest'][:18]} -> "
+             f"{after['plan_digest'][:18]}")]
+
+
+# ---- C12 pure logic part 3: the documents the gate authors itself ----------
+
+
+def c12_rename(doc, name):
+    """metadata.name swap — every revision C12 authors carries its own name (the seed's
+    two names are taken by the seed's own revisions)."""
+    return re.sub(r"(?m)^  name: .*$", "  name: " + name, doc or "", count=1)
+
+
+def c12_splice(doc, name, needle, repl, label):
+    """One exact-substring edit + the rename: {doc, applied, missing}. A needle that
+    does not occur EXACTLY once is a missing splice — the gate GAPs rather than ship a
+    document whose only known change is the one C12 is trying to disprove."""
+    out = {"doc": None, "applied": [], "missing": []}
+    text = doc or ""
+    if "apiVersion:" not in text[:600] or "kind: Pipeline" not in text[:600]:
+        out["missing"].append("source document (not a kind: Pipeline document)")
+        return out
+    text, k = re.subn(r"(?m)^  name: .*$", "  name: " + name, text, count=1)
+    (out["applied"] if k == 1 else out["missing"]).append("metadata.name")
+    n = text.count(needle)
+    if n == 1:
+        text = text.replace(needle, repl)
+        out["applied"].append(f"{label} ({needle[:40]})")
+    else:
+        out["missing"].append(f"{label}: needle occurs {n} times, want exactly 1 — "
+                              f"{needle[:60]!r}")
+    out["doc"] = None if out["missing"] else text
+    return out
+
+
+def c12_one_word_doc(doc, name):
+    """C12c's mid-run revision: the twin with ONE prompt word changed (contract § 7.1
+    C12c) — semantically different, node-for-node otherwise."""
+    return c12_splice(doc, name, C12_PROMPT_NEEDLE, C12_PROMPT_REPL, "one prompt word")
+
+
+def c12_ws_doc(doc, name):
+    """C12e arm 1: whitespace only INSIDE one `${{ … }}` binding — the canonical
+    document (and revision_digest) moves, the expression's AST does not."""
+    return c12_splice(doc, name, C12_WS_FROM, C12_WS_TO, "whitespace-only wording")
+
+
+def c12_operator_doc(doc, name):
+    """C12e arm 2: the passWhen operator `==` -> `!=` — an AST change, so BOTH digests
+    must move."""
+    return c12_splice(doc, name, "outputs.result.successful == true",
+                      "outputs.result.successful != true", "passWhen operator")
+
+
+def c12_budget_number_doc(doc, name):
+    """C12d's semantic control: one changed budget number publishes normally."""
+    return c12_splice(doc, name, "maxNodeExecutions: 200", "maxNodeExecutions: 199",
+                      "one changed budget number")
+
+
+def c12_invariance_variant(doc):
+    """C12d's re-export: DIFFERENT BYTES, same document — a comment header, the
+    metadata.name re-quoted, and the two policy lines swapped (key order, quoting and
+    comments are all canonicalization-invariant per ADR-0021 § 5). Returns '' when the
+    document is not the shape this probe needs, and never changes a VALUE."""
+    text = doc or ""
+    if "apiVersion:" not in text[:600]:
+        return ""
+    m = re.search(r"(?m)^  name: (.*)$", text)
+    if not m:
+        return ""
+    value = m.group(1).strip()
+    quoted = value if value[:1] in ("'", '"') else '"' + value + '"'
+    text = re.sub(r"(?m)^  name: .*$", lambda _m: "  name: " + quoted, text, count=1)
+    pol = re.search(r"(?m)^    maxConcurrentNodes: (\d+)\n(    maxDurationSeconds: \d+)\n", text)
+    if pol:
+        text = (text[:pol.start()] + pol.group(2) + "\n    maxConcurrentNodes: "
+                + pol.group(1) + "\n" + text[pol.end():])
+    return "# c12 canonicalization probe: comments do not survive into the digest\n" + text
+
+
+def c12_variant_is_same_doc(original, variant):
+    """Honesty gate on the probe itself: the variant's bytes MUST differ and its
+    `key: value` content (order-insensitive, comment/quote-insensitive) must be the
+    same set — otherwise the 409 below would be proving nothing about canonicalization."""
+    if not original or not variant or variant == original:
+        return False
+    def pairs(text):
+        body = [ln for ln in text.splitlines()
+                if ln.strip() and not ln.strip().startswith("#")]
+        out = set()
+        for ln in body:
+            k, sep, v = ln.partition(":")
+            if sep:
+                out.add((k.strip(), v.strip().strip("'\"").replace("    ", " ")))
+        return out
+    return pairs(original) == pairs(variant)
+
+
+def c12_code_verdict(label, vresp, code):
+    """§ 6's budget caps name a CODE (no location is fixed by the contract): PASS only
+    when an error carries exactly that code; a different code is a FAIL that prints
+    both names — the table fixes one failure per cap."""
+    if not c13_validate_ok(vresp):
+        return (f"C12b {label}: refused by {code}", None,
+                "no § 2.2 validate body came back — the cap is unmeasured")
+    hits = [e for e in vresp["errors"] if isinstance(e, dict) and e.get("code") == code]
+    if hits:
+        e = hits[0]
+        return (f"C12b {label}: refused by {code}", True,
+                f"{e.get('source')}/{code} at {e.get('instance_location')} — "
+                f"{str(e.get('hint') or e.get('message') or '')[:120]}")
+    if vresp.get("valid") is True:
+        return (f"C12b {label}: refused by {code}", False,
+                "valid=true: the over-budget document was ACCEPTED")
+    return (f"C12b {label}: refused by {code}", False,
+            f"refused, but not by {code} — {c13_brief(vresp['errors'])}")
+
+
+# ---- C12 live helpers: SQL is read-only, every action is the public API -------
+
+
+def c12_sql(sql, what):
+    """psql as evidence only; None (with the failure printed) when the ledger refuses
+    to answer — never read as a zero or an unchanged digest."""
+    try:
+        return psql(sql)
+    except RuntimeError as e:
+        show(f"C12 {what} (psql)", str(e)[:240])
+        return None
+
+
+def c12_run_pin(run_id):
+    """The run's pin read from Postgres: {revision_digest, plan_digest,
+    pipeline_revision_id, status} or None."""
+    text = c12_sql(c12_pin_sql(run_id), "run pin")
+    return c12_row(None if text is None else text.strip())
+
+
+def c12_nodes_text(client, run_id):
+    """Raw GET /runs/{runId}/nodes body — the byte-identity half of C12c."""
+    try:
+        r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
+    except Exception as e:  # noqa: BLE001
+        show(f"C12 GET /runs/{run_id}/nodes", f"{type(e).__name__}: {e}"[:200])
+        return None
+    show(f"C12 GET /runs/{run_id}/nodes -> {r.status}", (r.text or "")[:160])
+    return r.text if r.status == 200 else None
+
+
+def c12_revision_ids(client, pipeline_id):
+    """GET /pipelines/{id}/revisions -> [revision ids]; None when the route fails."""
+    try:
+        r = client.get(LB, f"/api/v1/pipelines/{pipeline_id}/revisions")
+    except Exception as e:  # noqa: BLE001
+        show(f"C12 GET /pipelines/{pipeline_id}/revisions", f"{type(e).__name__}: {e}"[:200])
+        return None
+    if r.status != 200:
+        show(f"C12 GET /pipelines/{pipeline_id}/revisions -> {r.status}", r.text[:200])
+        return None
+    rows = (r.json() or {}).get("revisions") or []
+    return [str(x.get("id") or x.get("revision_id") or "") for x in rows if isinstance(x, dict)]
+
+
+def c12_revision_digests(revision_id):
+    """pipeline_revisions row -> 'rd|pd' (both digests of a PUBLISHED revision; C12e
+    compares two such rows). None when the row is unreadable."""
+    text = c12_sql(f"SELECT revision_digest || '|' || plan_digest FROM pipeline_revisions "
+                   f"WHERE id = '{revision_id}'", "revision digests")
+    if not text:
+        return None
+    parts = text.strip().split("|")
+    return {"revision_digest": parts[0], "plan_digest": parts[-1]} if len(parts) == 2 else None
+
+
+def c12_publish_event_rd(run_id):
+    """§ 7.1 C12c's second psql: does THIS run's journal carry a revision_digest for
+    the publish event? '' is psql's NULL — the answer C12c wants."""
+    return c12_sql("SELECT payload->>'revision_digest' FROM domain_events WHERE "
+                   f"run_id = '{run_id}' AND type = 'pipeline.revision.published'",
+                   "publish event digest")
+
+
+def c12_node_keys(run_id):
+    text = c12_sql(f"SELECT node_instance_key FROM node_executions WHERE run_id = "
+                   f"'{run_id}' ORDER BY node_instance_key", "node key set")
+    return None if text is None else set(text.split())
+
+
+def c12_approval_summaries(run_id):
+    """Every approval summary the PINNED plan materialized for this run (C12c's
+    witness that a node created after the publish still read the pinned document)."""
+    text = c12_sql("SELECT COALESCE(summary,'<none>') FROM approvals WHERE "
+                   f"run_id = '{run_id}'", "approval summary")
+    return None if text is None else text
+
+
+def c12_wait_live(run_id, want, cap=240):
+    """Poll the ledger for a status in `want` (or any non-terminal status when `want`
+    is None). Returns the last status seen — '' only if the row never appeared."""
+    deadline = time.time() + cap
+    status = ""
+    while time.time() < deadline:
+        status = run_status(run_id)
+        if status.startswith("PSQL_ERROR"):
+            return status
+        if want is None and status and status not in C12_TERMINAL:
+            return status
+        if want and status in want:
+            return status
+        time.sleep(3)
+    return status
+
+
+def c12_run_row_cause(run_id):
+    text = c12_sql(f"SELECT status || '|' || COALESCE(failed_cause,'-') FROM runs WHERE "
+                   f"id = '{run_id}'", "run status/cause")
+    if not text:
+        return ("", "")
+    parts = text.strip().split("|")
+    return (parts[0], parts[-1] if len(parts) > 1 else "")
+
+
+def c12_publish(admin, pipeline_id, tag, doc):
+    """draft -> validate -> publish through the org admin's session (the seed's own
+    revisions stay untouched): c7_publish's route, C12's tag."""
+    return c7_publish(admin, pipeline_id, tag, doc)
+
+
+def c12_draft_validate(admin, pipeline_id, tag, doc):
+    """draft -> validate, no publish: the refusal readings C12a/C12b assert on."""
+    res = c13_draft_probe(admin, pipeline_id, tag, doc)
+    return (res or {}).get("vresp")
+
+
+def c12_fanout_run_doc(name, count, prefix="m4x-c12b"):
+    """C12b's fan-out arm the way § 6 words it — items that EVALUATE to `count`
+    elements, refused by the ADVANCER at scope start: one fixture node emits
+    `count` items (M4_FANOUT_COUNT rides the script's own env), a for_each fans over
+    its outputs. No gate and no agent node, so the run gets to the scope in seconds."""
+    nodes = ["  - id: emit", "    kind: process.exec", "    timeoutSeconds: 300", "    config:",
+             "      executable: m4-exit.sh", "      args: [items]",
+             "      env:", f"        M4_FANOUT_COUNT: '{count}'",
+             "      outputExtraction: {mode: json_from_stdout}", "    outputs:",
+             "      type: object", "      required: [items]", "      properties:",
+             "        items: {type: array, items: {type: object}}",
+             "  - id: fan", "    kind: for_each", "    dependsOn: [emit]",
+             "    timeoutSeconds: 600", "    config:",
+             "      items: '" + BIND_OPEN + "nodes.emit.outputs.items" + BIND_CLOSE + "'",
+             "      maxConcurrency: 3", "      body:", "        nodes:",
+             _c12_plain_node(0, pad=8).rstrip("\n")]
+    return c13_doc(name, "\n".join(nodes) + "\n", policies=C12_POLICIES)
+
+
+C12_TIMEOUT_DEFAULT = int(os.environ.get("M4X_C12_CAP", "1200"))
+
+
+def c12_run_cap(admin, alice, facts, pipeline_id, tag, doc, label, code, cap=None):
+    """The live half of an ADVANCER-owned cap (§ 6's fan-out and node-execution
+    budgets): publish the over-cap document, run it through the public API, watch it to
+    terminal, and read the failure back off the ledger. A missing precondition — no
+    document, no published revision, no run, no terminal state — is always a GAP, never
+    a PASS and never a FAIL blamed on the lab."""
+    label_run = f"C12b {label}: run.failed with failed_cause {code}"
+    if not doc:
+        return [(label_run, None, f"no document could be built from {SEED_PIPELINE_YAML}")]
+    pub = c12_publish(admin, pipeline_id, tag, doc)
+    rid = (pub or {}).get("revision_id")
+    if not rid:
+        return [(label_run, None,
+                 f"the over-cap document never published (validate "
+                 f"{(pub or {}).get('validate_status')} publish "
+                 f"{(pub or {}).get('publish_status')} {str((pub or {}).get('raw'))[:140]})")]
+    run_id = c7_post_run(alice, facts, rid, tag, label)
+    if not run_id:
+        return [(label_run, None, f"no run was created on revision {rid} — the public API "
+                                  "refused the over-cap document (see the check above)")]
+    CTX.setdefault("c12_runs", {})[label] = run_id
+    limit = cap or C12_TIMEOUT_DEFAULT
+    terminal = c8_watch(alice, facts, run_id, limit, label)
+    st, cause = c12_run_row_cause(run_id)
+    scope = c12_sql(f"SELECT COALESCE(string_agg(DISTINCT failed_cause, ','), '-') FROM "
+                    f"node_executions WHERE run_id = '{run_id}'", "scope failure causes")
+    if terminal not in C12_TERMINAL:
+        return [(label_run, None, f"run {run_id} never reached a terminal state within {limit}s")]
+    return c12_run_code_verdicts(label, code, st, cause, scope or "")
+
+
+def c12_publish_variant(admin, pipeline_id, tag, doc):
+    """publish WITHOUT the 409-collapse c7_publish does: the raw (status, body) is what
+    C12d asserts on, so the collision response must survive intact. None = nothing was
+    posted (no document), which every caller reads as its own GAP."""
+    if not doc:
+        return None
+    res = c13_draft_probe(admin, pipeline_id, tag, doc, publish=True)
+    if not res:
+        return None
+    return {"revision_id": str((res.get("publish_body") or {}).get("id") or ""),
+            "publish_status": res.get("publish_status"), "publish_body": res.get("publish_body"),
+            "vresp": res.get("vresp"), "raw": res.get("raw")}
+
+
 def c12():
     """C12 — the subset cannot be widened by authoring; a revision cannot move under a run (12 case 11).
     Acceptance: exists()/now()/matches()/workspace.* each fail validate
@@ -5461,7 +6086,221 @@ def c12():
     409 revision_already_published while a semantic change publishes normally;
     whitespace-only wording moves revision_digest but not plan_digest; a passWhen
     operator moves both."""
-    skip("C12", "validate-time refusals; runs pinned to (revision_digest, plan_digest)")
+    if not CTX.get("stack_up"):
+        skip("C12", "validate-time refusals; runs pinned to (revision_digest, plan_digest)")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C12", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                   "there is no twin pipeline to draft against and no assignment to re-pin "
+                   "(C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None:
+        check("C12: admin signed in", False, "no session — the library role cannot post a draft")
+        return
+    CTX["admin"] = admin
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        check("C12: alice signed in", False, "no session — runs are posted through the public API")
+        return
+    CTX["alice"] = alice
+    pid_pipe = mf(facts, "pipeline_id", "twin")
+    rev_twin = mf(facts, "revision_id", "twin")
+    aid = mf(facts, "assignment_id", "twin")
+    twin = mvariant(facts, "twin")
+    show("C12 draft host", f"twin pipeline {pid_pipe} pinned at {rev_twin} "
+                           f"(revision_digest {mf(facts, 'revision_digest', 'twin')}), "
+                           f"assignment {aid}")
+
+    # ---- C12a: the four authoring attempts that would widen the subset ----
+    probes = c12_forbidden_docs()
+    results = []
+    for label, expr, code, doc, location in probes:
+        if not doc:
+            results.append((label, code, location, None))
+            show(f"C12a {label}", f"no document could be built from {SEED_PIPELINE_YAML}")
+            continue
+        vresp = c12_draft_validate(admin, pid_pipe, f"C12a {label}", doc)
+        results.append((label, code, location, vresp))
+    c12_emit(c12_refusal_verdicts(results))
+
+    # ---- C12b: the three caps, each with the code § 6 fixes for it ----
+    over = c12_exprs_doc("m4x-c12b-exprs", C12_EXPR_CAP + 1)
+    at_cap = c12_exprs_doc("m4x-c12b-at-cap", C12_EXPR_CAP)
+    vo = c12_draft_validate(admin, pid_pipe, "C12b 65 expressions", over) if over else None
+    vk = c12_draft_validate(admin, pid_pipe, "C12b 64 expressions (control)", at_cap) \
+        if at_cap else None
+    c12_emit([c12_code_verdict(f"{C12_EXPR_CAP + 1} compiled expressions",
+                               vo, "expression_budget_exceeded"),
+              (f"C12b {C12_EXPR_CAP} expressions still validate (the cap is not off-by-one)",
+               None if not c13_validate_ok(vk) else vk.get("valid") is True,
+               "no validate body for the at-cap control" if not c13_validate_ok(vk)
+               else c13_brief(vk["errors"]))])
+
+    lit = c12_fanout_doc("m4x-c12b-fanout-literal", C12_ITEMS_CAP + 1)
+    vl = c12_draft_validate(admin, pid_pipe, "C12b 1001 literal items", lit) if lit else None
+    c12_emit([c12_code_verdict(f"{C12_ITEMS_CAP + 1} LITERAL items refused at compile time",
+                               vl, C12_LITERAL_FANOUT_CODES[0])])
+    if not c13_validate_ok(vl) or not [e for e in vl["errors"]
+                                       if isinstance(e, dict)
+                                       and e.get("code") in C12_LITERAL_FANOUT_CODES]:
+        gap("C12b 1001 evaluated items refused by fanout_items_exceeded at scope start",
+            "the literal-array arm above is the compiler's refusal, not the advancer's — "
+            "without a published over-cap document there is no run to observe (§ 6 gives "
+            "the two caps two different owners)")
+    else:
+        rdoc = c12_fanout_run_doc("m4x-c12b-fanout-run", C12_ITEMS_CAP + 1)
+        pub = c12_publish(admin, pid_pipe, "C12b 1001-item fan-out", rdoc) if rdoc else None
+        rid = (pub or {}).get("revision_id")
+        run_id = c7_post_run(alice, twin, rid, "m4x-c12b-fanout", "C12b") if rid else None
+        if not run_id:
+            gap("C12b 1001 evaluated items refused by fanout_items_exceeded at scope start",
+                f"no run could be started on the over-cap revision "
+                f"(publish {(pub or {}).get('publish_status')} {str((pub or {}).get('raw'))[:120]})")
+        else:
+            st = c8_watch(alice, twin, run_id, C12_TIMEOUT_DEFAULT, "C12b fan-out")
+            st, cause = c12_run_row_cause(run_id)
+            CTX.setdefault("c12_runs", {})["fanout"] = run_id
+            c12_emit(c12_run_code_verdicts(f"{C12_ITEMS_CAP + 1} evaluated items", C12_FANOUT_RUN_CODE,
+                                           st or "", cause, "") if st else
+                      [(f"C12b {C12_ITEMS_CAP + 1} evaluated items: run.failed with "
+                        f"failed_cause {C12_FANOUT_RUN_CODE}", None,
+                        f"run {run_id} never reached a terminal state within "
+                        f"{C12_TIMEOUT_DEFAULT}s")])
+    # ---- C12c: mid-run library movement is unrepresentable ----
+    doc = c7_twin_doc(admin, rev_twin)
+    box = {}
+    if not doc:
+        gap("C12c", f"GET /revisions/{rev_twin}/document?format=yaml did not return the twin's "
+                    "bytes — there is no 'one prompt word changed' revision to publish mid-run")
+    else:
+        one = c12_one_word_doc(doc, "m4x-c12c-midrun")
+        if not one["doc"]:
+            gap("C12c", "the mid-run revision could not be authored: "
+                        + "; ".join(one["missing"]))
+        run_id = c7_post_run(alice, twin, rev_twin, "m4x-c12c-pin", "C12c")
+        if not run_id:
+            gap("C12c", "no run could be started on the pinned twin revision — with no live "
+                        "run there is nothing for a new revision to move under")
+        else:
+            CTX.setdefault("c12_runs", {})["pin"] = run_id
+
+            def publish_mid_run(rid, doc=one["doc"]):
+                box["before"] = c12_run_pin(rid)
+                box["keys_before"] = c12_node_keys(rid)
+                box["nodes_before"] = c12_nodes_text(alice, rid)
+                pub = c12_publish_variant(admin, pid_pipe, "C12c mid-run revision", doc)
+                box["new_rev"] = str((pub or {}).get("revision_id") or "")
+                show(f"C12c mid-run publish -> {(pub or {}).get('publish_status')}",
+                     str((pub or {}).get("raw"))[:220])
+                box["after"] = c12_run_pin(rid)
+                box["nodes_after"] = c12_nodes_text(alice, rid)
+                box["revs"] = c12_revision_ids(alice, pid_pipe)
+                box["event_rd"] = c12_publish_event_rd(rid)
+                return True
+
+            terminal = c8_watch(alice, twin, run_id, C12_TIMEOUT_DEFAULT, "C12c",
+                                hook=publish_mid_run)
+            if "before" not in box:
+                gap("C12c", f"the run never left `queued` within {C12_TIMEOUT_DEFAULT}s, so no "
+                            "revision was published while it was executing")
+            else:
+                final, summ = c12_run_pin(run_id), c12_approval_summaries(run_id)
+                keys_final = c12_node_keys(run_id)
+                late = None
+                if box.get("after"):
+                    pinned = all(final[k] == box["before"][k] for k in
+                                 ("revision_digest", "plan_digest", "pipeline_revision_id")) \
+                        if (final and box["before"]) else False
+                    grew = (keys_final is not None and box.get("keys_before") is not None
+                            and keys_final >= box["keys_before"])
+                    witness = (None if summ is None else
+                               C12_PROMPT_NEEDLE in summ and C12_PROMPT_REPL not in summ)
+                    late = (None if witness is None else
+                            bool(pinned and grew and terminal in C12_TERMINAL and witness))
+                    show("C12c pinned-plan witness", f"terminal={terminal!r} pin_holds={pinned} "
+                         f"keys_grew={grew} approval_summary_uses_pinned_wording={witness}")
+                c12_emit(c12_pin_verdicts(
+                    box.get("before"), box.get("after"), box.get("event_rd"),
+                    None if box.get("revs") is None or not box.get("new_rev")
+                    else box["new_rev"] in box["revs"],
+                    box.get("nodes_before"), box.get("nodes_after"), late))
+
+                # re-pin the assignment: an explicit promotion, and current runs stay put
+                new_rev = box.get("new_rev") or ""
+                if not new_rev:
+                    gap("C12c PATCH /assignments re-pin clause",
+                        "the mid-run publish returned no revision id (see the publish output above)")
+                else:
+                    pr = admin.patch(LB, f"/api/v1/assignments/{aid}",
+                                     {"pinned_revision_id": new_rev})
+                    show(f"C12c PATCH /api/v1/assignments/{aid}", pr.text[:220])
+                    view = None
+                    lr = admin.get(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/assignments")
+                    if lr.status == 200:
+                        view = next((x for x in (lr.json() or {}).get("assignments", [])
+                                     if str(x.get("id")) == str(aid)), None)
+                    nr = admin.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                                   {"assignment_id": aid, "inputs": mf(facts, "inputs", "twin")
+                                    or {}, "idempotency": "m4x-c12c-repinned"})
+                    show(f"C12c POST runs (assignment {aid}, after re-pin) -> {nr.status}",
+                         nr.text[:200])
+                    nid = str((nr.json() or {}).get("run_id")) if nr.status in (200, 201) else ""
+                    npin = c12_run_pin(nid) if nid else None
+                    if npin:
+                        CTX.setdefault("c12_runs", {})["repinned"] = nid
+                    c12_emit(c12_repin_verdicts(
+                        box.get("before"), c12_run_pin(run_id), pr.status, view,
+                        None if not npin else {**npin, "moved": npin[
+                            "pipeline_revision_id"] == new_rev,
+                            "old_revision_id": mf(facts, "revision_id", "twin"),
+                            "old_revision_digest": mf(facts, "revision_digest", "twin")}))
+
+    # ---- C12d: the same DOCUMENT twice is a 409, a semantic change is not ----
+    if not doc:
+        gap("C12d", "no exported twin document to re-publish — canonicalization is unmeasured")
+    else:
+        base = c12_rename(doc, "m4x-c12d")
+        variant = c12_invariance_variant(base)
+        same = c12_variant_is_same_doc(base, variant)
+        c12_emit([("C12d the probe's own document: different bytes, same content", same,
+                   f"variant differs in {len(variant) - len(base)} bytes; the key/value "
+                   f"reading {'matches' if same else 'DIFFERS from'} the original — a variant "
+                   "that moved a value would prove nothing about canonicalization")])
+        p1 = c12_publish_variant(admin, pid_pipe, "C12d base revision", base)
+        rid1 = (p1 or {}).get("revision_id") or ""
+        p2 = c12_publish_variant(admin, pid_pipe, "C12d re-exported bytes", variant) \
+            if same and variant else None
+        sem = c12_budget_number_doc(doc, "m4x-c12d")
+        p3 = c12_publish_variant(admin, pid_pipe, "C12d one changed budget number", sem) \
+            if sem and sem.get("doc") else None
+        c12_emit(c12_republish_verdicts(
+            None if not (same and p2) else p2.get("publish_status"),
+            None if not (same and p2) else p2.get("publish_body"), rid1,
+            None if not p3 else p3.get("publish_status"),
+            None if not p3 else p3.get("publish_body")))
+        if not rid1:
+            gap("C12d the 409 names the EXISTING revision id",
+                f"the base document never published (publish "
+                f"{(p1 or {}).get('publish_status')} {str((p1 or {}).get('raw'))[:140]})")
+
+    # ---- C12e: where the two digests separate (ADR-0021 § 6) ----
+    if not doc:
+        gap("C12e", "no exported twin document to vary — the digest split is unmeasured")
+        return
+    ctl = c12_publish_variant(admin, pid_pipe, "C12e control revision", c12_rename(doc, "m4x-c12e"))
+    wssp, osp = c12_ws_doc(doc, "m4x-c12e"), c12_operator_doc(doc, "m4x-c12e")
+    for sp in (wssp, osp):
+        if sp["missing"]:
+            show("C12e splice gap", "; ".join(sp["missing"]))
+    ws = c12_publish_variant(admin, pid_pipe, "C12e whitespace inside one binding", wssp.get("doc"))
+    op = c12_publish_variant(admin, pid_pipe, "C12e passWhen operator", osp.get("doc"))
+    dig = lambda p: c12_revision_digests((p or {}).get("revision_id") or "")  # noqa: E731
+    c, w, o = dig(ctl), dig(ws), dig(op)
+    c12_emit(c12_digest_split_verdicts("whitespace-only prompt wording", ("revision",), c, w)
+             + c12_digest_split_verdicts("a passWhen operator", ("revision", "plan"), c, o))
 
 
 # --- C13 pure logic — unit-tested offline by e2e/m4/test_c13_logic.py --------
