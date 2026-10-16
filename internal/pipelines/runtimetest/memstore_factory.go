@@ -113,6 +113,8 @@ func (s *memSession) Interrupt(attemptID, reason string) error {
 func (s *memSession) ReconcileLeases() error    { return s.ms.ReconcileLeases(s.runID) }
 func (s *memSession) ReconcileDeadlines() error { return s.ms.ReconcileDeadlines(s.runID) }
 
+func (s *memSession) InterruptWorkspaceLost() error { return s.ms.InterruptWorkspaceLost(s.runID) }
+
 func (s *memSession) Decide(d GateDecision) error {
 	return s.ms.Decide(s.runID, d.ApprovalID, d.Decision, d.Comments, d.Decider, d.Version, d.Authorize)
 }

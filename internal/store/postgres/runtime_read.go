@@ -315,6 +315,23 @@ func hydrateRunTx(ctx context.Context, tx pgx.Tx, runID string) (*runtime.Run, e
 		CreatedAt:             createdAt,
 		StartedAt:             rteTime(started), FinishedAt: rteTime(finished),
 	}
+	// § 5.4 pass 5's evidence, read from the authoritative workspace row rather
+	// than remembered: a run workspace reported `lost` more than one reconciler
+	// tick ago is gone (ADR-0023 § 11's "> 1 pass" debounce — a loss reported
+	// this instant may still be a worker mid-reconcile). The `absent` half of
+	// that row is deliberately NOT modelled: a queued run legitimately has no
+	// workspace row until its worker prepares one (contract § 4 step 3), so
+	// "absent" would interrupt every run in the queue.
+	var lost bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM workspaces
+			WHERE run_id = $1::uuid AND scope_kind = 'run' AND state = 'lost'
+			  AND lost_at IS NOT NULL
+			  AND lost_at <= now() - $2::interval)`, runID, m4WorkspaceLostGrace).Scan(&lost); err != nil {
+		return nil, fmt.Errorf("postgres: hydrate workspace loss of run %s: %w", runID, err)
+	}
+	run.WorkspaceLost = lost
 	rows, err := tx.Query(ctx, `
 		SELECT name, value FROM run_inputs WHERE run_id = $1::uuid ORDER BY name`, runID)
 	if err != nil {

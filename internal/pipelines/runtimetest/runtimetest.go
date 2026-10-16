@@ -188,6 +188,15 @@ type Session interface {
 	ReconcileLeases() error
 	ReconcileDeadlines() error
 
+	// InterruptWorkspaceLost feeds pass 5's evidence (the run's workspace is
+	// gone) to the engine, which owns the consequence — contract § 5.4. A real
+	// deployment reads the same evidence from `workspaces` on the ordinary
+	// advance; the seam exists so the conformance suite can drive the arm
+	// without a worker, and passes 2 and 4 need no such seam because their
+	// evidence (deadline_at, maxDurationSeconds) is already rows the suite
+	// moves with SetNow.
+	InterruptWorkspaceLost() error
+
 	// Decide is the gate CAS surface (contract § 5.3).
 	Decide(d GateDecision) error
 	// Retry is contract route 31's engine half (append-only reopen).
@@ -233,6 +242,11 @@ func ConformanceTests(t *testing.T, f Factory) {
 	t.Run("Retry_FailedNode_AppendOnlyNeverRewritesKeys", func(t *testing.T) { testRetryAppendOnly(t, f) })
 	t.Run("Advance_TwiceNoNewInputs_IsJournalNoOp", func(t *testing.T) { testAdvanceIdempotence(t, f) })
 	t.Run("Skip_ConditionFalse_TerminalRowsAreLedgerLegal", func(t *testing.T) { testSkipLedgerLegal(t, f) })
+	// Reconciler passes 4 and 5 (contract § 5.4): the two arms no other
+	// subtest reaches — a run that outlived its budget, and a run whose
+	// workspace vanished before a worker held it.
+	t.Run("ReconcilerRunDuration_CascadesAndNamesCause", func(t *testing.T) { testRunDurationBudget(t, f) })
+	t.Run("ReconcilerWorkspaceLost_InterruptsWithNoAutoRetry", func(t *testing.T) { testWorkspaceLostInterrupt(t, f) })
 	// The dual-instance arm is parameterized on the factory: a store whose
 	// run-state lives only in one process cannot implement DualFactory's
 	// OpenPair honestly, and the in-memory reference simply skips.

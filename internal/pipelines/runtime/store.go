@@ -529,6 +529,29 @@ func (ms *MemStore) ReconcileDeadlines(runID string) error {
 	return nil
 }
 
+// InterruptWorkspaceLost is pass 5's evidence seam: the caller reports what the
+// rows say (this run's workspace is gone) and the advancer — which owns the
+// rule — turns that into the honest terminal (advance.go's
+// interruptLostWorkspace). Nothing here re-implements the state machine, so
+// both stores share one implementation.
+//
+// No auto-retry follows, and that is the point: ADR-0023 § 7 keeps
+// workspace_lost out of retry.retriableErrors, so the run stays interrupted
+// until a human retries it (route 31).
+func (ms *MemStore) InterruptWorkspaceLost(runID string) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	st.Run.WorkspaceLost = true
+	if ms.Adv != nil {
+		return ms.Adv.Advance(st, ms.now())
+	}
+	return nil
+}
+
 // ------------------------------------------------------------- approval ops
 
 // AuthorizeFunc evaluates the approver's grant AT DECISION TIME (12 case 9:

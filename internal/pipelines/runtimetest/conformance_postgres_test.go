@@ -442,6 +442,12 @@ func (s *pgSession) ReconcileDeadlines() error {
 	return err
 }
 
+func (s *pgSession) InterruptWorkspaceLost() error {
+	err := s.rs.InterruptWorkspaceLost(s.env.ctx, s.runID)
+	s.refresh()
+	return err
+}
+
 func (s *pgSession) Decide(d GateDecision) error {
 	err := s.rs.Decide(s.env.ctx, s.runID, d.ApprovalID, d.Decision, d.Comments, d.Decider, d.Version, d.Authorize)
 	s.refresh()

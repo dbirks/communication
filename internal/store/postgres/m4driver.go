@@ -186,6 +186,15 @@ func (d *M4Driver) Tick(ctx context.Context) (int, error) {
 		// worker's attempt is interrupted before the deadline pass looks at
 		// it, then deadlines (pass 3), then the advance that re-derives
 		// readiness from whatever those two just wrote.
+		//
+		// Passes 2, 4 and 5 are state rules and live in the engine, not in
+		// SQL the driver could forget to run: pass 2's gate deadlines are the
+		// advancer's expireApprovals arm (ReconcileLeases' own trailing
+		// advance already gives them first crack at the row), pass 4's run
+		// duration and pass 5's lost workspace are the first two checks of
+		// every advance, ahead of any new scheduling. That is why the driver
+		// holds no separate approval/duration/workspace sweep: the same rows
+		// reach the same rule from a trigger and from this tick.
 		err := d.rs.ReconcileLeases(ctx, runID)
 		if err == nil {
 			err = d.rs.ReconcileDeadlines(ctx, runID)
@@ -199,6 +208,17 @@ func (d *M4Driver) Tick(ctx context.Context) (int, error) {
 				slog.String("run_id", runID),
 				slog.String("error", err.Error()))
 		}
+	}
+
+	// Pass 6 is the last step and the only one that is not per-run: ADR-0023
+	// § 12's 24 h idempotency TTL. It runs inside the same advisory lock, so
+	// two replicas never sweep the same keys twice.
+	if n, err := d.sweepIdempotencyKeys(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("idempotency sweep: %w", err))
+		d.log.ErrorContext(ctx, "m4 idempotency sweep failed", slog.String("error", err.Error()))
+	} else if n > 0 {
+		d.log.DebugContext(ctx, "m4 idempotency sweep",
+			slog.Int64("keys_deleted", int64(n)))
 	}
 
 	if len(ids) > 0 {
@@ -272,6 +292,87 @@ func m4DriverUnlock(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		return false, fmt.Errorf("postgres: unlock m4 driver lock: %w", err)
 	}
 	return freed, nil
+}
+
+// m4IdempotencyBatch caps how many stale idempotency keys one pass deletes:
+// the same capped-batch rule as the run batch, so a long backlog drains across
+// ticks instead of holding the advisory lock through an unbounded DELETE.
+const m4IdempotencyBatch = 500
+
+// sweepIdempotencyKeys is § 5.4 pass 6 (ADR-0023 § 12's 24 h TTL): expired
+// run_idempotency_keys rows go, one transaction per row like every other pass.
+// A key past expires_at has no answer left to give — the run it names is
+// already created and the replay window is over — so deleting it is the whole
+// action, and the journal is untouched.
+func (d *M4Driver) sweepIdempotencyKeys(ctx context.Context) (int, error) {
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: acquire idempotency sweep connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, `
+		SELECT project_id::text, key FROM run_idempotency_keys
+		WHERE expires_at <= now()
+		ORDER BY expires_at, project_id, key
+		LIMIT $1`, m4IdempotencyBatch)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: select stale idempotency keys: %w", err)
+	}
+	var stale []m4StaleIdempotencyKey
+	for rows.Next() {
+		var k m4StaleIdempotencyKey
+		if err := rows.Scan(&k.projectID, &k.key); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("postgres: scan stale idempotency key: %w", err)
+		}
+		stale = append(stale, k)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("postgres: read stale idempotency keys: %w", err)
+	}
+	rows.Close()
+
+	deleted := 0
+	for _, k := range stale {
+		if ctx.Err() != nil {
+			return deleted, ctx.Err()
+		}
+		n, err := d.deleteIdempotencyKey(ctx, k)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += n
+	}
+	return deleted, nil
+}
+
+// m4StaleIdempotencyKey is one expired (project_id, key) pair.
+type m4StaleIdempotencyKey struct {
+	projectID string
+	key       string
+}
+
+// deleteIdempotencyKey removes ONE expired key in its own transaction (§ 5.4's
+// one transaction per row). A row another process already removed simply
+// affects zero rows — the sweep is a janitor, not a claim.
+func (d *M4Driver) deleteIdempotencyKey(ctx context.Context, k m4StaleIdempotencyKey) (int, error) {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: begin idempotency key delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM run_idempotency_keys WHERE project_id = $1::uuid AND key = $2`,
+		k.projectID, k.key)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: delete stale idempotency key: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("postgres: commit idempotency key delete: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // m4DriverBatchRuns selects the capped batch of live runs, oldest first. It

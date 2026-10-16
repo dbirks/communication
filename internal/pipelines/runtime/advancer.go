@@ -92,6 +92,19 @@ func (adv *Advancer) Advance(st *State, now time.Time) error {
 		return fmt.Errorf("%w: run %s has no executable plan snapshot",
 			ErrNoProgram, st.Run.ID)
 	}
+	// Reconciler passes 4 and 5 run BEFORE the queued→running arm: a run that
+	// has outlived its duration budget, or whose workspace is gone, must not be
+	// dressed up as running on the way to its honest terminal (ADR-0023 § 11).
+	// Both checks are idempotent, so pass() re-runs them harmlessly afterwards.
+	if err := ac.enforceRunDuration(); err != nil {
+		return err
+	}
+	if err := ac.interruptLostWorkspace(); err != nil {
+		return err
+	}
+	if RunTerminal(st.Run.Status) {
+		return nil
+	}
 	if st.Run.Status == RunQueued {
 		// queued → running once the run owns work. The real deployment's
 		// worker writes run.started after the run workspace is ready
@@ -126,6 +139,28 @@ type advanceCtx struct {
 }
 
 func (ac *advanceCtx) pass() error {
+	// 0. Run duration (reconciler pass 4, ADR-0023 § 11): the outermost budget
+	// is checked before anything is scheduled or expired, so an over-run run
+	// cancels its branches rather than queuing one more attempt. It shares
+	// failRun with every other run-level failure, which is what § 10's cascade
+	// means: pending/ready rows cancelled, live attempts cancel-requested.
+	if err := ac.enforceRunDuration(); err != nil {
+		return err
+	}
+	if RunTerminal(ac.st.Run.Status) {
+		return nil
+	}
+	// 0b. Lost workspace (reconciler pass 5, contract § 5.4): a run that never
+	// reached a worker because its workspace is gone is interrupted honestly.
+	// There is no retry arm here on purpose — 12 case 20's honest arm, and the
+	// compiler refuses workspace_lost in retry.retriableErrors, so a human
+	// decides (route 31) rather than the engine republishing onto a dead volume.
+	if err := ac.interruptLostWorkspace(); err != nil {
+		return err
+	}
+	if RunTerminal(ac.st.Run.Status) {
+		return nil
+	}
 	// 1. Cancellation cascade first: a cancelled run schedules nothing new.
 	if ac.st.Run.CancelRequestedAt != nil && !RunTerminal(ac.st.Run.Status) {
 		if err := ac.cascadeCancel(); err != nil {
@@ -158,6 +193,66 @@ func (ac *advanceCtx) pass() error {
 // worker claim predicate both read runs.status='running'). The journal row
 // is run.resumed (§ 3 row 4) naming waiting_human as the reason cleared.
 // Runs with a remaining pending gate keep waiting_human untouched.
+// enforceRunDuration is § 5.4 pass 4: a run past policies.maxDurationSeconds
+// ends with failed_cause='run_duration_exceeded' (contract § 6 names the cause,
+// § 3 row 10 carries it). The clock anchor is StartedAt once the run has
+// started — the budget is an execution bound — and CreatedAt while it is still
+// queued, so a run that never got a worker still cannot live forever.
+func (ac *advanceCtx) enforceRunDuration() error {
+	run := ac.st.Run
+	if RunTerminal(run.Status) || run.Status == RunPaused {
+		return nil
+	}
+	seconds := 0
+	if plan := ac.prog.Plan(); plan != nil {
+		seconds = plan.Policies.MaxDurationSeconds
+	}
+	if seconds <= 0 {
+		return nil // no run budget authored
+	}
+	anchor := run.StartedAt
+	if anchor.IsZero() {
+		anchor = run.CreatedAt
+	}
+	if anchor.Add(time.Duration(seconds) * time.Second).After(ac.now) {
+		return nil
+	}
+	return ac.failRun("run_duration_exceeded", ErrTimeout, "")
+}
+
+// interruptLostWorkspace is § 5.4 pass 5. Only the pre-worker statuses are in
+// scope: once a node is leased the worker owns its honest terminal, and pass 1
+// already covers a worker that stopped answering.
+func (ac *advanceCtx) interruptLostWorkspace() error {
+	run := ac.st.Run
+	if !run.WorkspaceLost || RunTerminal(run.Status) {
+		return nil
+	}
+	if run.Status != RunQueued && run.Status != RunPreparing {
+		return nil
+	}
+	var keys []string
+	for _, n := range ac.st.Nodes {
+		switch n.Status {
+		case NodePending, NodeReady, NodeWaiting:
+			if err := ac.cancelNode(n, "workspace_lost"); err != nil {
+				return err
+			}
+			keys = append(keys, n.InstanceKey)
+		}
+	}
+	if err := run.MoveRun(RunInterrupted, "workspace_lost", "", ac.now); err != nil {
+		return err
+	}
+	ac.event(pevents.TypeRunInterrupted, nil, "", pevents.RunInterrupted{
+		ProjectID: run.ProjectID, RunID: run.ID,
+		Reason: "workspace_lost", ErrorClass: ErrWorkspaceLost,
+		NodeInstanceKeys: keys,
+	})
+	ac.changed = true
+	return nil
+}
+
 func (ac *advanceCtx) resumeIfNoGates() error {
 	run := ac.st.Run
 	if run.Status != RunWaitingHuman {

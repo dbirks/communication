@@ -310,6 +310,14 @@ func (s *RuntimeStore) CancelAttempt(ctx context.Context, runID, attemptID, work
 
 // ---------------------------------------------------------- reconciler ops
 
+// m4WorkspaceLostGrace is ADR-0023 § 11 pass 5's "> 1 pass" debounce: a run
+// workspace is only treated as gone once its lost_at is older than more than
+// one serve reconciler tick (cmd/communication/serve.go drives the tick every
+// 2 s), so a loss a worker is still reporting cannot terminalise a run that a
+// later pass would find restored. runtime_read.go's hydration is the only
+// reader; the engine's rule lives in the advancer.
+const m4WorkspaceLostGrace = 5 * time.Second
+
 // ReconcileLeases is § 5.4 pass 1; ReconcileDeadlines is pass 3. Both
 // re-derive from the rows they just hydrated, so a pass from any replica is
 // the same function on the same data.
@@ -322,6 +330,22 @@ func (s *RuntimeStore) ReconcileLeases(ctx context.Context, runID string) error 
 func (s *RuntimeStore) ReconcileDeadlines(ctx context.Context, runID string) error {
 	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
 		return ms.ReconcileDeadlines(runID)
+	}, nil)
+}
+
+// InterruptWorkspaceLost is § 5.4 pass 5's evidence seam for a store that has
+// no workspace rows of its own to consult (the conformance suite's in-memory
+// session). A real deployment never calls it: hydrateRunTx reads the loss from
+// `workspaces` and the advancer applies the same rule on the ordinary advance.
+// It runs the advance rather than the transition itself, so the consequence —
+// cancel open rows, interrupt, never retry — has exactly one implementation.
+func (s *RuntimeStore) InterruptWorkspaceLost(ctx context.Context, runID string) error {
+	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, st *runtime.State) error {
+		st.Run.WorkspaceLost = true
+		if ms.Adv != nil {
+			return ms.Adv.Advance(st, ms.Now())
+		}
+		return nil
 	}, nil)
 }
 

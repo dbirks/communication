@@ -289,6 +289,12 @@ type Run struct {
 	ExpressionEvaluations int
 	NodeExecutionCount    int
 
+	// WorkspaceLost is reconciler evidence, not a column: the adapter sets it
+	// when the run's own workspace row (`scope_kind='run'`) has been reported
+	// `lost` for more than one pass (ADR-0023 § 11 pass 5). The engine owns the
+	// consequence — interrupt, never auto-retry — so the sweep stays a read.
+	WorkspaceLost bool
+
 	CreatedAt  time.Time
 	StartedAt  time.Time
 	FinishedAt time.Time
