@@ -6,7 +6,6 @@
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
 import {
   WIRE_APPROVAL_ID,
@@ -18,13 +17,28 @@ import {
   wireRun,
   wireRunList,
 } from "../test/fixtures/m4/wire";
+import {
+  conversationFixture,
+  conversationId,
+  conversationSummaryFixture,
+  meFixture,
+  permissionRequestFixture,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
 import { testidOf } from "../lib/format";
 
 const PROJECTS_PATH = "/api/v1/projects";
 const APPROVALS_PATH = `/api/v1/projects/${wireProjectId}/approvals`;
 const RUNS_PATH = `/api/v1/projects/${wireProjectId}/runs`;
+const CONVERSATIONS_PATH = `/api/v1/projects/${wireProjectId}/conversations`;
+const CONVERSATION_PATH = `/api/v1/conversations/${conversationId}`;
 const DECIDE_PATH = `/api/v1/approvals/${WIRE_APPROVAL_ID}/decide`;
 const RETRY_PATH = `/api/v1/runs/${WIRE_RUN_ID}/retry`;
+
+/** A second conversation, distinguishable by `testidOf` (first 13 hex). */
+const otherConversationId = "01987a70-3333-7000-8000-abcdef012345";
 
 const failedRun = {
   ...wireRun,
@@ -32,7 +46,12 @@ const failedRun = {
   failed_cause: "node_execution_failed:/implement",
 } as unknown as typeof wireRun;
 
-function routes(approvals: unknown, runs: unknown, extra: RouteStub[] = []): RouteStub[] {
+function routes(
+  approvals: unknown,
+  runs: unknown,
+  extra: RouteStub[] = [],
+  conversations: unknown = { items: [] },
+): RouteStub[] {
   return [
     ...extra,
     { path: "/api/v1/me", body: meFixture },
@@ -40,6 +59,7 @@ function routes(approvals: unknown, runs: unknown, extra: RouteStub[] = []): Rou
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: APPROVALS_PATH, body: approvals },
     { path: RUNS_PATH, body: runs },
+    { path: CONVERSATIONS_PATH, body: conversations },
   ];
 }
 
@@ -47,8 +67,12 @@ function mountInbox(
   approvals: unknown = wireApprovalList,
   runs: unknown = wireRunList,
   extra: RouteStub[] = [],
+  conversations: unknown = { items: [] },
 ) {
-  return renderApp({ path: "/inbox", routes: routes(approvals, runs, extra) });
+  return renderApp({
+    path: "/inbox",
+    routes: routes(approvals, runs, extra, conversations),
+  });
 }
 
 describe("/inbox", () => {
@@ -56,7 +80,7 @@ describe("/inbox", () => {
     mountInbox({ approvals: [] }, { runs: [] });
     expect((await screen.findByTestId("inbox-greeting")).textContent).toContain("Ada");
     expect((await screen.findByTestId("inbox-summary")).textContent).toBe(
-      "Across 1 project: 0 decisions, 0 stalled runs. 0 runs are going fine.",
+      "Across 1 project: 0 decisions, 0 stalled runs, 0 conversations. 0 runs are going fine.",
     );
   });
 
@@ -147,6 +171,72 @@ describe("/inbox", () => {
     expect(item.textContent).toContain("running");
     expect(screen.queryByTestId("inbox-stalled")).toBeNull();
     expect(screen.queryByTestId("inbox-decisions")).toBeNull();
+  });
+
+  it("lists an active conversation with an Open link to its transcript", async () => {
+    const { requests } = mountInbox({ approvals: [] }, { runs: [] }, [], {
+      items: [conversationSummaryFixture],
+    });
+
+    const list = await screen.findByTestId("inbox-conversations");
+    const row = await within(list).findByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    // The title is the wire's `title`; the profile id is not shown because the
+    // list row has no name for it here.
+    expect(row.textContent).toContain("Refactor billing");
+    // STATUS-E: the state rides a glyph+word chip ("● active"; the word is the
+    // DOM text, CSS uppercases it visually only).
+    expect(row.textContent).toContain("●active");
+    expect(
+      within(row).getByTestId(`inbox-conversation-tag-${testidOf(conversationId)}`).textContent,
+    ).toContain("active");
+    expect(
+      within(row).getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).textContent,
+    ).toContain("Open conversation");
+    expect(
+      within(row)
+        .getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`)
+        .getAttribute("href"),
+    ).toBe(`/projects/${wireProjectId}/conversations/${conversationId}`);
+    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 conversation");
+    // No turn is open on the list row, so nothing asks a prompt: the detail
+    // route is not read for a row the list already answers.
+    expect(requestsTo(requests, CONVERSATION_PATH, "GET")).toHaveLength(0);
+  });
+
+  it("tags a conversation whose detail reports a pending permission request", async () => {
+    const { requests } = mountInbox(
+      { approvals: [] },
+      { runs: [] },
+      [
+        {
+          path: CONVERSATION_PATH,
+          body: { ...conversationFixture, pending_permissions: [permissionRequestFixture] },
+        },
+      ],
+      { items: [{ ...conversationSummaryFixture, has_active_turn: true }] },
+    );
+
+    await waitFor(() => expect(requestsTo(requests, CONVERSATION_PATH, "GET")).toHaveLength(1));
+    const row = await screen.findByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    expect(
+      within(row).getByTestId(`inbox-conversation-tag-${testidOf(conversationId)}`).textContent,
+    ).toContain("permission");
+    expect(
+      within(row).getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).textContent,
+    ).toContain("Open");
+  });
+
+  it("leaves a finished and a dormant conversation out of the section", async () => {
+    const archived = { ...conversationSummaryFixture, status: "archived" };
+    const idle = { ...conversationSummaryFixture, id: otherConversationId, status: "idle" };
+    mountInbox({ approvals: [] }, { runs: [] }, [], {
+      items: [conversationSummaryFixture, archived, idle],
+    });
+
+    const list = await screen.findByTestId("inbox-conversations");
+    expect(within(list).getAllByTestId(/^inbox-open-conversation-/)).toHaveLength(1);
+    expect(screen.queryByTestId(`inbox-conversation-${testidOf(otherConversationId)}`)).toBeNull();
+    expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 conversation");
   });
 
   it("says so when nothing needs you", async () => {

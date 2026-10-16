@@ -7,9 +7,12 @@
  * `node_instance_key`, the pipeline slug from the library and the short ids the
  * server actually serves. Nothing is invented.
  *
- * 6a's CONVERSATIONS section is deliberately not built: no API route reports a
- * conversation that "needs you", and a section invented from nothing would put
- * data on screen the wire does not carry.
+ * 6a's CONVERSATIONS section reads `listConversations`, whose row carries no
+ * pending-permission field — only `getConversation`'s `pending_permissions`
+ * does. A prompt can only be pending while a turn is in flight, so that detail
+ * is read for the conversations reporting `has_active_turn` and nobody else: a
+ * PERMISSION tag is always an observed pending row, and every other row wears
+ * the status word the wire serves. No "needs you" signal is composed here.
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -18,20 +21,38 @@ import { InitialsBox } from "../components/ds/AppBar";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
-import { RUN_STATE, stateOf } from "../components/ds/states";
+import { CONVERSATION_STATE, RUN_STATE, stateOf } from "../components/ds/states";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../api/approvals";
 import { apiFetch, problemOf } from "../api/client";
 import { usePipelines } from "../api/pipelines";
 import { useRetryRun, runConflictOf } from "../api/runs";
 import { queryKeys, useMe, useProjects } from "../api/queries";
-import type { Approval, ApprovalList, Project, RunSummary, RunSummaryList } from "../api/types";
+import type {
+  Approval,
+  ApprovalList,
+  Conversation,
+  ConversationStatus,
+  ConversationSummary,
+  ConversationSummaryList,
+  Project,
+  RunSummary,
+  RunSummaryList,
+} from "../api/types";
 import { formatAge, shortId, testidOf } from "../lib/format";
 
 type RunStatus = RunSummary["status"];
 
 const ACTIVE_STATES: readonly RunStatus[] = ["queued", "preparing", "running"];
 const STALLED_STATES: readonly RunStatus[] = ["failed", "paused"];
+
+/**
+ * The conversation statuses that still ask something of someone: `active` has
+ * an agent session attached, `disconnected` lost one with a turn still open.
+ * `idle` is dormant history (nothing attached, nothing open) and `archived` is
+ * terminal, so neither is listed.
+ */
+const LIVE_CONVERSATION_STATES: readonly ConversationStatus[] = ["active", "disconnected"];
 
 export interface DecisionItem {
   project: Project;
@@ -41,6 +62,13 @@ export interface DecisionItem {
 export interface RunItem {
   project: Project;
   run: RunSummary;
+}
+
+export interface ConversationItem {
+  project: Project;
+  conversation: ConversationSummary;
+  /** Pending ACP prompts read from `getConversation`; 0 when never fetched. */
+  pendingPermissions: number;
 }
 
 export default function Inbox() {
@@ -68,8 +96,8 @@ export default function Inbox() {
     return <ProblemBanner error={projects.error} fallback="Your projects could not be read." />;
   }
 
-  const { decisions, stalled, running, unread } = attention;
-  const summary = `Across ${list.length} ${list.length === 1 ? "project" : "projects"}: ${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}, ${stalled.length} stalled ${stalled.length === 1 ? "run" : "runs"}. ${running.length} ${running.length === 1 ? "run is" : "runs are"} going fine.`;
+  const { decisions, stalled, conversations, running, unread } = attention;
+  const summary = `Across ${list.length} ${list.length === 1 ? "project" : "projects"}: ${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}, ${stalled.length} stalled ${stalled.length === 1 ? "run" : "runs"}, ${conversations.length} ${conversations.length === 1 ? "conversation" : "conversations"}. ${running.length} ${running.length === 1 ? "run is" : "runs are"} going fine.`;
 
   return (
     <div className="space-y-4">
@@ -92,7 +120,10 @@ export default function Inbox() {
         </ul>
       ) : null}
 
-      {decisions.length === 0 && stalled.length === 0 && running.length === 0 ? (
+      {decisions.length === 0 &&
+      stalled.length === 0 &&
+      conversations.length === 0 &&
+      running.length === 0 ? (
         <p className="text-[13px] text-muted" data-testid="inbox-empty">
           Nothing needs you.
         </p>
@@ -127,6 +158,20 @@ export default function Inbox() {
         </Panel>
       ) : null}
 
+      {conversations.length > 0 ? (
+        <Panel
+          title={`CONVERSATIONS · ${conversations.length}`}
+          headingId="inbox-conversations-heading"
+          headingLevel={2}
+        >
+          <div data-testid="inbox-conversations">
+            {conversations.map((item) => (
+              <ConversationRow key={item.conversation.id} item={item} />
+            ))}
+          </div>
+        </Panel>
+      ) : null}
+
       {running.length > 0 ? <RunningStrip items={running} slugs={slugs} /> : null}
     </div>
   );
@@ -149,6 +194,7 @@ export interface UnreadProject {
 export interface Attention {
   decisions: DecisionItem[];
   stalled: RunItem[];
+  conversations: ConversationItem[];
   running: RunItem[];
   unread: UnreadProject[];
 }
@@ -158,6 +204,10 @@ export interface Attention {
  * dynamic project list rather than a child component per project: the sections
  * are cross-project (a row from one project sorts against a row from another),
  * so the data has to arrive in one place anyway.
+ *
+ * Conversations are a three-level read — project list, project conversations,
+ * then the detail of only those reporting `has_active_turn` — because the list
+ * row carries no pending-prompt field and inventing one is not on the table.
  */
 function useProjectAttention(projects: Project[]): Attention {
   const gateResults = useQueries({
@@ -172,6 +222,34 @@ function useProjectAttention(projects: Project[]): Attention {
       queryFn: () => apiFetch<RunSummaryList>(`/api/v1/projects/${project.id}/runs`),
     })),
   });
+  const conversationResults = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: queryKeys.conversations(project.id),
+      queryFn: () =>
+        apiFetch<ConversationSummaryList>(`/api/v1/projects/${project.id}/conversations`),
+    })),
+  });
+
+  const live = useMemo(
+    () => liveConversations(projects, conversationResults),
+    [projects, conversationResults],
+  );
+  /**
+   * The prompt check is a second read, so it is narrowed to what could possibly
+   * hold one: `permission_requests` hang off a turn, and `has_active_turn` is
+   * the list row's own statement that a turn is open. Anything else is listed
+   * by status alone rather than guessed at.
+   */
+  const prompting = useMemo(
+    () => live.filter((item) => item.conversation.has_active_turn === true),
+    [live],
+  );
+  const detailResults = useQueries({
+    queries: prompting.map(({ conversation }) => ({
+      queryKey: queryKeys.conversation(conversation.id),
+      queryFn: () => apiFetch<Conversation>(`/api/v1/conversations/${conversation.id}`),
+    })),
+  });
 
   return useMemo(() => {
     const decisions: DecisionItem[] = [];
@@ -182,6 +260,7 @@ function useProjectAttention(projects: Project[]): Attention {
     projects.forEach((project, index) => {
       const gates = gateResults[index];
       const runs = runResults[index];
+      const convoList = conversationResults[index];
       /** A `waiting_human` run whose gate is still open is a decision, not a
        * stall — the same fact must not be listed twice under two headings. */
       const pendingGates = new Set<string>();
@@ -208,15 +287,66 @@ function useProjectAttention(projects: Project[]): Attention {
       } else if (runs?.isError) {
         unread.push({ project, title: problemOf(runs.error).title });
       }
+
+      if (convoList?.isError) {
+        unread.push({ project, title: problemOf(convoList.error).title });
+      }
     });
+
+    /**
+     * Prompt order comes from the `prompting` fan-out, which is `live` filtered
+     * in the same order, so index `n` answers `prompting[n]`.
+     */
+    const pendingById = new Map<string, number>();
+    prompting.forEach(({ conversation }, index) => {
+      const detail = detailResults[index];
+      const pending =
+        detail?.data?.pending_permissions?.filter((request) => request.status === "pending")
+          .length ?? 0;
+      if (pending > 0) pendingById.set(conversation.id, pending);
+    });
+
+    const conversations: ConversationItem[] = live.map((item) => ({
+      ...item,
+      pendingPermissions: pendingById.get(item.conversation.id) ?? 0,
+    }));
 
     const byAge = (a: RunItem, b: RunItem) => b.run.created_at.localeCompare(a.run.created_at);
     stalled.sort(byAge);
     running.sort(byAge);
     // Oldest gate first: the one closest to its deadline is the one still open.
     decisions.sort((a, b) => a.approval.created_at.localeCompare(b.approval.created_at));
-    return { decisions, stalled, running, unread };
-  }, [projects, gateResults, runResults]);
+    // A prompt waiting on the controller leads; the rest is most-recent-first.
+    conversations.sort((a, b) => {
+      const aPending = a.pendingPermissions > 0 ? 0 : 1;
+      const bPending = b.pendingPermissions > 0 ? 0 : 1;
+      return (
+        aPending - bPending || b.conversation.updated_at.localeCompare(a.conversation.updated_at)
+      );
+    });
+    return { decisions, stalled, conversations, running, unread };
+  }, [projects, gateResults, runResults, live, prompting, detailResults]);
+}
+
+/**
+ * Every live conversation across the caller's projects, in read order, with the
+ * count fields the section needs filled in later by the prompt fan-out.
+ */
+function liveConversations(
+  projects: readonly Project[],
+  results: readonly { data?: ConversationSummaryList; isError: boolean }[],
+): ConversationItem[] {
+  const items: ConversationItem[] = [];
+  projects.forEach((project, index) => {
+    const list = results[index]?.data;
+    if (!list) return;
+    for (const conversation of list.items) {
+      if (LIVE_CONVERSATION_STATES.includes(conversation.status)) {
+        items.push({ project, conversation, pendingPermissions: 0 });
+      }
+    }
+  });
+  return items;
 }
 
 /**
@@ -387,6 +517,64 @@ function StalledRow({
       ) : null}
     </div>
   );
+}
+
+/**
+ * A conversation someone can still work in. The wire gives the list row a
+ * title, a status and a controller and nothing else, so those are the whole
+ * row: a PERMISSION tag only when `getConversation` reported a pending prompt,
+ * the status word otherwise. The only action offered is opening it — answering
+ * a prompt and taking control live on `pages/Conversation.tsx`, and deciding
+ * them from a list would mean duplicating their CAS from here.
+ */
+function ConversationRow({ item }: { item: ConversationItem }) {
+  const { project, conversation, pendingPermissions } = item;
+  const needsPermission = pendingPermissions > 0;
+  const title = conversation.title.trim() || `conversation ${shortId(conversation.id)}`;
+
+  return (
+    <div
+      className="border-b border-line last:border-b-0"
+      data-testid={`inbox-conversation-${testidOf(conversation.id)}`}
+    >
+      <div className="flex items-center gap-[10px] px-[10px] py-[8px]">
+        <InitialsBox name={project.name} />
+        <StatusChip
+          state={needsPermission ? "waiting" : stateOf(CONVERSATION_STATE[conversation.status])}
+          label={needsPermission ? "permission" : conversation.status}
+          labelProps={{ "data-testid": `inbox-conversation-tag-${testidOf(conversation.id)}` }}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[13.5px] font-semibold" title={title}>
+            {title}
+          </p>
+          <p className="font-mono text-[10.5px] text-muted">
+            {project.name} · controller {controllerName(conversation)} · {conversation.status}
+            {conversation.has_active_turn ? " · turn open" : ""}
+          </p>
+        </div>
+        <span className="font-mono text-[10.5px] text-faint">
+          {formatAge(conversation.updated_at)}
+        </span>
+        <Link
+          to={`/projects/${project.id}/conversations/${conversation.id}`}
+          className="ds-btn ds-btn--secondary inline-flex h-[26px] items-center rounded-[4px] px-[10px]"
+          data-testid={`inbox-open-conversation-${testidOf(conversation.id)}`}
+        >
+          {needsPermission ? "Open" : "Open conversation"}
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/** Who is driving, in as few words as the control row allows. The same reading
+ * `components/Conversations.tsx` gives: a name when the server resolved one,
+ * the kind when it did not, never a bare uuid. */
+function controllerName(conversation: ConversationSummary): string {
+  if (conversation.control.kind === "none") return "nobody";
+  if (conversation.control.kind === "run_attempt") return "a pipeline run";
+  return conversation.control.display_name ?? "a member";
 }
 
 /**
