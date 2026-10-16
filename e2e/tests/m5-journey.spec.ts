@@ -28,7 +28,7 @@
 // Skipped unless COMMUNICATION_E2E_M5=1, so CI (which has no M4 lab) is
 // unaffected — the same gate idiom as M2's harness flag. Every wait is bounded:
 // a run that never reaches its gate fails the suite rather than hanging it.
-import { test, expect, type BrowserContext, type Page } from "@playwright/test";
+import { test, expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import {
   expectRunStatus,
@@ -58,6 +58,49 @@ const stamp = process.env.E2E_M5_STAMP ?? new Date().toISOString().slice(11, 19)
 const SLUG = `m5-journey-${stamp}`;
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
+
+/**
+ * One attempt's own panel. Since f010fe2 the node detail renders EVERY attempt
+ * of the node (`ui/src/pages/RunInspector.tsx` — `attemptViews.map` into
+ * `AttemptDetail`), each a `Panel` whose heading id is
+ * `run-attempt-heading-<attempt_number>`. `Panel` renders a `<section
+ * aria-labelledby=…>`, so that attribute is the only handle on the page that
+ * names ONE attempt rather than "whichever attempt the pane drew" — every
+ * attempt owns an `attempt-process-facts` / `attempt-exit-code` / `attempt-*`
+ * block, so an unscoped locator is now a strict-mode violation, not evidence.
+ */
+function attemptPane(page: Page, attemptNumber: number): Locator {
+  return page.locator(`section[aria-labelledby="run-attempt-heading-${attemptNumber}"]`);
+}
+
+/** Every attempt panel the selected node's pane lists (the gate card is
+ * `run-approval-heading-*`, so it never joins this set). */
+function attemptPanes(page: Page): Locator {
+  return page.locator('section[aria-labelledby^="run-attempt-heading-"]');
+}
+
+/**
+ * The newest attempt number the pane's crumb itself serves — `NodePaneHeader`
+ * prints `<node_id> · attempt N` for the node's LAST attempt. Read, not
+ * assumed: a node whose first attempt hit a retriable `infra`/`interrupted`
+ * error really does have an attempt 2, and then "the attempt that ran the
+ * survey" is the newest one. Returns 0-safe by failing the poll if the pane
+ * never names an attempt.
+ */
+async function newestAttemptNumber(page: Page, timeout: number): Promise<number> {
+  let newest = 0;
+  await expect
+    .poll(
+      async () => {
+        const match = /attempt (\d+)/.exec(await page.getByTestId("node-pane-crumb").innerText());
+        newest = match ? Number(match[1]) : 0;
+        return newest;
+      },
+      { timeout, message: "the node pane never named an attempt in its crumb" },
+    )
+    .toBeGreaterThan(0);
+  return newest;
+}
 
 /**
  * What gets typed into the draft editor: `docs/samples/home/plan-with-approval
@@ -504,6 +547,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("attempt 2", {
         timeout: DECISION_TIMEOUT_MS,
       });
+      // The pane lists BOTH attempts (f010fe2): the failed one stays on the
+      // page next to the retry it earned, so the crumb's `attempt 2` is a
+      // count, not a replacement. Step 7 reads what each one says.
+      await expect(attemptPane(alice, 1)).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
+      await expect(attemptPane(alice, 2)).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-06-retried");
     });
     await test.step("the run page offers the same way back, and it is armed", async () => {
@@ -534,11 +582,58 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
     await test.step("the deterministic survey attempt reports what it actually ran", async () => {
       await alice.getByTestId("run-stage-cell-survey").click();
-      await expect(alice.getByTestId("attempt-process-facts")).toBeVisible({ timeout: 30_000 });
-      await expect(alice.getByTestId("attempt-exit-code")).toHaveText("0");
-      await expect(alice.getByTestId("attempt-stdout")).toContainText("== files ==");
-      await expect(alice.getByTestId("attempt-events")).toBeVisible();
+      await expect(alice.getByTestId("node-pane-crumb")).toContainText("survey", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      // Which attempt: the NEWEST one the crumb serves, scoped to its own panel.
+      // The newest is the attempt whose envelope the boundary accepted — the
+      // only attempt whose exit code can be a fact about this run — and
+      // `attempt-process-facts` is no longer unique now that the pane lists
+      // every attempt, so the number has to be read rather than assumed to be 1.
+      const newest = await newestAttemptNumber(alice, DECISION_TIMEOUT_MS);
+      const att = attemptPane(alice, newest);
+      await expect(att.getByTestId("attempt-process-facts")).toBeVisible({ timeout: 30_000 });
+      await expect(att.getByTestId("attempt-exit-code")).toHaveText("0");
+      await expect(att.getByTestId("attempt-stdout")).toContainText("== files ==");
+      await expect(att.getByTestId("attempt-events")).toBeVisible();
+      // Panels are numbered 1..newest, each drawn once — that is what makes the
+      // scoping above a claim about attempts instead of a locator workaround.
+      await expect(attemptPanes(alice)).toHaveCount(newest);
       await shot(alice, "m5-07-attempt-evidence");
+    });
+    await test.step("the retried verify node shows both attempts, the failure and the retry", async () => {
+      // This step's claim is about TWO attempts, so both are addressed by
+      // number: attempt 1 is the one the boundary refused, attempt 2 is the
+      // human retry step 6 asked for. A pane that kept only its newest row
+      // would hide the failure the journal recorded (`10` J7's honesty rule).
+      await alice.getByTestId("run-stage-cell-verify").click();
+      await expect(alice.getByTestId("node-pane-crumb")).toContainText("verify", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      const first = attemptPane(alice, 1);
+      await expect(first.getByTestId("attempt-status")).toContainText("failed", {
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      // invalid_output is the class, and the schema's own locations are the
+      // evidence: the node's exit 1 was refused by its plan, not reported as a
+      // business verdict.
+      await expect(first.getByTestId("error-class-invalid_output")).toBeVisible();
+      await expect(first.getByTestId("attempt-output-errors")).toBeVisible();
+      // `rejectOutputs` (internal/store/postgres/attempt_worker.go) serves NO
+      // outputs for a refused envelope, so the facts block reads "not served"
+      // rather than lending the attempt the exit code it was refused for.
+      await expect(first.getByTestId("attempt-exit-code")).toHaveText("not served");
+      // Attempt 2 — the same deterministic command, run again because a person
+      // asked. Its verdict is only a fact once the worker closes it, so this
+      // wait is the run's budget, not the advancer's.
+      const second = attemptPane(alice, 2);
+      await expect(second.getByTestId("error-class-invalid_output")).toBeVisible({
+        timeout: RUN_TIMEOUT_MS,
+      });
+      await expect(second.getByTestId("attempt-output-errors")).toBeVisible();
+      await expect(second.getByTestId("attempt-exit-code")).toHaveText("not served");
+      await expect(attemptPanes(alice)).toHaveCount(2);
+      await shot(alice, "m5-07-both-attempts");
     });
     await test.step("the artifact the approved plan published renders", async () => {
       // `publish_plan` ran because the gate was approved: the evidence a person
