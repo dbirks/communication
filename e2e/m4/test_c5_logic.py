@@ -382,25 +382,79 @@ class ContinueWorkspaceTest(unittest.TestCase):
 
 
 class FinalStateTest(unittest.TestCase):
-    keys = {"/build_until_verified[1]/implement", "/build_until_verified[1]/test", "/gate"}
+    """§ 7.1 C5g: "the run then reaches 'completed' with the same node_instance_key
+    set as C1 (a retry appends, it never rewrites history)". The set is compared on
+    C1's OWN iteration-normalizer (the [n] suffix counts loop passes, and the
+    retried leg is free to pass on a different count — live18/C5 spent 1 iteration
+    where C1's twin spent 2), while append-only stays falsifiable in BOTH
+    directions: a REMOVED or RENAMED key still FAILS."""
+
+    C1 = {"/gate", "/verdict",
+          "/build_until_verified[1]/implement", "/build_until_verified[1]/test",
+          "/build_until_verified[1]/review",
+          "/build_until_verified[2]/implement", "/build_until_verified[2]/test",
+          "/build_until_verified[2]/review"}
+    ONE = {"/gate", "/verdict",
+           "/build_until_verified[1]/implement", "/build_until_verified[1]/test",
+           "/build_until_verified[1]/review"}
+    keys = {"/gate", "/build_until_verified[1]/implement", "/build_until_verified[1]/test"}
+
+    def detail(self, v, needle):
+        return [d for l, _o, d in v if needle in l][0]
 
     def test_completed_with_c1_identical_keys(self):
-        v = m.c5_final_verdicts("completed", self.keys, set(self.keys))
+        v = m.c5_final_verdicts("completed", self.C1, set(self.C1))
         self.assertTrue(all(ok for _, ok, _ in v), v)
 
-    def test_a_rewritten_history_fails(self):
-        v = m.c5_final_verdicts("completed", self.keys, self.keys | {"/extra"})
-        self.assertFalse(ok_of(v, "SET identical"))
+    def test_a_different_iteration_count_is_not_a_rewritten_history(self):
+        """The live18 FAIL: literal sets differed by the whole [2] iteration."""
+        v = m.c5_final_verdicts("completed", self.C1, self.ONE)
+        self.assertTrue(ok_of(v, "iteration-normalized"), v)
+        self.assertTrue(ok_of(v, "no hole"), v)
+        self.assertIn("C1's loop spent 2 iteration(s), this run 1",
+                      self.detail(v, "iteration-normalized"))
 
-    def test_iteration_normalised_fallback_reports_the_difference(self):
-        other = {"/build_until_verified[2]/implement", "/build_until_verified[2]/test", "/gate"}
-        v = m.c5_final_verdicts("completed", self.keys, other)
-        self.assertFalse(ok_of(v, "SET identical"))
+    def test_a_removed_node_key_still_fails(self):
+        other = {k for k in self.C1 if not k.endswith("/review")}
+        self.assertFalse(ok_of(m.c5_final_verdicts("completed", self.C1, other),
+                               "iteration-normalized"))
+
+    def test_a_renamed_node_key_still_fails(self):
+        other = {k.replace("/implement", "/impl") for k in self.C1}
+        self.assertFalse(ok_of(m.c5_final_verdicts("completed", self.C1, other),
+                               "iteration-normalized"))
+
+    def test_an_extra_node_key_still_fails(self):
+        self.assertFalse(ok_of(m.c5_final_verdicts("completed", self.C1, self.C1 | {"/extra"}),
+                               "iteration-normalized"))
+
+    def test_a_row_deleted_out_of_the_middle_fails_the_history_guard(self):
+        """The hole guard is what keeps the claim falsifiable under normalization:
+        [*]/test still exists (under [2]), so set equality alone would PASS a run
+        whose retry DELETED a node_execution row."""
+        other = self.C1 - {"/build_until_verified[1]/test"}
+        v = m.c5_final_verdicts("completed", self.C1, other)
         self.assertTrue(ok_of(v, "iteration-normalized"))
+        self.assertFalse(ok_of(v, "no hole"))
+        self.assertIn("never at [1]", self.detail(v, "no hole"))
+
+        three = self.C1 | {f"/build_until_verified[3]/{n}"
+                           for n in ("implement", "test", "review")}
+        v = m.c5_final_verdicts("completed", three, three - {"/build_until_verified[2]/test"})
+        self.assertTrue(ok_of(v, "iteration-normalized"))
+        self.assertFalse(ok_of(v, "no hole"))
+        self.assertIn("missing [2]", self.detail(v, "no hole"))
+
+    def test_a_loop_that_did_not_finish_the_last_iteration_leaves_no_hole(self):
+        """Rows never written are not rows removed — the guard fires on holes only."""
+        self.assertEqual(m.loop_history_holes(self.ONE), [])
+        self.assertEqual(m.loop_history_holes({"/build_until_verified[2]/implement"}),
+                         ["/build_until_verified[*]/implement: never at [1] "
+                          "(present at [2])"])
 
     def test_no_c1_keys_gaps_the_identity_claim(self):
         self.assertIsNone(ok_of(m.c5_final_verdicts("completed", set(), self.keys),
-                               "matches C1's twin run"))
+                               "set is C1's twin set"))
 
     def test_run_that_did_not_complete_fails(self):
         self.assertFalse(ok_of(m.c5_final_verdicts("failed", self.keys, self.keys),

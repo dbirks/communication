@@ -257,7 +257,48 @@ class C6cFinal(unittest.TestCase):
                                 {"/plan", "/verdict", "/extra"})
         self.assertIs(False, one(v, "reached 'completed'"))
         self.assertIs(False, one(v, "workspace_policies"))
-        self.assertIs(False, one(v, "key set equals C1"))
+        self.assertIs(False, one(v, "iteration-normalized"))
+
+    def test_a_different_iteration_count_is_the_same_graph(self):
+        """§ 7.1 C6c's "the run completed" pair is graded on the SAME normalizer as
+        C5g/C1: the restore-retry's until-loop may pass on a different iteration
+        count than C1's twin spent (live18/C6: 1 vs 2) without that being a rewrite
+        of history."""
+        loop = lambda n: {f"/build_until_verified[{n}]/{b}"
+                          for b in ("implement", "test", "review")}
+        k1 = {"/plan", "/verdict"} | loop(1) | loop(2)
+        k6 = {"/plan", "/verdict"} | loop(1)
+        v = m.c6_final_verdicts("completed",
+                                {"policies": {m.C6_KILL_KEY: m.C6_RESTORE_POLICY}}, k1, k6)
+        self.assertIs(True, one(v, "iteration-normalized"), v)
+        self.assertIs(True, one(v, "no hole"), v)
+        self.assertIn("spent 2 iteration(s), this run 1",
+                      [d for l, _o, d in v if "iteration-normalized" in l][0])
+
+    def test_a_removed_or_renamed_node_key_still_fails(self):
+        """The normalization must not sand off the append-only claim."""
+        loop = lambda n: {f"/build_until_verified[{n}]/{b}"
+                          for b in ("implement", "test", "review")}
+        k1 = {"/plan", "/verdict"} | loop(1)
+        pol = {"policies": {m.C6_KILL_KEY: m.C6_RESTORE_POLICY}}
+        self.assertIs(False, one(m.c6_final_verdicts("completed", pol, k1,
+                                                     k1 - {"/verdict"}),
+                                 "iteration-normalized"))
+        self.assertIs(False, one(m.c6_final_verdicts("completed", pol, k1,
+                                                     {k.replace("/implement", "/impl")
+                                                      for k in k1}),
+                                 "iteration-normalized"))
+
+    def test_a_row_deleted_mid_history_fails_the_hole_guard(self):
+        loop = lambda n: {f"/build_until_verified[{n}]/{b}"
+                          for b in ("implement", "test", "review")}
+        k1 = {"/plan", "/verdict"} | loop(1) | loop(2) | loop(3)
+        v = m.c6_final_verdicts("completed",
+                                {"policies": {m.C6_KILL_KEY: m.C6_RESTORE_POLICY}},
+                                k1, k1 - {"/build_until_verified[2]/test"})
+        self.assertIs(True, one(v, "iteration-normalized"))
+        self.assertIs(False, one(v, "no hole"))
+        self.assertIn("missing [2]", [d for l, _o, d in v if "no hole" in l][0])
 
     def test_missing_c1_set_is_a_gap_not_an_invention(self):
         """The equality needs TWO measured sets — an empty C1 side (C1 did not run

@@ -641,6 +641,97 @@ def compare_key_sets(a, b):
     return sa == sb, sorted(sa - sb), sorted(sb - sa)
 
 
+# --- the ONE normalizer behind every § 7.1 "a retry appends, it never rewrites
+# history" key-set claim (C1i, C1 cross-variant, C5g, C6c) --------------------
+#
+#   § 7.1 C5g: "the run then reaches 'completed' with the same node_instance_key
+#             set as C1 (a retry appends, it never rewrites history): 01's
+#             'Repeated attempts append, not overwrite' measured."
+#   § 7.1 C6c: "the retry succeeded and the run completed → both modes are
+#             implemented, and the pair of events is what makes 'where is the
+#             boundary' answerable from the journal rather than from folklore"
+#
+# "the same node_instance_key set as C1" compares THE GRAPH — the same node ids in
+# the same scopes. The `[n]` until-loop suffix is a counter of how many times the
+# loop happened to run, and a retried leg is free to pass on a different iteration
+# count than C1's twin did (live18: C5's/C6's loop spent 1 iteration, C1's twin 2,
+# so the literal sets differed by exactly c1_only=[…[2]/{implement,review,test}]
+# while both runs followed the identical graph). Comparing the raw sets there made
+# C5g and C6c FAIL a claim the run actually satisfied; C1's cross-variant check
+# already normalizes with collapse_iterations, so C5g/C6c use that same helper now.
+#
+# The append-only claim stays FALSIFIABLE: a retry that RENAMES a key (a body node
+# appears under a new id) or REMOVES one entirely still differs in the normalized
+# sets, and loop_history_holes() catches the case set equality cannot see — a row
+# deleted out of the MIDDLE of a multi-iteration history, whose node id survives
+# under a later [n].
+_ITERATED_KEY_RE = re.compile(r"^(?P<prefix>.*)\[(?P<n>\d+)\](?P<rest>/.*)$")
+
+
+def loop_history_holes(keys):
+    """Holes in an until-loop's append-only history, as human-readable strings.
+
+    Every iteration the loop ran appended a new [n]; nothing ever deleted an
+    earlier one. So for each (loop prefix, body node id) the iteration suffixes it
+    appears under must be 1..N with no hole and starting at 1. A loop killed
+    mid-iteration leaves the LAST index short — that is history as written, not a
+    hole (those rows were never written). Assumption: every body node of the § 7.0
+    twin's until-loop is unconditional; a `when`-guarded body node would have to be
+    exempted here."""
+    seen = {}
+    for k in set(keys):
+        m = _ITERATED_KEY_RE.match(k)
+        if not m:
+            continue
+        body = re.sub(r"\[\d+\]", "[*]", m.group("rest"))
+        seen.setdefault((m.group("prefix"), body), set()).add(int(m.group("n")))
+    holes = []
+    for (prefix, body), ns in sorted(seen.items()):
+        want = set(range(1, max(ns) + 1))
+        if ns == want:
+            continue
+        why = (f"never at [1] (present at {sorted(ns)})" if 1 not in ns
+               else f"present at {sorted(ns)} but missing {sorted(want - ns)}")
+        holes.append(f"{prefix}[*]{body}: {why}")
+    return holes
+
+
+KEYSET_NORM_RULE = ("the [n] until-loop suffix is an iteration count, not a node id — "
+                    "normalized with the same collapse_iterations() C1's cross-variant "
+                    "check uses (C1 spent N1 iterations, this run N2)")
+KEYSET_APPEND_RULE = ("the append-only claim is still falsifiable: every body node's "
+                      "iteration suffixes run 1..N contiguously, so a retry that REMOVED "
+                      "or RENAMED a node_instance_key row fails here")
+
+
+def key_set_identity_verdicts(claim, c1_keys, run_keys, gap_detail):
+    """(label, ok, detail) verdicts for "this run's node_instance_key set is C1's".
+
+    `claim` is the gate's own wording; both verdicts carry it so the report reads
+    as one claim measured two ways (identity of the node ids + no hole in the
+    history). An empty side is an honest GAP — the equality needs TWO measured
+    sets."""
+    a, b = set(c1_keys or set()), set(run_keys or set())
+    if not a or not b:
+        return [(claim, None, gap_detail)]
+    ident_raw, raw_a, raw_b = compare_key_sets(a, b)
+    ident, only_a, only_b = compare_key_sets(collapse_iterations(a), collapse_iterations(b))
+    holes = loop_history_holes(b)
+    detail = (f"iteration-normalized c1_only={only_a[:4]} run_only={only_b[:4]} — C1's loop "
+              f"spent {observed_iterations(a)} iteration(s), this run "
+              f"{observed_iterations(b)}; literal sets "
+              + ("identical" if ident_raw
+                 else f"differ (c1_only={raw_a[:4]} run_only={raw_b[:4]})"))
+    return [
+        (f"{claim} — iteration-normalized ({KEYSET_NORM_RULE})", ident, detail),
+        (f"{claim} — with no hole in the until-loop history ({KEYSET_APPEND_RULE})",
+         not holes,
+         f"holes={holes[:4]}" if holes else
+         f"every body node's iteration suffixes run 1..N over "
+         f"{observed_iterations(b)} iteration(s)"),
+    ]
+
+
 class SseFrames(list):
     """Parsed SSE envelopes plus a `_junk` note: data frames that arrived but
     were not JSON — reported, never crashy (a malformed observer frame is a
@@ -3793,23 +3884,24 @@ def c5_continue_verdicts(head_before, head_after, dirty_before, dirty_after, res
 
 
 def c5_final_verdicts(status, c1_keys, c5_keys):
-    """C5g — the run's final state is valid and its history was never rewritten."""
+    """C5g — the run's final state is valid and its history was never rewritten.
+
+    § 7.1 C5g: "the run then reaches 'completed' with the same node_instance_key
+    set as C1 (a retry appends, it never rewrites history): 01's 'Repeated
+    attempts append, not overwrite' measured." The key-set comparison goes through
+    the SHARED normalizer (key_set_identity_verdicts), because the retried leg's
+    until-loop may legitimately pass on a different iteration count than C1's twin
+    spent (live18: C5 spent 1, C1's twin 2 — the literal sets differed by the whole
+    [2] iteration while both runs followed the same graph). Removal and rename are
+    still FAILs."""
     out = [("C5g the killed run reached 'completed' after the checkpointed retry",
             str(status) == "completed", f"observed {status!r}")]
-    if not c1_keys or not c5_keys:
-        out.append(("C5g the run's node_instance_key set matches C1's twin run", None,
-                    "no C1 key set in this pass (CTX['c1'] empty) — the append-not-rewrite "
-                    "identity claim has nothing to compare against"))
-        return out
-    ident, only1, only5 = compare_key_sets(c1_keys, c5_keys)
-    out.append(("C5g node_instance_key SET identical to C1's twin run (01: repeated attempts "
-                "append, not overwrite)", ident, f"c1_only={only1} c5_only={only5}"))
-    if not ident:
-        ident_n, n1, n5 = compare_key_sets(collapse_iterations(c1_keys),
-                                           collapse_iterations(c5_keys))
-        out.append(("C5g iteration-normalized key set identical (the retry's loop may have "
-                    "spent a different iteration count)", ident_n,
-                    f"c1_only={n1} c5_only={n5}"))
+    out.extend(key_set_identity_verdicts(
+        "C5g the retried run's node_instance_key set is C1's twin set (01: repeated "
+        "attempts append, not overwrite)",
+        c1_keys, c5_keys,
+        "no C1 key set in this pass (CTX['c1'] empty) — the append-not-rewrite "
+        "identity claim has nothing to compare against"))
     return out
 
 
@@ -5662,11 +5754,12 @@ def c6_loss_verdicts(recovery, run_st, err_class, attempts, retried_sched, detai
 
 def c6_final_verdicts(status, retried, c1_keys, c6_keys):
     """C6c — the restore arm completes with C1's key set (retry appends, never
-    rewrites), and run.retried's workspace_policies names WHICH mode ran. A mode
-    claim needs the run.retried row the MANUAL retry posts: when the engine's
-    budget armed attempt 2 itself (§ 7.1 C5b 'running (retry armed)') the explicit
-    POST was refused, no run.retried exists, and the mode arm GAPs with that
-    reason — an absent journal row is never read as an empty map (the C5e
+    rewrites — graded on the SHARED iteration normalizer, see
+    key_set_identity_verdicts), and run.retried's workspace_policies names WHICH
+    mode ran. A mode claim needs the run.retried row the MANUAL retry posts: when
+    the engine's budget armed attempt 2 itself (§ 7.1 C5b 'running (retry armed)')
+    the explicit POST was refused, no run.retried exists, and the mode arm GAPs
+    with that reason — an absent journal row is never read as an empty map (the C5e
     sequencing class again). Key-set equality likewise needs TWO measured sets."""
     pol = (retried or {}).get("policies") if isinstance(retried, dict) else None
     v = [("C6c the restored run reached 'completed'", status == "completed",
@@ -5686,16 +5779,11 @@ def c6_final_verdicts(status, retried, c1_keys, c6_keys):
                                   if "implement" in k),
                   f"workspace_policies={pol!r}"))
     k1, k6 = set(c1_keys or []), set(c6_keys or [])
-    ident, only_c6, only_c1 = compare_key_sets(k6, k1)
-    if not k1 or not k6:
-        v.append(("C6c the key set equals C1's (a restore-retry appends, it never rewrites "
-                  "history)", None,
-                  f"c1_keys={len(k1)} c6_keys={len(k6)} — the equality needs TWO measured "
-                  "sets; inventing the missing one would prove nothing"))
-        return v
-    v.append(("C6c the key set equals C1's (a restore-retry appends, it never rewrites "
-              "history)", ident,
-              f"only_c1={only_c1[:4]} only_c6={only_c6[:4]}"))
+    v.extend(key_set_identity_verdicts(
+        "C6c the key set equals C1's (a restore-retry appends, it never rewrites history)",
+        k1, k6,
+        f"c1_keys={len(k1)} c6_keys={len(k6)} — the equality needs TWO measured "
+        "sets; inventing the missing one would prove nothing"))
     return v
 
 
