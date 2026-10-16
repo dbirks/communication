@@ -117,6 +117,24 @@ export function BranchGrid({
     cells.findIndex((cell) => cell.index === selectedBranch),
   );
 
+  // Nothing to grid. A scope whose rows have not arrived yet would otherwise
+  // draw the full panel — title bar, count line, sort control and a history
+  // strip that is empty twice over — and the phone-width QA saw two of those
+  // eating a third of the viewport each. One muted line names the scope (two
+  // identical collapsed lines would be the same complaint in a smaller font)
+  // and says the true thing: the loop has not iterated.
+  if (branches.length === 0) {
+    return (
+      <p
+        className="font-mono text-[10.5px] text-faint"
+        data-testid="branch-grid-empty"
+        aria-label={`Branches of ${scope}`}
+      >
+        <code className="text-muted">{scope}</code> — no iterations yet
+      </p>
+    );
+  }
+
   return (
     <Panel
       title={`${branches.length} branches`}

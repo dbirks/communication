@@ -13,6 +13,7 @@ import {
   CheckpointBlock,
   ErrorClassChip,
   attemptWord,
+  conversationTitleOf,
 } from "./AttemptDetail";
 import type { AttemptDetail as Attempt, NodeExecutionSummary } from "../../lib/pipeline/contract";
 import {
@@ -282,5 +283,71 @@ describe("the pane's own behaviour (run-view-3b/4a)", () => {
     expect(screen.getByTestId("attempt-no-conversation").textContent).toContain(
       "reports no conversation",
     );
+  });
+});
+
+describe("conversationTitleOf (browser QA: the attempt line said it twice)", () => {
+  it("drops the server-generated attempt conversation name", () => {
+    // The pane says `/plan · attempt 1` itself; repeating the generated
+    // `run 01a1454f /plan attempt 1` duplicated it and rendered a head
+    // prefix of the UUIDv7 (identical for every run in the same second).
+    expect(conversationTitleOf("run 01a1454f /plan attempt 1", "/plan", 1)).toBeNull();
+    expect(
+      conversationTitleOf(
+        "run 01a1454f /build_until_verified[1]/implement attempt 2",
+        "/build_until_verified[1]/implement",
+        2,
+      ),
+    ).toBeNull();
+  });
+
+  it("shows a title a person wrote, verbatim", () => {
+    expect(conversationTitleOf("Refactor billing", "/plan", 1)).toBe("Refactor billing");
+    // A real title that merely starts with the word "run" is not generated.
+    expect(conversationTitleOf("run the numbers past lunch", "/plan", 1)).toBe(
+      "run the numbers past lunch",
+    );
+    // Same shape, different number or node: not this attempt's generated name.
+    expect(conversationTitleOf("run 01a1454f /plan attempt 2", "/plan", 1)).toBe(
+      "run 01a1454f /plan attempt 2",
+    );
+    expect(conversationTitleOf("run 01a1454f /build attempt 1", "/plan", 1)).toBe(
+      "run 01a1454f /build attempt 1",
+    );
+  });
+
+  it("says nothing when there is no title", () => {
+    expect(conversationTitleOf(null, "/plan", 1)).toBeNull();
+    expect(conversationTitleOf("   ", "/plan", 1)).toBeNull();
+  });
+});
+
+describe("a long checkpoint volume id (phone-width overflow)", () => {
+  it("breaks the value and carries a copy button with the exact text", () => {
+    // QA: `volume` rendered `sha256:…` on one 469px line and the whole
+    // document scrolled sideways at 390px. The value must wrap, and the
+    // copy button — not a hand selection — carries the full address.
+    const long = {
+      ...featureCheckpoints[0],
+      volume_id: `sha256:${"a".repeat(64)}`,
+    };
+    render(<CheckpointBlock checkpoint={long} nodeKey="/build_until_verified[2]/implement" />);
+    const value = screen.getByTestId("attempt-checkpoint-volume");
+    expect(value.className).toContain("break-all");
+    expect(value.textContent).toBe(long.volume_id);
+    const copy = screen.getByTestId("attempt-checkpoint-volume-copy");
+    expect(copy.getAttribute("aria-label")).toContain(long.volume_id);
+    fireEvent.click(copy);
+  });
+
+  it("leaves a short locator copyable by hand, with no button", () => {
+    render(
+      <CheckpointBlock
+        checkpoint={featureCheckpoints[0]}
+        nodeKey="/build_until_verified[2]/implement"
+      />,
+    );
+    expect(screen.getByTestId("attempt-checkpoint-volume").textContent).toBe("vol_01J8A");
+    expect(screen.queryByTestId("attempt-checkpoint-volume-copy")).toBeNull();
   });
 });

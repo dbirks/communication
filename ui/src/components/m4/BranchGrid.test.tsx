@@ -143,4 +143,26 @@ describe("BranchGrid", () => {
     fireEvent.click(screen.getByTestId("branch-cell-22"));
     expect(onSelectBranch).toHaveBeenCalledWith(22);
   });
+
+  it("collapses a scope with no branches to one muted line", () => {
+    // Browser QA: `/build_until_verified` and `/fan_out` each drew the full
+    // panel — "0 branches", "select a branch to see what it has been
+    // through" — two identical third-of-the-viewport voids. A scope that has
+    // not iterated is a line, not a panel.
+    render(
+      <BranchGrid
+        scope="/build_until_verified"
+        nodes={[]}
+        selectedBranch={null}
+        onSelectBranch={vi.fn()}
+      />,
+    );
+    const empty = screen.getByTestId("branch-grid-empty");
+    expect(empty.textContent).toContain("/build_until_verified");
+    expect(empty.textContent).toContain("no iterations yet");
+    // The panel it replaces is gone: no count heading, no prompt, no grid.
+    expect(screen.queryByTestId("branch-grid")).toBeNull();
+    expect(screen.queryByText(/branches/)).toBeNull();
+    expect(screen.queryByText(/select a branch/i)).toBeNull();
+  });
 });

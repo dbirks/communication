@@ -25,7 +25,9 @@ import { attentionNodeId, retryVerdict } from "./RunInspector";
 import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import { viewNodeExecution } from "../api/m4view";
+import { shortDigest } from "../lib/pipeline/yamlPointer";
 import {
+  WIRE_ATTEMPT_1,
   WIRE_NODE_IMPLEMENT,
   WIRE_NODE_PLAN,
   WIRE_PIPELINE_ID,
@@ -33,6 +35,7 @@ import {
   WIRE_RUN_ID,
   wireApproval,
   wireApprovalList,
+  wireCheckpoint,
   wireNodeDetail,
   wireNodeList,
   wirePipeline,
@@ -583,6 +586,50 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     );
   });
 
+  it("keeps the attempt slot for attempts and labels a checkpoint boundary as one", async () => {
+    // Browser QA: the `run.checkpoint_saved` row rendered `att 8cce` — the
+    // attempt-slot fallback on an opaque id tail, which reads as attempt
+    // number 3278. An attempt number is only ever the server's
+    // `attempt_number`, and a boundary names itself.
+    mountRun("?tab=timeline");
+    await screen.findByTestId("run-title");
+
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "node.attempt.started",
+          { node_instance_key: "/plan", attempt_number: 1 },
+          { node_execution_id: WIRE_NODE_PLAN, attempt_id: WIRE_ATTEMPT_1, global_seq: 9151 },
+        ),
+      );
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "run.checkpoint_saved",
+          {
+            checkpoint: {
+              node_instance_key: "/plan",
+              inputs_digest: wireCheckpoint.inputs_digest,
+              outputs_digest: wireCheckpoint.outputs_digest,
+              volume_id: wireCheckpoint.volume_id,
+            },
+          },
+          { node_execution_id: WIRE_NODE_PLAN, attempt_id: WIRE_ATTEMPT_1, global_seq: 9152 },
+        ),
+      );
+    });
+
+    await screen.findAllByTestId(/^run-timeline-row-/);
+    // The attempt row still says which attempt it is.
+    expect(screen.getByTestId("run-timeline-row-9151").textContent).toContain("att 1");
+    // The boundary row names no attempt number at all: no id fragment in the
+    // attempt slot, and the checkpoint reference says what it is.
+    const boundary = screen.getByTestId("run-timeline-row-9152");
+    expect(boundary.textContent).not.toMatch(/\batt\s/i);
+    expect(screen.getByTestId("run-timeline-boundary-9152").textContent).toBe(
+      `checkpoint ${shortDigest(wireCheckpoint.outputs_digest)}`,
+    );
+  });
+
   it("Pause asks the pause route once per click", async () => {
     const { requests } = mountRun();
     await screen.findByTestId("run-title");
@@ -777,6 +824,37 @@ describe("the attempt pane as the agent's work log", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggle);
     expect(screen.getByTestId("attempt-outputs").hasAttribute("hidden")).toBe(false);
+  });
+
+  it("says the node and attempt once, not again through the conversation's generated name", async () => {
+    // Browser QA: the title line read `/plan · attempt 1 · run 01a1454f /plan
+    // attempt 1` — the server-generated conversation name repeated what the
+    // line already said, and its `run 01a1454f` is a UUIDv7 *head* prefix,
+    // identical for every run started in the same second. The pane keeps its
+    // own `node · attempt N` wording and drops the generated echo.
+    mountAgentAttempt([
+      {
+        path: `/api/v1/conversations/${conversationId}`,
+        body: {
+          ...controlledByOther,
+          title: "run 01a1454f /build_until_verified[1]/implement attempt 1",
+        },
+      },
+    ]);
+    await screen.findByTestId("attempt-agent-work");
+    const title = await screen.findByTestId("attempt-work-title");
+    expect(title.textContent).toBe("/build_until_verified[1]/implement · attempt 1");
+    expect(title.textContent).not.toMatch(/run 01a1454f/i);
+    expect(title.textContent?.match(/attempt/g)).toHaveLength(1);
+  });
+
+  it("keeps a conversation title a person wrote in the attempt line", async () => {
+    mountAgentAttempt();
+    await screen.findByTestId("attempt-agent-work");
+    const title = await screen.findByTestId("attempt-work-title");
+    expect(title.textContent).toBe(
+      "/build_until_verified[1]/implement · attempt 1 · Refactor billing",
+    );
   });
 });
 

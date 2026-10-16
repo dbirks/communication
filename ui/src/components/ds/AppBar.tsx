@@ -7,6 +7,13 @@ import { Mark } from "./Mark";
  * a section track in the middle (active = flat white tab on the fill track),
  * the Ask box next, you on the right. The project dropdown stays a slot for
  * when that feature exists (avatars are still open per the handoff).
+ *
+ * Phone width: the 52px bar is the desktop measurement, and five section names
+ * plus the user area do not fit in 390px — at that width the browser QA saw the
+ * document itself scrolling sideways (Operations at x=403, Sign out at x=551).
+ * So the row wraps and the track wraps with it (`min-h-[52px]` + `flex-wrap`,
+ * with `sm:` restoring the single 52px line), and nothing in it may force the
+ * page wider: every shrinkable child carries `min-w-0`.
  */
 
 export interface AppBarNavItem {
@@ -26,12 +33,12 @@ export interface AppBarProps {
 export function AppBar({ items, left, ask, right }: AppBarProps) {
   return (
     <header className="sticky top-0 z-20 border-b border-ink bg-surface">
-      <div className="mx-auto flex h-[52px] w-full max-w-5xl items-center gap-[14px] px-4">
+      <div className="mx-auto flex min-h-[52px] w-full max-w-5xl flex-wrap items-center gap-x-[14px] gap-y-[6px] px-4 py-[6px] sm:h-[52px] sm:flex-nowrap sm:py-0">
         <Mark size={28} />
         {left}
         <nav
           aria-label="Primary"
-          className="flex items-center gap-[2px] rounded-[4px] bg-fill p-[3px] text-[12.5px] text-muted"
+          className="flex min-w-0 flex-wrap items-center gap-[2px] rounded-[4px] bg-fill p-[3px] text-[12.5px] text-muted"
         >
           {items.map((item) => (
             <NavLink
@@ -46,7 +53,7 @@ export function AppBar({ items, left, ask, right }: AppBarProps) {
         </nav>
         {ask ? <div className="ml-auto flex min-w-0 justify-end">{ask}</div> : null}
         <div
-          className={ask ? "flex shrink-0 items-center gap-3" : "ml-auto flex items-center gap-3"}
+          className={`flex min-w-0 flex-wrap items-center gap-3 ${ask ? "shrink-0" : "ml-auto"}`}
         >
           {right}
         </div>

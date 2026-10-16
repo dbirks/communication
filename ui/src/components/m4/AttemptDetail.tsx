@@ -443,6 +443,56 @@ export function ErrorClassChip({ errorClass }: { errorClass: string }) {
 }
 
 /**
+ * A locator a person may need to paste elsewhere — a checkpoint volume id is a
+ * `sha256:` address, 71 characters, and the phone-width QA saw it forcing a
+ * 469px line that scrolled the whole document sideways. So the value always
+ * breaks (`break-all` + `min-w-0`, never a fixed nowrap) and a copy button
+ * carries the exact text without selecting it.
+ *
+ * The `testid` sits on the value itself, not the wrapper: the tests read what
+ * is shown, and the button's word is not part of the address.
+ */
+function CopyableValue({ value, testid, label }: { value: string; testid: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const hasClipboard = typeof navigator !== "undefined" && Boolean(navigator.clipboard);
+  // A short locator fits the line and is copyable by hand; the copy button is
+  // the affordance for the long ones the page had to break in the first place.
+  const long = value.length > 24;
+  const copy = () => {
+    if (!navigator.clipboard) return;
+    void navigator.clipboard.writeText(value).then(
+      () => setCopied(true),
+      () => setCopied(false),
+    );
+  };
+  if (!long) {
+    return (
+      <span data-testid={testid} className="min-w-0 break-all">
+        {value}
+      </span>
+    );
+  }
+  return (
+    <span className="flex min-w-0 flex-wrap items-baseline gap-[6px]">
+      <span data-testid={testid} className="min-w-0 break-all">
+        {value}
+      </span>
+      <button
+        type="button"
+        data-testid={`${testid}-copy`}
+        aria-label={`Copy the ${label}: ${value}`}
+        disabled={!hasClipboard}
+        onClick={copy}
+        title={hasClipboard ? `Copy the ${label}` : "Clipboard is not available in this context"}
+        className="shrink-0 rounded-[2px] border border-line px-[4px] py-[1px] font-mono text-[9.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:text-faint disabled:hover:border-line"
+      >
+        {copied ? "copied" : "copy"}
+      </button>
+    </span>
+  );
+}
+
+/**
  * A boundary record — the API's answer to "what does a retry inherit?". No
  * paths: `volume_id` and `workspace_id` are the locators the contract serves.
  */
@@ -466,28 +516,37 @@ export function CheckpointBlock({
       className="rounded-[3px] border border-line bg-surface p-[8px]"
       data-testid="attempt-checkpoint"
     >
-      <p className="font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
+      <p className="break-all font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
         checkpoint boundary · {checkpoint.node_instance_key}
       </p>
       <dl className="mt-[4px] space-y-[2px] font-mono text-[11px] text-ink-2">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <dt className="text-muted">inputs</dt>
-          <dd data-testid="attempt-checkpoint-inputs-digest">
+          <dd data-testid="attempt-checkpoint-inputs-digest" className="min-w-0 break-all">
             {shortDigest(checkpoint.inputs_digest)}
           </dd>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <dt className="text-muted">outputs</dt>
-          <dd>{shortDigest(checkpoint.outputs_digest)}</dd>
+          <dd className="min-w-0 break-all">{shortDigest(checkpoint.outputs_digest)}</dd>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <dt className="text-muted">volume</dt>
-          <dd data-testid="attempt-checkpoint-volume">{checkpoint.volume_id}</dd>
+          <dd className="min-w-0">
+            <CopyableValue
+              value={checkpoint.volume_id}
+              testid="attempt-checkpoint-volume"
+              label="checkpoint volume id"
+            />
+          </dd>
         </div>
         {checkpoint.repo_states.map((state) => (
           <div key={state.repository_id} className="flex flex-wrap gap-2">
             <dt className="text-muted">repo</dt>
-            <dd data-testid={`attempt-checkpoint-repo-${state.repository_id}`}>
+            <dd
+              data-testid={`attempt-checkpoint-repo-${state.repository_id}`}
+              className="min-w-0 break-all"
+            >
               {state.repository_id} {shortCommit(state.base_commit)} →{" "}
               {shortCommit(state.head_commit)}
               {state.head_commit === state.base_commit
@@ -579,6 +638,36 @@ function continuityCopy(attempt: Attempt): ContinuityCopy | null {
   }
 }
 
+/**
+ * The conversation title, minus what this line already says.
+ *
+ * An attempt conversation is named server-side —
+ * `internal/store/postgres/agentturn_seams.go`'s `attemptConversationTitle`
+ * writes `run <id[:8]> <node_instance_key> attempt <n>`, shortening the id from
+ * the *head*. For a UUIDv7 the head is a millisecond timestamp, so every run
+ * started in the same second renders the same `run 01a1454f` — the prefix the
+ * phone-width QA read as a real identifier. The pane says the node and the
+ * attempt itself, so that generated name is dropped rather than repeated; a
+ * title a person wrote is shown verbatim, including one that merely starts
+ * with the word "run".
+ */
+export function conversationTitleOf(
+  title: string | null | undefined,
+  nodeKey: string | null,
+  attemptNumber: number,
+): string | null {
+  const text = (title ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (nodeKey) {
+    const pattern = new RegExp(
+      `^run\\s+\\S+\\s+${nodeKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+attempt\\s+${attemptNumber}$`,
+      "i",
+    );
+    if (pattern.test(text)) return null;
+  }
+  return text;
+}
+
 /* ------------------------------------------------ the agent's own work */
 
 export interface AttemptAgentWorkProps {
@@ -635,6 +724,13 @@ function AttemptConversationWork({
 
   const data = conversation.data;
   const control = data?.control;
+  // The visible title says this node and this attempt already; the server's
+  // generated conversation name is dropped rather than repeated (see
+  // `conversationTitleOf`), so the line never reads
+  // `/plan · attempt 1 · run 01a1454f /plan attempt 1`.
+  const title = data
+    ? conversationTitleOf(data.title, node?.node_instance_key ?? null, attempt.attempt_number)
+    : null;
   const isController = Boolean(
     data && me.data && data.control.kind === "human" && data.control.user_id === me.data.id,
   );
@@ -690,7 +786,7 @@ function AttemptConversationWork({
     <section className="space-y-[8px]" aria-label="Agent work" data-testid="attempt-agent-work">
       <p className="truncate font-mono text-[10.5px] text-muted" data-testid="attempt-work-title">
         {node ? `${node.node_instance_key} · ` : ""}attempt {attempt.attempt_number}
-        {data.title ? ` · ${data.title}` : ""}
+        {title ? ` · ${title}` : ""}
       </p>
 
       <div

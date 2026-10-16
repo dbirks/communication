@@ -60,6 +60,7 @@ import {
   viewRunTree,
 } from "../api/m4view";
 import { normalizeRunFrames, projectRun, toRunEvent } from "../lib/pipeline/runEvents";
+import { shortCommit } from "../lib/format";
 import {
   isScopeKind,
   scopeBody,
@@ -735,7 +736,11 @@ interface TimelineRow {
   handle: string | null;
   nodeKey: string | null;
   stage: string | null;
+  /** `att N` — only ever a real attempt number, never an id fragment. */
   attempt: string | null;
+  /** The boundary a `run.checkpoint_saved`/`_restored` frame names, spelled as
+   * such so a digest prefix cannot be misread as an attempt number. */
+  boundary: string | null;
   detail: string | null;
   failure: boolean;
   human: boolean;
@@ -761,6 +766,33 @@ function isHumanFrame(
   if (type.startsWith("approval.") || type === "run.waiting_human") return true;
   if (actorKind === "human") return true;
   return type === "run.paused" && payload.paused_reason === "human_takeover";
+}
+
+/**
+ * The boundary a checkpoint frame names. `10`'s timeline shows *what happened*,
+ * so a `run.checkpoint_saved` row is labelled with the checkpoint it saved —
+ * never with `att …`, which is the attempt slot's word: the frame correlates on
+ * `attempt_id` (a uuid whose tail is random), and rendering that tail as
+ * `att 8cce` read as "attempt #8cce" in browser QA. Nothing is guessed here:
+ * no digest, no line.
+ */
+function boundaryOf(type: RunEventType, payload: Record<string, unknown>): string | null {
+  const nested =
+    payload.checkpoint && typeof payload.checkpoint === "object"
+      ? (payload.checkpoint as Record<string, unknown>)
+      : null;
+  const digest = (value: unknown): string | null =>
+    typeof value === "string" && value ? shortDigest(value) : null;
+  const saved = digest(nested?.outputs_digest) ?? digest(payload.outputs_digest);
+  if (type === "run.checkpoint_saved" && saved) return `checkpoint ${saved}`;
+  if (type === "run.checkpoint_restored") {
+    const commit = nested?.from_commit ?? payload.from_commit;
+    return typeof commit === "string" && commit
+      ? `checkpoint ${shortCommit(commit)}`
+      : "checkpoint";
+  }
+  if (type === "run.checkpoint_saved") return "checkpoint";
+  return null;
 }
 
 /** `/build_until_verified[2]/implement` → `implement` — the stage an event
@@ -813,12 +845,10 @@ function RunTimelineTab({
         handle: known?.id ?? nodeKey,
         nodeKey,
         stage: known?.node_id ?? leafOf(nodeKey),
-        attempt:
-          typeof attemptNumber === "number"
-            ? `att ${attemptNumber}`
-            : event.attempt_id
-              ? `att ${event.attempt_id.slice(-4)}`
-              : null,
+        // The attempt slot is the attempt number or nothing. `attempt_id` is a
+        // uuid (its last four hex are random), so it is never an attempt label.
+        attempt: typeof attemptNumber === "number" ? `att ${attemptNumber}` : null,
+        boundary: boundaryOf(event.type, payload),
         detail:
           (payload.detail as string | undefined) ??
           (payload.reason as string | undefined) ??
@@ -930,6 +960,11 @@ function RunTimelineTab({
                 <span className="font-semibold">{row.type}</span>
                 {row.nodeKey ? <code className="text-muted">{row.nodeKey}</code> : null}
                 {row.attempt ? <span className="text-faint">{row.attempt}</span> : null}
+                {row.boundary ? (
+                  <span className="text-faint" data-testid={`run-timeline-boundary-${row.seq}`}>
+                    {row.boundary}
+                  </span>
+                ) : null}
                 <span className="text-muted">{row.actor}</span>
                 {row.failure ? (
                   <span aria-hidden className="text-st-failed-tag-fg">
