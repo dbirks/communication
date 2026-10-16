@@ -170,6 +170,14 @@ type AgentTurn struct {
 	// § 4 step 3 wave wires it; successes then close as infra, visibly,
 	// naming the missing step — procexec's rule, same words.
 	Checkpoints RunWorkspaceResolver
+	// Secrets materializes this attempt's `node_attempt` mounts (contract § 4
+	// step 4): env entries land in the agent process environment, env_file
+	// writes land in the checkout with the exclusion appended first, and the
+	// ledger row carries attempt_id. Same machinery the M3 turn unit uses — one
+	// materializer in the process (ADR-0018 D4), not a second one. Nil means no
+	// seam is wired, unit.go's precedent for "nothing materialized" rather than
+	// a refusal of every attempt.
+	Secrets AttemptSecrets
 
 	// AckGrace bounds the wait for the ACP turn to land after session/cancel
 	// (§ 4 step 11's grace window); zero takes agentAckGrace.
@@ -335,7 +343,25 @@ func (a *AgentTurn) parseConfig(c AttemptClaim) (agentTurnSpec, *AttemptResult) 
 }
 
 // Execute runs one agent turn. Every refusal names itself; none pretends.
+//
+// It is a thin wrapper over executeAttempt for one reason: the values this
+// attempt materialized are known only to the materializer, and nothing the
+// attempt writes — journal payloads or the terminal result — may carry them
+// (12-test-strategy case 12). The hook must therefore be applied outside the
+// body that owns it, and it is reported through a per-call variable rather than
+// a field: one *AgentTurn serves concurrent attempts, so per-attempt state on
+// the struct would be both a race and a leak from one attempt into another's
+// redaction.
 func (a *AgentTurn) Execute(ctx context.Context, c AttemptClaim, sink AttemptSink) (AttemptResult, error) {
+	var redact func(string) (string, int)
+	res, err := a.executeAttempt(ctx, c, sink, &redact)
+	if redact != nil {
+		res = redactResult(redact, res)
+	}
+	return res, err
+}
+
+func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink AttemptSink, redactHook *func(string) (string, int)) (AttemptResult, error) {
 	spec, refusal := a.parseConfig(c)
 	if refusal != nil {
 		return *refusal, nil
@@ -396,6 +422,23 @@ func (a *AgentTurn) Execute(ctx context.Context, c AttemptClaim, sink AttemptSin
 		}
 	}
 
+	// § 4 step 4, in the order the contract fixes: secrets are materialized
+	// before the launch, and therefore before any checkpoint capture, so the
+	// exclusion that keeps an env_file mount out of the artifact is already in
+	// place when the capture reads the tree (ADR-0020 § 6). A refusal here fails
+	// the attempt with no child and no partial set (ADR-0018 D4's rule).
+	materialized, refusal := a.materializeSecrets(ctx, c, prof, conv, workspaceID, layout)
+	if refusal != nil {
+		return *refusal, nil
+	}
+	if materialized != nil {
+		defer a.cleanupSecrets(c, materialized, layout)
+		if redactHook != nil && materialized.Redact != nil {
+			*redactHook = materialized.Redact
+			sink = redactingAttemptSink{inner: sink, redact: materialized.Redact}
+		}
+	}
+
 	var auth []string
 	if a.LauncherAuth != nil {
 		dirs, err := a.LauncherAuth(prof.LauncherID)
@@ -421,6 +464,13 @@ func (a *AgentTurn) Execute(ctx context.Context, c AttemptClaim, sink AttemptSin
 	})
 	if err != nil {
 		return failedResult(ErrorClassInfra, "build agent environment: "+bounded(err.Error(), 400)), nil
+	}
+	// The env-delivered mounts join the child environment here and nowhere else:
+	// not the journal, not an artifact, not a log line (seams.go's rule for `env`
+	// values, ADR-0018 D4). They go last on purpose — what the platform
+	// authorized for this attempt outranks anything the launcher sets for itself.
+	if materialized != nil {
+		adapterEnv = append(adapterEnv, materialized.Env...)
 	}
 
 	plan := wsgit.LaunchPlan{
@@ -660,6 +710,162 @@ func (a *AgentTurn) runWorkspace(c AttemptClaim) (wsgit.Layout, *AttemptResult) 
 		return wsgit.Layout{}, ptrResult(failedResult(ErrorClassInfra, a.redact(err.Error())))
 	}
 	return layout, nil
+}
+
+// materializeSecrets is contract § 4 step 4 at attempt scope: the same
+// SecretMaterializer the M3 turn unit drives, asked for the `node_attempt` arm
+// only, with the attempt id that the ledger row must carry. The repositories a
+// mount may target are read from the workspace § 4 step 3 prepared — an attempt
+// never invents a checkout path.
+//
+// PolicyDigest is deliberately empty: under `required` the policy is not
+// verified until step 5, and a digest claimed at step 4 would be a promise about
+// a launch that has not been checked yet. The event reports it empty, which is
+// the same honest answer M3's non-required modes give.
+func (a *AgentTurn) materializeSecrets(ctx context.Context, c AttemptClaim, prof AgentProfile, conv AttemptConversation, workspaceID string, layout wsgit.Layout) (*Materialized, *AttemptResult) {
+	if a.Secrets == nil {
+		return nil, nil
+	}
+	repos, err := a.Secrets.ReposForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"read the run workspace's repositories for node_attempt secret mounts: "+a.redact(err.Error())))
+	}
+	var extra []string
+	m, err := a.Secrets.Materialize(ctx, MaterializeRequest{
+		OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
+		WorkspaceID: workspaceID, ConversationID: conv.ConversationID,
+		// The attempt's own stamped turn (§ 4 step 6) is the turn scope the
+		// secret events name; a materializer that left it empty would journal
+		// an attempt delivery as an ownerless one.
+		TurnID: conv.TurnID, WorkerID: c.WorkerID,
+		AgentProfileID:  prof.AgentProfileID,
+		AttemptID:       c.AttemptID,
+		Lifecycle:       LifecycleNodeAttempt,
+		Repos:           repos,
+		ExtraExclusions: &extra,
+	})
+	if err != nil {
+		// The reason is already in the journal (secret.materialization_failed,
+		// written by the materializer in its own transaction); the attempt's
+		// detail says only that the mount was refused, with no path in it.
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"node_attempt secret materialization refused (contract § 4 step 4): the reason is in secret.materialization_failed"))
+	}
+	if len(m.Env) == 0 && len(m.Files) == 0 && m.Done == nil {
+		// No node_attempt mount applies — the ordinary case, and nothing to
+		// clean up or redact.
+		return nil, nil
+	}
+	// An env_file write outside this run's tree is a materializer bug, and the
+	// attempt that noticed it must not launch on it: refuse rather than hand a
+	// secret to a process whose grants do not cover the file it was written into.
+	for _, file := range m.Files {
+		if !inside(layout.Work, file) {
+			return nil, ptrResult(failedResult(ErrorClassInfra,
+				"a node_attempt secret was materialized outside the run workspace (contract § 4 step 4): refusing to launch"))
+		}
+	}
+	return &m, nil
+}
+
+// cleanupSecrets runs at the attempt boundary: the value leaves the checkout and
+// the ledger closes, in that order (M3's rule — assert the file is gone, *then*
+// journal secret.removed, so "cleanup happened" and "the journal says so" are
+// one claim). The teardown outlives a cancelled attempt: a value must not
+// survive because its process was interrupted.
+//
+// A file that cannot be removed is logged, never journalled: the path names
+// where a secret lives and the journal is browser-visible. The uncleaned row is
+// then left standing, which is exactly the finding the worker's startup sweep
+// exists to close (ADR-0018 D1).
+func (a *AgentTurn) cleanupSecrets(c AttemptClaim, m *Materialized, layout wsgit.Layout) {
+	if m == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
+	defer cancel()
+	for _, file := range m.Files {
+		if !inside(layout.Work, file) {
+			a.logger().Error("refusing to remove a materialized secret outside the run workspace",
+				slog.String("attempt_id", c.AttemptID), slog.String("path", file))
+			continue
+		}
+		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			a.logger().Error("materialized node_attempt secret survived attempt cleanup",
+				slog.String("attempt_id", c.AttemptID), slog.String("path", file),
+				slog.String("error", err.Error()))
+		}
+	}
+	if m.Done != nil {
+		if err := m.Done(ctx); err != nil {
+			a.logger().Warn("secret.removed could not be journalled for the attempt",
+				slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
+		}
+	}
+}
+
+// redactingAttemptSink applies the materializer's black box to every payload an
+// attempt journals — an agent that `cat`s its own secret into its reply must not
+// put the value in the transcript (12-test-strategy case 12). The redaction runs
+// on the serialized payload, so a value that cannot be represented inside the
+// JSON shape it arrived in is left alone rather than corrupting the event.
+type redactingAttemptSink struct {
+	inner  AttemptSink
+	redact func(text string) (string, int)
+}
+
+func (r redactingAttemptSink) AppendEvent(ctx context.Context, ev AttemptEvent) error {
+	if r.inner == nil {
+		return nil
+	}
+	ev.Payload = redactPayload(r.redact, ev.Payload)
+	return r.inner.AppendEvent(ctx, ev)
+}
+
+func (r redactingAttemptSink) Stopping() <-chan struct{} {
+	if r.inner == nil {
+		return nil
+	}
+	return r.inner.Stopping()
+}
+
+// redactResult applies the same black box to what the attempt returns: the
+// boundary row's outputs and detail are as browser-visible as its events.
+func redactResult(redact func(string) (string, int), res AttemptResult) AttemptResult {
+	if redact == nil {
+		return res
+	}
+	if res.Detail != "" {
+		res.Detail, _ = redact(res.Detail)
+	}
+	if res.Outputs != nil {
+		res.Outputs = redactPayload(redact, res.Outputs)
+	}
+	return res
+}
+
+// redactPayload redacts a structured payload through its JSON form. A payload
+// that will not round-trip is returned untouched: a secret that survives an
+// un-redactable shape is a lesser failure than journaling a corrupted event, and
+// the value is never in the shape's keys anyway.
+func redactPayload(redact func(string) (string, int), payload any) any {
+	if redact == nil || payload == nil {
+		return payload
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	text, n := redact(string(raw))
+	if n == 0 || text == string(raw) {
+		return payload
+	}
+	var back any
+	if err := json.Unmarshal([]byte(text), &back); err != nil {
+		return payload
+	}
+	return back
 }
 
 func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (AttemptConversation, *AttemptResult) {

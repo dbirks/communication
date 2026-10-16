@@ -675,6 +675,10 @@ func (u *Unit) materializeSecrets(ctx context.Context, req UnitRequest) error {
 		ConversationID: u.ConversationID, TurnID: u.TurnID, WorkerID: u.WorkerID,
 		AgentProfileID: u.Profile.AgentProfileID, Repos: repos, ExtraExclusions: &extra,
 		PolicyDigest: u.policyDigest(),
+		// A turn is not an attempt: the node_attempt arm stays unread here and
+		// is materialized by the attempt that owns it (contract § 4 step 4).
+		// M2/M3 behaviour is otherwise byte-for-byte unchanged.
+		Lifecycle: LifecycleTurn,
 	})
 	if err != nil {
 		return fmt.Errorf("worker: materialize secrets for workspace %s: %w", u.WorkspaceID, err)

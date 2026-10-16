@@ -129,14 +129,18 @@ type SecretMount struct {
 // was present at one target on one worker. CleanedAt nil is the finding state —
 // the row the worker's startup sweep exists to close.
 type SecretMaterialization struct {
-	ID             int64
-	SecretID       string
-	SecretSlug     string
-	SecretVersion  int
-	ProjectID      string
-	WorkspaceID    string
-	TurnID         string
-	WorkerID       string
+	ID            int64
+	SecretID      string
+	SecretSlug    string
+	SecretVersion int
+	ProjectID     string
+	WorkspaceID   string
+	TurnID        string
+	WorkerID      string
+	// AttemptID is the node_attempt lifecycle's owner (contract § 4 step 4):
+	// set exactly when the mount was delivered for an attempt, empty for the
+	// turn/workspace arms M2/M3 materialize.
+	AttemptID      string
 	DeliveryMode   string
 	Target         string
 	FileMode       int // 0 means env delivery, which has no file
@@ -185,9 +189,13 @@ type NewSecretMaterialization struct {
 	WorkspaceID    string
 	TurnID         string
 	WorkerID       string
-	DeliveryMode   string
-	Target         string
-	FileMode       int
+	// AttemptID stamps the node_attempt arm's owner: the attempt whose process
+	// environment or checkout received the value. Empty for a turn-scope
+	// delivery, which must not name one (ADR-0018 D1's ownership rule).
+	AttemptID    string
+	DeliveryMode string
+	Target       string
+	FileMode     int
 }
 
 // --- read paths ----------------------------------------------------------
@@ -303,7 +311,7 @@ func (s *SecretStore) ListMaterializations(ctx context.Context, c Caller, projec
 		rows, err := tx.Query(ctx, `
 		SELECT mat.id, mat.secret_id::text, sm.slug, mat.secret_version, mat.project_id::text,
 		       COALESCE(mat.workspace_id::text, ''), COALESCE(mat.turn_id::text, ''),
-		       mat.worker_id::text, mat.delivery_mode, mat.target, mat.file_mode,
+		       COALESCE(mat.attempt_id::text, ''), mat.worker_id::text, mat.delivery_mode, mat.target, mat.file_mode,
 		       mat.materialized_at, mat.cleaned_at, COALESCE(mat.cleaned_by, '')
 		FROM secret_materializations mat
 		JOIN secret_metadata sm ON sm.id = mat.secret_id
@@ -320,7 +328,7 @@ func (s *SecretStore) ListMaterializations(ctx context.Context, c Caller, projec
 				clean *time.Time
 			)
 			if err := rows.Scan(&mat.ID, &mat.SecretID, &mat.SecretSlug, &mat.SecretVersion,
-				&mat.ProjectID, &mat.WorkspaceID, &mat.TurnID, &mat.WorkerID,
+				&mat.ProjectID, &mat.WorkspaceID, &mat.TurnID, &mat.AttemptID, &mat.WorkerID,
 				&mat.DeliveryMode, &mat.Target, &mode, &mat.MaterializedAt, &clean, &mat.CleanedBy); err != nil {
 				return fmt.Errorf("postgres: scan secret materialization: %w", err)
 			}
@@ -727,18 +735,21 @@ func (s *SecretStore) RecordMaterialization(ctx context.Context, in NewSecretMat
 		err := tx.QueryRow(ctx, `
 			INSERT INTO secret_materializations
 				(secret_id, secret_version, project_id, workspace_id, turn_id, worker_id,
-				 delivery_mode, target, file_mode)
-			VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7, $8, $9)
+				 attempt_id, delivery_mode, target, file_mode)
+			VALUES ($1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, $6::uuid,
+			        $7::uuid, $8, $9, $10)
 			RETURNING id`,
 			in.SecretID, in.SecretVersion, in.ProjectID, secNullUUID(in.WorkspaceID),
-			secNullUUID(in.TurnID), in.WorkerID, in.DeliveryMode, in.Target,
+			secNullUUID(in.TurnID), in.WorkerID, secNullUUID(in.AttemptID),
+			in.DeliveryMode, in.Target,
 			secNullFileMode(in.FileMode)).Scan(&id)
 		if err != nil {
 			return fmt.Errorf("postgres: record secret materialization: %w", err)
 		}
 		if _, err := AppendEvent(ctx, tx, events.New{
 			Type: events.TypeSecretMaterialized, OrganizationID: in.OrganizationID,
-			ProjectID: in.ProjectID, Actor: events.Actor{Kind: events.ActorKindWorker, ID: in.WorkerID},
+			ProjectID: in.ProjectID, AttemptID: in.AttemptID,
+			Actor:   events.Actor{Kind: events.ActorKindWorker, ID: in.WorkerID},
 			Payload: payload,
 		}); err != nil {
 			return err
@@ -774,7 +785,7 @@ func (s *SecretStore) UncleanedMaterializations(ctx context.Context, workspaceID
 	rows, err := s.Pool.Query(ctx, `
 		SELECT mat.id, mat.secret_id::text, sm.slug, mat.secret_version, mat.project_id::text,
 		       COALESCE(mat.workspace_id::text, ''), COALESCE(mat.turn_id::text, ''),
-		       mat.worker_id::text, mat.delivery_mode, mat.target, mat.file_mode,
+		       COALESCE(mat.attempt_id::text, ''), mat.worker_id::text, mat.delivery_mode, mat.target, mat.file_mode,
 		       mat.materialized_at
 		FROM secret_materializations mat
 		JOIN secret_metadata sm ON sm.id = mat.secret_id
@@ -791,7 +802,7 @@ func (s *SecretStore) UncleanedMaterializations(ctx context.Context, workspaceID
 			mode *int
 		)
 		if err := rows.Scan(&mat.ID, &mat.SecretID, &mat.SecretSlug, &mat.SecretVersion,
-			&mat.ProjectID, &mat.WorkspaceID, &mat.TurnID, &mat.WorkerID,
+			&mat.ProjectID, &mat.WorkspaceID, &mat.TurnID, &mat.AttemptID, &mat.WorkerID,
 			&mat.DeliveryMode, &mat.Target, &mode, &mat.MaterializedAt); err != nil {
 			return nil, fmt.Errorf("postgres: scan uncleaned materialization: %w", err)
 		}

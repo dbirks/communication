@@ -47,6 +47,10 @@ type UnitSecrets struct {
 // Compile-time proof of the seam.
 var _ worker.SecretMaterializer = (*UnitSecrets)(nil)
 
+// The attempt-shaped seam: materialization plus the authorized-checkout read
+// an agent.acp attempt needs (contract § 4 step 4).
+var _ worker.AttemptSecrets = (*UnitSecrets)(nil)
+
 // unitMount is one declared placement joined with the metadata the resolver
 // and the event need. Deliberately no ciphertext columns: the resolver reads
 // those through LoadVersion, and this query could not return them to anybody
@@ -66,15 +70,32 @@ type unitMount struct {
 	Revoked      bool
 }
 
-// MountsForUnit is the worker-side mount read: every placement declared for
-// the project, with its secret's revocation state. There is no Caller — the
-// authorization for this read is *structural*: the caller is a worker that was
-// assigned a turn in this project, the mount rows were written through the
-// role-gated API (maintainer-only), and the profile-allowlist question is
-// answered per delivery by secrets.Resolver, not here.
-func (s *SecretStore) MountsForUnit(ctx context.Context, projectID string) ([]unitMount, error) {
+// MountsForUnit is the worker-side mount read: the placements declared for the
+// project that belong to the requesting unit's lifecycle, with each secret's
+// revocation state. There is no Caller — the authorization for this read is
+// *structural*: the caller is a worker that was assigned a turn or an attempt in
+// this project, the mount rows were written through the role-gated API
+// (maintainer-only), and the profile-allowlist question is answered per delivery
+// by secrets.Resolver, not here.
+//
+// The lifecycle predicate is the ownership rule ADR-0018 D1 states: a
+// `node_attempt` mount is materialized for an attempt and never for a turn
+// (contract § 4 step 4), and everything else is a turn/workspace mount that an
+// attempt must not silently inherit. scope is worker.LifecycleTurn (the
+// default) or worker.LifecycleNodeAttempt; any other value is refused rather
+// than quietly widened.
+func (s *SecretStore) MountsForUnit(ctx context.Context, projectID, scope string) ([]unitMount, error) {
 	if s == nil || s.Pool == nil {
 		return nil, errors.New("postgres: secret store has no pool")
+	}
+	var lifecycleSQL string
+	switch scope {
+	case "", worker.LifecycleTurn:
+		lifecycleSQL = "m.lifecycle <> 'node_attempt'"
+	case worker.LifecycleNodeAttempt:
+		lifecycleSQL = "m.lifecycle = 'node_attempt'"
+	default:
+		return nil, fmt.Errorf("postgres: mount lifecycle %q is not turn or node_attempt", scope)
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT m.id::text, m.secret_id::text, sm.slug, sm.purpose, m.delivery_mode,
@@ -83,7 +104,7 @@ func (s *SecretStore) MountsForUnit(ctx context.Context, projectID string) ([]un
 		       m.allow_tracked, sm.revoked_at IS NOT NULL
 		FROM secret_mounts m
 		JOIN secret_metadata sm ON sm.id = m.secret_id
-		WHERE m.project_id = $1::uuid
+		WHERE m.project_id = $1::uuid AND (`+lifecycleSQL+`)
 		ORDER BY sm.slug, m.id`, prjCleanUUID(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list unit mounts: %w", err)
@@ -115,7 +136,29 @@ func (u *UnitSecrets) Materialize(ctx context.Context, req worker.MaterializeReq
 	if u == nil || u.Secrets == nil || u.Workspaces == nil {
 		return empty, errors.New("postgres: unit secrets materializer is not wired")
 	}
-	mounts, err := u.Secrets.MountsForUnit(ctx, req.ProjectID)
+	// The lifecycle scope is validated before anything is read: it filters the
+	// mounts below and stamps the ledger row's attempt_id, so a request whose
+	// scope and owner disagree must be refused even in a project that declares
+	// no mounts at all — the shape of the request is wrong, not its result.
+	scope := req.Lifecycle
+	if scope == "" {
+		scope = worker.LifecycleTurn
+	}
+	attemptID := ""
+	switch scope {
+	case worker.LifecycleNodeAttempt:
+		if req.AttemptID == "" {
+			return empty, errors.New("postgres: node_attempt materialization requires an attempt id")
+		}
+		attemptID = req.AttemptID
+	default:
+		if req.AttemptID != "" {
+			// A turn-scope unit that names an attempt would write a row whose
+			// lifecycle says 'turn' and whose attempt_id says otherwise.
+			return empty, errors.New("postgres: turn-scope materialization must not name an attempt id")
+		}
+	}
+	mounts, err := u.Secrets.MountsForUnit(ctx, req.ProjectID, req.Lifecycle)
 	if err != nil {
 		return empty, err
 	}
@@ -253,6 +296,7 @@ func (u *UnitSecrets) Materialize(ctx context.Context, req worker.MaterializeReq
 			SecretID: receipt.SecretID, SecretVersion: receipt.Version,
 			OrganizationID: req.OrganizationID, ProjectID: req.ProjectID,
 			WorkspaceID: req.WorkspaceID, TurnID: req.TurnID, WorkerID: req.WorkerID,
+			AttemptID:    attemptID,
 			DeliveryMode: receipt.DeliveryMode, Target: target, FileMode: receipt.FileMode,
 		}, events.SecretMaterializedPayload{
 			SecretID: receipt.SecretID, ProjectID: req.ProjectID, Slug: receipt.SecretSlug,
@@ -287,13 +331,50 @@ func (u *UnitSecrets) Materialize(ctx context.Context, req worker.MaterializeReq
 	return out, nil
 }
 
+// ReposForWorkspace implements worker.AttemptSecrets: the checkouts an
+// attempt's mounts may target, read from the run workspace § 4 step 3 prepared.
+//
+// The turn unit does not need this (it prepared the tree itself and has the rows
+// in hand); an agent.acp attempt consumes someone else's preparation, and a
+// materializer that guessed the checkout paths from the layout would be writing
+// secrets into directories the database never authorized. The repository *name*
+// comes from `repositories`, not the path basename: a mount's repository_name is
+// matched against it, and a renamed repository must not silently move a secret.
+func (u *UnitSecrets) ReposForWorkspace(ctx context.Context, workspaceID string) ([]worker.MaterializeRepo, error) {
+	if u == nil || u.Secrets == nil || u.Secrets.Pool == nil {
+		return nil, errors.New("postgres: unit secrets materializer is not wired")
+	}
+	if workspaceID == "" {
+		return nil, nil // no run workspace, nothing authorized
+	}
+	rows, err := u.Secrets.Pool.Query(ctx, `
+		SELECT wr.repository_id::text, r.name, wr.checkout_path, wr.mirror_path
+		FROM workspace_repos wr
+		JOIN repositories r ON r.id = wr.repository_id
+		WHERE wr.workspace_id = $1::uuid
+		ORDER BY r.name, wr.repository_id`, prjCleanUUID(workspaceID))
+	if err != nil {
+		return nil, fmt.Errorf("postgres: attempt repos for workspace %s: %w", workspaceID, err)
+	}
+	defer rows.Close()
+	var out []worker.MaterializeRepo
+	for rows.Next() {
+		var r worker.MaterializeRepo
+		if err := rows.Scan(&r.ID, &r.Name, &r.CheckoutPath, &r.MirrorPath); err != nil {
+			return nil, fmt.Errorf("postgres: scan attempt repo: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // failMaterialization journals the refusal and returns the error the unit
 // fails the turn with. The event carries the enum reason and the rejected
 // relative target only — never a host path, never the message of the git or
 // resolver error behind it.
 func (u *UnitSecrets) failMaterialization(ctx context.Context, req worker.MaterializeRequest, reason, secretID, slug, delivery, target string) error {
 	err := u.Secrets.inTx(ctx, func(tx pgx.Tx) error {
-		return secUnitAppendTx(ctx, tx, req.OrganizationID, req.ProjectID, req.ConversationID, req.WorkerID,
+		return secUnitAppendScopeTx(ctx, tx, req.OrganizationID, req.ProjectID, req.ConversationID, req.WorkerID, req.AttemptID,
 			events.TypeSecretMaterializationFailed, events.SecretMaterializationFailedPayload{
 				SecretID: secretID, ProjectID: req.ProjectID, Slug: slug,
 				DeliveryMode: delivery, Target: target, Reason: reason,
@@ -321,7 +402,7 @@ func (s *SecretStore) CloseMaterialization(ctx context.Context, id int64, req wo
 			 WHERE id = $1 AND cleaned_at IS NULL`, id); err != nil {
 			return fmt.Errorf("postgres: close materialization %d: %w", id, err)
 		}
-		return secUnitAppendTx(ctx, tx, req.OrganizationID, req.ProjectID, req.ConversationID, req.WorkerID,
+		return secUnitAppendScopeTx(ctx, tx, req.OrganizationID, req.ProjectID, req.ConversationID, req.WorkerID, req.AttemptID,
 			events.TypeSecretRemoved, events.SecretRemovedPayload{
 				SecretID: secretID, ProjectID: req.ProjectID, Target: target,
 				WorkspaceID: req.WorkspaceID, TurnID: req.TurnID, CleanedBy: "worker",
@@ -335,6 +416,14 @@ func (s *SecretStore) CloseMaterialization(ctx context.Context, id int64, req wo
 // be a half-truth, and these are the audit events 12-test-strategy case 12
 // reads.
 func secUnitAppendTx(ctx context.Context, tx pgx.Tx, organizationID, projectID, conversationID, workerID, eventType string, payload any) error {
+	return secUnitAppendScopeTx(ctx, tx, organizationID, projectID, conversationID, workerID, "", eventType, payload)
+}
+
+// secUnitAppendScopeTx is secUnitAppendTx with the M4 attempt correlation
+// filled in (contract § 3: a worker row that touches an attempt names it on the
+// journal row, not only in the payload). An empty attempt id — every M2/M3 turn
+// delivery — writes exactly the row the old helper wrote.
+func secUnitAppendScopeTx(ctx context.Context, tx pgx.Tx, organizationID, projectID, conversationID, workerID, attemptID, eventType string, payload any) error {
 	if eventType == "" {
 		return errors.New("postgres: unit event requires a type")
 	}
@@ -351,16 +440,20 @@ func secUnitAppendTx(ctx context.Context, tx pgx.Tx, organizationID, projectID, 
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO domain_events
-			(type, organization_id, project_id, conversation_id, actor_kind, actor_id, payload)
+			(type, organization_id, project_id, conversation_id, actor_kind, actor_id, attempt_id, payload)
 		VALUES ($1, $2::uuid, NULLIF($3,'')::uuid, NULLIF($4,'')::uuid, 'worker',
-		        $5, $6::jsonb)`,
-		eventType, organizationID, prjCleanUUID(projectID), prjCleanUUID(conversationID), actor, raw)
+		        $5, NULLIF($6,'')::uuid, $7::jsonb)`,
+		eventType, organizationID, prjCleanUUID(projectID), prjCleanUUID(conversationID), actor, attemptID, raw)
 	if err != nil {
 		return fmt.Errorf("postgres: append %s: %w", eventType, err)
 	}
 	return nil
 }
 
+// secUnitAppendScopeTx is secUnitAppendTx with the M4 attempt correlation
+// filled in (contract § 3: a worker row that touches an attempt names it on the
+// journal row, not only in the payload). An empty attempt id — every M2/M3 turn
+// delivery — writes exactly the row the old helper wrote.
 // deliveryFailureReason maps a materialize error onto the event enum. A
 // Refusal carries its own value; an I/O or git failure has no enum to claim,
 // and bad_shape is the honest "the write did not happen for a reason this
@@ -493,7 +586,7 @@ func (u *UnitSecrets) SweepUncleaned(ctx context.Context, workerID string) (int,
 				 WHERE id = $1 AND cleaned_at IS NULL`, r.ID); err != nil {
 				return fmt.Errorf("postgres: sweep close materialization %d: %w", r.ID, err)
 			}
-			return secUnitAppendTx(ctx, tx, org, r.ProjectID, "", workerID,
+			return secUnitAppendScopeTx(ctx, tx, org, r.ProjectID, "", workerID, r.AttemptID,
 				events.TypeSecretRemoved, events.SecretRemovedPayload{
 					SecretID: r.SecretID, ProjectID: r.ProjectID, Target: r.Target,
 					WorkspaceID: r.WorkspaceID, TurnID: r.TurnID, CleanedBy: "startup_sweep",

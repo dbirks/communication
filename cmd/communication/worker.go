@@ -400,6 +400,10 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	agentTurn := newAgentTurn(opts, pool, units, log)
 	agentTurn.Checkpoints = runWorkspaces
+	// Contract § 4 step 4: the attempt's node_attempt mounts materialize through
+	// the same adapter the M3 turn unit drives — one materializer, one keyring,
+	// one ledger, and the attempt id the reserved arm was waiting for.
+	agentTurn.Secrets = unitsSecrets
 	// One preparer shared by both kinds: the run workspace is per run, so two
 	// attempts of one run must go through the same door, not two copies of it.
 	prepareRunWorkspace := newRunWorkspacePreparer(opts, pool, w.ID, log)

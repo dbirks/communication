@@ -53,6 +53,19 @@ type Materialized struct {
 	Done func(ctx context.Context) error
 }
 
+// Secret mount lifecycles a materialize request can scope itself to —
+// 00004's `secret_mounts.lifecycle` CHECK arms and ADR-0018 D1's ownership
+// rule. `turn` (M3's default, and the only one M2/M3 ever honoured) covers
+// every mount except the attempt-scoped arm; `node_attempt` is M4's arm: the
+// mounts one *attempt* owns, materialized before its launch, removed when the
+// attempt ends, and recorded with secret_materializations.attempt_id set
+// (contract § 4 step 4).
+const (
+	LifecycleTurn        = "turn"
+	LifecycleWorkspace   = "workspace"
+	LifecycleNodeAttempt = "node_attempt"
+)
+
 // MaterializeRequest names the unit and the checkouts a mount may target.
 type MaterializeRequest struct {
 	OrganizationID string
@@ -62,6 +75,17 @@ type MaterializeRequest struct {
 	TurnID         string
 	WorkerID       string
 	AgentProfileID string
+	// AttemptID is the node attempt this delivery belongs to. Empty for a
+	// turn-scope unit (M2/M3); required, with Lifecycle='node_attempt', for
+	// the attempt arm, whose ledger row must name the attempt (contract § 4
+	// step 4 — the reserved arm finally used).
+	AttemptID string
+	// Lifecycle scopes which mounts this unit may deliver: "" or
+	// LifecycleTurn selects every mount except the node_attempt arm (M3's
+	// behaviour, unchanged), LifecycleNodeAttempt selects only the
+	// node_attempt arm. A turn never delivers an attempt mount and an attempt
+	// never delivers a turn mount: lifecycle is who owns the value's lifetime.
+	Lifecycle string
 	// PolicyDigest is the digest of the policy this unit is about to launch
 	// under, recorded on secret.materialized so a reader can tie "the value was
 	// present" to "under this ruleset". Empty means no policy was in play
@@ -87,6 +111,20 @@ type MaterializeRepo struct {
 	Name         string
 	CheckoutPath string
 	MirrorPath   string
+}
+
+// AttemptSecrets is the node_attempt-shaped SecretMaterializer: the same
+// materialization machinery M3's turn uses (one materializer, per ADR-0018 D4)
+// plus the read that tells an attempt which checkouts its mounts may target.
+// The turn unit learns its repos from its own preparation; an agent.acp attempt
+// consumes a workspace someone else prepared in § 4 step 3, so it has to ask.
+type AttemptSecrets interface {
+	SecretMaterializer
+	// ReposForWorkspace lists the prepared checkouts of one run workspace —
+	// id, name and the two paths a mount needs — as the authorized roots for
+	// this attempt's deliveries. No workspace, no repos: an empty slice is the
+	// honest answer for a run with no repositories, not an error.
+	ReposForWorkspace(ctx context.Context, workspaceID string) ([]MaterializeRepo, error)
 }
 
 // ArtifactCapturer is the hook into internal/artifacts (ADR-0020).

@@ -147,7 +147,13 @@ type Mount struct {
 	EnvName string
 	// Key optionally extracts one key from a multi-line value.
 	Key string
-	// Lifecycle is turn or workspace (node_attempt is M4).
+	// Lifecycle is turn, workspace or node_attempt (00004's CHECK arms).
+	// node_attempt is M4's: the mount one attempt owns, recorded against
+	// secret_materializations.attempt_id and removed at the attempt boundary
+	// rather than the turn's (ADR-0018 D1, contract § 4 step 4). The
+	// materializer itself treats all three identically — its job is the write,
+	// the lifecycle is whose lifetime the value is bound to, and it is the
+	// caller that owns a boundary.
 	Lifecycle string
 	// AllowTracked is the mount row's explicit policy exception (C-ENV6.4).
 	AllowTracked bool
@@ -783,6 +789,9 @@ func under(path, root string) bool {
 
 // lifecycle defaults a missing mount lifecycle to turn, the mode that fails
 // closed fastest: an unclaimed file is removed at turn end rather than kept.
+// node_attempt passes through unchanged — it is the arm M4 finally materializes
+// (contract § 4 step 4), and the receipt's lifecycle is what the audit event
+// reports, so an attempt mount must never be labelled a turn's.
 func lifecycle(m Mount) string {
 	if m.Lifecycle == "" {
 		return "turn"
