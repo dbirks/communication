@@ -446,7 +446,7 @@ class GateFirstSequencingTest(unittest.TestCase):
             self.now += secs
 
     def script(self, statuses, rows, decide=True):
-        """Run c5_wait_live_past_gate against canned ledger reads (one status +
+        """Run wait_live_past_gate against canned ledger reads (one status +
         one live-claim row per poll). Returns (result, gate_calls, checks)."""
         calls, checks, pos = [], [], [0]
         pairs = list(zip(statuses, rows))
@@ -477,7 +477,7 @@ class GateFirstSequencingTest(unittest.TestCase):
         m.approve_gate = approve
         m.check = check
         try:
-            out = m.c5_wait_live_past_gate(object(), "p-1", "run-1", 60)
+            out = m.wait_live_past_gate(object(), "p-1", "run-1", 60, "C5a")
         finally:
             (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate,
              m.check) = orig
@@ -501,20 +501,25 @@ class GateFirstSequencingTest(unittest.TestCase):
         self.assertIsNone(out)
         self.assertEqual(calls, [], "a dead run has no gate to decide")
 
-    def test_a_refused_decision_retries_until_the_cap_and_reports_nothing(self):
-        out, calls, _ = self.script(["waiting_human"] * 40, [None] * 40, decide=False)
+    def test_a_refused_decision_retries_until_the_cap_and_reports_the_stall(self):
+        out, calls, checks = self.script(["waiting_human"] * 40, [None] * 40, decide=False)
         self.assertIsNone(out)
         self.assertGreater(len(calls), 1, "the decide route is retried, not assumed")
+        self.assertIn(False, [ok for _lbl, ok in checks],
+                      f"a window that ended still waiting_human must be a FAIL, not "
+                      f"silence: {checks}")
+        self.assertTrue(any(lbl.startswith("C5a ") for lbl, ok in checks if ok is False),
+                        str(checks))
 
     def test_action_table(self):
-        self.assertEqual(m.c5_gate_then_live_action("running", True, False), ("live", False))
-        self.assertEqual(m.c5_gate_then_live_action("waiting_human", False, False),
+        self.assertEqual(m.gate_then_live_action("running", True, False), ("live", False))
+        self.assertEqual(m.gate_then_live_action("waiting_human", False, False),
                          ("approve", False))
-        self.assertEqual(m.c5_gate_then_live_action("waiting_human", False, True),
+        self.assertEqual(m.gate_then_live_action("waiting_human", False, True),
                          ("wait", True))
-        self.assertEqual(m.c5_gate_then_live_action("completed", False, True),
+        self.assertEqual(m.gate_then_live_action("completed", False, True),
                          ("terminal", True))
-        self.assertEqual(m.c5_gate_then_live_action("queued", False, True), ("wait", True))
+        self.assertEqual(m.gate_then_live_action("queued", False, True), ("wait", True))
 
 
 if __name__ == "__main__":

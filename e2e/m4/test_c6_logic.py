@@ -14,6 +14,7 @@ live kill+restore and live cross-worker arm against the real worker
 
 usage: python3 e2e/m4/test_c6_logic.py [-v]
 """
+import ast
 import os
 import re
 import sys
@@ -35,6 +36,7 @@ def one(rows, needle):
 
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_m4_exit.py")
 SEED_YAML = os.path.join(REPO, "docs", "compatibility", "probes", "m4", "pipeline.yaml")
 
 BOUNDARY = "c0ffee" + "1" * 58
@@ -244,6 +246,137 @@ class C6cFinal(unittest.TestCase):
     def test_missing_c1_set_is_a_fail_not_an_invention(self):
         v = m.c6_final_verdicts("completed", {"policies": {}}, set(), {"/plan"})
         self.assertIs(False, one(v, "key set equals C1"))
+
+
+def calls_and_args(fn_name, path=DRIVER):
+    """(called_names, {name: [literal-arg-lists]}) for one driver function."""
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+            called, args = set(), {}
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name):
+                    called.add(sub.func.id)
+                    args.setdefault(sub.func.id, []).append(
+                        [a.value if isinstance(a, ast.Constant) else None for a in sub.args])
+            return called, args
+    raise AssertionError(f"{fn_name} is not a module-level def in {path}")
+
+
+def defined_functions(path=DRIVER):
+    with open(path, encoding="utf-8") as fh:
+        return {n.name for n in ast.parse(fh.read()).body
+                if isinstance(n, ast.FunctionDef)}
+
+
+LIVE_ROW = {"id": "a-1", "key": m.C6_KILL_KEY, "worker": "worker-a", "token": "7",
+            "attempt_number": "1", "turn": "-"}
+
+
+class Clock:
+    """Monotonic fake clock so a 300s cap costs no wall time."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self):
+        self.now += 1.0
+        return self.now
+
+    def sleep(self, secs):
+        self.now += secs
+
+
+def run_gate_script(statuses, rows, decide=True, tag="C6b", cap=300):
+    """Drive m.wait_live_past_gate over canned ledger reads (one run_status + one
+    live-claim row per poll). Returns (result, decide_calls, checks). Nothing is
+    killed here — the live kill stays C6's § 7 run."""
+    calls, checks, pos = [], [], [0]
+    pairs = list(zip(statuses, rows))
+
+    def at(i):
+        return pairs[min(i, len(pairs) - 1)]
+
+    def live_row(run_id):
+        row = at(pos[0])[1]
+        pos[0] += 1
+        return row
+
+    def approve(client, project_id, run_id):
+        calls.append(project_id)
+        return decide
+
+    def check(label, ok, detail=""):
+        checks.append((label, ok))
+        return ok
+
+    orig = (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate, m.check)
+    m.time = Clock()
+    m.run_status = lambda run_id: at(pos[0])[0]
+    m.c5_live_attempt_row = live_row
+    m.approve_gate = approve
+    m.check = check
+    try:
+        out = m.wait_live_past_gate(object(), "p-1", "run-1", cap, tag)
+    finally:
+        (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate, m.check) = orig
+    return out, calls, checks
+
+
+class C6GateFirstSequencingTest(unittest.TestCase):
+    """live4/C6.out: `GAP C6b a live attempt to kill — no attempt on run … was ever
+    held by a worker within 300s`. The kill target (/implement, one node deeper
+    than /approve) only leases AFTER the gate is decided, so C6's bare
+    c4_wait_live_attempt poll graded itself against an empty ledger — the same
+    driver bug C5 had. These tests pin C6's ordering offline."""
+
+    def test_gate_is_decided_before_the_driver_waits_for_a_live_attempt(self):
+        out, calls, checks = run_gate_script(
+            ["waiting_human", "waiting_human", "running"], [None, None, LIVE_ROW])
+        self.assertEqual(out, LIVE_ROW)
+        self.assertEqual(calls, ["p-1"], "exactly one decide attempt once it succeeded")
+        self.assertTrue(any("approval gate was decided" in lbl and ok
+                            for lbl, ok in checks), str(checks))
+
+    def test_the_verdict_lines_are_tagged_c6b(self):
+        _out, _calls, checks = run_gate_script(["waiting_human", "running"],
+                                               [None, LIVE_ROW])
+        self.assertTrue(any(lbl.startswith("C6b ") and ok for lbl, ok in checks),
+                        f"C6's report must own its line: {checks}")
+
+    def test_a_live_claim_needs_no_gate_decision(self):
+        out, calls, _ = run_gate_script(["running"], [LIVE_ROW])
+        self.assertEqual(out, LIVE_ROW)
+        self.assertEqual(calls, [])
+
+    def test_terminal_run_stops_the_wait(self):
+        out, calls, _ = run_gate_script(["cancelled"], [None])
+        self.assertIsNone(out)
+        self.assertEqual(calls, [])
+
+    def test_a_window_that_never_left_the_gate_is_a_fail_not_a_silent_none(self):
+        out, calls, checks = run_gate_script(["waiting_human"] * 40, [None] * 40,
+                                             decide=False)
+        self.assertIsNone(out)
+        self.assertGreater(len(calls), 1, "the decide route is retried, not assumed")
+        self.assertIn(False, [ok for _lbl, ok in checks],
+                      f"still waiting_human at the cap must be reported: {checks}")
+
+    def test_c6_calls_the_gate_first_wait(self):
+        called, args = calls_and_args("c6")
+        self.assertIn("wait_live_past_gate", called, sorted(called))
+        self.assertEqual([a[4] for a in args["wait_live_past_gate"]], ["C6b"],
+                         "C6 must label its own verdict lines")
+
+    def test_the_bare_live_attempt_poll_is_gone_driver_wide(self):
+        names = defined_functions()
+        self.assertNotIn("c4_wait_live_attempt", names, "one gate-first wait for all "
+                                                        "three kills — no dead twin")
+        for fn in ("c4", "c5", "c6"):
+            called, _args = calls_and_args(fn)
+            self.assertNotIn("c4_wait_live_attempt", called, f"{fn} still waits on a "
+                                                             "lease without the gate")
 
 
 if __name__ == "__main__":

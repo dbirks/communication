@@ -2096,37 +2096,12 @@ def c4_frozen_attempt_sql(att):
     node_executions.status are both in scope across this join, so every column
     reference is qualified: a bare `status` aborts the gate with `column
     reference "status" is ambiguous` (live4/C4.out). Same qualified shape as
-    c6_attempts_of_key / c4_wait_live_attempt above."""
+    c6_attempts_of_key / wait_live_past_gate below."""
     return (f"SELECT a.status || ' worker=' || coalesce((SELECT w.name FROM workers w "
             f"WHERE w.id = a.worker_id),'-') || ' token=' || a.fencing_token::text || "
             f"' attempt=' || a.attempt_number::text || ' node=' || ne.node_instance_key || "
             f"' turn=' || coalesce(a.turn_id::text,'(none, process.exec)') FROM attempts a "
             f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'")
-
-
-def c4_wait_live_attempt(run_id, timeout=300):
-    """Poll the ledger for the first attempt a worker actually holds — the row
-    whose lease C4 then freezes. Returns the parsed row or None."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if run_status(run_id) in ("completed", "failed", "cancelled", "interrupted"):
-            return None
-        try:
-            row = c4_live_attempt(psql(
-                f"SELECT a.id || '|' || ne.node_instance_key || '|' || w.name || '|' || "
-                f"a.fencing_token::text || '|' || a.attempt_number::text || '|' || "
-                f"coalesce(a.turn_id::text, '-') FROM attempts a "
-                f"JOIN node_executions ne ON ne.id = a.node_execution_id "
-                f"JOIN workers w ON w.id = a.worker_id "
-                f"WHERE a.run_id = '{run_id}' AND a.status IN ('leased','running') "
-                f"ORDER BY a.started_at DESC NULLS LAST LIMIT 1"))
-        except RuntimeError as e:
-            show("C4a claim poll (psql)", str(e)[:300])
-            return None
-        if row:
-            return row
-        time.sleep(2)
-    return None
 
 
 def c4_worker_container(name):
@@ -2257,13 +2232,19 @@ def c4():
     if not run_id:
         return
     CTX["c4_run"] = run_id
-    live = c4_wait_live_attempt(run_id, 300)
+    # The /approve gate is decided BEFORE the live-lease poll: the twin parks at
+    # /approve ahead of the node that leases, so the old bare poll stared at
+    # status='waiting_human' for its whole 300s and GAPped "no attempt … was ever
+    # held by a worker" (live5/C4.out) — the same driver bug C5 had.
+    live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id, 300, "C4a")
     if live is None:
         dump_run_evidence(alice, run_id)
         gap("C4a a live lease to freeze",
             f"no attempt on run {run_id} was ever held by a worker within 300s (status="
-            f"{run_status(run_id)!r}) — with no lease there is no stale owner, so nothing "
-            "below is measurable (evidence dumped above)")
+            f"{run_status(run_id)!r}) — the gate was decided first, so this is nothing "
+            "ever leasing, not the driver waiting on a parked approval; with no lease "
+            "there is no stale owner, so nothing below is measurable (evidence dumped "
+            "above)")
         return
     att, owner = live["id"], live["worker"]
     svc = c4_worker_container(owner)
@@ -2753,18 +2734,19 @@ def c5_freeze_proof(status_stop, status_after):
     return a in C5_LIVE_STATES and b in C5_LIVE_STATES
 
 
-# C5a's sequencing: the deterministic twin's first long node sits BEHIND the
-# /approve gate, and the gate holds nothing (C9a's own sentence). Polling for a
-# live attempt before deciding the gate therefore stares at status=
-# 'waiting_human' for the whole window and reports "no attempt was ever held by a
-# worker" (live5/C5.out) — a driver bug, not a product gap. The gate is decided
-# first, through the same API route C1b/C9 use, as the designated approver.
-def c5_gate_then_live_action(status, has_live, approved):
+# The sequencing C4a, C5a and C6b all need: the deterministic twin's first long
+# node sits BEHIND the /approve gate, and the gate holds nothing (C9a's own
+# sentence). Polling for a live attempt before deciding the gate therefore stares
+# at status='waiting_human' for the whole window and reports "no attempt was ever
+# held by a worker" (live5/C5.out, live5/C4.out, live4/C6.out) — a driver bug, not
+# a product gap. The gate is decided first, through the same API route C1b/C9 use,
+# as the designated approver.
+def gate_then_live_action(status, has_live, approved):
     """The C5a poll's next move, given the run's status, whether the ledger shows
     an attempt a worker holds right now, and whether this gate has been decided.
-    Returns (action, approved) with action 'live' (aim the kill) | 'terminal'
-    (the run is over, nothing to kill) | 'approve' (decide the gate first) |
-    'wait'. Pure — test_c5_logic.py pins the ordering."""
+    Returns (action, approved) with action 'live' (aim the kill or the freeze) |
+    'terminal' (the run is over, nothing to act on) | 'approve' (decide the gate
+    first) | 'wait'. Pure — test_c5_logic.py pins the ordering."""
     if has_live:
         return "live", approved
     if status in ("completed", "failed", "cancelled", "interrupted"):
@@ -2791,16 +2773,17 @@ def c5_live_attempt_row(run_id):
         return None
 
 
-def c5_wait_live_past_gate(client, project_id, run_id, timeout):
+def wait_live_past_gate(client, project_id, run_id, timeout, tag):
     """Decide the approval gate, THEN wait for an attempt a worker actually holds
-    — the order § 7.1 C5a assumes. Alice is the run's designated approver (the
-    same POST /api/v1/approvals/{id}/decide route C1b and C9 exercise). Returns
-    the live attempt row or None."""
+    — the order § 7.1 C4a/C5a/C6b all assume. Alice is the run's designated
+    approver (the same POST /api/v1/approvals/{id}/decide route C1b and C9
+    exercise). `tag` labels which gate's report the verdict lines belong to.
+    Returns the live attempt row or None."""
     approved, deadline = False, time.time() + timeout
     while time.time() < deadline:
         status = run_status(run_id)
         row = c5_live_attempt_row(run_id)
-        action, approved = c5_gate_then_live_action(status, bool(row), approved)
+        action, approved = gate_then_live_action(status, bool(row), approved)
         if action == "live":
             return row
         if action == "terminal":
@@ -2808,10 +2791,15 @@ def c5_wait_live_past_gate(client, project_id, run_id, timeout):
         if action == "approve":
             approved = approve_gate(client, project_id, run_id)
             if approved:
-                check("C5a the approval gate was decided (C1b's route) so there is "
-                      "an attempt to kill", True, f"run {run_id} released from "
+                check(f"{tag} the approval gate was decided (C1b's route) so there is "
+                      "an attempt to act on", True, f"run {run_id} released from "
                       "waiting_human")
         time.sleep(2)
+    if not approved and run_status(run_id) == "waiting_human":
+        check(f"{tag} the approval gate was decided (C1b's route)", False,
+              f"the {timeout}s window elapsed with the run still waiting_human and "
+              "POST /api/v1/approvals/{id}/decide never returning 200 — nothing was "
+              "ever released, so nothing was ever leased")
     return None
 
 
@@ -2931,8 +2919,8 @@ def c5():
     ready_before, uploading_before = "", ""
     try:
         while tries < C5_KILL_TRIES and not killed:
-            live = c5_wait_live_past_gate(alice, mf(tw, "project_id"), run_id,
-                                          C5_KILL_POLL_S if tries else 300)
+            live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id,
+                                       C5_KILL_POLL_S if tries else 300, "C5a")
             if live is None:
                 if tries:
                     kill_state = "unattainable"
@@ -3835,13 +3823,19 @@ def c6():
 
     # C6b — the boundary must exist BEFORE the kill, and the attempt must be one
     # this project's own worker holds; without both, every reset claim is folklore.
-    live = c4_wait_live_attempt(run_id, 300)
+    # The gate is decided FIRST (wait_live_past_gate): the twin parks at /approve
+    # ahead of the node this kill needs, so a bare live-attempt poll spent its
+    # whole 300s in waiting_human and reported "no attempt … was ever held by a
+    # worker" (live4/C6.out) — the same driver bug C5 had.
+    live = wait_live_past_gate(alice, mf(twin, "project_id"), run_id, 300, "C6b")
     if live is None:
         dump_run_evidence(alice, run_id)
         gap("C6b a live attempt to kill",
             f"no attempt on run {run_id} was ever held by a worker within 300s (status="
-            f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
-            "the restore is unmeasurable (evidence dumped above)")
+            f"{run_status(run_id)!r}) — the gate was decided first, so this is nothing "
+            "ever leasing, not the driver waiting on a parked approval; with nothing "
+            "running there is no mid-node kill, so the restore is unmeasurable "
+            "(evidence dumped above)")
         return
     att, owner, key = live["id"], live["worker"], live["key"]
     svc = c4_worker_container(owner)
