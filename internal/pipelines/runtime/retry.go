@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	pevents "github.com/dbirks/communication/internal/pipelines/events"
 )
@@ -395,15 +396,119 @@ func (ms *MemStore) RequestCancel(runID, requestedBy string) error {
 // MarkCancelledByHumanTakeover is ADR-0023 § 9's takeover arm at the run
 // level: the attempt closes interrupted{human_takeover} and the run pauses
 // with that reason (the conversation-control machinery itself is M2's,
-// unchanged — this is only the run-state side of the handoff).
-func (ms *MemStore) MarkCancelledByHumanTakeover(runID, attemptID string) error {
+// unchanged — this is only the run-state side of the handoff). requestedBy is
+// the human whose CAS on the control row caused the move: run.paused is a
+// human-actor event and an actor-less one is a lie about who did it.
+func (ms *MemStore) MarkCancelledByHumanTakeover(runID, attemptID, requestedBy string) error {
 	// Pause FIRST: the interrupt's follow-up advance must not schedule a
 	// retry for the attempt the human is taking over (pause stops future
 	// scheduling; the interrupt still writes the honest attempt terminal).
-	if err := ms.Pause(runID, PausedHumanTakeover, ""); err != nil {
+	if err := ms.Pause(runID, PausedHumanTakeover, requestedBy); err != nil {
 		return err
 	}
-	return ms.Interrupt(runID, attemptID, ErrInterrupted)
+	// The event reason names WHY the attempt stopped (§ 5.3 / C9g:
+	// node.attempt.interrupted{reason:'human_takeover'}); the attempt's
+	// error_class stays the honest 'interrupted' Interrupt itself writes.
+	return ms.Interrupt(runID, attemptID, PausedHumanTakeover)
+}
+
+// ResumeFromHumanTakeover is the return half of ADR-0016 § 5 / contract § 5.3:
+// the pause MarkCancelledByHumanTakeover installed is lifted, and the node the
+// human interrupted is re-queued ONCE with the recorded intervention folded
+// into its retry_context (C9g: "the next attempt's retry_context names the
+// intervention"). The conversation-control move itself stays M2's — this is
+// only the run-state side of the handback, and the caller installs the
+// controller row in the same store transaction that calls it.
+//
+// The re-queue is explicit rather than left to the advancer's retry decision:
+// a takeover is not an execution failure, so it must not inherit the retry
+// budget (a node out of retries would otherwise reach its terminal on resume)
+// nor wait out a backoff the human just cancelled by handing the wheel back.
+func (ms *MemStore) ResumeFromHumanTakeover(runID, attemptID, requestedBy string, intervention any) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	st := ms.runs[runID]
+	if st == nil {
+		return fmt.Errorf("runtime: unknown run %s", runID)
+	}
+	if st.Run.Status != RunPaused || st.Run.PausedReason != PausedHumanTakeover {
+		return fmt.Errorf("runtime: run %s is %s (paused_reason %q), not paused for human takeover",
+			runID, st.Run.Status, st.Run.PausedReason)
+	}
+	a := st.attempt(attemptID)
+	if a == nil {
+		return fmt.Errorf("runtime: unknown attempt %s", attemptID)
+	}
+	n := st.nodeByExecID(a.NodeExecutionID)
+	if n == nil {
+		return fmt.Errorf("runtime: attempt %s has no node execution", attemptID)
+	}
+	at := ms.now()
+
+	// 1. Lift the takeover pause — route 29's transition and event, unchanged.
+	if err := st.Run.MoveRun(RunQueued, "", "", at); err != nil {
+		return err
+	}
+	st.event(at, pevents.ActorKindHuman, pevents.Record{
+		Type: pevents.TypeRunResumed, RunID: runID, ActorID: requestedBy,
+		Payload: pevents.RunResumed{
+			ProjectID: st.Run.ProjectID, RunID: runID, PausedReason: PausedHumanTakeover,
+		},
+	})
+
+	// 2. The next attempt inherits exactly what a continue_workspace retry
+	// would inherit (ADR-0023 § 6: attempt, error_class, and the last durable
+	// boundary's repo facts — never a memory), plus the intervention.
+	ctx := map[string]any{}
+	if last := st.LastAttempt(n.ID); last != nil {
+		ctx["attempt"] = int64(last.AttemptNumber)
+		if last.ErrorClass != "" {
+			ctx["error_class"] = last.ErrorClass
+		}
+	}
+	if ms.Adv != nil && ms.Adv.Prog != nil {
+		if d, err := RetryPlan(st, ms.Adv.Prog, n.InstanceKey); err == nil {
+			for k, v := range d.Context {
+				ctx[k] = v
+			}
+		}
+	}
+	if intervention != nil {
+		ctx["human_takeover"] = intervention
+	}
+	if err := ms.queueTakeoverAttempt(st, n, at, ctx); err != nil {
+		return err
+	}
+
+	// 3. The advance that follows re-derives readiness from rows, as every
+	// resume does (§ 5.1: the run is never driven from a memory).
+	if ms.Adv != nil {
+		return ms.Adv.Advance(st, at)
+	}
+	return nil
+}
+
+// queueTakeoverAttempt appends the handback attempt with the same accounting
+// queueAttempt does (attempt_count/in_flight are the ledger the advancer reads
+// readiness from), so the advance immediately after cannot double-queue it.
+func (ms *MemStore) queueTakeoverAttempt(st *State, n *NodeExecution, at time.Time, retryCtx map[string]any) error {
+	a := &Attempt{
+		ID:              st.NewID("at"),
+		NodeExecutionID: n.ID,
+		RunID:           st.Run.ID,
+		AttemptNumber:   n.AttemptCount + 1,
+		Status:          AttemptQueued,
+		ScheduledAt:     at,
+		RetryContext:    retryCtx,
+		CreatedAt:       at,
+	}
+	if err := a.Check(); err != nil {
+		return err
+	}
+	n.AttemptCount++
+	n.InFlight++
+	st.Attempts = append(st.Attempts, a)
+	return nil
 }
 
 // RunKeys lists every node execution key — a test/ops helper naming the

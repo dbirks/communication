@@ -100,7 +100,11 @@ type CnvControl struct {
 	UserID         string
 	DisplayName    string
 	PreviousUserID string
-	Version        int
+	// RunAttemptID is populated only when Kind is 'run_attempt': the attempt
+	// that holds the conversation as controller (§ 4 step 6). A human taking it
+	// is ADR-0016 § 5's takeover, which is why the kind alone is not enough.
+	RunAttemptID string
+	Version      int
 }
 
 // CnvTurn is one prompt plus the agent's whole answer for it. Empty optional
@@ -903,6 +907,13 @@ func (s *CnvStore) PostMessage(ctx context.Context, c Caller, conversationID, pr
 // cancel_requested_at on that turn in the same transaction. Control transfers
 // immediately; the turn ends when the harness agrees, and the one-active-turn
 // index is what stops the new controller prompting before then.
+//
+// When the displaced holder is a run attempt (controller_kind='run_attempt',
+// contract § 5.3 / C9g) the run moves too, in this same transaction: its
+// attempt closes interrupted{human_takeover} and the run pauses
+// paused_reason='human_takeover', through RuntimeStore so the engine owns those
+// semantics. An attempt that already reached its terminal owns no live work, and
+// then the takeover is the plain M2 handover with no run change.
 func (s *CnvStore) TakeControl(ctx context.Context, c Caller, conversationID string, version int) (CnvConversation, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvConversation{}, err
@@ -918,6 +929,12 @@ func (s *CnvStore) TakeControl(ctx context.Context, c Caller, conversationID str
 //
 // Only the current controller may return it, so a UI cannot release a lock it
 // never held.
+//
+// Control a human took from a run attempt goes back to that run (§ 5.3): the
+// takeover pause is lifted in the same transaction, the conversation's control
+// returns to controller_kind='run_attempt' naming the attempt that will actually
+// drive next, and what the human did while they held the wheel is handed to it
+// as that attempt's retry_context.
 func (s *CnvStore) ReturnControl(ctx context.Context, c Caller, conversationID string, version int) (CnvConversation, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvConversation{}, err
@@ -985,24 +1002,42 @@ func (s *CnvStore) transferControl(ctx context.Context, c Caller, conversationID
 		// records the displaced holder so a later return finds its way back.
 		toKind, toUser := events.ControllerKindHuman, c.UserID
 		previous := held.UserID
+		// resumeAttempt/resumeRun name the run attempt this handback returns
+		// the wheel to; takeoverAttempt names the one this handover displaces.
+		// Both are empty for the human<->human case M2 was built for.
+		var takeoverAttempt, resumeAttempt, resumeRun string
 		if requireHolder {
 			previous = c.UserID
 			toKind, toUser = events.ControllerKindNone, ""
 			if held.PreviousUserID != "" && cnvUserMayWrite(ctx, tx, held.PreviousUserID, project) {
 				toKind, toUser = events.ControllerKindHuman, held.PreviousUserID
 			}
+			// Contract § 5.3: control that a human took from a run attempt goes
+			// BACK to that attempt, not to 'none' — the run is the reason the
+			// conversation has a controller at all, and it is paused waiting on
+			// exactly this transaction.
+			var err error
+			if resumeAttempt, resumeRun, err = cnvTakeoverToResume(ctx, tx, conversationID); err != nil {
+				return err
+			}
+			if resumeAttempt != "" {
+				toKind, toUser = events.ControllerKindRunAttempt, ""
+			}
+		} else if held.Kind == events.ControllerKindRunAttempt {
+			takeoverAttempt = held.RunAttemptID
 		}
 
 		tag, err := tx.Exec(ctx, `
 			UPDATE conversation_control
 			SET controller_kind = $2,
 			    controller_user_id = NULLIF($3, '')::uuid,
+			    controller_run_attempt_id = NULLIF($6, '')::uuid,
 			    previous_controller_user_id = NULLIF($4, '')::uuid,
 			    version = version + 1,
 			    acquired_at = now(),
 			    updated_at = now()
 			WHERE conversation_id = $1::uuid AND version = $5`,
-			conversationID, toKind, toUser, previous, version)
+			conversationID, toKind, toUser, previous, version, resumeAttempt)
 		if err != nil {
 			return fmt.Errorf("postgres: compare-and-swap control: %w", err)
 		}
@@ -1065,6 +1100,18 @@ func (s *CnvStore) transferControl(ctx context.Context, c Caller, conversationID
 			},
 		}); err != nil {
 			return err
+		}
+		// The run-side half of the handoff, in this same transaction: control
+		// and run state move together or not at all (ADR-0016 § 5).
+		if takeoverAttempt != "" {
+			if err := cnvRunTakeover(ctx, tx, takeoverAttempt, c.UserID); err != nil {
+				return err
+			}
+		}
+		if resumeAttempt != "" {
+			if err := cnvRunResumeAfterTakeover(ctx, tx, conversationID, resumeRun, resumeAttempt, c.UserID); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1381,11 +1428,13 @@ func cnvControlForUpdate(ctx context.Context, tx pgx.Tx, conversationID string) 
 	var ctl CnvControl
 	err := tx.QueryRow(ctx, `
 		SELECT conversation_id::text, controller_kind, COALESCE(controller_user_id::text, ''),
-		       COALESCE(previous_controller_user_id::text, ''), version
+		       COALESCE(previous_controller_user_id::text, ''),
+		       COALESCE(controller_run_attempt_id::text, ''), version
 		FROM conversation_control
 		WHERE conversation_id = $1::uuid
 		FOR UPDATE`, conversationID).
-		Scan(&ctl.ConversationID, &ctl.Kind, &ctl.UserID, &ctl.PreviousUserID, &ctl.Version)
+		Scan(&ctl.ConversationID, &ctl.Kind, &ctl.UserID, &ctl.PreviousUserID,
+			&ctl.RunAttemptID, &ctl.Version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrConversationNotFound
 	}
@@ -1399,6 +1448,164 @@ func cnvControlForUpdate(ctx context.Context, tx pgx.Tx, conversationID string) 
 		}
 	}
 	return &ctl, nil
+}
+
+// cnvRunTakeover is contract § 5.3's run half of a takeover, applied inside the
+// caller's transaction: the attempt is interrupted{human_takeover} and its run
+// pauses with that reason, through RuntimeStore so the engine owns the
+// semantics (pause first, then interrupt, journal once).
+//
+// Fencing rule: an attempt that already reached its terminal owns no live work
+// to cancel, so taking over its conversation is plain M2 behaviour and changes
+// no run row. A run already terminal is skipped for the same reason — there is
+// nothing left to pause.
+func cnvRunTakeover(ctx context.Context, tx pgx.Tx, attemptID, actor string) error {
+	if attemptID == "" {
+		return nil
+	}
+	var runID string
+	var live bool
+	err := tx.QueryRow(ctx, `
+		SELECT a.run_id::text,
+		       a.status IN ('queued', 'leased', 'running')
+		         AND r.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+		FROM attempts a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.id = $1::uuid`, attemptID).Scan(&runID, &live)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The control row pointed at no attempt: a hand-seeded row, not a run.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: resolve run attempt %s for takeover: %w", attemptID, err)
+	}
+	if !live {
+		return nil
+	}
+	return takeoverRuntime().HumanTakeoverTx(ctx, tx, runID, attemptID, actor)
+}
+
+// cnvTakeoverToResume answers return-control's new question: did a human take
+// this conversation away from a run attempt that is still waiting for it back?
+// The ledger is the record — the attempt this conversation belongs to, already
+// interrupted, on a run paused for exactly that reason — because
+// conversation_control has a user column for previous holders and cannot name
+// an attempt. Returns ("", "") for every conversation M2's rules cover.
+func cnvTakeoverToResume(ctx context.Context, tx pgx.Tx, conversationID string) (string, string, error) {
+	var attemptID, runID string
+	err := tx.QueryRow(ctx, `
+		SELECT a.id::text, a.run_id::text
+		FROM attempts a
+		JOIN runs r ON r.id = a.run_id
+		WHERE a.conversation_id = $1::uuid
+		  AND a.status = 'interrupted'
+		  AND r.status = 'paused' AND r.paused_reason = 'human_takeover'
+		ORDER BY a.finished_at DESC NULLS LAST
+		LIMIT 1`, conversationID).Scan(&attemptID, &runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("postgres: resolve takeover to resume for conversation %s: %w", conversationID, err)
+	}
+	return attemptID, runID, nil
+}
+
+// cnvRunResumeAfterTakeover lifts the pause and hands the recorded intervention
+// to the next attempt (§ 5.3: "return-control resumes it with the recorded
+// intervention as the next attempt's retry_context"). What the human did while
+// they drove is read from the turn rows, never from a memory, so a control
+// plane that restarted mid-takeover still says what actually happened.
+func cnvRunResumeAfterTakeover(ctx context.Context, tx pgx.Tx,
+	conversationID, runID, attemptID, returningUser string) error {
+	interruptedAt, err := cnvAttemptFinishedAt(ctx, tx, attemptID)
+	if err != nil {
+		return err
+	}
+	intervention, err := cnvTakeoverIntervention(ctx, tx, conversationID, interruptedAt)
+	if err != nil {
+		return err
+	}
+	intervention["returned_by"] = returningUser
+	intervention["reason"] = takeoverReasonName()
+	if err := takeoverRuntime().ResumeFromHumanTakeoverTx(ctx, tx, runID, attemptID, returningUser, intervention); err != nil {
+		return err
+	}
+	return cnvRepointControl(ctx, tx, conversationID, attemptID)
+}
+
+// cnvRepointControl names the attempt that will actually drive the
+// conversation now that the pause is lifted: the newly queued one, read back
+// from the rows the resume just wrote. The interrupted attempt is the
+// controller the CAS handed back (ADR-0016 § 5's "previous holder"), but it is
+// terminal, and § 4 step 6 gives the next attempt the wheel when it claims —
+// this just makes the control row tell the truth in between.
+func cnvRepointControl(ctx context.Context, tx pgx.Tx, conversationID, oldAttemptID string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE conversation_control
+		SET controller_run_attempt_id = COALESCE((
+			SELECT newer.id FROM attempts newer
+			JOIN attempts older ON older.id = $2::uuid
+			  AND newer.node_execution_id = older.node_execution_id
+			WHERE newer.status = 'queued'
+			ORDER BY newer.attempt_number DESC
+			LIMIT 1), controller_run_attempt_id)
+		WHERE conversation_id = $1::uuid AND controller_kind = 'run_attempt'`,
+		conversationID, oldAttemptID)
+	if err != nil {
+		return fmt.Errorf("postgres: hand conversation %s control to the resumed attempt: %w", conversationID, err)
+	}
+	return nil
+}
+
+// takeoverReasonName is the reason string retry_context carries, mirroring the
+// engine's paused_reason so the two halves spell the handoff identically.
+func takeoverReasonName() string { return "human_takeover" }
+
+// cnvAttemptFinishedAt reads the moment the takeover closed the attempt, which
+// is the moment the human's own turns begin.
+func cnvAttemptFinishedAt(ctx context.Context, tx pgx.Tx, attemptID string) (time.Time, error) {
+	var at time.Time
+	err := tx.QueryRow(ctx, `SELECT coalesce(finished_at, now()) FROM attempts WHERE id = $1::uuid`,
+		attemptID).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("postgres: read takeover time for attempt %s: %w", attemptID, err)
+	}
+	return at, nil
+}
+
+// cnvTakeoverIntervention collects the human's prompts from the moment the
+// attempt lost control: the attempt's own turns carry node_attempt_id and are
+// the agent's transcript, not the intervention, so they are excluded by
+// construction rather than by timestamp arithmetic.
+func cnvTakeoverIntervention(ctx context.Context, tx pgx.Tx, conversationID string, since time.Time) (map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT prompt, to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+		FROM conversation_turns
+		WHERE conversation_id = $1::uuid AND node_attempt_id IS NULL AND created_at > $2
+		ORDER BY created_at, id`, conversationID, since)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read takeover turns for conversation %s: %w", conversationID, err)
+	}
+	defer rows.Close()
+	var turns []any
+	for rows.Next() {
+		var prompt, at string
+		if err := rows.Scan(&prompt, &at); err != nil {
+			return nil, fmt.Errorf("postgres: scan takeover turn: %w", err)
+		}
+		turns = append(turns, map[string]any{"prompt": prompt, "at": at})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: read takeover turns: %w", err)
+	}
+	if turns == nil {
+		turns = []any{}
+	}
+	return map[string]any{"turns": turns, "turn_count": len(turns)}, nil
 }
 
 // cnvUserMayWrite answers return-control's question: may the user we would hand

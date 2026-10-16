@@ -123,31 +123,53 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 		return fmt.Errorf("postgres: begin runtime tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	ready, err := s.settleTx(ctx, tx, runID, op, commitOnRefusal)
+	if !ready {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit runtime tx for run %s: %w", runID, err)
+	}
+	return err
+}
 
+// settleTx is settle's body on a transaction the CALLER already owns: same
+// lock, same hydrate, same write-back — but the CALLER commits, because it may
+// own more rows than this run's. It exists for the one handoff whose halves are
+// a single fact: ADR-0016 § 5's takeover moves the conversation-control row AND
+// pauses the run, and a run paused with the human still locked out (or a human
+// locked in with the run still driving) is exactly the split-brain the ADR
+// forbids. The bool says whether the write-back landed, i.e. whether the caller
+// may commit: true alongside a nil error, and alongside the commitOnRefusal
+// arm's accepted error.
+func (s *RuntimeStore) settleTx(ctx context.Context, tx pgx.Tx, runID string,
+	op func(ctx context.Context, tx pgx.Tx, ms *runtime.MemStore, st *runtime.State) error,
+	commitOnRefusal func(err error, appended []pevents.Record) bool,
+) (ready bool, err error) {
 	// (1) The advancer lock, then the run row — the § 5.1 pair, in this
 	// order, on every path.
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
 		advancerLockPrefix+runID); err != nil {
-		return fmt.Errorf("postgres: advancer lock for run %s: %w", runID, err)
+		return false, fmt.Errorf("postgres: advancer lock for run %s: %w", runID, err)
 	}
 	var locked int
 	if err := tx.QueryRow(ctx,
 		`SELECT 1 FROM runs WHERE id = $1::uuid FOR UPDATE`, runID).Scan(&locked); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRunNotFound
+			return false, ErrRunNotFound
 		}
-		return fmt.Errorf("postgres: lock run %s: %w", runID, err)
+		return false, fmt.Errorf("postgres: lock run %s: %w", runID, err)
 	}
 
 	// (2) Hydrate the truth from rows.
 	st, err := hydrateTx(ctx, tx, runID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	adv, err := s.advancerForTx(ctx, tx, runID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	journalLen := len(st.Events)
 	hydrated := snapshotRows(st)
@@ -163,15 +185,12 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 	// (4) Write back whatever the engine changed. With an op error, the
 	// only permitted writes are the commitOnRefusal arm's journal appends.
 	if opErr != nil && (commitOnRefusal == nil || !commitOnRefusal(opErr, st.Events[journalLen:])) {
-		return opErr
+		return false, opErr
 	}
 	if err := writeRowsTx(ctx, tx, st, hydrated, journalLen); err != nil {
-		return err
+		return false, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("postgres: commit runtime tx for run %s: %w", runID, err)
-	}
-	return opErr
+	return true, opErr
 }
 
 // advancerForTx assembles the advancer for ONE transaction on ONE run: the
@@ -388,6 +407,51 @@ func (s *RuntimeStore) Retry(ctx context.Context, runID, requestedBy string, tar
 	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
 		return ms.Retry(runID, rteIdentity(requestedBy), targets, inputOverrides)
 	}, nil)
+}
+
+// ---------------------------------------------------- human takeover (§ 5.3)
+
+// takeoverRuntime is the adapter the CONVERSATION-side transactions drive: it
+// owns no pool because its transaction is the caller's, and it carries no
+// advancer because advancerForTx rebuilds the right one from the run row's own
+// plan_snapshot on every call. There is one RuntimeStore per mutation, exactly
+// as there is one throwaway MemStore per transaction.
+func takeoverRuntime() *RuntimeStore { return NewRuntimeStore(nil, nil) }
+
+// HumanTakeover is contract § 5.3 / ADR-0016 § 5's run half of a takeover:
+// the attempt closes interrupted{human_takeover} and the run pauses with that
+// reason, through the engine arm (pause first, so the follow-up advance
+// schedules no retry for the attempt the human is taking over). Unfenced by
+// design, like every reconciler-side close: the human's CAS on the control row
+// is the authorization, and the attempt's own worker learns to stop from the
+// turn's cancel_requested_at that the same transaction wrote.
+func (s *RuntimeStore) HumanTakeover(ctx context.Context, runID, attemptID, requestedBy string) error {
+	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
+		return ms.MarkCancelledByHumanTakeover(runID, attemptID, rteIdentity(requestedBy))
+	}, nil)
+}
+
+// HumanTakeoverTx is HumanTakeover on the caller's transaction — the form
+// CnvStore.TakeControl uses, because "control moved" and "the run paused" are
+// one fact (ADR-0016 § 5).
+func (s *RuntimeStore) HumanTakeoverTx(ctx context.Context, tx pgx.Tx, runID, attemptID, requestedBy string) error {
+	_, err := s.settleTx(ctx, tx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
+		return ms.MarkCancelledByHumanTakeover(runID, attemptID, rteIdentity(requestedBy))
+	}, nil)
+	return err
+}
+
+// ResumeFromHumanTakeover is return-control's run half: the takeover pause is
+// lifted and the interrupted node's next attempt carries the recorded
+// intervention as retry_context (ADR-0016 § 5, ADR-0023 § 6, C9g). intervention
+// is what the human did while they held the conversation, assembled by the
+// caller from the transcript rows; the engine neither invents nor forgets it.
+func (s *RuntimeStore) ResumeFromHumanTakeoverTx(ctx context.Context, tx pgx.Tx,
+	runID, attemptID, requestedBy string, intervention any) error {
+	_, err := s.settleTx(ctx, tx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
+		return ms.ResumeFromHumanTakeover(runID, attemptID, rteIdentity(requestedBy), intervention)
+	}, nil)
+	return err
 }
 
 // Advance is the reconciler's backstop trigger (§ 5.1: called after every

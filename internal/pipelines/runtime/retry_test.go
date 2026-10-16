@@ -155,7 +155,7 @@ func TestHumanTakeoverPausesTheRun(t *testing.T) {
 	if err := dv.ms.Start(dv.run.ID, a.ID, "worker-a", a.FencingToken); err != nil {
 		t.Fatal(err)
 	}
-	if err := dv.ms.MarkCancelledByHumanTakeover(dv.run.ID, a.ID); err != nil {
+	if err := dv.ms.MarkCancelledByHumanTakeover(dv.run.ID, a.ID, "user-a"); err != nil {
 		t.Fatal(err)
 	}
 	st := dv.state()
@@ -164,6 +164,24 @@ func TestHumanTakeoverPausesTheRun(t *testing.T) {
 	}
 	if st.Run.Status != runtime.RunPaused || st.Run.PausedReason != runtime.PausedHumanTakeover {
 		t.Errorf("run = %s/%s, want paused/human_takeover", st.Run.Status, st.Run.PausedReason)
+	}
+	// C9g's half at the engine: the attempt's terminal event names the reason
+	// the human moved, while error_class stays the honest 'interrupted'.
+	var seen int
+	for _, e := range st.SortedEvents() {
+		if e.Type != pevents.TypeNodeAttemptInterrupted {
+			continue
+		}
+		seen++
+		if p, ok := e.Payload.(pevents.NodeAttemptInterrupted); !ok || p.Reason != runtime.PausedHumanTakeover {
+			t.Errorf("node.attempt.interrupted reason = %+v, want %s", e.Payload, runtime.PausedHumanTakeover)
+		}
+	}
+	if seen != 1 {
+		t.Errorf("node.attempt.interrupted events = %d, want exactly 1", seen)
+	}
+	if a.ErrorClass != runtime.ErrInterrupted {
+		t.Errorf("attempt error_class = %s, want %s", a.ErrorClass, runtime.ErrInterrupted)
 	}
 	// Claiming under the pause stays empty; a resume returns the node to
 	// ready for a fresh attempt (the conversation machinery is M2's — this
