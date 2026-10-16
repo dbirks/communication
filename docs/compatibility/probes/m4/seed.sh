@@ -26,6 +26,15 @@
 #      stay a plain project maintainer for gate C9c.
 #   2. project m4-exit (alice creates -> implicit maintainer) + members:
 #      bob contributor, carol dan maintainers (C9b/c/d arms)
+#   2b. project m4-project-b, created by ERIN, who therefore holds a membership in
+#      that project ONLY. § 7.2 W9 names its outsider "carol (project B only)", but
+#      § 7.1 C9d requires carol as a MAINTAINER of the M4 project (she and dan race
+#      one CAS decision) — the two literals cannot both hold for one identity, so
+#      carol stays where an executable arm needs her and the "project B only" role
+#      is played by erin, the contract's only unnamed-but-legal extra IdP identity.
+#      Erin never touches m4-exit: no PUT members call names her, so her M4 role is
+#      no row and the deep links must read 404 (README: "remove her afterwards or
+#      use a second project" — this is the second-project branch).
 #   3. repository app -> file:///srv/m4/fixtures/app.git (e2e/m4/make_fixture_repo.sh)
 #   4. profiles m4-planner/m4-implementer/m4-reviewer by SQL — M3's D10: there is
 #      no profile-write API; § 7.0's launcher claude, sandbox required, implementer
@@ -58,6 +67,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/m4-seed.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 MANIFEST="${M4_SEED_MANIFEST:-$M4_PROBE_ROOT_BASE/seed-manifest.json}"
 PROJECT_SLUG="${M4_SEED_PROJECT_SLUG:-m4-exit}"
+# W9's outsider needs a second project to be "project B only" (§ 7.2 W9 vs § 7.1 C9d).
+PROJECT_B_SLUG="${M4_SEED_PROJECT_B_SLUG:-m4-project-b}"
 REPO_URL="${M4_SEED_REPO_URL:-file:///srv/m4/fixtures/app.git}"
 GOAL="${M4_SEED_GOAL:-Document and fix add() in hello.py}"
 SENTINEL="${M4_SEED_SECRET_VALUE:-SENTINEL-m4-7c1e9d42-exit-test-only}"
@@ -200,6 +211,30 @@ create_project() { # -> PROJECT_ID
     fi
     loud "create project (POST /api/v1/projects)"
 }
+create_project_b() { # -> PROJECT_B_ID — created BY erin so she is its only seeded member
+    req erin POST /api/v1/projects \
+        "{\"name\":\"M4 Project B\",\"slug\":\"$PROJECT_B_SLUG\",\"description\":\"Second project for the § 7.2 W9 outsider (erin is a member of this project only)\"}"
+    if ok 201; then
+        PROJECT_B_ID=$(jget "$LAST_BODY_FILE" id)
+        say "project B: created $PROJECT_B_ID (slug $PROJECT_B_SLUG, erin implicit maintainer)"
+    elif ok 409; then
+        # Erin's list holds only projects she has a membership in — project B is one.
+        req erin GET /api/v1/projects || loud "project B reuse: list as erin"
+        need "project B reuse: list projects as erin" 200
+        PROJECT_B_ID=$(jfind "$LAST_BODY_FILE" items slug "$PROJECT_B_SLUG" id) \
+            || loud "project B $PROJECT_B_SLUG: 409 on create but absent from erin's list (unexpected state)"
+        say "project B: reused existing $PROJECT_B_ID (slug $PROJECT_B_SLUG)"
+    else
+        loud "create project B (POST /api/v1/projects as erin)"
+    fi
+    [ -n "${PROJECT_B_ID:-}" ] || loud "project B: empty id"
+    # The membership must be real before W9 measures its absence elsewhere: as erin,
+    # her own project reads 200. Erin's M4-exit role is never seeded (no put_member
+    # names her) — that absence is what gate W9 measures, so the seed does not.
+    req erin GET "/api/v1/projects/$PROJECT_B_ID" || loud "project B: erin cannot GET $PROJECT_B_SLUG"
+    need "project B: erin holds a membership on $PROJECT_B_SLUG (GET /projects/\$id as erin)" 200
+}
+
 create_repo() { # -> REPO_ID
     req alice POST "/api/v1/projects/$PROJECT_ID/repos" \
         "{\"name\":\"app\",\"git_url\":\"$REPO_URL\",\"default_branch\":\"main\"}"
@@ -360,8 +395,10 @@ write_manifest() {
     M4_SEED_STACK_URL="$M4_URL" \
     M4_SEED_USERS_ALICE="${UID_OF[alice]}" M4_SEED_USERS_BOB="${UID_OF[bob]}" \
     M4_SEED_USERS_CAROL="${UID_OF[carol]}" M4_SEED_USERS_DAN="${UID_OF[dan]}" \
+    M4_SEED_USERS_ERIN="${UID_OF[erin]}" \
     M4_SEED_USERS_ADMIN="${UID_OF[admin]}" \
     M4_SEED_PROJECT_ID="$PROJECT_ID" M4_SEED_PROJECT_SLUG="$PROJECT_SLUG" \
+    M4_SEED_PROJECT_B_ID="$PROJECT_B_ID" M4_SEED_PROJECT_B_SLUG="$PROJECT_B_SLUG" \
     M4_SEED_REPO_ID="$REPO_ID" M4_SEED_REPO_URL="$REPO_URL" \
     M4_SEED_PLANNER_ID="${PROFILE_IDS[m4-planner]}" M4_SEED_IMPLEMENTER_ID="${PROFILE_IDS[m4-implementer]}" \
     M4_SEED_REVIEWER_ID="${PROFILE_IDS[m4-reviewer]}" M4_SEED_SECRET_ID="$SECRET_ID" \
@@ -400,8 +437,14 @@ manifest = {
     "stack": {"compose_project": "communication-m4", "url": e["M4_SEED_STACK_URL"]},
     "users": {"alice": e["M4_SEED_USERS_ALICE"], "bob": e["M4_SEED_USERS_BOB"],
               "carol": e["M4_SEED_USERS_CAROL"], "dan": e["M4_SEED_USERS_DAN"],
+              "erin": e["M4_SEED_USERS_ERIN"],
               "admin": e["M4_SEED_USERS_ADMIN"]},
     "project": {"id": e["M4_SEED_PROJECT_ID"], "slug": e["M4_SEED_PROJECT_SLUG"]},
+    # The § 7.2 W9 outsider: erin holds a membership in project_b ONLY (no row on
+    # `project`), so she is the seeded stand-in for the row's "carol (project B
+    # only)" — see seed.sh's step 2b for why carol cannot play both roles.
+    "project_b": {"id": e["M4_SEED_PROJECT_B_ID"], "slug": e["M4_SEED_PROJECT_B_SLUG"],
+                  "outsider": "erin"},
     "repositories": {"app": {"id": e["M4_SEED_REPO_ID"], "git_url": e["M4_SEED_REPO_URL"]}},
     "profiles": {"m4-planner": e["M4_SEED_PLANNER_ID"],
                  "m4-implementer": e["M4_SEED_IMPLEMENTER_ID"],
@@ -444,7 +487,7 @@ PYEOF
     # means the seed did not happen. Never report success over one.
     if ! python3 - "$MANIFEST" "${RUNS[agent]}" "${RUNS[twin]}" \
         "${REV_ID[feature-development]}" "${REV_ID[feature-development-deterministic]}" \
-        "${REV_ID[issue-implementation]}" <<'PYEOF'
+        "${REV_ID[issue-implementation]}" "$PROJECT_B_ID" <<'PYEOF'
 import json, sys
 path, want = sys.argv[1], sys.argv[2:]
 try:
@@ -454,11 +497,15 @@ except Exception as exc:
 missing = [w for w in want if json.dumps(w) not in open(path, encoding="utf-8").read()]
 if missing:
     sys.stderr.write(f"manifest {path} is missing ids: {missing}\n"); sys.exit(1)
-for key in ("schema", "stack", "project", "pipelines", "runs"):
+for key in ("schema", "stack", "project", "project_b", "pipelines", "runs"):
     if key not in m:
         sys.stderr.write(f"manifest {path} lacks member '{key}'\n"); sys.exit(1)
 if m["schema"] != "m4-seed-manifest/1":
     sys.stderr.write(f"manifest {path}: unexpected schema {m['schema']!r}\n"); sys.exit(1)
+# W9's outsider must be named by the manifest, not assumed by the driver.
+if not (m["users"].get("erin") or "").strip() or not (m["project_b"].get("id") or "").strip():
+    sys.stderr.write(f"manifest {path}: users.erin / project_b.id must both be present "
+                     "(§ 7.2 W9 measures a seeded project-B-only identity)\n"); sys.exit(1)
 if [r.get("run_id") for r in m.get("runs", [])] != want[:2]:
     sys.stderr.write(f"manifest {path}: runs[] does not carry the two seeded run ids {want[:2]}\n"); sys.exit(1)
 sys.stderr.write(f"manifest OK: {path} ({len(open(path, encoding='utf-8').read())} bytes, {len(m['pipelines'])} pipelines, {len(m['runs'])} runs)\n")
@@ -482,11 +529,12 @@ if ! m4_stack_up; then
 fi
 say "readiness: both replicas 200"
 
-login alice; login bob; login carol; login dan; login admin
+login alice; login bob; login carol; login dan; login erin; login admin
 create_project
 put_member bob contributor
 put_member carol maintainer
 put_member dan maintainer
+create_project_b
 create_repo
 
 seed_profile m4-planner false worktree

@@ -9773,21 +9773,37 @@ def w9_not_found(dom_text):
                                    "404"))
 
 
-def w9_outsider_verdict(role, is_org_admin):
-    """Row W9's observer is 'carol (project B only)'. The § 7.0 seed adds carol as a
-    MAINTAINER of the one project it creates (seed.sh `put_member carol maintainer`)
-    and never creates a project B, so the row's outsider does not exist in the lab.
-    `role` is carol's membership row ('' = none). This is always the GAP naming the
-    seed gap — the leg then measures the leakage arms on a provisioned no-membership
-    identity and labels them as such."""
-    label = "W9 the row's observer — carol, a member of project B only"
+def w9_outsider_verdict(role, is_org_admin, outsider="erin", outsider_m4_role=None,
+                        outsider_project_b_role=None):
+    """Row W9's observer is 'carol (project B only)', but § 7.1 C9d needs carol as a
+    MAINTAINER of the M4 project (she and dan race one CAS decision) — no single
+    identity satisfies both literals. `role` is carol's M4 membership row ('' =
+    none), so carol is where the executable arm needs her and the seed (step 2b)
+    provisions the project-B-only ROLE as a second IdP identity: `outsider` holds
+    `outsider_project_b_role` on manifest.project_b and `outsider_m4_role` ('' = no
+    row) on the M4 project.
+
+    The arm stays a GAP (None) either way: with a seeded outsider it names the
+    contract's own identity contradiction (the row's literal name is unmeasurable);
+    without one it names the seed gap and the arms run on a bare IdP login."""
+    label = "W9 the row's observer - carol, a member of project B only"
+    if outsider_project_b_role and not outsider_m4_role:
+        return (label, None,
+                f"the row names carol, but § 7.1 C9d requires carol as an M4 maintainer "
+                f"(memberships: carol holds {role or 'no row'!r}), so the 'project B only' "
+                f"role is played by the seeded identity {outsider!r} "
+                f"(project_b role {outsider_project_b_role!r}, M4 role no row) - the arms "
+                f"below measure HER session, never carol's (org admin={is_org_admin})")
     return (label, None,
             f"the seed gap: memberships says carol holds {role or 'no row'!r} on the M4 "
             "project (docs/compatibility/probes/m4/seed.sh runs `put_member carol "
             "maintainer` against the only project the seed creates) and no project B "
-            "exists, so no seeded identity is 'project B only'. The substitute observer "
+            f"membership is seeded for {outsider!r} "
+            f"(M4 role {outsider_m4_role if outsider_m4_role is not None else 'unreadable'!r}, "
+            f"project B role {outsider_project_b_role if outsider_project_b_role is not None else 'unreadable'!r}), "
+            "so no seeded identity is 'project B only'. The substitute observer "
             f"used for the arms below is a fresh IdP login (org admin={is_org_admin}, no "
-            "membership) — named in every label, never called carol")
+            f"membership) - named in every label, never called carol")
 
 
 def w1():
@@ -10564,10 +10580,12 @@ def w9():
     """W9 — row § 7.2: "as carol (project B only), deep-link the M4 run id,
     /runs/{id}/nodes, /approvals/{id} and the run SSE URL" → "404/not-found states, no
     project name, no node names, no digest values, SSE never opens, console clean — 12
-    case 15's rule extended to the new surface". The seed has no project-B-only user
-    (carol is a maintainer of the only project it creates), so the observer is named as
-    a GAP and the four arms are measured against a provisioned identity with no
-    membership at all."""
+    case 15's rule extended to the new surface". Carol cannot be the outsider (C9d
+    makes her an M4 maintainer), so the row's "project B only" role is the identity
+    seed.sh step 2b provisions for it — erin, a member of manifest.project_b and of no
+    other project — and the observer arm names that substitution as a GAP while the
+    four leakage arms are measured on her real session. With no such seeded membership
+    the arms fall back to a bare IdP login (no membership at all) and say so."""
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
         gap("W9 all arms", "no seed manifest (§ 7.0 seed has not run) — no project, no run "
@@ -10580,8 +10598,15 @@ def w9():
         return
     aid = pw_first(psql(f"SELECT id FROM approval_requests WHERE run_id = '{run_id}' "
                         "ORDER BY created_at LIMIT 1"))
-    carol_id = c9_manifest_users(c9_manifest_json()).get("carol") or ""
+    users = c9_manifest_users(c9_manifest_json())
+    carol_id = users.get("carol") or ""
     role = c9_role_of(project_id, carol_id) if carol_id else ""
+    mobj = c9_manifest_json() or {}
+    project_b_id = str(((mobj.get("project_b") or {}).get("id")) or "")
+    erin_id = users.get("erin") or ""
+    erin_m4_role = c9_role_of(project_id, erin_id) if erin_id else None
+    erin_b_role = (c9_role_of(project_b_id, erin_id)
+                   if erin_id and project_b_id else None)
     alice = CTX.get("alice") or Client("alice")
     if login(alice) is None:
         gap("W9 all arms", "alice (a member who CAN see the run) could not sign in — the "
@@ -10595,7 +10620,9 @@ def w9():
                            "there is no outsider to render the deep links as")
         return
     is_admin = bool(me.get("is_org_admin"))
-    _label, _ok, why = w9_outsider_verdict(role, is_admin)
+    _label, _ok, why = w9_outsider_verdict(role, is_admin, outsider="erin",
+                                           outsider_m4_role=erin_m4_role,
+                                           outsider_project_b_role=erin_b_role)
     gap("W9 carol-as-outsider arm", why)
     if is_admin:
         gap("W9 all arms", "the substitute identity holds org admin, and internal/authz "
@@ -10639,7 +10666,7 @@ def w9():
             continue
         r = outsider.get(LB, path)
         api_status[surface] = r.status
-        show(f"W9 as erin (no membership): GET {path}", f"{r.status} {r.text[:140]}")
+        show(f"W9 as erin (project B only, no M4 row): GET {path}", f"{r.status} {r.text[:140]}")
     c5_emit([("W9 the control plane answers 404 for every M4 surface it is linked to",
               all(s == 404 for s in api_status.values()) and bool(api_status),
               f"outsider API statuses={api_status} — row W9: \"404/not-found states\"")])

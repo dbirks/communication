@@ -28,6 +28,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w9_console_verdict,
     w9_leak_verdicts,
     w9_not_found,
+    w9_outsider_verdict,
     w9_sse_verdict,
     w9_state_verdicts,
     w3_decide_verdict,
@@ -337,6 +338,30 @@ def test_w9_outsider_verdicts():
     assert w9_not_found("   ") is None
 
 
+def test_w9_outsider_observer_arm():
+    """§ 7.2 W9 names its observer "carol (project B only)" while § 7.1 C9d makes
+    carol an M4 maintainer; seed.sh step 2b provisions the ROLE as a second identity
+    (erin, member of manifest.project_b only). The observer arm is a GAP in both
+    worlds — it never reports a PASS for a carol who is not project-B-only."""
+    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
+                                        outsider_m4_role="",
+                                        outsider_project_b_role="maintainer")
+    assert ok is None, "the row's literal name (carol) is still not the observer"
+    assert "project B only" in label and "C9d" in why, (label, why)
+    assert "'erin'" in why and "no row" in why, why
+    assert "org admin=False" in why, why
+    # no seeded project-B-only membership: the arms fall back to a bare IdP login
+    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
+                                        outsider_m4_role=None,
+                                        outsider_project_b_role=None)
+    assert ok is None and "the seed gap" in why, (label, why)
+    # an outsider who DOES hold an M4 row can never stand in for the row's outsider
+    label, ok, why = w9_outsider_verdict("maintainer", False, outsider="erin",
+                                        outsider_m4_role="contributor",
+                                        outsider_project_b_role="maintainer")
+    assert ok is None and "the seed gap" in why, (label, why)
+
+
 def test_snapshot_spill_guard():
     """pw_snapshot's spill path: the file is only trusted on the CLI's own notice.
     W8 pastes YAML whose header names its own source file, the snapshot echoes that
@@ -361,7 +386,7 @@ if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
-               test_w9_outsider_verdicts):
+               test_w9_outsider_verdicts, test_w9_outsider_observer_arm):
         print(f"\n{fn.__name__}")
         fn()
     bad = globals().get("BAD", 0)
