@@ -42,6 +42,7 @@ import {
   useCancelRun,
   usePauseRun,
   useResumeRun,
+  useRetryRun,
   useRun,
   useRunNode,
   useRunNodes,
@@ -348,7 +349,7 @@ export default function RunInspector() {
               </span>
             </div>
           </div>
-          <RunActions runId={runId} status={run.status} />
+          <RunActions runId={runId} status={run.status} nodes={projection.nodes} />
         </header>
 
         {revisionNotice ? (
@@ -469,12 +470,73 @@ export default function RunInspector() {
 
 /* ------------------------------------------------------------- actions */
 
-function RunActions({ runId, status }: { runId: string; status: string }) {
+/**
+ * Route 31's retriability, read off the rows the server reads. `POST
+ * /runs/{id}/retry` re-queues node executions in `failed`, `interrupted` or
+ * `cancelled` (`docs/m4-contract.md` route 31); a run whose every node came
+ * back `succeeded` or `skipped` has no target and the API answers `409
+ * run_not_retriable` (`internal/store/postgres/m4api_runs_write.go`). A
+ * **rejected gate is a business outcome, not an execution failure** (contract
+ * § 5.3, C9e): the gate row is `succeeded` with `outcome: rejected`, so the
+ * honest UI is a disabled Retry that says why — not a button that 409s.
+ */
+export type RetryVerdict = { show: boolean; available: boolean; reason: string };
+
+const RETRIABLE_NODE_STATUSES: readonly string[] = ["failed", "interrupted", "cancelled"];
+const TERMINAL_RUN_STATUSES: readonly string[] = ["completed", "failed", "cancelled"];
+
+export function retryVerdict(status: string, nodes: readonly NodeExecutionSummary[]): RetryVerdict {
+  // Only a terminal run is offered a way back: a live or paused run's next
+  // step is its own (route 31 refuses a `running` run outright).
+  if (!TERMINAL_RUN_STATUSES.includes(status)) {
+    return { show: false, available: false, reason: "" };
+  }
+  const targets = nodes.filter((n) => RETRIABLE_NODE_STATUSES.includes(n.status));
+  if (targets.length > 0) {
+    return {
+      show: true,
+      available: true,
+      reason: `Re-runs ${targets.length} ${targets.length === 1 ? "node" : "nodes"}: ${targets
+        .map((n) => n.node_instance_key)
+        .join(", ")}`,
+    };
+  }
+  const gate = nodes.find((n) => n.kind === "human.approval" && n.outcome === "rejected");
+  if (gate) {
+    return {
+      show: true,
+      available: false,
+      reason:
+        `${gate.node_instance_key} answered rejected — a rejection is a business outcome, ` +
+        "not an execution failure (M4 contract § 5.3). No node failed, was interrupted or " +
+        "cancelled, so Retry has no target; start a new run to go down another path.",
+    };
+  }
+  return {
+    show: true,
+    available: false,
+    reason:
+      "No node failed, was interrupted or cancelled, so Retry has no target " +
+      "(route 31 re-queues those states only).",
+  };
+}
+
+function RunActions({
+  runId,
+  status,
+  nodes,
+}: {
+  runId: string;
+  status: string;
+  nodes: readonly NodeExecutionSummary[];
+}) {
   const pause = usePauseRun(runId);
   const resume = useResumeRun(runId);
   const cancel = useCancelRun(runId);
+  const retry = useRetryRun(runId);
   const [conflict, setConflict] = useState<string | null>(null);
-  const terminal = ["completed", "failed", "cancelled"].includes(status);
+  const terminal = TERMINAL_RUN_STATUSES.includes(status);
+  const verdict = retryVerdict(status, nodes);
   const report = (error: unknown) => {
     const clash = runConflictOf(error);
     setConflict(clash ? `refused — the run is ${clash.run_status}` : problemOf(error).title);
@@ -485,6 +547,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
     resume.mutate(undefined, { onSuccess: () => setConflict(""), onError: report });
   const cancelRun = () =>
     cancel.mutate(undefined, { onSuccess: () => setConflict(""), onError: report });
+  const retryRun = () => retry.mutate({}, { onSuccess: () => setConflict(""), onError: report });
 
   return (
     <div className="flex items-center gap-2">
@@ -516,6 +579,22 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
       >
         Cancel
       </Button>
+      {verdict.show ? (
+        <Button
+          variant="secondary"
+          disabled={!verdict.available || retry.isPending}
+          title={verdict.reason}
+          data-testid="run-retry"
+          onClick={retryRun}
+        >
+          {retry.isPending ? "Retrying…" : "Retry"}
+        </Button>
+      ) : null}
+      {verdict.show && !verdict.available ? (
+        <p className="w-full font-mono text-[11px] text-faint" data-testid="run-retry-reason">
+          {verdict.reason}
+        </p>
+      ) : null}
       {conflict ? (
         <p className="w-full font-mono text-[11px] text-failed" data-testid="run-action-error">
           {conflict}

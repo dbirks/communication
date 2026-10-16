@@ -427,7 +427,21 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
   });
 
-  test("step 6 — take control: approve, watch the run fail, and retry it", async () => {
+  /**
+   * Step 6 retries the run at its `verify` `process.exec` node — the ONE path
+   * route 31 makes retriable here. `POST /runs/{runId}/retry` "targets
+   * failed/interrupted/cancelled node executions" (`docs/m4-contract.md:536`),
+   * and `/verify` is `failed` (exit 1, `maxAttempts: 1`, so attempt 2 can only
+   * be a human retry). A **rejected gate is not a retriable thing**: the gate
+   * row goes `succeeded` with `outcome: rejected` and dependants skip via
+   * `when` (§ 5.3 `docs/m4-contract.md:810`, C9e `:1204`; the engine refuses a
+   * named `succeeded` target in `internal/pipelines/runtime/retry.go` and the
+   * API answers `409 run_not_retriable` in
+   * `internal/store/postgres/m4api_runs_write.go`). So the run is NOT expected
+   * to come back to `waiting_human` — a rejection is final by design, and only
+   * an `approval_expired` **timeout** is an execution failure (§ 5.4 pass 2).
+   */
+  test("step 6 — take control: approve, watch the run fail, and retry the node that failed", async () => {
     await test.step("the maintainer decides the gate herself", async () => {
       // This template has no `agent.acp` node, so there is no attempt
       // conversation to take control of; the human half of control is the
@@ -478,6 +492,17 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       });
       await shot(alice, "m5-06-retried");
     });
+    await test.step("the run page offers the same way back, and it is armed", async () => {
+      // `/verify` is `failed`, so route 31 has a target and the button is live
+      // (no reason line). The rejected-gate case is the opposite arm: nothing
+      // failed, so the page says why Retry is disabled instead of 409ing.
+      await gotoApp(alice, runPath);
+      await expect(alice.getByTestId("run-retry")).toBeVisible();
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/verify/);
+      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
+      await shot(alice, "m5-06-run-page-retry");
+    });
   });
 
   test("step 7 — view the evidence: the run's journal and the attempt's own record", async () => {
@@ -514,6 +539,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   });
 
   test("a retried run whose retriable node is a gate comes back", async () => {
+    // The gate arm of the retry question, kept separate from step 6 on purpose:
+    // only a gate that FAILED (the `approval_expired` timeout, § 5.4 pass 2) is
+    // a retry target at all; a gate that answered `rejected` is `succeeded` and
+    // route 31 has nothing to re-arm (see step 6's contract note).
+    //
     // FINDING, observed while building this journey: retrying a run whose only
     // retriable node execution is a `human.approval` gate answers 500 —
     //   postgres: insert approval … (pending): duplicate key value violates
@@ -531,6 +561,17 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await expect(alice.getByTestId(`inbox-retry-error-${testidOf(runId)}`)).toHaveCount(0);
   });
 
+  /**
+   * The rejection arm, answered against the contract rather than the card:
+   * rejecting a gate is a business outcome (M4 contract § 5.3 / C9e), the run
+   * terminates per the graph's `when`, and Retry does NOT re-open the gate — it
+   * answers `409 run_not_retriable` unless some other node genuinely failed. In
+   * THIS twin `publish_plan`/`verify` carry no `when` guard, so a rejection
+   * still runs `verify`, which exits 1: the failed run is then legitimately
+   * retriable *at `/verify`*, never at `/approve`, and retrying it lands back at
+   * `failed` because the node is deterministic. "Back to waiting_human with the
+   * gate live again" is not what the spec asks for.
+   */
   test("a rejected gate fails the run, as its own card promises", async () => {
     // FINDING: `ApprovalCard` says “rejecting fails this run · version N” and
     // links the claim to `01` invariant 10, but `closeGate`
@@ -548,17 +589,15 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await expectRunStatus(alice, /failed/, DECISION_TIMEOUT_MS);
   });
 
-  test("the run page itself offers a Retry control", async () => {
-    // FINDING: `RunActions` (ui/src/pages/RunInspector.tsx) serves Pause /
-    // Resume / Cancel only — a failed run's own page has no way back, so the
-    // retry above goes through the Inbox STALLED row (`POST /runs/{id}/retry`).
-    // The journey must not silently bless that gap: kept as a standing check
-    // that the run page grows the control.
-    test.fixme(
-      true,
-      "product gap: the run inspector has no Retry control for a failed run; retry exists only on the Inbox STALLED row",
-    );
-    await alice.goto(runPath);
+  test("the run page itself offers a Retry control, and explains when it cannot", async () => {
+    // The gap is closed: `RunActions` (ui/src/pages/RunInspector.tsx) now reads
+    // route 31's own target set off `/runs/{id}/nodes` and either arms the
+    // button or disables it with the reason (`run-retry-reason`) — a rejected
+    // gate is a business outcome, so nothing failed and there is nothing to
+    // retry. Proven per-arm in `ui/src/pages/RunInspector.test.tsx`; this is the
+    // live arm for a run with a genuinely failed node.
+    await gotoApp(alice, runPath);
     await expect(alice.getByTestId("run-retry")).toBeVisible();
+    await expect(alice.getByTestId("run-retry")).toBeEnabled();
   });
 });

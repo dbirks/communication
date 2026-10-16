@@ -21,9 +21,10 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import { renderApp } from "../test/render";
-import { attentionNodeId } from "./RunInspector";
+import { attentionNodeId, retryVerdict } from "./RunInspector";
 import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
+import { viewNodeExecution } from "../api/m4view";
 import {
   WIRE_NODE_IMPLEMENT,
   WIRE_NODE_PLAN,
@@ -806,5 +807,128 @@ describe("the run header follows the stream", () => {
     await waitFor(() => {
       expect(screen.getByTestId("run-header-status").textContent).toContain("running");
     });
+  });
+});
+
+/* ------------------------------------- Retry: the run page's own way back */
+
+/**
+ * The M5 journey's run after a maintainer **rejected** its gate. The gate is
+ * `succeeded` with the business outcome `rejected` and the dependant was
+ * skipped by its `when` (docs/m4-contract.md § 5.3, C9e) — so route 31 has no
+ * target and `POST /runs/{id}/retry` answers `409 run_not_retriable`.
+ */
+const wireRejectedGateNodes: NodeExecution[] = [
+  { ...wireNodeList.node_executions[0] },
+  {
+    ...wireNodeList.node_executions[0],
+    id: WIRE_NODE_APPROVE,
+    node_id: "approve",
+    kind: "human.approval",
+    node_instance_key: "/approve",
+    status: "succeeded",
+    outcome: "rejected",
+    attempt_count: 0,
+    waiting_reason: null,
+    execution_location: "control_plane",
+  },
+  {
+    ...wireNodeList.node_executions[0],
+    id: WIRE_NODE_IMPLEMENT,
+    node_id: "publish_plan",
+    kind: "artifact.publish",
+    node_instance_key: "/publish_plan",
+    status: "skipped",
+    outcome: null,
+  },
+];
+
+/** The same pipeline approved, then its own `verify` node failed (exit 1). */
+const wireVerifyFailedNodes: NodeExecution[] = [
+  ...wireRejectedGateNodes
+    .slice(0, 2)
+    .map((n) => (n.kind === "human.approval" ? { ...n, outcome: null } : n)),
+  {
+    ...wireNodeList.node_executions[0],
+    id: WIRE_NODE_IMPLEMENT,
+    node_id: "verify",
+    kind: "process.exec",
+    node_instance_key: "/verify",
+    status: "failed",
+    outcome: null,
+    error_class: "infra",
+    attempt_count: 1,
+  },
+];
+
+const summaries = (nodes: NodeExecution[]): NodeExecutionSummary[] => nodes.map(viewNodeExecution);
+
+describe("the run page's Retry control", () => {
+  it("explains a business rejection instead of offering a Retry that would 409", async () => {
+    const { requests } = mountRun("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "completed" } },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireRejectedGateNodes } },
+    ]);
+    await screen.findByTestId("run-title");
+
+    const retry = screen.getByTestId("run-retry") as HTMLButtonElement;
+    expect(retry.disabled).toBe(true);
+    const reason = screen.getByTestId("run-retry-reason").textContent ?? "";
+    expect(reason).toContain("/approve");
+    expect(reason).toContain("rejected");
+    expect(reason).toContain("business outcome");
+    // The honest sentence, not an invented "you can retry anyway".
+    expect(reason).toContain("no target");
+    fireEvent.click(retry);
+    await waitFor(() => expect(requestsTo(requests, `${RUN_PATH}/retry`, "POST")).toHaveLength(0));
+  });
+
+  it("gives a run whose worker node failed a Retry that posts route 31", async () => {
+    const { requests } = mountRun("", [
+      {
+        path: RUN_PATH,
+        body: { ...wireRun, status: "failed", failed_cause: "node_execution_failed:/verify" },
+      },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireVerifyFailedNodes } },
+      {
+        path: `${RUN_PATH}/retry`,
+        method: "POST",
+        body: { ...wireRun, status: "queued", failed_cause: null },
+      },
+    ]);
+    await screen.findByTestId("run-title");
+
+    const retry = screen.getByTestId("run-retry") as HTMLButtonElement;
+    expect(retry.disabled).toBe(false);
+    expect(retry.getAttribute("title")).toContain("/verify");
+    expect(screen.queryByTestId("run-retry-reason")).toBeNull();
+    fireEvent.click(retry);
+    await waitFor(() => expect(requestsTo(requests, `${RUN_PATH}/retry`, "POST")).toHaveLength(1));
+  });
+
+  it("says nothing about Retry while the run is still working", async () => {
+    mountRun("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "waiting_human" } },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+    ]);
+    await screen.findByTestId("run-title");
+    expect(screen.queryByTestId("run-retry")).toBeNull();
+  });
+
+  it("retryVerdict reads the same rows route 31 reads", () => {
+    expect(retryVerdict("completed", summaries(wireRejectedGateNodes))).toMatchObject({
+      show: true,
+      available: false,
+    });
+    expect(retryVerdict("failed", summaries(wireVerifyFailedNodes))).toMatchObject({
+      show: true,
+      available: true,
+    });
+    // A run that merely finished with no gate answered has no target either.
+    expect(retryVerdict("completed", [summaries(wireNodeList.node_executions)[0]])).toMatchObject({
+      show: true,
+      available: false,
+    });
+    expect(retryVerdict("running", summaries(wireVerifyFailedNodes)).show).toBe(false);
   });
 });
