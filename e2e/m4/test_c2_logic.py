@@ -7,10 +7,11 @@ Runs WITHOUT a stack (stdlib unittest only): the /proc scan parser, THE central
 (an unreadable place GAPs, it never counts as a clean zero), the
 lifecycle=node_attempt + attempt_id + cleaned-by-the-worker rule, and the
 attempt-owns-its-conversation_turns rule that leaves M3's human turns alone.
-And the hold wiring live4 proved missing: C2 posts `hold_seconds` and aims its
-live wait at the held /build_until_verified[1]/implement behind the gate, so
-§ 7.1 C2a's "during the implement attempt" window exists to be read at all
-(test_hold_logic.py's "only the fault legs hold" list predates C2 joining them).
+And the authorization wiring live14 proved missing: C2 posts the AGENT variant
+(the only profile-bearing, materialization-authorizable attempt) and aims its
+live wait at the post-gate implement node, so § 7.1 C2a's "during the implement
+attempt" window exists to be read at all (test_hold_logic.py's "only the fault
+legs hold" list never named C2, and C2 no longer holds on the twin).
 
 A green here means the VERDICT ALGEBRA is right. It never substitutes for C2's
 live read of /proc/<pid>/environ inside a running worker
@@ -224,9 +225,11 @@ class SqlTest(unittest.TestCase):
 
 
 class HoldWiringTest(unittest.TestCase):
-    """C2 posts the twin's hold (C2a is a read DURING the attempt; the shipped twin's
-    implement step is a printf — live4/C2.out:63, rows C2a/C2b/C2d of
-    docs/m4-exit-status.md) and aims its live wait at the post-gate implement node."""
+    """C2 posts the AGENT variant (C2a is a read DURING an AUTHORIZED attempt;
+    authorization is keyed on the agent profile per ADR-0018 D3, and a twin
+    process.exec holds none — live14/C2.out GAPped "no attempt was authorized to
+    hold DATABASE_URL" with hold_seconds proven working), and aims its live wait
+    at the post-gate implement node."""
 
     def driver_body(self):
         import ast
@@ -237,13 +240,28 @@ class HoldWiringTest(unittest.TestCase):
                     if isinstance(n, ast.FunctionDef) and n.name == "c2")
         return ast.get_source_segment(src, node)
 
-    def test_c2_posts_the_fault_legs_hold_within_the_schema_maximum(self):
-        self.assertEqual(m.C2_HOLD_SECONDS, m.C_FAULT_HOLD_SECONDS)
-        self.assertLessEqual(m.C2_HOLD_SECONDS, 600)
-        self.assertIn("hold_seconds=C2_HOLD_SECONDS", self.driver_body(),
-                      "c2() must post its twin run with the hold or C2a has no window")
-        self.assertIn("require_fault_hold(", self.driver_body(),
-                      "c2() owes the up-front fixture precondition like every leg that holds")
+    def test_c2_posts_the_agent_variant_the_allowlist_can_authorize(self):
+        body = self.driver_body()
+        self.assertIn('mvariant(facts, "agent")', body,
+                      "c2() must post the agent revision: its /implement is agent.acp "
+                      "under profile m4-implementer, the only attempt ADR-0018 D3's "
+                      "profile-keyed allowlist can ever authorize (internal/secrets/"
+                      "resolver.go denies AgentProfileID == \"\"; internal/worker/"
+                      "procexec.go never asks for a mount for a profile-less attempt — "
+                      "live14/C2.out: no materialization row lands for a twin attempt "
+                      "no matter what is posted)")
+        self.assertIn("post_c1_run(alice, ag,", body)
+        self.assertNotIn("hold_seconds=C2_", body,
+                         "the agent variant declares no hold_seconds — the model's own "
+                         "turn is the hold (C1's agent leg and C4e post it the same way)")
+        self.assertNotIn("require_fault_hold(", body,
+                         "that precondition belongs to legs that POST hold_seconds on "
+                         "the twin, not to C2's agent arm")
+        self.assertEqual(m.C2_RUN_CAP_S, 1800,
+                         "§ 7.1 C1c: the agent leg polls to terminal with a 30 min cap")
+        self.assertGreaterEqual(m.C2_LIVE_WINDOW_S, 900,
+                                "a real /plan turn and the gate precede the live "
+                                "/implement attempt")
 
     def test_c2_aims_the_live_wait_at_the_held_post_gate_implement(self):
         body = self.driver_body()
@@ -306,7 +324,19 @@ class HoldWiringTest(unittest.TestCase):
         self.assertIsNone(m.c2_hold_proof_verdicts(45, None, "unreadable")[0][1],
                           "an unreadable ledger GAPs, it never passes by inference")
         self.assertIsNone(m.c2_hold_proof_verdicts(0, 30, "honours")[0][1],
-                          "a leg that posted no hold has no window to prove")
+                          "a twin leg that posted no hold has no window to prove")
+
+    def test_the_agent_arm_grades_the_model_turn_as_the_hold(self):
+        """C2's authorized variant posts NO hold_seconds (the agent revision declares
+        none): the verdict grades the observed held stretch, and the mounted twin
+        fixture — which the agent arm never runs for plan/implement — is irrelevant."""
+        v = m.c2_hold_proof_verdicts(0, 120, "stale", agent=True)
+        self.assertTrue(v[0][1], v)
+        self.assertIn("model's turn is the hold", v[0][0])
+        self.assertFalse(m.c2_hold_proof_verdicts(0, 1, "honours", agent=True)[0][1],
+                         "a turn that closed inside the floor was not a window")
+        self.assertIsNone(m.c2_hold_proof_verdicts(0, None, "unreadable", agent=True)[0][1],
+                          "an unreadable ledger GAPs the agent window too")
 
     def test_held_shorter_than_posted_is_still_a_window_worth_reading(self):
         """The floor is the leg's own (<1s printf vs a real hold), not the full 45s —"""

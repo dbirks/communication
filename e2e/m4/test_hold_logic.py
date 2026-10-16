@@ -108,13 +108,23 @@ class FaultLegRunBodyTest(unittest.TestCase):
     """Which legs post the hold — read off the driver's own call sites."""
 
     def test_the_fault_legs_post_the_hold(self):
-        # c2 holds too: C2a reads the live process environment DURING the attempt
-        # (docs/m4-contract.md § 7.1), which a <1s printf step never allows.
-        for fn, poster in (("c2", "post_c1_run"), ("c4", "post_c1_run"),
-                           ("c5", "post_c1_run"), ("c6", "c7_post_run")):
+        # C2 is NOT in this list any more: C2a reads the live process environment
+        # DURING an AUTHORIZED attempt, and authorization is keyed on the agent
+        # profile (ADR-0018 D3 / internal/secrets/resolver.go) — a twin
+        # process.exec holds no profile, so no hold_seconds can make one
+        # materialize (live14/C2.out). C2 posts the agent variant, whose model
+        # turn is the window; C4/C5/C6 still hold the twin.
+        for fn, poster in (("c4", "post_c1_run"), ("c5", "post_c1_run"),
+                           ("c6", "c7_post_run")):
             self.assertTrue(posts_with_hold(fn, poster),
                             f"{fn} must post {poster} with hold_seconds (live6: its "
                             "fault landed on an attempt that had already succeeded)")
+
+    def test_c2_posts_the_agent_variant_without_the_hold(self):
+        self.assertFalse(posts_with_hold("c2", "post_c1_run"),
+                         "the agent revision declares no hold_seconds — posting it "
+                         "would fail run-input validation on that revision")
+        self.assertFalse(posts_with_hold("c2", "c7_post_run"))
 
     def test_the_hold_is_the_agreed_45_seconds(self):
         self.assertEqual(m.C_FAULT_HOLD_SECONDS, 45)

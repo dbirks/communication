@@ -1749,18 +1749,28 @@ C2_PROC_RE = re.compile(r"^PROC\|(\d+)\|([0-9a-f]{64})\|(.*)$")
 #        agent asked to print the environment produces a tool output with no sentinel
 #        (C2c re-run stays 0).
 # C2a is a read INSIDE a window and C2b is the read after it. The shipped twin's
-# implement step is a printf that closes in <1s, so pass 4 saw no worker-held attempt at
-# all and C2a GAPped "no /implement attempt was ever held by a worker within the poll
-# window (run status='completed')" (live4/C2.out:63, rows C2a/C2b/C2d of
-# docs/m4-exit-status.md); C2b's unmount and C2d's reviewer read ride on that attempt too.
-# C2 therefore posts `hold_seconds` like C4/C5/C6 do (cefe995), and reads the live process
-# environment inside the held attempt — the value never printed, only its sha256.
+# implement step is a printf that closes in <1s (live4/C2.out:63); 87b8f08 ran the
+# twin with hold_seconds instead, and live14/C2.out hit the real wall: "no attempt
+# was authorized to hold DATABASE_URL on this run". No twin attempt ever can be:
+# ADR-0018 D3's allowlist axis is the agent-profile id (internal/secrets/resolver.go
+# denies AgentProfileID == "" for every mount), and the twin's /implement is a
+# process.exec, which holds no profile — internal/worker/procexec.go's
+# materializeSecrets never asks for a mount for a profile-less attempt. A twin-only
+# run therefore produces no materialization row because of the lab's variant choice,
+# not the engine's delivery. § 7.1's C2 arms are written over an agent-side attempt
+# throughout ($AGENT_PID's environ, the m4-implementer allowlist, C2d's "agent asked
+# to print the environment", and the attempt/turn split, which has no population
+# without agent.acp attempts). C2 therefore posts the AGENT variant the way C1's
+# agent leg and C4e post it: /implement runs as agent.acp under profile
+# m4-implementer — § 7.0's own allowlist name — and the model's own turn is the
+# hold (the agent variant declares no hold_seconds and must not be posted one).
+# The value is never printed, only its sha256.
 #
-# 45s = the fault legs' number: C2's live reads are one ledger poll plus two execs (a
-# materialization read and a /proc scan), each a couple of seconds, so the hold outlasts
-# them by an order of magnitude — and reusing the constant keeps hold_window()'s cover
-# (45s x steps + the lease window) honest for every wait below.
-C2_HOLD_SECONDS = C_FAULT_HOLD_SECONDS
+# 900s = C4e's number: a real /plan turn and the gate's decision precede the live
+# /implement attempt; § 7.1 C1c gives the agent leg 30 minutes to reach terminal.
+C2_LIVE_WINDOW_S = 900
+C2_ATTEMPT_CLOSE_S = 1200                  # the body's agent.acp nodes run at 900s timeouts
+C2_RUN_CAP_S = 1800                        # § 7.1 C1c: agent legs poll to terminal, cap 30 min
 # The node C2a reads a live environment INSIDE. /plan is held too, but it is held BEFORE
 # /approve, so the gate is decided first and the wait is aimed here — the same lesson
 # live8/C6.out taught the kill legs (C_LIVE_TARGET_KEY, defined with them below).
@@ -1974,14 +1984,34 @@ def c2_attempt_is_live(status):
     return str(status or "").strip().lower() in C2_LIVE_STATUSES
 
 
-def c2_hold_proof_verdicts(posted, held_s, fixture_state, floor_s=C2_HOLD_PROVEN_S):
-    """Grade the hold C2 POSTED before any of its window claims are worth reading:
-    the ledger must show an attempt a worker held for more than the <1s a printf step
-    answers (`held_s` is the longest worker-held stretch on the run), and the mounted
-    fixture must be able to honour the input at all. `hold_diagnosis` is appended
-    whenever the reads contradict the leg, so a lab artefact names itself instead of
-    wearing a product gap. Unreadable ledger -> GAP, never a PASS by inference. Pure."""
+def c2_hold_proof_verdicts(posted, held_s, fixture_state, floor_s=C2_HOLD_PROVEN_S,
+                           agent=False):
+    """Grade the hold C2's window rests on before any of its window claims are worth
+    reading: the ledger must show an attempt a worker held for more than the <1s a
+    printf step answers (`held_s` is the longest worker-held stretch on the run), and
+    the mounted fixture must be able to honour the input at all. `hold_diagnosis` is
+    appended whenever the reads contradict the leg, so a lab artefact names itself
+    instead of wearing a product gap. Unreadable ledger -> GAP, never a PASS by
+    inference. Pure.
+
+    agent=True is the agent arm (C2's authorized variant): there is no hold_seconds
+    to post (the agent revision declares none, and a profile-less process.exec can
+    never be authorized anyway), so the model's own turn IS the hold and the verdict
+    grades the observed held stretch against the floor alone — the mounted twin
+    fixture has nothing to do with it."""
     want = _int(posted)
+    if agent:
+        floor = _int(floor_s)
+        held_txt = "unreadable" if held_s is None else f"{_int(held_s)}s"
+        ok = None if held_s is None else _int(held_s) >= floor
+        return [(f"C2a the agent arm's window was long enough to read inside the "
+                 f"attempt — the model's turn is the hold (>= {floor}s; the agent "
+                 "variant declares no hold_seconds and a profile-less process.exec "
+                 "could not be authorized for one anyway)",
+                 ok, f"longest worker-held attempt observed {held_txt} on the run's "
+                 "ledger — a real agent.acp turn, not a held printf" 
+                 + ("" if ok is not None else ": the attempt ledger did not read, so "
+                    "the window cannot be confirmed"))]
     if not want:
         return [("C2a the hold this leg posted took effect", None,
                  "the run was posted with no hold_seconds, so the twin ran at shipped "
@@ -2168,12 +2198,16 @@ def c2_git_mirror_grep(svc, mirror_path, needle=SENTINEL):
 
 def c2():
     """C2 - the unit of work is the attempt, not the turn (01 invariant 5 + ADR-0018).
-    The twin's run posts hold_seconds=C2_HOLD_SECONDS (45, the fault legs' value) and the
-    live wait goes through wait_live_past_gate(target=C2_LIVE_TARGET_KEY), so the read
-    below lands INSIDE § 7.1 C2a's "during the implement attempt" window at
-    /build_until_verified[1]/implement instead of after a printf step that closed in <1s
-    (live4/C2.out:63). require_fault_hold says up front whether the mounted fixture can
-    honour the hold and fault_hold_evidence/hold_diagnosis grade it afterwards — a lab
+    The gate is decided (C1b's route) and the live wait is aimed at
+    /build_until_verified[1]/implement, C2a's "during the implement attempt" node.
+    The run posted is the AGENT variant, not the twin: materialization authorization
+    is keyed on the agent profile (ADR-0018 D3), a process.exec attempt holds none
+    (internal/worker/procexec.go's materializeSecrets), and live14/C2.out GAPped
+    exactly there — "no attempt was authorized to hold DATABASE_URL on this run".
+    The agent variant's /implement is agent.acp under profile m4-implementer (§ 7.0's
+    allowlist name) and the model's own turn holds the attempt open — the way C1's
+    agent leg and C4e post it; hold_seconds is not declared in that revision and
+    fault_hold_evidence/hold_diagnosis still grade the window afterwards, so a lab
     artefact never gets reported as a product gap.
     Acceptance: during the implement attempt the sentinel sits in EXACTLY ONE live
     process environment (/proc/<pid>/environ of the child the attempt launched, read
@@ -2197,12 +2231,14 @@ def c2():
                   "below the moment a manifest exists)")
         return
     CTX["manifest"] = facts
-    tw = mvariant(facts, "twin")
-    if not isinstance(tw, dict) or not tw.get("revision_id"):
-        gap("C2", "the seed manifest carries no twin variant to run (the deterministic twin "
-                  "is the only variant whose implement attempt can be held open by "
-                  "hold_seconds to read a live /proc inside; the agent variant needs a "
-                  "working claude ACP launcher in the image)")
+    ag = mvariant(facts, "agent")
+    if not isinstance(ag, dict) or not ag.get("revision_id"):
+        gap("C2", "the seed manifest carries no agent variant to run (the agent variant is "
+                  "the only revision whose /implement is agent.acp under profile "
+                  "m4-implementer — the § 7.0 allowlist's own name, and the only attempt "
+                  "materialization authorization can ever reach: a twin process.exec holds "
+                  "no profile and is denied every mount by ADR-0018 D3; it needs a working "
+                  "claude ACP launcher in the image)")
         return
     # Precondition: the section 7.0 mount really is env/DATABASE_URL/node_attempt.
     try:
@@ -2241,10 +2277,11 @@ def c2():
     # "during the implement attempt", and a fixture left from before the hold honours
     # nothing — the leg says so BEFORE spending its window instead of after 300s of
     # polling a run whose every step closed in under a second (live4/C2.out:63).
-    if not require_fault_hold("C2a", expected=C2_HOLD_SECONDS):
-        return
-    run_id = post_c1_run(alice, tw, f"m4x-c2-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
-                         "c2", hold_seconds=C2_HOLD_SECONDS)
+    # No require_fault_hold here on purpose: that precondition belongs to legs that
+    # POST hold_seconds on the twin. C2 posts the agent variant, which declares no
+    # hold_seconds at all — the model's turn is the window.
+    run_id = post_c1_run(alice, ag, f"m4x-c2-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
+                         "c2")
     if not run_id:
         return
     CTX["c2_run"] = run_id
@@ -2253,13 +2290,13 @@ def c2():
     # BEFORE /approve, so a picker that takes whatever is live reads the environment of the
     # wrong attempt — the lesson live8/C6.out taught the kill legs.
     live = c2_live_from_claim(wait_live_past_gate(
-        alice, mf(tw, "project_id"), run_id, hold_window(300), "C2a",
+        alice, mf(ag, "project_id"), run_id, hold_window(C2_LIVE_WINDOW_S), "C2a",
         target=C2_LIVE_TARGET_KEY))
     if live is None:
         dump_run_evidence(alice, run_id)
         kind, label, detail = c2_no_live_attempt_verdict(
             run_status(run_id),
-            fault_hold_evidence(alice, run_id, "C2a", expected=C2_HOLD_SECONDS))
+            fault_hold_evidence(alice, run_id, "C2a", expected=0))
         if kind == "check":
             check(label, False, detail)
         else:
@@ -2285,11 +2322,11 @@ def c2():
         # whose environment can be hashed, and scanning now would read the attempt AFTER
         # its own boundary — C2b's question, not C2a's.
         dump_run_evidence(alice, run_id)
-        why = fault_hold_evidence(alice, run_id, "C2a", expected=C2_HOLD_SECONDS)
+        why = fault_hold_evidence(alice, run_id, "C2a", expected=0)
         gap("C2a the held attempt was still live when the environment was read",
             f"attempt {str(live['id'])[:8]} on {live['key']} had already closed "
-            f"({held_now}) between the claim poll and the exec — the hold_seconds="
-            f"{C2_HOLD_SECONDS} window had run out, so there is no live process environment "
+            f"({held_now}) between the claim poll and the exec — the agent turn ended "
+            "before the /proc read landed, so there is no live process environment "
             "to localize" + (f"; {why}" if why else ""))
         return
     mat_live = c2_mat_rows(live["id"])
@@ -2309,7 +2346,7 @@ def c2():
 
     # C2b - cross the node boundary: the unit ends with the attempt, so the
     # materialization must be cleaned by the worker before anything else happens.
-    terminal, deadline = "", time.time() + hold_window(600)
+    terminal, deadline = "", time.time() + hold_window(C2_ATTEMPT_CLOSE_S)
     while time.time() < deadline:
         terminal = c2_attempt_state(live["id"])
         if terminal in ("succeeded", "failed", "cancelled", "interrupted"):
@@ -2324,22 +2361,26 @@ def c2():
                                         want_lifecycle="node_attempt",
                                         terminal=terminal in ("succeeded", "failed",
                                                               "cancelled", "interrupted")))
-    # Was the window C2a read a window at all? The hold this leg POSTED has to show up as
-    # an attempt a worker actually held: an unhurried printf answers 0s, and every
-    # "exactly one place" / "nowhere durable" read above would then be a read of nothing
-    # (live4/C2.out:63). Graded here, where the boundary makes the ledger answer.
-    c2_emit(c2_hold_proof_verdicts(C2_HOLD_SECONDS, held_attempt_window_s(run_id),
-                                   fixture_hold_state()))
+    # Was the window C2a read a window at all? The agent turn that holds the attempt
+    # has to show up as a held stretch on the ledger: an unhurried printf answers 0s,
+    # and every "exactly one place" / "nowhere durable" read above would then be a
+    # read of nothing (live4/C2.out:63). Graded here, where the boundary makes the
+    # ledger answer — agent arm: the turn is the hold, nothing was posted.
+    c2_emit(c2_hold_proof_verdicts(0, held_attempt_window_s(run_id),
+                                   fixture_hold_state(), agent=True))
 
     # C2c sweeps DURABLE surfaces and C2d reads the reviewer's stored prompt — both are
-    # claims about the finished run. With hold_seconds posted the twin still has its
-    # test/review steps and iteration 2 to spend after the implement boundary, and
-    # /publish_evidence's artifacts are a swept place, so sweeping a live run would grade
-    # silence as cleanliness. Wait for the terminal state first.
-    terminal_run, _watch = watch_run(alice, tw, run_id, hold_window(900), "c2")
+    # claims about the finished run. The agent variant still has its test/review nodes
+    # and iteration 2 to spend after the implement boundary, and the publish node's
+    # artifacts are a swept place, so sweeping a live run would grade
+    # silence as cleanliness. Wait for the terminal state first (§ 7.1 C1c: 30 min cap
+    # for the agent leg; allow_unattended mirrors C1's agent arm).
+    terminal_run, _watch = watch_run(alice, ag, run_id, C2_RUN_CAP_S, "c2",
+                                      allow_unattended=True)
     if terminal_run != "completed":
         gap("C2c the durable sweep covers a completed run",
-            f"run {run_id} did not read status='completed' inside the hold window (last "
+            f"run {run_id} did not read status='completed' inside the § 7.1 C1c agent "
+            f"cap (last "
             f"read {run_status(run_id)!r}) — the sweep and the reviewer read below still "
             "ran, but a surface this run never wrote is absence, not proof")
 
@@ -2420,8 +2461,10 @@ def c2():
     c2_emit(c2_turn_ownership_verdicts(turns, human))
     if not turns:
         gap("C2d the agent leg ('print your environment' produces no sentinel in any tool "
-            "output)", "this run's variant is the deterministic twin - an agent.acp attempt "
-                       "needs the claude ACP launcher plus a model in the worker image; the "
+            "output)", "this run joined no attempt to a conversation_turns row - the agent "
+                       "variant's agent.acp attempts need the claude ACP launcher plus a "
+                       "model in the worker image, and a run that never leased one leaves "
+                       "nothing to print its environment; the "
                        "journal/transcript half of the claim (zero sentinel in every "
                        "conversation.* row) is asserted by the database sweep above")
     CTX["c2"] = {"run_id": run_id, "attempt_id": live["id"], "key": live["key"],
@@ -13706,6 +13749,122 @@ def w6_retry_control_verdict(controls, dom, auto_retried=None):
                           "'not retriable' control and the page hands out a live one")
 
 
+# --- W6's sequencing: WHO armed the retry that loses the workspace ------------
+# live13/W6.out ended in a GAP whose own text named the class: the leg killed the
+# owning worker, drained it, pointed the run at worker-c and then POSTED
+# /runs/{id}/retry — which answered `409 {"title":"Run Not Retriable","detail":"a
+# running run is not retriable..."}` while the ledger ALREADY read
+# `[('1','interrupted','interrupted'),('2','failed','infra')]`: with the twin's
+# attempt_limit 2 the ENGINE had armed attempt 2 the moment the reconciler wrote
+# interrupted (§ 7.1 C5b's "run row is still running (retry armed)"), so the manual
+# POST could only ever hit the run-status door. a06bd6a fixed C5e/C6 the same way:
+# MEASURE the automatic retry instead of racing it. W6 therefore arms NO retry of
+# its own — it drains the owning worker and flips the affinity WHILE attempt 2 is
+# still scheduled-but-unclaimed, so the engine's own attempt lands on the volume
+# that cannot see the tree, and the refusal the workspace is forced to write is what
+# the leg grades. When that refusal carries another class the row's copy has nothing
+# to render, and the line says so (a FAIL naming the ledger), never a silent GAP.
+
+def w6_who_armed_the_retry(sched, rows, worker=""):
+    """(label, ok, detail) — did the ENGINE arm the attempt that met the loss? Pure
+    over the two reads the leg has: the run's node.attempt.retry_scheduled count and
+    the killed node's attempt rows. ok=True needs a scheduled event AND an attempt
+    numbered above 1 claimed by `worker` (the throwaway, when the leg names one); an
+    attempt that nobody claimed yet is a False — the affinity flip lost the race."""
+    seen = [(r.get("attempt_number"), r.get("status"), r.get("error_class"),
+             r.get("worker")) for r in (rows or [])]
+    landed = [r for r in (rows or []) if (_int(r.get("attempt_number")) or 0) > 1
+              and str(r.get("worker") or "") not in ("", "-")]
+    n = _int(sched)
+    if not landed:
+        return [("W6 the ENGINE armed the retry the leg measures (node.attempt."
+                 "retry_scheduled -> attempt 2 claimed on another worker) — § 7.1 C5b's "
+                 "'running (retry armed)", None if not n else False,
+                 f"retry_scheduled rows={n} attempts={seen} — the leg posts NO manual "
+                 "retry (a 409 run-not-retriable on a still-running run is the engine "
+                 "mid-retry, not a product refusal), so an attempt nobody claimed means "
+                 "the affinity flip never landed before the claim")]
+    want = str(worker or "")
+    if want and not any(str(r.get("worker") or "") == want for r in landed):
+        return [("W6 the ENGINE armed the retry the leg measures (node.attempt."
+                 "retry_scheduled -> attempt 2 claimed on another worker)", False,
+                 f"attempt 2 was claimed by {landed[-1].get('worker')!r}, not the "
+                 f"throwaway {want!r} ({seen}) — the loss is on the volume the run "
+                 "already lived on, so the cross-volume arm has no subject")]
+    return [("W6 the ENGINE armed the retry the leg measures (node.attempt."
+             "retry_scheduled -> attempt 2 claimed on another worker)", n > 0,
+             f"retry_scheduled rows={n} attempts={seen} — W6 graded the engine's own "
+             "attempt 2, never a retry it posted itself")]
+
+
+def w6_auto_retry_class_verdicts(sched, rows, base=1, error_class=W6_ERROR_CLASS):
+    """'no auto-retry is offered' read off the LEDGER (M3 W8's rule as ADR-0023 § 7's "
+    "own words): the engine scheduled NO retry whose payload class is the loss class, "
+    "and no attempt was queued above the one that carried it. The engine's PRE-loss "
+    "attempt-1->2 scheduling is § 7.1 C5b's expected auto-retry and is not a violation "
+    "(the caller counts ONLY the rows that carry the loss class). None (GAP) when the "
+    "ledger answered neither read."""
+    attempts = [r for r in (rows or []) if (_int(r.get("attempt_number")) or 0) > _int(base)]
+    if sched is None:
+        return [("W6 the engine scheduled NO automatic retry for the lost workspace "
+                 f"(node.attempt.retry_scheduled rows carrying error_class={error_class!r} "
+                 "= 0, ADR-0023 § 7)", None,
+                 "the retry_scheduled read did not land — an unreadable journal proves "
+                 "nothing about what the engine scheduled")] if not attempts else [
+                ("W6 the engine scheduled NO automatic retry for the lost workspace "
+                 f"(node.attempt.retry_scheduled rows carrying error_class={error_class!r} "
+                 "= 0, ADR-0023 § 7)", False,
+                 f"attempt(s) above the loss exist: {[r.get('attempt_number') for r in attempts]} "
+                 "while the retry_scheduled read did not land — a queued retry above the "
+                 "loss is an auto-retry whoever armed it")]
+    if attempts:
+        return [("W6 the engine scheduled NO automatic retry for the lost workspace "
+                 f"(node.attempt.retry_scheduled rows carrying error_class={error_class!r} "
+                 "= 0, ADR-0023 § 7)", False,
+                 f"attempts above {base} exist: {[(r.get('attempt_number'), r.get('status')) for r in attempts]} "
+                 f"(retry_scheduled loss rows={_int(sched)}) — § 7.2 W6 forbids an auto-retry "
+                 "after a lost workspace")]
+    return [("W6 the engine scheduled NO automatic retry for the lost workspace "
+             f"(node.attempt.retry_scheduled rows carrying error_class={error_class!r} "
+             "= 0, ADR-0023 § 7)", _int(sched) == 0,
+             f"retry_scheduled loss rows={_int(sched)}, no attempt above {base} "
+             f"(rows={[(r.get('attempt_number'), r.get('status')) for r in (rows or [])]})")]
+
+
+def w6_loss_classification_verdicts(lost, ev, run_row, loss_copy=W6_LOSS_COPY,
+                                    error_class=W6_ERROR_CLASS):
+    """§ 7.2 W6's assertion list, quoted from the ledger's OWN facts. The page arms "
+    "(w6_loss_copy_verdict / w6_chip_verdict) can only be honest once the product has "
+    "classified the loss: `AttemptDetail.tsx` draws 'prior edits lost, rerun required' "
+    "behind `attempt.error_class === \"workspace_lost\"`, so a refusal the ledger "
+    "classed infra has no copy to render and the FAIL belongs to the classification, "
+    "not to the UI. GAP (None) only when the loss itself never landed — with a refusal "
+    "row in hand a missing class is a FAIL, exactly as the row reads."""
+    if not lost:
+        return [("W6 the workspace the other worker could not see was classified as a "
+                 f"loss (error_class='{error_class}')", None,
+                 "no refusal attempt was produced, so there is no classification to read")]
+    cls, det = str(lost.get("error_class") or ""), str(lost.get("detail") or "")
+    low = det.lower()
+    v = [("W6 the workspace the other worker could not see was classified as a loss "
+          f"(error_class='{error_class}')", cls == error_class,
+          f"attempt {lost.get('attempt_number')} on worker {lost.get('worker')!r} "
+          f"error_class={cls!r} detail={det[:180]!r} — § 7.2 W6's chip and its "
+          f"{list(loss_copy)!r} copy are BOTH drawn from this one field "
+          "(ui/src/components/m4/AttemptDetail.tsx), so an infra classification is the "
+          "product not classifying the loss, and no page wording can substitute")]
+    v.append(("W6 the workspace could not be recovered on the worker that took the "
+              "retry (workspace.recovery_lost is journalled)", bool(ev),
+              f"event={json.dumps(ev) if ev else '(none)'} run_row={run_row!r} — the "
+              "event is the fact the run page's loss story is supposed to describe"))
+    v.append((f"W6 the refusal tells the operator {list(loss_copy)!r} "
+              "(M3 W8's rule, unchanged wording)",
+              all(c.lower() in low for c in loss_copy),
+              f"detail={det[:220]!r} — the attempt's own text is what the operator "
+              "reads when the workspace is gone"))
+    return v
+
+
 # --- W5/W6 live helpers -------------------------------------------------------
 
 
@@ -14102,6 +14261,53 @@ def w6_auto_retried(run_id, error_class=W6_ERROR_CLASS):
     except RuntimeError as e:
         show("W6 the run's retry_scheduled rows (psql)", str(e)[:200])
         return None
+
+
+def w6_retry_scheduled_total(run_id):
+    """EVERY `node.attempt.retry_scheduled` row of the run — the engine's own
+    bookkeeping, read apart from the loss-class count in w6_auto_retried(). § 7.1
+    C5b's 'run row is still running (retry armed)' means this count is expected to
+    be > 0 BEFORE the loss (it is the attempt that meets the loss); what § 7.2 W6
+    forbids is a retry scheduled FOR the loss. None when the ledger will not
+    answer, which the verdicts read as a GAP, never as a zero."""
+    try:
+        return count_or_none(psql(
+            f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' AND "
+            f"type = 'node.attempt.retry_scheduled'").strip())
+    except RuntimeError as e:
+        show("W6 the run's retry_scheduled rows (psql)", str(e)[:200])
+        return None
+
+
+def w6_loss_facts(project_id, loss):
+    """The ledger half of a loss subject, filled in the SAME shape whatever produced
+    it (a row this lab already recorded, or this pass's kill): the node's attempt
+    rows, the engine's two retry_scheduled counts, the workspace.recovery_lost event
+    and the run row. It reads; it decides nothing."""
+    run_id, key = loss.get("run_id") or "", loss.get("key") or ""
+    out = dict(loss, rows=[], sched_total=None, sched_loss=None, event=None,
+               run_row="")
+    if not run_id:
+        return out
+    out["rows"] = c6_attempts_of_key(run_id, key) if key else []
+    out["sched_total"] = w6_retry_scheduled_total(run_id)
+    out["sched_loss"] = w6_auto_retried(run_id)
+    out["event"] = c6_recovery_event(project_id, run_id)
+    try:
+        rr = psql_rows(psql(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
+                            f"WHERE id = '{run_id}'"), 2)
+    except RuntimeError as e:
+        show("W6 the loss run's row (psql)", str(e)[:200])
+        rr = []
+    out["run_row"] = rr[0][0] if rr else ""
+    shown = [(r.get("attempt_number"), r.get("status"), r.get("error_class"),
+              r.get("worker")) for r in out["rows"]]
+    show(f"W6 what the ledger holds for the loss run {run_id}",
+         f"attempts={shown} retry_scheduled(all)={out['sched_total']!r} "
+         f"retry_scheduled({W6_ERROR_CLASS})={out['sched_loss']!r} "
+         f"recovery_lost={json.dumps(out['event']) if out['event'] else '(none)'} "
+         f"run row={out['run_row'] or '(unreadable)'!r}")
+    return out
 
 
 def w6_control_state(controls, session="m4w6"):
