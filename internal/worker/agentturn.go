@@ -440,13 +440,9 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		}
 	}
 
-	var auth []string
-	if a.LauncherAuth != nil {
-		dirs, err := a.LauncherAuth(prof.LauncherID)
-		if err != nil {
-			return failedResult(ErrorClassInfra, "resolve launcher credential directories: "+a.redact(err.Error())), nil
-		}
-		auth = dirs
+	credDirs, auth, err := a.credentialAuth(launcher)
+	if err != nil {
+		return failedResult(ErrorClassInfra, "resolve launcher credential directories: "+a.redact(err.Error())), nil
 	}
 	required := a.enforcement() == domain.EnforceRequired
 	adapterEnv, err := acp.LaunchEnv(acp.EnvRequest{
@@ -486,6 +482,16 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		AgentHome:     homeDir,
 		Cwd:           layout.Repos,
 		CommitGranted: prof.CommitGranted,
+	}
+	// M3's credential grant in the attempt shape (ADR-0019 D4): the launcher's
+	// declared credential directories join the grant set under the
+	// harness_credentials role — the same role, and the same access, the
+	// conversation path already grants. Without it the sandbox cannot read
+	// the credential tree and the adapter aborts with "Authentication
+	// required" (launchplan.go's C-FC3 rule means a missing path here is a
+	// refusal, never a silent drop: credentialAuth checked existence).
+	for _, dir := range credDirs {
+		plan.Grants = append(plan.Grants, wsgit.Grant{Role: wsgit.RoleHarnessAuth, Path: dir})
 	}
 	if err := plan.Check(); err != nil {
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
@@ -1252,6 +1258,40 @@ func (t *agentText) text() string {
 
 // nonoLauncherEnv is nono's own environment, never the agent's and never
 // os.Environ() (probe C-H1; unit.go's and procexec.go's same construction).
+// credentialAuth is unit.go's credentialDirs/credentialEnv pair in the
+// attempt shape: it resolves the launcher's declared credential directories
+// and renders the NAME=value entries LaunchEnv's Auth field consumes.
+// The distinction is the bug this closes: EnvRequest.Auth takes "NAME=value"
+// pairs, and a bare directory path is dropped silently by its collision
+// builder — the adapter then launches with no CLAUDE_CONFIG_DIR and aborts
+// with "Authentication required". Existence is verified before the launch
+// (probe C-FC3's silent-drop class), exactly as the conversation path does.
+func (a *AgentTurn) credentialAuth(launcher acp.Launcher) (dirs []string, authEnv []string, err error) {
+	if a.LauncherAuth == nil {
+		return nil, nil, nil
+	}
+	dirs, err = a.LauncherAuth(launcher.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	byDir := map[string]string{}
+	for _, kv := range acp.AuthEnvFromOS(launcher) {
+		name, value, _ := strings.Cut(kv, "=")
+		byDir[value] = name
+	}
+	for _, dir := range dirs {
+		if st, serr := os.Stat(dir); serr != nil || !st.IsDir() {
+			return dirs, nil, fmt.Errorf("agent.acp: launcher %q declares a credential directory at %s that is not usable: %v", launcher.ID, dir, serr)
+		}
+		name, ok := byDir[dir]
+		if !ok {
+			return dirs, nil, fmt.Errorf("agent.acp: launcher %q needs one of %v set to a credential directory, and %s is not named by any of them", launcher.ID, launcher.AuthEnvVars, dir)
+		}
+		authEnv = append(authEnv, name+"="+dir)
+	}
+	return dirs, authEnv, nil
+}
+
 func (a *AgentTurn) nonoLauncherEnv() []string {
 	path := os.Getenv("PATH")
 	if path == "" {
