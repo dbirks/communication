@@ -625,3 +625,127 @@ func revBrief(v api.RevisionView) api.RevisionView {
 	v.CompiledPlan = nil
 	return v
 }
+
+// m4SecretDoc is the contract § 7 C13c document: a credential pasted into a
+// process.exec config.env value. It passes the loader and every schema (the
+// spike secret-literal-in-config proved a schema cannot express the rule), so
+// the compiler's detector is invariant 5's boundary.
+const m4SecretDoc = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: m4api-c13c-literal
+  description: C13c refusal probe (docs/m4-contract.md § 7).
+spec:
+  inputs:
+    type: object
+  nodes:
+    - id: s1
+      kind: process.exec
+      timeoutSeconds: 60
+      config:
+        executable: python3
+        env:
+          DATABASE_URL: "postgres://u:p@h/d"
+`
+
+// TestM4APIPipelinesSecretLiteralBlocked runs the real definition service
+// against a real Postgres for the whole C13c path: validate must refuse and
+// must not echo the literal (neither in the response nor in the validation
+// record it stores), and publish must be unable to succeed while the finding
+// stands (ADR-0021 § 3 invariant 5, Security).
+func TestM4APIPipelinesSecretLiteralBlocked(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	token := migFixtureToken(t)
+	store := APIPipelineStore{S: f.pipelines, ExtractUI: ExtractPipelineUI}
+	c := m4APICaller(f)
+	defs, err := NewPipelineDefinitions()
+	if err != nil {
+		t.Fatalf("NewPipelineDefinitions: %v", err)
+	}
+	const literal = "postgres://u:p@h/d"
+
+	created, err := store.CreatePipeline(ctx, c, "m4api-c13c-"+token, "M4 C13c", "")
+	if err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	t.Cleanup(func() { m4APIPipeMop(t, ctx, f, created.ID) })
+	draft, err := store.CreateDraft(ctx, c, created.ID, api.DraftCreateInput{
+		DocumentYAML: m4SecretDoc, SourceKind: "yaml_import", SourceSHA256: m4Hex("c13c/" + token),
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+
+	outcome, err := defs.Validate(ctx, c, m4SecretDoc)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if outcome.Body.Valid {
+		t.Fatalf("the C13c document was accepted by validate: %+v", outcome.Body)
+	}
+	var finding *api.ValidateError
+	for i := range outcome.Body.Errors {
+		if outcome.Body.Errors[i].Code == string(api.DraftConflictSecretLiteral) {
+			finding = &outcome.Body.Errors[i]
+		}
+	}
+	if finding == nil {
+		t.Fatalf("no secret_literal_detected finding: %+v", outcome.Body.Errors)
+	}
+	if finding.InstanceLocation == nil || *finding.InstanceLocation != "/spec/nodes/0/config/env/DATABASE_URL" {
+		t.Errorf("finding location = %v, want /spec/nodes/0/config/env/DATABASE_URL",
+			finding.InstanceLocation)
+	}
+	bodyJSON, err := json.Marshal(outcome.Body)
+	if err != nil {
+		t.Fatalf("marshal validate body: %v", err)
+	}
+	if strings.Contains(string(bodyJSON), literal) {
+		t.Errorf("the validate body echoes the literal: %s", bodyJSON)
+	}
+
+	stored, err := store.RecordValidation(ctx, c, draft.ID, api.DraftValidationRecord{
+		Status: "invalid", Body: outcome.Body, DigestScope: outcome.DigestScope,
+	})
+	if err != nil {
+		t.Fatalf("RecordValidation: %v", err)
+	}
+	if stored.Status != "invalid" {
+		t.Errorf("stored status = %q, want invalid", stored.Status)
+	}
+	back, err := store.GetDraft(ctx, c, draft.ID)
+	if err != nil {
+		t.Fatalf("GetDraft: %v", err)
+	}
+	if strings.Contains(string(back.Validation), literal) {
+		t.Errorf("the stored validation record echoes the literal: %s", back.Validation)
+	}
+	if !strings.Contains(string(back.Validation), string(api.DraftConflictSecretLiteral)) {
+		t.Errorf("the stored validation lost the finding: %s", back.Validation)
+	}
+
+	if _, err := store.PublishDraft(ctx, c, draft.ID, api.DraftPublishInput{
+		ExpectedVersion: stored.Version, VersionLabel: "1.0.0", DocumentText: m4SecretDoc,
+		SchemaDigest: m4Digest("schema"), CelEnvDigest: m4Digest("celenv"),
+	}); err == nil {
+		t.Fatalf("publish succeeded on a document carrying a secret literal")
+	} else {
+		var conflict *api.DraftConflictError
+		if !errors.As(err, &conflict) || conflict.Kind != api.DraftConflictNotValid {
+			t.Errorf("publish err = %v, want a draft_not_valid conflict", err)
+		}
+		if strings.Contains(err.Error(), literal) {
+			t.Errorf("the publish refusal echoes the literal: %v", err)
+		}
+	}
+	var revCount int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM pipeline_revisions WHERE pipeline_id = $1`, created.ID).Scan(&revCount); err != nil {
+		t.Fatalf("revision count: %v", err)
+	}
+	if revCount != 0 {
+		t.Errorf("published revisions = %d, want 0", revCount)
+	}
+	m4APIEventsMopped(t, f.pool, created.ID, draft.ID)
+}

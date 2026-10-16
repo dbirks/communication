@@ -142,6 +142,29 @@ func (l *List) Extend(other List) { *l = append(*l, other...) }
 // package is a block: notes carry the informational half (ADR-0021 § 7).
 func (l List) Valid() bool { return len(l) == 0 }
 
+// Redact replaces every occurrence of each value in the list's message and
+// hint text with the marker. The compiler refuses a secret literal by SHAPE,
+// but the schema validator quotes offending scalars ("pattern: got …"), so a
+// finding raised by another stage can still carry the literal bytes the
+// document holds. ADR-0021 Security makes the response the boundary: nothing a
+// secret scanner flags may be echoed, in any source's error text, and the
+// validate body is stored verbatim on the draft (contract § 2 route 8), so the
+// redaction has to happen before the record is written, not on the way out.
+func (l List) Redact(values ...string) {
+	for i := range l {
+		for _, v := range values {
+			if v == "" {
+				continue
+			}
+			l[i].Message = strings.ReplaceAll(l[i].Message, v, RedactionMarker)
+			l[i].Hint = strings.ReplaceAll(l[i].Hint, v, RedactionMarker)
+		}
+	}
+}
+
+// RedactionMarker stands where a flagged value used to be.
+const RedactionMarker = "[redacted]"
+
 // SortOrders the list in contract order, in place.
 func (l List) SortOrder() {
 	sort.SliceStable(l, func(i, j int) bool {

@@ -974,7 +974,7 @@ func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, docume
 	_ = c
 	doc, diags := loader.Load([]byte(documentYAML))
 	if !diags.Valid() {
-		return d.invalid(diags), nil
+		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
 	if doc.Kind == loader.KindNodeTemplate {
 		// § 9.1 row 12: a NodeTemplate document is valid but publishable by
@@ -982,21 +982,21 @@ func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, docume
 		// draft row records it and publish cannot race past it.
 		diags.Addf(diag.SourceCompiler, diag.CodeTemplatePublishDefer, "/",
 			"NodeTemplate publication is deferred to M5; the template registry does not exist yet")
-		return d.invalid(diags), nil
+		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
 	if doc.Kind != loader.KindPipeline {
 		diags.Addf(diag.SourceLoader, diag.CodeUnknownDocument, "/",
 			"document kind %q has no schema branch", doc.Kind)
-		return d.invalid(diags), nil
+		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
 	diags = append(diags, d.validator.Validate(doc.Value)...)
 	if !diags.Valid() {
-		return d.invalid(diags), nil
+		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
 	plan, cdiags := compiler.Compile(doc, compiler.Options{})
 	diags = append(diags, cdiags...)
 	if !diags.Valid() {
-		return d.invalid(diags), nil
+		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
 	canonical, err := canon.CanonicalizeDocument(doc.Map())
 	if err != nil {
@@ -1022,6 +1022,19 @@ func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, docume
 		PlanDigest:        planDigest,
 		DigestScope:       canon.DigestScope,
 	}, nil
+}
+
+// m4RedactFindings strips any literal the compiler's secret detector flags
+// from every finding before the validate body is answered or stored. The
+// compiler's own messages name a shape, never a value, but the schema
+// validator quotes offending scalars and the loader quotes scalars too
+// (ADR-0021 § Security/privacy: "the product must not echo a value that a
+// secret scanner flags"), and the § 2.2 body is stored verbatim on the draft
+// row (contract § 2 route 8) — so redaction happens once, here, before the
+// record exists rather than on the way out.
+func m4RedactFindings(diags diag.List, doc loader.Document) diag.List {
+	diags.Redact(compiler.SecretLiteralValues(doc)...)
+	return diags
 }
 
 // invalid renders the § 2.2 body for a refused document: verdict in the

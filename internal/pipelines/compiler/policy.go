@@ -473,6 +473,17 @@ func (w *walk) secretLiterals(s *scope, id string, cfg map[string]canonValue, at
 			if looksLikeSecretAssignment(t) {
 				w.err(p, diag.CodeSecretLiteral,
 					"a literal assignment to a secret-shaped value was detected in node %q; reference it with {expr: \"secrets.NAME\"} instead (ADR-0021 § 3 invariant 5)", id)
+			} else if shape, hit := detectLiteralSecret(p, t); hit {
+				// config.env (and any env-like map or secret-shaped field in
+				// config) is where a credential actually gets pasted and the
+				// schema cannot see it: values are bindingOrString, so any
+				// string passes (contract § 9.1 row 13, spike
+				// secret-literal-in-config). The compiler's detector is the
+				// boundary, and it names the SHAPE only — the value must never
+				// reach a response or the stored validation record
+				// (ADR-0021 Security, contract § 7 C13c).
+				w.err(p, diag.CodeSecretLiteral,
+					"%s in node %q: a literal was written where a secret reference belongs. Declare it in config.secretRefs and let the worker materialise the mounted value at execution time (ADR-0021 § 3 invariant 5). The value itself is not quoted here", shape, id)
 			}
 		}
 	}
