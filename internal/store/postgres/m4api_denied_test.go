@@ -84,6 +84,61 @@ func TestM4DeniedNonUUIDProjectNull(t *testing.T) {
 	}
 }
 
+// TestM4DeniedNodeExecutionAuditRow: RecordDenied also receives node-execution
+// ids (docs/m4-contract.md § 2 run-scoped reads). node_executions carries no
+// project_id of its own, so the resolution must reach the owning run's project
+// rather than recording a NULL.
+func TestM4DeniedNodeExecutionAuditRow(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	caller := api.Caller{UserID: f.userID, OrganizationID: f.orgID}
+	runID := m4RunsReadSeedRun(t, ctx, f)
+	nodeID, _ := f.m4WorkerNode(t, ctx, runID, "/implement")
+	store := APIRunStore{Runs: f.runs}
+
+	if err := store.RecordDenied(ctx, caller, nodeID, "run.nodes"); err != nil {
+		t.Fatalf("RecordDenied(node %s): %v", nodeID, err)
+	}
+
+	rows, projectID, detail := m4DeniedAuditRow(t, ctx, f, f.userID, "run.nodes")
+	if rows != 1 {
+		t.Fatalf("denied audit rows = %d, want exactly 1", rows)
+	}
+	if projectID != f.projectID {
+		t.Errorf("audit project_id = %q, want the node execution's run project %q", projectID, f.projectID)
+	}
+	if want := `{"action": "run.nodes", "resource_id": "` + nodeID + `"}`; detail != want {
+		t.Errorf("audit detail = %s, want %s", detail, want)
+	}
+}
+
+// TestM4DeniedAttemptAuditRow: same duty for attempt ids, resolved through the
+// attempt's run (attempts.run_id is pinned to its node execution by 00005's
+// composite FK, so the project is unambiguous).
+func TestM4DeniedAttemptAuditRow(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	caller := api.Caller{UserID: f.userID, OrganizationID: f.orgID}
+	runID := m4RunsReadSeedRun(t, ctx, f)
+	_, attemptID := f.m4WorkerNode(t, ctx, runID, "/implement")
+	store := APIRunStore{Runs: f.runs}
+
+	if err := store.RecordDenied(ctx, caller, attemptID, "run.attempts"); err != nil {
+		t.Fatalf("RecordDenied(attempt %s): %v", attemptID, err)
+	}
+
+	rows, projectID, detail := m4DeniedAuditRow(t, ctx, f, f.userID, "run.attempts")
+	if rows != 1 {
+		t.Fatalf("denied audit rows = %d, want exactly 1", rows)
+	}
+	if projectID != f.projectID {
+		t.Errorf("audit project_id = %q, want the attempt's run project %q", projectID, f.projectID)
+	}
+	if want := `{"action": "run.attempts", "resource_id": "` + attemptID + `"}`; detail != want {
+		t.Errorf("audit detail = %s, want %s", detail, want)
+	}
+}
+
 // TestM4DeniedForeignRunAuditRow: a uuid that is well-formed but belongs to no
 // row (a cross-org probe) records the denial with no project.
 func TestM4DeniedForeignRunAuditRow(t *testing.T) {

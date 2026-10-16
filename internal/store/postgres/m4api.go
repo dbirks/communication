@@ -71,8 +71,10 @@ func m4Pool(pool *pgxpool.Pool, what string) (*pgxpool.Pool, error) {
 
 // m4Denied writes the audit row for a refused read or mutation of an
 // M4-family resource. The owning project is resolved from the id where one
-// exists (runs, gates, assignments); definitions are org-scoped and have
-// none (audit_events.project_id is nullable — api/pipelines.go's rule).
+// exists (runs, gates, assignments, and the run-family node execution /
+// attempt ids APIRunStore.RecordDenied also receives, via their run);
+// definitions are org-scoped and have none (audit_events.project_id is
+// nullable — api/pipelines.go's rule).
 func m4Denied(ctx context.Context, pool *pgxpool.Pool, c api.Caller, resourceID, action string) error {
 	cc := callerFromAPI(c)
 	if err := prjRequireCaller(cc); err != nil {
@@ -85,6 +87,10 @@ func m4Denied(ctx context.Context, pool *pgxpool.Pool, c api.Caller, resourceID,
 				(SELECT project_id::text FROM runs WHERE id = $1::uuid),
 				(SELECT project_id::text FROM approval_requests WHERE id = $1::uuid),
 				(SELECT project_id::text FROM assignments WHERE id = $1::uuid),
+				(SELECT r.project_id::text FROM node_executions ne
+					JOIN runs r ON r.id = ne.run_id WHERE ne.id = $1::uuid),
+				(SELECT r.project_id::text FROM attempts att
+					JOIN runs r ON r.id = att.run_id WHERE att.id = $1::uuid),
 				'')`, resourceID).Scan(&projectID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("postgres: resolve denial project for %s: %w", resourceID, err)
