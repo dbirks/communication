@@ -3,10 +3,13 @@
  * through the same hooks the preview's live seam proved, the filter chips are
  * the design's, and the empty/404 states are honest.
  */
-import { fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
-import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
+import { queryKeys } from "../api/queries";
 import {
   WIRE_RUN_ID,
   wirePipelineList,
@@ -14,6 +17,7 @@ import {
   wireRun,
   wireRunList,
 } from "../test/fixtures/m4/wire";
+import { RunsListColumn, defaultRunsFilter } from "./ProjectRuns";
 
 const RUNS_PATH = `/api/v1/projects/${wireProjectId}/runs`;
 const childRun = { ...wireRun, id: "01987b11-0000-0000-8000-00000000000c", depth: 1 };
@@ -49,12 +53,19 @@ describe("/projects/:projectId/runs", () => {
     expect(within(list).queryByTestId(`run-row-${childRun.id}`)).toBeNull();
   });
 
-  it("filters by state, and the empty filter result says which filter is empty", async () => {
+  it("opens on a lens with rows, and an empty lens still says which one is empty", async () => {
     mountRuns({ runs: [{ ...wireRun, status: "waiting_human" }] });
 
-    // The default filter is `active`; a waiting run is not active work.
+    // `active` is empty here, so the column does not open on it: the first
+    // non-empty lens in active → attention → waiting → all is pressed instead,
+    // and the waiting run is on screen at once.
+    expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+    expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("runs-filter-attention").getAttribute("aria-pressed")).toBe("true");
+
+    // Choosing an empty lens is still an honest empty answer, not a silent one.
+    fireEvent.click(screen.getByTestId("runs-filter-active"));
     expect((await screen.findByTestId("runs-empty")).textContent).toContain("No active runs");
-    expect(screen.getByTestId("runs-filter-waiting").textContent).toContain("waiting 1");
 
     fireEvent.click(screen.getByTestId("runs-filter-all"));
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
@@ -73,7 +84,7 @@ describe("/projects/:projectId/runs", () => {
     // 4a leads with the attention lens: waiting, paused, failed, interrupted.
     const chip = screen.getByTestId("runs-filter-attention");
     expect(chip.textContent).toContain("attention 3");
-    // The default lens stays `active` — adding attention changes no one's default.
+    // The lens opens on `active` because active work exists in this project.
     expect(screen.queryByTestId(`run-row-${broken[0].id}`)).toBeNull();
 
     fireEvent.click(chip);
@@ -106,6 +117,69 @@ describe("/projects/:projectId/runs", () => {
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
     expect(row.getAttribute("href")).toBe(`/projects/${wireProjectId}/runs/${WIRE_RUN_ID}`);
     expect(row.textContent).toMatch(/#\w{8} feature-development/);
+  });
+});
+
+/**
+ * The opening lens (runs-default-filter): a list that lands on an empty filter
+ * makes the project look idle when it is only parked elsewhere.
+ */
+describe("the opening lens of the runs list", () => {
+  const WAITING = [
+    { ...wireRun, id: "01987b11-0000-0000-8000-0000000000b1", status: "waiting_human" },
+    { ...wireRun, id: "01987b11-0000-0000-8000-0000000000b2", status: "waiting_human" },
+  ];
+
+  it("picks the first non-empty lens, falling back to all", () => {
+    expect(defaultRunsFilter({ active: 0, waiting: 2 })).toBe("waiting");
+    expect(defaultRunsFilter({ active: 1, attention: 3, waiting: 2, all: 6 })).toBe("active");
+    expect(defaultRunsFilter({ active: 0, attention: 2, waiting: 2, all: 4 })).toBe("attention");
+    expect(defaultRunsFilter({ active: 0, attention: 0, waiting: 0, all: 0 })).toBe("all");
+  });
+
+  it("keeps the lens a person clicked through a refetch", async () => {
+    const { queryClient, requests } = mountRuns({ runs: WAITING });
+
+    expect(await screen.findByTestId("runs-filter-attention")).toBeTruthy();
+    expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(screen.getByTestId("runs-filter-active"));
+    expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.runs(wireProjectId) });
+    });
+
+    // The refetch really happened — and the lens did not move under the click.
+    expect(requestsTo(requests, RUNS_PATH)).toHaveLength(2);
+    expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("true");
+    expect((await screen.findByTestId("runs-empty")).textContent).toContain("No active runs");
+  });
+
+  it("lists the open run even when the lens excludes it", async () => {
+    const parked = {
+      ...wireRun,
+      id: "01987b11-0000-0000-8000-0000000000b3",
+      status: "interrupted",
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    mockFetch(routes({ runs: [wireRun, parked] }));
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <RunsListColumn projectId={wireProjectId} selectedRunId={parked.id} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // There is active work, so the list opens on it — but the run whose page is
+    // open (interrupted: not active) is still listed, and still marked.
+    const row = await screen.findByTestId(`run-row-${parked.id}`);
+    expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("true");
+    expect(row.className).toContain("shadow-(--shadow-raised)");
+    expect(screen.queryByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
   });
 });
 

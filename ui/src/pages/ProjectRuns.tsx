@@ -11,7 +11,7 @@
  * opens `NewRunForm`, whose fields are read off the pinned revision's
  * `spec.inputs` — the page never invents an input shape of its own.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
@@ -34,6 +34,28 @@ const ATTENTION_STATES: readonly RunStatus[] = ["waiting_human", "paused", "fail
 
 export type RunsFilter = "attention" | "active" | "waiting" | "all";
 
+/** The order the opening lens is chosen in: live work first, then what a
+ * person owes, then what is parked, then everything. */
+export const RUNS_FILTER_ORDER: readonly RunsFilter[] = ["active", "attention", "waiting", "all"];
+
+export type RunsCounts = Record<RunsFilter, number>;
+
+/**
+ * The lens a list opens on: the first *non-empty* filter, so a project with no
+ * active work never lands on a blank "No active runs." the person has to
+ * dismiss by hand. `all` is both last in the order and the fallback.
+ */
+export function defaultRunsFilter(counts: Partial<RunsCounts>): RunsFilter {
+  return RUNS_FILTER_ORDER.find((name) => (counts[name] ?? 0) > 0) ?? "all";
+}
+
+function matchesFilter(run: RunSummary, filter: RunsFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "attention") return ATTENTION_STATES.includes(run.status);
+  if (filter === "waiting") return WAITING_STATES.includes(run.status);
+  return ACTIVE_STATES.includes(run.status);
+}
+
 export interface RunsListColumnProps {
   projectId: string;
   /** The run whose page is open — its row is the raised one. */
@@ -48,7 +70,11 @@ export interface RunsListColumnProps {
 export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColumnProps) {
   const runs = useProjectRuns(projectId);
   const pipelines = usePipelines();
-  const [filter, setFilter] = useState<RunsFilter>("active");
+  // Three states, deliberately: `picked` is a human choice (it never moves
+  // again), `latched` is the auto default frozen at the moment the list first
+  // answered, and `null` (still loading / failed) presses no chip at all.
+  const [picked, setPicked] = useState<RunsFilter | null>(null);
+  const [latched, setLatched] = useState<RunsFilter | null>(null);
   const [composing, setComposing] = useState(false);
 
   const slugs = useMemo(
@@ -56,19 +82,6 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
       new Map((pipelines.data?.pipelines ?? []).map((pipeline) => [pipeline.id, pipeline.slug])),
     [pipelines.data],
   );
-
-  const rows = useMemo(() => {
-    const all = (runs.data?.runs ?? []).filter((run) => run.depth === 0);
-    const matching =
-      filter === "all"
-        ? all
-        : filter === "attention"
-          ? all.filter((run) => ATTENTION_STATES.includes(run.status))
-          : filter === "waiting"
-            ? all.filter((run) => WAITING_STATES.includes(run.status))
-            : all.filter((run) => ACTIVE_STATES.includes(run.status));
-    return matching;
-  }, [runs.data, filter]);
 
   const counts = useMemo(
     () => ({
@@ -85,6 +98,27 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
     }),
     [runs.data],
   );
+
+  // The default is read off the counts of the *first* loaded list and then
+  // frozen: a later refetch must not move a filter nobody asked to move.
+  const auto = runs.data ? defaultRunsFilter(counts) : null;
+  useEffect(() => {
+    if (latched === null && auto !== null) setLatched(auto);
+  }, [latched, auto]);
+  const filter = picked ?? latched ?? auto;
+
+  const { rows, matched } = useMemo(() => {
+    const all = (runs.data?.runs ?? []).filter((run) => run.depth === 0);
+    if (filter === null) return { rows: [], matched: [] };
+    const matched = all.filter((run) => matchesFilter(run, filter));
+    // The open run stays in the list whatever the filter says — a selection
+    // the filter hides would read as the run having vanished.
+    const rows =
+      selectedRunId && !matched.some((run) => run.id === selectedRunId)
+        ? all.filter((run) => matchesFilter(run, filter) || run.id === selectedRunId)
+        : matched;
+    return { rows, matched };
+  }, [runs.data, filter, selectedRunId]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 border-r border-line px-3 py-3">
@@ -118,7 +152,7 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
           <button
             key={name}
             type="button"
-            onClick={() => setFilter(name)}
+            onClick={() => setPicked(name)}
             aria-pressed={filter === name}
             data-testid={`runs-filter-${name}`}
             className={`rounded-[3px] border px-2 py-[3px] font-mono text-[11px] ${
@@ -136,13 +170,13 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
         {runs.isError ? (
           <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
         ) : null}
-        {runs.data && rows.length === 0 ? (
+        {runs.data && filter !== null && matched.length === 0 ? (
           <p className="px-1 text-[12.5px] text-muted" data-testid="runs-empty">
             {counts.all === 0
               ? "No runs yet — this project has never started a pipeline."
               : filter === "attention"
-                ? "Nothing needs attention — no run is waiting on a person or lying broken."
-                : `No ${filter} runs.`}
+                ? `Nothing needs attention${rows.length > 0 ? " (the open run is kept in the list)" : ""} — no run is waiting on a person or lying broken.`
+                : `No ${filter} runs${rows.length > 0 ? " — the open run is listed because its page is here." : "."}`}
           </p>
         ) : null}
         {rows.map((run) => (
