@@ -103,6 +103,60 @@ func TestCheckpointUnavailableRefusesRestore(t *testing.T) {
 	}
 }
 
+// TestContinueWorkspaceRetryAcceptsAnUncapturedBoundary is the C5e guard for
+// § 6's DEFAULT arm. continue_workspace touches nothing: "the worktree is left
+// exactly as the interrupted attempt left it", so it needs no captured, no
+// committed and no provably-clean boundary — only restore_checkpoint, which
+// resets a tree, may be refused for a boundary nobody measured. When the
+// unrecorded-boundary refusal leaks onto the default mode, the UI's retry
+// button 409s on a run that had nothing to restore (lab live18 C5e) and the
+// engine never arms the retry at all.
+func TestContinueWorkspaceRetryAcceptsAnUncapturedBoundary(t *testing.T) {
+	plan := loadPlan(t, "testdata/stop.yaml") // /a → /b, both unauthored = continue_workspace
+	dv := newDriver(t, plan, map[string]any{"goal": "g"})
+	dv.script("/a", step{outputs: map[string]any{"ok": true}, bareBoundary: true})
+	dv.script("/b", step{failClass: runtime.ErrInfra, detail: "transient"},
+		step{outputs: map[string]any{"ok": true}})
+	dv.pump(30)
+	st := dv.state()
+	if st.Run.Status != runtime.RunFailed {
+		t.Fatalf("run = %s/%s, want failed on /b", st.Run.Status, st.Run.FailedCause)
+	}
+	ck := st.Checkpoints[len(st.Checkpoints)-1]
+	if ck.RepoStates[0].CaptureRecorded || ck.RepoStates[0].Committed {
+		t.Fatal("fixture must be an un-captured boundary — the arm under test")
+	}
+	if err := dv.ms.Retry(dv.run.ID, "alice", nil, nil); err != nil {
+		t.Fatalf("continue_workspace retry of an unrecorded boundary = %v, want accepted "+
+			"(checkpoint_unavailable belongs to restore_checkpoint only, ADR-0023 § 6)", err)
+	}
+	st = dv.state()
+	if st.Run.Status != runtime.RunRunning && st.Run.Status != runtime.RunQueued &&
+		st.Run.Status != runtime.RunPreparing {
+		t.Fatalf("run after the retry = %s/%s, want reopened", st.Run.Status, st.Run.FailedCause)
+	}
+	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 0 {
+		t.Errorf("run.checkpoint_restored = %d, want 0 — a continue retry resets nothing (C5f)", c)
+	}
+	b := st.Node("/b")
+	atts := st.AttemptsFor(b.ID)
+	if len(atts) != 2 {
+		t.Fatalf("/b attempts = %d, want the retry appended a 2nd", len(atts))
+	}
+	rc := atts[1].RetryContext
+	if rc["head_commit"] != bareHead {
+		t.Errorf("retry_context.head_commit = %v, want the boundary's commit identity %q",
+			rc["head_commit"], bareHead)
+	}
+	if _, ok := rc["modified_path_count"]; ok {
+		t.Errorf("retry_context = %v, want no modified_path_count for an un-captured boundary", rc)
+	}
+	dv.pump(30)
+	if st = dv.state(); st.Run.Status != runtime.RunCompleted {
+		t.Fatalf("run = %s/%s after the accepted retry, want completed", st.Run.Status, st.Run.FailedCause)
+	}
+}
+
 // TestRestoreCheckpointFromCommittedBoundary: the same retry with a committed
 // boundary succeeds, and run.checkpoint_restored — the event that "proves
 // the engine knows the difference" (contract § 3 row 8) — is written.

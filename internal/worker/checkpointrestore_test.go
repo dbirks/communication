@@ -145,6 +145,39 @@ func TestCheckpointRestoreContinueLeavesTheTreeAlone(t *testing.T) {
 	}
 }
 
+// TestCheckpointRestoreContinueDoesNotInheritTheRestoreRefusal is the same
+// rule seen from the worker: the unrecorded-boundary refusal is § 6's licence
+// check for the DESTRUCTIVE arm. A continue_workspace attempt whose boundary
+// was never captured still launches — it resets nothing, so it needs no
+// licence. If the check ever moves above the mode test, every retry of a run
+// with a process.exec boundary (which never captures) dies at prepare with
+// error_class=infra, and the kill leg of C5b/C6b reads as a mis-classed
+// interruption (lab live18).
+func TestCheckpointRestoreContinueDoesNotInheritTheRestoreRefusal(t *testing.T) {
+	uncaptured := []CheckpointRepoState{{RepositoryID: "repo-app", HeadCommit: "aaaa1111"}}
+	for _, mode := range []string{WorkspacePolicyContinue, ""} {
+		gitFake := &fakeRestore{}
+		inner := &launchProbe{}
+		sink := &recordingSink{}
+		e := &CheckpointRestorer{Inner: inner, Git: gitFake,
+			Boundary: func(context.Context, AttemptClaim) (RestoreBoundary, bool, error) {
+				return RestoreBoundary{Mode: mode, RepoStates: uncaptured,
+					Checkouts: map[string]string{"repo-app": "/ws/work/repos/app"}}, true, nil
+			}}
+		res, err := e.Execute(context.Background(), restoreClaim(), sink)
+		if err != nil {
+			t.Fatalf("Execute (mode %q): %v", mode, err)
+		}
+		if !inner.ran || res.Status == AttemptStatusFailed {
+			t.Fatalf("mode %q: result = %+v launched=%v, want the node to launch "+
+				"under continue_workspace with an unmeasured boundary", mode, res, inner.ran)
+		}
+		if len(gitFake.calls) != 0 || len(sink.events) != 0 {
+			t.Errorf("mode %q: restores=%v events=%v, want neither touched", mode, gitFake.calls, sink.types())
+		}
+	}
+}
+
 // TestCheckpointRestoreRefusesUncommittedBoundary is § 6's precondition and
 // C6d's data-loss guard: an uncommitted (or unmeasured) repo_state stops the
 // reset before git is asked for anything, and the node never launches.
