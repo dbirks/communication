@@ -239,7 +239,7 @@ func TestRunSecretValuesUnresolvableFailsThePublishAttempt(t *testing.T) {
 	bytesFake := &rsvBytesFake{}
 	rowsFake := &rsvRowsFake{}
 	scan := &ArtifactPublishSecretScan{
-		Publish: &worker.ArtifactPublish{Bytes: bytesFake, Rows: rowsFake},
+		Publish: &worker.ArtifactPublish{Bytes: bytesFake, Rows: rowsFake, Checkpoints: rsvBoundary{}},
 		Values:  scanner,
 	}
 	res, err := scan.Execute(ctx, rsvClaim(runID, map[string]any{
@@ -351,4 +351,19 @@ var _ worker.AttemptArtifactWriter = (*rsvRowsFake)(nil)
 func (f *rsvRowsFake) PublishAttemptArtifact(_ context.Context, in worker.AttemptArtifactInput) (string, error) {
 	f.calls = append(f.calls, in)
 	return "artifact-rsv", nil
+}
+
+// rsvBoundary is a stub § 4 step 3 boundary resolver: this file tests the
+// secret scan, and its fake run carries no `workspaces` row, so the pool-backed
+// RunWorkspaces the scan would otherwise wire would correctly refuse (no
+// boundary bound) and bury the scan assertion under an infra detail. In the real
+// worker path the RunWorkspaceExecutor wrapper prepares the run tree before
+// publish, so a boundary always exists by § 4 step 9; the stub reproduces that
+// precondition without dragging workspace preparation into a scan test.
+type rsvBoundary struct{}
+
+var _ worker.RunWorkspaceResolver = rsvBoundary{}
+
+func (rsvBoundary) RunWorkspace(context.Context, string) (worker.RunWorkspaceRef, bool, error) {
+	return worker.RunWorkspaceRef{WorkspaceID: "ws-rsv-1", VolumeID: "sha256:vol-rsv-1"}, true, nil
 }

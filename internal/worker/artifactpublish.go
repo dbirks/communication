@@ -157,7 +157,14 @@ type ArtifactPublish struct {
 	// the § 4 step 3 wiring hands one over; that mode then fails infra,
 	// visibly, naming the seam — a claim about the wiring, not about the node.
 	Workspaces AttemptWorkspaceResolver
-	Logger     *slog.Logger
+	// Checkpoints resolves the run's boundary identity (workspace row + volume +
+	// repo states). Like ProcExec/AgentTurn, a succeeded attempt MUST record a
+	// durable boundary — the store's CompleteAttempt refuses a succeeded worker
+	// attempt with no checkpoint volume (D-024 is same-volume only). Nil means no
+	// boundary can be bound, so the success is refused as infra naming the missing
+	// step, never published with an invented volume (contract § 4 step 10).
+	Checkpoints RunWorkspaceResolver
+	Logger      *slog.Logger
 }
 
 var _ AttemptExecutor = (*ArtifactPublish)(nil)
@@ -218,6 +225,17 @@ func (p *ArtifactPublish) Execute(ctx context.Context, c AttemptClaim, _ Attempt
 	if bad != nil {
 		return *bad, nil
 	}
+	// The boundary identity is resolved BEFORE any byte is put: a succeeded
+	// worker attempt must record a durable run_checkpoints boundary, and
+	// CompleteAttempt refuses one with no volume. Resolving up front means a
+	// missing workspace row is refused without orphaning a published artifact.
+	ckpt, bound := p.checkpointFor(ctx, c, spec)
+	if !bound {
+		return failedResult(ErrorClassInfra, "artifact.publish: the artifact is ready but no run workspace boundary "+
+			"is bound (contract § 4 step 3): a checkpoint requires a workspace row and its volume, so nothing was "+
+			"published (D-024 is same-volume only)"), nil
+	}
+
 	content, redactions := p.redact(content)
 	if spec.kind == artifacts.KindJSON && !json.Valid(content) {
 		// The scan rewrote a key or a bare number rather than a string value. A
@@ -279,7 +297,40 @@ func (p *ArtifactPublish) Execute(ctx context.Context, c AttemptClaim, _ Attempt
 			"no artifact id, which the attempt cannot name in outputs"), nil
 	}
 
-	return p.succeeded(c, spec, ref, id, redactions)
+	return p.succeeded(c, spec, ref, id, redactions, ckpt)
+}
+
+// checkpointFor resolves the boundary record the § 4 step 10 transaction
+// requires, mirroring ProcExec/AgentTurn. The volume identity comes only from
+// the resolver, never invented (D-024). bound=false when no seam is wired or the
+// run workspace row cannot be named — the caller then refuses the success rather
+// than publish with a boundary nobody can restore. The digests are filled in
+// succeeded once the outputs envelope exists.
+func (p *ArtifactPublish) checkpointFor(ctx context.Context, c AttemptClaim, spec artifactPublishSpec) (AttemptCheckpoint, bool) {
+	if p.Checkpoints == nil {
+		return AttemptCheckpoint{}, false
+	}
+	ref, ok, err := p.Checkpoints.RunWorkspace(context.WithoutCancel(ctx), c.RunID)
+	if err != nil || !ok || ref.WorkspaceID == "" || ref.VolumeID == "" {
+		return AttemptCheckpoint{}, false
+	}
+	// The plan's own words, not the resolved bytes: name/kind/media/source are
+	// what the run's snapshot declared and they are host-portable, so two workers
+	// publishing one plan agree on the inputs digest (procexec.go's reasoning).
+	inputs, err := json.Marshal(map[string]any{
+		"name": spec.name, "kind": spec.kind, "media": spec.media,
+		"sensitivity": spec.sensitivity, "mode": spec.mode, "path": spec.path,
+	})
+	if err != nil {
+		return AttemptCheckpoint{}, false
+	}
+	return AttemptCheckpoint{
+		InputsDigest: "sha256:" + sha256Hex(inputs),
+		RepoStates:   ref.RepoStates,
+		WorkspaceID:  ref.WorkspaceID,
+		VolumeID:     ref.VolumeID,
+		WorkerID:     c.WorkerID,
+	}, true
 }
 
 // materialize turns the node's configured source into the artifact's bytes.
@@ -425,7 +476,7 @@ func (p *ArtifactPublish) readWorkspaceFile(ctx context.Context, spec artifactPu
 // succeeded closes the executor's half of the boundary: outputs naming the
 // artifact (never carrying it), the outputs digest, and the artifact_refs the
 // step 10 transaction persists beside node.attempt.completed.
-func (p *ArtifactPublish) succeeded(c AttemptClaim, spec artifactPublishSpec, ref artifacts.Ref, id string, redactions int) (AttemptResult, error) {
+func (p *ArtifactPublish) succeeded(c AttemptClaim, spec artifactPublishSpec, ref artifacts.Ref, id string, redactions int, ckpt AttemptCheckpoint) (AttemptResult, error) {
 	outputs := map[string]any{
 		"artifact_id":     id,
 		"kind":            spec.kind,
@@ -446,21 +497,24 @@ func (p *ArtifactPublish) succeeded(c AttemptClaim, spec artifactPublishSpec, re
 	p.logger().Debug("artifact.publish published an artifact",
 		slog.String("attempt_id", c.AttemptID), slog.String("artifact_id", id),
 		slog.String("kind", spec.kind), slog.Int("redaction_count", redactions))
+	ckpt.OutputsDigest = "sha256:" + sha256Hex(raw)
+	ckpt.ArtifactRefs = []any{map[string]any{
+		"artifact_id":     id,
+		"kind":            spec.kind,
+		"name":            spec.name,
+		"media_type":      spec.media,
+		"sha256":          ref.SHA256,
+		"size_bytes":      ref.SizeBytes,
+		"storage_backend": ref.StorageBackend,
+		"storage_key":     ref.StorageKey,
+	}}
 	return AttemptResult{
 		Status:        AttemptStatusSucceeded,
 		Outcome:       "passed",
 		Outputs:       outputs,
-		OutputsDigest: "sha256:" + sha256Hex(raw),
-		ArtifactRefs: []any{map[string]any{
-			"artifact_id":     id,
-			"kind":            spec.kind,
-			"name":            spec.name,
-			"media_type":      spec.media,
-			"sha256":          ref.SHA256,
-			"size_bytes":      ref.SizeBytes,
-			"storage_backend": ref.StorageBackend,
-			"storage_key":     ref.StorageKey,
-		}},
+		OutputsDigest: ckpt.OutputsDigest,
+		ArtifactRefs:  ckpt.ArtifactRefs,
+		Checkpoint:    ckpt,
 	}, nil
 }
 

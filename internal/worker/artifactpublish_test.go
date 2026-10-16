@@ -107,7 +107,7 @@ func pubClaim(cfg map[string]any) AttemptClaim {
 }
 
 func pubExecutor(bytes *pubBytesFake, rows *pubRowsFake, redact func(string) (string, int), ws AttemptWorkspaceResolver) *ArtifactPublish {
-	p := &ArtifactPublish{Redact: redact, Workspaces: ws}
+	p := &ArtifactPublish{Redact: redact, Workspaces: ws, Checkpoints: pubCheckpoints{}}
 	// Assigned conditionally so a nil fake stays a nil seam (the executor's
 	// "not wired" check is an interface-nil check, not a typed-nil one).
 	if bytes != nil {
@@ -117,6 +117,22 @@ func pubExecutor(bytes *pubBytesFake, rows *pubRowsFake, redact func(string) (st
 		p.Rows = rows
 	}
 	return p
+}
+
+// pubCheckpoints is the § 4 step 3 boundary identity a succeeded publish must
+// record: a fixed workspace row + volume, the same shape procexec_test's
+// stubCheckpoints returns. runPublishWithNoCheckpoint overrides it to nil to
+// reproduce the missing-boundary arm.
+type pubCheckpoints struct{}
+
+var _ RunWorkspaceResolver = pubCheckpoints{}
+
+func (pubCheckpoints) RunWorkspace(context.Context, string) (RunWorkspaceRef, bool, error) {
+	return RunWorkspaceRef{
+		WorkspaceID: "ws-pub-1",
+		VolumeID:    "sha256:vol-pub-1",
+		RepoStates:  []CheckpointRepoState{{RepositoryID: "repo-1", BaseCommit: "base-1"}},
+	}, true, nil
 }
 
 func pubOutputs(t *testing.T, res AttemptResult) map[string]any {
@@ -575,5 +591,72 @@ func TestArtifactPublishRedactsRunSecret(t *testing.T) {
 	}
 	if rows.calls[0].RedactionCount != 0 {
 		t.Errorf("redaction_count = %d for a run holding no secret, want 0", rows.calls[0].RedactionCount)
+	}
+}
+
+// TestArtifactPublishRecordsBoundary is the bug the M4 lab surfaced: every
+// publish_verified run ended `failed node_execution_failed:/publish_verified`
+// with NO failed attempt, because the fenced boundary transaction
+// (AttemptStore.CompleteAttempt) refuses a succeeded worker attempt with no
+// checkpoint volume ("completed without a checkpoint volume", D-024) — the
+// executor published bytes but never bound the run's boundary, so the terminal
+// write failed, the lease lapsed, and the reconciler closed the attempt
+// interrupted{lease_expired}. The succeeded attempt MUST now carry the § 4
+// step 10 boundary (workspace row + volume + digests) the store requires.
+func TestArtifactPublishRecordsBoundary(t *testing.T) {
+	bytesFake, rows := &pubBytesFake{}, &pubRowsFake{}
+	cfg := map[string]any{"name": "review-evidence.json", "kind": "json",
+		"from": map[string]any{"mode": "output_json", "value": map[string]any{"approved": true}}}
+	res, err := pubExecutor(bytesFake, rows, nil, nil).Execute(context.Background(), pubClaim(cfg), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("status = %s (%s / %s), want succeeded", res.Status, res.ErrorClass, res.Detail)
+	}
+	ck := res.Checkpoint
+	if ck.VolumeID != "sha256:vol-pub-1" || ck.WorkspaceID != "ws-pub-1" {
+		t.Errorf("boundary lost the run workspace/volume: %+v", ck)
+	}
+	if ck.WorkerID != "worker-1" {
+		t.Errorf("boundary worker = %q, want the attempt's owner", ck.WorkerID)
+	}
+	// run_checkpoints.inputs_digest/outputs_digest are sha256:<64 hex> CHECKs.
+	for name, d := range map[string]string{"inputs": ck.InputsDigest, "outputs": ck.OutputsDigest} {
+		if !strings.HasPrefix(d, "sha256:") || len(d) != len("sha256:")+64 {
+			t.Errorf("%s digest %q is not sha256:<64 hex>", name, d)
+		}
+	}
+	if ck.OutputsDigest != res.OutputsDigest {
+		t.Errorf("boundary outputs_digest %q != attempt outputs_digest %q", ck.OutputsDigest, res.OutputsDigest)
+	}
+	if len(ck.RepoStates) != 1 || ck.RepoStates[0].RepositoryID != "repo-1" {
+		t.Errorf("boundary repo states = %+v, want the run workspace's", ck.RepoStates)
+	}
+}
+
+// TestArtifactPublishRefusesWithoutBoundary reproduces the lab failure at the
+// executor seam: with no § 4 step 3 boundary resolver (the state that produced
+// the interrupted attempts), a succeeded publish is refused as infra and writes
+// NOTHING — never a boundary-less success the store would reject out from under
+// the lease. This is the honest terminal that outranks the orphaned attempt.
+func TestArtifactPublishRefusesWithoutBoundary(t *testing.T) {
+	bytesFake, rows := &pubBytesFake{}, &pubRowsFake{}
+	p := pubExecutor(bytesFake, rows, nil, nil)
+	p.Checkpoints = nil // no run workspace bound (the lab's failing state)
+	cfg := map[string]any{"name": "review-evidence.json", "kind": "json",
+		"from": map[string]any{"mode": "output_json", "value": map[string]any{"approved": true}}}
+	res, err := p.Execute(context.Background(), pubClaim(cfg), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+		t.Fatalf("status/class = %s/%s, want failed/infra (%s)", res.Status, res.ErrorClass, res.Detail)
+	}
+	if len(bytesFake.puts) != 0 || len(rows.calls) != 0 {
+		t.Errorf("unbound-boundary publish wrote puts=%d rows=%d, want 0/0", len(bytesFake.puts), len(rows.calls))
+	}
+	if !strings.Contains(res.Detail, "boundary") {
+		t.Errorf("detail does not name the missing boundary: %s", res.Detail)
 	}
 }

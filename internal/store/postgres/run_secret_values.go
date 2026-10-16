@@ -280,6 +280,16 @@ func (s *ArtifactPublishSecretScan) Execute(ctx context.Context, c worker.Attemp
 
 	publish := *s.Publish
 	publish.Redact = redact
+	// The § 4 step 10 boundary: like process.exec/agent.acp, a succeeded
+	// artifact.publish must record a durable run_checkpoints row, and the store
+	// refuses one with no volume (D-024). The workspace row + volume are § 4
+	// step 3's, prepared by the RunWorkspaceExecutor wrapper before this call, so
+	// resolving them through the ledger-backed RunWorkspaces is the same door the
+	// other kinds use — never an invented volume. A run with no prepared
+	// workspace makes checkpointFor report bound=false and the attempt fails infra.
+	if publish.Checkpoints == nil {
+		publish.Checkpoints = &RunWorkspaces{Pool: s.Values.Pool}
+	}
 	return publish.Execute(ctx, c, sink)
 }
 
