@@ -70,7 +70,7 @@ The rules that follow, each of which is the shape of a bug we found rather than 
 4. **Group boxes are computed after layout, deepest scope first**, from the children's bounding
    box, plus `GROUP_PAD = 12` padding and a `GROUP_BAR = 22` title bar; dagre's own cluster
    width/height are ignored because they know nothing about the bar.
-5. **Determinism**: fixed `NODE_SIZE = 200×60`, `rankdir: "LR"`, `nodesep: 20`, `ranksep: 56`, and
+5. **Determinism**: fixed `NODE_SIZE = 200×60` (amended — see Amendment 1), `rankdir: "LR"`, `nodesep: 20`, `ranksep: 56`, and
    insertion in document order. `layout.test.ts` asserts a second layout of the same document is
    identical, which is what makes the preview screenshots and DOM counts reviewable.
 6. **Degradation is drawn, not dropped.** A scope with an empty body is an `empty_body` compiler
@@ -158,3 +158,28 @@ The rules that follow, each of which is the shape of a bug we found rather than 
 - Revisit if: definitions grow past ~40 concrete nodes (then pan/zoom and rank chunking), or an
   `edge labels` requirement arrives from the editor brief — both need an amendment here, not a new
   ADR, because neither changes the join rule or the cluster-edge rule.
+
+## Amendment 1 — 2026-10-16: content-sized nodes
+
+Commit `e39fa27` replaced rule 5's fixed `NODE_SIZE = 200×60` with a box measured from the
+node's own id. What changed in `layout.ts`:
+
+- `NODE_SIZE` is now the *floor*, `{ width: 108, height: 60 }`, and `NODE_MAX_WIDTH = 220` the
+  ceiling. `nodeBoxFor(id, bindings)` clamps the measured id width (+`NODE_BINDING_CHIP = 26`
+  when a `<n>` chip draws, +`NODE_PAD_X = 20`) into that range; past 220 the id wraps and the
+  box grows one row (`NODE_ID_LINE = 16` + `NODE_LINE_GAP = 3`) per line above the 60 floor.
+  Only the id drives width — the kind/state line (`NODE_KIND_LINE = 14`) may ellipsize.
+- Scope geometry followed: the bar and foot now *grow* with their wrapped text
+  (`scopeHeaderLabel` measured via `wrappedLineCount` at `GROUP_LABEL_PX = 11`, rows
+  `GROUP_LABEL_LINE = 14`, inset `GROUP_LABEL_INSET = 8`), so the widened children can
+  never push a bar or `↻ …` foot onto a neighbour.
+
+Why: a live screenshot of the definition-only view showed clipped ids (`emit_ite…`) and clipped
+`pending` words. The id is the only name an expression may use, so a graph showing `emit_ite…`
+shows a name that does not exist; and the definition-only rule is that no run-state words draw
+without run states (rule 3's join yields none for a definition), so state text must never be
+laid out as if it were there.
+
+What stays: rule 5's determinism is untouched. `nodeBoxFor`, `measureText` and the font-metric
+advances are pure functions of the document — no DOM measuring — insertion stays in document
+order, and `layout.test.ts` still asserts a second layout of the same document is identical.
