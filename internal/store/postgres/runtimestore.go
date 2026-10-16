@@ -659,6 +659,20 @@ func writeRowsTx(ctx context.Context, tx pgx.Tx, st *runtime.State, hydrated hyd
 		if err := updateAttemptTx(ctx, tx, id, a); err != nil {
 			return err
 		}
+		// ADR-0023 § 4 step 1's decrement is not the worker's private debt. The
+		// engine terminalizes attempts on behalf of writers that can never reach
+		// RunStore.FinishAttempt — § 5.4 pass 1's lease interrupt, pass 5's lost
+		// workspace, a run cancel's cascade, § 5.3's human takeover hand-off, a
+		// control-plane fail — and this write-back is the single place all of
+		// them land. The slot goes back in THIS transaction, exactly once: the
+		// diff's own previous status (hydrated under the run row lock) must have
+		// been non-terminal, so a second pass over an already-terminal row writes
+		// nothing here.
+		if !attemptStatusTerminal(old.Status) && attemptStatusTerminal(a.Status) {
+			if err := releaseWorkerSlotTx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 	}
 	for _, ap := range st.Approvals {
 		id := rteColID(runID, ap.ID)

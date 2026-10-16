@@ -555,10 +555,11 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 		if err := closeAttemptTurnTx(ctx, tx, c, in); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE workers SET active_attempts = active_attempts - 1
-			WHERE id = $1::uuid AND active_attempts > 0`, c.WorkerID); err != nil {
-			return fmt.Errorf("postgres: release attempt capacity on worker %s: %w", c.WorkerID, err)
+		// § 4 step 1: the slot the claim took comes back in THIS transaction,
+		// never on a later tick — runCheckFence proved the attempt was
+		// leased/running, so this is the transition's exactly-once release.
+		if err := releaseWorkerSlotTx(ctx, tx, c.AttemptID); err != nil {
+			return err
 		}
 		for _, ev := range in.Events {
 			if _, err := runAppendTx(ctx, tx, c.RunID, c.NodeExecutionID, c.AttemptID, ev); err != nil {
@@ -567,6 +568,54 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 		}
 		return nil
 	})
+}
+
+// ------------------------------------------- worker capacity accounting
+
+// attemptTerminalStatuses mirrors the attempts.status CHECK's terminal arm
+// (contract § 1). A queued/leased/running attempt HOLDS one slot on its
+// worker's capacity; a terminal one holds none — which is exactly what exit
+// gates C3/C9a measure (`workers.active_attempts` must equal the ledger of
+// non-terminal attempts per worker).
+var attemptTerminalStatuses = map[string]bool{
+	"succeeded": true, "failed": true, "cancelled": true, "interrupted": true,
+}
+
+// attemptStatusTerminal reports whether an attempt status releases capacity.
+// The empty status and every non-terminal status answer false.
+func attemptStatusTerminal(status string) bool { return attemptTerminalStatuses[status] }
+
+// releaseWorkerSlotTx gives back the ONE capacity slot an attempt holds on its
+// owning worker, inside the caller's transaction (ADR-0023 § 4 step 1: the
+// decrement rides the attempt's terminal write). Every path that terminalizes an
+// attempt owes this call — the worker's own boundary commit is only the common
+// one; the reconciler's lease interrupt, a run cancel's cascade, a human
+// takeover's hand-off and a control-plane failure all end the attempt's claim on
+// the worker too. A slot that is never released permanently mutes the claim
+// predicate `wr.active_attempts < wr.capacity` (runClaimPredicate above): the
+// worker is online with free capacity in every operator's view and can never
+// claim again.
+//
+// Exactly-once is the CALLER's proof, not this statement's: it only fires for a
+// transition whose PREVIOUS status was non-terminal, which the fenced worker
+// commit establishes under `FOR UPDATE` (runCheckFence refuses a terminal
+// attempt) and the engine's write-back establishes against its hydration
+// snapshot, taken under the run row lock. The `active_attempts > 0` guard is the
+// backstop that keeps a mis-call from going negative (workers active_attempts
+// CHECK), and a worker row that is already gone releases nothing.
+//
+// The worker is read from the attempt row itself, so the slot always goes back
+// to the worker that was counted at claim time — never to a caller's memory of
+// who owned the attempt.
+func releaseWorkerSlotTx(ctx context.Context, tx pgx.Tx, attemptID string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE workers w SET active_attempts = w.active_attempts - 1
+		FROM attempts a
+		WHERE a.id = $1::uuid AND w.id = a.worker_id AND w.active_attempts > 0`,
+		attemptID); err != nil {
+		return fmt.Errorf("postgres: release attempt slot for attempt %s: %w", attemptID, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------- paired turn
