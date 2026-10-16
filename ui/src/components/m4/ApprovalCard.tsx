@@ -21,6 +21,7 @@ import { Field, Textarea } from "../ds/Field";
 import { StatusChip } from "../ds/Row";
 import { APPROVAL_STATE, stateOf } from "../ds/states";
 import { formatRemaining, formatTime } from "../../lib/format";
+import { PlanView, splitPlanText } from "./PlanView";
 
 export interface ApprovalCardProps {
   approval: ApprovalDetail;
@@ -55,6 +56,9 @@ export function ApprovalCard({
 }: ApprovalCardProps) {
   const [comments, setComments] = useState("");
   const state = stateOf(APPROVAL_STATE[approval.state]);
+  // A summary can be prose, or a title line with the planner's JSON document
+  // glued to it. The JSON is decoded rather than printed (`PlanView`).
+  const summary = splitPlanText(approval.summary);
   const open = approval.state === "pending";
   const deadline = new Date(approval.deadline_at).valueOf();
   const remainingMs = Number.isNaN(deadline) ? null : deadline - now();
@@ -75,9 +79,14 @@ export function ApprovalCard({
       className={className}
     >
       <div className="space-y-[10px] p-[10px]">
-        <p className="text-[13.5px] leading-[20px]" data-testid="approval-summary">
-          {approval.summary}
-        </p>
+        <div data-testid="approval-summary">
+          {summary.title ? (
+            <p className="text-[13.5px] leading-[20px]" data-testid="approval-summary-title">
+              {summary.title}
+            </p>
+          ) : null}
+          <PlanView text={summary.body} className="mt-[2px]" />
+        </div>
 
         <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">
           <div className="flex gap-2">

@@ -160,3 +160,33 @@ describe("a decision refused by the server", () => {
     expect(screen.getByTestId("approval-approve").textContent).toBe("Posting…");
   });
 });
+
+describe("a gate whose summary carries the plan document", () => {
+  /** What the fixture pipeline actually serves: a title line and the planner's
+   * JSON glued into one string (`samplePipeline`'s gate summary). */
+  const planGate = (body: string) => ({ ...pendingApproval, summary: body });
+  const plan = JSON.stringify({
+    goal: "Document and fix add() in hello.py",
+    steps: [{ id: 1, title: "Find the file and its tests", actions: ["Call hello.py"] }],
+    risks: ["The repo was never read"],
+  });
+
+  it("keeps the title line and renders the plan as a plan, not as JSON", () => {
+    render(
+      <ApprovalCard approval={planGate(`Plan for hello.py\n${plan}\n`)} canDecide now={now} />,
+    );
+    expect(screen.getByTestId("approval-summary-title").textContent).toBe("Plan for hello.py");
+    expect(screen.getByTestId("plan-goal").textContent).toBe("Document and fix add() in hello.py");
+    expect(screen.getByTestId("plan-steps").textContent).toContain("Find the file and its tests");
+    expect(screen.getByTestId("plan-risks").textContent).toContain("repo was never read");
+    expect(screen.getByTestId("approval-summary").textContent).not.toContain('"done_when"');
+  });
+
+  it("leaves a prose summary as prose", () => {
+    render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
+    expect(screen.queryByTestId("approval-summary-title")).toBeNull();
+    expect(screen.getByTestId("approval-summary").textContent).toContain(
+      "four files, one migration",
+    );
+  });
+});
