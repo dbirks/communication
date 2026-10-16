@@ -445,9 +445,10 @@ class GateFirstSequencingTest(unittest.TestCase):
         def sleep(self, secs):
             self.now += secs
 
-    def script(self, statuses, rows, decide=True):
+    def script(self, statuses, rows, decide=True, target=None):
         """Run wait_live_past_gate against canned ledger reads (one status +
-        one live-claim row per poll). Returns (result, gate_calls, checks)."""
+        one live-claim row per poll). Returns (result, gate_calls, checks).
+        `target` is the node the leg aims at (None = C4's 'anything that is live')."""
         calls, checks, pos = [], [], [0]
         pairs = list(zip(statuses, rows))
 
@@ -477,7 +478,7 @@ class GateFirstSequencingTest(unittest.TestCase):
         m.approve_gate = approve
         m.check = check
         try:
-            out = m.wait_live_past_gate(object(), "p-1", "run-1", 60, "C5a")
+            out = m.wait_live_past_gate(object(), "p-1", "run-1", 60, "C5a", target=target)
         finally:
             (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate,
              m.check) = orig
@@ -520,6 +521,133 @@ class GateFirstSequencingTest(unittest.TestCase):
         self.assertEqual(m.gate_then_live_action("completed", False, True),
                          ("terminal", True))
         self.assertEqual(m.gate_then_live_action("queued", False, True), ("wait", True))
+
+    def test_a_claim_at_another_node_is_not_the_target(self):
+        """live8/C6.out: the kill landed on /plan because the poll took WHATEVER was
+        held; /plan is held BEFORE the gate, and the retry then named a node that did
+        not exist. With a target, a claim at another node is not 'live'."""
+        plan = dict(self.LIVE, key="/plan")
+        self.assertEqual(m.gate_then_live_action("running", plan, True, m.C_LIVE_TARGET_KEY),
+                         ("wait", True), "a pre-gate /plan claim is waited past, not killed")
+        self.assertEqual(m.gate_then_live_action("running", plan, False, m.C_LIVE_TARGET_KEY),
+                         ("wait", False), "a held claim somewhere else releases no kill "
+                         "and decides no gate — the run is simply not at the target yet")
+        held = dict(self.LIVE, key=m.C_LIVE_TARGET_KEY)
+        self.assertEqual(m.gate_then_live_action("running", held, True, m.C_LIVE_TARGET_KEY),
+                         ("live", True))
+        self.assertEqual(m.gate_then_live_action("running", held, True), ("live", True),
+                         "no target: C4's behaviour is unchanged — any claim is a claim")
+
+    def test_the_wait_waits_past_a_pre_gate_claim_to_the_target(self):
+        """/plan held (hold_seconds), the gate, then the target's own held attempt:
+        the wait must return the TARGET row, not the first thing it saw live."""
+        out, calls, checks = self.script(
+            ["running", "waiting_human", "waiting_human", "running"],
+            [dict(self.LIVE, key="/plan"), None, None,
+             dict(self.LIVE, key=m.C_LIVE_TARGET_KEY)],
+            target=m.C_LIVE_TARGET_KEY)
+        self.assertEqual(out["key"], m.C_LIVE_TARGET_KEY, f"returned {out!r}")
+        self.assertEqual(calls, ["p-1"], "the gate was decided exactly once")
+        self.assertTrue(any("approval gate was decided" in lbl and ok
+                            for lbl, ok in checks), str(checks))
+
+    def test_the_poll_of_a_targeted_wait_is_finer_than_2s(self):
+        """A 45s hold is only findable if the poll is faster than the steps it is
+        chasing; live8/W2.out's 'finish faster than the poll's 2s interval' says the
+        2s tick was the driver's own blindness. The targeted tick is a constant."""
+        self.assertLess(m.C_LIVE_POLL_S, 2)
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = src[src.index("def wait_live_past_gate("):src.index("def c5_kill_landed_verdicts")]
+        self.assertIn("tick = C_LIVE_POLL_S if target else 2", body)
+        self.assertIn("time.sleep(tick)", body)
+
+
+class TargetPickerTest(unittest.TestCase):
+    """The target-node picker C5/C6/W5/W6 aim their fault at (live8: the kill landed
+    on /plan, held BEFORE the approval gate)."""
+
+    def test_default_target_is_the_first_loop_body(self):
+        self.assertEqual(m.C_LIVE_TARGET_KEY, "/build_until_verified[1]/implement")
+        self.assertEqual(m.C6_KILL_KEY, m.C_LIVE_TARGET_KEY,
+                         "one name for the kill's target, not two that can drift")
+
+    def test_no_target_means_any_held_claim(self):
+        self.assertTrue(m.live_row_matches_target({"key": "/plan"}))
+        self.assertTrue(m.live_row_matches_target({"key": "/plan"}, None))
+        self.assertFalse(m.live_row_matches_target(None))
+        self.assertFalse(m.live_row_matches_target({}))
+
+    def test_a_target_asks_for_that_node_alone(self):
+        self.assertTrue(m.live_row_matches_target({"key": m.C_LIVE_TARGET_KEY},
+                                                  m.C_LIVE_TARGET_KEY))
+        self.assertFalse(m.live_row_matches_target({"key": "/plan"}, m.C_LIVE_TARGET_KEY))
+        self.assertFalse(m.live_row_matches_target({"key": None}, m.C_LIVE_TARGET_KEY),
+                         "an unreadable key is not a match — the poll keeps waiting")
+        self.assertFalse(m.live_row_matches_target("/plan", m.C_LIVE_TARGET_KEY),
+                         "a row without a key field cannot be claimed at the target")
+
+    def test_wait_live_attempt_row_filters_the_ledger_read(self):
+        """The read itself stays c5_live_attempt_row's ONE argument (every test in
+        test_c4/c5/c6_logic.py patches it with a one-argument stub); the filter is
+        applied on the row it returns."""
+        seen, plan = [], {"id": "a-1", "key": "/plan", "worker": "worker-a"}
+
+        def fake(run_id):
+            seen.append(run_id)
+            return plan
+        orig = m.c5_live_attempt_row
+        m.c5_live_attempt_row = fake
+        try:
+            self.assertIs(m.wait_live_attempt_row("r-1"), plan, "no target: the row stands")
+            self.assertIsNone(m.wait_live_attempt_row("r-1", m.C_LIVE_TARGET_KEY),
+                              "with a target, /plan is not a live attempt")
+            self.assertEqual(seen, ["r-1", "r-1"], "one ledger read per poll")
+        finally:
+            m.c5_live_attempt_row = orig
+
+
+class TargetCallSiteTest(unittest.TestCase):
+    """Which legs AIM their wait at a node — read off the driver's own call sites.
+    C4 is deliberately absent: it fences whatever lease it catches (live8 proves that
+    works for a pause) and its tests pin the no-target behaviour."""
+
+    def kwargs_of(self, fn_name, callee):
+        import ast
+        tree = ast.parse(open(self.driver(), encoding="utf-8").read())
+        out = []
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                            and sub.func.id == callee):
+                        out.append({k.arg: ast.unparse(k.value) for k in sub.keywords})
+        assert out, f"{fn_name} never calls {callee}"
+        return out
+
+    def driver(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_m4_exit.py")
+
+    def test_the_kill_legs_aim_at_the_target_node(self):
+        for fn in ("c5", "c6", "w2"):
+            for kw in self.kwargs_of(fn, "wait_live_past_gate"):
+                self.assertIn(kw.get("target"), ("C_LIVE_TARGET_KEY", "C6_KILL_KEY"),
+                              f"{fn} waits for any held attempt instead of the kill's "
+                              f"own node: {kw}")
+
+    def test_c4_keeps_the_any_live_claim_default(self):
+        for kw in self.kwargs_of("c4", "wait_live_past_gate"):
+            self.assertNotIn("target", kw, "C4's fence lands on whatever lease it catches "
+                                           "(it passes 20/1 on live8 — do not move it)")
+
+    def test_the_shared_kill_sequence_aims_at_the_target_too(self):
+        import ast
+        src = open(self.driver(), encoding="utf-8").read()
+        tree = ast.parse(src)
+        fn = next(n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "w_kill_worker_mid_node")
+        self.assertEqual([ast.unparse(d) for d in fn.args.defaults][-1], "C_LIVE_TARGET_KEY",
+                         "W5/W6 inherit the kill's target node from the shared sequence")
 
 
 if __name__ == "__main__":

@@ -835,6 +835,46 @@ def run_status(run_id):
         return f"PSQL_ERROR {e}"[:160]
 
 
+def c1_declared_input_names_sql(run_id):
+    """The input names the run's PINNED revision declares — the read C1e compares its
+    run_inputs count against. It comes from the ledger copy of the document (the
+    published canonical_document), not from a number in this file: cefe995 gave the
+    twin a sixth declared input (hold_seconds, default 0) and live8/C1.out still
+    FAILed the row on `5 validated rows`."""
+    return ("SELECT k FROM runs r "
+            "JOIN pipeline_revisions pr ON pr.id = r.pipeline_revision_id, "
+            "jsonb_object_keys(pr.canonical_document #> '{spec,inputs,properties}') AS k "
+            f"WHERE r.id = '{run_id}' ORDER BY k")
+
+
+def c1e_inputs_verdict(declared, origins, required=("goal", "repository")):
+    """§ 7.1 C1e's validated-inputs arm as ONE verdict: a run_inputs row per input the
+    pinned revision declares (submitted values and declared defaults alike), with no
+    extra row, and the required inputs carrying origin='submitted'. `declared` is the
+    revision's own name list, `origins` the run's 'name=origin' rows — both read, never
+    assumed, so the expected count tracks the document. ok=None means the revision did
+    not read back: the caller reports a GAP rather than guessing a number.
+    Pure — e2e/m4/test_c1_logic.py pins it."""
+    names = sorted({str(n).strip() for n in (declared or []) if str(n).strip()})
+    rows = [str(o).strip() for o in (origins or []) if "=" in str(o)]
+    seen = sorted({o.split("=")[0].strip() for o in rows})
+    label = ("C1e run_inputs: one validated row per input the pinned revision declares "
+             f"({len(names)} declared: {','.join(names) if names else 'unreadable'}; "
+             "README: read the document, not the old 2-rows prose)")
+    if not names:
+        return (label, None,
+                "the pinned revision's spec.inputs.properties did not read back, so the "
+                f"expected key set is unknown and no count is asserted (run_inputs "
+                f"observed={rows})")
+    missing = [n for n in names if n not in seen]
+    extra = [n for n in seen if n not in names]
+    not_submitted = [n for n in required if f"{n}=submitted" not in rows]
+    ok = not missing and not extra and not not_submitted
+    return (label, ok,
+            f"count={len(rows)} declared={len(names)} missing={missing} extra={extra} "
+            f"required_not_submitted={not_submitted} origins={rows}")
+
+
 def c1_run_digest_sql(run_id):
     """§ 7.1 C1e's digest read. runs carries revision_digest + plan_digest, but
     digest_scope is a column of the PINNED pipeline_revisions row, never of runs
@@ -900,6 +940,11 @@ def dump_run_evidence(client, run_id):
     """Failure honesty: dump the run row, the node tree and the last journal
     rows BEFORE the FAIL — an exit run that times out must arrive with its
     evidence already printed."""
+    try:
+        show(f"run_inputs {run_id} (what the API validated + its origins)", psql(
+            c1_run_inputs_sql(run_id)))
+    except RuntimeError as e:
+        show("run_inputs", str(e))
     try:
         show(f"runs row {run_id}", psql(
             f"SELECT status || ' cause=' || COALESCE(failed_cause,'-') || "
@@ -1080,6 +1125,12 @@ def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
 C_FAULT_HOLD_SECONDS = 45
 C_FAULT_HOLD_STEPS = 4          # plan + implement + test + review, each held open
 C_FAULT_LEASE_S = 45            # lease 30s + reconciler tick 15s (§ 7.1 C4a)
+# W2 is not a fault leg, but its row watches a page MID-LEASE: live8/W2.out GAPped
+# "no attempt was sampled MID-LEASE … the twin's process.exec attempts finish faster
+# than the poll's 2s interval", so its run holds each step open just long enough to
+# be sampled (10s > the 2s poll + the sample's own round trip) and no longer — the
+# leg's timings, iterations and journal comparisons stay as they are.
+W2_HOLD_SECONDS = 10
 
 
 def with_hold(inputs, seconds=C_FAULT_HOLD_SECONDS):
@@ -1107,6 +1158,159 @@ def hold_window(cap, steps=C_FAULT_HOLD_STEPS):
     except (TypeError, ValueError):
         base = 0
     return max(base, hold_cover(steps))
+
+
+# --- did the hold the leg POSTED actually happen? ----------------------------
+#
+# live8/C5.out GAPped "no attempt … was ever held by a worker" on a run whose every
+# step closed in <1s, while the leg had posted hold_seconds=45. Two readings were
+# possible and the report told them apart in neither: the run never carried the input,
+# or the input reached the run and the mounted fixture script ignored it. The reads
+# below answer both from the ledger and the host, so a lab artefact can never be
+# graded as a product gap again (the legs attach to a RUNNING stack with `--ready`,
+# and only `--up` regenerates .harness/m4-fixtures/bin/m4-exit.sh).
+FIXTURE_SCRIPT = os.path.join(FIXTURE_HOST, "bin", "m4-exit.sh")
+FIXTURE_REGEN = "bash e2e/m4/make_fixture_repo.sh"
+
+
+def c1_run_inputs_sql(run_id):
+    """Every run_inputs row of one run with its origin and validated value: the
+    record of what the API accepted, which is the only read that says whether a
+    fault leg's hold_seconds reached the run at all."""
+    return ("SELECT name || '=' || origin || ' ' || value::text FROM run_inputs "
+            f"WHERE run_id = '{run_id}' ORDER BY name")
+
+
+def parse_run_inputs(text):
+    """'name=origin value' lines -> [{name, origin, value}]. Pure; a ragged line is
+    dropped, never verdicted (the raw SELECT is shown alongside)."""
+    out = []
+    for line in (text or "").splitlines():
+        head, _, value = line.strip().partition(" ")
+        name, sep, origin = head.partition("=")
+        if name and sep and origin:
+            out.append({"name": name, "origin": origin, "value": value})
+    return out
+
+
+def run_inputs_read(run_id):
+    """[{name, origin, value}] for a run, or None when the ledger would not answer."""
+    try:
+        return parse_run_inputs(psql(c1_run_inputs_sql(run_id)))
+    except RuntimeError as e:
+        show("run_inputs", str(e)[:200])
+        return None
+
+
+def held_attempt_window_sql(run_id):
+    """The longest stretch any worker HELD one of this run's attempts, whole seconds.
+    `coalesce(started_at, scheduled_at)` so a lease that never got its started_at still
+    measures; `coalesce(finished_at, now())` so one still open is not read as zero."""
+    return ("SELECT coalesce(max(extract(epoch from (coalesce(finished_at, now()) - "
+            "coalesce(started_at, scheduled_at)))), 0)::int FROM attempts "
+            f"WHERE run_id = '{run_id}' AND worker_id IS NOT NULL")
+
+
+def held_attempt_window_s(run_id):
+    """Longest stretch any worker HELD one of this run's attempts, whole seconds —
+    the read that says whether the hold took effect: an unhurried printf step answers
+    0, a 45s hold answers ~45. None when the ledger is unreadable."""
+    try:
+        return _int(psql(held_attempt_window_sql(run_id)))
+    except RuntimeError as e:
+        show("held attempt window", str(e)[:200])
+        return None
+
+
+def fixture_hold_state(path=FIXTURE_SCRIPT):
+    """Does the host fixture script the workers mount honour M4_HOLD_SECONDS?
+    'honours' | 'stale' (the pre-hold script, which sleeps for nothing) |
+    'unreadable'. Reads the file — it never regenerates or edits it."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return "honours" if "M4_HOLD_SECONDS" in fh.read() else "stale"
+    except OSError:
+        return "unreadable"
+
+
+def hold_diagnosis(posted, held_s, fixture_state, need_s=None):
+    """One honest sentence for a fault leg that posted `posted` hold seconds and
+    never saw a held attempt. Pure. It names which of the three explanations the
+    reads support — the input never reached the run, the mounted fixture ignores it,
+    or the hold is honoured but shorter than the fault's own window — and stays
+    silent when nothing contradicts the leg (the caller then GAPs on its own words)."""
+    need = _int(need_s if need_s is not None else posted)
+    if not posted:
+        return ""
+    rows = f"hold_seconds={posted} posted, longest worker-held attempt observed {held_s}s"
+    if fixture_state == "stale":
+        return (f"LAB FAULT, not a product gap: {rows} and the mounted fixture script "
+                f"{FIXTURE_SCRIPT} has no M4_HOLD_SECONDS at all — it predates the hold "
+                f"({FIXTURE_REGEN}); bring the stack up with --up (only that path "
+                "regenerates the fixture) before this leg is measurable")
+    if fixture_state == "unreadable":
+        return (f"{rows} and the mounted fixture script {FIXTURE_SCRIPT} could not be read "
+                f"— whether the hold is honoured is unknown ({FIXTURE_REGEN} regenerates it)")
+    if held_s is None:
+        return f"{rows}: the attempt ledger did not read, so the hold cannot be confirmed"
+    if held_s < min(need, 5):
+        return (f"LAB FAULT, not a product gap: {rows} although the mounted fixture honours "
+                f"M4_HOLD_SECONDS — the steps still closed in under {held_s + 1}s, so the "
+                "hold never reached the child process (check the pinned revision declares "
+                "hold_seconds and the env splice on plan/implement/test/review)")
+    if need and held_s < need:
+        return (f"{rows}: the hold is honoured but shorter than the {need}s the fault "
+                "window needs — the target node may simply not have been reached yet")
+    return ""
+
+
+def fault_hold_evidence(client, run_id, tag, expected=C_FAULT_HOLD_SECONDS):
+    """Dump the three reads that explain a fault leg's 'nothing was ever held' GAP —
+    the run's validated inputs, the longest observed held attempt, and whether the
+    mounted fixture honours the hold — and return the diagnosis sentence for the
+    caller's GAP line. Evidence only: it never verdicts. `expected` is what the LEG
+    posted, so an input that never reached the run is named as its own lab fault."""
+    rows = run_inputs_read(run_id)
+    show(f"{tag} run_inputs (what the API validated for run {run_id})",
+         "\n".join(f"{r['name']}={r['origin']} {r['value']}" for r in (rows or []))
+         or "(no run_inputs rows readable)")
+    posted = next((r for r in (rows or []) if r["name"] == "hold_seconds"), None)
+    posted_s = _int(str((posted or {}).get("value", "0")).strip('"'))
+    held_s = held_attempt_window_s(run_id)
+    state = fixture_hold_state()
+    if expected and posted_s != _int(expected):
+        why = (f"LAB FAULT, not a product gap: this leg posts hold_seconds={expected} but "
+               f"run {run_id}'s validated row reads "
+               f"{(posted or {}).get('origin', 'MISSING')}={posted_s} — the input never "
+               "reached the run, so no step holds its attempt open and no fault can land "
+               "on a live one (is hold_seconds declared in the pinned revision's "
+               "spec.inputs.properties?)")
+    else:
+        why = hold_diagnosis(posted_s, held_s, state, need_s=expected)
+    show(f"{tag} was the hold honoured? (posted={posted_s}s, longest held "
+         f"attempt={held_s}s, mounted fixture {state})",
+         why or "nothing contradicts the leg: the inputs carried the hold and the "
+                "fixture honours it — the target node was simply never leased")
+    return why
+
+
+def require_fault_hold(tag, expected=C_FAULT_HOLD_SECONDS):
+    """Precondition every leg that POSTS a hold owes before it spends its window: the
+    fixture the workers mount must be able to honour it. The legs attach to a RUNNING
+    stack (`--ready`), and only `--up` regenerates .harness/m4-fixtures/bin/m4-exit.sh,
+    so a fixture left from before the hold makes 'nothing was ever held by a worker'
+    (live8/C5.out, live8/W5.out, live8/W6.out) a lab artefact — said up front, with the
+    command that fixes it, instead of after 300s of polling. An unreadable fixture is
+    not evidence of a lab fault, so the leg runs and the reads say the rest."""
+    if fixture_hold_state() != "stale":
+        return True
+    gap(f"{tag} the mounted fixture can hold an attempt open",
+        f"{FIXTURE_SCRIPT} carries no M4_HOLD_SECONDS, so the hold_seconds={expected} this "
+        "leg posts sleeps nothing and every process.exec step closes in <1s — no kill, "
+        "freeze or restore can land on a live attempt. Regenerate the fixture "
+        f"({FIXTURE_REGEN}) and bring the stack up with --up (the only path that "
+        "regenerates it) before this leg is measurable")
+    return False
 
 
 def post_c1_run(client, facts, idem, label, hold_seconds=None):
@@ -1161,15 +1365,25 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
     ok_all &= check("C1d /approve,/verdict control_plane; loop bodies worker (two writers, "
                     "ADR-0023 § 3)", not ctrl, str(ctrl))
 
-    # C1e — validated inputs, digests, checkpoints.
-    n_inputs = int(psql(f"SELECT count(*) FROM run_inputs WHERE run_id = '{run_id}'") or 0)
-    origins = psql(f"SELECT name || '=' || origin FROM run_inputs WHERE run_id = '{run_id}' "
-                   f"ORDER BY name")
-    ok_all &= check("C1e run_inputs: 5 validated rows (4 submitted + declared default; "
-                    "README: read the manifest, not the old 2-rows prose)",
-                    n_inputs == 5 and all(f"{n}=submitted" in origins
-                                          for n in ("goal", "repository")),
-                    f"count={n_inputs} origins={origins.splitlines()}")
+    # C1e — validated inputs, digests, checkpoints. The EXPECTED row set is the pinned
+    # revision's own declared inputs (a number here goes stale the moment the document
+    # gains one — live8/C1.out: `count=6 ... FAIL 5 validated rows`).
+    try:
+        origins = psql(f"SELECT name || '=' || origin FROM run_inputs WHERE run_id = "
+                       f"'{run_id}' ORDER BY name").splitlines()
+    except RuntimeError as e:
+        show("run_inputs (psql)", str(e)[:200])
+        origins = []
+    try:
+        declared = psql(c1_declared_input_names_sql(run_id)).splitlines()
+    except RuntimeError as e:
+        show("declared inputs of the pinned revision (psql)", str(e)[:200])
+        declared = []
+    v_label, v_ok, v_detail = c1e_inputs_verdict(declared, origins)
+    if v_ok is None:
+        gap(v_label, v_detail)
+    else:
+        ok_all &= check(v_label, v_ok, v_detail)
     dig = psql(c1_run_digest_sql(run_id)).strip().split("|")
     ok_all &= check(f"C1e run digests match the manifest (which came from publish) verbatim",
                     len(dig) == 3 and dig[0] == mf(facts, "revision_digest")
@@ -2792,13 +3006,47 @@ def c5_freeze_proof(status_stop, status_after):
 # held by a worker" (live5/C5.out, live5/C4.out, live4/C6.out) — a driver bug, not
 # a product gap. The gate is decided first, through the same API route C1b/C9 use,
 # as the designated approver.
-def gate_then_live_action(status, has_live, approved):
+# The node the fault legs aim at: the twin's first loop body, which the § 7.0 twin
+# holds open (hold_seconds) AFTER /approve. /plan is held too — but it is held BEFORE
+# the gate, so a picker that takes whatever is live aims the kill at /plan
+# (live8/C6.out) and the retry the leg then posts names
+# /build_until_verified[1]/implement, a node that does not exist yet.
+C_LIVE_TARGET_KEY = "/build_until_verified[1]/implement"
+C_LIVE_POLL_S = 0.5    # a targeted poll has to be finer than the thing it is chasing
+
+
+def live_row_matches_target(row, target=None):
+    """Is this held-attempt read the node the leg aims at? `target=None` keeps the
+    behaviour C4/C5's tests pin: ANY live claim is actionable. Pure."""
+    if not row:
+        return False
+    if not target:
+        return True
+    key = row.get("key") if isinstance(row, dict) else None
+    return key is not None and str(key) == str(target)
+
+
+def wait_live_attempt_row(run_id, target=None):
+    """The live-claim read a fault leg acts on: whatever the ledger holds when `target`
+    is None, and ONLY a claim at `target` otherwise — the picker C5/C6/W5/W6 need,
+    because the twin holds /plan open ahead of the gate and a bare read aimed every
+    kill there (live8/C6.out). The read itself stays `c5_live_attempt_row`'s single
+    argument (e2e/m4/test_c4/c5/c6_logic.py patch it with one-argument stubs), so the
+    filter lives here: a claim at another node reads as 'nothing live yet' and the
+    poll keeps waiting instead of killing the wrong node."""
+    row = c5_live_attempt_row(run_id)
+    return row if live_row_matches_target(row, target) else None
+
+
+def gate_then_live_action(status, has_live, approved, target=None):
     """The C5a poll's next move, given the run's status, whether the ledger shows
-    an attempt a worker holds right now, and whether this gate has been decided.
-    Returns (action, approved) with action 'live' (aim the kill or the freeze) |
-    'terminal' (the run is over, nothing to act on) | 'approve' (decide the gate
-    first) | 'wait'. Pure — test_c5_logic.py pins the ordering."""
-    if has_live:
+    an attempt a worker holds right now (a bool, or the claim ROW itself — with
+    `target` set, only a row AT that node counts), and whether this gate has been
+    decided. Returns (action, approved) with action 'live' (aim the kill or the
+    freeze) | 'terminal' (the run is over, nothing to act on) | 'approve' (decide
+    the gate first) | 'wait'. Pure — test_c5_logic.py pins the ordering."""
+    held = has_live if isinstance(has_live, bool) else live_row_matches_target(has_live, target)
+    if held:
         return "live", approved
     if status in ("completed", "failed", "cancelled", "interrupted"):
         return "terminal", approved
@@ -2824,17 +3072,28 @@ def c5_live_attempt_row(run_id):
         return None
 
 
-def wait_live_past_gate(client, project_id, run_id, timeout, tag):
+def wait_live_past_gate(client, project_id, run_id, timeout, tag, target=None):
     """Decide the approval gate, THEN wait for an attempt a worker actually holds
     — the order § 7.1 C4a/C5a/C6b all assume. Alice is the run's designated
     approver (the same POST /api/v1/approvals/{id}/decide route C1b and C9
     exercise). `tag` labels which gate's report the verdict lines belong to.
+    `target` aims the wait at one node (C_LIVE_TARGET_KEY for the kill/fence legs):
+    a held attempt anywhere else is NOT the fault's target, so it is waited past
+    rather than acted on. None keeps C4's behaviour — a live claim is a live claim.
     Returns the live attempt row or None."""
     approved, deadline = False, time.time() + timeout
+    tick = C_LIVE_POLL_S if target else 2
+    status, status_at = "", 0.0
     while time.time() < deadline:
-        status = run_status(run_id)
-        row = c5_live_attempt_row(run_id)
-        action, approved = gate_then_live_action(status, bool(row), approved)
+        # Each read is a `compose exec psql`, so the cheap-to-change half (is anything
+        # HELD right now — the thing a 45s hold must not slip past) is polled at `tick`
+        # while the run's own status, which moves on the order of seconds, is reused for
+        # a couple of ticks. live8/W2.out's "finish faster than the poll's 2s interval"
+        # was the driver's blindness, not the twin's speed.
+        if time.time() - status_at >= max(tick, 2):
+            status, status_at = run_status(run_id), time.time()
+        row = wait_live_attempt_row(run_id, target)
+        action, approved = gate_then_live_action(status, row, approved, target)
         if action == "live":
             return row
         if action == "terminal":
@@ -2845,7 +3104,7 @@ def wait_live_past_gate(client, project_id, run_id, timeout, tag):
                 check(f"{tag} the approval gate was decided (C1b's route) so there is "
                       "an attempt to act on", True, f"run {run_id} released from "
                       "waiting_human")
-        time.sleep(2)
+        time.sleep(tick)
     if not approved and run_status(run_id) == "waiting_human":
         check(f"{tag} the approval gate was decided (C1b's route)", False,
               f"the {timeout}s window elapsed with the run still waiting_human and "
@@ -2919,6 +3178,8 @@ def c5():
         check("C5: alice signed in", False, "no session — the gate cannot start a run")
         return
     CTX["alice"] = alice
+    if not require_fault_hold("C5a"):
+        return
     run_id = post_c1_run(alice, tw, f"m4x-c5-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
                          "c5", hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
@@ -2930,10 +3191,13 @@ def c5():
     # whatever the crash left behind. The twin parks at /approve with nothing
     # leased (C9a's own sentence), so the old "poll for a live attempt" window
     # elapsed entirely in waiting_human (live5/C5.out).
-    # § 7.1 kills inside a ~40s process.exec; the shipped twin's steps are printfs
-    # that close in <1s, so "read the ledger, then compose kill" races the node to
-    # its own terminal write (live4/C5: /plan had already succeeded and the
-    # reconciler was graded for a death that never happened). The gate therefore
+    # § 7.1 names a ~40s process.exec; the shipped twin's steps are printfs, so the
+    # run posts hold_seconds (C_FAULT_HOLD_SECONDS) and the kill is aimed at
+    # C_LIVE_TARGET_KEY — the held /build_until_verified[1]/implement that sits BEHIND
+    # /approve. /plan is held too, but it is held BEFORE the gate: a picker that takes
+    # whatever is live kills /plan, and the retry this leg then posts names a node that
+    # does not exist yet (live8/C6.out, where the API answered the 500 for that).
+    # The gate therefore
     # freezes the owning worker with SIGSTOP, reads the lease back to PROVE it was
     # live and stayed live while frozen, and only then delivers the SIGKILL § 7.1
     # demands. A target that had already closed before the signal is a WASTED pick
@@ -2971,7 +3235,8 @@ def c5():
     try:
         while tries < C5_KILL_TRIES and not killed:
             live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id,
-                                       hold_window(C5_KILL_POLL_S if tries else 300), "C5a")
+                                       hold_window(C5_KILL_POLL_S if tries else 300), "C5a",
+                                       target=C_LIVE_TARGET_KEY)
             if live is None:
                 if tries:
                     kill_state = "unattainable"
@@ -3059,11 +3324,13 @@ def c5():
 
         if tries == 0:
             dump_run_evidence(alice, run_id)
+            why = fault_hold_evidence(alice, run_id, "C5a")
             gap("C5a a live attempt to kill",
-                f"no attempt on run {run_id} was ever held by a worker within 300s even "
-                f"after the approval gate was put through C1b's decide route (status="
-                f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
-                "nothing below is measurable (evidence dumped above)")
+                f"no attempt on run {run_id} was ever HELD by a worker at "
+                f"{C_LIVE_TARGET_KEY} within the window, even after the approval gate was "
+                f"put through C1b's decide route (status={run_status(run_id)!r}) — with "
+                "nothing running there is no mid-node kill, so nothing below is measurable "
+                "(evidence dumped above)" + (f"; {why}" if why else ""))
             return
         c5_emit(c5_kill_landed_verdicts(kill_state, tries, proven))
         if kill_state != "interrupted" and not (kill_state == "closed" and proven):
@@ -3215,7 +3482,7 @@ def c5():
 # journal says what actually happened to the bytes.
 
 C6_RESTORE_KEY = "/plan"            # the checkpointed boundary the restore resets to
-C6_KILL_KEY = "/build_until_verified[1]/implement"   # the ~40s node C6 kills inside
+C6_KILL_KEY = C_LIVE_TARGET_KEY     # the held post-gate node C6 kills inside (§ 7.1)
 C6_RESTORE_POLICY = "restore_checkpoint"
 C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own named repos volume
 C6_RECOVERY_REASONS = ("volume_changed", "different_worker")
@@ -3865,6 +4132,8 @@ def c6():
              "no restore_checkpoint string found in the validate response's plan: the "
              "restore verdicts below will GAP rather than assume the splice compiled")
 
+    if not require_fault_hold("C6b"):
+        return
     run_id = c7_post_run(alice, twin, rev, f"m4x-c6-restore-{suffix}", "restore twin",
                          hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
@@ -3879,15 +4148,22 @@ def c6():
     # ahead of the node this kill needs, so a bare live-attempt poll spent its
     # whole 300s in waiting_human and reported "no attempt … was ever held by a
     # worker" (live4/C6.out) — the same driver bug C5 had.
-    live = wait_live_past_gate(alice, mf(twin, "project_id"), run_id, hold_window(300), "C6b")
+    # AND the wait is aimed at C6_KILL_KEY: /plan is held open too, but it is held
+    # BEFORE the gate, and killing it left the retry naming
+    # /build_until_verified[1]/implement — a node that did not exist yet, which the
+    # API answered with a 500 (live8/C6.out).
+    live = wait_live_past_gate(alice, mf(twin, "project_id"), run_id, hold_window(300), "C6b",
+                               target=C6_KILL_KEY)
     if live is None:
         dump_run_evidence(alice, run_id)
+        why = fault_hold_evidence(alice, run_id, "C6b")
         gap("C6b a live attempt to kill",
-            f"no attempt on run {run_id} was ever held by a worker within 300s (status="
-            f"{run_status(run_id)!r}) — the gate was decided first, so this is nothing "
-            "ever leasing, not the driver waiting on a parked approval; with nothing "
-            "running there is no mid-node kill, so the restore is unmeasurable "
-            "(evidence dumped above)")
+            f"no attempt on run {run_id} was ever HELD by a worker at {C6_KILL_KEY} within "
+            f"the window (status={run_status(run_id)!r}) — the gate was decided first and "
+            "the wait was aimed at the kill target, so this is nothing ever leasing there, "
+            "not the driver waiting on a parked approval; with nothing running there is no "
+            "mid-node kill, so the restore is unmeasurable (evidence dumped above)"
+            + (f"; {why}" if why else ""))
         return
     att, owner, key = live["id"], live["worker"], live["key"]
     svc = c4_worker_container(owner)
@@ -11637,7 +11913,7 @@ def w2():
     CTX["alice"] = client
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     {"pipeline_revision_id": rev,
-                     "inputs": mf(twin, "inputs", default={}),
+                     "inputs": with_hold(mf(twin, "inputs", default={}), W2_HOLD_SECONDS),
                      "idempotency": f"m4-exit-w2-{int(time.time())}"})
     run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
     if not check("W2 the deterministic twin run the row watches is started",
@@ -11670,8 +11946,14 @@ def w2():
             return
         # The gate is decided FIRST — the twin parks at /approve ahead of the loop the
         # row needs to see iterate (wait_live_past_gate; the same driver bug C4/C5/C6
-        # reported as "no attempt was ever held by a worker").
-        live = wait_live_past_gate(client, project_id, run_id, 300, "W2")
+        # reported as "no attempt was ever held by a worker"). The wait is aimed at
+        # C_LIVE_TARGET_KEY so the held attempt it returns is a POST-GATE one (the run
+        # holds each step W2_HOLD_SECONDS, live8/W2.out: "no attempt was sampled
+        # MID-LEASE … faster than the poll's 2s interval") — a bare live read would
+        # return /plan, which sits BEFORE the gate, and leave the run parked in
+        # waiting_human for the samples below.
+        live = wait_live_past_gate(client, project_id, run_id, 300, "W2",
+                                   target=C_LIVE_TARGET_KEY)
         c5_emit([w_gate_release_verdict(live, run_status(run_id),
                                         c1_attempt_count(run_id), tag="W2")])
         samples = [first]
@@ -12150,11 +12432,14 @@ def w5_attempt2_verdict(dom, key):
                           f"{w_quotes(dom, 'attempt')}")
 
 
-def w5_kill_landed_verdicts(state, tries, proven):
+def w5_kill_landed_verdicts(state, tries, proven, why=""):
     """The row's precondition, stated as the ledger reads it: nothing below W5's
     interrupted/countdown/attempt-2 claims is honest unless a worker actually died while
-    holding a live lease — the same SIGSTOP-proof C5b demands (c5_freeze_proof)."""
+    holding a live lease — the same SIGSTOP-proof C5b demands (c5_freeze_proof).
+    `why` is the hold diagnosis fault_hold_evidence read when nothing was ever held —
+    it names a lab artefact instead of leaving the row to blame the product."""
     label = "W5 the worker died holding a live lease (docker kill of this project's worker)"
+    note = f" — {why}" if why else ""
     proof = (f"the lease was still live {C5_FREEZE_PROOF_S}s after SIGSTOP" if proven
              else "the SIGSTOP proof is unreadable")
     if state == "interrupted":
@@ -12167,12 +12452,13 @@ def w5_kill_landed_verdicts(state, tries, proven):
         return [(label, False, f"the attempt stayed live after the kill ({proof}) — no "
                                "interrupted write, so the page had nothing to render")]
     if state == "unattainable":
-        return [(label, None, f"the twin stopped offering a live attempt after {tries} pick(s) "
-                              "— its process.exec steps close in <1s, so the worker that would "
-                              "have had to die mid-node was idle (§ 7.1 names a ~40s node the "
-                              "lab does not ship)")]
-    return [(label, None, f"no attempt row readable after {tries} kill pick(s) — the ledger "
-                          "gave status for nothing")]
+        return [(label, None, f"the twin stopped offering a HELD attempt after {tries} "
+                              "pick(s) — its process.exec steps closed before a kill could be "
+                              "aimed at them (hold_seconds is not taking effect on the run), "
+                              "so the worker that would have had to die mid-node was idle"
+                              + note)]
+    return [(label, None, f"no attempt row readable at the kill's target node after {tries} "
+                          f"kill pick(s) — the ledger gave status for nothing" + note)]
 
 
 def w_pick_container(names, service, project=W5_LAB_PROJECT):
@@ -12341,7 +12627,8 @@ def w_deliver_signal(sig, service, container, tag):
     return rc2, out2, f"docker compose -p {W5_LAB_PROJECT} kill {sig} {service}"
 
 
-def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart=True):
+def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart=True,
+                           target=C_LIVE_TARGET_KEY):
     """C5's own kill sequence, factored so the browser legs watch the SAME crash C5
     grades: decide the gate first (wait_live_past_gate), prove the target held a live
     lease with SIGSTOP (c5_freeze_proof), `docker kill` ONLY this project's owning
@@ -12350,8 +12637,12 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
     happens; a sampler that raises can never strand the lab with a dead worker.
     `restart=False` hands the drained worker to the caller (W6 has to keep it drained
     while the retry lands on another volume) — the caller then owns the start-back in
-    its own finally. Returns the facts (state='interrupted' when the reconciler wrote
-    it) or None when there was nothing to kill or the container could not be resolved.
+    its own finally. `target` is the node the signal is aimed at (C_LIVE_TARGET_KEY by
+    default: the held POST-GATE /build_until_verified[1]/implement — a bare live read
+    catches /plan, which the twin holds BEFORE the gate, and then the retry names a
+    node that does not exist yet). Returns the facts (state='interrupted' when the
+    reconciler wrote it) or None when there was nothing to kill or the container could
+    not be resolved.
     """
     def att_row(aid):
         try:
@@ -12371,16 +12662,23 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
             show(f"{tag} page sample {label}", f"{type(e).__name__}: {str(e)[:160]}")
 
     facts = {"run_id": run_id, "state": "", "tries": 0, "proven": None, "owner": "",
-             "service": "", "container": "", "attempt_id": "", "key": "", "ne_id": ""}
+             "service": "", "container": "", "attempt_id": "", "key": "", "ne_id": "",
+             "why": ""}
     frozen, killed = "", ""
     try:
         while facts["tries"] < C5_KILL_TRIES:
             live = wait_live_past_gate(client, project_id, run_id,
                                        hold_window(C5_KILL_POLL_S if facts["tries"] else 300),
-                                       tag)
+                                       tag, target=target)
             if live is None:
                 if facts["tries"]:
                     facts["state"] = "unattainable"
+                else:
+                    # Nothing at the target was ever held: dump WHY before the leg GAPs
+                    # on a wording that would otherwise blame the product (live8/W5.out,
+                    # live8/W6.out: "no attempt row readable after 0 kill pick(s)").
+                    dump_run_evidence(client, run_id)
+                    facts["why"] = fault_hold_evidence(client, run_id, tag)
                 break
             att, owner, key = live["id"], live["worker"], live["key"]
             service = c4_worker_container(owner)
@@ -12496,6 +12794,8 @@ def w5():
                            "cannot be posted")
         return
     CTX["alice"] = client
+    if not require_fault_hold("W5"):
+        return
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     {"pipeline_revision_id": mf(twin, "revision_id"),
                      "inputs": with_hold(mf(twin, "inputs", default={})),
@@ -12551,12 +12851,15 @@ def w5():
         kill = w_kill_worker_mid_node(client, project_id, run_id, "W5", sample=sample)
         if kill is None:
             return          # w_kill_worker_mid_node / w5_container_of gapped the reason
-        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"]))
+        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"],
+                                        kill.get("why", "")))
         if kill["state"] != "interrupted":
             gap("W5 the interrupted wording, the countdown and attempt 2",
-                f"no provable mid-node death (last ledger read: {kill['state'] or 'unreadable'} "
+                f"no provable mid-node death at {C_LIVE_TARGET_KEY} (last ledger read: "
+                f"{kill['state'] or 'unreadable'} "
                 f"after {kill['tries']} kill pick(s)) — with no interrupted attempt the page has "
-                "nothing honest to say, so its wording is unmeasurable")
+                "nothing honest to say, so its wording is unmeasurable"
+                + (f"; {kill['why']}" if kill.get("why") else ""))
             return
         # the attempt pane of the node that died: the row's copy lives there
         if kill["ne_id"]:
@@ -12686,6 +12989,8 @@ def w6_produce_loss(client, twin, tag="W6"):
     writes affinity), and read the refusal the workspace cannot avoid writing. Returns
     the facts, or None with the reason printed."""
     project_id = mf(twin, "project_id")
+    if not require_fault_hold(tag):
+        return None
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     {"pipeline_revision_id": mf(twin, "revision_id"),
                      "inputs": with_hold(mf(twin, "inputs", default={})),
@@ -12704,16 +13009,18 @@ def w6_produce_loss(client, twin, tag="W6"):
         # its own volume, which is exactly § 7.1 C6e's "drain a, run affinity forced".
         kill = w_kill_worker_mid_node(client, project_id, run_id, tag, restart=False)
         owner_back = False
-        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"])
+        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"],
+                                        kill.get("why", ""))
                 if kill else [(f"{tag} the worker died holding a live lease", None,
                                "the container of the owning worker could not be resolved to "
                                "this compose project — nothing was killed, so no workspace "
                                "was ever left behind")])
         if not kill or kill["state"] != "interrupted":
             gap(f"{tag} the different-volume loss case",
-                f"no provable mid-node death (last ledger read: "
+                f"no provable mid-node death at {C_LIVE_TARGET_KEY} (last ledger read: "
                 f"{(kill or {}).get('state') or 'unreadable'!r}) — the loss arm needs a "
-                "workspace that was really left behind on another worker's volume")
+                "workspace that was really left behind on another worker's volume"
+                + (f"; {(kill or {}).get('why') or ''}" if (kill or {}).get("why") else ""))
             return None
         out.update({"key": kill["key"], "ne_id": kill["ne_id"], "owner": kill["owner"],
                     "service": kill["service"]})

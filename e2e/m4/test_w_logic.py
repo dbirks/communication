@@ -78,6 +78,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w6_chip_verdict,
     w6_loss_copy_verdict,
     w6_retry_control_verdict,
+    C_LIVE_TARGET_KEY,
     w_forbidden_word_hits,
     w_forbidden_word_verdicts,
     w_norm,
@@ -1211,6 +1212,40 @@ def test_w_pick_container_only_this_projects_worker():
     assert w_pick_container([], "worker-a") == "" and w_pick_container(None, "") == ""
 
 
+def test_w5_w6_aim_their_kill_at_the_held_post_gate_attempt():
+    """live8/W5.out and live8/W6.out both GAPped `no attempt row readable after 0 kill
+    pick(s)`: the shared kill sequence waited for ANY held attempt, the twin parks at
+    /approve with nothing leased (and holds /plan BEFORE the gate), and the run reached
+    its terminal state before a signal could be aimed anywhere. W5/W6 now inherit
+    C5's target-node picker — the held POST-GATE /build_until_verified[1]/implement —
+    and dump WHY (validated inputs, longest held attempt, the mounted fixture script)
+    before they GAP."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "e2e_m4_exit.py"), encoding="utf-8").read()
+    import ast
+    tree = ast.parse(src)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "w_kill_worker_mid_node")
+    calls = {c.func.id: c for c in ast.walk(fn) if isinstance(c, ast.Call)
+             and isinstance(c.func, ast.Name)}
+    assert "wait_live_past_gate" in calls, sorted(calls)
+    kw = {k.arg: ast.unparse(k.value) for k in calls["wait_live_past_gate"].keywords}
+    assert kw.get("target") == "target", f"the target must reach the wait: {kw}"
+    assert "fault_hold_evidence" in calls, "nothing-was-held needs its WHY dumped first"
+    assert "dump_run_evidence" in calls, "…and the run's own evidence with it"
+    # the verdict line carries the diagnosis instead of leaving the row to blame the UI
+    why = "LAB FAULT, not a product gap: hold_seconds=45 posted…"
+    det = one(w5_kill_landed_verdicts("", 0, None, why), "died holding", detail=True)
+    assert why in det, det
+    assert "target node" in det, det
+    det2 = one(w5_kill_landed_verdicts("unattainable", 3, None, why), "died holding",
+               detail=True)
+    assert why in det2 and "hold_seconds is not taking effect" in det2, det2
+    assert one(w5_kill_landed_verdicts("", 0, None), "died holding") is None, \
+        "no diagnosis is still an honest GAP"
+    assert C_LIVE_TARGET_KEY == "/build_until_verified[1]/implement"
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
@@ -1228,6 +1263,7 @@ if __name__ == "__main__":
                test_w5_kill_proof_console_and_spinner,
                test_w6_loss_copy_chip_and_retry_control,
                test_w_pick_container_only_this_projects_worker,
+               test_w5_w6_aim_their_kill_at_the_held_post_gate_attempt,
                test_w11_reads_the_tree_route_its_own_shape,
                test_c11_report_honesty_tolerates_a_labelled_true_row,
                test_http_connection_blip_retry):

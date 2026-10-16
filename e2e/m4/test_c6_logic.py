@@ -288,7 +288,7 @@ class Clock:
         self.now += secs
 
 
-def run_gate_script(statuses, rows, decide=True, tag="C6b", cap=300):
+def run_gate_script(statuses, rows, decide=True, tag="C6b", cap=300, target=None):
     """Drive m.wait_live_past_gate over canned ledger reads (one run_status + one
     live-claim row per poll). Returns (result, decide_calls, checks). Nothing is
     killed here — the live kill stays C6's § 7 run."""
@@ -318,7 +318,7 @@ def run_gate_script(statuses, rows, decide=True, tag="C6b", cap=300):
     m.approve_gate = approve
     m.check = check
     try:
-        out = m.wait_live_past_gate(object(), "p-1", "run-1", cap, tag)
+        out = m.wait_live_past_gate(object(), "p-1", "run-1", cap, tag, target=target)
     finally:
         (m.time, m.run_status, m.c5_live_attempt_row, m.approve_gate, m.check) = orig
     return out, calls, checks
@@ -368,6 +368,29 @@ class C6GateFirstSequencingTest(unittest.TestCase):
         self.assertIn("wait_live_past_gate", called, sorted(called))
         self.assertEqual([a[4] for a in args["wait_live_past_gate"]], ["C6b"],
                          "C6 must label its own verdict lines")
+
+    def test_the_wait_is_aimed_at_the_kill_target_not_at_whatever_is_held(self):
+        """live8/C6.out: the kill landed on /plan — the twin holds /plan open BEFORE
+        /approve, so the first held attempt the poll saw was the wrong node, and the
+        retry C6 then posted named /build_until_verified[1]/implement, a node that did
+        not exist yet (the API answered that with a 500)."""
+        src = open(DRIVER, encoding="utf-8").read()
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)
+                  and n.name == "c6")
+        kws = [{k.arg: ast.unparse(k.value) for k in c.keywords}
+               for c in ast.walk(fn) if isinstance(c, ast.Call)
+               and isinstance(c.func, ast.Name) and c.func.id == "wait_live_past_gate"]
+        self.assertTrue(kws, "c6 posts no run to wait on")
+        for kw in kws:
+            self.assertEqual(kw.get("target"), "C6_KILL_KEY",
+                             f"the kill must land on {m.C6_KILL_KEY}: {kw}")
+        plan = dict(LIVE_ROW, key="/plan")
+        out, calls, checks = run_gate_script(["running", "waiting_human", "running"],
+                                             [plan, None, LIVE_ROW], target=m.C6_KILL_KEY)
+        self.assertEqual(out, LIVE_ROW, f"a pre-gate /plan claim is not the kill target: {out}")
+        self.assertEqual(calls, ["p-1"], "the gate was decided exactly once")
+        self.assertTrue(any("approval gate was decided" in lbl and ok
+                            for lbl, ok in checks), str(checks))
 
     def test_the_bare_live_attempt_poll_is_gone_driver_wide(self):
         names = defined_functions()

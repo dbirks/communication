@@ -456,5 +456,86 @@ class C1RunDigestSqlTest(unittest.TestCase):
         self.assertNotIn("{", self.SQL)
 
 
+class C1eDeclaredInputsTest(unittest.TestCase):
+    """live8/C1.out: `FAIL C1e run_inputs: 5 validated rows … count=6 …
+    'hold_seconds=default'`. The number in the assertion could not know that cefe995
+    gave the twin a sixth declared input. C1e's expected row set is therefore READ
+    from the run's pinned revision, and the origin checks stay."""
+
+    SIX = ["acceptance_criteria", "fanout", "fanout_count", "goal", "hold_seconds",
+           "repository"]
+    SIX_ORIGINS = ["acceptance_criteria=default", "fanout=submitted",
+                   "fanout_count=submitted", "goal=submitted", "hold_seconds=default",
+                   "repository=submitted"]
+
+    def test_live8s_own_six_rows_pass_against_six_declared_inputs(self):
+        label, ok, detail = m.c1e_inputs_verdict(self.SIX, self.SIX_ORIGINS)
+        self.assertTrue(ok, detail)
+        self.assertIn("6 declared", label)
+        self.assertIn("count=6", detail)
+
+    def test_a_row_that_was_never_validated_is_a_named_fail(self):
+        _l, ok, detail = m.c1e_inputs_verdict(self.SIX, [o for o in self.SIX_ORIGINS
+                                                         if not o.startswith("goal")])
+        self.assertFalse(ok)
+        self.assertIn("missing=['goal']", detail)
+
+    def test_an_extra_row_is_a_named_fail_too(self):
+        _l, ok, detail = m.c1e_inputs_verdict(self.SIX, self.SIX_ORIGINS
+                                              + ["surprise=submitted"])
+        self.assertFalse(ok)
+        self.assertIn("extra=['surprise']", detail)
+
+    def test_the_origin_checks_survive_the_count_fix(self):
+        _l, ok, detail = m.c1e_inputs_verdict(self.SIX, [o.replace("goal=submitted",
+                                                                   "goal=default")
+                                                         for o in self.SIX_ORIGINS])
+        self.assertFalse(ok, "goal must be a SUBMITTED value, not a default")
+        self.assertIn("required_not_submitted=['goal']", detail)
+
+    def test_an_unreadable_revision_is_a_gap_never_a_guessed_number(self):
+        _l, ok, detail = m.c1e_inputs_verdict([], self.SIX_ORIGINS)
+        self.assertIsNone(ok, "no declared set read = no count asserted")
+        self.assertIn("did not read back", detail)
+        _l2, ok2, _d2 = m.c1e_inputs_verdict(["", " goal ", "goal"],
+                                             ["goal=submitted"], required=("goal",))
+        self.assertTrue(ok2, "blank and duplicate names collapse")
+
+    def test_the_count_comes_from_the_twins_own_document(self):
+        """The expected set is the seed twin's declared inputs, not a constant."""
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("no PyYAML in this environment")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                            "docs", "compatibility", "probes", "m4", "pipeline.yaml")
+        docs = [d for d in re.split(r"(?m)^---\s*$", open(path, encoding="utf-8").read())
+                if "kind: Pipeline" in d]
+        twin = next(d for d in docs if "feature-development-deterministic" in d)
+        declared = sorted((yaml.safe_load(twin)["spec"]["inputs"]["properties"]))
+        self.assertEqual(declared, self.SIX)
+        self.assertTrue(m.c1e_inputs_verdict(declared, self.SIX_ORIGINS)[1],
+                        "the live8 reading passes against the document it ran")
+
+    def test_the_driver_no_longer_carries_a_hardcoded_input_count(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        self.assertNotIn("run_inputs: 5", src, "the old label carried the count")
+        self.assertNotIn("n_inputs ==", src)
+        self.assertIn("c1e_inputs_verdict(declared, origins)", src)
+
+    def test_the_declared_input_read_is_a_join_onto_the_pinned_revision(self):
+        sql = m.c1_declared_input_names_sql("run-1")
+        self.assertIn("JOIN pipeline_revisions pr ON pr.id = r.pipeline_revision_id", sql)
+        self.assertIn("canonical_document", sql)
+        self.assertIn("{spec,inputs,properties}", sql)
+        self.assertIn("WHERE r.id = 'run-1'", sql)
+        cols = create_table_columns(MIG05, ("runs", "pipeline_revisions", "run_inputs"))
+        self.assertIn("canonical_document", cols["pipeline_revisions"])
+        self.assertIn("pipeline_revision_id", cols["runs"])
+        for col in ("name", "origin", "value"):
+            self.assertIn(col, cols["run_inputs"], col)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
