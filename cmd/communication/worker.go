@@ -381,6 +381,12 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// behind the registration-time sweep gate, under the worker's own
 	// enforcement mode, sharing the drain path (§ 4 step 12).
 	attemptStore := &postgres.AttemptStore{Runs: &postgres.RunStore{Pool: pool}}
+	// § 4 step 3's database half: the run's workspace row, the volume it lives
+	// on and the repository states at the boundary. Both wired executors
+	// resolve their checkpoint identity through it, and the decorators below
+	// make sure that row exists before either kind launches — a checkpoint
+	// naming a tree nobody prepared would be a lie with a uuid in it (D-024).
+	runWorkspaces := &postgres.RunWorkspaces{Pool: pool}
 	procExec := &worker.ProcExec{
 		WorkspaceRoot: opts.workspaceRoot,
 		LauncherHome:  opts.sandboxLauncherHome,
@@ -390,18 +396,33 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		Enforcement:   opts.sandboxEnforcement,
 		GitIdentity:   opts.agentGit,
 		Logger:        log,
-		// Checkpoints is deliberately nil until the § 4 step 3
-		// run-workspace wave wires it: a successful command then closes as
-		// infra naming the unbound boundary — a claim about this wiring,
-		// never a checkpoint with an invented volume (D-024).
+		Checkpoints:   runWorkspaces,
 	}
 	agentTurn := newAgentTurn(opts, pool, units, log)
+	agentTurn.Checkpoints = runWorkspaces
+	// One preparer shared by both kinds: the run workspace is per run, so two
+	// attempts of one run must go through the same door, not two copies of it.
+	prepareRunWorkspace := newRunWorkspacePreparer(opts, pool, w.ID, log)
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
 		worker.AttemptExecutors{
-			worker.NodeKindProcessExec: procExec,
-			worker.NodeKindAgentACP:    agentTurn,
+			// Every wired kind is wrapped: the first attempt of a run prepares
+			// its workspace on this worker's volume and closes ADR-0023 § 4's
+			// one-way affinity door, and an attempt that reaches this worker
+			// while the run belongs to another worker is refused with
+			// workspace.recovery_lost / different_worker rather than cloning a
+			// second copy (contract § 4 step 3).
+			worker.NodeKindProcessExec: &worker.RunWorkspaceExecutor{
+				Inner:   procExec,
+				Prepare: prepareRunWorkspace,
+				Logger:  log,
+			},
+			worker.NodeKindAgentACP: &worker.RunWorkspaceExecutor{
+				Inner:   agentTurn,
+				Prepare: prepareRunWorkspace,
+				Logger:  log,
+			},
 		},
 		w.ID,
 		worker.WithAttemptLogger(log),
@@ -486,6 +507,173 @@ func acpAskModeID(launcherID string) string {
 	return l.AskModeID
 }
 
+// newRunWorkspacePreparer is docs/m4-contract.md § 4 step 3's worker half:
+// the on-disk tree (wsgit.Manager.Prepare under the `run` scope, the M3 D1
+// tree M4 finally populates) and the rows that make it a fact
+// (postgres.RunWorkspaces.Prepare's single transaction of `workspaces` row +
+// worker_affinity/worker_volume_id, then the workspace_repos paths that every
+// sandbox grant is later built from, ADR-0017 FC3).
+//
+// It is handed to internal/worker as a func because internal/worker must not
+// import the store (AGENTS.md's dependency rule); the typed different-worker
+// refusal is re-stated as worker.ErrDifferentRunWorkspaceOwner on the way
+// out, which is what RunWorkspaceExecutor turns into the attempt's
+// workspace.recovery_lost/different_worker detail.
+//
+// Order and why:
+//
+//  1. measure + record both storage roots first. RunWorkspaces.Prepare
+//     refuses a volume it has no worker_volumes row for, and V5b is the
+//     reason the repos root is recorded too (the mirrors live there and a
+//     workspace may not bind to an unmeasured volume).
+//  2. If the run already has a workspace, the tree was built by whoever owns
+//     it — so this call only *checks the door* (Prepare is idempotent for the
+//     owning worker on the owning volume and refuses everyone else, journalling
+//     the loss). No disk work happens on that path: cloning a second copy of
+//     another worker's run is the thing step 3 exists to prevent.
+//  3. Otherwise the tree is prepared BEFORE the door is closed, so a git
+//     failure (unreachable mirror, bad branch) leaves the run unbound and
+//     claimable rather than pinning it to a worker that cannot build it. The
+//     row that Prepare leaves behind stays `preparing` — `ready` is only ever
+//     written together with the repo rows (ADR-0017 D3), which is step 5.
+//  4. RunWorkspaces.Prepare then claims affinity, echoing the commits this
+//     prepare observed (it validates they belong to the run's project but
+//     records no paths itself — those are RecordRepos' by contract).
+//  5. RecordRepos writes the paths and moves the workspace to `ready` in one
+//     transaction, so no attempt can resolve a boundary whose tree the rows do
+//     not describe.
+func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID func() string,
+	log *slog.Logger) worker.RunWorkspacePreparer {
+	mgr, mgrErr := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
+	workspaces := &postgres.WorkspaceStore{Pool: pool}
+	runs := &postgres.RunWorkspaces{Pool: pool}
+	repoRead := &postgres.TurnStore{Pool: pool}
+	return func(ctx context.Context, c worker.AttemptClaim) error {
+		if mgrErr != nil {
+			return fmt.Errorf("run workspace roots: %w", mgrErr)
+		}
+		if c.RunID == "" || c.ProjectID == "" || c.OrganizationID == "" {
+			return fmt.Errorf("attempt claim has no run/project/organization id (run %q project %q org %q): the run workspace cannot be resolved", c.RunID, c.ProjectID, c.OrganizationID)
+		}
+		id := workerID()
+		if id == "" {
+			return errors.New("worker is not registered yet: a run workspace needs a worker id to bind to")
+		}
+
+		vols, err := mgr.Measure()
+		if err != nil {
+			return fmt.Errorf("measure storage roots: %w", err)
+		}
+		wsVol, ok := vols[wsgit.RootKindWorkspaces]
+		if !ok {
+			return errors.New("the workspaces root could not be measured")
+		}
+		reposVol, ok := vols[wsgit.RootKindRepos]
+		if !ok {
+			return errors.New("the mirror root could not be measured")
+		}
+		for _, v := range []wsgit.Volume{wsVol, reposVol} {
+			if err := workspaces.RecordVolume(ctx, worker.VolumeRecord{
+				WorkerID: id, RootKind: v.RootKind, RootPath: v.Path,
+				StDev: v.StDev, StIno: v.StIno, FSType: v.FSType, VolumeID: v.ID,
+			}); err != nil {
+				return fmt.Errorf("record %s volume of worker %s: %w", v.RootKind, id, err)
+			}
+		}
+
+		ref, prepared, err := runs.RunWorkspace(ctx, c.RunID)
+		if err != nil {
+			return fmt.Errorf("look up the workspace of run %s: %w", c.RunID, err)
+		}
+		if prepared {
+			if _, err := runs.Prepare(ctx, c.RunID, id, wsVol.ID, ref.RepoStates); err != nil {
+				return runWorkspaceRefusal(err)
+			}
+			return nil
+		}
+
+		repos, err := repoRead.ProjectRepos(ctx, c.ProjectID)
+		if err != nil {
+			return fmt.Errorf("list repositories of project %s: %w", c.ProjectID, err)
+		}
+		specs := make([]wsgit.RepoSpec, 0, len(repos))
+		for _, r := range repos {
+			specs = append(specs, wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch})
+		}
+		prep, err := mgr.Prepare(ctx, wsgit.PrepareRequest{
+			// The run scope and the run id: <workspaces>/run/<run-id> with work/
+			// granted to the attempt and meta/ kept out of every grant
+			// (ADR-0017 D4, probe C-GRANT2).
+			ScopeKind: "run", ScopeID: c.RunID, ProjectID: c.ProjectID,
+			WorkspaceVolumeID: wsVol.ID, MirrorVolumeID: reposVol.ID,
+			Repos: specs,
+			// ExcludedPaths is deliberately empty: APM-generated and
+			// node-attempt-secret trees are § 4 step 4's to declare, and they
+			// must reach info/exclude before the first capture, not after.
+		})
+		if err != nil {
+			return fmt.Errorf("prepare the run workspace tree for %s: %w", c.RunID, err)
+		}
+		states := make([]worker.CheckpointRepoState, 0, len(prep.Repos))
+		for _, r := range prep.Repos {
+			states = append(states, worker.CheckpointRepoState{
+				RepositoryID: r.RepositoryID, BaseCommit: r.BaseCommit, HeadCommit: r.HeadCommit,
+			})
+		}
+		bound, err := runs.Prepare(ctx, c.RunID, id, wsVol.ID, states)
+		if err != nil {
+			return runWorkspaceRefusal(err)
+		}
+		if len(bound.RepoStates) > 0 {
+			// A concurrent attempt of this run finished the same prepare while we
+			// were cloning: its rows describe this same tree (the idempotent reuse
+			// arm only answers for this worker on this volume), so there is
+			// nothing left to record.
+			return nil
+		}
+
+		rows := make([]worker.WorkspaceRepo, 0, len(prep.Repos))
+		for _, r := range prep.Repos {
+			rows = append(rows, worker.WorkspaceRepo{
+				WorkspaceID: bound.WorkspaceID, OrganizationID: c.OrganizationID, ProjectID: c.ProjectID,
+				RepositoryID: r.RepositoryID, CheckoutPath: r.CheckoutPath, MirrorPath: r.MirrorPath,
+				MirrorVolumeID: r.MirrorVolume, AdminDir: r.AdminDir, RunRef: r.RunRef,
+				BaseCommit: r.BaseCommit,
+			})
+		}
+		if err := workspaces.RecordRepos(ctx, bound.WorkspaceID, rows, len(rows) > 0); err != nil {
+			// A second attempt of the same run can win the race between the
+			// lookup above and this write (capacity > 1). Its rows describe the
+			// same tree, so the fact this call wanted is already committed.
+			if again, ok, err2 := runs.RunWorkspace(ctx, c.RunID); err2 == nil && ok && len(again.RepoStates) > 0 {
+				log.Warn("run workspace repo rows were written by a concurrent attempt",
+					slog.String("run_id", c.RunID), slog.String("workspace_id", bound.WorkspaceID),
+					slog.String("error", err.Error()))
+				return nil
+			}
+			return fmt.Errorf("record the repositories of run workspace %s: %w", bound.WorkspaceID, err)
+		}
+		log.Info("run workspace prepared",
+			slog.String("run_id", c.RunID), slog.String("workspace_id", bound.WorkspaceID),
+			slog.String("worker_id", id), slog.String("volume_id", bound.VolumeID),
+			slog.Int("repos", len(rows)))
+		return nil
+	}
+}
+
+// runWorkspaceRefusal restates the store's typed one-way-door refusal in the
+// worker's own vocabulary, so internal/worker can recognise it without
+// importing the store. Everything else passes through untouched.
+func runWorkspaceRefusal(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, postgres.ErrRunWorkspaceDifferentWorker) {
+		return fmt.Errorf("%w: %v", worker.ErrDifferentRunWorkspaceOwner, err)
+	}
+	return err
+}
+
 // newAgentTurn assembles the agent.acp executor (contract § 4 steps 4–6, 8,
 // 10–12) on the same seams the § 4 step 6 wave owns: the attempt session
 // store and the pinned agent-profile read are the Postgres implementations,
@@ -495,10 +683,11 @@ func acpAskModeID(launcherID string) string {
 // whose context carries no verified launch plan is refused by the factory
 // rather than exec'd unsandboxed (ADR-0019 D6, no third branch). The sandbox
 // verifier, launcher-credential dirs and nono path are procexec's, so the
-// two kinds measure the same backend. Checkpoints is deliberately nil, same
-// as procExec: until the § 4 step 3 run-workspace wave binds it, a completed
-// turn closes as infra naming the unbound boundary — never a checkpoint with
-// an invented volume (D-024).
+// two kinds measure the same backend. Checkpoints is bound by the caller now
+// that the § 4 step 3 run-workspace wave has landed: a completed turn records
+// the workspace and volume actually prepared for its run, never an invented
+// volume (D-024), and the RunWorkspaceExecutor wrapper refuses the attempt
+// outright when that workspace belongs to another worker.
 func newAgentTurn(opts workerOptions, pool *pgxpool.Pool, units *worker.UnitService, log *slog.Logger) *worker.AgentTurn {
 	return &worker.AgentTurn{
 		WorkspaceRoot: opts.workspaceRoot,
