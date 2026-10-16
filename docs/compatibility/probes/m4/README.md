@@ -5,25 +5,26 @@ and the Playwright legs W1–W11 live in `e2e/m4/e2e_m4_exit.py`; this directory
 holds the shell probe contract (`CHECK`/`NOTE` lines, `results-*.txt` evidence)
 so any single claim can be re-derived without replaying the whole exit run.
 
-**Status: skeleton.** The M4 Go code is landing as this is written, so the
-honest output of `run.sh` today is 25 `SKIP` lines naming each gate's intent
-and why it cannot yet be measured. That is deliberate — honesty over green
-(AGENTS.md: no capability claim without a real test; 12-test-strategy.md: a
-mocked green never substitutes for § 7). The § 7.0 *seed* side is now real
-(`seed.sh`, `pipeline.yaml`, `validate_pipeline.py` below): schema-valid
-offline today, and `seed.sh` against a stack-less lab fails the same honest
-way — loud, with no manifest — because its contract is the frozen
-`api/openapi.yaml`, not the in-flight handlers.
+**Status: live.** The § 7.0 seed side (`seed.sh`, `pipeline.yaml`,
+`validate_pipeline.py` below) is real and has seeded a running stack, every § 7
+gate has an implementation in `e2e/m4/e2e_m4_exit.py`, and the lab has been run
+for real — what has actually been *observed* is listed under "Live evidence"
+and nothing outside that list carries a verdict. `run.sh` here is the intent
+ledger, not the judge: it prints the ENV header plus one `CHECK <id> SKIP …`
+naming each gate's purpose and never a `PASS`. Verdicts come from the driver.
+Honesty over green is unchanged (AGENTS.md: no capability claim without a real
+test; 12-test-strategy.md: a mocked green never substitutes for § 7) — it just
+no longer means "everything SKIPs".
 
 ## Layout
 
 | File | Contents |
 | --- | --- |
-| `run.sh` | Runner: prints the ENV header and one `CHECK <id> SKIP …` per § 7 gate, then `SUMMARY`/`FAILED_CLAIM`. Writes `results-exit.txt` (the § 7.0 evidence file; `M4_RESULTS=<path>` overrides). Never starts or stops the stack. |
-| `lib.sh` | Sourced helpers § 7.0 names: `run_sql`, `api` (cookie jar per user), `events_of_run <run_id> <type>…`, `m4_assert`, plus the `CHECK`/`NOTE` reporters and `m4_stack_up`. |
+| `run.sh` | Intent ledger: prints the ENV header and one `CHECK <id> SKIP …` per § 7 gate, then `SUMMARY`/`FAILED_CLAIM`. Writes `results-exit.txt` (the § 7.0 evidence file; `M4_RESULTS=<path>` overrides). Never starts or stops the stack, and never reports a gate's verdict — the driver does. |
+| `lib.sh` | Sourced helpers § 7.0 names: `run_sql`, `api` (cookie jar per user), `events_of_run <run_id> <type>…`, `m4_assert`, plus the `CHECK`/`NOTE` reporters and `m4_stack_up`. **bash only** — sourcing it from zsh breaks the shell's `PATH` (zsh ties `path` to `PATH`, and lib.sh sets `path` as an array), so always `bash -c 'source docs/compatibility/probes/m4/lib.sh; …'`. |
 | `pipeline.yaml` | The § 7 sample pipeline set — **three `---`-delimited documents**: the § 9.3 corrected sample (`feature-development`, agent variant), its deterministic `process.exec` twin (`feature-development-deterministic`, identical node ids ⇒ identical compiled `node_instance_key` set — the C1 twin requirement), and the C8 fan-out child (`issue-implementation`). See "The seed pipeline" below. |
 | `seed.sh` | The § 7.0 seed contract: logs the lab users through the mock IdP, creates the project/members/repo, seeds the three profiles (SQL — there is no profile-write API, M3 D10), creates + mounts the `test-database-url` sentinel secret, then draft → validate → publish → assignment → **POST two runs** (agent + twin), printing every id to a `seed-manifest.json` the exit gates consume. Contract = `api/openapi.yaml` only; every failed call prints the problem detail verbatim and stops. |
-| `validate_pipeline.py` | Offline schema check for `pipeline.yaml` against `internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json` (the canonical asset the API serves at `GET /api/v1/schemas/pipeline-v1alpha1`). Host tooling only: `python3` + `PyYAML` + `jsonschema` (draft 2020-12) — already present in the lab, **not repo dependencies**; structure only, the compiler rules arrive with the gates. |
+| `validate_pipeline.py` | Offline schema check for `pipeline.yaml` against `internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json` (the canonical asset the API serves at `GET /api/v1/schemas/pipeline-v1alpha1`). Host tooling only: `python3` + `PyYAML` + `jsonschema` (draft 2020-12) — already present in the lab, **not repo dependencies**; structure only — the loader/compiler rules (DAG, unknown ids, CEL subset, secret policy) are proven by the `validate` route and by C12/C13. |
 
 ## Isolation (§ 7.0 — the reason this directory has its own compose project)
 
@@ -33,6 +34,9 @@ Everything runs against project **`communication-m4`**:
 HOST_UID=$(id -u) HOST_GID=$(id -g) \
   docker compose -p communication-m4 -f compose.yml -f compose.harness.yml -f compose.m4.yml up -d --build
 ```
+
+(`--build` from the working tree, or build the two dev images once and use
+`--no-build` — see "Running it live" below.)
 
 Ports 18091 (app), 18092/18093 (API replicas), 18094 (preview), 18095 (OIDC),
 18099 (the C11 collector). **Never** the `communication` project, **never**
@@ -44,9 +48,97 @@ killed only by `docker compose -p communication-m4 kill worker-a`.
 
 `PASS` = observed, matched expectation, literal pasted. `FAIL` = observed, did
 not match. `GAP` = could not be measured here, with the reason. `SKIP` = the
-precondition (built stack / implemented gate) is absent **today**, printed
+precondition (built stack / implemented gate) is absent, printed
 honestly. `N/A` = precondition not applicable. Never `PASS` by inference, and
 never a mocked stand-in for a real run.
+
+## Running it live — what the lab actually takes
+
+The driver owns stack up/down and seeds through `seed.sh`; the steps below are
+what it does, and what to do when you drive the parts by hand.
+
+**0. Generate the fixture repo before anything seeds.**
+
+```bash
+bash e2e/m4/make_fixture_repo.sh .harness/m4-fixtures
+```
+
+An absent `.harness/m4-fixtures/app.git` is not a subtle failure: every attempt
+fails honestly at prepare with git's own `does not appear to be a git
+repository`, and the infra reason reads like a protocol fault until you look at
+the bind. Generate first (`stack_up` calls the same script via
+`ensure_fixture_repo`).
+
+**1. Build the images, then bring the stack up on them.** `communication:dev`
+comes from `api/Dockerfile`, `communication-worker:dev` from
+`worker/Dockerfile` (both built by this plan; nobody pulls the dev tags):
+
+```bash
+docker build -t communication:dev -f api/Dockerfile .
+docker build -t communication-worker:dev -f worker/Dockerfile .
+HOST_UID=$(id -u) HOST_GID=$(id -g) \
+  docker compose -p communication-m4 -f compose.yml -f compose.harness.yml \
+  -f compose.m4.yml up -d --no-build
+```
+
+`--no-build` reuses the images you just made; `up -d --build` rebuilds them from
+the working tree. **To test exactly a commit, build from a `git archive HEAD`
+export rather than a dirty tree** — a green run against uncommitted edits
+proves nothing about the sha you are quoting.
+
+`HOST_UID`/`HOST_GID` are not optional (compose.harness.yml's warning, observed
+in `docs/compatibility/ACP.md`): the image's user is uid 10001 and the host
+agent configs are `0600`/`0700` and owned by you.
+
+**2. Seed where the driver will read it.** `seed.sh`'s own default is
+`$M4_PROBE_ROOT_BASE/seed-manifest.json` (`…/m4-probes/`), but the exit driver
+reads `$HOME/.cache/communication-lab/m4-exit/seed-manifest.json`, so a
+hand-run seed has to be pointed at the driver's path:
+
+```bash
+M4_SEED_MANIFEST=$HOME/.cache/communication-lab/m4-exit/seed-manifest.json \
+  bash docs/compatibility/probes/m4/seed.sh
+```
+
+Seed.sh is re-runnable: byte-identical published documents reuse the live
+revision (`revision_already_published` → `existing_revision_id`) and the fixed
+idempotency keys replay the seeded runs (200, stored run). Library-role calls —
+draft → validate → publish and their library lookups — run as the bootstrap org
+admin **`admin`** (`COMMUNICATION_BOOTSTRAP_ADMIN_SUBJECTS`), never as a project
+maintainer. It exits non-zero and writes no manifest if any step, or the
+manifest itself, fails.
+
+**3. Run gates.**
+
+```bash
+python3 e2e/m4/e2e_m4_exit.py --only C1,C9 --down
+```
+
+A gate that *crashes* records a FAIL naming the raising frame and the driver
+continues to the next gate (183b7e8) — a broken gate is a fact about the gate,
+never a silent green or a stopped run. Every gate's verdict logic also has
+offline tests, `e2e/m4/test_*_logic.py`, which CI runs in the **`m4-gate-logic`**
+job: canned Postgres/API evidence through the reducer, stdlib unittest only, no
+stack. Those prove the reducer is self-consistent; they are not § 7 evidence.
+
+**Harness credentials.** `${HOME}/.claude` is bind-mounted at `/harness/claude`
+(`CLAUDE_CONFIG_DIR`) on both workers — and since 966dcac an *agent attempt*
+receives the `harness_credentials` grant the same way M3's conversation turns
+did, so the ACP legs (C1/C2/C9/C11) spend real turns under real logins.
+
+## Live evidence — observed 2026-10-16
+
+Exactly what has been seen against a running lab, stated as it stands:
+
+| Gate | Observed | Status of that evidence |
+| --- | --- | --- |
+| **C9** | `30 PASS / 2 FAIL` | The two FAILs are C9c (approver who lost project access was accepted); fixed in 1c1721c, **not yet re-run**, so C9's recorded live verdict is still 30/2. |
+| **C13** | first run `15 FAIL / 8 GAP` | That run drove fixes d2fdf26 (secret literals refused at validate/publish), 183b7e8 and c0c86e4 (gate documents, CEL roots). **Not yet re-run.** |
+| Both sample pipelines | first node completes live; after 52685c1 the run continues **past the approval gate into the `until` loop** | Observed for `feature-development` and its `process.exec` twin. Not the whole C1 verdict. |
+
+Everything else — C1–C8, C10–C14, W1–W11 — is implemented and has **not yet
+been run live**. No gate is claimed to pass; the fixes named above are named as
+fixes awaiting the re-run that would earn their gates a verdict.
 
 ## Seed contract (`seed.sh`) — bare stack → running sample pipeline, no Go in between
 
@@ -55,14 +147,20 @@ touches neither):
 
 ```bash
 python3 e2e/m4/e2e_m4_exit.py --up --ready            # host prep, fixture repo, compose up
-bash docs/compatibility/probes/m4/seed.sh             # -> seed-manifest.json, ids on stdout
+M4_SEED_MANIFEST=$HOME/.cache/communication-lab/m4-exit/seed-manifest.json \
+  bash docs/compatibility/probes/m4/seed.sh           # -> seed-manifest.json, ids on stdout
 python3 e2e/m4/e2e_m4_exit.py --ready --only C1,C9 --down   # gates read the manifest, then teardown
 ```
 
+(`--up --seed` runs the seed itself with `M4_SEED_MANIFEST` already pointed at
+the driver's path; the middle line is what to type when you seeded by hand —
+see step 2 above for why the override is needed.)
+
 Route shapes come from **`api/openapi.yaml` only** (paths, payloads, the
 `X-CSRF-Token` + `Origin` mutation pair from the doc's conventions block,
-`application/problem+json` errors) — the handlers are written concurrently, so
-the OpenAPI document is seed.sh's whole contract. Every call fails loudly:
+`application/problem+json` errors) — the OpenAPI document is seed.sh's whole
+contract, which is what makes handler drift surface as a loud `SEED FAIL`
+rather than a quietly re-tuned probe. Every call fails loudly:
 non-2xx (or unreachable) prints `SEED FAIL <label>`, the method/path/status,
 and the **problem-detail body verbatim**, exits non-zero, and writes no
 manifest. The login dance is `e2e_m3_exit.py`'s `login()` shape (mock-IdP form:
@@ -106,7 +204,8 @@ in this build, so printing them there would print empties.
 ### seed-manifest format (`m4-seed-manifest/1`)
 
 `M4_SEED_MANIFEST` overrides the path; default
-`$M4_PROBE_ROOT_BASE/seed-manifest.json` (lab cache, never committed). JSON,
+`$M4_PROBE_ROOT_BASE/seed-manifest.json` (lab cache, never committed) — which
+is `…/m4-probes/`, **not** the `…/m4-exit/` path the exit driver reads. JSON,
 keyed so gates never re-derive ids:
 
 ```json
@@ -194,9 +293,9 @@ python3 validate_pipeline.py pipeline.yaml
 ```
 
 The validator is a draft-2020-12 check against the pinned canonical asset —
-structure only, exactly the layer santhosh enforces server-side; loader/compiler
-rules (DAG, unknown ids, CEL subset, secret policy) are proven by the
-`validate` route once handlers land. Cross-evidence that the *asset itself* is
+structure only, exactly the layer enforced server-side; loader/compiler rules
+(DAG, unknown ids, CEL subset, secret policy) are proven by the `validate`
+route the seed calls on every run. Cross-evidence that the *asset itself* is
 sound in the pinned validator: `go run ./cmd/communication doctor --pipelines`
 (all lanes `ok`, reports the `cel_env_digest` revisions pin).
 
@@ -204,7 +303,7 @@ sound in the pinned validator: `go run ./cmd/communication doctor --pipelines`
 
 ```bash
 cd docs/compatibility/probes/m4
-bash run.sh                 # -> results-exit.txt
+bash run.sh                 # -> results-exit.txt (intent ledger; SKIPs by contract)
 bash seed.sh                # § 7.0 seed: ids + seed-manifest.json (needs the stack up)
 ```
 
@@ -225,10 +324,20 @@ three revision ids. Any of those failing prints `SEED FAIL manifest: …` and
 exits 1 — `SEED done` never appears over a manifest that does not parse or is
 missing the run ids.
 
-With a live stack, per-claim probes will be added here as `c<N>_*.sh` scripts
-using `lib.sh` (the m3 p1…p6 pattern); until then `run.sh`'s SKIP block is the
-whole honest state of the evidence. Fixture scratch lives under
+Per-claim probes live here as `c<N>_*.sh` scripts using `lib.sh` (the m3 p1…p6
+pattern) alongside the driver's gates; `run.sh`'s SKIP block names intent only.
+Fixture scratch lives under
 `$HOME/.cache/communication-lab/m4-probes/`; the disposable repo itself is
 generated by `e2e/m4/make_fixture_repo.sh` into the gitignored
 `.harness/m4-fixtures/` (mounted read-only at `/srv/m4/fixtures` inside the
 workers — same-path bind trick, see `e2e/m4/README.md`).
+
+## Troubleshooting — symptoms seen running this for real
+
+| Symptom | Cause |
+| --- | --- |
+| Attempt fails with `exit 126` | The attempt's tool read grant is missing — the script (`m4-exit.sh` under `/opt/m4/bin`) is mounted but not readable/executable by the unit's sandbox policy. Fix the grant, not the script. |
+| Agent turn dies with the adapter's `Authentication required` | Harness credentials never reached the worker: `${HOME}/.claude` not bind-mounted at `/harness/claude`, or `CLAUDE_CONFIG_DIR` unset, or the stack came up without `HOST_UID`/`HOST_GID` so uid 10001 cannot read your `0600` config. |
+| Run sits in `waiting_human` after the gate was decided | Pre-52685c1 build: nothing resumed the run once its last approval gate was decided. Rebuild the image from ≥ 52685c1. |
+| Attempts queue forever, never claimed | The **run** is not in `running` — the scheduler only hands out attempts for a running run. Read the run row and its gate state before blaming the worker. |
+| Seed dies with `SEED FAIL … 403` on draft/validate/publish | The caller lacks the pipeline **library role**. Those calls must run as the bootstrap org admin `admin`; a project maintainer (alice) is deliberately not one. |
