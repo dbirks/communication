@@ -425,6 +425,53 @@ class BudgetArmTest(unittest.TestCase):
         self.assertIsNone(ok_of(m.c5_budget_verdicts("", "completed", "-"), "maxAttempts=1"))
 
 
+class BudgetArmScratchPreconditionTest(unittest.TestCase):
+    """live17/C5 (C5h's scratch arms, 0a0d6a9): every § 7.1 C5h row PASSED on the
+    gate's own maxAttempts=1 scratch revision, yet the leg still printed the OLD
+    twin-budget GAP — "the killed node is authored with attempt_limit=2 in the § 7.0
+    twin … no node … has a budget of 1" — and the gate summary counted it (GAP=4).
+    The precondition stops being a gap the moment something else measures C5h; it
+    only stays a gap while NOTHING does."""
+
+    scratch = [("C5h the scratch node is authored with a budget of 1", True,
+                "node_executions.attempt_limit='1'"),
+               ("C5h the retry is REFUSED", True, "retry_scheduled=0 attempts=[1]")]
+
+    def tearDown(self):
+        del m.FAILURES[:], m.GAPS[:]
+
+    def test_scratch_verdicts_present_the_precondition_is_a_note_not_a_gap(self):
+        v = m.c5_budget_verdicts("2", "completed", "-", scratch_ran=True)
+        self.assertIs(ok_of(v, "maxAttempts=1"), m.C5_NOTE)
+        d = detail_of(v, "maxAttempts=1")
+        self.assertIn("scratch", d)
+        self.assertIn("attempt_limit=2", d)      # the twin's budget is still explained
+
+    def test_a_note_costs_the_gate_no_gap_and_no_pass(self):
+        del m.FAILURES[:], m.GAPS[:]
+        m.c5_emit(m.c5_budget_verdicts("2", "completed", "-", scratch_ran=True))
+        self.assertEqual(m.GAPS, [])
+        self.assertEqual(m.FAILURES, [])
+
+    def test_scratch_arm_that_could_not_run_keeps_the_gap(self):
+        for ran in (False, None, []):
+            v = m.c5_budget_verdicts("2", "completed", "-", scratch_ran=ran)
+            self.assertIsNone(ok_of(v, "maxAttempts=1"), f"scratch_ran={ran!r}")
+            self.assertIn("scratch arm produced no verdicts",
+                          detail_of(v, "maxAttempts=1"))
+
+    def test_an_unmeasurable_limit_with_a_ran_scratch_arm_is_still_a_note(self):
+        self.assertIs(ok_of(m.c5_budget_verdicts("", "completed", "-", scratch_ran=True),
+                            "maxAttempts=1"), m.C5_NOTE)
+
+    def test_a_twin_budget_of_one_is_graded_on_the_run_however_scratched(self):
+        v = m.c5_budget_verdicts("1", "failed", "node_execution_failed:/implement",
+                                 scratch_ran=True)
+        self.assertTrue(ok_of(v, "maxAttempts=1"), v)
+        self.assertFalse(ok_of(m.c5_budget_verdicts("1", "completed", "-", scratch_ran=True),
+                               "maxAttempts=1"))
+
+
 class GateFirstSequencingTest(unittest.TestCase):
     """live5/C5 printed `GAP C5a a live attempt to kill — no attempt … was ever
     held by a worker within 300s (status='waiting_human')`: the deterministic

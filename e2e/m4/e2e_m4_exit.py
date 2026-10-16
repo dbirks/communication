@@ -3455,10 +3455,21 @@ C5_CONTINUE_SENTENCE = (
     "D-009 says users accept redoing the incomplete node, not losing it.")
 
 
+# A NOTE verdict: a line the report must carry that is NOT a gate result. It is
+# printed as NOTE and lands in neither FAILURES nor GAPS, so it cannot be counted
+# as a precondition gap by the summary (nor dress an unmeasured claim as a PASS).
+# A claim only becomes a NOTE when the measurement EXISTS somewhere else; if the
+# substitute measurement cannot run, the honest verdict stays a GAP.
+C5_NOTE = object()
+
+
 def c5_emit(verdicts):
-    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, `ok is C5_NOTE`
+    a NOTE, never a PASS."""
     for label, ok, detail in verdicts:
-        if ok is None:
+        if ok is C5_NOTE:
+            print(f"  NOTE  {label}{(' — ' + detail) if detail else ''}", flush=True)
+        elif ok is None:
             gap(label, detail or "no row to measure")
         else:
             check(label, ok, detail)
@@ -3802,15 +3813,31 @@ def c5_final_verdicts(status, c1_keys, c5_keys):
     return out
 
 
-def c5_budget_verdicts(attempt_limit, status, cause):
-    """C5h — the refusal arm needs a node authored with maxAttempts=1. Where the § 7.0
-    twin authors more, the precondition simply does not exist in the lab: GAP."""
+def c5_budget_verdicts(attempt_limit, status, cause, scratch_ran=False):
+    """C5h — the refusal arm needs a node authored with maxAttempts=1.
+
+    `scratch_ran`: the gate's OWN published maxAttempts=1 revision (c5h_scratch_arm)
+    produced verdicts in this pass. When it did, the § 7.0 twin's budget is no
+    longer a missing precondition — C5h is measured there, so this prints a NOTE
+    saying where the arm was actually measured. NOTE is not a PASS: the scratch
+    arm's own rows carry C5h's verdicts. When the scratch arm could not run, the
+    precondition really does leave C5h unmeasured and the honest verdict is GAP."""
     if _int(attempt_limit) != 1:
+        if scratch_ran:
+            return [("C5h with maxAttempts=1 the retry is refused and the run fails honestly",
+                     C5_NOTE,
+                     f"the § 7.0 twin's killed node is authored with attempt_limit="
+                     f"{_int(attempt_limit)} (docs/compatibility/probes/m4/pipeline.yaml), so "
+                     "the refusal arm is NOT measured on the twin — it is measured on the "
+                     "gate's own scratch revision (the C5h scratch arm above: a copy of the "
+                     "twin's held node published with retry.maxAttempts: 1). No gap here; the "
+                     "scratch arm's rows hold C5h's verdicts")]
         return [("C5h with maxAttempts=1 the retry is refused and the run fails honestly", None,
                  f"the killed node is authored with attempt_limit={_int(attempt_limit)} in the "
                  "§ 7.0 twin (docs/compatibility/probes/m4/pipeline.yaml), so no node the "
                  "worker can be killed mid-way through has a budget of 1 — the refusal arm "
-                 "needs a maxAttempts:1 long-running twin node that the lab does not ship")]
+                 "needs a maxAttempts:1 long-running twin node that the lab does not ship, and "
+                 "the gate's own scratch arm produced no verdicts either")]
     ok = (str(status) == "failed"
           and str(cause).startswith("node_execution_failed:"))
     return [("C5h with maxAttempts=1 the retry is refused and the run fails honestly",
@@ -4838,20 +4865,26 @@ def c5():
     c1_keys = ((CTX.get("c1") or {}).get("twin") or {}).get("keys") or set()
     c5_emit(c5_final_verdicts(status, c1_keys, {r["key"] for r in ne_rows}))
 
-    # C5h — the budget arm.
+    # C5h — the budget arm. The arm is published by the gate itself, so it runs
+    # BEFORE the twin-precondition verdict is printed: whether the scratch arm
+    # produced verdicts is what decides GAP vs NOTE (§ 7.1 C5h is measured there,
+    # not on the § 7.0 twin, whose held node carries budget 2 for C5g's arm).
     limit = psql(f"SELECT attempt_limit::text FROM node_executions WHERE id = "
                  f"(SELECT node_execution_id FROM attempts WHERE id = '{att}')")
     show("C5h the killed node's authored attempt_limit", limit)
     final = psql_rows(psql(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
                            f"WHERE id = '{run_id}'"), 2)
-    c5_emit(c5_budget_verdicts(limit, final[0][0] if final else "",
-                               final[0][1] if final else ""))
+    scratch = None
     if _int(limit) != 1:
         # The shipped twin cannot arm the refusal: its held node is authored with
         # budget 2 (C5g's completion arm needs it) and re-authoring the twin would
         # change C1's node key set. So § 7.1 C5h is measured on a scratch revision
         # the gate publishes itself (C8e's route: draft -> validate -> publish).
-        c5h_scratch_arm(alice, facts, tw)
+        scratch = c5h_scratch_arm(alice, facts, tw)
+    CTX["c5h_scratch_ran"] = bool(scratch)
+    c5_emit(c5_budget_verdicts(limit, final[0][0] if final else "",
+                               final[0][1] if final else "",
+                               scratch_ran=bool(scratch)))
     CTX["c5"] = {"run_id": run_id, "attempt_id": att, "owner": owner, "key": key,
                  "head_before": head_before, "dirty_before": dirty_before,
                  "volume_before": ws_before.get("volume_id"),
@@ -4872,7 +4905,11 @@ def c5h_scratch_arm(alice, facts, tw):
     m4-exit.sh, M4_HOLD_SECONDS from hold_seconds) with retry.maxAttempts: 1 and
     nothing else; kill the owning worker mid-node with the C5 sequence (SIGSTOP
     prove, SIGKILL, lease window); grade c5h_refusal_verdicts. A scratch publish
-    or kill that cannot be proven is a GAP with the reason, never a guess."""
+    or kill that cannot be proven is a GAP with the reason, never a guess.
+
+    RETURNS the graded § 7.1 C5h verdicts when the arm ran far enough to read the
+    ledger, else None — the caller turns a produced list into the twin-precondition
+    NOTE (C5h was measured) and a None into the honest GAP (it was not)."""
     admin = CTX.get("admin") or Client("admin")
     if login(admin) is None and "communication_session" not in admin.cookies:
         gap("C5h scratch arm", "no admin (library-role) session — the maxAttempts=1 "
@@ -4947,7 +4984,9 @@ def _c5h_kill_and_grade(alice, facts, run_id):
     refusal reads: live pick -> SIGSTOP + freeze proof -> SIGKILL -> lease window
     -> attempt/run ledger -> no-auto-retry reads -> the manual POST /retry (§ 5
     route 31). Host safety as in C5: the killed worker is always composed back up.
-    GAP with the reason on every step the lab refuses to give."""
+    GAP with the reason on every step the lab refuses to give. Returns the graded
+    C5h verdicts (the caller's NOTE/GAP switch), or None when the kill never
+    landed."""
     def att_read(aid):
         try:
             rows = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
@@ -5079,7 +5118,7 @@ def _c5h_kill_and_grade(alice, facts, run_id):
                                                                     "cancelled"):
             time.sleep(5)
         show("C5h the scratch run closed at", run_status(run_id))
-    c5_emit(c5h_refusal_verdicts({
+    graded = c5h_refusal_verdicts({
         "attempt_limit": (limit or "").strip(),
         "att_status": ledger.get("status", ""), "att_class": ledger.get("error_class", ""),
         "sched": sched, "attempts": seen,
@@ -5087,8 +5126,10 @@ def _c5h_kill_and_grade(alice, facts, run_id):
         "manual_status": manual_status, "manual_body": manual_body,
         "manual_attempt2": None if manual_status not in (200, 201)
         else (None if after is None else max(after, default=0) > 1),
-        "attempts_after": after}))
+        "attempts_after": after})
+    c5_emit(graded)
     show("C5h § 7.1 C5h verbatim (the row this arm measures)", C5H_SENTENCE)
+    return graded
 
 
 # --- C6 pure logic — unit-tested offline by e2e/m4/test_c6_logic.py -----------
@@ -8161,6 +8202,16 @@ def c9f_doc_verdicts(splices, arm):
     return v
 
 
+def c9f_sub_floor_doc(doc, sub_floor=C9F_SUB_FLOOR_S, floor=C9F_DEADLINE_S):
+    """The 20-second PROBE document: the arm's own bytes with the deadline the schema
+    refuses (20 < minimum 60). It is only ever posted to POST /drafts/{id}/validate,
+    never published — the refusal is the evidence that the arms run at 60 because the
+    SCHEMA says so. '' = there was no deadline line to move (the leg then GAPs)."""
+    if not isinstance(doc, str) or f"deadlineSeconds: {floor}" not in doc:
+        return ""
+    return doc.replace(f"deadlineSeconds: {floor}", f"deadlineSeconds: {sub_floor}", 1)
+
+
 def c9f_sub_floor_verdict(vresp, sub_floor=C9F_SUB_FLOOR_S, floor=C9F_SCHEMA_FLOOR_S):
     """The 20-second probe: the brief's suggested short deadline is BELOW the schema's
     declared floor (configHumanApproval.deadlineSeconds.minimum), so it must be
@@ -8264,8 +8315,9 @@ def c9f_expiry_verdicts(arm, snap, expired, run_row, failed_ev, cancel_ev):
       snap      the gate's joined ledger row AFTER the window (c9_gate_row columns)
       expired   [{on_timeout, re_requested}] approval.expired rows for THIS gate
       run_row   {status, failed_cause} from runs
-      failed_ev the run.failed payload (error_class) or None
-      cancel_ev the run.cancel_requested payload (cascade) or None"""
+      failed_ev the run.failed payload: {} when the ledger answered and no such row
+      cancel_ev exists, None when the read itself failed
+      cancel_ev the run.cancel_requested payload (cascade), same spelling"""
     label = f"C9f on_timeout={arm}"
     if not snap:
         return [(f"{label}: the gate's row is readable after the window", None,
@@ -8293,12 +8345,12 @@ def c9f_expiry_verdicts(arm, snap, expired, run_row, failed_ev, cancel_ev):
              f"never failed (observed {st or '(unreadable)'!r})",
              None if run_row is None else st == "cancelled", _c9f_run_detail(run_row, failed_ev)),
             ("C9f on_timeout=cancel_run: run.cancel_requested was journalled first",
-             None if run_row is None else cancel_ev is not None,
+             None if (run_row is None or cancel_ev is None) else bool(cancel_ev),
              "no run.cancel_requested row for this run" if run_row is not None
-             and cancel_ev is None else str(cancel_ev)[:140]),
+             and not cancel_ev else str(cancel_ev)[:140]),
             ("C9f on_timeout=cancel_run: the timeout never masquerades as a business "
              "outcome or an execution failure (no run.failed here)",
-             None if run_row is None else failed_ev is None,
+             None if (run_row is None or failed_ev is None) else not failed_ev,
              f"run.failed={str(failed_ev)[:120]}"),
             ("C9f on_timeout=cancel_run: re_requested stays false (cancel is not a "
              "re-request)", rerequests == 0, f"re_requested rows={rerequests}"),
@@ -8345,6 +8397,137 @@ def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
          f"state={snap_after_first.get('state')!r} "
          f"attempts={snap_after_first.get('attempts')!r}"),
     ]
+    return out
+
+
+# --- C9g's algebra: a human takes the wheel of a LIVE run conversation ----------
+#
+# § 7.1 C9g names five observable facts and this is one verdict list per fact, all
+# fed from real rows/responses by c9g_takeover(). The inputs are deliberately the
+# shapes the leg can actually read — the take-control RESPONSE body, the
+# conversation_turns / attempts / runs ledger rows, and the journal payload — never
+# a re-derived guess. `None` anywhere means the read failed, and the arm GAPs.
+C9G_TAKE_TYPES = ("conversation.control.transferred", "conversation.turn.cancelled")
+
+
+def c9g_takeover_verdicts(take, turn, att, run_row, interrupted_ev, bob_id):
+    """The take-control half of § 7.1 C9g. Inputs (None/{} anywhere GAPs that arm):
+      take           the POST /conversations/{cid}/take-control answer
+                     {status, ctype, body:{control:{kind,user_id,version}}}
+      turn           {status, cancel_requested} of the turn that was live
+      att            {status, error_class} of the run attempt driving that turn
+      run_row        {status, paused_reason} from runs
+      interrupted_ev the node.attempt.interrupted payload, or None
+      bob_id         the SECOND member's user id (the new controller)"""
+    out = [
+        ("C9g POST /conversations/{cid}/take-control with the version the caller read "
+         "-> 200 (ADR-0016's CAS, not a claim)",
+         None if not take else _int(take.get("status")) == 200,
+         "no take-control answer" if not take else
+         f"status={take.get('status')!r} ctype={take.get('ctype')!r}"),
+        ("C9g the control row moved to the second member (controller badge: kind=human, "
+         "user_id=the taker, version bumped)",
+         None if not take else _c9g_control_moved((take.get("body") or {}).get("control"),
+                                                  bob_id),
+         f"control={json.dumps((take.get('body') or {}).get('control')) if take else '(none)'}"),
+        ("C9g the live turn was cancel-requested in the SAME transaction (§ 7.1: 'the "
+         "live turn is cancel-requested'; the worker then sends ACP session/cancel)",
+         None if not turn else bool(str(turn.get("cancel_requested") or "").strip() not in
+                                    ("", "-", "NULL", "None")),
+         f"turn={turn}"),
+        ("C9g attempts.status='interrupted' with error_class='interrupted' (§ 7.1's "
+         "literal; interrupted is never a business outcome)",
+         None if not att else (str(att.get("status")) == "interrupted"
+                               and str(att.get("error_class")) == "interrupted"),
+         f"attempt={att}"),
+        ("C9g node.attempt.interrupted{reason:'human_takeover'} is journalled (§ 3 row "
+         "23's takeover arm)",
+         None if interrupted_ev is None else
+         str(interrupted_ev.get("reason")) == "human_takeover",
+         "no node.attempt.interrupted read" if interrupted_ev is None
+         else str(interrupted_ev)[:160]),
+        ("C9g runs.status='paused' with paused_reason='human_takeover' — the RUN waits, "
+         "the attempt does not silently retry (§ 5.3)",
+         None if not run_row else (str(run_row.get("status")) == "paused"
+                                   and str(run_row.get("paused_reason")) == "human_takeover"),
+         f"run={run_row}"),
+    ]
+    return out
+
+
+def _c9g_control_moved(control, bob_id):
+    """True only when the answer's control row names a HUMAN controller equal to the
+    member who took it. None (unreadable control) GAPs, False (still the run attempt,
+    or a different human) FAILS."""
+    if not isinstance(control, dict):
+        return None
+    return (str(control.get("kind")) == "human"
+            and str(control.get("user_id") or "") == str(bob_id)
+            and _int(control.get("version")) >= 2)
+
+
+def c9g_return_verdicts(ret, run_row, resumed_ev, next_att, intervention):
+    """The return-control half of § 7.1 C9g: 'return-control → run resumes and the next "
+    "attempt's retry_context names the intervention'. Inputs: the POST …/return-control "
+    "answer, the runs row AFTER it, the run.resumed payload, the next attempt row "
+    "{attempt_number, retry_context}, and the recorded intervention text."""
+    rcx = (next_att or {}).get("retry_context")
+    rcx = rcx if isinstance(rcx, dict) else {}
+    # "names the intervention": the recorded human-intervention summary is IN the
+    # context the retry carries (ADR-0016 § 5 / runtime/retry.go puts it there under
+    # the human_takeover key). With no recorded summary to look for, the arm's claim
+    # is only that a context exists at all.
+    blob = json.dumps(rcx).lower()
+    needle = str(intervention or "").strip().lower()
+    mentions = bool(rcx) if not needle else (needle in blob or "human_takeover" in blob)
+    return [
+        ("C9g POST /conversations/{cid}/return-control -> 200 (the lock goes back, "
+         "ADR-0016 § 2)",
+         None if not ret else _int(ret.get("status")) == 200,
+         "no return-control answer" if not ret else f"status={ret.get('status')!r}"),
+        ("C9g the run resumes on its own (no manual POST /runs/{id}/resume — "
+         "§ 7.1's 'then return-control → run resumes')",
+         None if not run_row else str(run_row.get("status")) != "paused",
+         f"run={run_row}"),
+        ("C9g run.resumed names the paused_reason it cleared (human_takeover)",
+         None if resumed_ev is None else
+         str(resumed_ev.get("paused_reason")) == "human_takeover",
+         "no run.resumed read" if resumed_ev is None else str(resumed_ev)[:160]),
+        ("C9g the NEXT attempt carries retry_context naming the human intervention "
+         "(01's controller model: the agent is told what a person did)",
+         None if not next_att else mentions,
+         f"retry_context={json.dumps(rcx)[:180] if rcx else '(NULL)'} "
+         f"attempt_number={(next_att or {}).get('attempt_number')!r}"),
+    ]
+
+
+def c9g_transcript_verdicts(before_seq, after_seq, journal_types, cursor_tables):
+    """§ 7.1 C9g's last sentence: 'GET /conversations/$CID still replays the full "
+    "transcript from M1/M2's mechanism — the run adds rows, never a second cursor'.
+      before_seq / after_seq  max(global_seq) of the conversation's transcript rows
+                              read before take-control and after return-control
+      journal_types           the types the run actually appended for this conversation
+      cursor_tables           names of any NEW per-conversation cursor table in the
+                              schema (the second cursor the contract forbids)"""
+    b, a = count_or_none(before_seq), count_or_none(after_seq)
+    out = [
+        ("C9g the run's conversation writes into the SAME domain_events journal M1/M2 "
+         "replay from (max global_seq only grows)",
+         None if (b is None or a is None) else a >= b,
+         f"before_seq={before_seq!r} after_seq={after_seq!r}"),
+        ("C9g the takeover appended its own transcript rows (control transferred / "
+         "turn cancelled are conversation-scoped journal rows, not a side channel)",
+         None if journal_types is None else
+         all(t in set(journal_types) for t in C9G_TAKE_TYPES),
+         f"observed={sorted(set(journal_types or []))} want={list(C9G_TAKE_TYPES)}"),
+    ]
+    if cursor_tables is None:
+        out.append(("C9g the run adds rows, never a SECOND transcript cursor (§ 7.1's "
+                    "literal)", None, "the schema inventory could not be read"))
+    else:
+        out.append(("C9g the run adds rows, never a SECOND transcript cursor (§ 7.1's "
+                    "literal)", not cursor_tables,
+                    f"new cursor-shaped tables={list(cursor_tables)[:6]}"))
     return out
 
 
@@ -8523,6 +8706,113 @@ def c9_decide_race(clients, aid, decision, version):
     return [r for r in out if r], out
 
 
+def c9_event_payload(run_id, etype, aid=""):
+    """The LAST journal payload of one type for this run (None = unreadable, {} = the
+    ledger answered and no such row exists). `aid` widens the read to rows the
+    runtime journals with run_id NULL but the approval named in the payload."""
+    scope = f"run_id = '{run_id}'" if run_id else "false"
+    if aid:
+        scope = f"({scope} OR payload->>'approval_id' = '{aid}')"
+    try:
+        text = psql(f"SELECT COALESCE(payload::text,'{{}}') FROM domain_events WHERE "
+                    f"type = '{etype}' AND {scope} ORDER BY global_seq DESC LIMIT 1")
+    except RuntimeError as e:
+        show(f"C9 {etype} read (psql)", str(e)[:200])
+        return None
+    line = (text or "").strip()
+    if not line:
+        return {}
+    try:
+        pay = json.loads(line)
+    except ValueError:
+        return {}
+    return pay if isinstance(pay, dict) else {}
+
+
+def c9_expired_rows(aid, run_id=""):
+    """approval.expired rows for THIS gate: [{on_timeout, re_requested}] in journal
+    order, or None when the ledger would not answer (the arms then GAP)."""
+    scope = f"payload->>'approval_id' = '{aid}'"
+    if run_id:
+        scope = f"(run_id = '{run_id}' OR {scope})"
+    try:
+        return [dict(zip(("on_timeout", "re_requested"), r)) for r in psql_rows(psql(
+            f"SELECT coalesce(payload->>'on_timeout','-') || '|' || "
+            f"coalesce(payload->>'re_requested','-') FROM domain_events WHERE "
+            f"type = 'approval.expired' AND {scope} ORDER BY global_seq"), 2)]
+    except RuntimeError as e:
+        show("C9 approval.expired read (psql)", str(e)[:240])
+        return None
+
+
+def c9_run_row(run_id):
+    """{status, failed_cause, paused_reason} of the run; {} when the row is gone,
+    None when the ledger could not be read at all."""
+    try:
+        rows = psql_rows(psql(f"SELECT status || '|' || coalesce(failed_cause,'-') || '|' || "
+                              f"coalesce(paused_reason,'-') FROM runs WHERE id = "
+                              f"'{run_id}'"), 3)
+    except RuntimeError as e:
+        show("C9 runs row (psql)", str(e)[:200])
+        return None
+    return dict(zip(("status", "failed_cause", "paused_reason"), rows[0])) if rows else {}
+
+
+def c9_plan_row(run_id):
+    """The gated run's /plan row: {status, outputs_present} — C9f's 'the run's other
+    branches keep running' is read here, because the twin's /plan is upstream of the
+    gate and must have finished (with its outputs) before the wait even begins."""
+    try:
+        rows = psql_rows(psql(f"SELECT status || '|' || (outputs IS NOT NULL)::text FROM "
+                              f"node_executions WHERE run_id = '{run_id}' AND "
+                              "node_instance_key = '/plan'"), 2)
+    except RuntimeError as e:
+        show("C9 /plan row (psql)", str(e)[:200])
+        return None
+    return dict(zip(("status", "outputs_present"), rows[0])) if rows else {}
+
+
+def c9_artifact_reads(client, run_id):
+    """(rows, {artifact_id: GET /artifacts/{id} status}) — the run's artifact ledger
+    and whether each is STILL readable. rows None = the read failed (GAP)."""
+    try:
+        rows = c1f_parse_artifacts(psql(c1f_artifact_sql(run_id)))
+    except RuntimeError as e:
+        show("C9 artifact rows (psql)", str(e)[:200])
+        return None, {}
+    reads = {}
+    for a in rows[:8]:
+        try:
+            reads[str(a["id"])] = client.get(LB, f"/api/v1/artifacts/{a['id']}").status
+        except Exception as e:  # noqa: BLE001 — an unreadable artifact is the finding
+            show(f"C9 GET /artifacts/{a['id']}", str(e)[:160])
+            reads[str(a["id"])] = 0
+    return rows, reads
+
+
+def c9_sibling_progressed(run_id):
+    """Terminal node rows of the SIBLING run the leg started and released — the count
+    § 7.1 C9f's 'a sibling node … progresses while an unrelated gate waits' grades."""
+    try:
+        return count_or_none(psql(f"SELECT count(*)::text FROM node_executions WHERE "
+                                  f"run_id = '{run_id}' AND status IN ('succeeded','failed',"
+                                  "'skipped','cancelled')"))
+    except RuntimeError as e:
+        show("C9 sibling node count (psql)", str(e)[:200])
+        return None
+
+
+def c9_deadline_left(aid):
+    """Postgres's own clock, not the driver's (§ 8's timing rule): seconds until THIS
+    gate's deadline_at. '' = unreadable."""
+    try:
+        return psql(f"SELECT extract(epoch FROM (deadline_at - now()))::text FROM "
+                    f"approval_requests WHERE id = '{aid}'").strip()
+    except RuntimeError as e:
+        show("C9 deadline read", str(e)[:200])
+        return ""
+
+
 def c9_lab_write(sql, why):
     """A LAB-SIDE state write with no contract route — the M3 D10 exception seed.sh
     already uses for profiles. § 7.1 C9c's precondition is a member REMOVED from the
@@ -8559,6 +8849,419 @@ def c9_restore_member(admin, project_id, user_id, role):
     check("C9 restore: alice is a maintainer of the project again (later gates keep their "
           "designated approver)", now == role, f"memberships.role={now!r} want {role!r}")
     return now
+
+
+def c9_f_wait_expired(aid, run_id, wait_s, want=1, label=""):
+    """Wait for `want` approval.expired row(s) on THIS gate (the reconciler's pass-2
+    tick is what writes them, at most C9F_TICK_S behind the clock). Returns
+    (rows, secs_left_at_first_sighting); rows None = the read never answered."""
+    deadline, seen, first_left = time.time() + wait_s, None, None
+    while time.time() < deadline:
+        rows = c9_expired_rows(aid, run_id)
+        if rows is None:
+            return None, None
+        if len(rows) >= want:
+            return rows, first_left
+        seen = rows
+        first_left = first_left if first_left is not None else c9_deadline_left(aid)
+        time.sleep(5)
+    show(f"C9f {label}: no expiry within {wait_s}s", f"approval.expired so far={seen}")
+    return seen, first_left
+
+
+def c9_f_hold_watch(aid, sib, cap):
+    """The CONCURRENT read C9f's last sentence needs: while OUR gate is still
+    pending, how many of the SIBLING run's node rows reach a terminal status? Polls
+    both sides and stops the moment our gate stops waiting, so "progressed while the
+    gate waited" is a statement about overlapping time and not about two reads taken
+    whenever. -> {"ran": int|None, "held": bool, "ticks": int}."""
+    deadline, ran, held, ticks = time.time() + cap, None, False, 0
+    while time.time() < deadline:
+        state = (c9_gate_row(aid) or {}).get("state")
+        if str(state) != "pending":
+            break
+        held = True
+        ticks += 1
+        now = c9_sibling_progressed(sib)
+        ran = now if ran is None or (now is not None and now > ran) else ran
+        time.sleep(5)
+    return {"ran": ran, "held": held, "ticks": ticks}
+
+
+def c9f_deadline_arms(alice, admin, facts):
+    """C9f — the deadline ARMS, measured. The § 7.0 seed authors deadlineSeconds:
+    86400 / onTimeout: fail, so expire and cancel_run have no row to expire until
+    THIS gate publishes its own short-deadline revisions (the C8e pattern: draft ->
+    validate -> publish a scratch copy, revisions being immutable). Pulling
+    deadline_at forward by SQL would fake the clock, which § 7.0 forbids.
+    § 7.1 C9f, verbatim: "deadline arms: on_timeout=fail → approval.expired then
+    run.failed{error_class:'approval_expired'}; on_timeout=expire re-requests
+    EXACTLY ONCE (approval_requests.re_requested=t) and then fails;
+    on_timeout=cancel_run cancels the run and cascades (C8g's path). Nothing is
+    claimed while waiting, and the run's other branches keep running: the sample's
+    /plan artifact is still readable and a sibling node in the C8 pipeline
+    progresses while an unrelated gate waits."""
+    pid, plid = mf(facts, "project_id"), mf(facts, "pipeline_id")
+    src = doc_revision_canonical(admin, mf(facts, "revision_id", variant="twin"))
+    if src is None:
+        gap("C9f the three on_timeout arms",
+            "GET /revisions/{id} served no canonical Pipeline document for the twin — the "
+            "gate will not author deadlines into bytes it cannot show the compiler read "
+            "(c8e_live_arms's rule)")
+        return
+
+    # The 20s probe FIRST: it is why the arms below run at the schema's 60. The probe
+    # is the arm's own bytes with the deadline the schema REFUSES (20 < minimum 60),
+    # posted to validate only — never published, never run. Its refusal is the schema's
+    # statement, not this file's opinion.
+    probe = c9f_deadline_doc(src, schema_name("m4x-c9f-probe20"), "fail")
+    doc = c9f_sub_floor_doc(probe["doc"])
+    if not doc:
+        gap("C9f the sub-floor deadline is refused at validate",
+            "the probe document could not be authored "
+            f"({probe['missing'] or 'no deadline line to move'}) — the "
+            f"{C9F_DEADLINE_S}s the arms use is then this driver's choice, not a measured "
+            "floor")
+    else:
+        res = c13_draft_probe(admin, plid, "C9f sub-floor probe", doc)
+        c5_emit(c9f_sub_floor_verdict((res or {}).get("vresp")))
+
+    for arm in C9F_TIMEOUT_ARMS:
+        label = f"C9f {arm}"
+        sp = c9f_deadline_doc(src, schema_name(f"m4x-c9f-{arm}"), arm)
+        c5_emit(c9f_doc_verdicts(sp, arm))
+        if sp["doc"] is None:
+            continue
+        pub = c7_publish(admin, plid, label, sp["doc"])
+        rev = str((pub or {}).get("revision_id") or "")
+        if not rev:
+            c5_emit([(f"C9f {arm}: its own short-deadline revision published", None,
+                       f"draft/publish -> validate={(pub or {}).get('validate_status')} "
+                       f"rev={rev!r}")])
+            continue
+        run_id = c9_f_post(alice, pid, rev, mf(facts, "inputs", variant="twin") or {},
+                           f"m4x-c9f-{arm}", label)
+        if not run_id:
+            continue
+        aid = c9_wait_for_gate(alice, pid, run_id, 900)
+        if not aid:
+            gap(f"C9f {arm}: the short-deadline gate opened",
+                f"run {run_id} never opened a pending gate within 900s "
+                f"(status={run_status(run_id)!r}) — there is no deadline to expire")
+            continue
+        snap = c9_gate_row(aid)
+        show(f"C9f {arm} the gate's row WHILE the short deadline waits",
+             json.dumps(snap) if snap else "(no row)")
+        c5_emit(c9f_waited_verdicts(snap, c9_expired_rows(aid, run_id)))
+        c5_emit(c9f_branch_verdicts(c9_plan_row(run_id), *c9_artifact_reads(alice, run_id),
+                                    run_status_during=str(snap.get("run_status"))))
+        # The sibling arm, measured in the SAME window: a SECOND run, released from
+        # its own gate, whose nodes must reach terminal rows while OUR gate holds.
+        sib = c9_f_sibling(alice, facts, label)
+        watch = c9_f_hold_watch(aid, sib, C9F_ARM_WAIT_S) if sib else {"ran": None,
+                                                                      "held": False,
+                                                                      "ticks": 0}
+        show(f"C9f {arm} the sibling's terminal rows while our gate held",
+             f"ran={watch['ran']} held={watch['held']} polls={watch['ticks']}")
+        window = C9F_EXPIRE_WAIT_S // 2 if arm == "expire" else C9F_ARM_WAIT_S
+        rows, first_left = c9_f_wait_expired(aid, run_id, window, label=arm)
+        mid_snap = c9_gate_row(aid)
+        if arm == "expire":
+            # The reads BETWEEN the two deadlines: the same row re-requested, the
+            # window moved forward, the gate still pending and still holding nothing.
+            c5_emit(c9f_rerequest_verdicts(mid_snap,
+                                           c9_approval_body(alice, aid).get("re_requested"),
+                                           rows, c9_f_deadline_moved(aid, first_left)))
+            rows, _ = c9_f_wait_expired(aid, run_id, C9F_EXPIRE_WAIT_S // 2, want=2,
+                                        label=f"{arm} (second window)")
+        c5_emit(c9f_expiry_verdicts(arm, c9_gate_row(aid), rows, c9_run_row(run_id),
+                                   c9_event_payload(run_id, "run.failed", aid),
+                                   c9_event_payload(run_id, "run.cancel_requested", aid)))
+        c5_emit(c9f_sibling_verdicts(watch["ran"], watch["held"],
+                                    str(mid_snap.get("run_status")) if mid_snap else ""))
+        c9_run_to_terminal(run_id, C9F_EXPIRE_WAIT_S, alice, label)
+
+
+def c9_f_post(alice, pid, rev, inputs, idem, label):
+    """Route 22 against the gate's OWN revision (the C8e shape). None = refused."""
+    r = alice.post(LB, f"/api/v1/projects/{pid}/runs",
+                   {"pipeline_revision_id": rev, "inputs": inputs,
+                    "idempotency": idem_key(idem)})
+    if not check(f"{label}: POST /projects/{{id}}/runs (own revision {rev[:8]}) -> 201",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
+def c9_approval_body(client, aid):
+    """GET /approvals/{id} as a dict ({} on any refusal) — the API's own spelling of
+    re_requested/deadline, read next to the ledger row that carries them."""
+    try:
+        g = client.get(LB, f"/api/v1/approvals/{aid}")
+        return g.json() if g.status == 200 else {}
+    except ValueError:
+        return {}
+
+
+def c9_f_deadline_moved(aid, secs_left_before):
+    """Did the re-request hand the approver a NEW window? Compared on Postgres's
+    clock on both sides. None = either side unreadable (the arm GAPs)."""
+    now_left = c9_deadline_left(aid)
+    try:
+        before, after = float(secs_left_before), float(now_left)
+    except (TypeError, ValueError):
+        return None
+    return after > before - C9F_TICK_S and after > 0
+
+
+def c9_f_sibling(alice, facts, label):
+    """The run C9f releases from its gate so a sibling's nodes progress while an
+    unrelated gate waits. '' = it never started (that arm then GAPs)."""
+    tw = mvariant(facts, "twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        return ""
+    rid = c9_f_post(alice, mf(facts, "project_id"), tw["revision_id"],
+                    tw.get("inputs") or {}, f"m4x-c9f-sibling-{label[-24:]}",
+                    f"{label} sibling")
+    if not rid:
+        return ""
+    aid = c9_wait_for_gate(alice, mf(facts, "project_id"), rid, 900)
+    if aid and not approve_gate(alice, mf(facts, "project_id"), rid):
+        show(f"C9f {label} sibling gate could not be released", f"gate {aid} stayed pending "
+             "— the sibling never progressed, so that arm GAPs")
+    return rid
+
+
+def c9_take_control(client, cid, version):
+    """POST /conversations/{cid}/take-control with the CAS token the caller last read
+    (§ 7.1 C9g's literal route). Same {status, ctype, body} shape as c9_decide."""
+    r = client.post(LB, f"/api/v1/conversations/{cid}/take-control", {"version": version})
+    try:
+        body = r.json()
+    except ValueError:
+        body = {"_raw": r.text[:300]}
+    return {"status": r.status, "ctype": r.headers.get("Content-Type", ""), "body": body}
+
+
+def c9_return_control(client, cid, version):
+    r = client.post(LB, f"/api/v1/conversations/{cid}/return-control", {"version": version})
+    try:
+        body = r.json()
+    except ValueError:
+        body = {"_raw": r.text[:300]}
+    return {"status": r.status, "ctype": r.headers.get("Content-Type", ""), "body": body}
+
+
+def c9_conversation(client, cid):
+    """GET /conversations/{cid} -> (status, body dict). The controller badge and the
+    CAS version both come from here — never from a guess (§ 7.1 C9g)."""
+    g = client.get(LB, f"/api/v1/conversations/{cid}")
+    try:
+        return g.status, (g.json() if g.status == 200 else {})
+    except ValueError:
+        return g.status, {}
+
+
+def c9_turn_row(turn):
+    """{status, cancel_requested} of the live turn (§ 7.1 C9g's 'the live turn is "
+    "cancel-requested'); None when the ledger will not answer."""
+    try:
+        rows = psql_rows(psql(f"SELECT status || '|' || coalesce(cancel_requested_at::text,"
+                              f"'-') FROM conversation_turns WHERE id = '{turn}'"), 2)
+    except RuntimeError as e:
+        show("C9g conversation_turns row (psql)", str(e)[:200])
+        return None
+    return dict(zip(("status", "cancel_requested"), rows[0])) if rows else {}
+
+
+def c9_attempt_row(att):
+    """{status, error_class} of the run attempt driving that turn."""
+    try:
+        rows = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') FROM "
+                              f"attempts WHERE id = '{att}'"), 2)
+    except RuntimeError as e:
+        show("C9g attempts row (psql)", str(e)[:200])
+        return None
+    return dict(zip(("status", "error_class"), rows[0])) if rows else {}
+
+
+def c9_conv_journal_types(cid):
+    """Every transcript type the journal holds for THIS conversation — the read that
+    shows the takeover landed in the same domain_events stream M1/M2 replay."""
+    try:
+        return [ln.strip() for ln in psql(f"SELECT DISTINCT type FROM domain_events WHERE "
+                                          f"conversation_id = '{cid}'").splitlines()
+                if ln.strip()]
+    except RuntimeError as e:
+        show("C9g conversation journal types (psql)", str(e)[:200])
+        return None
+
+
+def c9_conv_transcript_seq(cid):
+    try:
+        return psql(f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events WHERE "
+                    f"conversation_id = '{cid}'").strip()
+    except RuntimeError as e:
+        show("C9g conversation transcript high-water (psql)", str(e)[:200])
+        return ""
+
+
+def c9_cursor_tables():
+    """Names of any cursor/offset/stream-position table in the schema. § 7.1 C9g's
+    "the run adds rows, never a second cursor" is a claim about the SCHEMA, so it is
+    read from the schema: an empty list is the pass, a new table is the FAIL, and an
+    unreadable information_schema is the GAP."""
+    try:
+        return [ln.strip() for ln in psql(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = "
+            "current_schema() AND (table_name LIKE '%cursor%' OR table_name LIKE "
+            "'%offset%' OR table_name LIKE '%stream_position%') ORDER BY table_name"
+        ).splitlines() if ln.strip()]
+    except RuntimeError as e:
+        show("C9g cursor-table inventory (psql)", str(e)[:200])
+        return None
+
+
+C9G_WINDOW_S = 1200            # the real /plan turn precedes the gate (C4e's window)
+C9G_CLOSE_POLL_S = 180         # takeover -> interrupted -> paused
+C9G_RESUME_POLL_S = 300        # return-control -> resumed -> the retry's context
+C9_INTERVENTION = "M4 exit C9g: a human took over this turn (docs/m4-contract.md § 7.1)"
+
+
+def c9g_takeover(alice, facts):
+    """C9g — human takeover of a RUN conversation, measured on an agent.acp attempt.
+    The twin is process.exec, so its attempts carry no conversation at all
+    (attempts_agent_turn_pair keeps conversation_id NULL with turn_id); the AGENT
+    variant's /implement owns a real ACP turn, which is what § 7.1 C9g takes.
+    A second member (bob, a contributor — take-control is contributor+) takes the
+    lock mid-turn, the run must pause, and return-control must resume it with the
+    intervention as the retry's context. A turn that closes before the takeover
+    lands is a GAP naming that, never a PASS."""
+    agent = mvariant(facts, "agent")
+    if not isinstance(agent, dict) or not agent.get("revision_id"):
+        gap("C9g human takeover of a run conversation",
+            "the seed manifest carries no agent variant — with no agent.acp attempt there is "
+            "no run conversation to take (the deterministic twin never owns one)")
+        return
+    bob = CTX.get("bob") or Client("bob")
+    bob_doc = login(bob) or {}
+    if not bob_doc:
+        gap("C9g human takeover of a run conversation",
+            "bob (the SECOND member) never signed in — a takeover by the controller himself "
+            "is the idempotent 200, not the CAS § 7.1 C9g measures")
+        return
+    CTX["bob"] = bob
+    bob_id = str(bob_doc.get("id") or (mf(facts, "users", default={}) or {}).get("bob") or "")
+    run_id = post_c1_run(alice, agent, idem_key("m4x-c9g-agent"), "c9g")
+    if not run_id:
+        return
+    CTX["c9g_run"] = run_id
+    live = wait_live_past_gate(alice, mf(agent, "project_id"), run_id, C9G_WINDOW_S,
+                              "C9g", target=C4E_TARGET_KEY)
+    if live is None:
+        gap("C9g human takeover of a run conversation",
+            f"no live agent.acp attempt at {C4E_TARGET_KEY} inside {hold_window(C9G_WINDOW_S)}s "
+            f"(run status={run_status(run_id)!r}) — the takeover has no turn to cancel; "
+            "an attempt that never existed proves nothing about a controller lock")
+        return
+    att, turn = live["id"], live["turn"]
+    shape = psql_rows(psql(c4e_attempt_shape_sql(att)), 4)
+    conv = shape[0][2] if shape and len(shape[0]) > 2 else "(none)"
+    show(f"C9g the attempt caught mid-turn ({live['key']}) and its conversation",
+         " | ".join(shape[0]) if shape else "(no row)")
+    if not conv or conv in ("(none)", "NULL", "-"):
+        gap("C9g human takeover of a run conversation",
+            f"attempt {att} carries attempts.conversation_id NULL, so POST "
+            "/conversations/{cid}/take-control has nothing to take (the row above is the "
+            "evidence)")
+        return
+    seq_before = c9_conv_transcript_seq(conv)
+    st, conv_body = c9_conversation(alice, conv)
+    if st != 200:
+        gap("C9g human takeover of a run conversation",
+            f"GET /conversations/{conv} answered {st} — with no control.version to read, "
+            "C9g refuses to guess a CAS token (a wrong one is a 409 this leg would then "
+            "have to explain)")
+        return
+    version = count_or_none((conv_body.get("control") or {}).get("version"))
+    show("C9g the control row as bob reads it before taking it",
+         json.dumps(conv_body.get("control")))
+    if not version:
+        gap("C9g human takeover of a run conversation",
+            f"control.version is unreadable ({(conv_body.get('control') or {})!r}) — the "
+            "CAS token § 7.1 C9g must send does not exist")
+        return
+    take = c9_take_control(bob, conv, version)
+    show(f"C9g POST /conversations/{conv}/take-control as bob (version {version}) -> "
+         f"{take['status']}", f"content-type={take['ctype']}\n{json.dumps(take['body'])[:400]}")
+    deadline = time.time() + C9G_CLOSE_POLL_S
+    trow, arow, rrow = {}, {}, {}
+    while time.time() < deadline:
+        # None (the ledger refused) stays None: an unreadable row is that arm's GAP,
+        # never a blank dict that reads as "interrupted with no error_class".
+        trow, arow, rrow = c9_turn_row(turn), c9_attempt_row(att), c9_run_row(run_id)
+        if (str((arow or {}).get("status")) == "interrupted"
+                and str((rrow or {}).get("status")) == "paused"):
+            break
+        time.sleep(3)
+    c5_emit(c9g_takeover_verdicts(take, trow, arow, rrow,
+                                  c9_event_payload(run_id, "node.attempt.interrupted"),
+                                  bob_id))
+
+    # The return half. Only worth attempting if the takeover actually landed: a lock
+    # bob never held cannot be handed back.
+    if str((arow or {}).get("status")) != "interrupted":
+        gap("C9g return-control resumes the run with the intervention as retry_context",
+            f"the takeover above never closed the attempt (status={(arow or {}).get('status')!r})"
+            " — there is nothing to hand back")
+        return
+    cur = count_or_none(((c9_conversation(bob, conv)[1] or {}).get("control") or
+                         {}).get("version")) or version
+    ret = c9_return_control(bob, conv, cur)
+    show(f"C9g POST /conversations/{conv}/return-control (version {cur}) -> {ret['status']}",
+         json.dumps(ret["body"])[:300])
+    deadline, rrow2, resumed = time.time() + C9G_RESUME_POLL_S, {}, None
+    while time.time() < deadline:
+        rrow2, resumed = c9_run_row(run_id), c9_event_payload(run_id, "run.resumed")
+        if rrow2 and str(rrow2.get("status")) != "paused":
+            break
+        time.sleep(3)
+    nxt = c9_next_attempt(run_id, att)
+    c5_emit(c9g_return_verdicts(ret, rrow2, resumed, nxt, C9_INTERVENTION))
+    # The transcript itself: M1/M2's GET still answers for a run-owned conversation,
+    # and the run's rows landed in the SAME journal (no second cursor, § 7.1 C9g).
+    replay_st, _replay = c9_conversation(bob, conv)
+    check("C9g GET /conversations/$CID still answers after the takeover (M1/M2's replay "
+          "route, not a run-scoped one)", replay_st == 200,
+          f"status={replay_st}")
+    c5_emit(c9g_transcript_verdicts(seq_before, c9_conv_transcript_seq(conv),
+                                   c9_conv_journal_types(conv), c9_cursor_tables()))
+    r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
+                   {"reason": "M4 exit C9g: the takeover arms are measured; the retry would "
+                              "spend another real Claude turn"})
+    show(f"C9g cleanup POST /runs/{run_id}/cancel -> {r.status}", r.text[:160])
+    CTX["c9g"] = {"run_id": run_id, "attempt_id": att, "turn_id": turn, "conversation": conv}
+
+
+def c9_next_attempt(run_id, first_att):
+    """The attempt AFTER the interrupted one (same node, another attempt_number) with
+    its retry_context PARSED — § 7.1 C9g's 'the next attempt's retry_context names the
+    intervention'. The separator is '@@', never '|': a retry_context is jsonb and any
+    human sentence inside it can carry a pipe (c7_events' lesson). None = no retry at
+    all yet, which the caller FAILS honestly: the contract says the run resumes and
+    retries, so an absent retry is that claim not holding."""
+    try:
+        rows = psql_rows(psql(
+            f"SELECT attempt_number::text || '@@' || COALESCE(retry_context::text,'-') "
+            f"FROM attempts WHERE node_execution_id = (SELECT node_execution_id FROM "
+            f"attempts WHERE id = '{first_att}') AND run_id = '{run_id}' AND id::text <> "
+            f"'{first_att}' ORDER BY attempt_number DESC LIMIT 1"), 2, sep="@@")
+    except RuntimeError as e:
+        show("C9g the retry's row (psql)", str(e)[:220])
+        return None
+    if not rows:
+        return None
+    return {"attempt_number": rows[0][0], "retry_context": c5_parse_retry_context(rows[0][1])}
 
 
 def c9_run_to_terminal(run_id, cap, client, label):
@@ -8845,17 +9548,19 @@ def c9():
             "inputs.fanout), so 'rejected skips its dependants' is not producible without "
             "publishing an extra revision — C7/C8's authored-revision pattern, not this gate's")
 
-    # ---- C9f: the timeout arms are the reconciler's, and this lab cannot arm them ----
-    gap("C9f on_timeout=fail → approval.expired → run.failed{error_class:'approval_expired'}",
-        "the § 7.0 seed authors the gate with deadlineSeconds: 86400 (pipeline.yaml), so the "
-        "deadline is a day out; arming it early needs a re-authored short-deadline revision "
-        "published as admin (C7/C8's pattern). Pulling deadline_at forward by SQL would fake "
-        "the clock, and § 7.0 keeps SQL as evidence only — the arms above are the reconciler's "
-        "§ 8 integration matrix until then")
-    for arm in ("on_timeout=expire re-requests EXACTLY ONCE (re_requested=t) and then fails",
-                "on_timeout=cancel_run cancels the run and cascades (C8g's path)"):
-        gap(f"C9f {arm}", "same precondition: no seeded revision carries that on_timeout value "
-                          "(the seed authors 'fail'), so the lab cannot produce the row to expire")
+    # ---- C9f: the timeout arms, armed by revisions THIS gate publishes ----
+    # The § 7.0 seed authors deadlineSeconds: 86400 / onTimeout: fail, so the
+    # expire/cancel_run rows do not exist until the gate publishes its own short-
+    # deadline copies (C8e's draft -> validate -> publish route; the schema's floor is
+    # 60s, so 60 is the shortest legal deadline and the brief's 20 is validated as a
+    # refusal). SQL never touches deadline_at: § 7.0 keeps it evidence-only.
+    if admin is None:
+        gap("C9f the three on_timeout arms",
+            "admin never signed in — a scratch revision may only be published through the "
+            "library role, and without one the seed's 86400s deadline is the only row the "
+            "lab holds (the ARMED verdict above is all that is measurable)")
+    else:
+        c9f_deadline_arms(alice, admin, facts)
     try:
         tree = psql(f"SELECT node_instance_key || ' ' || status || ' loc=' || "
                     f"execution_location || ' att=' || attempt_count::text FROM node_executions "
@@ -8865,7 +9570,7 @@ def c9():
     show("C9f what IS observable: the node tree while the gate waits (nothing is claimed "
          "behind it, and the branches that could run already have)", tree or "(no node rows)")
 
-    # ---- C9g: human takeover of a RUN conversation ----
+    # ---- C9g: human takeover of a RUN conversation, on an agent.acp turn ----
     scope = "', '".join([r for r in (run_id, run_e) if r]) or "(none)"
     try:
         conv = psql_rows(psql(f"SELECT count(*)::text || '|' || count(a.turn_id)::text "
@@ -8876,21 +9581,10 @@ def c9():
         show("C9g conversation probe (psql)", str(e)[:260])
     show("C9g attempts of the C9 runs that carry a conversation_id / turn_id",
          f"{conv[0][0]} / {conv[0][1]}" if conv else "(unreadable)")
-    if conv and _int(conv[0][0]) > 0:
-        gap("C9g human takeover of a run conversation (take-control / return-control)",
-            f"a run conversation DOES exist here ({conv[0][0]} attempt rows carry one), but C9 "
-            "does not drive the takeover leg: § 5.3's CAS control transfer, the "
-            "node.attempt.interrupted{human_takeover} close and the run's "
-            "paused_reason=human_takeover are ADR-0016's machinery and need the attempt to be "
-            "LIVE mid-turn — which the gate's own waiting window is not")
-    else:
-        gap("C9g human takeover of a run conversation (take-control / return-control)",
-            "the C9 runs' attempts carry NO conversation_id (the literal above): the "
-            "deterministic twin is process.exec, and attempts_agent_turn_pair makes "
-            "conversation_id NULL with turn_id — so POST /conversations/{cid}/take-control "
-            "has no run conversation to take. The arm needs a live agent.acp turn (C1's agent "
-            "variant); M2's journey spec proves the takeover machinery itself, and C9 will "
-            "re-run this leg against the agent variant when the exit pass serializes one")
+    # The twin's attempts carry NONE (attempts_agent_turn_pair keeps conversation_id
+    # NULL with turn_id), so the leg drives the AGENT variant, whose /implement owns a
+    # live ACP turn, and takes THAT conversation (§ 7.1 C9g's controller model).
+    c9g_takeover(alice, facts)
     CTX["c9"] = {"run_id": run_id, "approval_id": aid, "restarted": restarted,
                  "reject_run_id": run_e, "reject_approval_id": aid_e}
 
