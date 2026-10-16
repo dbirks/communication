@@ -854,6 +854,13 @@ func (a APIRunStore) RetryRun(ctx context.Context, c api.Caller, runID string, i
 			return api.RunView{}, m4RunConflict(api.RunConflictCheckpointUnavailable,
 				missing.Reason+" (node "+missing.NodeInstanceKey+")", r)
 		}
+		// A target the run has no row for is the client's mistake, not the
+		// engine's: 404 with a stable code, and the reopen has already been
+		// refused whole (validate-then-mutate), so nothing moved.
+		var unknown runtime.ErrNodeExecutionNotFound
+		if errors.As(err, &unknown) {
+			return api.RunView{}, &api.NodeExecutionNotFound{NodeInstanceKey: unknown.InstanceKey}
+		}
 		return api.RunView{}, err
 	}
 	updated, err := a.Runs.GetRun(ctx, r.ID)

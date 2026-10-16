@@ -228,3 +228,39 @@ func TestAttemptBudgetIsHard(t *testing.T) {
 		t.Errorf("node = %s/%s, want failed after the budget", n.Status, n.ErrorClass)
 	}
 }
+
+// TestRetryUnknownNodeIsTypedError is the 500-fix's engine half: a target the
+// run has no row for is a client error, so the engine says so with a typed
+// error instead of an anonymous fmt.Errorf the API can only call a server
+// failure. Nothing may move on the refusal.
+func TestRetryUnknownNodeIsTypedError(t *testing.T) {
+	plan := loadPlan(t, "testdata/stop.yaml")
+	dv := newDriver(t, plan, map[string]any{"goal": "g"})
+	dv.script("/a", step{failClass: runtime.ErrInfra, detail: "transient"})
+	dv.script("/b", step{outputs: map[string]any{"ok": true}})
+	dv.pump(30)
+	st := dv.state()
+	if st.Run.Status != runtime.RunFailed {
+		t.Fatalf("run = %s/%s, want failed", st.Run.Status, st.Run.FailedCause)
+	}
+	before := strings.Join(st.RunKeys(), ",") + "|" + st.Run.Status
+
+	err := dv.ms.Retry(dv.run.ID, "alice", []string{"/build_until_verified[1]/implement"}, nil)
+	var unknown runtime.ErrNodeExecutionNotFound
+	if !errors.As(err, &unknown) {
+		t.Fatalf("retry of an unknown node = %v, want runtime.ErrNodeExecutionNotFound", err)
+	}
+	if unknown.InstanceKey != "/build_until_verified[1]/implement" || unknown.RunID != dv.run.ID {
+		t.Errorf("error carries %+v, want the named key and run %s", unknown, dv.run.ID)
+	}
+	// A named-unknown target in a list with a legal one is still a whole-
+	// request refusal (validate-before-mutate).
+	if err := dv.ms.Retry(dv.run.ID, "alice", []string{"/a", "/nope"}, nil); err == nil {
+		t.Fatal("mixed known/unknown targets must refuse")
+	}
+	st = dv.state()
+	if before != strings.Join(st.RunKeys(), ",")+"|"+st.Run.Status {
+		t.Fatalf("an unknown-target refusal moved rows: %s → %s", before,
+			strings.Join(st.RunKeys(), ",")+"|"+st.Run.Status)
+	}
+}

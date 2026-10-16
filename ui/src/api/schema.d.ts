@@ -1579,7 +1579,7 @@ export interface paths {
     put?: never;
     /**
      * Retry failed, interrupted or cancelled node executions
-     * @description Targets default to every non-succeeded terminal node execution, or the named `node_instance_keys[]`. Scope bookkeeping is recomputed so an `until` loop restarts its dead iteration, not the whole loop (ADR-0023 § 6). Re-queues attempts carrying `retry_context` (what the last attempt knew: attempt number, error class, head commit, modified-path count); a node declaring `retry.workspacePolicy: restore_checkpoint` additionally requires every repository to be committed at that boundary — otherwise `409` `checkpoint_unavailable` and *nothing* is reset (a destructive default would be a data-loss bug wearing a feature badge, `12` C6d). The default policy is `continue_workspace`: the interrupted unit's edits stay where they are and the retry is *told* about them. Retry-time `inputs` overrides are recorded as run inputs (attempt-level `overrides` are visible on the attempt; `run.override.applied` is reserved and not emitted, ADR-0024 § 3). `409` `run_not_retriable` on a `running` or completed run. Contributor+. Appends `run.retried`.
+     * @description Targets default to every non-succeeded terminal node execution, or the named `node_instance_keys[]`. Scope bookkeeping is recomputed so an `until` loop restarts its dead iteration, not the whole loop (ADR-0023 § 6). Re-queues attempts carrying `retry_context` (what the last attempt knew: attempt number, error class, head commit, modified-path count); a node declaring `retry.workspacePolicy: restore_checkpoint` additionally requires every repository to be committed at that boundary — otherwise `409` `checkpoint_unavailable` and *nothing* is reset (a destructive default would be a data-loss bug wearing a feature badge, `12` C6d). The default policy is `continue_workspace`: the interrupted unit's edits stay where they are and the retry is *told* about them. Retry-time `inputs` overrides are recorded as run inputs (attempt-level `overrides` are visible on the attempt; `run.override.applied` is reserved and not emitted, ADR-0024 § 3). `409` `run_not_retriable` on a `running` or completed run. A named `node_instance_keys[]` entry that is not a node execution of this run is a client error: `404` `node-execution-not-found`, and the whole reopen is refused before any row moves. Contributor+. Appends `run.retried`.
      */
     post: operations["retryRun"];
     delete?: never;
@@ -4315,6 +4315,16 @@ export interface components {
         "application/problem+json": components["schemas"]["RunConflictProblem"];
       };
     };
+    /** @description `404` for `POST /runs/{runId}/retry`, two arms with the same status: `not-found` when the run does not exist or sits in a project the caller cannot see (no resource is named, so existence is not disclosed), or `node-execution-not-found` when a named `node_instance_keys[]` entry is not a node execution of the run the caller addressed — that body names the key, which is the caller's own input and discloses nothing. Both arms reset nothing. */
+    RunRetryNotFound: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/problem+json": components["schemas"]["Problem"];
+      };
+    };
     /** @description `409` for `POST /approvals/{approvalId}/decide`: the gate is already decided (`approval_already_decided`) or a CAS `version` miss — and the body carries the *winner*, so the loser's UI shows who decided and at which version instead of guessing. Also the arm for an approver whose access was revoked between gate-open and decision (with `approval.denied`, `reason: approver_lost_access`); the gate stays `pending` in that case. */
     ApprovalConflict: {
       headers: {
@@ -6793,7 +6803,7 @@ export interface operations {
       };
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
-      404: components["responses"]["NotFound"];
+      404: components["responses"]["RunRetryNotFound"];
       409: components["responses"]["RunConflict"];
     };
   };

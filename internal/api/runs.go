@@ -64,6 +64,12 @@ var (
 	// comparison against the pinned revision's declared budgets happens in
 	// the store, next to the plan; the API renders the 400.
 	ErrBudgetOverridesRaise = errors.New("api: budget_overrides_may_only_lower")
+	// ErrNodeExecutionNotFound is route 31's 404: the retry body named a
+	// `node_instance_keys[]` entry that is not a node execution of the run.
+	// The client asked to act on a row that does not exist — a client error,
+	// never a 500, and nothing is reset (the engine validates every target
+	// before any row moves).
+	ErrNodeExecutionNotFound = errors.New("api: node execution not found in run")
 )
 
 // Run-conflict kinds: the § 2.1 route vocabulary for lifecycle refusals.
@@ -89,6 +95,20 @@ type RunConflictError struct {
 func (e *RunConflictError) Error() string {
 	return fmt.Sprintf("api: run conflict (%s): %s", e.Kind, e.Detail)
 }
+
+// NodeExecutionNotFound names the offending target so the 404 body can point
+// at it (`node_instance_key`): the client already knows the run it addressed,
+// what it does not know is that its key is not one of that run's nodes.
+type NodeExecutionNotFound struct {
+	NodeInstanceKey string
+}
+
+func (e *NodeExecutionNotFound) Error() string {
+	return fmt.Sprintf("api: no node execution %q in this run", e.NodeInstanceKey)
+}
+
+// Unwrap keeps the plain sentinel working for stores that cannot name the key.
+func (e *NodeExecutionNotFound) Unwrap() error { return ErrNodeExecutionNotFound }
 
 // RunInputsInvalid is the POST /runs 422: the submitted inputs failed
 // validation against the pinned revision's spec.inputs, reported in the
@@ -1279,6 +1299,13 @@ func (h *rnHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 		errors.Is(err, ErrPipelineNotFound):
 		h.denied(w, r, c, resourceID, action, "no such object, or it is not visible to you")
 		WriteProblem(w, http.StatusNotFound, "Not Found", "No such "+m4NounFor(action)+".")
+	case errors.Is(err, ErrNodeExecutionNotFound):
+		var named *NodeExecutionNotFound
+		key := ""
+		if errors.As(err, &named) {
+			key = named.NodeInstanceKey
+		}
+		m4WriteNodeExecutionNotFound(w, key)
 	case errors.Is(err, ErrAssignmentConflict):
 		m4WriteTypedProblem(w, http.StatusConflict, "assignment-already-exists",
 			"Assignment already exists",
@@ -1291,6 +1318,25 @@ func (h *rnHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 	default:
 		h.serverError(w, r, resourceID, action, err)
 	}
+}
+
+// m4WriteNodeExecutionNotFound renders route 31's unknown-target 404: the
+// stable code `node-execution-not-found` with the key the client named. The
+// key is the caller's own input, so echoing it discloses nothing (unlike the
+// 404 for an invisible run, which names no resource at all — W9's rule).
+func m4WriteNodeExecutionNotFound(w http.ResponseWriter, key string) {
+	detail := "No node execution of this run has that instance key; " +
+		"GET /api/v1/runs/{runId}/nodes lists the targets a retry may name."
+	if key == "" {
+		m4WriteTypedProblem(w, http.StatusNotFound, "node-execution-not-found",
+			"No Such Node Execution", detail)
+		return
+	}
+	m4WriteTypedProblemExtra(w, http.StatusNotFound, "node-execution-not-found",
+		"No Such Node Execution", detail,
+		struct {
+			NodeInstanceKey string `json:"node_instance_key"`
+		}{NodeInstanceKey: key})
 }
 
 // m4NounFor picks the 404 noun from the action's family so the body never

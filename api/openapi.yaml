@@ -3382,7 +3382,10 @@ paths:
         `inputs` overrides are recorded as run inputs (attempt-level `overrides`
         are visible on the attempt; `run.override.applied` is reserved and not
         emitted, ADR-0024 § 3). `409` `run_not_retriable` on a `running` or
-        completed run. Contributor+. Appends `run.retried`.
+        completed run. A named `node_instance_keys[]` entry that is not a node
+        execution of this run is a client error: `404`
+        `node-execution-not-found`, and the whole reopen is refused before any
+        row moves. Contributor+. Appends `run.retried`.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -3409,7 +3412,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          $ref: "#/components/responses/NotFound"
+          $ref: "#/components/responses/RunRetryNotFound"
         "409":
           $ref: "#/components/responses/RunConflict"
 
@@ -4401,6 +4404,36 @@ components:
             detail: "/implement declares restore_checkpoint but app is dirty at the boundary."
             run_id: 01987a81-2222-7000-8000-abcdef012345
             run_status: failed
+    RunRetryNotFound:
+      description: >
+        `404` for `POST /runs/{runId}/retry`, two arms with the same status:
+        `not-found` when the run does not exist or sits in a project the caller
+        cannot see (no resource is named, so existence is not disclosed), or
+        `node-execution-not-found` when a named `node_instance_keys[]` entry is
+        not a node execution of the run the caller addressed — that body names
+        the key, which is the caller's own input and discloses nothing. Both
+        arms reset nothing.
+      headers:
+        X-Communication-Replica:
+          $ref: "#/components/headers/XCommunicationReplica"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            invisible-run:
+              value:
+                type: https://communication.dev/errors/not-found
+                title: Not Found
+                status: 404
+                detail: "No such run."
+            unknown-node-execution:
+              value:
+                type: https://communication.dev/errors/node-execution-not-found
+                title: No Such Node Execution
+                status: 404
+                detail: "No node execution of this run has that instance key; GET /api/v1/runs/{runId}/nodes lists the targets a retry may name."
+                node_instance_key: /build_until_verified[1]/implement
     ApprovalConflict:
       description: >
         `409` for `POST /approvals/{approvalId}/decide`: the gate is already

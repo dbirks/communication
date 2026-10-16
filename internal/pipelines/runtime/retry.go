@@ -31,6 +31,20 @@ func (e ErrCheckpointUnavailable) Error() string {
 	return fmt.Sprintf("runtime: checkpoint_unavailable for %s: %s", e.NodeInstanceKey, e.Reason)
 }
 
+// ErrNodeExecutionNotFound says a named node execution instance key is not a
+// row of the run at all. It is a typed error, not a bare fmt.Errorf, because
+// the API must tell it apart from a store failure: contract route 31's caller
+// named a target that does not exist in that run, which is their error (404
+// node-execution-not-found), never a 500.
+type ErrNodeExecutionNotFound struct {
+	InstanceKey string
+	RunID       string
+}
+
+func (e ErrNodeExecutionNotFound) Error() string {
+	return fmt.Sprintf("runtime: no node execution %s in run %s", e.InstanceKey, e.RunID)
+}
+
 // RetryDecision answers "what does a retry inherit?" (contract route 27's
 // purpose sentence) for one node execution, purely from rows.
 type RetryDecision struct {
@@ -49,7 +63,7 @@ type RetryDecision struct {
 func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, error) {
 	row := st.Node(instanceKey)
 	if row == nil {
-		return RetryDecision{}, fmt.Errorf("runtime: no node execution %s in run %s", instanceKey, st.Run.ID)
+		return RetryDecision{}, ErrNodeExecutionNotFound{InstanceKey: instanceKey, RunID: st.Run.ID}
 	}
 	if prog == nil {
 		return RetryDecision{}, fmt.Errorf("%w: retry of node %s", ErrNoProgram, instanceKey)
@@ -148,7 +162,7 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		for _, key := range targets {
 			n := st.Node(key)
 			if n == nil {
-				return fmt.Errorf("runtime: no node execution %s in run %s", key, runID)
+				return ErrNodeExecutionNotFound{InstanceKey: key, RunID: runID}
 			}
 			if n.Status != NodeFailed && n.Status != NodeInterrupted && n.Status != NodeCancelled {
 				return fmt.Errorf("runtime: %s is %s, not retriable", key, n.Status)

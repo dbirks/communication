@@ -1865,3 +1865,43 @@ func TestM4ReplicaHeader(t *testing.T) {
 		t.Errorf("replica header = %q", rec.Header().Get("X-Communication-Replica"))
 	}
 }
+
+// TestM4RetryUnknownNodeIsNotFound is route 31's client-error arm: a body that
+// names a node execution the run does not have answers 404 problem+json with
+// the stable code node-execution-not-found (never a 500), names the key, and
+// nudges nothing — the reopen was refused whole before any row moved.
+func TestM4RetryUnknownNodeIsNotFound(t *testing.T) {
+	fx := m4PopulatedServer(t)
+	fx.runs.retryErr = &NodeExecutionNotFound{NodeInstanceKey: "/build_until_verified[1]/implement"}
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/runs/"+m4UUID+"/retry",
+		`{"node_instance_keys":["/build_until_verified[1]/implement"]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown-node retry = %d: %s", rec.Code, rec.Body)
+	}
+	var problem struct {
+		Type            string `json:"type"`
+		Status          int    `json:"status"`
+		NodeInstanceKey string `json:"node_instance_key"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(problem.Type, "/node-execution-not-found") || problem.Status != 404 {
+		t.Errorf("problem body = %+v", problem)
+	}
+	if problem.NodeInstanceKey != "/build_until_verified[1]/implement" {
+		t.Errorf("body names %q, want the key the client sent", problem.NodeInstanceKey)
+	}
+	if len(fx.triggered) != 0 {
+		t.Errorf("a refused retry must not nudge the advancer: %v", fx.triggered)
+	}
+
+	// The sentinel alone (a store that cannot name the key) maps the same way.
+	fx.runs.retryErr = ErrNodeExecutionNotFound
+	rec = fx.call(t, "POST", "http://localhost:8080/api/v1/runs/"+m4UUID+"/retry",
+		`{"node_instance_keys":["/nope"]}`)
+	if rec.Code != http.StatusNotFound ||
+		!strings.Contains(rec.Body.String(), "node-execution-not-found") {
+		t.Fatalf("sentinel retry = %d: %s", rec.Code, rec.Body)
+	}
+}
