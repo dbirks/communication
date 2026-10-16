@@ -848,5 +848,176 @@ class WKillWorkerMidNodeOfflineTest(unittest.TestCase):
                         f"restart=True must restore the killed worker: {cmds}")
 
 
+def c5h_twin_canonical():
+    """The § 7.0 twin's canonical_document shape, small: an until body whose
+    implement node is the held node C5 kills inside."""
+    return {
+            "apiVersion": "communication.dev/v1alpha1", "kind": "Pipeline",
+            "metadata": {"name": "feature-development-deterministic"},
+            "spec": {
+                "inputs": {"type": "object", "required": ["goal", "repository"],
+                           "properties": {
+                               "goal": {"type": "string", "minLength": 1},
+                               "repository": {"type": "string", "minLength": 1},
+                               "hold_seconds": {"type": "integer", "minimum": 0,
+                                                "default": 0}}},
+                "policies": {"workspaceMode": "worktree", "maxConcurrentNodes": 1},
+                "nodes": [
+                    {"id": "plan", "kind": "process.exec"},
+                    {"id": "build_until_verified", "kind": "until", "config": {"body": {"nodes": [
+                        {"id": "implement", "kind": "process.exec", "timeoutSeconds": 900,
+                         "retry": {"maxAttempts": 2, "backoff": {"baseSeconds": 10},
+                                   "retriableErrors": ["infra", "interrupted"]},
+                         "config": {"executable": "m4-exit.sh", "args": ["implement"],
+                                    "env": {"M4_HOLD_SECONDS":
+                                                "${{ string(inputs.hold_seconds) }}"},
+                                    "cwd": "repos/app",
+                                    "workspace": {"mode": "run_workspace",
+                                                  "repositories":
+                                                      ["${{ inputs.repository }}"]}},
+                         "outputs": {"type": "object", "required": ["summary"],
+                                     "properties": {"summary": {"type": "string"}}}},
+                        {"id": "test", "kind": "process.exec", "dependsOn": ["implement"]},
+                    ]}}},
+            ],
+        },
+    }
+
+
+class C5hScratchDocTest(unittest.TestCase):
+    """c5h_scratch_doc: the gate's OWN C5h revision is a deep copy of the twin's
+    held node with ONE variable — retry := maxAttempts 1 — and nothing else."""
+
+    def test_copy_lifts_the_held_node_with_only_the_budget_changed(self):
+        src = c5h_twin_canonical()
+        res = m.c5h_scratch_doc(src, "m4x-c5h-hold")
+        self.assertEqual(res["missing"], [])
+        doc = res["doc"]
+        self.assertIsInstance(doc, str)
+        self.assertEqual(doc.count("executable: m4-exit.sh"), 1)
+        self.assertIn("maxAttempts: 1", doc)
+        self.assertNotIn("maxAttempts: 2", doc)         # the twin's budget is gone
+        self.assertNotIn("kind: until", doc)            # no loop, no gate
+        self.assertNotIn("backoff", doc)                # old retry block fully replaced
+        self.assertIn("M4_HOLD_SECONDS", doc)           # the hold survived the copy
+        self.assertIn("inputs.hold_seconds", doc)
+        self.assertIn("m4x-c5h-hold", doc)
+        # The source document is untouched — the twin's key set is C1's property.
+        impl = src["spec"]["nodes"][1]["config"]["body"]["nodes"][0]
+        self.assertEqual(impl["retry"]["maxAttempts"], 2)
+
+    def test_refuses_a_source_that_is_not_the_twin(self):
+        for bad, needle in (
+            (None, "source document"),
+            ({"apiVersion": "x", "kind": "Pipeline", "spec": {}}, "held node"),
+        ):
+            res = m.c5h_scratch_doc(bad, "m4x-c5h-hold")
+            self.assertIsNone(res["doc"])
+            self.assertTrue(any(needle in why for why in res["missing"]),
+                            f"{bad!r}: missing={res['missing']}")
+
+    def test_refuses_a_held_node_without_the_hold_or_the_inputs(self):
+        no_hold = c5h_twin_canonical()
+        del no_hold["spec"]["nodes"][1]["config"]["body"]["nodes"][0]["config"]["env"]
+        res = m.c5h_scratch_doc(no_hold, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("M4_HOLD_SECONDS" in why for why in res["missing"]))
+        no_input = c5h_twin_canonical()
+        del no_input["spec"]["inputs"]["properties"]["hold_seconds"]
+        res = m.c5h_scratch_doc(no_input, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("inputs.hold_seconds" in why for why in res["missing"]))
+        other_exec = c5h_twin_canonical()
+        other_exec["spec"]["nodes"][1]["config"]["body"]["nodes"][0]["config"]["executable"] = "other"
+        res = m.c5h_scratch_doc(other_exec, "n")
+        self.assertIsNone(res["doc"])
+        self.assertTrue(any("m4-exit.sh" in why for why in res["missing"]))
+
+
+class C5hDocVerdictsTest(unittest.TestCase):
+    def test_honest_copy_passes_every_arm(self):
+        res = m.c5h_scratch_doc(c5h_twin_canonical(), "m4x-c5h-hold")
+        v = m.c5h_doc_verdicts(res)
+        self.assertTrue(all(ok for _, ok, _ in v), str(v))
+        self.assertEqual(len(v), 3)
+
+    def test_missing_splices_are_a_loud_fail(self):
+        v = m.c5h_doc_verdicts({"doc": None, "applied": [], "missing": ["the twin's held node"]})
+        self.assertIn(False, [ok for _, ok, _ in v])
+        self.assertFalse(any(ok for _, ok, _ in v if ok is not None))
+
+    def test_shape_arm_catches_a_second_budget(self):
+        res = m.c5h_scratch_doc(c5h_twin_canonical(), "n")
+        res["doc"] = res["doc"] + "      maxAttempts: 2\n"
+        v = m.c5h_doc_verdicts(res)
+        self.assertIs(v[-1][1], False, str(v[-1]))
+
+
+def refusal(**kw):
+    base = {"attempt_limit": "1", "att_status": "interrupted", "att_class": "interrupted",
+            "sched": 0, "attempts": [1], "run_status": "failed",
+            "run_cause": "node_execution_failed:/implement", "manual_status": 200,
+            "manual_body": '{"run_id": "r-1"}', "manual_attempt2": True,
+            "attempts_after": [1, 2]}
+    base.update(kw)
+    return {k: v for k, v in base.items() if v is not None}
+
+
+class C5hRefusalVerdictsTest(unittest.TestCase):
+    """§ 7.1 C5h: with maxAttempts=1 the retry is refused, the RUN fails honestly,
+    and the manual POST behaves as § 5 route 31 says."""
+
+    def graded(self, needle, a):
+        hits = [(ok, d) for label, ok, d in m.c5h_refusal_verdicts(a) if needle in label]
+        self.assertEqual(len(hits), 1, f"{needle!r}: {hits}")
+        return hits[0]
+
+    def test_full_refusal_passes_every_arm(self):
+        v = m.c5h_refusal_verdicts(refusal())
+        self.assertTrue(all(ok for _, ok, _ in v), str(v))
+
+    def test_an_engine_armed_retry_is_a_fail_not_a_refusal(self):
+        self.assertIs(self.graded("retry is REFUSED", refusal(sched=1))[0], False)
+        self.assertIs(self.graded("retry is REFUSED", refusal(attempts=[1, 2]))[0], False)
+        self.assertIs(self.graded("retry is REFUSED",
+                                 refusal(attempts=[1, 2], sched=None))[0], None)
+
+    def test_a_run_that_survived_the_exhaustion_fails_the_psql_line(self):
+        self.assertIs(self.graded("RUN fails honestly", refusal(run_status="running"))[0],
+                      False)
+        self.assertIs(self.graded("RUN fails honestly", refusal(run_status="completed",
+                                                                run_cause="-"))[0], False)
+        self.assertIs(self.graded("RUN fails honestly", refusal(run_status=""))[0], None)
+
+    def test_manual_retry_arms(self):
+        ok, _ = self.graded("manual POST", refusal())
+        self.assertIs(ok, True)
+        ok, _ = self.graded("manual POST", refusal(manual_status=409,
+                                                   manual_body='{"code": "run_not_retriable"}'))
+        self.assertIs(ok, False, "a failed run is retriable per route 31 — a 409 here is "
+                                 "the contradiction the gate must report")
+        ok, _ = self.graded("manual POST", refusal(manual_status=None, manual_body=""))
+        self.assertIs(ok, None)
+        ok, _ = self.graded("manual POST", refusal(manual_status=500, manual_body="boom"))
+        self.assertIs(ok, False)
+
+    def test_attempt_two_requeued_arm(self):
+        self.assertIs(self.graded("re-queued", refusal(manual_attempt2=False))[0], False)
+        self.assertEqual([label for label, _, _ in m.c5h_refusal_verdicts(
+            refusal(manual_attempt2=None, attempts_after=None))
+            if "re-queued" in label], [])
+
+    def test_unreadable_preconditions_gap(self):
+        self.assertIs(self.graded("authored with a budget of 1",
+                                  refusal(attempt_limit=""))[0], None)
+        self.assertIs(self.graded("authored with a budget of 1",
+                                  refusal(attempt_limit="2"))[0], False)
+        self.assertIs(self.graded("interrupted (status", refusal(att_class=""))[0], None)
+        self.assertIs(self.graded("interrupted (status",
+                                  refusal(att_status="failed", att_class="infra"))[0], False)
+        self.assertIs(self.graded("retry is REFUSED", refusal(sched=None))[0], None)
+        self.assertIs(self.graded("retry is REFUSED", refusal(attempts=None))[0], None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

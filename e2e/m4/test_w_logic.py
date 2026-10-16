@@ -76,8 +76,15 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w5_kill_landed_verdicts,
     w5_spinner_verdict,
     w6_chip_verdict,
+    w6_auto_retry_class_verdicts,
+    w6_loss_attempt_row,
+    w6_loss_classification_verdicts,
     w6_loss_copy_verdict,
+    w6_loss_facts,
     w6_retry_control_verdict,
+    w6_retry_scheduled_total,
+    w6_who_armed_the_retry,
+    C6_LOSS_WORKER,
     C_LIVE_TARGET_KEY,
     w_forbidden_word_hits,
     w_forbidden_word_verdicts,
@@ -1246,6 +1253,219 @@ def test_w5_w6_aim_their_kill_at_the_held_post_gate_attempt():
     assert C_LIVE_TARGET_KEY == "/build_until_verified[1]/implement"
 
 
+ROWS_1 = [{"attempt_number": "1", "status": "interrupted", "error_class": "interrupted",
+           "detail": "-", "worker": "worker-a"}]
+ROWS_LOST = ROWS_1 + [{"attempt_number": "2", "status": "failed",
+                       "error_class": W6_ERROR_CLASS, "detail":
+                       "prior edits lost, rerun required", "worker": C6_LOSS_WORKER}]
+ROW_LOST = ROWS_LOST[1]
+
+
+def test_w6_who_armed_the_retry_reads_the_ledger_not_a_post():
+    """live13/W6.out raced the engine: it drained worker-a, pointed the run at
+    worker-c and POSTED /runs/{id}/retry, which answered 409 "a running run is not
+    retriable" while the ledger already read attempt 2 failed/infra — with the twin's
+    attempt_limit 2 the ENGINE armed that attempt the moment the reconciler wrote
+    interrupted (§ 7.1 C5b's "running (retry armed)"). The leg now arms NOTHING and
+    grades whose attempt it measured."""
+    ok = w6_who_armed_the_retry("1", ROWS_LOST, C6_LOSS_WORKER)[0]
+    assert ok[1] is True and "W6 graded the engine's own attempt 2" in ok[2], ok
+    # scheduled but never claimed: the affinity flip lost the race, and a leg that
+    # posted no retry has nobody else to blame
+    never = w6_who_armed_the_retry("1", ROWS_1, C6_LOSS_WORKER)[0]
+    assert never[1] is False and "claimed" in never[2].lower(), never
+    # no scheduling AND no attempt: nothing to measure is a GAP, never a FAIL
+    assert w6_who_armed_the_retry("0", ROWS_1, "") [0][1] is None
+    assert w6_who_armed_the_retry(None, ROWS_1, "")[0][1] is None, \
+        "an unreadable retry_scheduled count proves nothing"
+    # claimed, but by the worker that ALREADY had the tree: no cross-volume subject
+    same = w6_who_armed_the_retry("1", ROWS_1 + [dict(ROW_LOST, worker="worker-a")],
+                                  C6_LOSS_WORKER)[0]
+    assert same[1] is False and "worker-a" in same[2], same
+    # a reused ledger case names no throwaway: any claiming worker satisfies the arm
+    assert w6_who_armed_the_retry("1", ROWS_LOST, "")[0][1] is True
+
+
+def test_w6_auto_retry_class_verdicts_sees_the_engine_pre_loss_but_not_post_loss():
+    """§ 7.2 W6's "no auto-retry is offered" over the ledger: the attempt-1→2
+    scheduling the engine did BEFORE the loss is § 7.1 C5b's expected auto-retry (the
+    caller passes the loss-class-only count in `sched` and the loss's own number as
+    `base`); what must never exist is a retry armed FOR the loss."""
+    assert w6_auto_retry_class_verdicts("0", ROWS_LOST, 2)[0][1] is True
+    assert w6_auto_retry_class_verdicts("1", ROWS_LOST, 2)[0][1] is False, \
+        "a workspace_lost retry_scheduled row IS an offered auto-retry"
+    assert w6_auto_retry_class_verdicts("0", ROWS_LOST, 1)[0][1] is False, \
+        "base=1 reads attempt 2 as a retry above the loss"
+    above = ROWS_LOST + [{"attempt_number": "3", "status": "queued",
+                          "error_class": "-", "detail": "-", "worker": "-"}]
+    bad = w6_auto_retry_class_verdicts("0", above, 2)[0]
+    assert bad[1] is False and "3" in bad[2], bad
+    assert w6_auto_retry_class_verdicts(None, ROWS_LOST, 2)[0][1] is None, \
+        "the journal did not answer: GAP"
+    assert w6_auto_retry_class_verdicts(None, above, 2)[0][1] is False, \
+        "…but a queued attempt above the loss is an auto-retry whoever armed it"
+
+
+def test_w6_classification_failure_is_a_fail_that_names_the_ledger():
+    """AttemptDetail.tsx draws the copy, the chip AND the withheld retry control from
+    one field (attempts.error_class). A refusal the product classed 'infra' is the
+    product not classifying the loss: FAIL, with the ledger quoted — never a GAP and
+    never a wording line that blames the UI for a classification it was never given."""
+    none = w6_loss_classification_verdicts(None, None, "")
+    assert len(none) == 1 and none[0][1] is None, none
+    infra = w6_loss_classification_verdicts(dict(ROW_LOST, error_class="infra"),
+                                            None, "failed|infra")
+    assert infra[0][1] is False and "'infra'" in infra[0][2], infra[0]
+    assert "AttemptDetail.tsx" in infra[0][2], "the FAIL has to say WHY the UI is innocent"
+    assert infra[1][1] is False, "no workspace.recovery_lost row is its own FAIL"
+    assert infra[2][1] is True, "the infra detail still carries the words — graded apart"
+    good = w6_loss_classification_verdicts(ROW_LOST, {"reason": "different_worker"},
+                                           "interrupted|workspace_lost")
+    assert [v[1] for v in good] == [True, True, True], good
+    quiet = w6_loss_classification_verdicts(dict(ROW_LOST, detail="workspace gone"),
+                                            {"reason": "different_worker"}, "")
+    assert [v[1] for v in quiet] == [True, True, False], quiet
+    assert W6_LOSS_COPY[0] in quiet[2][0], "the FAIL's label names the copy it looked for"
+
+
+def test_w6_loss_attempt_row_only_reads_a_refusal_as_a_refusal():
+    assert w6_loss_attempt_row(ROWS_LOST)["attempt_number"] == "2"
+    assert w6_loss_attempt_row(ROWS_LOST, "2")["attempt_number"] == "2"
+    assert w6_loss_attempt_row(ROWS_LOST, "1")["attempt_number"] == "2", \
+        "the named row must be a REFUSAL: attempt 1 is the interruption, not the loss"
+    assert w6_loss_attempt_row(ROWS_1) is None and w6_loss_attempt_row([]) is None
+    two = ROWS_1 + [{"attempt_number": "2", "status": "failed", "error_class": "timeout",
+                     "detail": "-", "worker": "worker-a"}, ROW_LOST]
+    assert w6_loss_attempt_row(two, "2")["error_class"] == W6_ERROR_CLASS, \
+        "C5h's exhausted budget leaves earlier failures on the same node"
+
+
+def test_w6_retry_reads_answer_or_none_never_a_fake_zero():
+    """w6_retry_scheduled_total counts EVERY retry_scheduled row of the run (§ 7.1
+    C5b's expected attempt-1→2 arm), apart from the loss-class count in
+    w6_auto_retried; a ledger that will not answer gives None so the verdict GAPs."""
+    import contextlib
+    import io
+
+    import e2e_m4_exit as m
+    seen, orig = [], {}
+
+    def drive(sql_answer):
+        def fake_psql(sql):
+            seen.append(sql)
+            if isinstance(sql_answer, Exception):
+                raise sql_answer
+            return sql_answer
+        for name, fn in (("psql", fake_psql),):
+            orig.setdefault(name, getattr(m, name))
+            setattr(m, name, fn)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return w6_retry_scheduled_total("r-1")
+        finally:
+            for name, fn in orig.items():
+                setattr(m, name, fn)
+
+    assert drive("2") == 2
+    assert drive("") is None, "an empty answer is NOT a zero the leg can PASS on"
+    assert drive("x") is None
+    assert drive(RuntimeError("psql failed")) is None
+    joined = " AND ".join(seen[-1].split())
+    assert "node.attempt.retry_scheduled" in joined and "error_class" not in joined, \
+        "the TOTAL read must not filter on the class — w6_auto_retried is the classed one"
+
+
+def test_w6_loss_facts_reads_every_fact_the_verdicts_consume():
+    """One shape whatever produced the subject (C6e's ledger row or this pass's kill):
+    the attempt rows, BOTH retry counts, the recovery event and the run row. It reads;
+    it decides nothing — and an unreadable ledger stays None, never a zero."""
+    import contextlib
+    import io
+
+    import e2e_m4_exit as m
+    orig = {}
+
+    def fake_psql(sql):
+        s = " ".join(sql.split())
+        if "retry_scheduled" in s:
+            return "0" if "error_class" in s else "2"   # pre-loss scheduling only
+        if "FROM runs" in s:
+            return "interrupted|workspace_lost"
+        raise AssertionError("unexpected psql: " + s[:120])
+
+    def patch(name, fn):
+        orig.setdefault(name, getattr(m, name))
+        setattr(m, name, fn)
+
+    patch("psql", fake_psql)
+    patch("c6_attempts_of_key", lambda run_id, key: ROWS_LOST)
+    patch("c6_recovery_event", lambda project_id, run_id: {"reason": "different_worker"})
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            out = w6_loss_facts("p-1", {"run_id": "r-1", "key": m.C_LIVE_TARGET_KEY})
+    finally:
+        for name, fn in orig.items():
+            setattr(m, name, fn)
+    assert out["rows"] == ROWS_LOST and out["sched_total"] == 2 \
+        and out["sched_loss"] == 0 and out["run_row"] == "interrupted|workspace_lost", out
+    assert out["event"] == {"reason": "different_worker"}
+    verdicts = (w6_who_armed_the_retry(out["sched_total"], out["rows"], C6_LOSS_WORKER)
+                + w6_loss_classification_verdicts(w6_loss_attempt_row(out["rows"], "2"),
+                                                  out["event"], out["run_row"])
+                + w6_auto_retry_class_verdicts(out["sched_loss"], out["rows"], 2))
+    assert all(ok is True for _l, ok, _d in verdicts), \
+        [(l, ok, d) for l, ok, d in verdicts if ok is not True]
+    # an unreadable ledger is carried as None and GAPs, it never reads as a clean zero
+    orig2 = dict(orig)
+
+    def dead_psql(sql):
+        raise RuntimeError("psql failed")
+
+    patch("psql", dead_psql)
+    patch("c6_row", lambda sql, what: "")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            gap_out = w6_loss_facts("p-1", {"run_id": "r-1", "key": "k"})
+    finally:
+        for name, fn in orig2.items():
+            setattr(m, name, fn)
+    assert gap_out["sched_total"] is None and gap_out["sched_loss"] is None
+    assert w6_auto_retry_class_verdicts(gap_out["sched_loss"], [], 2)[0][1] is None
+
+
+def test_w6_wires_the_engine_retry_and_never_posts_its_own():
+    """The sequencing fix a06bd6a made to C5e/C6, pinned for W6: the leg must NOT
+    POST /runs/{id}/retry (that 409 is the engine mid-retry, not a product refusal),
+    it must flip the affinity and READ attempt 2, and w6() must grade the ledger
+    verdicts BEFORE the page wording that depends on them."""
+    import ast
+
+    import e2e_m4_exit as m
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "e2e_m4_exit.py"), encoding="utf-8").read()
+    tr = ast.parse(src)
+    fns = {n.name: n for n in tr.body if isinstance(n, ast.FunctionDef)}
+    prod = ast.get_source_segment(src, fns["w6_produce_loss"])
+    posted = [ast.unparse(c) for c in ast.walk(fns["w6_produce_loss"])
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+              and c.func.attr == "post"
+              and "/retry" in " ".join(ast.unparse(a) for a in c.args)]
+    assert not posted, f"the loss leg POSTS a retry it does not own: {posted}"
+    for needle in ("W6_RETRY_WAIT_S", "c6_attempts_of_key", "w6_retry_scheduled_total",
+                   "C6_LOSS_WORKER", "w_kill_worker_mid_node"):
+        assert needle in prod, f"w6_produce_loss lost {needle!r}"
+    assert "restart=False" in prod, "the owning worker stays drained or it reclaims its " \
+                                    "own volume and nothing is lost"
+    leg = ast.get_source_segment(src, fns["w6"])
+    for needle in ("w6_loss_facts", "w6_who_armed_the_retry",
+                   "w6_loss_classification_verdicts", "w6_auto_retry_class_verdicts",
+                   "w6_loss_attempt_row"):
+        assert needle in leg, f"w6() no longer calls {needle} — the helper is dead code"
+    assert leg.index("w6_loss_classification_verdicts") < leg.index("w6_loss_copy_verdict"), \
+        "the classification is graded before the copy that cannot render without it"
+    assert m.W6_RETRY_WAIT_S <= 240, "the leg has to end well inside the 25-minute budget"
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
@@ -1263,6 +1483,13 @@ if __name__ == "__main__":
                test_w5_kill_proof_console_and_spinner,
                test_w6_loss_copy_chip_and_retry_control,
                test_w_pick_container_only_this_projects_worker,
+               test_w6_who_armed_the_retry_reads_the_ledger_not_a_post,
+               test_w6_auto_retry_class_verdicts_sees_the_engine_pre_loss_but_not_post_loss,
+               test_w6_classification_failure_is_a_fail_that_names_the_ledger,
+               test_w6_loss_attempt_row_only_reads_a_refusal_as_a_refusal,
+               test_w6_retry_reads_answer_or_none_never_a_fake_zero,
+               test_w6_loss_facts_reads_every_fact_the_verdicts_consume,
+               test_w6_wires_the_engine_retry_and_never_posts_its_own,
                test_w5_w6_aim_their_kill_at_the_held_post_gate_attempt,
                test_w11_reads_the_tree_route_its_own_shape,
                test_c11_report_honesty_tolerates_a_labelled_true_row,

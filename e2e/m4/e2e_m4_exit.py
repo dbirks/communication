@@ -3398,6 +3398,167 @@ def c5_budget_verdicts(attempt_limit, status, cause):
              bool(ok), f"status={status!r} failed_cause={str(cause)[:90]!r}")]
 
 
+# --- C5h — the budget arm measured on the gate's OWN published scratch -------
+# docs/m4-contract.md § 7.1 C5h verbatim:
+#   C5h  budget arm: with maxAttempts=1 on the killed node, the retry is refused and
+#        the RUN fails honestly — psql -tAc "select status,failed_cause from runs
+#        where id='$RUN'"  # failed | node_execution_failed:/…
+# The shipped twin cannot produce this arm: its held node is authored with
+# retry.maxAttempts 2 (C5g's completion arm needs that budget) and changing the
+# twin would change C1's node key set. So the gate publishes its OWN scratch
+# revision — the C6/C7/C8e draft -> validate -> publish route — carrying nothing
+# but a copy of the twin's held node (process.exec m4-exit.sh, M4_HOLD_SECONDS
+# from inputs.hold_seconds) with retry.maxAttempts: 1, and kills a worker inside
+# THAT. Manual-retry behaviour is graded by § 5 route 31: POST /runs/{runId}/retry
+# "Targets failed/interrupted/cancelled node executions ... `run_not_retriable` on
+# a terminal-successful or `running` run" — a FAILED run is retriable, so the POST
+# C5e's engine-owned retry contradicted must here answer 200.
+C5H_NODE_ID = "implement"        # the twin's held until-body node, lifted to top level
+C5H_SENTENCE = ('C5h  budget arm: with maxAttempts=1 on the killed node, the retry is '
+                'refused and the RUN fails honestly — psql -tAc "select status,'
+                'failed_cause from runs where id=\'$RUN\'"  # failed | '
+                'node_execution_failed:/…')
+
+
+def c5h_scratch_doc(canonical, name):
+    """Re-author the C5h scratch pipeline from the twin's canonical_document WITHOUT
+    editing the fixture: a deep copy of the held until-body node lifted to top level
+    with its retry block replaced by maxAttempts: 1 — the one variable. No gate, no
+    loop, no outputs block (the schema requires only spec.inputs and spec.nodes);
+    inputs keeps exactly goal/repository/hold_seconds so M4_HOLD_SECONDS still
+    rides the run input. Returns {doc, applied, missing}, doc None (the caller
+    GAPs) unless every splice verbatim applied — a node the gate invented is not
+    the twin's held node and would prove nothing about the twin's budget rule."""
+    out = {"doc": None, "applied": [], "missing": []}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (GET /revisions/{id} served no canonical "
+                              "kind: Pipeline document)")
+        return out
+    held = doc_body_node(canonical, C5H_NODE_ID)
+    if held is None:
+        out["missing"].append(f"the twin's held node '{C5H_NODE_ID}' (not exactly one "
+                              "until-body node with that id)")
+        return out
+    cfg = held.get("config") if isinstance(held.get("config"), dict) else {}
+    if cfg.get("executable") != "m4-exit.sh":
+        out["missing"].append(f"held node '{C5H_NODE_ID}' is not the m4-exit.sh "
+                              f"process.exec (executable={cfg.get('executable')!r})")
+        return out
+    if "M4_HOLD_SECONDS" not in (cfg.get("env") or {}):
+        out["missing"].append("held node has no M4_HOLD_SECONDS env — nothing to kill "
+                              "a worker mid-way through")
+        return out
+    props = ((canonical.get("spec") or {}).get("inputs") or {}).get("properties") or {}
+    kept = {k: props[k] for k in ("goal", "repository", "hold_seconds") if k in props}
+    for k in ("repository", "hold_seconds"):
+        if k not in kept:
+            out["missing"].append(f"inputs.{k} on the seed twin ({k} is what the held "
+                                  "node's bindings read)")
+    if out["missing"]:
+        return out
+    node = json.loads(json.dumps(held))            # deep copy; the twin doc stays put
+    node.pop("dependsOn", None)                    # it is the only node
+    node["retry"] = {"maxAttempts": 1}
+    scratch = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
+               "metadata": {"name": name,
+                            "description": "C5h budget arm: the twin's held node with "
+                                           "retry.maxAttempts 1 and nothing else"},
+               "spec": {"inputs": {"type": "object", "required": ["goal", "repository"],
+                                   "properties": kept},
+                        "policies": json.loads(json.dumps(
+                            (canonical.get("spec") or {}).get("policies") or {})),
+                        "nodes": [node]}}
+    out["applied"].append(f"held node '{C5H_NODE_ID}' (m4-exit.sh + M4_HOLD_SECONDS) "
+                          "copied to top level verbatim")
+    out["applied"].append("retry := {maxAttempts: 1} (the one variable — backoff and "
+                          "retriableErrors are gone with the old budget too)")
+    out["doc"] = doc_yaml_emit(scratch)
+    return out
+
+
+def c5h_doc_verdicts(res):
+    """Honesty gate on the scratch document itself: the arm only measures the twin's
+    kill target if that target was copied verbatim and the ONE change is the
+    budget."""
+    sp = res if isinstance(res, dict) else {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    v = [("C5h scratch doc: the twin's held node (m4-exit.sh + M4_HOLD_SECONDS) copied "
+          "to top level", any("copied to top level" in a for a in applied),
+          f"applied={applied[:3]}")]
+    v.append(("C5h scratch doc: retry replaced by maxAttempts 1 — the budget the "
+              "contract row names, and the one variable", any("maxAttempts" in a
+                                                              for a in applied),
+              f"applied={applied[:3]}"))
+    if missing:
+        v.append(("C5h scratch doc: every required splice applied", False,
+                  f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append(("C5h scratch doc: ONE node and no other retry budget anywhere "
+                  "(no gate, no until, no maxAttempts: 2)",
+                  doc.count("executable: m4-exit.sh") == 1 and "maxAttempts: 1" in doc
+                  and "maxAttempts: 2" not in doc and "kind: until" not in doc,
+                  f"{len(doc)} bytes"))
+    return v
+
+
+def c5h_refusal_verdicts(a):
+    """§ 7.1 C5h's refusal algebra over canned ledger reads (the live leg feeds it
+    Postgres). a: {attempt_limit, att_status, att_class, sched, attempts,
+    run_status, run_cause, manual_status, manual_body, manual_attempt2,
+    attempts_after}. Missing readings stay None (an honest GAP); a retry_scheduled
+    row, an attempt 2 the engine armed, or a run that completed instead of failing
+    is a FAIL — the budget refused means NOTHING retried automatically. The manual
+    POST is graded by § 5 route 31, quoted in the label."""
+    a = a if isinstance(a, dict) else {}
+    v = []
+    limit = count_or_none(a.get("attempt_limit"))
+    v.append(("C5h the scratch node is authored with a budget of 1 (maxAttempts=1)",
+              None if limit is None else limit == 1,
+              f"node_executions.attempt_limit={a.get('attempt_limit')!r}"))
+    st = str(a.get("att_status") or "").strip()
+    cls = str(a.get("att_class") or "").strip()
+    v.append(("C5h the killed scratch attempt is interrupted (status + error_class)",
+              None if not st or not cls
+              else st == "interrupted" and cls == "interrupted",
+              f"attempt row {st or '(unreadable)'} | {cls or '(unreadable)'}"))
+    sched, seen = a.get("sched"), a.get("attempts")
+    max_seen = max((_int(x) for x in seen), default=0) if isinstance(seen, list) else None
+    v.append(("C5h the retry is REFUSED — no automatic retry: no "
+              "node.attempt.retry_scheduled row and no attempt 2 while the budget "
+              "stands exhausted", None if sched is None or max_seen is None
+              else sched == 0 and max_seen <= 1,
+              f"retry_scheduled={sched!r} attempts={seen!r}"))
+    rs = str(a.get("run_status") or "").strip()
+    rc = str(a.get("run_cause") or "").strip()
+    v.append(("C5h the RUN fails honestly — failed | node_execution_failed:... "
+              "(§ 7.1 C5h's psql line, quoted in C5H_SENTENCE)",
+              None if not rs else rs == "failed" and rc.startswith("node_execution_failed:"),
+              f"status={rs or '(unreadable)'} failed_cause={rc[:90] or '(unreadable)'}"))
+    label = ("C5h manual POST /runs/{id}/retry behaves as the contract row says "
+             "(§ 5 route 31: it 'Targets failed/interrupted/cancelled node "
+             "executions'; run_not_retriable is only for 'a terminal-successful or "
+             "running run' — a FAILED run is retriable)")
+    ms = _int(a.get("manual_status")) if a.get("manual_status") not in (None, "") else 0
+    mb = str(a.get("manual_body") or "")
+    if not ms:
+        v.append((label, None, "no POST answer readable — the arm has nothing to measure"))
+    elif ms in (200, 201):
+        v.append((label + " — accepted", True, f"{ms} {mb[:160]}"))
+    elif c5_run_not_retriable(ms, mb):
+        v.append((label + " — refused 409 run_not_retriable", False,
+                  f"the run above is failed (not terminal-successful, not running) "
+                  f"and route 31 targets failed executions — refusing it here "
+                  f"contradicts the row: {mb[:160]}"))
+    else:
+        v.append((label, False, f"observed {ms} {mb[:160]}"))
+    if a.get("manual_attempt2") is not None:
+        v.append(("C5h the accepted manual retry re-queued the killed node (attempt 2 "
+                  "appended with retry_context — § 5 route 31's stated effect)",
+                  bool(a.get("manual_attempt2")),
+                  f"post-retry attempts={a.get('attempts_after')!r}"))
+    return v
+
+
 def c5_attempt_state(row):
     """What the ledger says about an attempt the gate just signalled:
     'interrupted' (the reconciler wrote the dead worker's terminal state — the case
@@ -4266,10 +4427,249 @@ def c5():
                            f"WHERE id = '{run_id}'"), 2)
     c5_emit(c5_budget_verdicts(limit, final[0][0] if final else "",
                                final[0][1] if final else ""))
+    if _int(limit) != 1:
+        # The shipped twin cannot arm the refusal: its held node is authored with
+        # budget 2 (C5g's completion arm needs it) and re-authoring the twin would
+        # change C1's node key set. So § 7.1 C5h is measured on a scratch revision
+        # the gate publishes itself (C8e's route: draft -> validate -> publish).
+        c5h_scratch_arm(alice, facts, tw)
     CTX["c5"] = {"run_id": run_id, "attempt_id": att, "owner": owner, "key": key,
                  "head_before": head_before, "dirty_before": dirty_before,
                  "volume_before": ws_before.get("volume_id"),
                  "volume_after": ws_after.get("volume_id"), "checkpoints": ck_after}
+
+
+# --- C5h live arm — publish the gate's OWN maxAttempts=1 revision and kill it --
+
+
+def c5h_scratch_arm(alice, facts, tw):
+    """C5h — the budget arm on a revision the driver publishes itself. § 7.1 C5h
+    verbatim: 'C5h  budget arm: with maxAttempts=1 on the killed node, the retry is
+    refused and the RUN fails honestly — psql -tAc "select status,failed_cause from
+    runs where id='$RUN'"  # failed | node_execution_failed:/…'. The shipped twin
+    cannot arm it (held node budget 2; re-authoring the twin would change C1's key
+    set), so — like C8e (b2bfe62) and C6/C7 — publish a scratch pipeline through
+    draft -> validate -> publish: a copy of the twin's held node (process.exec
+    m4-exit.sh, M4_HOLD_SECONDS from hold_seconds) with retry.maxAttempts: 1 and
+    nothing else; kill the owning worker mid-node with the C5 sequence (SIGSTOP
+    prove, SIGKILL, lease window); grade c5h_refusal_verdicts. A scratch publish
+    or kill that cannot be proven is a GAP with the reason, never a guess."""
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C5h scratch arm", "no admin (library-role) session — the maxAttempts=1 "
+            "revision is an extra PUBLISHED revision and only the library role may "
+            "draft it")
+        return
+    CTX["admin"] = admin
+    src = doc_revision_canonical(admin, mf(tw, "revision_id"))
+    if src is None:
+        gap("C5h scratch arm", f"GET /api/v1/revisions/{mf(tw, 'revision_id')!r} served "
+            "no canonical Pipeline document — the gate will not author a budget into "
+            "bytes it cannot show the compiler actually read")
+        return
+    slug = schema_name("m4x-c5h-hold")
+    res = c5h_scratch_doc(src, slug)
+    c5_emit(c5h_doc_verdicts(res))
+    show("C5h scratch splices applied to the twin document",
+         " | ".join(res["applied"]) or "(none)")
+    if res["doc"] is None:
+        gap("C5h scratch arm", f"the twin document is not the shape C5h copies "
+            f"({res['missing']}) — an invented long-running node would not be the "
+            "twin's kill target and would prove nothing about the twin's budget rule")
+        return
+    r = admin.post(LB, "/api/v1/pipelines", {"slug": slug, "display_name": slug,
+                                             "description": "C5h maxAttempts=1 budget arm"})
+    show(f"C5h POST /api/v1/pipelines (scratch) -> {r.status}", r.text[:160])
+    pid = str((r.json() or {}).get("id") or "") if r.status in (201, 409) else ""
+    if r.status == 409 and not pid:
+        lst = admin.get(LB, "/api/v1/pipelines")
+        for p in (lst.json() or {}).get("pipelines") or []:
+            if p.get("slug") == slug:
+                pid = str(p.get("id") or "")
+    if not pid:
+        gap("C5h scratch arm", f"POST /api/v1/pipelines -> {r.status}: no scratch "
+            "pipeline to hold the maxAttempts=1 draft")
+        return
+    pub = c7_publish(admin, pid, "C5h maxAttempts=1 hold node", res["doc"])
+    rev = str((pub or {}).get("revision_id") or "")
+    if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+        gap("C5h scratch arm", f"the maxAttempts=1 revision could not be drafted/"
+            f"validated/published (validate={pub and pub.get('validate_status')} "
+            f"publish={pub and pub.get('publish_status')} errors="
+            f"{str((pub or {}).get('vresp') or '')[:240]}) — with no published "
+            "budget-1 node there is no refusal to measure")
+        return
+    check("C5h scratch revision published through draft -> validate -> publish "
+          "(the § 7.0 seed twin is untouched)", True,
+          f"revision {rev[:8]} on scratch pipeline {slug}")
+    base = mf(tw, "inputs", default={}) or mf(facts, "inputs", default={}) or {}
+    inputs = {k: base[k] for k in ("goal", "repository") if k in base}
+    if "repository" not in inputs:
+        gap("C5h scratch arm", "the § 7.0 seed manifest carries no inputs.repository — "
+            "the copied node's workspace binding reads it, so the scratch run cannot "
+            "be posted honestly")
+        return
+    inputs["hold_seconds"] = C_FAULT_HOLD_SECONDS
+    r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                   {"pipeline_revision_id": rev, "inputs": inputs,
+                    "idempotency": idem_key("m4x-c5h")})
+    show(f"C5h POST runs (scratch revision {rev[:8]}) -> {r.status}", r.text[:200])
+    if r.status not in (200, 201):
+        gap("C5h scratch arm", f"POST runs -> {r.status} {r.text[:160]} — the "
+            "maxAttempts=1 pipeline never ran, so the refusal has no ledger to read")
+        return
+    run_id = (r.json() or {}).get("run_id")
+    CTX["c5h_run"] = run_id
+    return _c5h_kill_and_grade(alice, facts, run_id)
+
+
+def _c5h_kill_and_grade(alice, facts, run_id):
+    """The C5 kill sequence aimed at the scratch maxAttempts=1 node, then the
+    refusal reads: live pick -> SIGSTOP + freeze proof -> SIGKILL -> lease window
+    -> attempt/run ledger -> no-auto-retry reads -> the manual POST /retry (§ 5
+    route 31). Host safety as in C5: the killed worker is always composed back up.
+    GAP with the reason on every step the lab refuses to give."""
+    def att_read(aid):
+        try:
+            rows = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
+                                  f"FROM attempts WHERE id = '{aid}'"), 2)
+        except RuntimeError as e:
+            show("C5h the killed attempt's row (psql)", str(e)[:200])
+            return {}
+        return dict(zip(("status", "error_class"), rows[0])) if rows else {}
+
+    def attempts_seen(key):
+        try:
+            return [_int(x[0]) for x in psql_rows(psql(
+                f"SELECT a.attempt_number::text FROM attempts a JOIN node_executions ne "
+                f"ON ne.id = a.node_execution_id WHERE a.run_id = '{run_id}' AND "
+                f"ne.node_instance_key = '{key}' ORDER BY 1"), 1)]
+        except RuntimeError as e:
+            show("C5h attempt rows (psql)", str(e)[:200])
+            return None
+
+    def sql_read(sql, what):
+        try:
+            return psql(sql)
+        except RuntimeError as e:
+            show(f"C5h {what} (psql)", str(e)[:200])
+            return None
+
+    # The scratch pipeline has no approval gate — the held node is its only node,
+    # so ANY live claim is the target (wait_live_past_gate's target=None rule).
+    live = wait_live_past_gate(alice, mf(facts, "project_id"), run_id,
+                               hold_window(C5_KILL_POLL_S), "C5h")
+    if live is None:
+        gap("C5h scratch arm — the mid-node kill", f"no attempt on the scratch run "
+            f"{run_id} was ever HELD within the window (status="
+            f"{run_status(run_id)!r}) — with nothing running there is no mid-node "
+            "kill, so the refusal arm has no ledger")
+        return
+    att, owner, key = live["id"], live["worker"], live["key"]
+    svc = c4_worker_service(owner)
+    if svc is None:
+        gap("C5h scratch arm — the mid-node kill",
+            f"the live claim belongs to worker row {owner!r}, which is not one of this "
+            "project's two lab workers — the driver never kills a container it did not "
+            "create (§ 7.0)")
+        return
+    show("C5h the live scratch attempt (the copy of the twin's held node, budget 1)",
+         f"{att} node={key} owner={owner}")
+    frozen = killed = None
+    ledger = {}
+    try:
+        container = resolve_container(svc, "C5h")
+        if not container:
+            gap("C5h scratch arm — the mid-node kill",
+                "the owning worker's container could not be resolved — the gate will "
+                "not signal a container it cannot name")
+            return
+        rc, out, how = container_signal(C5_STOP_SIGNAL, svc)
+        if rc != 0:
+            gap("C5h scratch arm — the mid-node kill",
+                f"SIGSTOP {how or 'unresolved'} -> rc={rc}: {out[-200:]} — without the "
+                "freeze the gate cannot prove the kill landed mid-node")
+            return
+        frozen = svc
+        s_stop = att_read(att).get("status", "")
+        time.sleep(C5_FREEZE_PROOF_S)
+        proven = c5_freeze_proof(s_stop, att_read(att).get("status", ""))
+        if not proven:
+            gap("C5h scratch arm — the mid-node kill",
+                f"the freeze proof failed (status@stop={s_stop or '(unreadable)'!r}) — "
+                "the scratch node closed before the signal landed, so a SIGKILL would "
+                "strike an idle worker and prove nothing")
+            return
+        rc, out, how = container_signal("KILL", svc)
+        if rc != 0:
+            gap("C5h scratch arm — the mid-node kill",
+                f"SIGKILL {how or 'unresolved'} -> rc={rc}: {out[-200:]} — no kill, no "
+                "refusal to measure")
+            return
+        killed = owner
+        show(f"C5h {how} — the frozen worker dies mid-hold (no cleanup, no terminal "
+             f"write)", out[-160:] or container)
+        time.sleep(C5_KILL_WAIT_S)            # lease 30s + reconciler tick 15s + margin
+        deadline = time.time() + C5_KILL_POLL_S
+        ledger = att_read(att)
+        while time.time() < deadline and c5_attempt_state(ledger) == "live":
+            time.sleep(3)
+            ledger = att_read(att)
+    finally:
+        if frozen and not killed:
+            rc2, out2, how2 = container_signal(C5_CONT_SIGNAL, frozen)
+            show(f"C5h unfreeze {frozen} (SIGCONT via {how2 or 'no container'}, rc={rc2}) "
+                 "— the gate never leaves a stopped worker behind",
+                 out2[-160:] or frozen)
+        if killed:
+            rc2, out2 = run(COMPOSE + ["start", killed])
+            show(f"C5h compose start {killed} — the killed worker is brought back "
+                 f"(host safety; rc={rc2})", out2[-200:] or killed)
+            wait_worker_row(killed, 120)
+
+    show(f"C5h the killed scratch attempt's row ({att}) after the lease window",
+         f"{ledger.get('status') or '(no row)'} | {ledger.get('error_class') or '(no row)'}")
+    limit = sql_read(f"SELECT ne.attempt_limit::text FROM node_executions ne "
+                     f"JOIN attempts a ON a.node_execution_id = ne.id "
+                     f"WHERE a.id = '{att}'", "authored budget read")
+    sched = count_or_none(sql_read(
+        f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' AND "
+        f"type = 'node.attempt.retry_scheduled' AND attempt_id = '{att}'",
+        "retry_scheduled count") or "")
+    seen = attempts_seen(key)
+    deadline = time.time() + 90            # the run's own failure lands on the next advancer tick
+    while time.time() < deadline and run_status(run_id) not in ("failed", "completed",
+                                                                "cancelled"):
+        time.sleep(3)
+    fr = psql_rows(sql_read(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM "
+                            f"runs WHERE id = '{run_id}'", "run row read") or "", 2)
+    r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
+                   {"reason": "C5h budget-refusal probe (the UI's button)"})
+    show(f"C5h POST /api/v1/runs/{run_id}/retry -> {r.status}", r.text[:200])
+    manual_status, manual_body = r.status, r.text[:200]
+    after = None
+    if manual_status in (200, 201):
+        deadline = time.time() + 120
+        after = attempts_seen(key)
+        while time.time() < deadline and not (after and max(after, default=0) > 1):
+            time.sleep(5)
+            after = attempts_seen(key)
+        show("C5h attempt rows after the accepted manual retry", str(after))
+        deadline = time.time() + hold_window(240)   # never leave a live run behind
+        while time.time() < deadline and run_status(run_id) not in ("failed", "completed",
+                                                                    "cancelled"):
+            time.sleep(5)
+        show("C5h the scratch run closed at", run_status(run_id))
+    c5_emit(c5h_refusal_verdicts({
+        "attempt_limit": (limit or "").strip(),
+        "att_status": ledger.get("status", ""), "att_class": ledger.get("error_class", ""),
+        "sched": sched, "attempts": seen,
+        "run_status": fr[0][0] if fr else "", "run_cause": fr[0][1] if fr else "",
+        "manual_status": manual_status, "manual_body": manual_body,
+        "manual_attempt2": None if manual_status not in (200, 201)
+        else (None if after is None else max(after, default=0) > 1),
+        "attempts_after": after}))
+    show("C5h § 7.1 C5h verbatim (the row this arm measures)", C5H_SENTENCE)
 
 
 # --- C6 pure logic — unit-tested offline by e2e/m4/test_c6_logic.py -----------
@@ -13508,6 +13908,12 @@ W5_INTERRUPTED_COPY = "interrupted — the worker disappeared mid-node"
 W5_COUNTDOWN_COPY = "next attempt scheduled"
 W6_LOSS_COPY = ("prior edits lost", "rerun required")
 W6_ERROR_CLASS = "workspace_lost"
+# W6 measures the ENGINE's automatic retry, so its only wait is "did attempt 2 land on
+# the other volume and write its refusal?" — the claim needs one worker heartbeat (10s)
+# plus the prepare/refuse round trip, and the leg's whole budget (kill, drain, the
+# throwaway's registration, this wait, the browser arms) must end well inside 25 min.
+W6_RETRY_WAIT_S = 240
+W6_ATTEMPT_TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
 W5_LAB_PROJECT = COMPOSE_PROJECT
 
 
@@ -14299,7 +14705,7 @@ def w6_loss_facts(project_id, loss):
     except RuntimeError as e:
         show("W6 the loss run's row (psql)", str(e)[:200])
         rr = []
-    out["run_row"] = rr[0][0] if rr else ""
+    out["run_row"] = "|".join(rr[0]) if rr else ""   # status|failed_cause, both halves
     shown = [(r.get("attempt_number"), r.get("status"), r.get("error_class"),
               r.get("worker")) for r in out["rows"]]
     show(f"W6 what the ledger holds for the loss run {run_id}",
@@ -14308,6 +14714,22 @@ def w6_loss_facts(project_id, loss):
          f"recovery_lost={json.dumps(out['event']) if out['event'] else '(none)'} "
          f"run row={out['run_row'] or '(unreadable)'!r}")
     return out
+
+
+def w6_loss_attempt_row(rows, attempt_number=""):
+    """The ledger row that IS the loss refusal, read the way the verdicts consume it:
+    an attempt that FAILED with a class written on it. A completed or still-live
+    attempt is not a refusal whoever it belongs to, and the classification verdict
+    turns None into its honest GAP. `attempt_number` is the leg's own subject and wins
+    when the ledger carries more than one failed attempt (§ 7.1 C5h's exhausted budget
+    leaves earlier failures on the same node)."""
+    fails = [r for r in (rows or []) if str(r.get("status") or "").lower() == "failed"]
+    want = str(attempt_number or "")
+    if want:
+        hit = [r for r in fails if str(r.get("attempt_number") or "") == want]
+        if hit:
+            return hit[-1]
+    return fails[-1] if fails else None
 
 
 def w6_control_state(controls, session="m4w6"):
@@ -14333,9 +14755,14 @@ def w6_produce_loss(client, twin, tag="W6"):
     """Run C6e's different-volume case for real, as the row words it: kill the owning
     worker mid-node (w_kill_worker_mid_node — C5's own sequence), drain that service,
     bring up this driver's throwaway worker-c on its OWN named repos volume, point the
-    run at it (the M3 D10 lab-side exception § 7.1 C6e already uses — no public route
-    writes affinity), and read the refusal the workspace cannot avoid writing. Returns
-    the facts, or None with the reason printed."""
+    run at it BEFORE the engine's automatic attempt 2 is claimed (the M3 D10 lab-side
+    exception § 7.1 C6e already uses — no public route writes affinity), and read the
+    refusal the workspace cannot avoid writing. This leg POSTS no retry: with the twin's
+    attempt_limit 2 the reconciler's `interrupted` write already armed attempt 2 (§ 7.1
+    C5b's "running (retry armed)"), so the route answers 409 run-not-retriable and the
+    retry worth grading is the engine's own (a06bd6a's C5e/C6 fix). Returns the facts —
+    including a refusal the product classed something OTHER than workspace_lost, which
+    the caller FAILS on the classification — or None with the reason printed."""
     project_id = mf(twin, "project_id")
     if not require_fault_hold(tag):
         return None
@@ -14384,46 +14811,89 @@ def w6_produce_loss(client, twin, tag="W6"):
                 "different-volume case to open (that is C5d's arm, not C6e's)")
             return None
         show(f"{tag} worker-c's row", f"{cw[0]} enforcement={cw[1]} capacity={cw[2]}")
-        flip = c9_lab_write(
-            f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
-            f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
-            f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
-            f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}' AND worker_affinity = (SELECT id "
-            f"FROM workers WHERE name = '{kill['owner']}')",
-            f"{tag}: point the run at worker-c (§ 7.1 C6e's 'drain a, run affinity "
-            "forced' — no public route writes affinity)")
-        if not flip or flip.strip().endswith("0"):        # the guard matched no row
-            show(f"{tag} the guarded affinity flip matched nothing ({flip.strip() or 'unreadable'!r})",
-                 "the run carried no affinity to the owning worker, so the same write is "
-                 "re-issued unguarded — it still names only THIS run and only worker-c")
-            flip = c9_lab_write(
+
+        def affinity_now():
+            """The run's affinity as a worker NAME — the only readable proof the flip
+            landed: psql runs with -q, so an UPDATE answers NOTHING and 'matched
+            nothing' (live13/W6.out) was the reader, not the ledger. The arm below is
+            worthless unless the run really points at the throwaway, so the row is
+            read back rather than guessed."""
+            return c6_row(f"SELECT coalesce((SELECT name FROM workers WHERE "
+                          f"id = r.worker_affinity), '-') || '|' || "
+                          f"coalesce(r.worker_volume_id, '-') FROM runs r "
+                          f"WHERE id = '{run_id}'", "run affinity")
+
+        def flip_run(why):
+            return c9_lab_write(
                 f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
                 f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
                 f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
-                f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}'",
-                f"{tag}: point the run at worker-c (unguarded retry of the same write)")
-        rr = client.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": f"{tag} cross-volume arm"})
-        show(f"{tag} POST /api/v1/runs/{run_id}/retry -> {rr.status}", rr.text[:200])
-        lost, deadline = None, time.time() + 180
+                f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}'" + why[0],
+                f"{tag}: point the run at worker-c{why[1]}")
+
+        flip_run((f" AND worker_affinity = (SELECT id FROM workers WHERE name = "
+                  f"'{kill['owner']}')",
+                  " (§ 7.1 C6e's 'drain a, run affinity forced' — no public route writes "
+                  "affinity)"))
+        aff = affinity_now()
+        if not aff.startswith(C6_LOSS_WORKER):
+            show(f"{tag} the guarded affinity flip did not land (runs row={aff!r})",
+                 "the run carried no affinity to the owning worker, so the same write is "
+                 "re-issued unguarded — it still names only THIS run and only worker-c")
+            flip_run(("", " (unguarded retry of the same write)"))
+            aff = affinity_now()
+        if not aff.startswith(C6_LOSS_WORKER):
+            gap(f"{tag} the run points at worker-c before attempt 2 is claimed",
+                f"runs.worker_affinity still reads {aff!r} after both writes — the "
+                "engine's automatic retry would land on the worker that already holds the "
+                "tree, which is C5d's same-volume arm, not C6e's")
+            return None
+        show(f"{tag} the run's affinity at the flip (attempt 2 unclaimed)",
+             f"{aff} — worker-a is drained, so the affinity-bound claim predicate "
+             "(internal/store/postgres/attempts.go) leaves the throwaway as the only "
+             "worker that can take the engine's retry")
+        # NO manual POST /runs/{id}/retry. With the twin's attempt_limit 2 the ENGINE
+        # armed attempt 2 the moment the reconciler wrote interrupted (§ 7.1 C5b's "run
+        # row is still running (retry armed)"), so the route could only ever answer 409
+        # run-not-retriable (live13/W6.out). What the leg DOES control is where that
+        # automatic attempt lands: the claim predicate is affinity-bound
+        # (internal/store/postgres/attempts.go runClaimPredicate), the owning worker is
+        # drained, and the flip above points the run at the throwaway's own volume — so
+        # the refusal worker-c writes IS the engine's retry meeting the loss.
+        show(f"{tag} no retry posted — the leg waits for the engine's own attempt 2",
+             f"retry_scheduled rows so far={w6_retry_scheduled_total(run_id)!r} "
+             "(a 409 here would be the run-status door, not the product refusing a retry)")
+        lost, deadline = None, time.time() + W6_RETRY_WAIT_S
         while time.time() < deadline:
-            rows = [x for x in c6_attempts_of_key(run_id, kill["key"])
-                    if x.get("error_class") == W6_ERROR_CLASS]
-            if rows:
-                lost = rows[-1]
-                break
+            above = [x for x in c6_attempts_of_key(run_id, kill["key"])
+                     if (_int(x.get("attempt_number")) or 0) > 1]
+            if above and str(above[-1].get("status") or "") in W6_ATTEMPT_TERMINAL:
+                lost = above[-1]        # whatever class the product chose: the leg
+                break                   # grades the classification, it does not filter on it
             time.sleep(5)
         if not lost:
-            seen = [(a.get("attempt_number"), a.get("status"), a.get("error_class"))
-                    for a in c6_attempts_of_key(run_id, kill["key"])]
+            seen = [(a.get("attempt_number"), a.get("status"), a.get("error_class"),
+                     a.get("worker")) for a in c6_attempts_of_key(run_id, kill["key"])]
             gap(f"{tag} the different-volume loss case",
-                f"no attempt of {kill['key']} carries error_class='{W6_ERROR_CLASS}' within "
-                f"180s of the retry (ledger reads: {seen}) "
-                "— with no lost-workspace refusal the run page has nothing to say about "
-                "edits being gone")
+                f"no attempt of {kill['key']} above 1 reached a terminal state within "
+                f"{W6_RETRY_WAIT_S}s of the affinity flip (ledger reads: {seen}) "
+                "— with no refusal from the worker that took the retry the run page has "
+                "nothing to say about edits being gone")
+            return None
+        if str(lost.get("status") or "") != "failed":
+            seen = [(a.get("attempt_number"), a.get("status"), a.get("error_class"),
+                     a.get("worker")) for a in c6_attempts_of_key(run_id, kill["key"])]
+            gap(f"{tag} the different-volume refusal",
+                f"the engine's attempt {lost.get('attempt_number')} on worker "
+                f"{lost.get('worker')!r} ended {lost.get('status')!r} rather than refusing — "
+                "the tree it needed was on the volume it got, so there is no "
+                "lost-workspace story for § 7.2 W6 to open (ledger reads: "
+                f"{seen})")
             return None
         out.update({"error_class": lost.get("error_class", ""),
                     "detail": lost.get("detail", ""),
-                    "attempt_number": lost.get("attempt_number", "")})
+                    "attempt_number": lost.get("attempt_number", ""),
+                    "worker": lost.get("worker", "")})
         ev_c = c6_recovery_event(project_id, run_id)
         show(f"{tag} the loss the ledger recorded", f"recovery_lost={json.dumps(ev_c) if ev_c else '(none)'} "
              f"attempt={json.dumps(lost)[:240]}")
@@ -14445,8 +14915,16 @@ def w6():
     Subject: C6e's different-volume case — an existing `workspace_lost` refusal this
     lab already recorded if the ledger holds one, otherwise the same case produced for
     this leg (w6_produce_loss: C5's kill, drain the owning service, worker-c on its own
-    named repos volume, affinity forced, retry). With neither, the leg reports GAP with
-    the reason it produced nothing — it never PASSes an absent case.
+    named repos volume, affinity forced — and NO retry this leg posts: with the twin's
+    attempt_limit 2 the ENGINE armed attempt 2 the moment the reconciler wrote
+    interrupted (§ 7.1 C5b), so the leg flips the affinity while that automatic attempt
+    is still queued and measures where IT lands). The ledger is graded first —
+    w6_who_armed_the_retry, w6_loss_classification_verdicts and
+    w6_auto_retry_class_verdicts — because AttemptDetail.tsx draws the copy, the chip
+    and the withheld control all from attempts.error_class: an unclassified refusal is
+    a FAIL that names the ledger, never a wording complaint. With neither a produced
+    nor a recorded case, the leg reports GAP with the reason — it never PASSes an
+    absent case.
     """
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
@@ -14481,6 +14959,21 @@ def w6():
         loss = w6_produce_loss(client, twin, tag="W6")
     if not loss:
         return                       # w6_produce_loss gapped its own reason
+    # --- the ledger half, graded before any page is opened -------------------
+    ledger = w6_loss_facts(project_id, loss)
+    lost = w6_loss_attempt_row(ledger["rows"], loss.get("attempt_number")) or loss
+    base = _int(lost.get("attempt_number")) or _int(loss.get("attempt_number")) or 1
+    c5_emit(w6_who_armed_the_retry(ledger["sched_total"], ledger["rows"],
+                                   C6_LOSS_WORKER if loss.get("source") == "W6" else ""))
+    c5_emit(w6_loss_classification_verdicts(lost, ledger["event"], ledger["run_row"],
+                                            W6_LOSS_COPY, W6_ERROR_CLASS))
+    c5_emit(w6_auto_retry_class_verdicts(ledger["sched_loss"], ledger["rows"], base,
+                                         W6_ERROR_CLASS))
+    # The page arms read one field: AttemptDetail.tsx draws the copy, the chip and the
+    # withheld control behind attempt.error_class === 'workspace_lost'. An unclassified
+    # refusal has nothing to render, and FAILing the wording on top of the
+    # classification line would blame the UI for the product's own miss.
+    classified = str(lost.get("error_class") or "") == W6_ERROR_CLASS
     session = "m4w6"
     url = f"/projects/{project_id}/runs/{loss['run_id']}?tab=execution"
     if loss.get("ne_id"):
@@ -14491,7 +14984,8 @@ def w6():
         return
     try:
         pw_goto(url, session=session)
-        shown, _n = pw_poll(lambda ns: W6_ERROR_CLASS in w8_dom_text(ns), session=session,
+        want = (W6_ERROR_CLASS if classified else "attempt").lower()
+        shown, _n = pw_poll(lambda ns: want in w8_dom_text(ns).lower(), session=session,
                             tries=12, delay=2)
         rc, raw = pw_snapshot(session=session)
         nodes = pw_snapshot_nodes(raw)
@@ -14499,15 +14993,27 @@ def w6():
         shot = pw_shot("w6-workspace-lost", session=session)
         check("W6 the lost run's page opens on the node that lost its workspace", shown,
               f"run={loss['run_id']} node={loss['key']!r} attempt="
-              f"{loss['attempt_number']} detail={str(loss.get('detail'))[:120]!r} "
+              f"{loss['attempt_number']} error_class={str(lost.get('error_class'))!r} "
+              f"detail={str(lost.get('detail'))[:120]!r} "
               f"(source: {loss['source']}) [{shot}]")
-        c5_emit([w6_loss_copy_verdict(dom)])
-        c5_emit([w6_chip_verdict(nodes, dom)])
-        controls = w6_control_state(w_retry_controls(nodes), session=session)
-        show(f"W6 the retry controls the page draws ({len(controls)}/{len(nodes)} nodes)",
-             str([(c["text"], c["disabled"], c["title"][:60]) for c in controls][:4]))
-        c5_emit([w6_retry_control_verdict(controls, dom, w6_auto_retried(loss["run_id"]))])
-        CTX["w6"] = dict(loss, controls=controls, shot=shot)
+        controls = []
+        if not classified:
+            gap("W6 the run page's loss wording, chip and retry control",
+                f"the ledger classed attempt {lost.get('attempt_number')} "
+                f"error_class={str(lost.get('error_class'))!r}, not '{W6_ERROR_CLASS}' — "
+                "ui/src/components/m4/AttemptDetail.tsx draws all three page arms behind "
+                "attempt.error_class === 'workspace_lost', so the page has no loss story "
+                "to render and the classification FAIL above is the honest verdict "
+                f"[page: {w_quotes(dom, 'retry', limit=1)}] [{shot}]")
+        else:
+            c5_emit([w6_loss_copy_verdict(dom)])
+            c5_emit([w6_chip_verdict(nodes, dom)])
+            controls = w6_control_state(w_retry_controls(nodes), session=session)
+            show(f"W6 the retry controls the page draws ({len(controls)}/{len(nodes)} "
+                 f"nodes)",
+                 str([(c["text"], c["disabled"], c["title"][:60]) for c in controls][:4]))
+            c5_emit([w6_retry_control_verdict(controls, dom, ledger["sched_loss"])])
+        CTX["w6"] = dict(loss, controls=controls, shot=shot, ledger=ledger)
     finally:
         pw("close", session=session)
 
