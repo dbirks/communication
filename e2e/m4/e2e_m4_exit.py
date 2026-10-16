@@ -87,11 +87,19 @@ MANIFEST_PATH = os.environ.get("M4_SEED_MANIFEST") or os.path.join(
 SEED_PIPELINE_YAML = os.path.join(REPO_DIR, "docs", "compatibility", "probes",
                                   "m4", "pipeline.yaml")
 
-WORKER_A = "communication-m4-worker-a"
-WORKER_B = "communication-m4-worker-b"
+# COMPOSE_PROJECT is the only deployment this driver may ever aim a container
+# command at. WORKER_A / WORKER_B are compose SERVICE names, NOT container names:
+# compose creates `<project>-<service>-<n>` (communication-m4-worker-a-1), so
+# `docker logs communication-m4-worker-a` answers `no such object` and the leg
+# silently reads nothing (live9/C4c matched 0 lines for exactly this reason).
+# Every raw `docker` call goes through compose_container() below, which resolves
+# the service and PROVES the project label first.
+COMPOSE_PROJECT = "communication-m4"
+WORKER_A = "worker-a"
+WORKER_B = "worker-b"
 NETWORK = "communication-m4_default"
 MASTERKEYS_VOL = "communication-m4_masterkeys"
-COMPOSE = ["docker", "compose", "-p", "communication-m4",
+COMPOSE = ["docker", "compose", "-p", COMPOSE_PROJECT,
            "-f", "compose.yml", "-f", "compose.harness.yml", "-f", "compose.m4.yml"]
 COMPOSE_ENV = dict(os.environ, HOST_UID=str(os.getuid()), HOST_GID=str(os.getgid()))
 
@@ -151,13 +159,147 @@ def psql(sql):
 
 
 def wexec(sh, worker=WORKER_A):
-    """Run sh inside a stack worker (C2's /proc probes, C5's git reads)."""
-    return run(["docker", "exec", worker, "sh", "-c", sh])
+    """Run sh inside a stack worker (C2's /proc probes, C5's git reads). `worker`
+    is a compose SERVICE name; container_exec resolves it to the container compose
+    actually created (`communication-m4-worker-a-1`) before the raw docker exec."""
+    return container_exec(worker, sh)[:2]
 
 
 def compose_logs(*services):
     rc, out = run(COMPOSE + ["logs", "--no-color", *services])
     return out
+
+
+# --- container addressing: ONE resolver for every raw `docker` call ----------
+#
+# Raw docker (logs / kill / exec) needs a CONTAINER reference; compose's own
+# subcommands take the SERVICE name. Both are project-pinned (`-p
+# communication-m4` / the compose-project label), and neither ever aims at a
+# container this driver cannot prove belongs to this project (§ 7.0).
+
+
+def compose_container_identity(ref):
+    """(compose project, container name) a docker reference reports — ('','') when
+    docker cannot read it. The project half is the proof every raw docker call asks
+    for before it fires; the name half keeps the report line readable
+    (`docker logs communication-m4-worker-a-1`) instead of a bare container id."""
+    rc, out = run(["docker", "inspect", "-f",
+                   '{{index .Config.Labels "com.docker.compose.project"}}|{{.Name}}', ref])
+    if rc != 0:
+        return "", ""
+    proj, _, name = str(out).strip().partition("|")
+    return proj.strip(), name.strip().lstrip("/")
+
+
+def compose_ps_refs(service):
+    """`docker compose -p communication-m4 ps -q <service>` -> the container refs
+    compose itself reports for one service ([] when compose cannot answer)."""
+    rc, out = run(COMPOSE + ["ps", "-q", str(service or "").strip()])
+    if rc != 0:
+        return []
+    return [ln.strip() for ln in str(out).splitlines() if ln.strip()]
+
+
+def compose_container(service):
+    """Resolve one of THIS project's compose services to the container compose
+    actually created (`communication-m4-worker-a-1`), or '' when nothing provable
+    answers: compose's own `ps -q` first, then a running-container name match
+    (w_pick_container), and in both paths the container must report
+    com.docker.compose.project=communication-m4. Never a guessed id, never a
+    container from another stack, never the bare `-worker-a` prefix."""
+    svc = str(service or "").strip()
+    if not svc:
+        return ""
+    proven = []
+    for ref in compose_ps_refs(svc):
+        proj, name = compose_container_identity(ref)
+        if proj == COMPOSE_PROJECT:
+            proven.append(name or ref)
+    if len(proven) == 1:
+        return proven[0]
+    if proven:                      # several replicas: no single container to target
+        return ""
+    rc, out = run(["docker", "ps", "--format", "{{.Names}}"])
+    if rc != 0:
+        return ""
+    name = w_pick_container(out.splitlines(), svc, project=COMPOSE_PROJECT)
+    if not name:
+        return ""
+    proj, _ = compose_container_identity(name)
+    return name if proj == COMPOSE_PROJECT else ""
+
+
+def resolve_container(service, label=""):
+    """compose_container + the honest GAP when nothing provable answers, so a leg
+    that cannot name its container says so instead of FAILing the product on an
+    empty read it never performed."""
+    name = compose_container(service)
+    if not name:
+        gap(f"{label} the container of compose service "
+            f"{str(service or '').strip()!r}".strip(),
+            f"neither `docker compose -p {COMPOSE_PROJECT} ps -q "
+            f"{str(service or '').strip()}` nor a running `{COMPOSE_PROJECT}-"
+            f"{str(service or '').strip()}-<n>` container reporting "
+            f"com.docker.compose.project={COMPOSE_PROJECT} answered — the leg aims at "
+            "no container it cannot prove belongs to this project (§ 7.0)")
+    return name
+
+
+def container_signal(sig, service):
+    """Deliver one signal to ONE of this project's containers: `docker kill
+    [-s SIG] <resolved container>`, falling back to `docker compose ... kill [-s SIG]
+    <service>` when the raw reference will not take. Returns (rc, out, how) with
+    how='' (rc None) when no container resolves — the caller must not treat that as
+    a product failure."""
+    svc = str(service or "").strip()
+    name = compose_container(svc)
+    if not name:
+        return None, (f"no container this leg can prove belongs to {COMPOSE_PROJECT} "
+                      f"for service {svc!r}"), ""
+    argv = ["docker", "kill"] + (["-s", sig] if sig and sig != "KILL" else []) + [name]
+    rc, out = run(argv)
+    if rc == 0:
+        return rc, out, " ".join(argv)
+    rc2, out2 = run(COMPOSE + ["kill"] + (["-s", sig] if sig and sig != "KILL" else [])
+                    + [svc])
+    if rc2 != 0:
+        return rc2, f"{out}\n{out2}", f"{' '.join(argv)} then compose kill {svc}"
+    return rc2, out2, f"docker compose -p {COMPOSE_PROJECT} kill {sig or 'KILL'} {svc}"
+
+
+def container_logs(service):
+    """`docker logs` of the container compose created for one service (the row's
+    literal command reads `docker logs worker-a`); compose's own logs is the
+    fallback. Returns (rc, out, how) — how='' (rc None) when nothing resolves."""
+    svc = str(service or "").strip()
+    name = compose_container(svc)
+    if not name:
+        return None, (f"no container this leg can prove belongs to {COMPOSE_PROJECT} "
+                      f"for service {svc!r}"), ""
+    rc, out = run(["docker", "logs", name])
+    if rc == 0:
+        return rc, out, f"docker logs {name}"
+    rc2, out2 = run(COMPOSE + ["logs", "--no-color", svc])
+    if rc2 != 0:
+        return rc2, f"{out}\n{out2}", f"docker logs {name} then compose logs {svc}"
+    return rc2, out2, f"docker compose -p {COMPOSE_PROJECT} logs {svc}"
+
+
+def container_exec(service, sh):
+    """`docker exec` one shell inside this project's container for a service,
+    falling back to `docker compose exec -T <service>`. (rc, out, how) as above."""
+    svc = str(service or "").strip()
+    name = compose_container(svc)
+    if not name:
+        return None, (f"no container this leg can prove belongs to {COMPOSE_PROJECT} "
+                      f"for service {svc!r}"), ""
+    rc, out = run(["docker", "exec", name, "sh", "-c", sh])
+    if rc == 0:
+        return rc, out, f"docker exec {name} sh -c"
+    rc2, out2 = run(COMPOSE + ["exec", "-T", svc, "sh", "-c", sh])
+    if rc2 != 0:
+        return rc2, f"{out}\n{out2}", f"docker exec {name} then compose exec {svc}"
+    return rc2, out2, f"docker compose -p {COMPOSE_PROJECT} exec -T {svc} sh -c"
 
 
 # --- HTTP client / login (cloned shapes from e2e_m3_exit.py) -----------------
@@ -1846,12 +1988,15 @@ def c2_mat_rows(attempt_id):
 
 
 def c2_compose_svc(container):
-    """`compose exec` addresses SERVICES while the ledger (and CTX) carry this
-    project's prefixed CONTAINER names. Anything not from this project passes
-    through unchanged, so the exec fails loudly and the leg GAPs - never a
-    guessed service name."""
+    """`compose exec` addresses SERVICES, while callers hand this either the service
+    name (worker-a, what c4_worker_service returns) or this project's prefixed
+    CONTAINER name (communication-m4-worker-a-1) read back from the ledger. Both
+    normalize to the service; anything not from this project passes through
+    unchanged, so the exec fails loudly and the leg GAPs - never a guessed service
+    name."""
     c = str(container or "")
-    return c[len("communication-m4-"):] if c.startswith("communication-m4-") else c
+    prefix = COMPOSE_PROJECT + "-"
+    return c[len(prefix):] if c.startswith(prefix) else c
 
 
 def c2_probe_worker(svc, run_id):
@@ -2013,7 +2158,7 @@ def c2():
             f"(run status={run_status(run_id)!r}) - with nothing running there is no live "
             "process environment, so 'exactly one place' is unmeasurable (evidence above)")
         return
-    svc = c4_worker_container(live["worker"])
+    svc = c4_worker_service(live["worker"])
     if svc is None:
         gap("C2a read the live process environment",
             f"the claim belongs to worker row {live['worker']!r}, which is not one of this "
@@ -2080,8 +2225,9 @@ def c2():
     for svc_, path, why in ((svc, f"/workspaces/run/{run_id}",
                              f"the attempt's workspace tree on {svc} (env delivery writes no "
                              "file anywhere in it)"),
-                            ("communication-m4-api-a", "/artifacts",
-                             "artifact bytes (\u00a7 7.1's grep -rl /artifacts)"),
+                            ("api-a", "/artifacts",
+                             "artifact bytes on communication-m4-api-a-1 (\u00a7 7.1's "
+                             "grep -rl /artifacts)"),
                             (svc, "/artifacts", f"{svc}'s artifact root")):
         n, listing = c2_grep_container(svc_, path)
         findings.append({"place": f"{svc_}:{path} ({why})", "count": n})
@@ -2369,9 +2515,11 @@ def c4_frozen_attempt_sql(att):
             f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'")
 
 
-def c4_worker_container(name):
-    """Compose SERVICE name = the worker row's name; the container is this
-    project's prefixed one. Unknown names return None (never a guessed id)."""
+def c4_worker_service(name):
+    """The compose SERVICE this project owns for a worker row's name. The container
+    is `<project>-<service>-<n>`, so anything addressing a container feeds the
+    result to compose_container() first. Unknown names return None (the legs kill
+    nothing they did not create — § 7.0)."""
     return {"worker-a": WORKER_A, "worker-b": WORKER_B}.get(name)
 
 
@@ -2512,7 +2660,7 @@ def c4():
             "above)")
         return
     att, owner = live["id"], live["worker"]
-    svc = c4_worker_container(owner)
+    svc = c4_worker_service(owner)
     if svc is None:
         gap("C4a pause the owning worker",
             f"the claim belongs to worker row {owner!r}, which is not one of this project's "
@@ -2588,12 +2736,19 @@ def c4():
             "the contract line expects. The half that matters — the dead attempt published "
             "nothing — is CHECKed above from outputs/artifacts/checkpoints/completed-events.")
 
-    rc, log = run(["docker", "logs", svc])
-    n_lines, sample = c4_fence_log(log)
-    show(f"C4c fence refusals in {owner}'s OWN log (docker logs | grep -ciE "
-         f"'{FENCE_REFUSAL_RE.pattern}')", "\n".join(sample) or "(no matching line)")
-    check("C4c the stale owner's refusal is OBSERVED in its own log (count > 0, "
-          "never simulated)", n_lines > 0, f"matched {n_lines} lines")
+    rc, log, how = container_logs(svc)
+    if not how:
+        gap("C4c the stale owner's refusal is OBSERVED in its own log (count > 0, "
+            "never simulated)",
+            f"{log} — the leg could not read a log it never resolved, and an empty "
+            "read is not evidence that the worker stayed silent about the fence")
+    else:
+        n_lines, sample = c4_fence_log(log)
+        show(f"C4c fence refusals in {owner}'s OWN log ({how} | grep -ciE "
+             f"'{FENCE_REFUSAL_RE.pattern}')", "\n".join(sample) or "(no matching line)")
+        check("C4c the stale owner's refusal is OBSERVED in its own log (count > 0, "
+              "never simulated)", n_lines > 0,
+              f"{how} matched {n_lines} lines")
     r = alice.get(LB, f"/api/v1/attempts/{att}")
     show(f"GET /api/v1/attempts/{att} — what the API says", f"{r.status} {r.text[:400]}")
     try:
@@ -3242,7 +3397,7 @@ def c5():
                     kill_state = "unattainable"
                 break
             att, owner, key = live["id"], live["worker"], live["key"]
-            svc = c4_worker_container(owner)
+            svc = c4_worker_service(owner)
             if svc is None:
                 gap("C5a compose kill the owning worker",
                     f"the live claim belongs to worker row {owner!r}, which is not one of this "
@@ -3275,12 +3430,19 @@ def c5():
                  f"ready={ready_before} uploading={uploading_before}")
 
             # C5b — freeze first (SIGSTOP takes away the worker's voice, not its
-            # bytes), prove the lease was live and stayed live, then SIGKILL.
-            rc, out = run(["docker", "kill", "-s", C5_STOP_SIGNAL, svc])
+            # bytes), prove the lease was live and stayed live, then SIGKILL. The
+            # signal is aimed at the container compose CREATED for this service
+            # (communication-m4-worker-a-1), never at the bare service name.
+            container = resolve_container(svc, "C5a")
+            if not container:
+                kill_state = ""
+                break
+            rc, out, how = container_signal(C5_STOP_SIGNAL, svc)
             if rc != 0:
                 gap("C5b freeze the owning worker (SIGSTOP ahead of the SIGKILL)",
-                    f"rc={rc}: {out[-240:]} — without the freeze the gate cannot prove the "
-                    "kill landed mid-node, and it will not guess that it did")
+                    f"{how or 'unresolved'} -> rc={rc}: {out[-240:]} — without the freeze the "
+                    "gate cannot prove the kill landed mid-node, and it will not guess "
+                    "that it did")
                 kill_state = ""
                 break
             frozen = svc
@@ -3288,7 +3450,8 @@ def c5():
             time.sleep(C5_FREEZE_PROOF_S)
             s_after = att_row(att).get("status", "")
             proven = c5_freeze_proof(s_stop, s_after)
-            show(f"C5b freeze {svc}: the lease at the signal and {C5_FREEZE_PROOF_S}s later",
+            show(f"C5b freeze {container} ({how}): the lease at the signal and "
+                 f"{C5_FREEZE_PROOF_S}s later",
                  f"status@stop={s_stop or '(unreadable)'} "
                  f"status+{C5_FREEZE_PROOF_S}s={s_after or '(unreadable)'} proved={proven}")
 
@@ -3297,21 +3460,22 @@ def c5():
                      "the deterministic twin's process.exec step finished before the signal "
                      "landed; the worker is unfrozen (SIGCONT) and unharmed, so the gate "
                      "re-arms on its next live claim")
-                rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, svc])
-                show(f"docker kill -s {C5_CONT_SIGNAL} {svc} — the freeze is lifted "
-                     f"(rc={rc})", out[-160:] or svc)
+                rc, out, how = container_signal(C5_CONT_SIGNAL, svc)
+                show(f"{how or container} — the freeze is lifted (rc={rc})",
+                     out[-160:] or container)
                 if run_status(run_id) == "waiting_human":
                     approve_gate(alice, mf(tw, "project_id"), run_id)
                 continue
-            rc, out = run(["docker", "kill", svc])
+            rc, out, how = container_signal("KILL", svc)
             if rc != 0:
                 gap("C5b compose kill (SIGKILL: the honest case)",
-                    f"rc={rc}: {out[-240:]} — without a kill there is no crash to recover from")
+                    f"{how or 'unresolved'} -> rc={rc}: {out[-240:]} — without a kill there "
+                    "is no crash to recover from")
                 kill_state = ""
                 break
             killed = owner
-            show(f"docker kill {svc} — the frozen worker and its child die together "
-                 "(no cleanup, no terminal write)", out[-240:] or svc)
+            show(f"{how} — the frozen worker and its child die together "
+                 "(no cleanup, no terminal write)", out[-240:] or container)
             time.sleep(C5_KILL_WAIT_S)       # lease 30s + reconciler tick 15s + margin
             deadline = time.time() + C5_KILL_POLL_S
             while time.time() < deadline:
@@ -3370,9 +3534,10 @@ def c5():
                                      artcount("uploading")))
     finally:
         if frozen and not killed:
-            rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, frozen])
-            show(f"C5b unfreeze {frozen} (SIGCONT) — the gate never leaves a stopped worker "
-                 f"behind (rc={rc})", out[-160:] or frozen)
+            rc, out, how = container_signal(C5_CONT_SIGNAL, frozen)
+            show(f"C5b unfreeze {frozen} (SIGCONT) via {how or 'no resolved container'} — "
+                 f"the gate never leaves a stopped worker behind (rc={rc})",
+                 out[-160:] or frozen)
         if killed:
             rc, out = run(COMPOSE + ["start", killed])
             show(f"compose start {killed} — the killed worker is brought back (host safety: the "
@@ -4166,7 +4331,7 @@ def c6():
             + (f"; {why}" if why else ""))
         return
     att, owner, key = live["id"], live["worker"], live["key"]
-    svc = c4_worker_container(owner)
+    svc = c4_worker_service(owner)
     if svc is None:
         gap("C6b compose kill the owning worker",
             f"the live claim belongs to worker row {owner!r}, which is not one of this "
@@ -12621,7 +12786,7 @@ W5_INTERRUPTED_COPY = "interrupted — the worker disappeared mid-node"
 W5_COUNTDOWN_COPY = "next attempt scheduled"
 W6_LOSS_COPY = ("prior edits lost", "rerun required")
 W6_ERROR_CLASS = "workspace_lost"
-W5_LAB_PROJECT = "communication-m4"
+W5_LAB_PROJECT = COMPOSE_PROJECT
 
 
 def w_norm(text):
@@ -12774,11 +12939,12 @@ def w5_kill_landed_verdicts(state, tries, proven, why=""):
 
 
 def w_pick_container(names, service, project=W5_LAB_PROJECT):
-    """compose names this project's containers `<project>-<service>-<n>`; WORKER_A is
-    that PREFIX, not a container reference — `docker kill communication-m4-worker-a`
-    answers `no such object: communication-m4-worker-a`. Picks the real container of one
-    of THIS project's two lab workers, '' for anything else (never a guessed id, never a
-    container belonging to another compose project).
+    """compose names this project's containers `<project>-<service>-<n>`; the bare
+    `<project>-<service>` PREFIX is not a container reference — `docker kill
+    communication-m4-worker-a` answers `no such object:
+    communication-m4-worker-a`. Picks the real container of one of THIS project's
+    services, '' for anything else (never a guessed id, never a container belonging
+    to another compose project). compose_container() is the caller-facing resolver.
     """
     want = f"{project}-{str(service or '').strip()}-"
     hits = sorted(str(n).strip() for n in names or []
@@ -12866,27 +13032,12 @@ def w6_retry_control_verdict(controls, dom, auto_retried=None):
 
 def w5_container_of(service):
     """Resolve a compose SERVICE name (the worker row's name) to this project's real
-    container and PROVE the compose-project label before anything is killed: the
+    container (`communication-m4-worker-a-1`) via the driver's ONE resolver: compose
+    `ps -q <service>` first, a running-container name match second, and in both
+    paths the compose-project label is PROVEN before anything is killed. The
     boundary is `docker compose -p communication-m4` / `docker kill` of one of THIS
-    project's two lab workers and nothing else."""
-    if not service:
-        return ""
-    rc, out = run(["docker", "ps", "--format", "{{.Names}}"])
-    if rc != 0:
-        show("docker ps (container names)", out[-200:])
-        return ""
-    name = w_pick_container(out.splitlines(), service)
-    if not name:
-        return ""
-    rc2, lab = run(["docker", "inspect", "-f",
-                    '{{index .Config.Labels "com.docker.compose.project"}}', name])
-    if rc2 != 0 or str(lab).strip() != W5_LAB_PROJECT:
-        gap("W5/W6 container resolution for the owning worker",
-            f"{name!r} does not report com.docker.compose.project={W5_LAB_PROJECT!r} "
-            f"(rc={rc2}: {str(lab).strip()[:80]!r}) — the leg never kills a container it "
-            "cannot prove belongs to this project")
-        return ""
-    return name
+    project's two lab workers and nothing else; '' means the caller must not kill."""
+    return compose_container(service)
 
 
 def w_node_execution_id(attempt_id):
@@ -12924,19 +13075,13 @@ def w_scheduled_times(run_id, key):
 
 def w_deliver_signal(sig, service, container, tag):
     """Deliver one signal to ONE of this project's lab workers. The row's literal
-    command is `docker kill worker-a`, aimed at the container this leg has PROVEN
-    belongs to communication-m4; if docker will not take that reference the signal goes
-    through `docker compose -p communication-m4 kill [-s SIG] <service>` instead. Both
-    name this project only — neither ever reaches another stack's container. Returns
-    (rc, output, how) so the verdict line says which command landed."""
-    argv = ["docker", "kill"] + (["-s", sig] if sig != "KILL" else []) + [container]
-    rc, out = run(argv)
-    if rc == 0:
-        return rc, out, " ".join(argv)
-    rc2, out2 = run(COMPOSE + ["kill"] + (["-s", sig] if sig != "KILL" else []) + [service])
-    if rc2 != 0:
-        return rc2, f"{out}\n{out2}", f"{argv} then compose kill {service}"
-    return rc2, out2, f"docker compose -p {W5_LAB_PROJECT} kill {sig} {service}"
+    command is `docker kill worker-a`, aimed at the container the resolver proved
+    belongs to communication-m4 (`communication-m4-worker-a-1`); if docker will not
+    take that reference the signal goes through `docker compose -p communication-m4
+    kill [-s SIG] <service>` instead. Both name this project only — neither ever
+    reaches another stack's container. Returns (rc, output, how) so the verdict line
+    says which command landed."""
+    return container_signal(sig, service)
 
 
 def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart=True,
@@ -12993,13 +13138,16 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
                     facts["why"] = fault_hold_evidence(client, run_id, tag)
                 break
             att, owner, key = live["id"], live["worker"], live["key"]
-            service = c4_worker_container(owner)
+            service = c4_worker_service(owner)
             container = w5_container_of(service)
             if not container:
                 gap(f"{tag} docker kill this project's owning worker",
-                    f"the live claim belongs to worker row {owner!r} (container "
-                    f"{service!r}): with no container this leg can prove belongs to "
-                    "communication-m4 there is nothing it is allowed to kill (§ 7.0)")
+                    f"the live claim belongs to worker row {owner!r} (compose service "
+                    f"{service!r}): neither `docker compose -p {COMPOSE_PROJECT} ps -q "
+                    f"{service}` nor a running `{COMPOSE_PROJECT}-{service}-<n>` container "
+                    f"reporting com.docker.compose.project={COMPOSE_PROJECT} answered, so "
+                    "with no container this leg can prove belongs to communication-m4 there "
+                    "is nothing it is allowed to kill (§ 7.0)")
                 return None
             if owner != "worker-a":
                 show(f"{tag} note — which container gets killed",
@@ -13060,9 +13208,10 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
         return facts
     finally:
         if frozen and not killed:
-            rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, frozen])
-            show(f"{tag} unfreeze {frozen} (SIGCONT) — the leg never leaves a stopped "
-                 f"worker behind (rc={rc})", out[-160:] or frozen)
+            rc, out, how = container_signal(C5_CONT_SIGNAL, facts["service"] or frozen)
+            show(f"{tag} unfreeze {frozen} (SIGCONT) via {how or 'no resolved container'} — "
+                 f"the leg never leaves a stopped worker behind (rc={rc})",
+                 out[-160:] or frozen)
         if killed and facts["service"] and not restart:
             show(f"{tag} {facts['service']} stays DOWN — the caller owns the start-back "
                  "(W6 keeps the owning worker drained so only the other volume's worker "

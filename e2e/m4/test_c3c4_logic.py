@@ -155,10 +155,16 @@ class C4LiveAttemptTest(unittest.TestCase):
             "0197-0000-0000-0000-000000000001", "-"))["turn"], "-")
 
     def test_container_map_refuses_unknown_workers(self):
-        self.assertEqual(m.c4_worker_container("worker-a"), m.WORKER_A)
-        self.assertEqual(m.c4_worker_container("worker-b"), m.WORKER_B)
-        self.assertIsNone(m.c4_worker_container("worker-c"))
-        self.assertIsNone(m.c4_worker_container("production-worker"))
+        """The map yields compose SERVICE names: `communication-m4-worker-a` is the
+        container PREFIX and no container docker can address (live9/C4c read 0 log
+        lines off it), so it must never come back from this helper."""
+        self.assertEqual(m.c4_worker_service("worker-a"), m.WORKER_A)
+        self.assertEqual(m.c4_worker_service("worker-b"), m.WORKER_B)
+        self.assertIsNone(m.c4_worker_service("worker-c"))
+        self.assertIsNone(m.c4_worker_service("production-worker"))
+        for svc in (m.WORKER_A, m.WORKER_B):
+            self.assertFalse(svc.startswith(m.COMPOSE_PROJECT),
+                             f"{svc} is a container prefix, not a service name")
 
 
 class C4FenceLogTest(unittest.TestCase):
