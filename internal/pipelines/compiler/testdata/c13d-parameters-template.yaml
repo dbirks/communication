@@ -1,0 +1,29 @@
+# GENERATED PROBE: byte-for-byte the document e2e/m4/e2e_m4_exit.py's C13d arms send to
+# POST /api/v1/drafts (c13_root_probe_doc / c13_root_misuse_doc / c13_template_doc).
+# Regenerate with: python3 -c "import sys;sys.path.insert(0,'e2e/m4');import e2e_m4_exit as m;
+# open('internal/pipelines/compiler/testdata/c13d-roots-in-scope.yaml','w').write(m.c13_root_probe_doc('m4x-c13d-roots')[0])"
+# (the header line above was written back afterwards). Compiler assertions live in
+# roots_scope_test.go; the gate reads the same § 2.2 codes over HTTP.
+apiVersion: communication.dev/v1alpha1
+kind: NodeTemplate
+metadata:
+  name: m4x-c13d-template
+  version: 1.0.0
+  description: C13d parameters-root probe (ADR-0022 § 2, contract § 9.1 row 12).
+spec:
+  implements: agent.acp
+  parameters:
+    type: object
+    required: [profile]
+    properties:
+      profile: {type: string}
+      review_instructions: {type: string}
+  config:
+    profile: '${{ parameters.profile }}'
+    sessionMode: new
+    prompt: 'parameters -> ${{ parameters.review_instructions }}'
+  outputSchema:
+    type: object
+    required: [approved]
+    properties:
+      approved: {type: boolean}

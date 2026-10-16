@@ -1,0 +1,164 @@
+# GENERATED PROBE: byte-for-byte the document e2e/m4/e2e_m4_exit.py's C13d arms send to
+# POST /api/v1/drafts (c13_root_probe_doc / c13_root_misuse_doc / c13_template_doc).
+# Regenerate with: python3 -c "import sys;sys.path.insert(0,'e2e/m4');import e2e_m4_exit as m;
+# open('internal/pipelines/compiler/testdata/c13d-roots-in-scope.yaml','w').write(m.c13_root_probe_doc('m4x-c13d-roots')[0])"
+# (the header line above was written back afterwards). Compiler assertions live in
+# roots_scope_test.go; the gate reads the same § 2.2 codes over HTTP.
+# docs/compatibility/probes/m4/pipeline.yaml — the § 7 exit seed pipeline set.
+# Provenance: document 1 is internal/pipelines/testdata/feature-development-contract.yaml
+# (docs/m4-contract.md § 9.3, the compiled-against contract shape) adjusted to § 7's exit
+# narrative: (a) the C1 deterministic twin is published beside it as document 2 with the SAME
+# node ids, so both revisions compile to an identical node_instance_key set; (b) the § 7.0
+# fixture is Python (pytest), so the test node executes the committed fixture script instead
+# of `go`, keeping the § 9.3 slots (cwd, json_from_path, {exit_code, result} outputs); (c) the
+# C8 fan-out arm lives inside the sample as the when-gated emit_items -> fan_out branch
+# (inputs.fanout=false keeps C1's key set clean; =true arms C8a-e against fanout_count items);
+# (d) maxChildDepth is 1 because fan_out invokes document 3. Every other line is verbatim § 9.3.
+# Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
+# see README.md "Offline validation" for the exact commands. seed.sh posts one document per
+# `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
+#
+# Document 1: agent-driven variant — Plan -> Approve -> Implement -> Test -> Review ->
+# Loop -> verdict, C8 fan-out arm, then publish evidence.
+# docs/compatibility/probes/m4/pipeline.yaml — the § 7 exit seed pipeline set.
+# Provenance: document 1 is internal/pipelines/testdata/feature-development-contract.yaml
+# (docs/m4-contract.md § 9.3, the compiled-against contract shape) adjusted to § 7's exit
+# narrative: (a) the C1 deterministic twin is published beside it as document 2 with the SAME
+# node ids, so both revisions compile to an identical node_instance_key set; (b) the § 7.0
+# fixture is Python (pytest), so the test node executes the committed fixture script instead
+# of `go`, keeping the § 9.3 slots (cwd, json_from_path, {exit_code, result} outputs); (c) the
+# C8 fan-out arm lives inside the sample as the when-gated emit_items -> fan_out branch
+# (inputs.fanout=false keeps C1's key set clean; =true arms C8a-e against fanout_count items);
+# (d) maxChildDepth is 1 because fan_out invokes document 3. Every other line is verbatim § 9.3.
+# Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
+# see README.md "Offline validation" for the exact commands. seed.sh posts one document per
+# `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
+#
+# Document 1: agent-driven variant — Plan -> Approve -> Implement -> Test -> Review ->
+# Loop -> verdict, C8 fan-out arm, then publish evidence.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: m4x-c13d-roots
+  description: Plan, approve, implement, test, review, loop until verified, publish evidence.
+spec:
+  inputs:
+    type: object
+    required: [goal, repository]
+    properties:
+      goal: {type: string, minLength: 1}
+      repository: {type: string, minLength: 1}
+      acceptance_criteria:
+        type: string
+        default: Tests pass, the plan is followed, and the reviewer approves.
+      fanout:
+        type: boolean
+        default: false
+        description: Arms the C8 for_each fan-out branch (emit_items + fan_out run only when true).
+      fanout_count:
+        type: integer
+        minimum: 0
+        maximum: 1000
+        default: 0
+        description: Items the m4-exit.sh items fixture emits (C8a 0, C8b-e 25).
+  outputs:
+    type: object
+    required: [implementation_summary]
+    properties:
+      implementation_summary: {type: string}
+      review_approved: {type: boolean}
+      iterations: {type: integer}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: r_inputs
+    kind: agent.acp
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: 'inputs -> ${{ inputs.x }}'
+  - id: r_nodes
+    kind: agent.acp
+    dependsOn: [r_inputs]
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: 'nodes -> ${{ nodes.r_inputs.outputs.x }}'
+  - id: r_run
+    kind: agent.acp
+    dependsOn: [r_nodes]
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: 'run -> ${{ run.x }}'
+  - id: r_loop
+    kind: agent.acp
+    dependsOn: [r_run]
+    timeoutSeconds: 60
+    config:
+      profile: m4-planner
+      sessionMode: new
+      prompt: 'reserved -> ${{ loop.x }}'
+  - id: seed
+    kind: process.exec
+    dependsOn: [r_loop]
+    config:
+      executable: seed
+    outputs:
+      type: object
+      properties:
+        worklist: {type: array, items: {type: object}}
+  - id: fan
+    kind: for_each
+    dependsOn: [seed]
+    config:
+      items: '${{ nodes.seed.outputs.worklist }}'
+      maxConcurrency: 2
+      body:
+        nodes:
+        - id: b_item
+          kind: agent.acp
+          timeoutSeconds: 60
+          config:
+            profile: m4-planner
+            sessionMode: new
+            prompt: 'item -> ${{ item.x }}'
+        - id: b_items
+          kind: agent.acp
+          timeoutSeconds: 60
+          config:
+            profile: m4-planner
+            sessionMode: new
+            prompt: 'items -> ${{ items.x }}'
+  - id: until1
+    kind: until
+    dependsOn: [fan]
+    config:
+      maxIterations: 2
+      passWhen: nodes.b_iter.status == 'succeeded'
+      resultBindings:
+        review_note: '${{ nodes.b_prev.outputs.note }}'
+      body:
+        nodes:
+        - id: b_iter
+          kind: agent.acp
+          timeoutSeconds: 60
+          config:
+            profile: m4-planner
+            sessionMode: new
+            prompt: 'iteration -> ${{ iteration > 1 ? "2+" : "1" }}'
+        - id: b_prev
+          kind: agent.acp
+          timeoutSeconds: 60
+          config:
+            profile: m4-planner
+            sessionMode: new
+            prompt: 'previous -> ${{ has(previous.review_note) ? previous.review_note : "first" }}'
