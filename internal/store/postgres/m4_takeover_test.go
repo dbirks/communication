@@ -488,9 +488,9 @@ func TestM4TakeoverResumesRunToClaimable(t *testing.T) {
 	if newAttempt == c.AttemptID || nodeID != "implement" {
 		t.Fatalf("handback attempt = (id %s, node %s), want a fresh attempt on the interrupted implement node", newAttempt, nodeID)
 	}
-	// The number is above the interrupted attempt's but not necessarily its +1:
-	// the worker's own claim already bumped node_executions.attempt_count
-	// (ADR-0023 § 4 step 6), which is the count the handback is numbered from.
+	// The number is above the interrupted attempt's: attempt_count is the
+	// engine's queue-time ledger (contract § 7.1 C1e), which is what the
+	// handback is numbered from — the worker's claim never bumps it.
 	if newNum == "1" {
 		t.Errorf("handback attempt number = %s, want a number above the interrupted attempt's", newNum)
 	}

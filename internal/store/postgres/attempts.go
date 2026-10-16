@@ -68,6 +68,15 @@ type NewAttempt struct {
 // QueueAttempt inserts a queued attempt — unowned by construction
 // (attempts_queued_unowned) — under the node's row lock, so the unique
 // (node_execution_id, attempt_number) cannot race with itself.
+//
+// The attempt ledger: node_executions.attempt_count is the number of
+// attempts the node has, i.e. max(attempts.attempt_number) (contract § 7.1
+// C1e: a single-attempt node reads 1). The ENGINE owns that column — it
+// bumps it when it queues (runtime queueAttempt) and persists it absolutely
+// (updateNodeTx). This seam exists for writers outside an engine pass (test
+// fixtures, the retry/queue paths reached without a hydrated advancer), so it
+// maintains the same invariant itself: GREATEST, never +1, so an attempt this
+// store counts can never be counted twice by the engine's absolute write.
 func (s *RunStore) QueueAttempt(ctx context.Context, in NewAttempt) (Attempt, error) {
 	if in.AttemptNumber < 1 {
 		return Attempt{}, fmt.Errorf("postgres: attempt_number must be >= 1, got %d", in.AttemptNumber)
@@ -86,6 +95,13 @@ func (s *RunStore) QueueAttempt(ctx context.Context, in NewAttempt) (Attempt, er
 			return Attempt{}, ErrRunNotFound
 		}
 		return Attempt{}, fmt.Errorf("postgres: lock node execution %s: %w", in.NodeExecutionID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE node_executions
+		SET attempt_count = GREATEST(attempt_count, $2) WHERE id = $1::uuid`,
+		in.NodeExecutionID, in.AttemptNumber); err != nil {
+		return Attempt{}, fmt.Errorf("postgres: count attempt n%d on node %s: %w",
+			in.AttemptNumber, in.NodeExecutionID, err)
 	}
 	a, err := s.scanAttempt(tx.QueryRow(ctx, `
 		INSERT INTO attempts
@@ -242,9 +258,12 @@ const runClaimSQL = `
 // cannot double-spend capacity between two claims by the same worker
 // (ADR-0023 § 4's predicate reads wr.active_attempts < wr.capacity — that
 // read is only meaningful under the row lock), then the pinned claim runs,
-// then each leased attempt's node execution moves ready → leased with its
-// attempt_count bumped, and the worker's active_attempts rises by exactly
-// what was claimed. SKIP LOCKED is a queue, not exactly-once: the fencing
+// then each leased attempt's node execution moves ready → leased and the
+// worker's active_attempts rises by exactly what was claimed. The claim does
+// NOT touch attempt_count: the attempt was already counted when the engine
+// queued it (docs/m4-live-findings.md P1 — counting it here too halved every
+// retry budget, because the advancer gates the retry on attempt_count <
+// attempt_limit). SKIP LOCKED is a queue, not exactly-once: the fencing
 // triple, not the claim, is what makes a stale write rejectable.
 func (s *RunStore) ClaimAttempts(ctx context.Context, workerID string, limit int) ([]AttemptClaim, error) {
 	if limit <= 0 {
@@ -311,7 +330,7 @@ func (s *RunStore) ClaimAttempts(ctx context.Context, workerID string, limit int
 	for _, c := range claims {
 		tag, err := tx.Exec(ctx, `
 			UPDATE node_executions
-			SET status = 'leased', attempt_count = attempt_count + 1,
+			SET status = 'leased',
 			    ready_at = COALESCE(ready_at, now())
 			WHERE id = $1::uuid AND status = 'ready' AND execution_location = 'worker'`,
 			c.NodeExecutionID)

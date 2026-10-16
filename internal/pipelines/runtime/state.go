@@ -393,6 +393,11 @@ type NodeExecution struct {
 	ArtifactRefs []any
 	DependsOn    []string
 
+	// AttemptCount is the node's attempt ledger: how many attempts it has,
+	// i.e. max(attempts.attempt_number) (contract § 7.1 C1e — a single-attempt
+	// node reads 1). queueAttempt owns the increment and the store persists it
+	// absolutely; the claim never bumps it, or one attempt would spend two of
+	// AttemptLimit's seats and the retry gate below would fire early.
 	AttemptCount int
 	AttemptLimit int
 	InFlight     int
