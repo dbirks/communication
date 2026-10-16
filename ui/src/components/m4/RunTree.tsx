@@ -260,12 +260,17 @@ export { parentKeyOf };
 
 /** Build the visible rows, depth-first, respecting expansion and page size. */
 export function buildRows(args: BuildArgs): RunTreeRow[] {
-  return paged(childrenOf(args, "/", 0, false), args.pageSize, "more:/", 0);
+  return paged(args, childrenOf(args, "/", 0, false), "more:/", 0);
 }
 
 /** Rows whose parent key is `parentKey`, grouped by definition node. A row that
  * is a scope's own numbered place is left to `placeRows` — it is a place in a
  * repeat, not a repeat of a node. */
+/**
+ * Rows whose parent key is `parentKey`, grouped by definition node. A row that
+ * is a scope's own numbered place is left to `placeRows` — it is a place in a
+ * repeat, not a repeat of a node.
+ */
 function childrenOf(
   args: BuildArgs,
   parentKey: string,
@@ -282,11 +287,76 @@ function childrenOf(
     ),
     args.definitionOrder,
   );
-  return groups.map(([nodeId, instances], index) =>
+  const chunks = groups.map(([nodeId, instances], index) =>
     instances.length === 1
       ? instanceRows(args, instances[0], level, groups.length, index + 1)
       : repeatHeadingRows(args, nodeId, instances, parentKey, level, groups.length, index + 1),
   );
+  // Only the root carries the child runs. A nested child's `node_instance_key`
+  // belongs to the child run's own keyspace, so comparing it to a parent's key
+  // could only ever be a coincidence; nesting *between* child runs comes from
+  // the tree's `children` array, which `childRunRows` walks.
+  if (parentKey === "/") chunks.push(childRunSection(args, level));
+  return chunks;
+}
+
+/** The tree's own branch: every child run `GET /runs/{id}/tree` reported. */
+const CHILD_RUNS_KEY = "runs:child-runs";
+
+/**
+ * The child runs of THIS run, as one always-reachable branch (W11).
+ *
+ * A child run is a run with its own identity, so the `/tree` route is what
+ * names it — and every child that route reports must be reachable in the page,
+ * not parked behind the invocation that made it. Attaching a child to its
+ * `node_instance_key` strands it two expansions deep inside a branch that is
+ * itself paged, which is exactly how C8's fan-out children vanished from the
+ * run page: 6 (then 25) children under `/fan_out[n]/invoke`, none of them
+ * openable. So they get one heading, listing all of them, each with its own
+ * status chip, its depth and a link to its own inspector; the invocation that
+ * made it is named in the row (`instanceRows` counts it) and in the heading.
+ *
+ * The heading starts open — collapsing it is a request, never the default — and
+ * the list is never paged: the run's own budget bounds child runs, and a hidden
+ * child run is a run nobody can open.
+ */
+function childRunSection(args: BuildArgs, level: number): RunTreeRow[] {
+  const children = args.tree?.children ?? [];
+  if (children.length === 0) return [];
+  const open = isOpen(args, CHILD_RUNS_KEY, true);
+  const head: RunTreeRow = {
+    key: CHILD_RUNS_KEY,
+    level,
+    label: "child runs",
+    // The child runs have statuses; the branch that holds them has none of its
+    // own, so it carries the count the route gave us and no invented chip.
+    status: null,
+    kind: null,
+    detail: `${children.length} child run${children.length === 1 ? "" : "s"} of this run`,
+    counts: null,
+    expandable: true,
+    expanded: open,
+    setsize: 1,
+    posinset: 1,
+    childrenCount: children.length,
+  };
+  if (!open) return [head];
+  // Deliberately not `paged`: see the doc comment.
+  return [
+    head,
+    ...children
+      .map((child, index) => childRunRows(args, child, level + 1, children.length, index + 1))
+      .flat(),
+  ];
+}
+
+/**
+ * Expansion of one key. A branch that is open by default inverts the set: the
+ * caller's `expandedKeys` records what a person *toggled*, and a default-open
+ * branch is closed only once it appears there.
+ */
+function isOpen(args: BuildArgs, key: string, defaultOpen = false): boolean {
+  return args.expanded.has(key) !== defaultOpen;
 }
 
 /**
@@ -317,7 +387,7 @@ function repeatHeadingRows(
     detail: `${instances.length} ${instances[0].kind === "until" ? "iterations" : "executions"}`,
     counts: rollupCounts(instances),
     expandable: true,
-    expanded: args.expanded.has(headingKey),
+    expanded: isOpen(args, headingKey),
     setsize,
     posinset,
     childrenCount: instances.length,
@@ -326,10 +396,10 @@ function repeatHeadingRows(
   return [
     head,
     ...paged(
+      args,
       instances.map((node, index) =>
         instanceRows(args, node, level + 1, instances.length, index + 1),
       ),
-      args.pageSize,
       `more:${headingKey}`,
       level + 1,
     ),
@@ -347,8 +417,13 @@ function instanceRows(
   const key = node.node_instance_key;
   const places = placeRows(args, node);
   const branches = childrenOf(args, key, level + 1, SCOPE_TREE_KINDS.has(node.kind));
-  const invoked = childRunsUnder(args, key);
-  const siblingCount = places.length + branches.length + invoked.length;
+  // The child runs this execution invoked live in the run's own `child runs`
+  // branch (W11: every child the route reports must be reachable); the row that
+  // invoked them says so in words rather than hiding them two levels down.
+  const invokedByThis = (args.tree?.children ?? []).filter(
+    (child) => child.node_instance_key === key,
+  ).length;
+  const siblingCount = places.length + branches.length;
   const self: RunTreeRow = {
     key,
     level,
@@ -356,9 +431,9 @@ function instanceRows(
     status: { state: stateOf(NODE_EXECUTION_STATE[node.status]), word: statusWord(node) },
     kind: node.kind,
     detail: key,
-    counts: summaryCounts(node),
+    counts: summaryCounts(node, invokedByThis),
     expandable: siblingCount > 0,
-    expanded: args.expanded.has(key),
+    expanded: isOpen(args, key),
     setsize,
     posinset,
     childrenCount: siblingCount,
@@ -375,11 +450,8 @@ function instanceRows(
         : expandPlace(args, place.place as RunTreeRow, level + 1, siblingCount, position++),
     ),
     ...branches,
-    ...invoked.map(
-      (child) => childRunRows(args, child, level + 1, siblingCount, position++) as RunTreeRow[],
-    ),
   ];
-  return [self, ...paged(childChunks, args.pageSize, `more:${key}`, level + 1)];
+  return [self, ...paged(args, childChunks, `more:${key}`, level + 1)];
 }
 
 /**
@@ -423,7 +495,7 @@ function placeRows(args: BuildArgs, node: NodeExecutionSummary): Place[] {
         detail: placeKey,
         counts: members.length > 0 ? rollupCounts(members) : null,
         expandable: members.length > 0,
-        expanded: args.expanded.has(placeKey),
+        expanded: isOpen(args, placeKey),
         setsize: 1,
         posinset: iteration,
         childrenCount: members.length,
@@ -450,16 +522,16 @@ function expandPlace(
   if (!self.expandable || !self.expanded) return [self];
   return [
     self,
-    ...paged(
-      childrenOf(args, self.key, level + 1, false),
-      args.pageSize,
-      `more:${self.key}`,
-      level + 1,
-    ),
+    ...paged(args, childrenOf(args, self.key, level + 1, false), `more:${self.key}`, level + 1),
   ];
 }
 
-/** One child run, and its own children when expanded. */
+/**
+ * One child run the `/tree` route reported, and its own children when expanded.
+ * The sentence this row writes is the run's own identity: `child run <short id>
+ * · depth <n> · waits for <policy>` — id, depth and wait policy are all the
+ * route's facts, never a guess — followed by the invocation that made it.
+ */
 function childRunRows(
   args: BuildArgs,
   child: RunTreeChild,
@@ -475,10 +547,15 @@ function childRunRows(
     label: child.pipeline_slug,
     status: { state: stateOf(RUN_STATE[child.status]), word: child.status },
     kind: null,
-    detail: `child run ${shortId(child.child_run_id)} · depth ${child.depth} · waits for ${child.wait_policy}`,
+    detail: [
+      `child run ${shortId(child.child_run_id)} · depth ${child.depth} · waits for ${child.wait_policy}`,
+      child.node_instance_key ? `invoked by ${child.node_instance_key}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
     counts: child.detached ? "detached" : null,
     expandable: nested.length > 0,
-    expanded: args.expanded.has(key),
+    expanded: isOpen(args, key),
     setsize,
     posinset,
     href: args.runPath?.(child.child_run_id),
@@ -488,8 +565,8 @@ function childRunRows(
   return [
     self,
     ...paged(
+      args,
       nested.map((grand, index) => childRunRows(args, grand, level + 1, nested.length, index + 1)),
-      args.pageSize,
       `more:${key}`,
       level + 1,
     ),
@@ -535,13 +612,25 @@ function groupByDefinitionNode(nodes: NodeExecutionSummary[], definitionOrder?: 
  * it: rows come in per-item chunks, so slicing rows naively would orphan
  * children under a parent that is no longer on screen.
  */
+/**
+ * Slice a branch to `pageSize` items, keeping each item's whole subtree with
+ * it: rows come in per-item chunks, so slicing rows naively would orphan
+ * children under a parent that is no longer on screen.
+ *
+ * The `+N more` row is a real control, not a caption — a hidden branch that
+ * cannot be opened strands whatever it holds (W11 counted children that were
+ * past a page the UI had no way to turn). Expanding it shows the whole branch;
+ * collapsing the parent hides it again.
+ */
 function paged(
+  args: BuildArgs,
   chunks: RunTreeRow[][],
-  pageSize: number,
   moreKey: string,
   level: number,
 ): RunTreeRow[] {
+  const pageSize = args.pageSize;
   if (chunks.length <= pageSize) return chunks.flat();
+  if (isOpen(args, moreKey)) return chunks.flat();
   const visible = chunks.slice(0, pageSize).flat();
   const hidden = chunks.length - pageSize;
   return [
@@ -554,25 +643,14 @@ function paged(
       kind: null,
       detail: "this branch is longer than one page",
       counts: null,
-      expandable: false,
+      // Expandable: the row exists to hand the rest of the branch back.
+      expandable: true,
       expanded: false,
       setsize: chunks.length,
       posinset: pageSize + 1,
       childrenCount: hidden,
     },
   ];
-}
-
-/** Child runs whose invocation sits at or below this instance key. */
-function childRunsUnder(args: BuildArgs, key: string): RunTreeChild[] {
-  if (!args.tree) return [];
-  // Exact key match, and only among this run's own invocations. Two reasons:
-  // a prefix match would attach an invocation's child run to the *place* row
-  // above it as well, drawing the same run twice; and a nested child's
-  // `node_instance_key` belongs to the child run's own keyspace, so comparing it
-  // to a parent's key can only ever be a coincidence. Nesting between child runs
-  // comes from the tree's `children` array, which `childRunRows` already walks.
-  return args.tree.children.filter((child) => child.node_instance_key === key);
 }
 
 /** `/build_until_verified[2]/review` → `review[2]`: the iteration travels with
@@ -603,11 +681,12 @@ export function statusWord(node: NodeExecutionSummary): string {
   return node.status;
 }
 
-function summaryCounts(node: NodeExecutionSummary): string | null {
+function summaryCounts(node: NodeExecutionSummary, invokedRuns = 0): string | null {
   const parts: string[] = [];
   if (node.attempt_count > 1) parts.push(`${node.attempt_count} attempts`);
   if (node.iterations != null) parts.push(`${node.iterations} iterations`);
   if (node.items != null) parts.push(`${node.items} items`);
+  if (invokedRuns > 0) parts.push(`${invokedRuns} child run${invokedRuns === 1 ? "" : "s"}`);
   // `in_flight` is a live count: attempts a worker still holds. A row that has
   // reached a terminal state cannot hold work, so repeating the last number the
   // server happened to send would claim a failure is still running.

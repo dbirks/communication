@@ -105,23 +105,66 @@ describe("buildRows", () => {
     const rows = buildRows({
       nodes: fanOutNodes,
       tree: fanOutTree,
-      expanded: new Set([
-        "/verify_each",
-        "/verify_each[22]",
-        "/verify_each[22]/invoke",
-        `run:${fanOutTree.children[21].child_run_id}`,
-      ]),
+      // Nothing under `/verify_each` is expanded: the only reason to open a
+      // branch is its own subtree, and a child run no longer lives there.
+      expanded: new Set([`run:${fanOutTree.children[21].child_run_id}`]),
       pageSize: 30,
     });
-    const invocation = rows.find((row) => row.key === "/verify_each[22]/invoke")!;
+    expect(rows.find((row) => row.key === "/verify_each[22]/invoke")).toBeUndefined();
     const childRun = rows.find((row) => row.key === `run:${fanOutTree.children[21].child_run_id}`)!;
-    expect(invocation.level).toBeLessThan(childRun.level);
+    // W11: "the tree renders depth 1 children with their own statuses".
+    expect(childRun.level).toBe(1);
     expect(childRun.detail).toContain("child run");
     expect(childRun.detail).toContain("depth 1");
+    // The relationship the route names is still said out loud.
+    expect(childRun.detail).toContain("invoked by /verify_each[22]/invoke");
     expect(childRun.label).toBe("module-check");
     expect(childRun.status?.word).toBe("failed");
     // depth 2 only appears when its own parent is expanded
-    expect(rows.some((row) => row.detail.includes("depth 2"))).toBe(true);
+    expect(rows.filter((row) => row.detail.includes("depth 2"))).toHaveLength(1);
+  });
+
+  it("shows every child the /tree route reports without a single expansion (W11)", () => {
+    const rows = buildRows({
+      nodes: fanOutNodes,
+      tree: fanOutTree,
+      expanded: new Set(),
+      pageSize: 10,
+    });
+    const heading = rows.find((row) => row.key === "runs:child-runs")!;
+    expect(heading.expanded).toBe(true);
+    expect(heading.detail).toBe("25 child runs of this run");
+    const shown = rows.filter((row) => row.key.startsWith("run:"));
+    // Not ten, not "the ones that happened to be reachable": all of them.
+    expect(shown).toHaveLength(fanOutTree.children.length);
+    for (const child of fanOutTree.children) {
+      const row = rows.find((item) => item.key === `run:${child.child_run_id}`)!;
+      expect(row.detail.startsWith("child run ")).toBe(true);
+      expect(row.detail).toContain(` · depth ${child.depth} · waits for ${child.wait_policy}`);
+      expect(row.status?.word).toBe(child.status);
+    }
+  });
+
+  it("collapses its child runs only on request, and says what it holds", () => {
+    const rows = buildRows({
+      nodes: fanOutNodes,
+      tree: fanOutTree,
+      expanded: new Set(["runs:child-runs"]),
+      pageSize: 10,
+    });
+    expect(rows.find((row) => row.key === "runs:child-runs")?.expanded).toBe(false);
+    expect(rows.filter((row) => row.key.startsWith("run:"))).toHaveLength(0);
+  });
+
+  it("counts a node execution's child runs on the row that invoked them", () => {
+    const rows = buildRows({
+      nodes: fanOutNodes,
+      tree: fanOutTree,
+      expanded: new Set(["/verify_each", "/verify_each[22]"]),
+      pageSize: 30,
+    });
+    const invocation = rows.find((row) => row.key === "/verify_each[22]/invoke")!;
+    expect(invocation.counts).toContain("1 child run");
   });
 
   it("pages a long branch and names what is hidden", () => {
@@ -132,11 +175,26 @@ describe("buildRows", () => {
       pageSize: 10,
     });
     // Ten places and the row that says what the page hid, both at level 1.
-    expect(rows.filter((row) => row.level === 1 && !row.key.startsWith("more:"))).toHaveLength(10);
+    expect(
+      rows.filter((row) => row.level === 1 && row.key.startsWith("/verify_each[")),
+    ).toHaveLength(10);
     const more = rows.find((row) => row.key.startsWith("more:"))!;
     expect(more.key).toBe("more:/verify_each");
     expect(more.label).toBe("15 more");
     expect(more.detail).toBe("this branch is longer than one page");
+    // A page that cannot be turned strands whatever it hides, so this row opens.
+    expect(more.expandable).toBe(true);
+  });
+
+  it("hands back the whole branch when its page is turned", () => {
+    const rows = buildRows({
+      nodes: fanOutNodes,
+      tree: fanOutTree,
+      expanded: new Set(["/verify_each", "more:/verify_each"]),
+      pageSize: 10,
+    });
+    expect(rows.filter((row) => row.key.startsWith("/verify_each["))).toHaveLength(25);
+    expect(rows.find((row) => row.key === "more:/verify_each")).toBeUndefined();
   });
 });
 
@@ -258,7 +316,7 @@ describe("RunTree", () => {
       <RunTree
         nodes={fanOutNodes}
         tree={fanOutTree}
-        expandedKeys={["/verify_each", "/verify_each[22]", "/verify_each[22]/invoke"]}
+        expandedKeys={[]}
         onSelect={onSelect}
         runPath={(runId) => `/runs/${runId}`}
         pageSize={30}
@@ -266,8 +324,31 @@ describe("RunTree", () => {
     );
     const link = screen.getByTestId(`run-tree-link-run:${fanOutTree.children[21].child_run_id}`);
     expect(link.getAttribute("href")).toBe(`/runs/${fanOutTree.children[21].child_run_id}`);
+    expect(link.textContent).toContain("failed");
     fireEvent.click(link);
     expect(onSelect).toHaveBeenCalled();
+  });
+
+  it("turns its own page when a branch is longer than the window", () => {
+    const onToggle = vi.fn();
+    render(
+      <RunTree
+        nodes={fanOutNodes}
+        tree={fanOutTree}
+        expandedKeys={["/verify_each"]}
+        onToggle={onToggle}
+        pageSize={10}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("run-tree-toggle-more:/verify_each"));
+    expect(onToggle).toHaveBeenCalledWith("more:/verify_each");
+  });
+
+  it("says in words how many child runs the route reported", () => {
+    render(<RunTree nodes={fanOutNodes} tree={fanOutTree} expandedKeys={[]} />);
+    const heading = screen.getByTestId("run-tree-row-runs:child-runs");
+    expect(heading.textContent).toContain("25 child runs of this run");
+    expect(heading.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("expands and collapses on request, and counts what it hides", () => {

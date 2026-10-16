@@ -164,15 +164,23 @@ describe("/projects/:projectId/conversations/:conversationId", () => {
     const transcript = await screen.findByTestId("transcript");
     expect(within(transcript).getAllByTestId("transcript-item")).toHaveLength(2);
 
-    // EventSource replays from Last-Event-ID after a drop; the second delivery
-    // of global_seq 11 must be ignored, and 12 must land once.
+    // The stream does not wait on EventSource's private retry: our own
+    // reconnect re-opens the same scope carrying the cursor it last rendered
+    // (`?after=11`), so a replayed 11 is ignored and 12 lands once.
     act(() => source.fail());
     expect(screen.getByTestId("stream-status").textContent).toBe("reconnecting");
+    const reconnected = await waitFor(() => {
+      const next = FakeEventSource.instances.at(-1)!;
+      expect(next).not.toBe(source);
+      return next;
+    });
+    expect(reconnected.url).toContain("?after=11");
+    expect(source.readyState).toBe(FakeEventSource.CLOSED);
     act(() => {
-      source.emit(
+      reconnected.emit(
         conversationEvent("conversation.message.agent", { text: "hi" }, { global_seq: 11 }),
       );
-      source.emit(
+      reconnected.emit(
         conversationEvent(
           "conversation.message.agent",
           { text: " there", final: true },

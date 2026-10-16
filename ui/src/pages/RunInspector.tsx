@@ -860,11 +860,15 @@ function RunTimelineTab({
       </p>
     );
   }
-  const chip = (value: TimelineFilter, label: string, testid: string) => (
+  const chip = (value: TimelineFilter, label: string, testid: string, name?: string) => (
     <button
       key={value}
       type="button"
       aria-pressed={filter === value}
+      // A stage chip says its node id and nothing else; said aloud, "build_until_verified"
+      // is indistinguishable from the stage-strip cell for the same node. The name
+      // says what pressing it does.
+      aria-label={name}
       data-testid={testid}
       onClick={() => setFilter(value)}
       className={`rounded-[2px] border px-[7px] py-[2px] font-mono text-[10.5px] ${
@@ -887,7 +891,9 @@ function RunTimelineTab({
         {chip("all", "all", "run-timeline-filter-all")}
         {chip("failures", "failures", "run-timeline-filter-failures")}
         {chip("human", "human", "run-timeline-filter-human")}
-        {stages.map((stage) => chip(`stage:${stage}`, stage, `run-timeline-stage-${stage}`))}
+        {stages.map((stage) =>
+          chip(`stage:${stage}`, stage, `run-timeline-stage-${stage}`, `filter to stage ${stage}`),
+        )}
         <input
           type="search"
           aria-label="Search timeline events"

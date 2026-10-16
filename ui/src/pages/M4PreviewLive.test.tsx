@@ -150,13 +150,15 @@ describe("M4 live preview (fixture seam → real routes)", () => {
 
       // The child run joins through the tree route and the library's slug map —
       // the wire only carries `pipeline_id`, so a `module-check` label on screen
-      // is the mapping doing its job.
-      expandToImplement();
-      fireEvent.click(screen.getByTestId("run-tree-toggle-/build_until_verified[1]/implement"));
+      // is the mapping doing its job. It is on screen *without* the reader
+      // opening the branch that invoked it (W11: every child the route reports
+      // is reachable), and still names the invocation that made it.
       const childRow = screen.getByTestId(`run-tree-row-run:${wireTree.children[0].run.id}`);
       expect(childRow.textContent).toContain("module-check");
+      expect(childRow.textContent).toContain("invoked by /build_until_verified[1]/implement");
 
       // Select the execution → its attempt history (route 25) and checkpoint.
+      expandToImplement();
       fireEvent.click(
         within(screen.getByTestId("run-tree-row-/build_until_verified[1]/implement")).getByRole(
           "button",

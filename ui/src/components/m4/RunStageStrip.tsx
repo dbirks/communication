@@ -49,10 +49,25 @@ const PRECEDENCE: StateName[] = [
 
 /** True when this row is a scope's numbered place rather than a node's own row. */
 function isPlaceOfAnother(node: NodeExecutionSummary, byKey: Map<string, NodeExecutionSummary>) {
+  return scopeParentOf(node, byKey) !== undefined;
+}
+
+/**
+ * The definition node this row's progress belongs to. A numbered place is
+ * counted under its scope — and so is a server row that spells its `node_id`
+ * with the iteration suffix (`build_until_verified[2]`): the strip's cell *is*
+ * the definition node, and two cells for one loop is exactly the duplication
+ * `10` J7 forbids (`10 J7`, W2's assertion).
+ */
+function scopeParentOf(node: NodeExecutionSummary, byKey: Map<string, NodeExecutionSummary>) {
   const suffix = /\[\d+\]$/.exec(node.node_instance_key);
-  if (!suffix) return false;
+  if (!suffix) return undefined;
   const parent = byKey.get(node.node_instance_key.slice(0, -suffix[0].length));
-  return parent !== undefined && SCOPE_STRIP_KINDS.has(parent.kind);
+  return parent !== undefined && SCOPE_STRIP_KINDS.has(parent.kind) ? parent : undefined;
+}
+
+function cellKeyOf(node: NodeExecutionSummary, byKey: Map<string, NodeExecutionSummary>): string {
+  return scopeParentOf(node, byKey)?.node_id ?? node.node_id;
 }
 
 /**
@@ -105,10 +120,13 @@ export function stageCells(nodes: NodeExecutionSummary[], definitionOrder?: stri
   const byNode = new Map<string, NodeExecutionSummary[]>();
   const firstSeen = new Map<string, number>();
   nodes.forEach((node, index) => {
-    if (!firstSeen.has(node.node_id)) firstSeen.set(node.node_id, index);
-    const list = byNode.get(node.node_id) ?? [];
+    // One cell per definition node, not per row: a scope's places and a server
+    // that repeats the iteration in `node_id` both join the scope's own cell.
+    const nodeId = cellKeyOf(node, byKey);
+    if (!firstSeen.has(nodeId)) firstSeen.set(nodeId, index);
+    const list = byNode.get(nodeId) ?? [];
     list.push(node);
-    byNode.set(node.node_id, list);
+    byNode.set(nodeId, list);
   });
   /**
    * Definition position. The caller who has the pinned revision passes its node
@@ -132,13 +150,18 @@ export function stageCells(nodes: NodeExecutionSummary[], definitionOrder?: stri
     const segments = heads
       .sort((a, b) => a.node_instance_key.localeCompare(b.node_instance_key))
       .flatMap((node) => segmentsOf(node, nodes, byKey));
+    // Nothing to count: every row of this group is a place that belongs to a
+    // scope cell elsewhere. An empty cell would be a second stage for a loop
+    // that already has one.
+    if (segments.length === 0) continue;
+    const kindOf = (heads[0] ?? instances[0]).kind;
     const states = segments.map((segment) => segment.state);
     const counts = new Map<StateName, number>();
     for (const state of states) counts.set(state, (counts.get(state) ?? 0) + 1);
     const state = PRECEDENCE.find((candidate) => counts.has(candidate)) ?? "queued";
     cells.push({
       nodeId,
-      kind: instances[0].kind,
+      kind: kindOf,
       state,
       counts: [...counts.entries()]
         .sort((a, b) => PRECEDENCE.indexOf(a[0]) - PRECEDENCE.indexOf(b[0]))

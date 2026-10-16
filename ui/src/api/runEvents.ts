@@ -3,9 +3,11 @@
  *
  * Same `domain_events` journal, same framing as the project and conversation
  * streams (`useEventStream` here is the shipped implementation, not a copy:
- * ADR-0014 § 5's gap-safety argument — `Last-Event-ID` replay, the monotonic
- * `global_seq` floor, the heartbeat comment — is one argument per journal, not
- * one per route). M4's addition is what the frames *do*: every event carries
+ * ADR-0014 § 5's gap-safety argument — the `?after=<global_seq>` resume cursor
+ * this client re-opens with after a dropped socket, the monotonic `global_seq`
+ * floor that dedupes a replay, the heartbeat comment — is one argument per
+ * journal, not one per route). A replica rolling over (M4 C14a, W10) therefore
+ * resumes this stream mid-journal on the same document: nothing here reloads. M4's addition is what the frames *do*: every event carries
  * the correlation members `run_id` / `node_execution_id` / `attempt_id`, so a
  * frame names the exact row an open Run Inspector must repaint, and the same
  * frame also invalidates the run subtree so the next read confirms it.

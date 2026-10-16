@@ -7,9 +7,19 @@
  * gap-safety argument). Frames carry `event: <type>`, so we listen per type
  * rather than only on `onmessage`.
  *
- * `EventSource` reconnects by itself and replays from `Last-Event-ID`; we
- * additionally ignore anything at or below the highest `global_seq` already
- * rendered, so a replay can never duplicate a transcript row or a tool update.
+ * The client does *not* rely on `EventSource`'s private reconnect: a reconnect
+ * it owns carries `?after=<last seen global_seq>` (the route's documented
+ * cursor for clients that do not send `Last-Event-ID`, `api/openapi.yaml`
+ * `components.parameters.After`) and re-arms by hand, so an api replica rolling
+ * over (M4 C14a, W10) resumes mid-journal instead of restarting from the head.
+ * Frames at or below the highest `global_seq` already rendered are ignored, so a
+ * replay can never duplicate a transcript row or a tool update — `id:` on the
+ * wire *is* `global_seq`, so that floor is also the id-dedupe.
+ *
+ * Nothing here ever navigates or reloads: a dropped stream is a network event,
+ * and the journal behind it is durable, so the page's own document must survive
+ * it with its rendered rows intact (a reload would repaint the timeline from a
+ * cold read and is exactly what W10 measures as "document replaced").
  */
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -122,6 +132,20 @@ export interface EventStream {
   status: ConnectionState;
 }
 
+/**
+ * The resume cursor the journal accepts in the URL. `after` is the last
+ * `global_seq` rendered, so `0` (nothing seen yet) opens the stream plain and
+ * lets the server start wherever its scope says it starts.
+ */
+export function resumeUrl(url: string, after: number): string {
+  if (!(after > 0)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}after=${Math.trunc(after)}`;
+}
+
+/** Reconnect ladder, capped: a replica that is down comes back within seconds,
+ * and hammering a restarting replica is worse than a one-second gap. */
+const RECONNECT_MS = [250, 500, 1000, 2000, 5000];
+
 interface StreamOptions {
   url: string;
   types: readonly string[];
@@ -144,8 +168,14 @@ export function useEventStream({ url, types, keys, onEvent }: StreamOptions): Ev
     setStatus("reconnecting");
     lastSeq.current = 0;
 
+    let closed = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // The buffer is deliberately NOT rebuilt with the socket: the rows on screen
+    // are the rows this document already drew, and a reconnect only appends.
     const record = (envelope: EventEnvelope) => {
-      // A replay from Last-Event-ID can redeliver what we already drew.
+      // The server may replay from the cursor, and a native EventSource retry
+      // may redeliver what we already drew: the id (= `global_seq`) decides.
       if (envelope.global_seq <= lastSeq.current) return;
       lastSeq.current = envelope.global_seq;
       setEvents((previous) => [...previous, envelope].slice(-MAX_EVENTS));
@@ -153,31 +183,69 @@ export function useEventStream({ url, types, keys, onEvent }: StreamOptions): Ev
       onEventRef.current?.(envelope);
     };
 
-    const source = new EventSource(url);
-    const listeners: Array<[string, (message: MessageEvent<string>) => void]> = [];
+    /** Tear one socket down; a socket we replaced is never allowed to keep a
+     * listener that would double-apply a frame. */
+    const detach = (source: EventSource) => {
+      source.onmessage = null;
+      source.onopen = null;
+      source.onerror = null;
+      for (const [type, listener] of bindings) source.removeEventListener(type, listener);
+      source.close();
+    };
+    const bindings: Array<[string, (message: MessageEvent<string>) => void]> = [];
     for (const type of types) {
       const listener = (message: MessageEvent<string>) => {
         const envelope = parseEnvelope(message.data);
         if (envelope) record(envelope);
       };
-      source.addEventListener(type, listener);
-      listeners.push([type, listener]);
+      bindings.push([type, listener]);
     }
 
-    // Frames sent without an `event:` field (defensive; the server always sets one).
-    source.onmessage = (message: MessageEvent<string>) => {
-      const envelope = parseEnvelope(message.data);
-      if (envelope) record(envelope);
+    let socket: EventSource | null = null;
+
+    const reconnect = () => {
+      if (closed || timer) return;
+      setStatus("reconnecting");
+      const wait = RECONNECT_MS[Math.min(attempt, RECONNECT_MS.length - 1)];
+      attempt += 1;
+      // A replica restart is a restart, not a mistake of ours: never reload, and
+      // never drop the frames already on screen while waiting for the journal.
+      timer = setTimeout(() => {
+        timer = null;
+        open();
+      }, wait);
     };
-    source.onopen = () => setStatus("live");
-    source.onerror = () => setStatus("reconnecting");
+
+    function open() {
+      if (closed) return;
+      const source = new EventSource(resumeUrl(url, lastSeq.current));
+      for (const [type, listener] of bindings) source.addEventListener(type, listener);
+      // Frames sent without an `event:` field (defensive; the server always sets one).
+      source.onmessage = (message: MessageEvent<string>) => {
+        const envelope = parseEnvelope(message.data);
+        if (envelope) record(envelope);
+      };
+      source.onopen = () => {
+        attempt = 0;
+        setStatus("live");
+      };
+      // `onerror` fires both for a dead connection and for one the browser is
+      // retrying on its own. Close it and open our own: the browser's retry
+      // depends on the server having stamped `id:` on every frame, ours does not.
+      source.onerror = () => {
+        detach(source);
+        if (socket === source) socket = null;
+        reconnect();
+      };
+      socket = source;
+    }
+
+    open();
 
     return () => {
-      source.onmessage = null;
-      source.onopen = null;
-      source.onerror = null;
-      for (const [type, listener] of listeners) source.removeEventListener(type, listener);
-      source.close();
+      closed = true;
+      if (timer) clearTimeout(timer);
+      if (socket) detach(socket);
     };
     // `types` is a module constant per call site; `keys` are the ids inside `url`,
     // so the dependency array length is fixed for a given call site.
