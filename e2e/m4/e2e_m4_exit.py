@@ -754,6 +754,19 @@ def run_status(run_id):
         return f"PSQL_ERROR {e}"[:160]
 
 
+def c1_run_digest_sql(run_id):
+    """§ 7.1 C1e's digest read. runs carries revision_digest + plan_digest, but
+    digest_scope is a column of the PINNED pipeline_revisions row, never of runs
+    (00005_m4_pipelines.sql:111; runs has no such column, :154-189), so it
+    travels through runs.pipeline_revision_id. A bare `digest_scope FROM runs`
+    aborts the whole gate: `column "digest_scope" does not exist` (live4/C1.out).
+    The check's meaning is unchanged — the run's two digests match the manifest
+    and the scope the pinned revision was digested under is non-empty."""
+    return ("SELECT r.revision_digest || '|' || r.plan_digest || '|' || pr.digest_scope "
+            "FROM runs r JOIN pipeline_revisions pr ON pr.id = r.pipeline_revision_id "
+            f"WHERE r.id = '{run_id}'")
+
+
 def dump_run_evidence(client, run_id):
     """Failure honesty: dump the run row, the node tree and the last journal
     rows BEFORE the FAIL — an exit run that times out must arrive with its
@@ -786,6 +799,24 @@ def dump_run_evidence(client, run_id):
             f"FROM domain_events WHERE run_id = '{run_id}' ORDER BY global_seq DESC LIMIT 12"))
     except RuntimeError as e:
         show("last journal rows", str(e))
+    # ADR-0016 / docs/design/attempt-permissions.md: an unattended `ask` prompt is
+    # journalled requested -> decided{cancelled, node_policy:ask_unattended} and that
+    # cancelled tool call is what fails an agent.acp attempt. The 12-row window above
+    # routinely scrolls those rows out, so dump the run's whole permission trail.
+    try:
+        show("permission trail (ADR-0016 ask_unattended evidence)", psql(
+            f"SELECT global_seq::text || ' ' || type || ' req=' || "
+            f"COALESCE(payload->>'permission_request_id','-') || ' status=' || "
+            f"COALESCE(payload->>'status','-') || ' decided_by=' || "
+            f"COALESCE(payload->>'decided_by','-') || ' kind=' || "
+            f"COALESCE(payload->>'kind','-') || ' title=' || "
+            f"COALESCE(left(payload->>'title',60),'-') FROM domain_events "
+            f"WHERE (run_id = '{run_id}' OR attempt_id IN (SELECT a.id FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE ne.run_id = '{run_id}')) "
+            f"AND type LIKE 'conversation.permission.%' ORDER BY global_seq"))
+    except RuntimeError as e:
+        show("permission trail", str(e))
 
 
 def approve_gate(client, project_id, run_id):
@@ -900,8 +931,7 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
                     n_inputs == 5 and all(f"{n}=submitted" in origins
                                           for n in ("goal", "repository")),
                     f"count={n_inputs} origins={origins.splitlines()}")
-    dig = psql(f"SELECT revision_digest || '|' || plan_digest || '|' || digest_scope "
-               f"FROM runs WHERE id = '{run_id}'").strip().split("|")
+    dig = psql(c1_run_digest_sql(run_id)).strip().split("|")
     ok_all &= check(f"C1e run digests match the manifest (which came from publish) verbatim",
                     len(dig) == 3 and dig[0] == mf(facts, "revision_digest")
                     and dig[1] == mf(facts, "plan_digest") and dig[2] != "",
@@ -1873,6 +1903,19 @@ def c3_run_ids(facts):
     return ids, "the § 7.0 seed manifest runs"
 
 
+def c4_frozen_attempt_sql(att):
+    """§ 7.1 C4a's row for the attempt about to be fenced. attempts.status AND
+    node_executions.status are both in scope across this join, so every column
+    reference is qualified: a bare `status` aborts the gate with `column
+    reference "status" is ambiguous` (live4/C4.out). Same qualified shape as
+    c6_attempts_of_key / c4_wait_live_attempt above."""
+    return (f"SELECT a.status || ' worker=' || coalesce((SELECT w.name FROM workers w "
+            f"WHERE w.id = a.worker_id),'-') || ' token=' || a.fencing_token::text || "
+            f"' attempt=' || a.attempt_number::text || ' node=' || ne.node_instance_key || "
+            f"' turn=' || coalesce(a.turn_id::text,'(none, process.exec)') FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'")
+
+
 def c4_wait_live_attempt(run_id, timeout=300):
     """Poll the ledger for the first attempt a worker actually holds — the row
     whose lease C4 then freezes. Returns the parsed row or None."""
@@ -2045,12 +2088,7 @@ def c4():
         show("C4a note — which container gets frozen",
              f"§ 7.1 names worker-a, but the live claim landed on {owner}; the gate is about "
              f"the OWNER losing its lease, so {owner} is frozen and this report says so")
-    show("C4a the attempt about to be fenced", psql(
-        f"SELECT status || ' worker=' || coalesce((SELECT name FROM workers WHERE id = "
-        f"a.worker_id),'-') || ' token=' || a.fencing_token::text || ' attempt=' || "
-        f"a.attempt_number::text || ' node=' || ne.node_instance_key || ' turn=' || "
-        f"coalesce(a.turn_id::text,'(none, process.exec)') FROM attempts a "
-        f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'"))
+    show("C4a the attempt about to be fenced", psql(c4_frozen_attempt_sql(att)))
     rc, out = run(COMPOSE + ["pause", owner])
     if rc != 0:
         gap("C4a compose pause (freezer, not a kill)",

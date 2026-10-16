@@ -13,6 +13,7 @@ usage: python3 e2e/m4/test_c1_logic.py [-v]
 """
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -285,6 +286,64 @@ class ResultBindingsTest(unittest.TestCase):
         for junk in (None, "x", []):
             verdicts = [ok for _, ok, _ in m.result_bindings_ok(junk, "twin")]
             self.assertEqual(verdicts, [False, False, False], repr(junk))
+
+
+MIG05 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                     "internal", "store", "postgres", "migrations", "00005_m4_pipelines.sql")
+_SKIP_PREFIX = ("constraint", "check", "unique", "primary", "foreign", "exclude")
+
+
+def create_table_columns(path, names):
+    """{table: [first-token column names]} from a migration's CREATE TABLE blocks."""
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    out = {}
+    for name in names:
+        hit = re.search(rf"CREATE TABLE {name} \((.*?)\n\);", src, re.S)
+        assert hit, f"CREATE TABLE {name} not found in {path}"
+        cols = []
+        for line in hit.group(1).splitlines():
+            line = line.split("--")[0].strip()
+            if not line or line.lower().startswith(_SKIP_PREFIX):
+                continue
+            cols.append(line.split()[0].lower())
+        out[name] = cols
+    return out
+
+
+class C1RunDigestSqlTest(unittest.TestCase):
+    """live4's C1 gate aborted at C1e: `ERROR: column "digest_scope" does not
+    exist`. runs carries revision_digest + plan_digest but NO digest_scope
+    (00005_m4_pipelines.sql's runs block); digest_scope is a column of the
+    pinned pipeline_revisions row, so the check reads it through the pin."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.SQL = m.c1_run_digest_sql("run-1")
+        cls.cols = create_table_columns(MIG05, ("runs", "pipeline_revisions"))
+
+    def test_digest_scope_is_a_revision_column_and_not_a_run_column(self):
+        self.assertIn("digest_scope", self.cols["pipeline_revisions"])
+        self.assertNotIn("digest_scope", self.cols["runs"])
+        for col in ("revision_digest", "plan_digest", "pipeline_revision_id", "id"):
+            self.assertIn(col, self.cols["runs"], col)
+
+    def test_digest_scope_is_read_through_the_pinned_revision(self):
+        for hit in re.finditer(r"\bdigest_scope\b", self.SQL):
+            self.assertEqual(self.SQL[:hit.start()].rsplit(" ", 1)[-1], "pr.",
+                             f"unqualified digest_scope at {hit.start()}: {self.SQL}")
+        self.assertIn("JOIN pipeline_revisions pr ON pr.id = r.pipeline_revision_id", self.SQL)
+
+    def test_every_qualified_column_exists_in_the_migration(self):
+        aliases = {"r": "runs", "pr": "pipeline_revisions"}
+        bad = [f"{a}.{c} -> {aliases[a]}.{c}" for a, c in
+               re.findall(r"\b([a-z]+)\.([a-z_]+)\b", self.SQL.lower())
+               if a in aliases and c not in self.cols[aliases[a]]]
+        self.assertEqual(bad, [], self.SQL)
+
+    def test_the_run_id_is_the_only_hole(self):
+        self.assertIn("WHERE r.id = 'run-1'", self.SQL)
+        self.assertNotIn("{", self.SQL)
 
 
 if __name__ == "__main__":
