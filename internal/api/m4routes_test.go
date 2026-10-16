@@ -951,6 +951,44 @@ func TestM4RoleMatrix(t *testing.T) {
 			t.Error("the refusal must not decide anything")
 		}
 	})
+
+	// C9c through the handler: the store now answers a same-organization
+	// former member with the approval.denied refusal (postgres
+	// APIApprovalStore.DecideApproval loads the gate under the tenant scope so
+	// the refusal can name it and journal it), and the mapping is 403 — never
+	// the 404 that hides whether the gate exists at all.
+	t.Run("a former member's decide is 403, not 404", func(t *testing.T) {
+		fx := m4PopulatedServer(t)
+		fx.prin.IsOrgAdmin = false
+		fx.projects.role = "" // removed from the project between gate-open and decide
+		rec := fx.call(t, "POST", "http://localhost:8080/api/v1/approvals/"+m4UUID+"/decide",
+			`{"decision":"approved","version":1}`)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("removed approver decide = %d, want 403: %s", rec.Code, rec.Body)
+		}
+		if p := decodeProblem(t, rec); !strings.Contains(p.Type, "approval-denied") {
+			t.Errorf("problem type = %q, want approval-denied", p.Type)
+		}
+		if fx.approvs.decidedAs != "" {
+			t.Error("the C9c refusal must not decide anything")
+		}
+		if len(fx.approvs.denied) == 0 {
+			t.Error("the C9c refusal was not audited")
+		}
+	})
+
+	// ... while a caller who cannot even claim the organization still gets the
+	// uniform not-found (the store's tenant read answers ErrApprovalNotFound).
+	t.Run("a stranger's decide stays 404", func(t *testing.T) {
+		fx := m4PopulatedServer(t)
+		fx.prin.IsOrgAdmin = false
+		fx.approvs.ap = ApprovalView{} // invisible under the organization predicate
+		rec := fx.call(t, "POST", "http://localhost:8080/api/v1/approvals/"+m4UUID+"/decide",
+			`{"decision":"approved","version":1}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("cross-org decide = %d, want 404: %s", rec.Code, rec.Body)
+		}
+	})
 }
 
 // ------------------------------------------------------- create-run + pins

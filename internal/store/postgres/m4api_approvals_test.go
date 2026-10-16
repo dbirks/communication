@@ -551,3 +551,177 @@ func (f *m4Fixture) m4OtherOrg(t *testing.T, ctx context.Context) api.Caller {
 	})
 	return api.Caller{UserID: userID, OrganizationID: orgID}
 }
+
+// ------------------------------------------------------- C9c: lost access --
+
+// m4APRemoveMembership drops the caller from the project — 12 case 9c's
+// "removed from the project" between gate-open and decide. The m4APMember
+// cleanup restores nothing; a test that wants the grant back re-adds it.
+func m4APRemoveMembership(t *testing.T, ctx context.Context, f *m4Fixture) {
+	t.Helper()
+	if _, err := f.pool.Exec(ctx,
+		`DELETE FROM memberships WHERE project_id = $1 AND user_id = $2`, f.projectID, f.userID); err != nil {
+		t.Fatalf("remove membership: %v", err)
+	}
+}
+
+// m4APDeniedReasons lists the approval.denied reasons journaled for one gate.
+func m4APDeniedReasons(t *testing.T, ctx context.Context, f *m4Fixture, approvalID string) []string {
+	t.Helper()
+	rows, err := f.pool.Query(ctx, `
+		SELECT payload->>'reason' FROM domain_events
+		WHERE type = $1 AND payload->>'approval_id' = $2 ORDER BY global_seq`,
+		events.TypeApprovalDenied, approvalID)
+	if err != nil {
+		t.Fatalf("read approval.denied rows: %v", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan approval.denied reason: %v", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate approval.denied rows: %v", err)
+	}
+	return out
+}
+
+// m4APGateState reads the gate's live row: a refusal must leave it pending at
+// the version the caller submitted (CAS version unmoved, C9c).
+func m4APGateState(t *testing.T, ctx context.Context, f *m4Fixture, approvalID string) (string, int, bool) {
+	t.Helper()
+	var state string
+	var version int
+	var decided bool
+	if err := f.pool.QueryRow(ctx, `
+		SELECT state, version, decided_by IS NOT NULL FROM approval_requests WHERE id = $1::uuid`,
+		approvalID).Scan(&state, &version, &decided); err != nil {
+		t.Fatalf("read gate row: %v", err)
+	}
+	return state, version, decided
+}
+
+// m4APRunStatus reads runs.status for the fixture run (C9c: still waiting for
+// a human that never came).
+func m4APRunStatus(t *testing.T, ctx context.Context, f *m4Fixture, runID string) string {
+	t.Helper()
+	var status string
+	if err := f.pool.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1::uuid`, runID).Scan(&status); err != nil {
+		t.Fatalf("read run status: %v", err)
+	}
+	return status
+}
+
+// TestM4APIApprovalsLostAccessRefusedAndJournaled is 12 case 9c on real rows:
+// alice is the designated approver when the gate opens, is removed from the
+// project, and her decide is refused AT DECISION TIME — the contract's refusal
+// (a *api.ApprovalConflictError of kind approver_lost_access, which the
+// handler answers 403, never 404: she is in the right organization and the
+// refusal has to name the gate it refused), exactly one approval.denied row
+// carrying that reason, and a gate that has not moved.
+func TestM4APIApprovalsLostAccessRefusedAndJournaled(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	c := m4APMember(t, ctx, f, "maintainer")
+	runID := f.m4QueuedRun(t, ctx, "", 0)
+	_, approvalID := m4APIApprovals(t, ctx, f, runID, []string{f.userID})
+	before := m4APRunStatus(t, ctx, f, runID)
+
+	approvals := APIApprovalStore{R: NewRuntimeStore(f.pool, nil)}
+	// The handler's authorize is the same shape: no current role ⇒ lost access.
+	authorize := func(ap api.ApprovalView, decider string) (bool, string) {
+		if ap.MyRole == "" {
+			return false, api.ApprovalDeniedLostAccess
+		}
+		for _, uid := range ap.ApproverUserIDs {
+			if uid == decider {
+				return true, ""
+			}
+		}
+		return false, api.ApprovalDeniedNotDesignated
+	}
+
+	m4APRemoveMembership(t, ctx, f)
+
+	_, err := approvals.DecideApproval(ctx, c, approvalID, "approved", "still me", 1, authorize)
+	var conflict *api.ApprovalConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("removed approver decide err = %v, want *api.ApprovalConflictError", err)
+	}
+	if conflict.Kind != api.ApprovalDeniedLostAccess {
+		t.Errorf("refusal kind = %q, want %q", conflict.Kind, api.ApprovalDeniedLostAccess)
+	}
+	if conflict.ApprovalID != approvalID {
+		t.Errorf("refusal names gate %q, want %q", conflict.ApprovalID, approvalID)
+	}
+
+	reasons := m4APDeniedReasons(t, ctx, f, approvalID)
+	if len(reasons) != 1 || reasons[0] != api.ApprovalDeniedLostAccess {
+		t.Errorf("approval.denied reasons = %v, want exactly [%s]", reasons, api.ApprovalDeniedLostAccess)
+	}
+	if state, version, decided := m4APGateState(t, ctx, f, approvalID); state != "pending" || version != 1 || decided {
+		t.Errorf("gate after refusal = state %q version %d decided %v, want pending/1/false",
+			state, version, decided)
+	}
+	if got := m4APRunStatus(t, ctx, f, runID); got != before {
+		t.Errorf("run status after refusal = %q, want it unmoved (%q)", got, before)
+	}
+	if n := m4APEventCount(t, ctx, f.pool, f.projectID, events.TypeApprovalDecided); n != 0 {
+		t.Errorf("approval.decided rows = %d, want 0 (a refusal is not a decision)", n)
+	}
+
+	// Reads still hide the gate from a former member — only the decide path
+	// answers by name, and it answers with a refusal.
+	if _, gerr := approvals.GetApproval(ctx, c, approvalID); !errors.Is(gerr, api.ErrApprovalNotFound) {
+		t.Errorf("former member GetApproval err = %v, want api.ErrApprovalNotFound", gerr)
+	}
+
+	// The grant is live, not poisoned: restore the membership and the same
+	// approver decides the same gate normally.
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO memberships (project_id, user_id, role) VALUES ($1::uuid, $2::uuid, 'maintainer')`,
+		f.projectID, f.userID); err != nil {
+		t.Fatalf("restore membership: %v", err)
+	}
+	winner, err := approvals.DecideApproval(ctx, c, approvalID, "approved", "back again", 1, authorize)
+	if err != nil {
+		t.Fatalf("decide after restore: %v", err)
+	}
+	if winner.State != "decided" || winner.Version != 2 {
+		t.Errorf("restored decide = state %q version %d, want decided/2", winner.State, winner.Version)
+	}
+	if reasons := m4APDeniedReasons(t, ctx, f, approvalID); len(reasons) != 1 {
+		t.Errorf("approval.denied reasons after restore = %v, want the single lost-access row", reasons)
+	}
+}
+
+// TestM4APIApprovalsLostAccessOtherOrgNotFound: the tenant rule still holds —
+// a caller from another organization gets the uniform not-found (same sentinel
+// as a random uuid), journals nothing, and changes nothing.
+func TestM4APIApprovalsLostAccessOtherOrgNotFound(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	c := m4APMember(t, ctx, f, "maintainer")
+	runID := f.m4QueuedRun(t, ctx, "", 0)
+	_, approvalID := m4APIApprovals(t, ctx, f, runID, []string{f.userID})
+	other := f.m4OtherOrg(t, ctx)
+
+	approvals := APIApprovalStore{R: NewRuntimeStore(f.pool, nil)}
+	_, err := approvals.DecideApproval(ctx, other, approvalID, "approved", "", 1,
+		func(api.ApprovalView, string) (bool, string) { return true, "" })
+	if !errors.Is(err, api.ErrApprovalNotFound) {
+		t.Fatalf("cross-org decide err = %v, want api.ErrApprovalNotFound", err)
+	}
+	if reasons := m4APDeniedReasons(t, ctx, f, approvalID); len(reasons) != 0 {
+		t.Errorf("cross-org approval.denied rows = %v, want none (nothing is journaled for a stranger)", reasons)
+	}
+	if state, version, decided := m4APGateState(t, ctx, f, approvalID); state != "pending" || version != 1 || decided {
+		t.Errorf("gate after cross-org attempt = state %q version %d decided %v, want pending/1/false",
+			state, version, decided)
+	}
+	_ = c
+}

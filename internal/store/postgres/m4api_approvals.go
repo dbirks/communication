@@ -696,6 +696,23 @@ const m4ApprovalColumns = `
 	COALESCE(m.role, CASE WHEN $3::boolean THEN 'maintainer' ELSE '' END),
 	r.status, r.organization_id::text`
 
+// m4ApprovalTenantScope is the decide path's read: the ORGANIZATION boundary
+// and nothing more (openapi's tenant rule — a resource outside the caller's
+// organization is the uniform not-found). A same-organization caller who is no
+// longer a project member is deliberately NOT hidden here: C9c requires their
+// decide to be refused AS the named gate (403 + approval.denied
+// {approver_lost_access}), and a row that answers not-found can neither be
+// refused by name nor journaled. Every read that hands the view back keeps the
+// visibility predicate below; only decision-time authorization is evaluated
+// against this scope, and it fails closed.
+const m4ApprovalTenantScope = `
+	FROM approval_requests x
+	JOIN projects p ON p.id = x.project_id
+	JOIN runs r ON r.id = x.run_id
+	JOIN node_executions n ON n.id = x.node_execution_id
+	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
+	WHERE p.organization_id = $2::uuid`
+
 const m4ApprovalScope = `
 	FROM approval_requests x
 	JOIN projects p ON p.id = x.project_id
@@ -824,6 +841,18 @@ func (a APIApprovalStore) GetApproval(ctx context.Context, c api.Caller, approva
 		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, approvalID))
 }
 
+// getApprovalTenant loads the same view under the organization boundary only.
+// MyRole on the result is the caller's CURRENT project role (empty when they
+// hold none), which is the decision-time fact C9c is about.
+func (a APIApprovalStore) getApprovalTenant(ctx context.Context, pool *pgxpool.Pool, cc Caller,
+	approvalID string) (api.ApprovalView, error) {
+	return m4ScanApproval(pool.QueryRow(ctx, `
+		SELECT `+m4ApprovalColumns+`
+		`+m4ApprovalTenantScope+`
+		  AND x.id = $4::uuid`,
+		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, approvalID))
+}
+
 // m4RunTerminal is § 3 row 29's run_terminal arm: a gate whose run has
 // finished is not decidable, and the answer names that reason rather than
 // pretending the gate is still live.
@@ -841,6 +870,12 @@ func m4RunTerminal(status string) bool {
 // state/decision/decider/version, never a silent overwrite. A refusal
 // (lost access / not a designated approver / run terminal) is journaled as
 // approval.denied and leaves the gate pending at its old version.
+//
+// The load is the TENANT read (organization boundary only), not the
+// visibility read: a same-organization caller who lost their project role is
+// refused as approver_lost_access and that refusal is journaled (C9c), while
+// a caller from another organization still gets api.ErrApprovalNotFound — the
+// uniform not-found, and no journal row — exactly as if the id were random.
 func (a APIApprovalStore) DecideApproval(ctx context.Context, c api.Caller, approvalID, decision, comments string,
 	version int, authorize api.ApproverAuthorize) (api.ApprovalView, error) {
 	pool, err := a.pool()
@@ -851,9 +886,31 @@ func (a APIApprovalStore) DecideApproval(ctx context.Context, c api.Caller, appr
 	if err := prjRequireCaller(cc); err != nil {
 		return api.ApprovalView{}, err
 	}
-	current, err := a.GetApproval(ctx, c, approvalID)
+	current, err := a.getApprovalTenant(ctx, pool, cc, approvalID)
 	if err != nil {
 		return api.ApprovalView{}, err
+	}
+
+	// C9c: a caller inside the right organization but with no right to this
+	// project (a designated approver removed between gate-open and decide) is
+	// refused by name, not hidden: 403 (handler's refusal arm) plus ONE
+	// approval.denied{approver_lost_access} appended in its own transaction,
+	// and no state change at all — RuntimeStore.Decide is never reached, so
+	// the gate keeps its state, its version, and its waiting_human run.
+	// Visibility (MyRole) is read HERE, at decision time, from the rows: a
+	// stale grant from the request that opened the card cannot decide it
+	// (ADR-0023 § 9). A caller from ANOTHER organization already answered the
+	// uniform not-found above, with nothing journaled.
+	if !cc.IsOrgAdmin && current.MyRole == "" {
+		if err := a.journalDenied(ctx, pool, cc, current, api.ApprovalDeniedLostAccess); err != nil {
+			return api.ApprovalView{}, err
+		}
+		return current, &api.ApprovalConflictError{
+			Kind: api.ApprovalDeniedLostAccess, ApprovalID: current.ID,
+			State: current.State, Decision: derefStr(current.Decision),
+			DecidedBy: derefStr(current.DecidedBy), Version: current.Version,
+			Detail: "you no longer hold a role in the project this gate belongs to.",
+		}
 	}
 
 	var runStatus string
@@ -890,7 +947,7 @@ func (a APIApprovalStore) DecideApproval(ctx context.Context, c api.Caller, appr
 		if authorize == nil {
 			return true, ""
 		}
-		view, err := a.GetApproval(ctx, c, approvalID)
+		view, err := a.getApprovalTenant(ctx, pool, cc, approvalID)
 		if err != nil {
 			// No gate, no grant: fail closed with the lost-access arm (the
 			// handler's currentRole read has the same shape).
@@ -908,7 +965,7 @@ func (a APIApprovalStore) DecideApproval(ctx context.Context, c api.Caller, appr
 			case "":
 				kind = api.ApprovalDeniedAlreadyDecided
 			}
-			latest, lerr := a.GetApproval(ctx, c, approvalID)
+			latest, lerr := a.getApprovalTenant(ctx, pool, cc, approvalID)
 			if lerr != nil {
 				return api.ApprovalView{}, lerr
 			}
