@@ -399,3 +399,101 @@ func m4LifecycleMop(t *testing.T, f *m4Fixture, pipelineID string) {
 	// reaches them.
 	m4APIEventsMopped(t, f.pool, pipelineID)
 }
+
+// TestM4RunLifecycleBindingsClaimResolvesConfig is the § 4 step 6 / § 5.1 step 3
+// gate for the live lab: the CONTROL PLANE resolves a node's `${{ }}` config
+// bindings, so the attempt a worker claims must arrive fully interpolated — no
+// `${{` anywhere in its Config, and the plan node's prompt carrying the run's
+// own goal input. A claim that still carried an expression is the bug this
+// proves absent (§ 4 step 14: the worker never evaluates).
+func TestM4RunLifecycleBindingsClaimResolvesConfig(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	_, planJSON := m4LifecyclePlan(t)
+	pipelineID, revisionID := m4LifecyclePublished(t, f, planJSON)
+
+	caller := api.Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
+	runStore := &RunStore{Pool: f.pool}
+	children := &M4Children{Runs: runStore}
+	m4Runtime := NewRuntimeStore(f.pool, &runtime.Advancer{
+		Deps: runtime.AdvancerDeps{Children: children},
+	})
+	children.Runtime = m4Runtime
+	as, err := APIAssignmentStore{S: f.pipelines}.CreateAssignment(ctx, caller, f.projectID,
+		api.AssignmentCreateInput{PipelineID: pipelineID, PinnedRevisionID: revisionID,
+			MaxConcurrentRuns: 1})
+	if err != nil {
+		t.Fatalf("CreateAssignment: %v", err)
+	}
+	const goal = "make bindings resolve at claim time"
+	view, created, err := APIRunStore{Runs: runStore, Runtime: m4Runtime}.CreateRun(ctx, caller,
+		api.RunCreateInput{
+			ProjectID:    f.projectID,
+			AssignmentID: as.ID,
+			Inputs: map[string]json.RawMessage{
+				"goal":                json.RawMessage("\"" + goal + "\""),
+				"repository":          json.RawMessage(`"repo-a"`),
+				"acceptance_criteria": json.RawMessage(`"tests pass"`),
+				"fanout":              json.RawMessage(`false`),
+				"fanout_count":        json.RawMessage(`0`),
+			},
+			Key:         "m4-life-bindings-1",
+			RequestSHA:  m4Hex("body/m4-life-bindings-1"),
+			TriggeredBy: f.userID,
+		})
+	if err != nil || !created {
+		t.Fatalf("CreateRun = (%v, %v)", created, err)
+	}
+	if err := m4Runtime.Advance(ctx, view.ID); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	workerID := m4Worker(t, ctx, f.pool, "bindings", 1)
+	claims, err := (&AttemptStore{Runs: runStore}).ClaimAttempts(ctx, workerID, 1)
+	if err != nil || len(claims) == 0 {
+		t.Fatalf("ClaimAttempts = (%d claims, %v), want the queued plan attempt", len(claims), err)
+	}
+	var cfg map[string]any
+	var nodeIDs []string
+	for _, cl := range claims {
+		nodeIDs = append(nodeIDs, cl.NodeID)
+		if cl.NodeID == "plan" {
+			cfg = cl.Config
+		}
+	}
+	if cfg == nil {
+		t.Fatalf("claimed nodes = %v, want the plan node's attempt", nodeIDs)
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal claim config: %v", err)
+	}
+	if strings.Contains(string(raw), "${{") {
+		t.Errorf("claimed config still carries an expression binding: %s", raw)
+	}
+	if strings.Contains(string(raw), "$unresolved") {
+		t.Errorf("claimed config carries an unresolved marker: %s", raw)
+	}
+	prompt, _ := cfg["prompt"].(string)
+	if prompt == "" {
+		t.Fatalf("claim config = %#v, want a hydrated string prompt", cfg)
+	}
+	if !strings.Contains(prompt, goal) {
+		t.Errorf("prompt = %q, want it to carry the run's goal input %q", prompt, goal)
+	}
+	if !strings.Contains(prompt, "tests pass") {
+		t.Errorf("prompt = %q, want the acceptance_criteria input interpolated too", prompt)
+	}
+	t.Logf("resolved prompt for run %s: %q", view.ID, prompt)
+
+	// Every evaluation is counted (contract § 6's budget is only real if the
+	// claim-time path pays it too).
+	var evals int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT expression_evaluations FROM runs WHERE id = $1::uuid`, view.ID).Scan(&evals); err != nil {
+		t.Fatalf("read expression_evaluations: %v", err)
+	}
+	if evals == 0 {
+		t.Errorf("runs.expression_evaluations = 0 after claim resolution, want > 0")
+	}
+}

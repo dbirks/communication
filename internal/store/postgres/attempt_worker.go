@@ -14,6 +14,7 @@ import (
 
 	"github.com/dbirks/communication/internal/events"
 	pevents "github.com/dbirks/communication/internal/pipelines/events"
+	"github.com/dbirks/communication/internal/pipelines/runtime"
 	"github.com/dbirks/communication/internal/worker"
 )
 
@@ -80,9 +81,11 @@ func workerClaim(c worker.AttemptClaim) AttemptClaim {
 // ClaimAttempts wins up to `capacity` queued attempts for the worker and
 // hydrates each claim's Config from the run's PINNED plan_snapshot (§ 4
 // step 2; 00005 makes that column immutable per run, so the hydration reads
-// no mutable state). Literal config bindings land as the nested value the
-// executor dispatches on; a binding that still carries expression ids lands
-// as an $unresolved marker the executor refuses honestly — the worker never
+// no mutable state), then INTERPOLATES it: every expression binding is
+// resolved here, by the control plane, against the run's persisted state
+// (§ 4 step 6, § 5.1 step 3). Only a binding that cannot be resolved at all —
+// a snapshot this process cannot program, a corrupt row — lands as an
+// $unresolved marker the executor refuses honestly, because the worker never
 // evaluates an expression (§ 4 step 14).
 func (s *AttemptStore) ClaimAttempts(ctx context.Context, workerID string, capacity int) ([]worker.AttemptClaim, error) {
 	claims, err := s.Runs.ClaimAttempts(ctx, workerID, capacity)
@@ -167,7 +170,132 @@ func (s *AttemptStore) hydrateConfigs(ctx context.Context, claims []AttemptClaim
 			out[c.AttemptID] = cfg
 		}
 	}
+	s.resolveBindings(ctx, claims, out)
 	return out
+}
+
+// resolveBindings closes the loop § 4 step 6 opens: the plan snapshot carries
+// bindings, the run's rows carry the state they mean, and the claimed attempt
+// must arrive carrying the RESULT. Resolution runs through the runtime's own
+// ResolveNodeConfig — the same Evaluator, ConfigTree and vars assembly the
+// advancer decided this node with — never a second one (ADR-0022 § 3).
+//
+// A claim whose config is already all literals costs one map walk and no read.
+// When a run's bindings cannot be resolved (no programmable snapshot, a row
+// this read cannot hydrate), the $unresolved markers STAY: the lease is already
+// committed, so the honest outcome is the executor's binding_error close, not a
+// swallowed claim. Each evaluation this performs is added to
+// runs.expression_evaluations, the same counter and cap the advancer pays.
+func (s *AttemptStore) resolveBindings(ctx context.Context, claims []AttemptClaim, configs map[string]map[string]any) {
+	byRun := map[string][]AttemptClaim{}
+	for _, c := range claims {
+		if cfg, ok := configs[c.AttemptID]; ok && configHasUnresolved(cfg) {
+			byRun[c.RunID] = append(byRun[c.RunID], c)
+		}
+	}
+	for runID, pending := range byRun {
+		s.resolveRunBindings(ctx, runID, pending, configs)
+	}
+}
+
+func (s *AttemptStore) resolveRunBindings(ctx context.Context, runID string,
+	claims []AttemptClaim, configs map[string]map[string]any) {
+	tx, err := s.Runs.Pool.Begin(ctx)
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	prog, err := hydrateProgramTx(ctx, tx, runID)
+	if err != nil || prog == nil {
+		return
+	}
+	st, err := hydrateTx(ctx, tx, runID)
+	if err != nil || st == nil || st.Run == nil {
+		return
+	}
+	rows := map[string]*runtime.NodeExecution{}
+	for _, n := range st.Nodes {
+		rows[n.ID] = n
+	}
+	before := st.Run.ExpressionEvaluations
+	for _, c := range claims {
+		row, ok := rows[c.NodeExecutionID]
+		if !ok {
+			continue
+		}
+		cfg, rerr := runtime.ResolveNodeConfig(prog, st, row)
+		if rerr != nil {
+			// The contract's answer to a binding that will not evaluate is the
+			// attempt's binding_error close, so the marker stays and says why
+			// (bounded, never a panic and never a half-resolved value).
+			markBindingDetail(configs[c.AttemptID], rerr.Error())
+			continue
+		}
+		configs[c.AttemptID] = cfg
+	}
+	evals := st.Run.ExpressionEvaluations - before
+	// The hydration read closes before the counter is paid: the claim's lease
+	// is already committed, so nothing here may hold a connection or a lock
+	// while another writer updates the same run row.
+	if err := tx.Commit(ctx); err != nil {
+		return
+	}
+	if evals > 0 {
+		_, _ = s.Runs.BumpExpressionEvaluations(ctx, runID, evals)
+	}
+}
+
+// configHasUnresolved reports whether any nested config value still carries an
+// expression binding the worker must not evaluate.
+func configHasUnresolved(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		if _, marker := t["$unresolved"]; marker {
+			return true
+		}
+		for _, child := range t {
+			if configHasUnresolved(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if configHasUnresolved(child) {
+				return true
+			}
+		}
+	case string:
+		if strings.Contains(t, "${{") {
+			return true
+		}
+	}
+	return false
+}
+
+// markBindingDetail annotates every unresolved marker of one config with a
+// bounded reason, so the attempt's binding_error says what the control plane
+// could not evaluate instead of leaving it a mystery.
+func markBindingDetail(cfg map[string]any, detail string) {
+	if len(detail) > 512 {
+		detail = detail[:512]
+	}
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			if _, marker := t["$unresolved"]; marker {
+				t["detail"] = detail
+			}
+			for _, child := range t {
+				walk(child)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		}
+	}
+	walk(cfg)
 }
 
 // planShape decodes exactly the three fields of one compiled plan node the

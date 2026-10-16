@@ -220,20 +220,11 @@ func (ac *advanceCtx) advanceScope(scopeKey string, idx map[string]int) error {
 // envelopeFor materializes the CEL `nodes` root for one scope instance:
 // every declared node gets an envelope, {status:'pending', outputs:{}} for the
 // unscheduled (ADR-0022 § 3, contract § 5.1 step 3).
+// envelopeFor is the advance pass's `nodes` root. The ONE implementation lives
+// in attempt_config.go (envelopeAt) so the claim hydration interpolates a
+// node's config against exactly the activation this pass decided it with.
 func (ac *advanceCtx) envelopeFor(scopeKey string, idx map[string]int) map[string]any {
-	results := map[string]nodeResult{}
-	for _, pn := range ac.prog.ScopeNodes(scopeKey) {
-		nr := nodeResult{Status: NodePending, Outputs: map[string]any{}, ArtifactRefs: []any{}}
-		if row := ac.st.Node(buildInstanceKey(pn.Path, idx)); row != nil {
-			outs := row.Outputs
-			if outs == nil {
-				outs = map[string]any{}
-			}
-			nr = nodeResult{Status: row.Status, Outcome: row.Outcome, Outputs: outs, ArtifactRefs: nz(row.ArtifactRefs)}
-		}
-		results[pn.ID] = nr
-	}
-	return nodesRoot(results)
+	return envelopeAt(ac.prog, ac.st, scopeKey, idx)
 }
 
 type nodeResult struct {
@@ -265,42 +256,10 @@ func nodesRoot(results map[string]nodeResult) map[string]any {
 }
 
 // varsFor assembles the activation for evaluations inside one scope instance.
+// The ONE implementation is varsAt in attempt_config.go, shared with claim
+// hydration (§ 5.1 step 3 keeps one evaluator AND one activation assembly).
 func (ac *advanceCtx) varsFor(scopeKey string, idx map[string]int, state *ScopeState) map[string]any {
-	inputs := ac.st.Run.Inputs
-	if inputs == nil {
-		inputs = map[string]any{}
-	}
-	vars := map[string]any{
-		"nodes":  ac.envelopeFor(scopeKey, idx),
-		"inputs": inputs,
-		"run": map[string]any{
-			"id":    ac.st.Run.ID,
-			"depth": int64(ac.st.Run.Depth),
-		},
-	}
-	if state != nil {
-		switch state.Kind {
-		case "until":
-			prev := state.Previous
-			if prev == nil {
-				prev = map[string]any{}
-			}
-			vars["previous"] = prev
-			vars["iteration"] = int64(state.Iteration)
-		case "for_each":
-			items := state.Items
-			if items == nil {
-				items = []any{}
-			}
-			vars["items"] = items
-			if i, ok := idx[ac.prog.scopes[scopeKey].Owner]; ok && i < len(items) {
-				vars["item"] = items[i]
-			} else {
-				vars["item"] = map[string]any{}
-			}
-		}
-	}
-	return vars
+	return varsAt(ac.prog, ac.st, scopeKey, idx, state)
 }
 
 // ------------------------------------------------------------ node decision
