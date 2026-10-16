@@ -30,7 +30,13 @@ import { useRetryRun, runConflictOf } from "../api/runs";
 import { useMe, useProjects } from "../api/queries";
 import type { Approval, ConversationSummary, Project, RunSummary } from "../api/types";
 import { formatAge, shortId, testidOf } from "../lib/format";
-import { useProjectAttention, type ConversationItem, type RunItem } from "../lib/attention";
+import {
+  useProjectAttention,
+  attentionTitle,
+  ATTENTION_TITLE_CLAMP,
+  type ConversationItem,
+  type RunItem,
+} from "../lib/attention";
 
 export default function Inbox() {
   const me = useMe();
@@ -191,8 +197,12 @@ function DecisionRow({ project, approval }: { project: Project; approval: Approv
           labelProps={{ "data-testid": `inbox-decision-tag-${testidOf(approval.id)}` }}
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[13.5px] font-semibold" title={approval.summary}>
-            {approval.summary}
+          <p
+            className={`text-[13.5px] font-semibold ${ATTENTION_TITLE_CLAMP}`}
+            data-testid={`inbox-decision-title-${testidOf(approval.id)}`}
+            title={approval.summary}
+          >
+            {attentionTitle(approval.summary)}
           </p>
           <p className="font-mono text-[10.5px] text-muted">
             {project.name} · run {run} · {approval.node_instance_key}
@@ -345,7 +355,7 @@ function ConversationRow({ item }: { item: ConversationItem }) {
           labelProps={{ "data-testid": `inbox-conversation-tag-${testidOf(conversation.id)}` }}
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[13.5px] font-semibold" title={title}>
+          <p className={`text-[13.5px] font-semibold ${ATTENTION_TITLE_CLAMP}`} title={title}>
             {title}
           </p>
           <p className="font-mono text-[10.5px] text-muted">

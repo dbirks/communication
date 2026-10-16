@@ -287,6 +287,49 @@ export function needsYou(view: Pick<ProjectAttentionView, "decisions" | "stalled
 }
 
 /**
+ * Every attention row's title clamp: two lines, the rest hidden. The full text
+ * rides in the row's `title` attribute, so shortening what is on screen never
+ * shortens what can be read.
+ */
+export const ATTENTION_TITLE_CLAMP = "line-clamp-2";
+
+/**
+ * The title an attention row shows for a gate.
+ *
+ * The wire carries no approval title, so a row prints the gate's `summary` —
+ * and a planner gate's summary is the whole interpolated plan: a prose lead-in
+ * followed by a JSON object. Printed as-is it buries the board under escaped
+ * braces (`live-board.png`), so when a summary carries a JSON object the row
+ * shows the trimmed text before its first `{`. A summary that is *only* the
+ * object (no lead-in) keeps its full text rather than going blank, and prose
+ * that merely mentions a brace is left alone.
+ */
+export function attentionTitle(summary: string): string {
+  const text = summary.trim();
+  const at = text.indexOf("{");
+  if (at < 0) return text;
+  const prefix = text.slice(0, at).trim();
+  if (prefix === "") return text;
+  return looksLikeJsonObject(text.slice(at)) ? prefix : text;
+}
+
+/** A JSON object, or a document with one at its start and a stray newline (or
+ * a second node's output) glued after it — either way the reader is not here
+ * for the braces. */
+function looksLikeJsonObject(text: string): boolean {
+  const body = text.trim();
+  if (!body.startsWith("{")) return false;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    // Trailing glue after the object (`…}\n`, a second interpolation): key-shaped
+    // text is evidence enough that this is not prose meant to be read.
+    return /[A-Za-z_"][\w.-]*\s*:\s*["[{\d]/.test(body);
+  }
+}
+
+/**
  * Attention for a single project — the same read, one element wide. Passing a
  * `null` project (still loading) asks for nothing rather than fetching a blank
  * id.

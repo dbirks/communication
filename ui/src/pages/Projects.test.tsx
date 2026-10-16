@@ -251,6 +251,26 @@ describe("/ projects board", () => {
     expect(screen.getByTestId("project-quiet-quiet-app").textContent).toBe("Nothing needs you.");
   });
 
+  it("drops the plan JSON a gate's summary carries and clamps what is left", async () => {
+    const planGate = {
+      ...wireApproval,
+      summary:
+        'Plan for Document and fix add() in hello.py\n{"acceptance":["pytest passes in app/ with both tests green"],"goal":"Document and fix add() in app/hello.py","steps":[{"action":"Add a docstring to add().","file":"app/hello.py","id":1}]}',
+    } as unknown as typeof wireApproval;
+    boardStub([projectFixture], { [projectFixture.id]: { approvals: { approvals: [planGate] } } });
+
+    await screen.findByTestId("project-list");
+    const item = screen.getByTestId(`project-item-decision-${wireApproval.id}`);
+    expect(item.textContent).toContain("Plan for Document and fix add() in hello.py");
+    expect(item.textContent).not.toContain('"acceptance"');
+    expect(item.textContent).not.toContain("{");
+    // Two lines, with the whole summary behind the tooltip.
+    const title = screen.getByTestId(`item-title-decision-${wireApproval.id}`);
+    expect(title.className).toContain("line-clamp-2");
+    expect(title.getAttribute("title")).toBe(planGate.summary);
+    expect(title.textContent).toBe("Plan for Document and fix add() in hello.py");
+  });
+
   it("orders needs-me first by default and alphabetically on a–z", async () => {
     boardStub([projectFixture, otherProject, quietProject], {
       [projectFixture.id]: { approvals: { approvals: [wireApproval] } },

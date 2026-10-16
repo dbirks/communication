@@ -9,6 +9,13 @@
  * heading line, context as a paragraph, steps as an ordered list with their
  * actions and "done when", criteria and risks as short lists.
  *
+ * Two shapes of plan are read, because two are served. The fixture pipeline's
+ * steps carry `title` + `actions[]` + `done_when`; a real agent writes a
+ * singular `action` naming the `file` it touches, and puts its evidence in
+ * top-level `findings` and `acceptance` (`live-conversation-4.png`). Both render
+ * structurally — a headline, the file in mono, the full text below — and only a
+ * step with neither falls back to JSON.
+ *
  * Nothing is dropped on the way. Keys this view does not know stay reachable in
  * a collapsed "other fields" block, a payload that is not JSON at all renders
  * as the text it is (whitespace preserved, clamped with "show all"), and a
@@ -28,7 +35,35 @@ const CONTEXT_LINES = 4;
 const CHARS_PER_LINE = 45;
 
 /** Keys with a rendering of their own; everything else is "other fields". */
-const KNOWN_KEYS = new Set(["goal", "context", "steps", "acceptance_criteria", "risks"]);
+const KNOWN_KEYS = new Set([
+  "goal",
+  "context",
+  "steps",
+  "acceptance_criteria",
+  "acceptance", // alias of acceptance_criteria
+  "risks",
+  "findings",
+]);
+
+/** Step keys with a rendering of their own. A real agent plan writes
+ * `"action":"…"` where the fixture pipeline writes `"actions":[…]`, and names
+ * the file it touches — both render (`live-conversation-4.png`). */
+const STEP_KEYS = new Set([
+  "title",
+  "action",
+  "actions",
+  "description",
+  "done_when",
+  "file",
+  "files",
+]);
+
+/** An `action` longer than this reads as more than a headline, so the title
+ * keeps its first sentence and the full text is shown below it. */
+const ACTION_HEADLINE_MAX = 80;
+/** A "first sentence" shorter than this is an abbreviation (`e.g.`), not a
+ * break worth cutting a headline at. */
+const SENTENCE_MIN = 24;
 
 export interface PlanViewProps {
   /** The payload — a plan document, or the plain text a node served instead. */
@@ -43,6 +78,7 @@ interface PlanShape {
   steps: unknown[] | null;
   criteria: unknown[] | null;
   risks: unknown[] | null;
+  findings: unknown[] | null;
   other: Record<string, unknown>;
 }
 
@@ -66,17 +102,28 @@ export function parsePlan(text: string): PlanShape | null {
   let context: string | null = null;
   let steps: unknown[] | null = null;
   let criteria: unknown[] | null = null;
+  let criteriaAlias: unknown[] | null = null;
   let risks: unknown[] | null = null;
+  let findings: unknown[] | null = null;
   for (const [key, value] of Object.entries(raw)) {
     if (key === "goal" && typeof value === "string") goal = value;
     else if (key === "context" && typeof value === "string") context = value;
     else if (key === "steps" && Array.isArray(value)) steps = value;
     else if (key === "acceptance_criteria" && Array.isArray(value)) criteria = value;
+    else if (key === "acceptance" && Array.isArray(value)) criteriaAlias = value;
     else if (key === "risks" && Array.isArray(value)) risks = value;
+    else if (key === "findings" && Array.isArray(value)) findings = value;
     else if (KNOWN_KEYS.has(key)) continue; // same key, wrong shape → JSON below
     else other[key] = value;
   }
-  return { goal, context, steps, criteria, risks, other };
+  /** `acceptance` is only an alias while the canonical key is absent: when a
+   * plan serves both with different content, the second one stays reachable in
+   * the JSON block rather than being quietly merged into the list. */
+  if (criteria === null) criteria = criteriaAlias;
+  else if (criteriaAlias !== null && JSON.stringify(criteriaAlias) !== JSON.stringify(criteria)) {
+    other.acceptance = criteriaAlias;
+  }
+  return { goal, context, steps, criteria, risks, findings, other };
 }
 
 /**
@@ -94,12 +141,61 @@ export function splitPlanText(text: string): { title: string | null; body: strin
   return { title: title === "" ? null : title, body };
 }
 
-/** A step's headline: its `title`, or the step itself as JSON if it has none. */
-function stepTitle(step: unknown): string {
-  if (typeof step === "string") return step;
-  if (isPlainObject(step) && typeof step.title === "string") return step.title;
-  if (typeof step === "object" && step !== null) return JSON.stringify(step);
-  return String(step);
+/** A step's headline and any text held back from it. `title` wins; a real
+ * agent plan instead writes a long `action` (`live-conversation-4.png`), whose
+ * first sentence becomes the headline and whose full text renders below; then
+ * `description`. A step with none of those is shown as the JSON it is. */
+function stepTitle(step: unknown): {
+  headline: string;
+  full: string | null;
+  from: "title" | "action" | "description" | null;
+} {
+  if (typeof step === "string") return { headline: step, full: null, from: null };
+  if (isPlainObject(step)) {
+    if (typeof step.title === "string" && step.title.trim() !== "") {
+      return { headline: step.title, full: null, from: "title" };
+    }
+    for (const key of ["action", "description"] as const) {
+      const value = step[key];
+      if (typeof value !== "string" || value.trim() === "") continue;
+      const text = value.trim();
+      if (key === "action" && text.length > ACTION_HEADLINE_MAX) {
+        const headline = firstSentence(text);
+        if (headline !== text) return { headline, full: text, from: "action" };
+      }
+      return { headline: text, full: null, from: key };
+    }
+  }
+  if (typeof step === "object" && step !== null) {
+    return { headline: JSON.stringify(step), full: null, from: null };
+  }
+  return { headline: String(step), full: null, from: null };
+}
+
+/** The first sentence of `text` — up to a `.`/`!`/`?` followed by whitespace,
+ * ignoring the ones inside `7.0` and short abbreviations — or `text` itself
+ * when there is no break to take. */
+export function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  for (let index = SENTENCE_MIN; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (char !== "." && char !== "!" && char !== "?") continue;
+    const before = trimmed[index - 1];
+    const after = trimmed[index + 1];
+    if (before === undefined || /\s/.test(before) || /\d/.test(before)) continue;
+    if (after !== undefined && !/\s/.test(after)) continue;
+    if (trimmed.slice(index + 1).trim() === "") return trimmed;
+    return trimmed.slice(0, index + 1);
+  }
+  return trimmed;
+}
+
+/** `file` (a string) or `files` (an array of strings) as one mono line. */
+function filesOf(step: unknown): string[] {
+  if (!isPlainObject(step)) return [];
+  const listed = Array.isArray(step.files) ? itemsOf(step.files) : [];
+  if (typeof step.file === "string" && step.file.trim() !== "") listed.unshift(step.file.trim());
+  return listed.filter((entry) => entry.trim() !== "");
 }
 
 /** A list payload's items as strings; anything not a string keeps its JSON. */
@@ -123,16 +219,32 @@ function actionsOf(step: unknown): string[] {
   return [];
 }
 
+/** Which step keys reached the screen. Only those are hidden from the block,
+ * so a step that carries both a `title` and an `action` keeps the `action`
+ * reachable instead of losing it. */
+function stepUsedKeys(step: unknown, titleFrom: string | null, files: string[]): Set<string> {
+  const used = new Set<string>();
+  if (titleFrom) used.add(titleFrom);
+  if (files.length > 0) {
+    used.add("file");
+    used.add("files");
+  }
+  if (isPlainObject(step)) {
+    if (Array.isArray(step.actions) || typeof step.actions === "string") used.add("actions");
+    if (typeof step.done_when === "string") used.add("done_when");
+  }
+  return used;
+}
+
 /** Fields on a step this view does not render, kept for the collapsed block.
  * A scalar `id` is known too — the ordered list already numbers the step — so it
  * never fills the block on its own; a non-scalar `id` stays there so nothing is
  * dropped. */
-function stepOther(step: unknown): Record<string, unknown> {
+function stepOther(step: unknown, used: ReadonlySet<string>): Record<string, unknown> {
   if (!isPlainObject(step)) return {};
-  const known = new Set(["title", "actions", "done_when"]);
   return Object.fromEntries(
     Object.entries(step).filter(([key, value]) => {
-      if (known.has(key)) return false;
+      if (STEP_KEYS.has(key) && used.has(key)) return false;
       if (key === "id" && isStepId(value)) return false;
       return true;
     }),
@@ -182,6 +294,9 @@ export function PlanView({ text, className = "" }: PlanViewProps) {
       ) : null}
       {plan.risks !== null ? (
         <PlanList label="risks" testid="plan-risks" items={itemsOf(plan.risks)} />
+      ) : null}
+      {plan.findings !== null ? (
+        <PlanList label="findings" testid="plan-findings" items={itemsOf(plan.findings)} />
       ) : null}
       {otherCount > 0 ? (
         <RestBlock label="other fields" count={otherCount} value={plan.other} testid="plan-other" />
@@ -239,9 +354,11 @@ function PlanSteps({ steps }: { steps: unknown[] }) {
         {steps.map((step, index) => {
           const actions = actionsOf(step);
           const doneWhen = doneWhenOf(step);
-          const other = stepOther(step);
-          const otherCount = Object.keys(other).length;
           const idNote = stepIdNote(step, index);
+          const { headline, full, from } = stepTitle(step);
+          const files = filesOf(step);
+          const other = stepOther(step, stepUsedKeys(step, from, files));
+          const otherCount = Object.keys(other).length;
           return (
             <li key={index} className="flex gap-[6px]" data-testid={`plan-step-${index + 1}`}>
               <span
@@ -252,7 +369,7 @@ function PlanSteps({ steps }: { steps: unknown[] }) {
               </span>
               <div className="min-w-0 space-y-[3px]">
                 <p className="text-[12.5px] leading-[18px] font-semibold">
-                  {stepTitle(step)}
+                  {headline}
                   {idNote ? (
                     <span
                       className="ml-[6px] font-mono text-[10px] font-normal text-faint"
@@ -262,6 +379,22 @@ function PlanSteps({ steps }: { steps: unknown[] }) {
                     </span>
                   ) : null}
                 </p>
+                {files.length > 0 ? (
+                  <p
+                    className="font-mono text-[11px] leading-[16px] break-all text-muted"
+                    data-testid={`plan-step-files-${index + 1}`}
+                  >
+                    {files.join(" \u00b7 ")}
+                  </p>
+                ) : null}
+                {full !== null ? (
+                  <p
+                    className="text-[12px] leading-[17px] break-words text-ink-2"
+                    data-testid={`plan-step-action-${index + 1}`}
+                  >
+                    {full}
+                  </p>
+                ) : null}
                 {actions.length > 0 ? (
                   <ul className="space-y-[2px]" data-testid={`plan-step-actions-${index + 1}`}>
                     {actions.map((action, actionIndex) => (

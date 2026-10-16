@@ -30,6 +30,8 @@ import {
 } from "../components/ds/states";
 import {
   attentionByProject,
+  attentionTitle,
+  ATTENTION_TITLE_CLAMP,
   needsYou,
   useProjectAttention,
   EMPTY_PROJECT_VIEW,
@@ -303,7 +305,10 @@ interface CardItem {
   key: string;
   state: StateName;
   tag: string;
+  /** What the row prints — a gate's summary with its plan JSON left out. */
   title: string;
+  /** The wire's full text, kept for the row's tooltip. */
+  full: string;
   meta: string;
   to: string;
 }
@@ -316,7 +321,8 @@ function topItems(view: ProjectAttentionView): CardItem[] {
       key: `decision-${approval.id}`,
       state: "waiting" as StateName,
       tag: "approval",
-      title: approval.summary,
+      title: attentionTitle(approval.summary),
+      full: approval.summary,
       meta: `${formatAge(approval.created_at)} · run ${shortId(approval.run_id)}`,
       to: `/projects/${project.id}/runs/${approval.run_id}`,
     })),
@@ -325,6 +331,7 @@ function topItems(view: ProjectAttentionView): CardItem[] {
       state: stateOf(RUN_STATE[run.status]),
       tag: run.status,
       title: `Run ${shortId(run.id)}${run.failed_cause ? ` — ${run.failed_cause}` : ""}`,
+      full: `Run ${shortId(run.id)}${run.failed_cause ? ` — ${run.failed_cause}` : ""}`,
       meta: `${formatAge(run.created_at)} · run ${shortId(run.id)}`,
       to: `/projects/${project.id}/runs/${run.id}`,
     })),
@@ -336,6 +343,7 @@ function topItems(view: ProjectAttentionView): CardItem[] {
           : stateOf(CONVERSATION_STATE[conversation.status]),
       tag: pendingPermissions > 0 ? "permission" : conversation.status,
       title: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
+      full: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
       meta: `${formatAge(conversation.updated_at)} · conversation`,
       to: `/projects/${project.id}/conversations/${conversation.id}`,
     })),
@@ -352,8 +360,9 @@ function AttentionItem({ item }: { item: CardItem }) {
     >
       <StatusChip state={item.state} label={item.tag} />
       <span
-        className="mt-[3px] block text-[12.5px] font-semibold leading-[17px]"
-        title={item.title}
+        className={`mt-[3px] block text-[12.5px] font-semibold leading-[17px] ${ATTENTION_TITLE_CLAMP}`}
+        data-testid={`item-title-${item.key}`}
+        title={item.full}
       >
         {item.title}
       </span>

@@ -37,7 +37,7 @@ import { Button } from "../components/ds/Button";
 import { Field, Input, Select } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
-import { useAttentionForProject } from "../lib/attention";
+import { useAttentionForProject, attentionTitle, ATTENTION_TITLE_CLAMP } from "../lib/attention";
 import { formatAge, testidOf } from "../lib/format";
 import { RunStatusChip, elapsed, shortId } from "./ProjectRuns";
 
@@ -117,10 +117,10 @@ function NeedsAttention({ project }: { project: Project }) {
                 }}
               />
               <span
-                className="min-w-0 flex-1 truncate text-[12.5px] font-semibold"
+                className={`min-w-0 flex-1 text-[12.5px] font-semibold ${ATTENTION_TITLE_CLAMP}`}
                 title={approval.summary}
               >
-                {approval.summary}
+                {attentionTitle(approval.summary)}
               </span>
               <span className="font-mono text-[10.5px] text-faint">
                 {formatAge(approval.created_at)}

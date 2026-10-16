@@ -161,3 +161,155 @@ describe("splitPlanText — a title glued to the document", () => {
     expect(body).toBe(prose);
   });
 });
+
+/**
+ * A real agent plan, verbatim from the live gate (`live-conversation-4.png`):
+ * steps that name themselves with a singular `action` and a `file`, and a top
+ * level the fixture pipeline never served — `acceptance` instead of
+ * `acceptance_criteria`, plus `findings`. Before this, every one of those steps
+ * was a line of raw JSON and an OTHER FIELDS block.
+ */
+const LIVE_PLAN = JSON.stringify({
+  acceptance: [
+    "pytest passes in app/ with both tests green",
+    "add.__doc__ is a non-empty, accurate docstring",
+    "add() still returns a + b",
+    "The reviewer approves",
+  ],
+  findings: [
+    "app/hello.py:1: add(a, b) returns a + b, which is already the correct sum. It has no docstring, so test_add_is_documented fails.",
+    "app/tests/test_hello.py:11: test_add_sums asserts add(1, 2) == 99. That expected value is wrong.",
+    "app/README.md says the fixture is mounted read-only into workers at /srv/m4/fixtures. Edits may need to go to a writable copy.",
+  ],
+  goal: "Document and fix add() in app/hello.py",
+  risks: [
+    "If the reviewer or the contract (docs/m4-contract.md § 7.0, which isn't in this checkout) requires the test file to stay unchanged, the only way to pass is to make add() return a wrong result. I won't do that without explicit confirmation.",
+    "If the checkout is read-only, steps 1-2 need a writable copy of the repo.",
+  ],
+  steps: [
+    {
+      action:
+        "Add a docstring to add() that says it returns the sum of a and b, using the + operator, so it works with numbers and any other types that support +. Leave the a + b body unchanged.",
+      file: "app/hello.py",
+      id: 1,
+    },
+    {
+      action:
+        "Change the assertion in test_add_sums from add(1, 2) == 99 to add(1, 2) == 3, and replace the 'intentionally failing' comment with one that matches the corrected assertion. Optionally add edge cases such as add(-1, 1) == 0 and add(0.5, 0.25) == 0.75.",
+      file: "app/tests/test_hello.py",
+      id: 2,
+    },
+    {
+      action:
+        "Run pytest from app/ (pytest.ini sets testpaths = tests) and confirm both tests pass.",
+      id: 3,
+    },
+    {
+      action:
+        "Send the diff for review, pointing out that the test's expected value was changed instead of add()'s behavior, and why.",
+      id: 4,
+    },
+  ],
+});
+
+describe("a plan in the shapes a real agent serves", () => {
+  const show = () => render(<PlanView text={LIVE_PLAN} />);
+
+  it("titles a step from its singular action, headline first and full text below", () => {
+    show();
+    const step = screen.getByTestId("plan-step-1");
+    expect(step.textContent).toContain(
+      "Add a docstring to add() that says it returns the sum of a and b, using the + operator, so it works with numbers and any other types that support +.",
+    );
+    // The second sentence is not lost — it rides in the full text under the
+    // headline, and none of the step is shown as JSON.
+    expect(screen.getByTestId("plan-step-action-1").textContent).toBe(
+      "Add a docstring to add() that says it returns the sum of a and b, using the + operator, so it works with numbers and any other types that support +. Leave the a + b body unchanged.",
+    );
+    expect(step.textContent).not.toContain('"action"');
+    expect(step.textContent).not.toContain("{");
+  });
+
+  it("prints the file a step touches as its own mono line", () => {
+    show();
+    expect(screen.getByTestId("plan-step-files-1").textContent).toBe("app/hello.py");
+    expect(screen.getByTestId("plan-step-files-2").textContent).toBe("app/tests/test_hello.py");
+    expect(screen.queryByTestId("plan-step-files-3")).toBeNull();
+  });
+
+  it("leaves a short single-sentence action as the whole headline", () => {
+    show();
+    expect(screen.getByTestId("plan-step-3").textContent).toContain(
+      "Run pytest from app/ (pytest.ini sets testpaths = tests) and confirm both tests pass.",
+    );
+    expect(screen.queryByTestId("plan-step-action-3")).toBeNull();
+  });
+
+  it("knows id, action, file and files, so a live step shows no other-fields block", () => {
+    show();
+    for (const index of [1, 2, 3, 4]) {
+      expect(screen.queryByTestId(`plan-step-other-${index}`)).toBeNull();
+    }
+    expect(screen.queryByTestId("plan-other")).toBeNull();
+  });
+
+  it("bullets findings and reads acceptance as an alias of acceptance_criteria", () => {
+    show();
+    expect(screen.getByTestId("plan-findings").textContent).toContain(
+      "app/hello.py:1: add(a, b) returns a + b",
+    );
+    expect(screen.getByTestId("plan-criteria").textContent).toContain(
+      "add.__doc__ is a non-empty, accurate docstring",
+    );
+    expect(screen.getByTestId("plan-view").textContent).not.toContain('"acceptance"');
+  });
+
+  it("titles from description when there is no title or action", () => {
+    render(
+      <PlanView text={JSON.stringify({ steps: [{ description: "Read the contract first" }] })} />,
+    );
+    expect(screen.getByTestId("plan-step-1").textContent).toContain("Read the contract first");
+    expect(screen.queryByTestId("plan-step-other-1")).toBeNull();
+  });
+
+  it("keeps an action a title superseded reachable in the step block", () => {
+    render(
+      <PlanView
+        text={JSON.stringify({
+          steps: [
+            {
+              action: "cat m4-contract.md",
+              description: "opens the contract",
+              retry: 2,
+              title: "Read the contract first",
+            },
+          ],
+        })}
+      />,
+    );
+    const step = screen.getByTestId("plan-step-1");
+    expect(step.textContent).toContain("Read the contract first");
+    const block = screen.getByTestId("plan-step-other-1");
+    expect(block.textContent).toContain("other fields (3)");
+    fireEvent.click(block.querySelector("button") as HTMLButtonElement);
+    expect(screen.getByTestId("plan-step-other-1-json").textContent).toContain(
+      '"action": "cat m4-contract.md"',
+    );
+  });
+
+  it("shows both acceptance keys when they disagree", () => {
+    render(
+      <PlanView
+        text={JSON.stringify({
+          acceptance: ["Reviewer approves"],
+          acceptance_criteria: ["Tests pass"],
+        })}
+      />,
+    );
+    expect(screen.getByTestId("plan-criteria").textContent).toContain("Tests pass");
+    const block = screen.getByTestId("plan-other");
+    expect(block.textContent).toContain("other fields (1)");
+    fireEvent.click(block.querySelector("button") as HTMLButtonElement);
+    expect(screen.getByTestId("plan-other-json").textContent).toContain("Reviewer approves");
+  });
+});

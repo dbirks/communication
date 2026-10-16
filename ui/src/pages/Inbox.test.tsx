@@ -106,6 +106,24 @@ describe("/inbox", () => {
     expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
   });
 
+  it("drops the plan JSON a gate's summary carries from its row", async () => {
+    const planGate = {
+      ...wireApproval,
+      summary:
+        'Plan for Document and fix add() in hello.py\n{"acceptance":["pytest passes in app/ with both tests green"],"goal":"Document and fix add() in app/hello.py","steps":[{"action":"Add a docstring to add().","file":"app/hello.py","id":1}]}',
+    } as unknown as typeof wireApproval;
+    mountInbox({ approvals: [planGate] }, { runs: [] });
+
+    const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    expect(row.textContent).toContain("Plan for Document and fix add() in hello.py");
+    expect(row.textContent).not.toContain('"acceptance"');
+    // Two lines on screen, the whole summary behind the tooltip.
+    const title = screen.getByTestId(`inbox-decision-title-${testidOf(WIRE_APPROVAL_ID)}`);
+    expect(title.className).toContain("line-clamp-2");
+    expect(title.getAttribute("title")).toBe(planGate.summary);
+    expect(title.textContent).toBe("Plan for Document and fix add() in hello.py");
+  });
+
   it("refuses a decision inline rather than silently, on 403", async () => {
     mountInbox(wireApprovalList, { runs: [] }, [
       {
