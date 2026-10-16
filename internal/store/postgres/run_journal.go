@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -48,6 +49,10 @@ func runAppendTx(ctx context.Context, tx pgx.Tx, runID, nodeExecutionID, attempt
 	if err != nil {
 		return events.Envelope{}, err
 	}
+	conversationID, err := attemptConversationTx(ctx, tx, attemptID, ev.Type)
+	if err != nil {
+		return events.Envelope{}, err
+	}
 	if err := LockEventJournal(ctx, tx, projectID, orgID); err != nil {
 		return events.Envelope{}, err
 	}
@@ -55,12 +60,12 @@ func runAppendTx(ctx context.Context, tx pgx.Tx, runID, nodeExecutionID, attempt
 	var payloadRaw []byte
 	err = tx.QueryRow(ctx, `
 		INSERT INTO domain_events
-			(type, organization_id, project_id, actor_kind, actor_id, payload,
+			(type, organization_id, project_id, conversation_id, actor_kind, actor_id, payload,
 			 run_id, node_execution_id, attempt_id)
-		VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6::jsonb,
-		        $7::uuid, NULLIF($8, '')::uuid, NULLIF($9, '')::uuid)
+		VALUES ($1, $2::uuid, $3::uuid, NULLIF($4, '')::uuid, $5, $6, $7::jsonb,
+		        $8::uuid, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid)
 		RETURNING `+prjEventColumns,
-		ev.Type, orgID, projectID, ev.ActorKind, ev.ActorID, payload,
+		ev.Type, orgID, projectID, conversationID, ev.ActorKind, ev.ActorID, payload,
 		runID, nodeExecutionID, attemptID).
 		Scan(&env.GlobalSeq, &env.EventID, &env.Type, &env.SchemaVersion, &env.OccurredAt,
 			&env.OrganizationID, &env.ProjectID, &env.ConversationID,
@@ -74,6 +79,45 @@ func runAppendTx(ctx context.Context, tx pgx.Tx, runID, nodeExecutionID, attempt
 		return events.Envelope{}, fmt.Errorf("postgres: append run event outbox row: %w", err)
 	}
 	return env, nil
+}
+
+// attemptConversationTx answers the one correlation column § 3's rule leaves
+// unstated: a worker row written for a node execution sets run/node/attempt,
+// and an agent.acp attempt additionally owns a conversation (§ 4 step 6's
+// stamped attempts.conversation_id). M2's transcript rows are read by
+// conversation_id — "the transcript *is* the journal, scoped by
+// conversation_id" (openapi's conversation-events route) — so a
+// conversation-scoped row an attempt writes must carry the column, or the run's
+// own conversation page renders an empty transcript.
+//
+// The id is read FROM the attempt row, never from the caller: a worker that
+// could name an arbitrary conversation could write into another run's
+// transcript, and § 3's whole point is that correlation comes from state.
+// Non-conversation types (node.*, run.*, artifact.*) answer "": they belong to
+// the run ledger, and leaking run noise into a transcript stream is a second
+// bug this keeps from becoming the fix.
+func attemptConversationTx(ctx context.Context, tx pgx.Tx, attemptID, typ string) (string, error) {
+	if attemptID == "" || !runTranscriptType(typ) {
+		return "", nil
+	}
+	var conversationID string
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(conversation_id::text, '') FROM attempts WHERE id = $1::uuid`, attemptID).
+		Scan(&conversationID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil // no attempt row: the fence refuses the write anyway
+		}
+		return "", fmt.Errorf("postgres: resolve attempt %s conversation: %w", attemptID, err)
+	}
+	return conversationID, nil
+}
+
+// runTranscriptType reports whether a journal type belongs to a conversation's
+// transcript. M2 owns the vocabulary (internal/events); agent.session.* counts
+// too because the M2 loop journals it conversation-scoped
+// (TurnStore.AppendConversationEvent stamps the column for exactly these).
+func runTranscriptType(typ string) bool {
+	return strings.HasPrefix(typ, "conversation.") || strings.HasPrefix(typ, "agent.session.")
 }
 
 // ------------------------------------------------------------------ bridge

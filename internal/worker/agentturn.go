@@ -186,7 +186,13 @@ type AgentTurn struct {
 	// Quiesce is how long trailing stream updates may still arrive after
 	// Prompt returns before the final text is read (DefaultQuiesce's rule).
 	Quiesce time.Duration
-	Logger  *slog.Logger
+	// Transcript bounds the attempt's transcript rows (chunk size, preview
+	// size, idle coalescing). Zero is M2's own cadence — the attempt path is
+	// not allowed a different one (§ 4 step 6).
+	Transcript TurnConfig
+	// Clock drives the sink's idle flush; nil is the wall clock.
+	Clock  Clock
+	Logger *slog.Logger
 
 	profileOnce *profileCache
 	memoMu      sync.Mutex
@@ -572,11 +578,13 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// pump coalesces the final agent text concurrently; a tool call resets
 	// the buffer because text before a tool call is not the final answer.
 	final := &agentText{}
+	transcript := a.attemptTranscript(ctx, c, conv, sink)
 	pdone := make(chan struct{})
 	go func() {
 		defer close(pdone)
 		for ev := range sess.Events() {
 			final.add(ev)
+			transcript.emit(ev)
 		}
 	}()
 
@@ -647,6 +655,11 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			}
 		}
 	}
+
+	// The transcript closes before the attempt speaks its terminal row: the
+	// chunks and tool lines are the run's conversation, and a member watching
+	// the run page must see them in order under the terminal event.
+	a.closeTranscript(ctx, transcript, res.Status == AttemptStatusSucceeded)
 
 	// Retire the binding honestly. A rejected final journal write means the
 	// fence already proved us stale: runner.go's abandon rule then skips the

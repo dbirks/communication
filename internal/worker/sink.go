@@ -28,7 +28,7 @@ import (
 // goroutine (emit) and the turn goroutine (note/finish) — so all mutable
 // state lives under mu.
 type turnSink struct {
-	loop   *TurnLoop
+	w      sinkWriter
 	claim  Claim
 	log    *slog.Logger
 	onLost func()
@@ -47,14 +47,50 @@ type turnSink struct {
 	lost       bool
 }
 
+// sinkWriter is the journal surface a turnSink writes through: the cadence it
+// coalesces on, the clock its idle flush arms with, and the one fenced append.
+// It exists so the M2 loop and an M4 agent.acp attempt share ONE transcript
+// mechanism rather than two that drift: the coalescing, chunk bounds, preview
+// bounds and redaction hook here are exactly the M2 behaviour that
+// docs/m4-contract.md § 4 step 6 says an attempt keeps "unchanged from M2".
+type sinkWriter struct {
+	cfg   TurnConfig
+	clock Clock
+	// write performs the fenced append; ErrLeaseLost must come back verbatim
+	// so the sink can stop writing and name the lost lease once.
+	write func(ctx context.Context, ev TurnEvent) error
+	// redact is the live materialized-secret hook, resolved at flush time
+	// because the unit that owns the values may not exist when the sink is
+	// built. nil is a pass-through.
+	redact func(text string) (string, int)
+}
+
 func (l *TurnLoop) newSink(c Claim, ctx context.Context, onLost func()) *turnSink {
 	return &turnSink{
-		loop:      l,
+		w: sinkWriter{
+			cfg:    l.cfg,
+			clock:  l.clock,
+			write:  func(ctx context.Context, ev TurnEvent) error { return l.store.AppendTurnEvent(ctx, c, ev) },
+			redact: l.unitRedact(c.ConversationID),
+		},
 		claim:     c,
 		log:       l.log,
 		onLost:    onLost,
 		ctx:       ctx,
 		updateSeq: map[string]int{},
+	}
+}
+
+// unitRedact resolves the live unit's materialized-secret redactor once per
+// flush: a turn's unit is created after its sink is, so the lookup has to be
+// lazy (turnSink.redact documents why the hook is a black box).
+func (l *TurnLoop) unitRedact(conversationID string) func(string) (string, int) {
+	return func(text string) (string, int) {
+		u := l.unitFor(conversationID)
+		if u == nil || u.Materialized == nil || u.Materialized.Redact == nil {
+			return text, 0
+		}
+		return u.Materialized.Redact(text)
 	}
 }
 
@@ -69,7 +105,7 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 	switch ev.Kind {
 	case "message_chunk":
 		s.msg.WriteString(ev.Text)
-		if s.msg.Len() >= s.loop.cfg.MaxChunkBytes {
+		if s.msg.Len() >= s.w.cfg.MaxChunkBytes {
 			s.flushMsgLocked(false)
 			s.armIdleLocked()
 			return
@@ -80,7 +116,7 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 		// buffer, so a stream switch flushes the other one first.
 		s.flushMsgLocked(false)
 		s.thought.WriteString(ev.Text)
-		if s.thought.Len() >= s.loop.cfg.MaxChunkBytes {
+		if s.thought.Len() >= s.w.cfg.MaxChunkBytes {
 			s.flushThoughtLocked()
 			s.armIdleLocked()
 			return
@@ -100,8 +136,8 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 				Title:          bounded(s.redact(ev.Text), 200),
 				Kind:           ev.ToolKind,
 				Status:         orDefault(ev.ToolStatus, "pending"),
-				InputPreview:   bounded(input, s.loop.cfg.MaxPreviewBytes),
-				Truncated:      len(input) > s.loop.cfg.MaxPreviewBytes,
+				InputPreview:   bounded(input, s.w.cfg.MaxPreviewBytes),
+				Truncated:      len(input) > s.w.cfg.MaxPreviewBytes,
 			},
 		})
 	case "tool_call_update":
@@ -119,8 +155,8 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 				ToolCallID:     ev.ToolCallID,
 				Status:         orDefault(ev.ToolStatus, "in_progress"),
 				Title:          bounded(s.redact(ev.Text), 200),
-				OutputPreview:  bounded(output, s.loop.cfg.MaxPreviewBytes),
-				Truncated:      len(output) > s.loop.cfg.MaxPreviewBytes,
+				OutputPreview:  bounded(output, s.w.cfg.MaxPreviewBytes),
+				Truncated:      len(output) > s.w.cfg.MaxPreviewBytes,
 				UpdateSeq:      n,
 			},
 		})
@@ -144,14 +180,10 @@ func (s *turnSink) emit(ev domain.ConversationEvent) {
 // of a streaming transcript; the exclusion set and the download path are what
 // case 12 asserts against, and neither can carry a file's content.
 func (s *turnSink) redact(text string) string {
-	if text == "" {
+	if text == "" || s.w.redact == nil {
 		return text
 	}
-	u := s.loop.unitFor(s.claim.ConversationID)
-	if u == nil || u.Materialized == nil || u.Materialized.Redact == nil {
-		return text
-	}
-	out, n := u.Materialized.Redact(text)
+	out, n := s.w.redact(text)
 	if n > 0 && s.log != nil {
 		// The count, never the value: the log is operator-visible, the journal
 		// is browser-visible, and neither gets plaintext.
@@ -180,7 +212,7 @@ func (s *turnSink) note(text string) {
 			ConversationID: s.claim.ConversationID,
 			TurnID:         s.claim.TurnID,
 			ChunkSeq:       s.nextMsgSeq(),
-			Text:           bounded(text, s.loop.cfg.MaxChunkBytes),
+			Text:           bounded(text, s.w.cfg.MaxChunkBytes),
 			Truncated:      false,
 		},
 	})
@@ -215,7 +247,7 @@ func (s *turnSink) armIdleLocked() {
 	}
 	s.flushGen++
 	gen := s.flushGen
-	clock, idle := s.loop.clock, s.loop.cfg.IdleFlush
+	clock, idle := s.w.clock, s.w.cfg.IdleFlush
 	go func() {
 		<-clock.After(idle)
 		s.mu.Lock()
@@ -239,7 +271,7 @@ func (s *turnSink) flushMsgLocked(final bool) {
 	if text == "" {
 		return
 	}
-	max := s.loop.cfg.MaxChunkBytes
+	max := s.w.cfg.MaxChunkBytes
 	for {
 		if len(text) <= max {
 			s.appendLocked(TurnEvent{
@@ -286,7 +318,7 @@ func (s *turnSink) flushThoughtLocked() {
 		return
 	}
 	s.thoughtSeq++
-	max := s.loop.cfg.MaxChunkBytes
+	max := s.w.cfg.MaxChunkBytes
 	truncated := false
 	if len(text) > max {
 		cut := max
@@ -321,7 +353,7 @@ func (s *turnSink) appendLocked(ev TurnEvent) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	err := s.loop.store.AppendTurnEvent(ctx, s.claim, ev)
+	err := s.w.write(ctx, ev)
 	if errors.Is(err, ErrLeaseLost) {
 		s.lost = true
 		if s.onLost != nil {
