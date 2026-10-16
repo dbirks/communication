@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/dbirks/communication/internal/agent/acp"
+	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/sandbox/nono"
 	"github.com/dbirks/communication/internal/secrets"
@@ -547,7 +548,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// somewhere. When it IS configured the endpoint host is logged once at
 	// startup (never the key): this is a new egress path and the operator has to
 	// be able to see where it points (ADR-0024 Security).
-	if mc := opts.newModelChat(log, pool, unitsSecrets); mc != nil {
+	if mc := opts.newModelChat(log, pool, unitsSecrets, attemptArtifactBytes); mc != nil {
 		attemptExecs[worker.NodeKindModelChat] = &worker.RunWorkspaceExecutor{
 			Inner:   mc,
 			Prepare: prepareRunWorkspace,
@@ -1120,7 +1121,7 @@ func pathIsUnderRoot(root, candidate string) bool {
 // node that could name its own endpoint would be a node that can exfiltrate a
 // project's content anywhere. The API key is never logged — only whether one
 // is set — and only the endpoint host is named at startup.
-func (o workerOptions) newModelChat(log *slog.Logger, pool *pgxpool.Pool, unitsSecrets *postgres.UnitSecrets) worker.AttemptExecutor {
+func (o workerOptions) newModelChat(log *slog.Logger, pool *pgxpool.Pool, unitsSecrets *postgres.UnitSecrets, artifactBytes artifacts.Store) worker.AttemptExecutor {
 	if o.modelChat.baseURL == "" {
 		log.Info("model.chat is not configured on this worker: no COMMUNICATION_MODEL_CHAT_BASE_URL, so the kind is not registered and its nodes fail with the worker's honest refusal (contract § 4 step 8)")
 		return nil
@@ -1130,6 +1131,17 @@ func (o workerOptions) newModelChat(log *slog.Logger, pool *pgxpool.Pool, unitsS
 		APIKey:  o.modelChat.apiKey,
 		Models:  o.modelChat.models,
 		Logger:  log,
+	}
+	// § 4 step 8's over-cap branch: a completion above the 32 KiB inline cap
+	// travels as a kind=json artifact, so model.chat gets the SAME byte backend
+	// and the SAME fenced row writer artifact.publish is given — one door for
+	// both kinds, and a spill that is un-wired stays the honest
+	// outputs_too_large refusal rather than a clipped answer.
+	if artifactBytes != nil {
+		chat.Bytes = artifactBytes
+		chat.Rows = &postgres.AttemptArtifacts{Pool: pool}
+	} else {
+		log.Warn("model.chat has no artifact byte backend: an over-cap completion will fail with outputs_too_large instead of spilling to a kind=json artifact (contract § 4 step 8)")
 	}
 	log.Info("model.chat egress is configured against this endpoint (new egress path, ADR-0024 Security)",
 		slog.String("endpoint", chat.EndpointHost()),

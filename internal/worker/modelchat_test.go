@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/dbirks/communication/internal/artifacts"
 )
 
 // The § 4 step 8 executor's unit layer: a real HTTP server (httptest) behind
@@ -324,5 +327,242 @@ func TestModelChatConfigurationDoor(t *testing.T) {
 	res, _ = chat.Execute(context.Background(), mcClaim(cfg), nil)
 	if res.ErrorClass != ErrorClassBindingError {
 		t.Fatalf("unresolved model binding = %s/%s, want binding_error", res.Status, res.ErrorClass)
+	}
+}
+
+// ------------------------------------------------- § 4 step 8's over-cap spill
+
+// mcSpillConfig is a schema the big reply below satisfies.
+func mcSpillConfig() map[string]any {
+	return map[string]any{
+		"model": "gpt-test",
+		"messages": []any{map[string]any{
+			"role": "user", "content": "summarize the diff",
+		}},
+		"responseSchema": map[string]any{
+			"type":     "object",
+			"required": []any{"verdict"},
+			"properties": map[string]any{
+				"verdict": map[string]any{"type": "string"},
+				"notes":   map[string]any{"type": "string"},
+			},
+		},
+	}
+}
+
+// mcBigReply is a schema-valid completion whose text envelope is well over the
+// 32 KiB inline cap, and which carries a value the run's redactor knows.
+func mcBigReply() string {
+	return `{"verdict":"approve","notes":"` + strings.Repeat("a", 40_000) +
+		` TOPSECRETVALUE ` + strings.Repeat("b", 20_000) + `"}`
+}
+
+func mcSpillClaim() AttemptClaim {
+	c := mcClaim(mcSpillConfig())
+	c.NodeExecutionID = "node-exec-1"
+	c.NodeID = "review"
+	c.NodeInstanceKey = "review[1]"
+	return c
+}
+
+func mcSpillExecutor(base string, bytes *pubBytesFake, rows *pubRowsFake) *ModelChat {
+	m := mcExecutor(base)
+	// Conditionally assigned so a nil fake stays a nil seam — the executor's
+	// "backend not wired" check is an interface-nil check, not a typed-nil one.
+	if bytes != nil {
+		m.Bytes = bytes
+	}
+	if rows != nil {
+		m.Rows = rows
+	}
+	if bytes != nil {
+		// The same run-secret seam the request gate uses: it replaces the one
+		// value this run materialized wherever it appears.
+		m.Redact = func(text string) (string, int) {
+			n := strings.Count(text, "TOPSECRETVALUE")
+			if n == 0 {
+				return text, 0
+			}
+			return strings.ReplaceAll(text, "TOPSECRETVALUE", "[REDACTED]"), n
+		}
+	}
+	return m
+}
+
+func TestModelChatSpillToArtifact(t *testing.T) {
+	srv := newMCServer(t)
+	srv.send(mcReply{status: 200, body: mcChatReply(mcBigReply())})
+	bytesFake, rowsFake := &pubBytesFake{}, &pubRowsFake{id: "artifact-spill-1"}
+	res, err := mcSpillExecutor(srv.srv.URL, bytesFake, rowsFake).
+		Execute(context.Background(), mcSpillClaim(), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("status = %s class=%s detail=%s, want succeeded", res.Status, res.ErrorClass, res.Detail)
+	}
+	if srv.requests() != 1 {
+		t.Fatalf("requests = %d, want 1", srv.requests())
+	}
+	if len(bytesFake.puts) != 1 {
+		t.Fatalf("byte-backend puts = %d, want exactly 1", len(bytesFake.puts))
+	}
+	if len(rowsFake.calls) != 1 {
+		t.Fatalf("fenced row writes = %d, want exactly 1", len(rowsFake.calls))
+	}
+	in := bytesFake.puts[0].in
+	if in.Kind != artifacts.KindJSON || in.MediaType != "application/json" {
+		t.Errorf("spill artifact is %s/%s, want json/application/json", in.Kind, in.MediaType)
+	}
+	if in.ProjectID != "p1" {
+		t.Errorf("spill artifact project = %q, want the claim's project", in.ProjectID)
+	}
+	if !json.Valid(bytesFake.puts[0].body) {
+		t.Errorf("kind=json spill artifact does not parse (%d bytes)", len(bytesFake.puts[0].body))
+	}
+	if strings.Contains(string(bytesFake.puts[0].body), "TOPSECRETVALUE") {
+		t.Error("the spill artifact was published unscanned — the run's secret value is in its bytes")
+	}
+	row := rowsFake.calls[0]
+	if row.AttemptID != "0f51cf22-4c2d-7abc-9def-0123456789ab" || row.FencingToken != 3 ||
+		row.RunID != pubRunID || row.NodeExecutionID != "node-exec-1" ||
+		row.WorkerID != "w1" || row.OrganizationID != "o1" || row.ProjectID != "p1" {
+		t.Errorf("row write carries the wrong lease triple: %+v", row)
+	}
+	// The value appears twice in the payload (the raw text and the parsed
+	// json copy), and the scan counts what it replaced (ADR-0020 D4).
+	if row.Kind != artifacts.KindJSON || row.RedactionCount != 2 {
+		t.Errorf("row kind=%s redactions=%d, want json/2", row.Kind, row.RedactionCount)
+	}
+	out, ok := res.Outputs.(map[string]any)
+	if !ok {
+		t.Fatalf("outputs are %T, want an object", res.Outputs)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal outputs: %v", err)
+	}
+	if len(raw) > modelChatInlineOutput {
+		t.Errorf("inline outputs are %d bytes, over the 32 KiB cap the spill exists to respect", len(raw))
+	}
+	if out["artifact_id"] != "artifact-spill-1" || out["truncated"] != true {
+		t.Errorf("outputs do not name the spill artifact: %v", out["artifact_id"])
+	}
+	if _, full := out["text"]; full {
+		t.Error("outputs carry the full text as well as the artifact — the payload must travel as the ref")
+	}
+	preview, _ := out["text_preview"].(string)
+	if preview == "" || len(preview) > modelChatPreviewMax || !strings.HasSuffix(preview, "…") {
+		t.Errorf("text_preview is %d bytes, want a bounded …-terminated head", len(preview))
+	}
+	refs := res.ArtifactRefs
+	if len(refs) != 1 {
+		t.Fatalf("artifact_refs = %#v, want exactly one entry", res.ArtifactRefs)
+	}
+	ref, _ := refs[0].(map[string]any)
+	if ref["artifact_id"] != "artifact-spill-1" || ref["kind"] != artifacts.KindJSON ||
+		ref["sha256"] == "" || ref["storage_key"] == "" {
+		t.Errorf("artifact_refs entry = %v, want the published artifact's identity", ref)
+	}
+	if out["digest"] != "sha256:"+ref["sha256"].(string) {
+		t.Errorf("outputs digest %v does not match the artifact ref %v", out["digest"], ref["sha256"])
+	}
+	if res.OutputsDigest != "sha256:"+sha256Hex(raw) {
+		t.Errorf("outputs_digest %q is not the digest of the inline envelope", res.OutputsDigest)
+	}
+}
+
+// TestModelChatSpillStaleFencePublishesNothing is § 4 step 10's "I am dead":
+// the fenced writer refused, so the attempt fails with no artifact_refs and no
+// outputs naming an artifact — the bytes sit in the backend unreferenced for
+// the orphan sweep, and this worker does not retry the write.
+func TestModelChatSpillStaleFencePublishesNothing(t *testing.T) {
+	srv := newMCServer(t)
+	srv.send(mcReply{status: 200, body: mcChatReply(mcBigReply())})
+	bytesFake := &pubBytesFake{}
+	rowsFake := &pubRowsFake{err: ErrLeaseLost}
+	res, err := mcSpillExecutor(srv.srv.URL, bytesFake, rowsFake).
+		Execute(context.Background(), mcSpillClaim(), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+		t.Fatalf("status = %s class = %s detail=%s, want failed/infra", res.Status, res.ErrorClass, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "stale lease") || !strings.Contains(res.Detail, "unreferenced") {
+		t.Errorf("detail does not name the lost fence and the orphaned bytes: %s", res.Detail)
+	}
+	if len(rowsFake.calls) != 1 {
+		t.Fatalf("row writes = %d, want the one refused call", len(rowsFake.calls))
+	}
+	if len(res.ArtifactRefs) != 0 || res.Outputs != nil {
+		t.Errorf("a stale fence published something: refs=%v outputs=%v", res.ArtifactRefs, res.Outputs)
+	}
+	if srv.requests() != 1 {
+		t.Errorf("requests = %d, want 1 (the reply was real, only the row was refused)", srv.requests())
+	}
+}
+
+// TestModelChatSpillWithoutBackendRefuses is the honest refusal the executor
+// shipped with: with no byte backend (or no row writer) wired, an over-cap
+// completion fails invalid_output/outputs_too_large rather than publishing a
+// half-artifact or clipping the answer silently.
+func TestModelChatSpillWithoutBackendRefuses(t *testing.T) {
+	for name, tc := range map[string]struct {
+		bytes *pubBytesFake
+		rows  *pubRowsFake
+	}{
+		"no byte backend": {bytes: nil, rows: &pubRowsFake{}},
+		"no row writer":   {bytes: &pubBytesFake{}, rows: nil},
+		"nothing wired":   {bytes: nil, rows: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newMCServer(t)
+			srv.send(mcReply{status: 200, body: mcChatReply(mcBigReply())})
+			res, err := mcSpillExecutor(srv.srv.URL, tc.bytes, tc.rows).
+				Execute(context.Background(), mcSpillClaim(), nil)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInvalidOutput {
+				t.Fatalf("status = %s class = %s detail=%s, want failed/invalid_output", res.Status, res.ErrorClass, res.Detail)
+			}
+			if !strings.Contains(res.Detail, "outputs_too_large") && !strings.Contains(res.Detail, "inline cap") {
+				t.Errorf("detail does not name the inline cap it hit: %s", res.Detail)
+			}
+			errs, _ := json.Marshal(res.OutputErrors)
+			if !strings.Contains(string(errs), ModelChatCodeOutputsLg) {
+				t.Errorf("output_errors = %s, want code %s", errs, ModelChatCodeOutputsLg)
+			}
+			if tc.bytes != nil && len(tc.bytes.puts) != 0 {
+				t.Errorf("%d puts against an unwired writer", len(tc.bytes.puts))
+			}
+			if tc.rows != nil && len(tc.rows.calls) != 0 {
+				t.Errorf("%d row writes against an unwired backend", len(tc.rows.calls))
+			}
+			if len(res.ArtifactRefs) != 0 {
+				t.Errorf("refusal carries artifact_refs: %v", res.ArtifactRefs)
+			}
+		})
+	}
+}
+
+// TestModelChatSpillPutFailureWritesNoRow keeps the ordering artifactpublish.go
+// pins: a byte backend that refuses means no artifact row and no event.
+func TestModelChatSpillPutFailureWritesNoRow(t *testing.T) {
+	srv := newMCServer(t)
+	srv.send(mcReply{status: 200, body: mcChatReply(mcBigReply())})
+	bytesFake := &pubBytesFake{putErr: errors.New("disk full")}
+	rowsFake := &pubRowsFake{}
+	res, err := mcSpillExecutor(srv.srv.URL, bytesFake, rowsFake).
+		Execute(context.Background(), mcSpillClaim(), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+		t.Fatalf("status = %s class = %s, want failed/infra", res.Status, res.ErrorClass)
+	}
+	if len(rowsFake.calls) != 0 {
+		t.Errorf("a failed Put still wrote %d artifact rows", len(rowsFake.calls))
 	}
 }

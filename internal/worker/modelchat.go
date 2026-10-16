@@ -12,8 +12,11 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/dbirks/communication/internal/artifacts"
 )
 
 // NodeKindModelChat is the § 4 step 8 node kind this executor runs, the
@@ -26,10 +29,15 @@ const NodeKindModelChat = "model.chat"
 // Caps and defaults for model.chat. The inline figure is § 6's 32 KiB outputs
 // envelope that procexec.go enforces with the same named failure; § 4 step 8
 // sends an over-cap payload to a kind=json artifact, which this executor does
-// not own (it has no byte backend), so the honest terminal is the refusal
+// when a byte backend and the fenced row writer are wired (Bytes/Rows) and
+// refuses with outputs_too_large when they are not — the honest terminal
 // rather than a silently clipped answer.
 const (
 	modelChatInlineOutput = 32 << 10
+	// modelChatPreviewMax bounds the inline text preview that travels beside a
+	// spill artifact: the reader sees the head of the answer without the 32 KiB
+	// envelope having to carry all of it (§ 4 step 8).
+	modelChatPreviewMax = 4 << 10
 	// modelChatBodyMax bounds how much of an endpoint's response body this
 	// worker will buffer — a completion is a JSON object, not a stream.
 	modelChatBodyMax = 4 << 20
@@ -81,8 +89,23 @@ type ModelChat struct {
 	HTTPClient *http.Client
 	// Timeout overrides modelChatDefaultTimeout for claims with no deadline.
 	Timeout time.Duration
-	Logger  *slog.Logger
+	// Bytes is the ADR-0020 artifact byte backend. Optional: it is needed only
+	// for § 4 step 8's over-cap spill, where the full reply becomes a
+	// kind=json artifact instead of an inline outputs row. Nil keeps the
+	// honest outputs_too_large refusal.
+	Bytes artifacts.Store
+	// Rows is the fenced artifact-row writer (the same AttemptArtifactWriter
+	// artifact.publish is given). Optional like Bytes; without it the spilled
+	// bytes would be an orphan in the backend with no row and no
+	// artifact.created event, which is not a publish.
+	Rows AttemptArtifactWriter
+	// ArtifactName overrides the spill artifact's name (defaults to
+	// model_chat_outputs.json). Injectable for tests.
+	ArtifactName string
+	Logger       *slog.Logger
 }
+
+const modelChatDefaultArtifactName = "model_chat_outputs.json"
 
 var _ AttemptExecutor = (*ModelChat)(nil)
 
@@ -276,7 +299,42 @@ func (m *ModelChat) Execute(ctx context.Context, c AttemptClaim, _ AttemptSink) 
 			return *bad, nil
 		}
 	}
-	return modelChatOutputs(c, spec, host, text, parsed), nil
+	out, err := m.buildOutputs(ctx, c, spec, host, text, parsed)
+	if err != nil {
+		return *err, nil
+	}
+	return out, nil
+}
+
+// buildOutputs is § 4 step 8's inline-or-spill rule: the validated reply fits
+// in outputs when the 32 KiB envelope (§ 6) allows it, and otherwise travels
+// as a kind=json artifact with a bounded preview and the ref left inline.
+func (m *ModelChat) buildOutputs(ctx context.Context, c AttemptClaim, spec *modelChatSpec, host, text string, parsed any) (AttemptResult, *AttemptResult) {
+	full := map[string]any{"text": text, "model": spec.model, "endpoint": host}
+	if parsed != nil {
+		full["json"] = parsed
+	}
+	raw, err := json.Marshal(full)
+	if err != nil {
+		return AttemptResult{}, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+			"model.chat: the validated completion cannot be serialized for outputs: "+bounded(err.Error(), 300))
+	}
+	if len(raw) <= modelChatInlineOutput {
+		return AttemptResult{
+			Status:        AttemptStatusSucceeded,
+			Outcome:       "passed",
+			Outputs:       full,
+			OutputsDigest: "sha256:" + sha256Hex(raw),
+		}, nil
+	}
+	if m == nil || m.Bytes == nil || m.Rows == nil {
+		res := *mcBad(ErrorClassInvalidOutput, ModelChatCodeOutputsLg, fmt.Sprintf(
+			"model.chat: outputs envelope is %d bytes over the 32 KiB inline cap (§ 6); § 4 step 8 sends that "+
+				"payload as a kind=json artifact, and this worker has no artifact byte backend/fenced row writer wired, "+
+				"so the honest answer is a refusal rather than a clipped answer", len(raw)))
+		return AttemptResult{}, &res
+	}
+	return m.spillOutputs(ctx, c, spec, host, full, len(raw))
 }
 
 // requestBody marshals the wire call and runs ADR-0018's gate over it: the
@@ -565,26 +623,154 @@ func validateCompletion(spec *modelChatSpec, text string) (any, *AttemptResult) 
 	return instance, nil
 }
 
-// modelChatOutputs builds the succeeded payload. No artifact is published
-// here: § 4 step 8 puts an over-cap payload in a kind=json artifact, and this
-// executor owns no byte backend, so over-cap is the honest refusal instead of
-// a clipped outputs row.
-func modelChatOutputs(c AttemptClaim, spec *modelChatSpec, host, text string, parsed any) AttemptResult {
-	outputs := map[string]any{"text": text, "model": spec.model, "endpoint": host}
-	if parsed != nil {
-		outputs["json"] = parsed
+// spillOutputs is § 4 step 8's over-cap branch: "its text lands in outputs
+// and, above the inline cap, in a kind=json artifact". The full validated
+// reply becomes the artifact's bytes — scanned through the run's secret seam
+// first, exactly as artifact.publish scans before it writes — Put into the
+// byte backend, then recorded by the fenced row writer, which writes the
+// artifact row and its artifact.created in one transaction and neither for a
+// stale lease. Outputs then carry a bounded preview plus the ref, never the
+// payload (§ 6's inline cap is what made this a spill in the first place).
+func (m *ModelChat) spillOutputs(ctx context.Context, c AttemptClaim, spec *modelChatSpec, host string, full map[string]any, fullSize int) (AttemptResult, *AttemptResult) {
+	content, err := marshalCanonicalJSON(full)
+	if err != nil {
+		return AttemptResult{}, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+			"model.chat: the over-cap completion cannot be serialized as the spill artifact's json: "+
+				bounded(err.Error(), 300))
 	}
-	raw, err := json.Marshal(outputs)
-	if err != nil || len(raw) > modelChatInlineOutput {
-		res := *mcBad(ErrorClassInvalidOutput, ModelChatCodeOutputsLg, fmt.Sprintf(
-			"model.chat: outputs envelope is %d bytes over the 32 KiB inline cap (§ 6); § 4 step 8 sends that "+
-				"payload as a kind=json artifact, which this worker's model.chat executor does not own yet", len(raw)))
-		return res
+	content, redactions := m.redactBytes(content)
+	if !json.Valid(content) {
+		// artifactpublish.go's rule verbatim: a kind=json artifact that does
+		// not parse would be a broken record presented as evidence, and
+		// redaction outranks nothing — so nothing is published.
+		return AttemptResult{}, mcBad(ErrorClassInvalidOutput, ModelChatCodeOutputsLg, fmt.Sprintf(
+			"model.chat: the secret scan rewrote the spill payload into unparseable json (%d bytes); a "+
+				"kind=json artifact must parse, so nothing was published", len(content)))
 	}
+	name := strings.TrimSpace(m.ArtifactName)
+	if name == "" {
+		name = modelChatDefaultArtifactName
+	}
+	kind := artifacts.KindJSON
+	media := defaultArtifactMedia(kind)
+	if limit := artifacts.LimitFor(kind); limit > 0 && int64(len(content)) > limit {
+		return AttemptResult{}, mcBad(ErrorClassInvalidOutput, ModelChatCodeOutputsLg, fmt.Sprintf(
+			"model.chat: completion is %d bytes, over the %s kind cap of %d bytes (ADR-0020 D2) and over the "+
+				"32 KiB inline cap (§ 6) — neither outputs nor a kind=json artifact can carry it",
+			len(content), kind, limit))
+	}
+
+	ref, err := m.Bytes.Put(ctx, artifacts.Input{
+		ProjectID:   c.ProjectID,
+		Name:        artifacts.SanitizeFilename(name),
+		Kind:        kind,
+		MediaType:   media,
+		Sensitivity: artifacts.SensitivityStandard,
+		MaxBytes:    artifacts.LimitFor(kind),
+		Body:        bytes.NewReader(content),
+	})
+	if err != nil {
+		return AttemptResult{}, mcBad(ErrorClassInfra, "",
+			"model.chat: put spill artifact bytes: "+bounded(err.Error(), 400))
+	}
+	id, err := m.Rows.PublishAttemptArtifact(ctx, AttemptArtifactInput{
+		OrganizationID:  c.OrganizationID,
+		ProjectID:       c.ProjectID,
+		RunID:           c.RunID,
+		NodeExecutionID: c.NodeExecutionID,
+		AttemptID:       c.AttemptID,
+		WorkerID:        c.WorkerID,
+		FencingToken:    c.FencingToken,
+		Name:            name,
+		Kind:            kind,
+		MediaType:       media,
+		Sensitivity:     artifacts.SensitivityStandard,
+		Ref:             ref,
+		RedactionCount:  redactions,
+	})
+	if err != nil {
+		if errors.Is(err, ErrLeaseLost) {
+			// § 4 step 10's "I am dead": stop writing, no retry, no second
+			// Put. The object stays in the backend unreferenced for the orphan
+			// sweep; the attempt reports the lost fence and publishes nothing.
+			return AttemptResult{}, mcBad(ErrorClassInfra, "", "model.chat: the fenced artifact writer refused a "+
+				"stale lease (this worker's fencing token is no longer current): bytes are in the backend "+
+				"unreferenced, no artifact row and no artifact.created event were written")
+		}
+		return AttemptResult{}, mcBad(ErrorClassInfra, "",
+			"model.chat: publish spill artifact row: "+bounded(err.Error(), 400))
+	}
+	if id == "" {
+		return AttemptResult{}, mcBad(ErrorClassInfra, "", "model.chat: the fenced artifact writer reported "+
+			"success with no artifact id, which the attempt cannot name in outputs")
+	}
+
+	text, _ := modelChatString(full["text"])
+	outputs := map[string]any{
+		"text_preview":    modelChatPreview(text, modelChatPreviewMax),
+		"truncated":       true,
+		"model":           spec.model,
+		"endpoint":        host,
+		"artifact_id":     id,
+		"kind":            kind,
+		"name":            name,
+		"media_type":      media,
+		"sha256":          ref.SHA256,
+		"digest":          "sha256:" + ref.SHA256,
+		"size_bytes":      ref.SizeBytes,
+		"inline_bytes":    fullSize,
+		"redaction_count": redactions,
+	}
+	rawOut, err := json.Marshal(outputs)
+	if err != nil || len(rawOut) > modelChatInlineOutput {
+		return AttemptResult{}, mcBad(ErrorClassInvalidOutput, ModelChatCodeOutputsLg, fmt.Sprintf(
+			"model.chat: spilled outputs envelope is %d bytes over the 32 KiB inline cap (§ 6)", len(rawOut)))
+	}
+	m.logger().Debug("model.chat spilled an over-cap completion to a kind=json artifact",
+		slog.String("attempt_id", c.AttemptID), slog.String("artifact_id", id),
+		slog.Int("inline_bytes", fullSize), slog.Int("redaction_count", redactions))
 	return AttemptResult{
 		Status:        AttemptStatusSucceeded,
 		Outcome:       "passed",
 		Outputs:       outputs,
-		OutputsDigest: "sha256:" + sha256Hex(raw),
+		OutputsDigest: "sha256:" + sha256Hex(rawOut),
+		ArtifactRefs: []any{map[string]any{
+			"artifact_id":     id,
+			"kind":            kind,
+			"name":            name,
+			"media_type":      media,
+			"sha256":          ref.SHA256,
+			"size_bytes":      ref.SizeBytes,
+			"storage_backend": ref.StorageBackend,
+			"storage_key":     ref.StorageKey,
+		}},
+	}, nil
+}
+
+// redactBytes runs the run's secret seam over bytes destined for the byte
+// backend — artifactpublish.go's same seam, with its same ADR-0020 D4 rule
+// that a missing scanner reports 0 rather than an invented number.
+func (m *ModelChat) redactBytes(content []byte) ([]byte, int) {
+	if m == nil || m.Redact == nil {
+		return content, 0
 	}
+	out, n := m.Redact(string(content))
+	if n < 0 {
+		n = 0
+	}
+	return []byte(out), n
+}
+
+// modelChatPreview keeps the inline head of a spilled reply inside its budget
+// without cutting a rune in half, so a browser never renders U+FFFD where a
+// character was.
+func modelChatPreview(text string, max int) string {
+	if max <= 0 || len(text) <= max {
+		return text
+	}
+	cut := max - len("…")
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "…"
 }
