@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sort"
@@ -56,6 +58,12 @@ type fakeAttemptStore struct {
 	claims      int
 	writes      []string // successful state mutations only, in order
 	cancelsSeen int
+
+	// cancelErr/appendErr inject a store-side refusal into the two watch
+	// paths (C4c: the store refuses a fenced write after a newer owner drew
+	// a greater token) without disturbing the rest of the triple bookkeeping.
+	cancelErr error
+	appendErr error
 }
 
 func newFakeAttemptStore(capacity int) *fakeAttemptStore {
@@ -190,6 +198,9 @@ func (s *fakeAttemptStore) AppendAttemptEvent(_ context.Context, c AttemptClaim,
 	if err != nil {
 		return err
 	}
+	if s.appendErr != nil {
+		return s.appendErr
+	}
 	s.writes = append(s.writes, "event "+a.id+" "+ev.Type)
 	return nil
 }
@@ -200,6 +211,9 @@ func (s *fakeAttemptStore) CancelRequestedAttempt(_ context.Context, c AttemptCl
 	a, err := s.verify(c)
 	if err != nil {
 		return time.Time{}, false, err
+	}
+	if s.cancelErr != nil {
+		return time.Time{}, false, s.cancelErr
 	}
 	s.cancelsSeen++
 	if a.cancelAt == nil {
@@ -595,6 +609,118 @@ func TestAttemptStaleTokenStopsImmediately(t *testing.T) {
 	if a := store.snapshot("a1"); a.workerID != "worker-thief" ||
 		strings.HasPrefix(a.status, "succe") || a.finishedAt.Nanosecond() != 0 {
 		t.Fatalf("stale worker wrote a terminal or disturbed the new owner: %+v", a)
+	}
+}
+
+// lockedBuf collects slog output that a loop goroutine may still be writing
+// while the test reads it.
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// fenceRefusalLine returns the ONE warn line C4c demands — the stale owner
+// observing its own fenced write refused — or "" when absent. The words are
+// what the lab driver greps for (e2e/m4 FENCE_REFUSAL_RE:
+// 'stale (owner|token)|fenc|lease lost').
+func fenceRefusalLine(logs string) string {
+	for _, ln := range strings.Split(logs, "\n") {
+		low := strings.ToLower(ln)
+		if strings.Contains(low, "fenced write refused") {
+			return ln
+		}
+	}
+	return ""
+}
+
+func assertC4cRefusalLine(t *testing.T, logs string) {
+	t.Helper()
+	ln := fenceRefusalLine(logs)
+	if ln == "" {
+		t.Fatalf("no fence-refusal line in the worker's own log:\n%s", logs)
+	}
+	for _, want := range []string{"attempt_id=a1", "fencing_token=", "stale owner", "lease lost"} {
+		if !strings.Contains(ln, want) {
+			t.Fatalf("refusal line %q lacks %q", ln, want)
+		}
+	}
+}
+
+// TestAttemptFencedCancelWatchRefusalIsLogged is C4c at the loop level on
+// the path the live pause/unpause actually takes: the wake-up's next fenced
+// read (the cancel watch) is refused by the store, and the refusal must be
+// OBSERVED in the worker's own log — never a silent stop (contract § 7.1
+// C4c, `12` case 3).
+func TestAttemptFencedCancelWatchRefusalIsLogged(t *testing.T) {
+	store := newFakeAttemptStore(1)
+	store.queue("a1", "process.exec", 0, time.Now())
+
+	var logs lockedBuf
+	l, err := NewAttemptLoop(fastAttemptConfig(1), store,
+		AttemptExecutors{"process.exec": parkedExecutor()},
+		func() string { return "worker-1" },
+		WithAttemptLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("NewAttemptLoop: %v", err)
+	}
+	startLoop(t, l)
+
+	waitFor(t, "attempt began", func() bool { return store.snapshot("a1").status == AttemptStatusRunning })
+	store.mu.Lock()
+	store.cancelErr = ErrLeaseLost // a newer owner has drawn a greater token
+	store.mu.Unlock()
+	waitFor(t, "fenced watch stops the attempt", func() bool { return l.attemptsCompleted() >= 1 })
+
+	assertC4cRefusalLine(t, logs.String())
+	if a := store.snapshot("a1"); a.finishedAt.Nanosecond() != 0 || a.outputs != nil {
+		t.Fatalf("stale worker wrote a terminal after the refusal: %+v", a)
+	}
+}
+
+// TestAttemptFencedAppendRefusalIsLogged covers the second silent
+// observation point: a live journal append refused by the fence (contract
+// § 4 step 6's sink rule) must log the refusal and stop the body.
+func TestAttemptFencedAppendRefusalIsLogged(t *testing.T) {
+	store := newFakeAttemptStore(1)
+	store.queue("a1", "process.exec", 0, time.Now())
+	store.mu.Lock()
+	store.appendErr = ErrLeaseLost
+	store.mu.Unlock()
+
+	exec := execFn(func(ctx context.Context, _ AttemptClaim, sink AttemptSink) (AttemptResult, error) {
+		if err := sink.AppendEvent(ctx, AttemptEvent{Type: "node.scope.progress"}); !errors.Is(err, ErrLeaseLost) {
+			t.Errorf("AppendEvent under a refused fence: %v", err)
+		}
+		<-ctx.Done() // the sink's refusal must stop the body
+		return AttemptResult{}, nil
+	})
+
+	var logs lockedBuf
+	l, err := NewAttemptLoop(fastAttemptConfig(1), store,
+		AttemptExecutors{"process.exec": exec},
+		func() string { return "worker-1" },
+		WithAttemptLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("NewAttemptLoop: %v", err)
+	}
+	startLoop(t, l)
+	waitFor(t, "refused append stops the attempt", func() bool { return l.attemptsCompleted() >= 1 })
+
+	assertC4cRefusalLine(t, logs.String())
+	if a := store.snapshot("a1"); a.finishedAt.Nanosecond() != 0 {
+		t.Fatalf("stale worker wrote a terminal after the refusal: %+v", a)
 	}
 }
 

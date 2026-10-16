@@ -348,6 +348,20 @@ func (rt *runningAttempt) requestStop() {
 	rt.stopOnce.Do(func() { close(rt.stopCh) })
 }
 
+// noteLeaseLost is the ONE place the silent fence-refusal paths (begin,
+// cancel watch, live journal append) record that the store refused this
+// worker's fenced write. Contract § 7.1 C4c: the stale owner's refusal must
+// be observable in its own log, never a silent stop — logged once per
+// attempt at warn with the attempt id and the now-stale fencing token.
+func (rt *runningAttempt) noteLeaseLost(write string) {
+	if !rt.lostLease.Swap(true) {
+		rt.loop.log.Warn("fenced write refused: this worker is the stale owner (lease lost)",
+			slog.String("attempt_id", rt.claim.AttemptID),
+			slog.Int64("fencing_token", rt.claim.FencingToken),
+			slog.String("write", write))
+	}
+}
+
 // runAttempt executes one claimed attempt end to end and always tries to
 // write an honest terminal — unless the fencing token proved us stale, in
 // which case writing nothing IS the honest answer (runner.go's rule, ADR-0016
@@ -379,7 +393,7 @@ func (l *AttemptLoop) runAttempt(ctx context.Context, c AttemptClaim) {
 
 	if err := l.store.BeginAttempt(actx, c); err != nil {
 		if errors.Is(err, ErrLeaseLost) {
-			rt.lostLease.Store(true)
+			rt.noteLeaseLost("begin")
 			return
 		}
 		l.log.Error("begin attempt failed", slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
@@ -433,7 +447,7 @@ func (l *AttemptLoop) attemptCancelWatch(tctx, _ context.Context, c AttemptClaim
 		at, ok, err := l.store.CancelRequestedAttempt(tctx, c)
 		switch {
 		case errors.Is(err, ErrLeaseLost):
-			rt.lostLease.Store(true)
+			rt.noteLeaseLost("cancel_watch")
 			rt.cancel()
 			return
 		case err != nil:
@@ -576,7 +590,7 @@ func (s attemptSink) AppendEvent(ctx context.Context, ev AttemptEvent) error {
 		if errors.Is(err, ErrLeaseLost) {
 			// A fenced append failed while the attempt was live: we are
 			// stale — stop the body like runner.go:96-101's sink does.
-			s.rt.lostLease.Store(true)
+			s.rt.noteLeaseLost("journal_append")
 			s.rt.cancel()
 		}
 		return err
