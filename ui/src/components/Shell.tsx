@@ -9,6 +9,7 @@ import { Button } from "./ds/Button";
 const NAV_ITEMS = [
   { to: "/inbox", label: "Inbox" },
   { to: "/", label: "Projects", end: true },
+  { to: "/library", label: "Library" },
   { to: "/ops", label: "Operations" },
 ];
 
