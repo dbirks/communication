@@ -2643,6 +2643,449 @@ def c7():
     skip("C7", "bounded until terminates by exhaustion with per-iteration evidence")
 
 
+# --- C8 pure logic — unit-tested offline by e2e/m4/test_c8_logic.py -----------
+# Verdict algebra for the fan-out gate (docs/m4-contract.md § 7.1 C8). Every
+# verdict is computed over canned ledger rows / canned API bodies, so the live
+# half only has to read Postgres and the tree route and hand the rows over.
+# `ok is None` is an honest GAP (the lab produced no row to measure — e.g. the
+# for_each scope never opened); a measured over-run of maxConcurrency is always
+# a FAIL: C8c is proven from journal-ordered running counts, never inferred from
+# the maxConcurrency: 3 line in pipeline.yaml.
+
+C8_FAN_OUT_KEY = "/fan_out"
+C8_INVOKE_SUFFIX = "/invoke"
+C8_MAX_CONCURRENCY = 3
+C8_ITEMS = 25
+C8_FAILING_ITEM = 13
+C8_POLICIES = ("collect_and_continue", "stop", "fail_after_all")
+
+
+def c8_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c8_invoke_keys(text):
+    """psql rows of for_each body keys -> the sorted set of invoke node_instance_keys.
+    Empty for 'no rows' / NULL-only output; whitespace-only lines never count."""
+    return sorted({ln.strip() for ln in (text or "").splitlines()
+                   if ln.strip() and ln.strip().upper() != "NULL"})
+
+
+def c8_running_samples(text):
+    """'global_seq|running_count' ledger rows -> [(seq, count)] in seq order.
+    Rows the driver cannot read are DROPPED (and counted by the caller through
+    len()); a sample list that came back empty is a GAP, not a zero."""
+    out = []
+    for seq, cnt in psql_rows(text, 2):
+        try:
+            s, c = int(str(seq).strip()), int(str(cnt).strip())
+        except ValueError:
+            continue
+        if c < 0:
+            continue
+        out.append((s, c))
+    return sorted(out)
+
+
+def c8_max_in_flight(samples):
+    """Peak 'running' invoke rows over sampled commit points; None when no sample."""
+    counts = [c for _s, c in samples or [] if isinstance(c, int)]
+    return max(counts) if counts else None
+
+
+def c8_concurrency_verdicts(samples, cap=C8_MAX_CONCURRENCY):
+    """C8c — the bounded fan-out measured, not asserted.
+    PASS needs peak<=cap AND a peak that proves the sampler saw the concurrency
+    actually happen (peak>1) over more than one commit point."""
+    peak = c8_max_in_flight(samples)
+    if peak is None:
+        return [("C8c max concurrently running invoke rows <= "
+                 f"{cap} (measured from the journal)", None,
+                 "no seq|count rows — the for_each scope produced no measurable "
+                 "commit point")]
+    v = [(f"C8c max concurrently running invoke rows <= {cap} "
+          f"(measured over {len(samples)} commit points)", peak <= cap,
+          f"observed peak={peak} at seqs {[s for s, _c in samples][:8]}")]
+    v.append((f"C8c the sample actually saw parallelism (>1 in flight)",
+              None if peak == 1 and len(samples) > 1 else peak > 1,
+              f"peak={peak}: {'serial run proves nothing about the cap' if peak == 1 else ''}")
+             if peak <= cap else
+             (f"C8c sample validity", None, "cap already FAILED"))
+    v.append(("C8c more than one commit point sampled", None if peak and len(samples) < 2 else
+              len(samples) >= 2, f"{len(samples)} rows"))
+    return v
+
+
+def c8_tree_verdicts(doc, parent_id, want_children):
+    """C8d — GET /runs/{id}/tree shape: the failed child must be VISIBLE in the
+    parent's tree, each child a run of its own with its own invoking key."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("children"), list):
+        return [("C8d GET /runs/{run}/tree shows every child run", None,
+                 f"body is {type(doc).__name__} without a children array — "
+                 "nothing to read the tree from")]
+    kids = doc["children"]
+    root = doc.get("run") if isinstance(doc.get("run"), dict) else {}
+    ids = [str((k.get("run") or {}).get("id") or "") for k in kids
+           if isinstance(k, dict) and isinstance(k.get("run"), dict)]
+    keys = {str(k.get("node_instance_key") or "") for k in kids if isinstance(k, dict)}
+    depths = {(k.get("run") or {}).get("depth", k.get("depth")) for k in kids
+              if isinstance(k, dict)}
+    return [
+        ("C8d GET /runs/{run}/tree shows every child run (one row per item)",
+         len(ids) == want_children, f"{len(ids)} children, want {want_children}"),
+        ("C8d tree children are DISTINCT runs (own child_run_id)",
+         len(set(ids)) == len(ids) and "" not in ids,
+         f"{len(set(ids))} distinct ids of {len(ids)}"),
+        (f"C8d every tree child carries its invoking node_instance_key under {C8_FAN_OUT_KEY}",
+         bool(keys) and "" not in keys and all(k.startswith(C8_FAN_OUT_KEY) for k in keys),
+         f"keys={sorted(keys)[:4]}"),
+        ("C8d tree root is the parent run", root.get("id") in (parent_id, None) and
+         bool(root.get("id")), f"root={root.get('id')!r} parent={parent_id!r}"),
+        ("C8d tree child depth is 1 below the root",
+         depths in ({1}, {None}) if depths else None, f"depths={sorted(map(str, depths))}"),
+    ]
+
+
+def c8_child_count_verdicts(rows, want_total=C8_ITEMS, want_failed=1):
+    """C8b/C8d — 'status|count' ledger rows over the invoke nodes (and the
+    pipeline_invocations join): exact totals, and exactly one failed child."""
+    counts = {}
+    for status, cnt in psql_rows(rows, 2):
+        n = count_or_none(cnt)
+        if n is None:
+            return [("C8b invoke ledger is readable", None, f"bad count row {rows!r}")]
+        counts[status.strip()] = counts.get(status.strip(), 0) + n
+    if not counts:
+        return [("C8b invoke ledger is readable", None,
+                 "no status|count rows — the fan-out never wrote node_executions")]
+    total = sum(counts.values())
+    return [
+        (f"C8b invoke node_execution rows total {want_total}", total == want_total,
+         f"observed {total}: {counts}"),
+        (f"C8d exactly {want_failed} failed child", counts.get("failed", 0) == want_failed,
+         f"failed={counts.get('failed', 0)} of {total}"),
+        (f"C8d remaining siblings preserved ({want_total - want_failed} non-failed)",
+         total - counts.get("failed", 0) == want_total - want_failed,
+         f"non-failed={total - counts.get('failed', 0)}"),
+    ]
+
+
+def c8_depth_project_verdicts(depth_text, project_text, parent_project_id):
+    """C8b — distinct depth is exactly 1 and every child inherits the project."""
+    depths = c8_invoke_keys(depth_text)
+    flags = c8_invoke_keys(project_text)
+    return [
+        ("C8b distinct child depth = parent.depth+1 = 1",
+         None if not depths else depths == ["1"], f"observed {depths or 'no rows'}"),
+        (f"C8b children inherit project {str(parent_project_id)[:8]} (project_id = parent's)",
+         None if not flags else set(flags) == {"t"}, f"observed {flags or 'no rows'}"),
+    ]
+
+
+def c8_scope_items(payload):
+    """node.scope.completed's payload -> the items count it recorded, or None when
+    the line is absent/unparseable (a GAP, never a silent 0)."""
+    if payload is None:
+        return None
+    try:
+        doc = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or "items" not in doc:
+        return None
+    return count_or_none(doc.get("items"))
+
+
+def c8_zero_item_verdicts(scope_status, scope_event, children_json, run_status):
+    """C8a — zero items completes the scope IMMEDIATELY and honestly: succeeded,
+    a node.scope.completed carrying items:0, outputs.children = [], run completed."""
+    items = c8_scope_items(scope_event)
+    return [
+        ("C8a /fan_out with 0 items -> node_executions.status succeeded",
+         scope_status == "succeeded", f"observed {scope_status!r}"),
+        ("C8a node.scope.completed {scope:'/fan_out', items:0} in the journal",
+         None if items is None else items == 0,
+         f"items={items}" if items is not None else
+         f"no readable node.scope.completed payload: {repr(scope_event)[:120]}"),
+        ("C8a outputs.children is the EMPTY array", children_json == "[]",
+         f"observed {str(children_json)[:120]!r}"),
+        ("C8a the run completes (status completed)", run_status == "completed",
+         f"observed {run_status!r}"),
+    ]
+
+
+def c8_policy_verdicts(policy, scope_status, failed_cause, ran, succeeded, cancelled):
+    """C8d/C8e — the authored onChildFailure policy, applied as written."""
+    if policy not in C8_POLICIES:
+        return [(f"C8e onChildFailure policy {policy!r} is one of {C8_POLICIES}", None,
+                 "the lab could not author the policy this arm measures")]
+    if policy == "collect_and_continue":
+        return [("C8d collect_and_continue: scope COMPLETES with the failure collected",
+                 scope_status == "succeeded", f"scope={scope_status!r} cause={failed_cause!r}"),
+                (f"C8d collect_and_continue: all {ran if ran else C8_ITEMS} children ran",
+                 None if ran is None else ran == C8_ITEMS, f"ran={ran}")]
+    if policy == "stop":
+        return [
+            ("C8e stop: scope fails with failed_cause=child_failed",
+             scope_status == "failed" and failed_cause == "child_failed",
+             f"scope={scope_status!r} cause={failed_cause!r}"),
+            ("C8e stop: queued siblings cancelled (node.execution_cancelled "
+             "reason=on_child_failure_stop)",
+             None if cancelled is None else cancelled > 0, f"cancelled={cancelled}"),
+            ("C8e stop: COMPLETED siblings are preserved (still readable)",
+             None if succeeded is None else succeeded > 0,
+             f"succeeded_before_stop={succeeded}"),
+        ]
+    return [("C8e fail_after_all: all 25 children run, then the scope fails",
+             None if ran is None else (ran == C8_ITEMS and scope_status == "failed"),
+             f"ran={ran} scope={scope_status!r} cause={failed_cause!r}")]
+
+
+def c8_cancel_verdicts(run_status, cascade_event, child_statuses, cancelled_attempts):
+    """C8g — parent cancelled mid-fan-out cascades: every child terminal, the run
+    cancelled, cancelled_attempts populated."""
+    kids = list(child_statuses or [])
+    terminal = {"completed", "failed", "cancelled", "interrupted"}
+    return [
+        ("C8g cancel the parent -> run.cancel_requested{cascade:true}",
+         None if cascade_event is None else "cascade" in cascade_event,
+         repr(cascade_event)[:160]),
+        ("C8g every child reaches a terminal state",
+         None if not kids else all(s in terminal for s in kids),
+         f"child statuses={sorted(set(kids)) or 'no rows'}"),
+        ("C8g run ends cancelled with cancelled_attempts[] populated",
+         run_status == "cancelled" and bool(cancelled_attempts),
+         f"status={run_status!r} cancelled_attempts={str(cancelled_attempts)[:120]}"),
+    ]
+
+
+def c8_detach_verdict(vresp, location="/spec/policies/cancelPolicy"):
+    """C8h — cancelPolicy: detach is REFUSED at validate, never silently ignored."""
+    label = "C8h cancelPolicy detach is refused by validate (unsupported_policy)"
+    if not c13_validate_ok(vresp):
+        return [(label, None, "no § 2.2 ValidateResponse body to read")]
+    hits = c13_errors_at(vresp, location) + c13_errors_at(vresp, "/policies/cancelPolicy")
+    codes = {str(e.get("code")) for e in hits}
+    return [(label,
+             vresp.get("valid") is False and "unsupported_policy" in codes,
+             c13_brief(vresp.get("errors"))) if hits else
+            (label,
+             vresp.get("valid") is False and
+             "unsupported_policy" in {str(e.get("code")) for e in vresp.get("errors") or []},
+             f"no error located at {location}; " + c13_brief(vresp.get("errors")))]
+
+
+def c8_depth_guard_verdicts(validate_body, third_level_status):
+    """C8f — self-invoke refused at validate (child_depth_exceeded); a 2-level chain
+    builds while a 3rd level is refused by runs_depth_check."""
+    codes = {str(e.get("code")) for e in (validate_body or {}).get("errors") or []} \
+        if c13_validate_ok(validate_body) else set()
+    return [
+        ("C8f self-invoking pipeline -> validate child_depth_exceeded",
+         None if not c13_validate_ok(validate_body) else
+         (validate_body.get("valid") is False and "child_depth_exceeded" in codes),
+         f"codes={sorted(codes) or 'none'}"),
+        ("C8f third level refused by runs_depth_check (2-level chain is the ceiling)",
+         None if third_level_status is None else
+         third_level_status in (400, 409, 422),
+         f"third-level POST -> {third_level_status}"),
+    ]
+
+
+# --- C8 live helpers — the stack-facing half -----------------------------------
+
+
+def c8_seed_facts():
+    """seed-manifest/1 -> what C8 arms a run against: the feature-development
+    ASSIGNMENT (the for_each branch lives in that published revision, gated by
+    inputs.fanout) and the published issue-implementation child. {} = no manifest."""
+    obj = c9_manifest_json()
+    pipes = obj.get("pipelines") if isinstance(obj, dict) else None
+    if not isinstance(pipes, dict):
+        return {}
+    fd = pipes.get(FD_SLUG) or {}
+    ii = pipes.get("issue-implementation") or {}
+    proj = (obj.get("project") or {}).get("id")
+    runs = [r for r in (obj.get("runs") or []) if isinstance(r, dict)]
+    base = next((r.get("inputs") or {} for r in runs
+                 if r.get("pipeline_slug") == FD_SLUG), {})
+    if not (proj and fd.get("assignment_id") and fd.get("revision_id")):
+        return {}
+    return {"project_id": str(proj), "assignment_id": str(fd["assignment_id"]),
+            "revision_id": str(fd["revision_id"]), "pipeline_id": str(fd.get("pipeline_id")),
+            "child_pipeline_id": str(ii.get("pipeline_id") or ""),
+            "child_revision_id": str(ii.get("revision_id") or ""), "inputs": base}
+
+
+def c8_inputs(base_inputs, count):
+    """The run inputs the manifest's agent variant carries, with the fan-out branch
+    armed (pipeline.yaml's `when: inputs.fanout == true` + fanout_count items)."""
+    inp = dict(base_inputs or {})
+    inp["fanout"], inp["fanout_count"] = True, count
+    return inp
+
+
+def c8_post_run(client, facts, count, idem, label):
+    """POST /projects/{p}/runs with the manifest's ASSIGNMENT (never a re-pin) and
+    fanout=true; 201/queued or nothing."""
+    body = {"assignment_id": facts["assignment_id"],
+            "inputs": c8_inputs(facts.get("inputs"), count), "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    if not check(f"C8 {label}: POST runs (assignment + fanout_count={count}) -> 201",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
+def c8_running_sample_sql(run_id):
+    """C8c's window query: the running invoke rows at EVERY journal commit point,
+    in global_seq order (attempt.started +1, each terminal attempt event -1)."""
+    return ("WITH ev AS (SELECT e.global_seq AS seq, CASE WHEN e.type = "
+            "'node.attempt.started' THEN 1 ELSE -1 END AS d FROM domain_events e "
+            "JOIN node_executions ne ON ne.id = e.node_execution_id "
+            f"WHERE e.run_id = '{run_id}' AND ne.kind = 'pipeline.invoke' "
+            f"AND ne.node_instance_key LIKE '{C8_FAN_OUT_KEY}[%{C8_INVOKE_SUFFIX}' "
+            "AND e.type IN ('node.attempt.started','node.attempt.completed',"
+            "'node.attempt.failed','node.attempt.cancelled','node.attempt.interrupted')) "
+            "SELECT seq::text || '|' || sum(d) OVER (ORDER BY seq)::text "
+            "FROM ev ORDER BY seq")
+
+
+def c8_sample_series(pts, every=25):
+    """Thin the commit-point series to every Nth point but ALWAYS keep the peak:
+    the printed evidence stays bounded without hiding the maximum."""
+    if not pts:
+        return []
+    peak = max(pts, key=lambda p: p[1])
+    out = pts[::max(1, every)]
+    return sorted(set(out) | {peak})
+
+
+def c8_measure_concurrency(run_id, every=25):
+    """Run the window query and return the sampled commit points (None = ledger unreadable)."""
+    text = c8_sql(c8_running_sample_sql(run_id), "c8c concurrency sample")
+    if text is None:
+        return None
+    pts = c8_running_samples(text)
+    out = c8_sample_series(pts, every)
+    show("C8c running-invoke sample (global_seq:in_flight)",
+         " ".join(f"{s}:{c}" for s, c in out)[:400] or "(no commit points)")
+    return out
+
+
+def c8_scope_row(run_id):
+    """The /fan_out row: status|outcome|failed_cause|outputs.children as JSON text."""
+    rows = psql_rows(c8_sql(
+        f"SELECT status || '|' || COALESCE(outcome,'-') || '|' || "
+        f"COALESCE(failed_cause,'-') || '|' || "
+        f"COALESCE(jsonb_path_query_array(outputs, '$.children')::text, '<none>') "
+        f"FROM node_executions WHERE run_id = '{run_id}' "
+        f"AND node_instance_key = '{C8_FAN_OUT_KEY}'", "scope row"), 4)
+    if not rows:
+        return {}
+    st, oc, fc, ch = rows[0]
+    return {"status": st, "outcome": oc, "failed_cause": fc, "children": ch}
+
+
+def c8_event(run_id, etype):
+    """The scope's own journal line (payload text) or None when the ledger is unreadable."""
+    text = c8_sql(
+        f"SELECT coalesce(payload::text,'-') FROM domain_events WHERE run_id = '{run_id}' "
+        f"AND type = '{etype}' ORDER BY global_seq DESC LIMIT 1", f"{etype} read")
+    return None if text is None else (text.strip() or "")
+
+
+def c8_child_counts(run_id):
+    """invoke rows grouped by status — the 25 / 24+1 arithmetic of C8b/C8d."""
+    return c8_sql(
+        f"SELECT status || '|' || count(*)::text FROM node_executions "
+        f"WHERE run_id = '{run_id}' AND kind = 'pipeline.invoke' GROUP BY status",
+        "invoke rows")
+
+
+def c8_invoke_key_rows(run_id):
+    return c8_sql(
+        f"SELECT node_instance_key FROM node_executions WHERE run_id = '{run_id}' "
+        f"AND kind = 'pipeline.invoke' ORDER BY node_instance_key", "invoke keys")
+
+
+def c8_invocation_count(run_id):
+    """pipeline_invocations joined to child runs (C8b's second psql row)."""
+    text = c8_sql(
+        f"SELECT count(*)::text FROM pipeline_invocations i JOIN runs c ON c.id = "
+        f"i.child_run_id WHERE i.run_id = '{run_id}'", "pipeline_invocations")
+    return count_or_none(text.strip()) if text else None
+
+
+def c8_child_shape(run_id, project_id):
+    """(depth rows, project-inheritance rows) for the parent's children."""
+    return (c8_sql(f"SELECT DISTINCT depth::text FROM runs WHERE parent_run_id = '{run_id}'",
+                   "child depth"),
+            c8_sql(f"SELECT DISTINCT (c.project_id = '{project_id}')::text FROM runs c "
+                   f"WHERE c.parent_run_id = '{run_id}'", "child project"))
+
+
+def c8_child_statuses(run_id):
+    text = c8_sql(f"SELECT status FROM runs WHERE parent_run_id = '{run_id}'", "child runs")
+    return c8_invoke_keys(text) if text is not None else None
+
+
+def c8_tree_doc(client, run_id):
+    """GET /runs/{run}/tree -> the JSON body, or None when the route did not answer."""
+    try:
+        r = client.get(LB, f"/api/v1/runs/{run_id}/tree")
+        show(f"C8d GET /runs/{run_id}/tree -> {r.status}", r.text[:400])
+        return r.json() if r.status == 200 else None
+    except Exception as e:  # noqa: BLE001 — an unreadable tree is a GAP, not a crash
+        show("C8d GET /runs/{run}/tree", f"{type(e).__name__}: {e}"[:240])
+        return None
+
+
+def c8_watch(client, facts, run_id, cap, label, hook=None):
+    """Poll the ledger to terminal, landing the gate decision on the way, and firing
+    `hook(run_id)` once while the run is live (C8g's mid-fan-out cancel). Returns the
+    terminal status, or None past the cap (evidence already dumped)."""
+    status, approved, deadline, fired = "", False, time.time() + cap, False
+    while time.time() < deadline:
+        status = run_status(run_id)
+        if status in ("completed", "failed", "cancelled", "interrupted"):
+            break
+        if status == "waiting_human" and not approved:
+            approved = approve_gate(client, facts["project_id"], run_id)
+        if hook and not fired and status not in ("queued", ""):
+            fired = hook(run_id)
+        time.sleep(4)
+    if status not in ("completed", "failed", "cancelled", "interrupted"):
+        dump_run_evidence(client, run_id)
+        check(f"C8 {label}: terminal within {cap}s", False,
+              f"last observed status={status!r} (tree + journal dumped above)")
+        return None
+    return status
+
+
+C8_SELF_DOC_NODE = """  - id: fan
+    kind: for_each
+    config:
+      items: '${{ inputs.goal }}'
+      maxConcurrency: 1
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          timeoutSeconds: 60
+          config:
+            pipeline: '@@NAME@@'
+            inputs:
+              number: 1
+"""
+
+
 def c8():
     """C8 — fan-out: zero items, and 25 children with one failing (12 case 8).
     Acceptance: issue-implementation pipeline via for_each -> pipeline.invoke,
@@ -2653,7 +3096,161 @@ def c8():
     PRESERVES completed, fail_after_all runs all 25; self-invoke => child_depth_exceeded
     and a third level refused by runs_depth_check; mid-fan-out cancel cascades;
     cancelPolicy: detach refused at validate (unsupported_policy)."""
-    skip("C8", "for_each 0/25 items with bounded concurrency, child failure policies, cascade")
+    if not CTX.get("stack_up"):
+        skip("C8", "for_each 0/25 items with bounded concurrency, child failure policies, "
+                   "cascade")
+        return
+    facts = c8_seed_facts()
+    if not facts:
+        gap("C8", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                  "there is no fan-out-capable published revision, no project assignment to "
+                  "run it through, and no published issue-implementation child to invoke "
+                  "(C1 seeds on demand)")
+        return
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        check("C8: alice signed in", False, "no session — the fan-out run cannot be posted")
+        return
+    CTX["alice"] = alice
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    pid = facts["project_id"]
+
+    # ---- C8a — zero items complete the scope immediately, and honestly ----
+    run0 = c8_post_run(alice, facts, 0, f"m4x-c8-zero-{suffix}", "zero items")
+    zero = None
+    if run0:
+        st0 = c8_watch(alice, facts, run0, 1800, "zero items")
+        if st0 is None:
+            gap("C8a zero-item fan-out", f"run {run0} never reached a terminal state — the "
+                                         "scope row, its node.scope.completed and the run "
+                                         "output are unmeasurable")
+        else:
+            row0 = c8_scope_row(run0)
+            c8_emit(c8_zero_item_verdicts(row0.get("status"), c8_event(run0, "node.scope.completed"),
+                                          row0.get("children"), st0))
+            zero = {"run_id": run0, "status": st0, "scope": row0}
+
+    # ---- C8b–C8d — 25 items, one failing (item 13), bounded fan-out ----
+    run25 = c8_post_run(alice, facts, C8_ITEMS, f"m4x-c8-25-{suffix}", f"{C8_ITEMS} items")
+    fan = None
+    if run25:
+        st25 = c8_watch(alice, facts, run25, 3000, f"{C8_ITEMS} items")
+        if st25 is None:
+            gap("C8b–C8e 25-item fan-out", f"run {run25} never reached a terminal state — "
+                                            "the invoke ledger, the concurrency sample and the "
+                                            "child failure policy are unmeasurable")
+        else:
+            keys = c8_invoke_key_rows(run25) or ""
+            counts = c8_child_counts(run25)
+            show("C8b invoke node_instance_keys", (keys or "(none)")[:600])
+            show("C8b invoke rows by status", (counts or "(none)")[:300])
+            depths, proj_flags = c8_child_shape(run25, pid)
+            inv = c8_invocation_count(run25)
+            row25 = c8_scope_row(run25)
+            doc = alice.get(LB, f"/api/v1/revisions/{facts['revision_id']}/document?format=yaml")
+            authored = None
+            if doc.status == 200:
+                mch = re.search(r"onChildFailure:\s*([a-z_]+)", doc.text)
+                authored = mch.group(1) if mch else None
+            else:
+                show("C8e authored-policy read",
+                     f"GET /revisions/{{id}}/document -> {doc.status}: the policy the graph "
+                     "actually authored is unreadable, so the policy arms GAP")
+            samples = c8_measure_concurrency(run25)
+            n_keys = len(c8_invoke_keys(keys))
+            total_ran = None
+            if counts:
+                total_ran = sum(count_or_none(c.split("|")[1]) or 0
+                                for c in counts.splitlines() if "|" in c) or None
+            c8_emit([
+                (f"C8b {C8_ITEMS} invoke node_execution rows under {C8_FAN_OUT_KEY} "
+                 "(exact key set)",
+                 n_keys == C8_ITEMS, f"observed {n_keys} distinct keys"),
+                (f"C8b {C8_ITEMS} pipeline_invocations joined to child runs",
+                 None if inv is None else inv == C8_ITEMS, f"observed {inv}"),
+            ])
+            c8_emit(c8_child_count_verdicts(counts) if counts else
+                    [("C8b invoke ledger is readable", None, "no status|count rows")])
+            c8_emit(c8_depth_project_verdicts(depths, proj_flags, pid))
+            c8_emit(c8_concurrency_verdicts(samples if samples is not None else []))
+            c8_emit(c8_policy_verdicts(authored, row25.get("status"), row25.get("failed_cause"),
+                                       total_ran, None, None))
+            kids = row25.get("children")
+            try:
+                children = json.loads(kids) if kids and kids[0] in "[{" else None
+            except ValueError:
+                children = None
+            c8_emit([
+                ("C8d outputs.children carries one entry per item (25)",
+                 None if children is None else len(children) == C8_ITEMS,
+                 f"{len(children) if children is not None else 'unparsed'} entries"),
+                ("C8d each child entry names its own child_run_id",
+                 None if not children else all(
+                     (c.get("child_run_id") or c.get("run_id") or c.get("id")) for c in children
+                     if isinstance(c, dict)),
+                 str([sorted(c)[:4] for c in children if isinstance(c, dict)][:3])[:200]),
+            ])
+            c8_emit(c8_tree_verdicts(c8_tree_doc(alice, run25), run25, C8_ITEMS))
+            fan = {"run_id": run25, "status": st25, "scope": row25, "peak": c8_max_in_flight(
+                samples or []), "policy": authored, "children": children}
+
+    # ---- C8e the OTHER policies: the seed authors exactly one ----
+    gap("C8e onChildFailure=stop / fail_after_all arms",
+        "the § 7.0 published revision authors collect_and_continue on /fan_out and pipeline "
+        "revisions are immutable; a stop/fail_after_all measurement needs a second published "
+        "parent revision plus its assignment, which the seed contract does not create — the "
+        "verdict algebra over canned rows is proven offline in test_c8_logic.py")
+
+    # ---- C8f depth guard (validate-time half) + C8h detach refusal ----
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C8f/C8h validate-time refusals", "no admin session — the library role cannot "
+                                              "post a probe draft")
+    else:
+        CTX["admin"] = admin
+        host = facts["child_pipeline_id"] or facts["pipeline_id"]
+        src = admin.get(LB, f"/api/v1/revisions/{facts['child_revision_id']}"
+                            f"/document?format=yaml") if facts["child_revision_id"] else None
+        self_doc = None
+        if src is not None and src.status == 200 and src.text.startswith("apiVersion"):
+            self_doc = src.text.replace("  nodes:\n", "  nodes:\n" + C8_SELF_DOC_NODE.replace(
+                "@@NAME@@", "issue-implementation"), 1)
+        else:
+            show("C8f self-invoke document source",
+                 f"GET /revisions/{{id}}/document -> {getattr(src, 'status', 'no revision')}")
+        if self_doc:
+            probe = c13_draft_probe(admin, host, "C8f self-invoke", self_doc)
+            c8_emit(c8_depth_guard_verdicts(probe["vresp"] if probe else None, None))
+        else:
+            gap("C8f self-invoking pipeline refused by child_depth_exceeded",
+                "no exported child document to splice a self-invoke into — a probe document "
+                "the loader refuses for another reason proves nothing")
+        c8_emit(c8_depth_guard_verdicts(None, None))
+        detach = c13_draft_probe(admin, host, "C8h cancelPolicy detach", c13_doc(
+            "m4x-c8-detach", """  - id: e1
+    kind: process.exec
+    timeoutSeconds: 60
+    config: {executable: /bin/true}
+""", policies=C13_POLICIES.replace("cancelPolicy: cascade", "cancelPolicy: detach")))
+        c8_emit(c8_detach_verdict(detach["vresp"] if detach else None))
+
+    # ---- C8g — cancel the parent mid-fan-out; the cascade must close every child ----
+    def cancel_mid(rid):
+        if not c8_invoke_key_rows(rid):
+            return False                     # the fan-out has not opened yet
+        r = alice.post(LB, f"/api/v1/runs/{rid}/cancel", {"reason": "M4 exit C8g"})
+        show(f"C8g POST /runs/{rid}/cancel -> {r.status}", r.text[:240])
+        return True
+
+    runc = c8_post_run(alice, facts, C8_ITEMS, f"m4x-c8-cancel-{suffix}", "mid-fan-out cancel")
+    if runc:
+        stc = c8_watch(alice, facts, runc, 1800, "mid-fan-out cancel", hook=cancel_mid)
+        kids = c8_child_statuses(runc)
+        c8_emit(c8_cancel_verdicts(stc or "", c8_event(runc, "run.cancel_requested"),
+                                   kids, c8_event(runc, "run.cancelled")))
+    else:
+        gap("C8g mid-fan-out cancel cascade", "the cancel-arm run could not be posted")
+    CTX["c8"] = {"zero": zero, "fan": fan, "cancel_run": runc}
 
 
 # --- C9 pure logic — unit-tested offline by e2e/m4/test_c9_logic.py -----------

@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""test_c8_logic.py - offline unit proof for e2e_m4_exit.py's C8 pure logic.
+
+Runs WITHOUT a stack (stdlib unittest only): the fan-out verdict algebra — the
+max-in-flight verdict over canned journal commit points, the run-tree shape
+verdict over a canned GET /runs/{id}/tree body, the 25 / 24+1 invoke arithmetic,
+the depth+project inheritance rows, the zero-item scope, each authored
+onChildFailure policy, the cancel cascade, and the detach/depth refusals.
+
+A green here means the VERDICT ALGEBRA is right. It never substitutes for C8's
+live 25-child fan-out against the real engine and both workers' capacity split
+(12-test-strategy.md: bounded concurrency is only proven by measuring it).
+
+usage: python3 e2e/m4/test_c8_logic.py [-v]
+"""
+import json
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
+
+
+def hits(rows, needle):
+    """The verdicts whose label mentions `needle` (asserts the arm exists at all)."""
+    out = [v for v in rows if needle in v[0]]
+    assert out, f"no verdict matching {needle!r} in {[l for l, _o, _d in rows]}"
+    return out
+
+
+def oks(rows, needle):
+    return [ok for _l, ok, _d in hits(rows, needle)]
+
+
+def one(rows, needle):
+    vs = oks(rows, needle)
+    assert len(vs) == 1, f"{needle!r} produced {len(vs)} verdicts"
+    return vs[0]
+
+
+def err(code, loc):
+    return {"code": code, "source": "compiler", "message": code, "instance_location": loc,
+            "schema_location": None, "hint": ""}
+
+
+def vbody(errors, valid=False):
+    return {"valid": valid, "errors": errors, "notes": [], "digest_scope": "v1alpha1-canonical-1"}
+
+
+def tree(parent="PARENT", n=25, key_prefix="/fan_out[", depth=1, keyed=True):
+    kids = [{"run": {"id": f"K{i}", "status": "succeeded", "depth": depth},
+             "node_instance_key": (key_prefix + str(i) + "]/invoke") if keyed else None,
+             "depth": depth, "children": []} for i in range(1, n + 1)]
+    return {"run": {"id": parent, "status": "running"}, "children": kids}
+
+
+class SampleTest(unittest.TestCase):
+    def test_parse_keeps_only_real_commit_points(self):
+        pts = m.c8_running_samples("10|1\n11|2\nNOTICE: whatever\n12|3\n13|x\n")
+        self.assertEqual([10, 11, 12], [s for s, _c in pts])
+        self.assertEqual([1, 2, 3], [c for _s, c in pts])
+
+    def test_empty_series_has_no_peak(self):
+        self.assertEqual([], m.c8_running_samples(""))
+        self.assertIsNone(m.c8_max_in_flight([]))
+        self.assertIsNone(m.c8_max_in_flight(None))
+
+    def test_thinning_never_hides_the_peak(self):
+        pts = [(i, 1) for i in range(1, 100)] + [(50, 3)]
+        out = m.c8_sample_series(pts, every=25)
+        self.assertEqual(3, max(c for _s, c in out))
+        self.assertLess(len(out), len(pts))
+        self.assertEqual([], m.c8_sample_series([], 5))
+
+
+class ConcurrencyTest(unittest.TestCase):
+    def test_peak_within_cap_and_parallel_passes(self):
+        vs = m.c8_concurrency_verdicts([(1, 1), (2, 3), (3, 2), (4, 0)])
+        self.assertTrue(one(vs, "<= 3"))
+        self.assertTrue(one(vs, "saw parallelism"))
+        self.assertTrue(one(vs, "more than one commit point"))
+
+    def test_over_run_is_a_fail_never_inferred(self):
+        vs = m.c8_concurrency_verdicts([(1, 3), (2, 4), (3, 1)])
+        self.assertFalse(one(vs, "<= 3"))
+
+    def test_no_samples_is_a_gap(self):
+        vs = m.c8_concurrency_verdicts([])
+        self.assertIsNone(one(vs, "<= 3"))
+
+    def test_serial_run_gaps_the_parallelism_proof(self):
+        vs = m.c8_concurrency_verdicts([(i, 1) for i in range(1, 6)])
+        self.assertTrue(one(vs, "<= 3"))
+        self.assertIsNone(one(vs, "saw parallelism"))
+
+    def test_single_point_sample_cannot_prove_the_cap(self):
+        vs = m.c8_concurrency_verdicts([(9, 2)])
+        self.assertTrue(one(vs, "<= 3"))
+        self.assertIsNone(one(vs, "more than one commit point"))
+
+    def test_cap_is_what_the_graph_authored(self):
+        self.assertFalse(one(m.c8_concurrency_verdicts([(1, 3), (2, 3), (3, 2)], cap=2), "<= 2"))
+
+
+class TreeTest(unittest.TestCase):
+    def test_full_tree_passes(self):
+        vs = m.c8_tree_verdicts(tree(), "PARENT", 25)
+        self.assertTrue(one(vs, "shows every child"))
+        self.assertTrue(one(vs, "DISTINCT runs"))
+        self.assertTrue(one(vs, "node_instance_key"))
+        self.assertTrue(one(vs, "root is the parent"))
+        self.assertTrue(one(vs, "depth is 1"))
+
+    def test_missing_child_is_a_fail(self):
+        vs = m.c8_tree_verdicts(tree(n=24), "PARENT", 25)
+        self.assertFalse(one(vs, "shows every child"))
+
+    def test_unreadable_body_is_a_gap(self):
+        for junk in (None, {}, "nope", {"run": {"id": "P"}}):
+            self.assertIsNone(one(m.c8_tree_verdicts(junk, "P", 25), "shows every child"))
+
+    def test_keyless_children_fail(self):
+        vs = m.c8_tree_verdicts(tree(keyed=False), "P", 25)
+        self.assertFalse(one(vs, "node_instance_key"))
+
+    def test_duplicate_child_ids_fail_distinctness(self):
+        doc = tree(n=3)
+        doc["children"][1]["run"]["id"] = doc["children"][0]["run"]["id"]
+        self.assertFalse(one(m.c8_tree_verdicts(doc, "P", 3), "DISTINCT runs"))
+
+    def test_wrong_root_and_wrong_depth_fail(self):
+        vs = m.c8_tree_verdicts(tree(parent="OTHER", depth=2), "P", 25)
+        self.assertFalse(one(vs, "root is the parent"))
+        self.assertFalse(one(vs, "depth is 1"))
+
+
+class LedgerArithmeticTest(unittest.TestCase):
+    def test_25_children_with_one_failure(self):
+        vs = m.c8_child_count_verdicts("succeeded|24\nfailed|1")
+        self.assertTrue(one(vs, "total 25"))
+        self.assertTrue(one(vs, "1 failed child"))
+        self.assertTrue(one(vs, "siblings preserved"))
+
+    def test_lost_sibling_is_a_fail(self):
+        vs = m.c8_child_count_verdicts("succeeded|23\nfailed|1")
+        self.assertFalse(one(vs, "total 25"))
+        self.assertFalse(one(vs, "siblings preserved"))
+
+    def test_two_failures_is_a_fail(self):
+        self.assertFalse(one(m.c8_child_count_verdicts("succeeded|23\nfailed|2"), "1 failed"))
+
+    def test_no_rows_is_a_gap(self):
+        self.assertIsNone(one(m.c8_child_count_verdicts(""), "readable"))
+
+    def test_garbage_count_never_reads_as_zero(self):
+        self.assertIsNone(one(m.c8_child_count_verdicts("succeeded|x"), "readable"))
+
+    def test_depth_and_project_inheritance(self):
+        vs = m.c8_depth_project_verdicts("1", "t", "PROJ")
+        self.assertTrue(one(vs, "depth = parent.depth+1"))
+        self.assertTrue(one(vs, "inherit project"))
+
+    def test_wrong_depth_and_foreign_project_fail(self):
+        vs = m.c8_depth_project_verdicts("2", "f", "PROJ")
+        self.assertFalse(one(vs, "depth = parent.depth+1"))
+        self.assertFalse(one(vs, "inherit project"))
+
+    def test_missing_inheritance_rows_gap(self):
+        vs = m.c8_depth_project_verdicts("", "", "PROJ")
+        self.assertIsNone(one(vs, "depth = parent.depth+1"))
+        self.assertIsNone(one(vs, "inherit project"))
+
+    def test_invoke_keys_are_deduped_and_sorted(self):
+        self.assertEqual(["/fan_out[1]/invoke", "/fan_out[2]/invoke"],
+                         m.c8_invoke_keys("/fan_out[2]/invoke\n/fan_out[1]/invoke\n"
+                                          "/fan_out[2]/invoke\n\n"))
+        self.assertEqual([], m.c8_invoke_keys(None))
+
+
+class ZeroItemTest(unittest.TestCase):
+    def test_clean_zero_item_run_passes(self):
+        vs = m.c8_zero_item_verdicts(
+            "succeeded", '{"items":0,"scope_key":"/fan_out"}', "[]", "completed")
+        self.assertEqual([True, True, True, True], [ok for _l, ok, _d in vs])
+
+    def test_skip_instead_of_empty_completion_is_a_fail(self):
+        vs = m.c8_zero_item_verdicts("skipped", '{"items":0}', "[]", "completed")
+        self.assertFalse(vs[0][1])
+
+    def test_missing_journal_line_gaps_only_itself(self):
+        vs = m.c8_zero_item_verdicts("succeeded", None, "[]", "completed")
+        self.assertIsNone(vs[1][1])
+        self.assertTrue(vs[0][1] and vs[2][1] and vs[3][1])
+
+    def test_nonempty_children_array_fails(self):
+        self.assertFalse(m.c8_zero_item_verdicts("succeeded", '{"items":0}',
+                                                 '[{"child_run_id":"k"}]', "completed")[2][1])
+
+    def test_run_that_never_completes_fails(self):
+        vs = m.c8_zero_item_verdicts("succeeded", '{"items":0}', "[]", "failed")
+        self.assertFalse(vs[3][1])
+
+    def test_items_not_zero_is_a_fail(self):
+        self.assertFalse(one(m.c8_zero_item_verdicts("succeeded", '{"items":3}', "[]",
+                                                     "completed"), "node.scope.completed"))
+
+
+class PolicyTest(unittest.TestCase):
+    def test_collect_and_continue_completes_the_scope(self):
+        vs = m.c8_policy_verdicts("collect_and_continue", "succeeded", None, 25, 24, 0)
+        self.assertTrue(one(vs, "scope COMPLETES"))
+        self.assertTrue(one(vs, "children ran"))
+
+    def test_collect_and_continue_that_failed_the_scope_is_a_fail(self):
+        self.assertFalse(one(m.c8_policy_verdicts("collect_and_continue", "failed",
+                                                  "child_failed", 25, 24, 0),
+                             "scope COMPLETES"))
+
+    def test_stop_cancels_queued_and_keeps_completed(self):
+        vs = m.c8_policy_verdicts("stop", "failed", "child_failed", 9, 5, 4)
+        self.assertTrue(one(vs, "failed_cause=child_failed"))
+        self.assertTrue(one(vs, "queued siblings cancelled"))
+        self.assertTrue(one(vs, "preserved"))
+
+    def test_stop_that_ran_everything_did_not_stop(self):
+        vs = m.c8_policy_verdicts("stop", "failed", "child_failed", 25, 24, 0)
+        self.assertFalse(one(vs, "queued siblings cancelled"))
+
+    def test_stop_without_evidence_gaps(self):
+        vs = m.c8_policy_verdicts("stop", "failed", "child_failed", None, None, None)
+        self.assertTrue(one(vs, "failed_cause=child_failed"))
+        self.assertIsNone(one(vs, "queued siblings cancelled"))
+        self.assertIsNone(one(vs, "preserved"))
+
+    def test_fail_after_all_wants_all_25_then_fail(self):
+        self.assertTrue(one(m.c8_policy_verdicts("fail_after_all", "failed", "child_failed",
+                                                 25, 24, 0), "then the scope fails"))
+        self.assertFalse(one(m.c8_policy_verdicts("fail_after_all", "failed", "child_failed",
+                                                  13, 12, 0), "then the scope fails"))
+        self.assertIsNone(one(m.c8_policy_verdicts("fail_after_all", "failed", "child_failed",
+                                                   None, None, None), "then the scope fails"))
+
+    def test_unknown_policy_gaps_instead_of_defaulting(self):
+        self.assertIsNone(one(m.c8_policy_verdicts("detach", "succeeded", None, 25, 24, 0),
+                              "onChildFailure policy"))
+
+
+class CancelAndRefusalTest(unittest.TestCase):
+    def test_clean_cascade_passes(self):
+        vs = m.c8_cancel_verdicts("cancelled", '{"cascade":true,"children":["a"]}',
+                                  ["cancelled", "failed", "completed"], ["att-1"])
+        self.assertEqual([True, True, True], [ok for _l, ok, _d in vs])
+
+    def test_child_left_running_is_a_fail(self):
+        vs = m.c8_cancel_verdicts("cancelled", '{"cascade":true}', ["cancelled", "running"], [])
+        self.assertFalse(vs[1][1])
+        self.assertFalse(vs[2][1])
+
+    def test_no_cascade_event_gaps(self):
+        self.assertIsNone(m.c8_cancel_verdicts("cancelled", None, ["cancelled"], [])[0][1])
+
+    def test_detach_refused_at_validate(self):
+        vs = m.c8_detach_verdict(vbody([err("unsupported_policy",
+                                            "/spec/policies/cancelPolicy")]))
+        self.assertTrue(one(vs, "detach is refused"))
+
+    def test_detach_silently_ignored_is_a_fail(self):
+        self.assertFalse(one(m.c8_detach_verdict(vbody([], True)), "detach is refused"))
+
+    def test_unreadable_validate_body_gaps(self):
+        for junk in (None, {}, {"errors": "nope"}):
+            self.assertIsNone(one(m.c8_detach_verdict(junk), "detach is refused"))
+
+    def test_self_invoke_depth_guard(self):
+        vs = m.c8_depth_guard_verdicts(vbody([err("child_depth_exceeded", "/spec/nodes/0")]), 409)
+        self.assertTrue(one(vs, "child_depth_exceeded"))
+        self.assertTrue(one(vs, "third level refused"))
+
+    def test_depth_guard_without_a_body_gaps(self):
+        vs = m.c8_depth_guard_verdicts(None, None)
+        self.assertIsNone(one(vs, "child_depth_exceeded"))
+        self.assertIsNone(one(vs, "third level refused"))
+
+    def test_valid_self_invoke_is_a_fail(self):
+        self.assertFalse(one(m.c8_depth_guard_verdicts(vbody([], True), None),
+                             "child_depth_exceeded"))
+
+
+class SeedShapeTest(unittest.TestCase):
+    def test_run_inputs_arm_the_branch_without_touching_the_rest(self):
+        inp = m.c8_inputs({"goal": "ship it", "repository": "app", "fanout": False,
+                           "fanout_count": 0}, 25)
+        self.assertEqual({"goal": "ship it", "repository": "app", "fanout": True,
+                          "fanout_count": 25}, inp)
+
+    def test_missing_or_unparseable_manifest_reads_as_no_facts(self):
+        import tempfile
+        keep = m.MANIFEST_PATH
+        try:
+            m.MANIFEST_PATH = "/nonexistent/seed-manifest.json"
+            self.assertEqual({}, m.c8_seed_facts())
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                f.write("{ not json")
+                m.MANIFEST_PATH = f.name
+            self.assertEqual({}, m.c8_seed_facts())
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"project": {"id": "P"}, "pipelines": {},
+                           "runs": [{"pipeline_slug": m.FD_SLUG, "inputs": {}}]}, f)
+                m.MANIFEST_PATH = f.name
+            self.assertEqual({}, m.c8_seed_facts())
+        finally:
+            m.MANIFEST_PATH = keep
+
+    def test_seed_facts_take_the_assignment_verbatim(self):
+        import tempfile
+        keep = m.MANIFEST_PATH
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"project": {"id": "P"},
+                           "pipelines": {m.FD_SLUG: {"pipeline_id": "PIPE", "revision_id": "R",
+                                                     "assignment_id": "A"},
+                                         "issue-implementation": {"pipeline_id": "CHILD",
+                                                                  "revision_id": "CREV"}},
+                           "runs": [{"pipeline_slug": m.FD_SLUG,
+                                     "inputs": {"goal": "g", "fanout": False}}]}, f)
+                m.MANIFEST_PATH = f.name
+            got = m.c8_seed_facts()
+            self.assertEqual("A", got["assignment_id"])
+            self.assertEqual("CHILD", got["child_pipeline_id"])
+            self.assertEqual("g", got["inputs"]["goal"])
+        finally:
+            m.MANIFEST_PATH = keep
+
+    def test_self_invoke_document_splices_a_real_invoke_node(self):
+        doc = m.C8_SELF_DOC_NODE.replace("@@NAME@@", "issue-implementation")
+        self.assertIn("kind: for_each", doc)
+        self.assertIn("pipeline: 'issue-implementation'", doc)
+        self.assertEqual(m.C8_ITEMS, 25)
+        self.assertEqual(m.C8_MAX_CONCURRENCY, json.loads('{"cap": 3}')["cap"])
+        self.assertEqual(3, m.C8_MAX_CONCURRENCY)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2 if "-v" in sys.argv else 1)
