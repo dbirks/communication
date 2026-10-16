@@ -86,7 +86,7 @@ func TestM4RunLifecycleApprovalResumesRun(t *testing.T) {
 		VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceID: workspaceID, WorkerID: workerID,
 	}
 	if err := m4Runtime.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
-		map[string]any{"plan": "step 1: read the spec"}, "sha256:"+strings.Repeat("3", 64),
+		m4LifecyclePlanOutputs(), "sha256:"+strings.Repeat("3", 64),
 		nil, "", ckpt); err != nil {
 		t.Fatalf("complete plan attempt: %v", err)
 	}

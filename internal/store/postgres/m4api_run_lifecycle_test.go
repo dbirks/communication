@@ -46,6 +46,18 @@ func m4LifecyclePlan(t *testing.T) (*compiler.Plan, json.RawMessage) {
 	return plan, raw
 }
 
+// m4LifecyclePlanOutputs is the fake worker's validated /plan envelope. Probe
+// document 1 declares plan as the OBJECT the real m4-planner answers
+// ({goal, findings[], steps[{id, action}]}), so a bare string is refused as
+// invalid_output and the /approve gate never opens.
+func m4LifecyclePlanOutputs() map[string]any {
+	return map[string]any{"plan": map[string]any{
+		"goal":     "add a docstring and fix the assertion",
+		"findings": []any{"the spec documents the helper"},
+		"steps":    []any{map[string]any{"id": 1, "action": "read the spec"}},
+	}}
+}
+
 // m4LifecyclePublished publishes the probe document through APIPipelineStore
 // — create pipeline -> draft -> RecordValidation -> PublishDraft — and
 // returns the pipeline id and the published revision's id.
@@ -710,7 +722,7 @@ func TestM4RunLifecycleRetryRearmsDownstream(t *testing.T) {
 		VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceID: workspaceID, WorkerID: workerID,
 	}
 	if err := m4Runtime.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
-		map[string]any{"plan": "step 1: read the spec"}, "sha256:"+strings.Repeat("3", 64),
+		m4LifecyclePlanOutputs(), "sha256:"+strings.Repeat("3", 64),
 		nil, "", ckpt); err != nil {
 		t.Fatalf("complete retried attempt: %v", err)
 	}
