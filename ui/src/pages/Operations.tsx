@@ -1,5 +1,6 @@
 import { problemOf } from "../api/client";
 import { useHealth, useReadiness, useWorkers } from "../api/queries";
+import { useSystemScheduler } from "../api/runs";
 import { SandboxHealthPanel } from "../components/Sandbox";
 import { Spinner } from "../components/Feedback";
 import { Panel } from "../components/ds/Panel";
@@ -53,10 +54,136 @@ function StatusCard({ testid, title, status, ok, rows, detail }: StatusCardProps
   );
 }
 
+/** Age of the oldest queued attempt in human units; null means the queue is empty. */
+function formatAgeSeconds(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "queue empty";
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.round(whole / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h`;
+}
+
+export interface SchedulerPanelProps {
+  scheduler: ReturnType<typeof useSystemScheduler>;
+}
+
+/**
+ * Scheduler telemetry (`docs/m4-contract.md` § 6.2 via `SchedulerStatus`), plus
+ * the two honest sentences W7/C13f demand: unbindable runs are *waiting for its
+ * worker*, and CPU/memory/disk limits are not implemented at all.
+ */
+export function SchedulerPanel({ scheduler }: SchedulerPanelProps) {
+  const problem = scheduler.error ? problemOf(scheduler.error) : null;
+  const status = scheduler.data;
+  const counters: Array<[string, string, string]> = status
+    ? [
+        ["attempts queued", String(status.attempts_by_status.queued), "scheduler-attempts-queued"],
+        ["attempts leased", String(status.attempts_by_status.leased), "scheduler-attempts-leased"],
+        [
+          "attempts running",
+          String(status.attempts_by_status.running),
+          "scheduler-attempts-running",
+        ],
+        ["lease expirations", String(status.lease_expirations), "scheduler-lease-expirations"],
+        ["max retry loop depth", String(status.max_retry_loop_depth), "scheduler-max-retry-depth"],
+        [
+          "oldest queued age",
+          formatAgeSeconds(status.oldest_queued_age_seconds),
+          "scheduler-oldest-queued",
+        ],
+        ["waiting approvals", String(status.waiting_approvals), "scheduler-waiting-approvals"],
+        [
+          "queued unbindable runs",
+          String(status.queued_unbindable_runs),
+          "scheduler-queued-unbindable",
+        ],
+      ]
+    : [];
+
+  return (
+    <Panel
+      title="SCHEDULER"
+      headingLevel={2}
+      meta={status ? `${status.workers.length} worker(s) reporting` : undefined}
+    >
+      <div className="p-[10px]">
+        {scheduler.isPending ? <Spinner label="Loading scheduler" /> : null}
+        {problem ? (
+          <p
+            className="font-mono text-[11px] text-st-failed-tag-fg"
+            role="alert"
+            data-testid="scheduler-unavailable"
+          >
+            × {problem.detail || "Scheduler status could not be loaded."}
+          </p>
+        ) : null}
+        {status ? (
+          <>
+            <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] text-ink-2 sm:grid-cols-2">
+              {counters.map(([term, value, testid]) => (
+                <div key={term} className="flex gap-2" data-testid={testid}>
+                  <dt className="text-muted">{term}</dt>
+                  <dd className="font-semibold">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {status.queued_unbindable_runs > 0 ? (
+              <p className="pt-2 text-[12.5px] text-ink-2" data-testid="scheduler-unbindable-note">
+                {status.queued_unbindable_runs} run(s) waiting for its worker — the worker that
+                holds its workspace is offline, draining or full
+              </p>
+            ) : null}
+            <p className="pt-2 text-[12.5px] text-muted" data-testid="scheduler-no-resource-limits">
+              Resource limits (CPU, memory, disk): not implemented — nothing is silently capped.
+            </p>
+            {status.workers.length === 0 ? (
+              <p className="pt-2 text-[12.5px] text-muted">No worker load reported</p>
+            ) : (
+              <table
+                className="w-full border-collapse pt-2 text-[12.5px]"
+                data-testid="scheduler-workers-table"
+              >
+                <caption className="sr-only">Per-worker claim capacity</caption>
+                <thead>
+                  <tr className="border-b border-line-strong text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                    <th scope="col" className="py-1 pr-4">
+                      Worker
+                    </th>
+                    <th scope="col" className="py-1">
+                      Active attempts / capacity
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {status.workers.map((worker) => (
+                    <tr
+                      key={worker.worker_id}
+                      data-testid={`scheduler-worker-row-${worker.name}`}
+                      className="border-b border-line-soft last:border-b-0"
+                    >
+                      <td className="py-[5px] pr-4 font-semibold">{worker.name}</td>
+                      <td className="py-[5px] font-mono text-[11px]">
+                        {worker.active_attempts} / {worker.capacity}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
 export default function Operations() {
   const health = useHealth();
   const readiness = useReadiness();
   const workers = useWorkers();
+  const scheduler = useSystemScheduler();
   // Worker rows are keyed by name in `workers-table`; the sandbox panel registers
   // by id, so the two surfaces agree on one label instead of one of them showing
   // a uuid.
@@ -194,6 +321,8 @@ export default function Operations() {
           ) : null}
         </div>
       </Panel>
+
+      <SchedulerPanel scheduler={scheduler} />
 
       {/* M3: the fleet's sandbox verdict. A worker that never verified, or that
           registered `permissive-dev`/`disabled`, is a finding an operator must
