@@ -17,7 +17,16 @@
 # expression language has no join/format function (ADR-0022 § 5): interpolating plan.findings or
 # plan.steps into the /approve gate's summary renders a raw JSON array the Inbox card truncates
 # mid-array, so the gate shows plan.goal plus plan.summary (a <=600-char human-readable plan) and
-# nothing else; findings/steps stay in the node outputs.
+# nothing else; findings/steps stay in the node outputs; and (f) document 1's /review evidence: §
+# 9.3 declares evidence as a string, but the real m4-reviewer replies captured live answer an
+# ARRAY of observation strings (two of three) or one string (one of three), and against § 9.3 the
+# outputs validator refuses the array (invalid_output: at /evidence: got array, want string). The
+# /review prompt now names the array as the shape; the declared schema admits both observed shapes
+# ({type: [string, array], items: {type: string}}) so a prose-shaped answer costs an attempt
+# instead of the run, and the loop's review_feedback binding carries the same union to /implement
+# (an agent reader, via expr.Stringify's canonical JSON). The twin keeps § 9.3's string because
+# m4-exit.sh answers one, and C1 compares node_instance_key SETS, not output shapes. README § 7
+# deviations 6-7 carry the detail.
 # Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
 # see README.md "Offline validation" for the exact commands. seed.sh posts one document per
 # `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
@@ -151,12 +160,18 @@ spec:
               Implement the approved plan in repository ${{ inputs.repository }}.
               Goal: ${{ inputs.goal }}
               Previous reviewer feedback: ${{ has(previous.review_feedback) ? previous.review_feedback : '(first iteration: no prior review)' }}
-              Reply with JSON {summary, files_changed} only.
+              Reply with JSON of exactly this shape:
+              {"summary": "<what you changed and why, in prose>",
+               "files_changed": ["<repo path>"]}
+              summary is ONE non-empty plain-text string — no JSON, no nested object, no array.
+              files_changed is an ARRAY of repository path strings, one path per element (paths
+              only, never objects and never a single string listing them), and [] when nothing
+              changed. Write nothing outside this object.
           outputs:
             type: object
             required: [summary]
             properties:
-              summary: {type: string}
+              summary: {type: string, minLength: 1}
               files_changed: {type: array, items: {type: string}}
         - id: test
           kind: process.exec
@@ -202,13 +217,21 @@ spec:
               Decide whether the acceptance criteria are met.
               Criteria: ${{ inputs.acceptance_criteria }}
               Test result: ${{ nodes.test.outputs.result }}
-              Reply with JSON {approved, evidence, findings} only.
+              Reply with JSON of exactly this shape:
+              {"approved": true,
+               "evidence": ["<one observed fact per element>"],
+               "findings": ["<one verdict per criterion>", "<the recommendation, last>"]}
+              approved is a JSON boolean. evidence is an ARRAY of strings — one observed fact
+              per element, plain sentences — never one string holding the whole list and never
+              an object. findings is an ARRAY of strings: one verdict per criterion, then the
+              recommendation as the last element. Either array may be empty, but each is always
+              an array and never null. Write nothing outside this object.
           outputs:
             type: object
             required: [approved, evidence]
             properties:
               approved: {type: boolean}
-              evidence: {type: string}
+              evidence: {type: [string, array], items: {type: string}}
               findings: {type: array, items: {type: string}}
       resultBindings:
         implementation_summary: ${{ nodes.implement.outputs.summary }}
@@ -221,7 +244,7 @@ spec:
         iterations: {type: integer}
         approved: {type: boolean}
         implementation_summary: {type: string}
-        review_feedback: {type: string}
+        review_feedback: {type: [string, array], items: {type: string}}
   - id: emit_items
     kind: process.exec
     dependsOn: [approve]

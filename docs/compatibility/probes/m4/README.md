@@ -323,6 +323,39 @@ four deliberate, provenance-headed adjustments:
    under the shape but carry **no `summary`** — expected, since only the newer
    prompt asks for it; the next live runs answer it and a missing one fails
    honestly as `invalid_output`.
+7. **Document 1's `/review` `evidence` admits the array Claude answers.** With
+   `/plan` fixed, the live agent run got plan → approve → iterations and died at
+   `/build_until_verified[2]/review`: `invalid_output: at /evidence: got array,
+   want string` (attempts 1 and 2, same class as the `/plan` refusal above).
+   The captured replies answer `evidence` as an ARRAY of one-fact-per-element
+   strings (both iteration-2 replies) and, once, as a single string when the
+   test was red and it had one thing to say (iteration 1); § 9.3's
+   `evidence: {type: string}` refuses the array. The prompt now names the exact
+   shape (`approved` a JSON boolean, `evidence` an array of strings, `findings`
+   an array with the recommendation last, nothing outside the object) and the
+   declared schema admits both observed shapes —
+   `evidence: {type: [string, array], items: {type: string}}` — so the probe
+   measures the loop's business outcome instead of re-litigating a
+   prose-vs-array coin flip. Every captured reply validates under it: 2 ×
+   `/plan`, 2 × `/implement`, 3 × `/review` (the iteration-1 reply reassembled
+   from its three `conversation.message.agent` chunks), plus the loop envelope
+   with `review_feedback` bound from each `evidence` value. Downstream: `passWhen`
+   reads only `review.outputs.approved` (boolean, untouched), the loop's
+   `review_feedback` result binding declares the same union, and its one consumer
+   is `/implement`'s prompt — read by an agent, where an array reaches the text
+   through `expr.Stringify` (ADR-0022 § 1 `bindingText`) as canonical JSON and
+   loses nothing. No human-facing card interpolates it: the gate still shows
+   `plan.goal` + `plan.summary` only, and `publish_verified` /
+   `publish_needs_attention` take the whole outputs object as `output_json`,
+   which an array survives. `/implement`'s prompt and schema were tightened
+   together against its own captured replies (`summary` a required non-empty
+   plain-text string — `minLength: 1` — `files_changed` an array of repository
+   path strings, `[]` when nothing changed); both observed replies match. The
+   twin keeps `evidence`/`review_feedback` as § 9.3's string because
+   `m4-exit.sh review` answers one: C1's cross-variant proof compares
+   `node_instance_key` SETS (and per-pipeline `plan_digest`), never output
+   shapes — and the twin's node ids, key set and leading comment block are
+   byte-unchanged.
 
 ### Offline validation (no server needed)
 
@@ -380,6 +413,7 @@ workers — same-path bind trick, see `e2e/m4/README.md`).
 | Symptom | Cause |
 | --- | --- |
 | Attempt fails with `exit 126` | The attempt's tool read grant is missing — the script (`m4-exit.sh` under `/opt/m4/bin`) is mounted but not readable/executable by the unit's sandbox policy. Fix the grant, not the script. |
+| Agent attempt fails `invalid_output … at /evidence: got array, want string` (or the same at `/plan`) | The run pinned a revision authored before deviations 6–7, whose outputs schema still declares § 9.3's strings while the agent answers an array. Republish from the current `pipeline.yaml` and re-run; the pinned snapshot, not the agent, is what changed. |
 | Agent turn dies with the adapter's `Authentication required` | Harness credentials never reached the worker: `${HOME}/.claude` not bind-mounted at `/harness/claude`, or `CLAUDE_CONFIG_DIR` unset, or the stack came up without `HOST_UID`/`HOST_GID` so uid 10001 cannot read your `0600` config. |
 | Run sits in `waiting_human` after the gate was decided | Pre-52685c1 build: nothing resumed the run once its last approval gate was decided. Rebuild the image from ≥ 52685c1. |
 | Attempts queue forever, never claimed | The **run** is not in `running` — the scheduler only hands out attempts for a running run. Read the run row and its gate state before blaming the worker. |
