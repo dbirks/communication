@@ -457,5 +457,108 @@ class SqlReaderTest(unittest.TestCase):
             m.psql = keep
 
 
+class DriverQueryTest(unittest.TestCase):
+    """The four DRIVER bugs the last C8 diagnosis found. Each one hid a real product
+    behaviour behind a broken reader: the re-wrapped children array, the 'true'-vs-'t'
+    inheritance flag, the journal sweep that control-plane invokes never populate
+    (ADR-0023 § 3 — no lease, no node.attempt.* events), and the 2-space node spliced
+    into a 4-space yaml.Marshal export. The product side of the depth guard is fixed
+    and committed; the driver just has to be able to see it."""
+
+    def setUp(self):
+        self.keep, self.seen = m.psql, []
+        m.psql = lambda sql: self.seen.append(sql) or ""
+
+    def tearDown(self):
+        m.psql = self.keep
+
+    def test_scope_row_reads_children_without_rewrapping_them(self):
+        """jsonb_path_query_array(outputs,'$.children') wraps the matched array in ANOTHER
+        array: [] -> [[]] and 25 entries -> 1. The verdicts then measured the driver."""
+        m.c8_scope_row("R")
+        sql = self.seen[-1]
+        self.assertIn("(outputs -> 'children')::text", sql)
+        self.assertNotIn("jsonb_path_query_array", sql)
+
+    def test_scope_row_children_text_is_the_bare_array(self):
+        keep = m.psql
+        try:
+            m.psql = lambda sql: "succeeded|-|-|[]"
+            row = m.c8_scope_row("R")
+        finally:
+            m.psql = keep
+        self.assertEqual("[]", row["children"])
+        self.assertTrue(one(m.c8_zero_item_verdicts(row["status"], '{"items": 0}',
+                                                    row["children"], "completed"),
+                            "outputs.children is the EMPTY array"))
+
+    def test_child_project_inheritance_emits_t_not_true(self):
+        """(c.project_id = '…')::text prints 'true'; the verdict wants 't'. The gate
+        GAPped inheritance on children that had it."""
+        m.c8_child_shape("R", "PROJ")
+        sql = self.seen[-1]
+        self.assertIn("CASE WHEN c.project_id = 'PROJ' THEN 't' ELSE 'f' END", sql)
+        self.assertNotIn("c.project_id = 'PROJ')::text", sql)
+        vs = m.c8_depth_project_verdicts("1", "t", "PROJ")
+        self.assertTrue(one(vs, "children inherit project"))
+        self.assertFalse(one(m.c8_depth_project_verdicts("1", "f", "PROJ"),
+                             "children inherit project"))
+
+    def test_concurrency_sweep_reads_node_executions_not_the_journal(self):
+        """ADR-0023 § 3: a control-plane invoke never takes a lease and emits no
+        node.attempt.* events, so the journal sweep returned nothing and C8c could
+        only ever GAP. The in-flight curve comes from ready_at (+1) / finished_at (-1)
+        over the parent's own pipeline.invoke rows."""
+        sql = m.c8_running_sample_sql("R")
+        self.assertIn("kind = 'pipeline.invoke'", sql)
+        self.assertIn("SELECT ready_at AS ts, 1 AS d", sql)
+        self.assertIn("SELECT finished_at AS ts, -1 AS d", sql)
+        self.assertIn(m.C8_FAN_OUT_KEY, sql)
+        self.assertIn(m.C8_INVOKE_SUFFIX, sql)
+        self.assertNotIn("domain_events", sql)
+        self.assertNotIn("node.attempt.", sql)
+        self.assertIn("ORDER BY ts, d", sql)   # -1 before +1: a boundary touch is not overlap
+        self.assertIn("run_id = 'R'", sql)
+
+    def test_sweep_rows_still_feed_the_peak_verdicts(self):
+        pts = m.c8_running_samples("1|1\n2|2\n3|3\n4|2\n5|3\n6|2\n7|1\n8|0\n")
+        self.assertEqual(3, m.c8_max_in_flight(pts))
+        vs = m.c8_concurrency_verdicts(pts)
+        self.assertTrue(one(vs, "<= 3"))
+        self.assertTrue(one(vs, "saw parallelism"))
+
+    def test_self_invoke_document_is_one_valid_yaml_export(self):
+        """The splice target was the yaml.Marshal'd GET /revisions/{id}/document (4-space
+        node indentation) while C8_SELF_DOC_NODE is written at the seed's 2 spaces, so the
+        draft died invalid_yaml before the compiler ever saw the self-invoke."""
+        import yaml
+        doc = m.c13_doc("issue-implementation",
+                        m.C8_SELF_DOC_NODE.replace("@@NAME@@", "issue-implementation"))
+        self.assertIn("apiVersion: communication.dev/v1alpha1", doc,
+                      "c13_doc must produce the seed header")
+        parsed = yaml.safe_load(doc)
+        nodes = parsed["spec"]["nodes"]
+        self.assertEqual("for_each", nodes[0]["kind"])
+        self.assertEqual(1, nodes[0]["config"]["maxConcurrency"])
+        self.assertEqual("collect_and_continue", nodes[0]["config"]["onChildFailure"])
+        invoke = nodes[0]["config"]["body"]["nodes"][0]
+        self.assertEqual("pipeline.invoke", invoke["kind"])
+        self.assertEqual("issue-implementation", parsed["metadata"]["name"])
+        self.assertEqual("issue-implementation", invoke["config"]["pipeline"])
+        # configPipelineInvoke.inputs values are bindingOrString: a bare 1 is a
+        # schema_shape error that would drown the child_depth_exceeded being measured.
+        self.assertEqual("1", invoke["config"]["inputs"]["number"])
+        self.assertIsInstance(invoke["config"]["inputs"]["number"], str)
+
+    def test_self_invoke_is_built_from_the_seed_document_not_a_revision_export(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = src[src.index("def c8():"):src.index("# --- C9 pure logic")]
+        self.assertIn("self_doc = c13_doc(", body)
+        self.assertNotIn("src.text.replace", body)
+        self.assertEqual(1, body.count("c8_depth_guard_verdicts("),
+                        "the depth guard emits exactly once, from the live probe")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

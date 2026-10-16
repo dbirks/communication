@@ -4809,7 +4809,8 @@ def c8_invoke_keys(text):
 
 
 def c8_running_samples(text):
-    """'global_seq|running_count' ledger rows -> [(seq, count)] in seq order.
+    """'point|running_count' ledger rows -> [(point, count)] in point order (the
+    point is the sweep's row_number over ready_at/finished_at transitions).
     Rows the driver cannot read are DROPPED (and counted by the caller through
     len()); a sample list that came back empty is a GAP, not a zero."""
     out = []
@@ -4837,8 +4838,9 @@ def c8_concurrency_verdicts(samples, cap=C8_MAX_CONCURRENCY):
     peak = c8_max_in_flight(samples)
     if peak is None:
         return [("C8c max concurrently running invoke rows <= "
-                 f"{cap} (measured from the journal)", None,
-                 "no seq|count rows — the for_each scope produced no measurable "
+                 f"{cap} (measured from node_executions ready_at/finished_at transitions "
+                 "rather than asserted from the schema — contract § 7.1 C8c)", None,
+                 "no point|in_flight rows — the for_each scope produced no measurable "
                  "commit point")]
     v = [(f"C8c max concurrently running invoke rows <= {cap} "
           f"(measured over {len(samples)} commit points)", peak <= cap,
@@ -5114,17 +5116,28 @@ def c8_post_run(client, facts, count, idem, label):
 
 
 def c8_running_sample_sql(run_id):
-    """C8c's window query: the running invoke rows at EVERY journal commit point,
-    in global_seq order (attempt.started +1, each terminal attempt event -1)."""
-    return ("WITH ev AS (SELECT e.global_seq AS seq, CASE WHEN e.type = "
-            "'node.attempt.started' THEN 1 ELSE -1 END AS d FROM domain_events e "
-            "JOIN node_executions ne ON ne.id = e.node_execution_id "
-            f"WHERE e.run_id = '{run_id}' AND ne.kind = 'pipeline.invoke' "
-            f"AND ne.node_instance_key LIKE '{C8_FAN_OUT_KEY}[%{C8_INVOKE_SUFFIX}' "
-            "AND e.type IN ('node.attempt.started','node.attempt.completed',"
-            "'node.attempt.failed','node.attempt.cancelled','node.attempt.interrupted')) "
-            "SELECT seq::text || '|' || sum(d) OVER (ORDER BY seq)::text "
-            "FROM ev ORDER BY seq")
+    """C8c's window query: the invoke rows in flight at EVERY ready/finish commit
+    point of the parent's own `kind='pipeline.invoke'` node_executions, as
+    'point|in_flight' rows in time order (ready_at +1, finished_at -1, running sum).
+
+    Measured from node_executions and NOT from the journal: pipeline.invoke is
+    control-plane work, and ADR-0023 § 3 says control-plane work never occupies a
+    lease — it emits no node.attempt.* events at all, so the journal-side sweep
+    returned zero commit points and C8c GAPped however wide the fan-out ran.
+    The advancer only readies an index's body once a fan-out slot frees up (§ 5.2's
+    fourth layer), so this curve IS the in-flight count. Ties break -1 before +1: a
+    sibling finishing at the instant another readies is not counted as overlap, so
+    the cap never fails on a clock collision."""
+    where = (f"FROM node_executions WHERE run_id = '{run_id}' AND kind = 'pipeline.invoke' "
+             f"AND node_instance_key LIKE '{C8_FAN_OUT_KEY}[%{C8_INVOKE_SUFFIX}' ")
+    return ("WITH ev AS (SELECT ready_at AS ts, 1 AS d, id " + where +
+            "AND ready_at IS NOT NULL UNION ALL "
+            "SELECT finished_at AS ts, -1 AS d, id " + where +
+            "AND finished_at IS NOT NULL) "
+            "SELECT rn::text || '|' || running::text FROM (SELECT row_number() OVER "
+            "(ORDER BY ts, d, id) AS rn, sum(d) OVER (ORDER BY ts, d, id "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running "
+            "FROM ev) q ORDER BY rn")
 
 
 def c8_sample_series(pts, every=25):
@@ -5144,17 +5157,22 @@ def c8_measure_concurrency(run_id, every=25):
         return None
     pts = c8_running_samples(text)
     out = c8_sample_series(pts, every)
-    show("C8c running-invoke sample (global_seq:in_flight)",
+    show("C8c running-invoke sample (point:in_flight)",
          " ".join(f"{s}:{c}" for s, c in out)[:400] or "(no commit points)")
     return out
 
 
 def c8_scope_row(run_id):
-    """The /fan_out row: status|outcome|failed_cause|outputs.children as JSON text."""
+    """The /fan_out row: status|outcome|failed_cause|outputs.children as JSON text.
+
+    `outputs -> 'children'` and NOT jsonb_path_query_array: the path query REWRAPS the
+    array it matches, so a scope whose children were [] came back [[]] and 25 entries
+    came back as 1 — the C8a/C8d verdicts were reading a driver artefact (a live4/C8
+    observed children='[[]]' against a genuinely empty scope)."""
     rows = psql_rows(c8_sql(
         f"SELECT status || '|' || COALESCE(outcome,'-') || '|' || "
         f"COALESCE(failed_cause,'-') || '|' || "
-        f"COALESCE(jsonb_path_query_array(outputs, '$.children')::text, '<none>') "
+        f"COALESCE((outputs -> 'children')::text, '<none>') "
         f"FROM node_executions WHERE run_id = '{run_id}' "
         f"AND node_instance_key = '{C8_FAN_OUT_KEY}'", "scope row"), 4)
     if not rows:
@@ -5197,7 +5215,8 @@ def c8_child_shape(run_id, project_id):
     """(depth rows, project-inheritance rows) for the parent's children."""
     return (c8_sql(f"SELECT DISTINCT depth::text FROM runs WHERE parent_run_id = '{run_id}'",
                    "child depth"),
-            c8_sql(f"SELECT DISTINCT (c.project_id = '{project_id}')::text FROM runs c "
+            c8_sql(f"SELECT DISTINCT CASE WHEN c.project_id = '{project_id}' THEN 't' "
+                   f"ELSE 'f' END FROM runs c "
                    f"WHERE c.parent_run_id = '{run_id}'", "child project"))
 
 
@@ -5253,7 +5272,7 @@ C8_SELF_DOC_NODE = """  - id: fan
           config:
             pipeline: '@@NAME@@'
             inputs:
-              number: 1
+              number: '1'
 """
 
 
@@ -5372,23 +5391,19 @@ def c8():
     else:
         CTX["admin"] = admin
         host = mf(facts, "child_pipeline_id") or mf(facts, "pipeline_id")
-        src = admin.get(LB, f"/api/v1/revisions/{mf(facts, 'child_revision_id')}"
-                            f"/document?format=yaml") if mf(facts, "child_revision_id") else None
-        self_doc = None
-        if src is not None and src.status == 200 and src.text.startswith("apiVersion"):
-            self_doc = src.text.replace("  nodes:\n", "  nodes:\n" + C8_SELF_DOC_NODE.replace(
-                "@@NAME@@", "issue-implementation"), 1)
-        else:
-            show("C8f self-invoke document source",
-                 f"GET /revisions/{{id}}/document -> {getattr(src, 'status', 'no revision')}")
+        # The document is built from the § 7.0 seed header (c13_doc), NOT by splicing
+        # into GET /revisions/{id}/document: that export is yaml.Marshal output with
+        # 4-space node indentation, and the 2-space C8_SELF_DOC_NODE dropped into it was
+        # invalid_yaml before the compiler ever saw the self-invoke (live C8f).
+        self_doc = c13_doc("issue-implementation", C8_SELF_DOC_NODE.replace(
+            "@@NAME@@", "issue-implementation"))
         if self_doc:
             probe = c13_draft_probe(admin, host, "C8f self-invoke", self_doc)
             c8_emit(c8_depth_guard_verdicts(probe["vresp"] if probe else None, None))
         else:
             gap("C8f self-invoking pipeline refused by child_depth_exceeded",
-                "no exported child document to splice a self-invoke into — a probe document "
-                "the loader refuses for another reason proves nothing")
-        c8_emit(c8_depth_guard_verdicts(None, None))
+                "no exported seed document to splice a self-invoke into — a probe "
+                "document the loader refuses for another reason proves nothing")
         detach = c13_draft_probe(admin, host, "C8h cancelPolicy detach", c13_doc(
             "m4x-c8-detach", """  - id: e1
     kind: process.exec
