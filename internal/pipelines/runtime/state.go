@@ -201,6 +201,41 @@ var nodeTransitions = map[string][]string{
 	NodeInterrupted: {NodeReady},
 }
 
+// Reopen is contract route 31's row half: a retry returns a retriable terminal
+// execution (failed / interrupted / cancelled, and the skipped rows a stopped
+// branch left behind) to PENDING — not to ready. § 5.1 step 2 makes readiness
+// the advancer's own derivation from dependency state, and § 5.1 step 3 makes
+// it the only place a `when`/config binding is evaluated; a retry that jumped a
+// downstream row straight to ready has the control-plane dispatch read an
+// upstream whose outputs no longer exist, which errors (predicate_error),
+// fails the run again and cascade-cancels the attempt the retry just armed —
+// the live-lab defect this method exists to make impossible. Every terminal
+// field is cleared with the status: history stays append-only in the ledger
+// (attempts, journal, checkpoints), the execution row returns to its fresh
+// shape.
+func (n *NodeExecution) Reopen(at time.Time) error {
+	switch n.Status {
+	case NodeFailed, NodeInterrupted, NodeCancelled, NodeSkipped:
+	default:
+		return IllegalTransition{What: "node execution " + n.InstanceKey, From: n.Status, To: NodePending,
+			Why: "node_executions_reopen_target: only failed, interrupted, cancelled or skipped rows re-arm"}
+	}
+	n.Status = NodePending
+	n.Outcome = ""
+	n.ErrorClass = ""
+	n.FailedCause = ""
+	n.Waiting = ""
+	n.SkipReason = ""
+	n.CancelReason = ""
+	n.FinishedAt = time.Time{}
+	// ready_at is "the first time this execution became ready" and stays: the
+	// § 3 CHECK only demands it be present for non-pending rows.
+	if n.ReadyAt.IsZero() {
+		n.ReadyAt = at
+	}
+	return nil
+}
+
 func CanNodeTransition(from, to string) bool {
 	for _, t := range nodeTransitions[from] {
 		if t == to {

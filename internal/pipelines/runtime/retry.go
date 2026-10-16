@@ -114,11 +114,12 @@ func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, err
 }
 
 // RetryRun is contract route 31's engine half: re-target the failed,
-// interrupted or cancelled node executions, reopen them (and their cancelled
-// descendants — the branch must be runnable again), re-queue attempts with
-// retry_context, and reopen the run itself. Idempotence rule C6d honoured
-// first: every target's plan is validated BEFORE any row moves, so a
-// checkpoint_unavailable refusal resets nothing.
+// interrupted or cancelled node executions, reopen them (and the cancelled or
+// skipped descendants they re-arm) to PENDING so the advancer re-derives their
+// readiness from dependency state, re-queue attempts with retry_context, and
+// reopen the run itself. Idempotence rule C6d honoured first: every target's
+// plan is validated BEFORE any row moves, so a checkpoint_unavailable refusal
+// resets nothing.
 //
 // An `until` whose iteration 2 died restarts iteration 2, not the loop
 // (ADR-0023 § 6) — because the composite's ScopeState was never rolled back
@@ -168,24 +169,20 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		}
 		decisions = append(decisions, d)
 		reopen[n.InstanceKey] = n
-		// Cancelled descendants of a reopened target come back too.
+		// The branch downstream of a reopened target comes back too: whatever
+		// the stopped-branch cascade cancelled, and whatever a `continue`
+		// route skipped. Both are re-DERIVED rather than trusted — see Reopen.
 		for _, other := range st.Nodes {
-			if other.Status == NodeCancelled && sameScopeInstance(other, n) && dependsOnTransitively(prog, other, n) {
+			if (other.Status == NodeCancelled || other.Status == NodeSkipped) &&
+				sameScopeInstance(other, n) && dependsOnTransitively(prog, other, n) {
 				reopen[other.InstanceKey] = other
 			}
 		}
 	}
 	at := ms.now()
 	for _, key := range sortedKeys(reopen) {
-		n := reopen[key]
-		switch n.Status {
-		case NodeFailed, NodeInterrupted, NodeCancelled:
-			if err := n.Move(NodeReady, at); err != nil {
-				return err
-			}
-			n.ErrorClass = ""
-			n.FailedCause = ""
-			n.Outcome = ""
+		if err := reopen[key].Reopen(at); err != nil {
+			return err
 		}
 	}
 	// Re-queue one attempt per reopened WORKER row with the decision's

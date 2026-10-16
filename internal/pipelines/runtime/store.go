@@ -174,7 +174,11 @@ func (ms *MemStore) Claim(runID, workerID string) (*Attempt, error) {
 			continue
 		}
 		n := st.nodeByExecID(a.NodeExecutionID)
-		if n == nil || NodeTerminal(n.Status) {
+		if n == nil || n.Status != NodeReady {
+			// Worker-facing claim SQL says `AND status = 'ready'` (contract
+			// § 5.1 step 4): a retry arms attempts for rows whose dependencies
+			// have not settled yet, and those wait for the advancer to re-ready
+			// them — they are not claimable work.
 			continue
 		}
 		if best == nil || a.ScheduledAt.Before(best.ScheduledAt) ||

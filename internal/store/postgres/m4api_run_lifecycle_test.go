@@ -497,3 +497,252 @@ func TestM4RunLifecycleBindingsClaimResolvesConfig(t *testing.T) {
 		t.Errorf("runs.expression_evaluations = 0 after claim resolution, want > 0")
 	}
 }
+
+// ---------------------------------------------------------------- retry re-arm
+
+// m4LifeNodeStatuses reads node_executions back from the database.
+func m4LifeNodeStatuses(t *testing.T, f *m4Fixture, runID string) map[string]string {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(), `
+		SELECT node_instance_key, status FROM node_executions WHERE run_id = $1::uuid`, runID)
+	if err != nil {
+		t.Fatalf("read node_executions: %v", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, s string
+		if err := rows.Scan(&k, &s); err != nil {
+			t.Fatalf("scan node_executions: %v", err)
+		}
+		out[k] = s
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("scan node_executions: %v", err)
+	}
+	return out
+}
+
+// m4LifeEvents lists the run's journaled event types in append order.
+func m4LifeEvents(t *testing.T, f *m4Fixture, runID string) []string {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(), `
+		SELECT type FROM domain_events WHERE run_id = $1::uuid ORDER BY global_seq`, runID)
+	if err != nil {
+		t.Fatalf("read domain_events: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan domain_events: %v", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("scan domain_events: %v", err)
+	}
+	return out
+}
+
+// m4LifeRunWiring builds the run stores exactly as cmd/communication/serve.go does.
+func m4LifeRunWiring(f *m4Fixture) (*RunStore, *RuntimeStore, APIRunStore) {
+	runStore := &RunStore{Pool: f.pool}
+	children := &M4Children{Runs: runStore}
+	rt := NewRuntimeStore(f.pool, &runtime.Advancer{Deps: runtime.AdvancerDeps{Children: children}})
+	children.Runtime = rt
+	return runStore, rt, APIRunStore{Runs: runStore, Runtime: rt}
+}
+
+// TestM4RunLifecycleRetryRearmsDownstream is the live-lab defect as a test: an
+// API run whose first worker node fails to the end of its budget (the M4 exit
+// seed's /plan, closed failed/infra three times the way the attempt store
+// does) fails the run with node_execution_failed:/plan and cascade-cancels
+// /approve. Retrying it through the public API must re-arm /plan AND let the
+// run proceed exactly as a fresh run would from that point: /approve waits for
+// a human, it must NOT be jumped straight to ready (where its config binding
+// reads a plan with no outputs and errors predicate_error:/approve, failing
+// the run again and cascade-cancelling the retried attempt before any worker
+// claims it).
+func TestM4RunLifecycleRetryRearmsDownstream(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	_, planJSON := m4LifecyclePlan(t)
+	pipelineID, revisionID := m4LifecyclePublished(t, f, planJSON)
+
+	caller := api.Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
+	assignments := APIAssignmentStore{S: f.pipelines}
+	as, err := assignments.CreateAssignment(ctx, caller, f.projectID, api.AssignmentCreateInput{
+		PipelineID: pipelineID, PinnedRevisionID: revisionID, MaxConcurrentRuns: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateAssignment: %v", err)
+	}
+	_, m4Runtime, runs := m4LifeRunWiring(f)
+
+	view, _, err := runs.CreateRun(ctx, caller, api.RunCreateInput{
+		ProjectID: f.projectID, AssignmentID: as.ID,
+		Inputs: map[string]json.RawMessage{
+			"goal": json.RawMessage(`"add feature"`), "repository": json.RawMessage(`"repo-a"`),
+			"acceptance_criteria": json.RawMessage(`"tests pass"`),
+			"fanout":              json.RawMessage(`false`), "fanout_count": json.RawMessage(`0`),
+		},
+		Key: "m4-life-retry-1", RequestSHA: m4Hex("body/m4-life-retry-1"), TriggeredBy: f.userID,
+	})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := m4Runtime.Advance(ctx, view.ID); err != nil {
+		t.Fatalf("first advance: %v", err)
+	}
+	workerID := m4Worker(t, ctx, f.pool, "retry", 4)
+
+	// Drive /plan to its terminal failure: three failed/infra closes (the
+	// attempt store's own path), with the persisted backoff pulled into the
+	// past so the next queued attempt is claimable immediately.
+	for i := 0; i < 6; i++ {
+		if _, err := f.pool.Exec(ctx, `
+			UPDATE attempts SET scheduled_at = now() - interval '1 minute'
+			WHERE run_id = $1::uuid AND status = 'queued'`, view.ID); err != nil {
+			t.Fatalf("age queued attempts: %v", err)
+		}
+		a, err := m4Runtime.Claim(ctx, view.ID, workerID)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if a == nil {
+			break
+		}
+		if err := m4Runtime.Start(ctx, view.ID, a.ID, workerID, a.FencingToken); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		if err := m4Runtime.Fail(ctx, view.ID, a.ID, workerID, a.FencingToken,
+			runtime.ErrInfra, "lab: agent process exited", nil); err != nil {
+			t.Fatalf("fail attempt %d: %v", a.AttemptNumber, err)
+		}
+	}
+
+	var runStatus, runCause string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT status, coalesce(failed_cause,'') FROM runs WHERE id = $1::uuid`, view.ID).
+		Scan(&runStatus, &runCause); err != nil {
+		t.Fatalf("read run: %v", err)
+	}
+	before := m4LifeNodeStatuses(t, f, view.ID)
+	t.Logf("after failures: run=%s/%s nodes=%v", runStatus, runCause, before)
+	if runStatus != runtime.RunFailed || runCause != "node_execution_failed:/plan" {
+		t.Fatalf("run = %s/%s, want failed/node_execution_failed:/plan", runStatus, runCause)
+	}
+	if before["/plan"] != runtime.NodeFailed {
+		t.Fatalf("/plan = %s, want failed", before["/plan"])
+	}
+	if before["/approve"] != runtime.NodeCancelled {
+		t.Fatalf("/approve = %s, want cancelled (cascade)", before["/approve"])
+	}
+
+	// --- retry through the public API (route 31), the lab's exact call: no
+	// explicit targets, so every non-succeeded terminal row is a target.
+	if _, err := runs.RetryRun(ctx, caller, view.ID, api.RunRetryInput{Reason: "lab retry"}); err != nil {
+		t.Fatalf("RetryRun: %v", err)
+	}
+	after := m4LifeNodeStatuses(t, f, view.ID)
+	t.Logf("right after retry: nodes=%v", after)
+
+	var runStatus2 string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT status FROM runs WHERE id = $1::uuid`, view.ID).Scan(&runStatus2); err != nil {
+		t.Fatalf("read run after retry: %v", err)
+	}
+	if runStatus2 == runtime.RunFailed {
+		t.Fatalf("the retry failed the run again (nodes=%v, events=%v)", after, m4LifeEvents(t, f, view.ID))
+	}
+	// Readiness is the advancer's alone (§ 5.1 step 2): a re-armed downstream
+	// node returns to pending and is re-readied once its dependencies are
+	// genuinely succeeded again. Jumping it to ready is what produced the
+	// live lab's predicate_error:/approve.
+	if after["/approve"] != runtime.NodePending {
+		t.Errorf("/approve = %s right after retry, want %s", after["/approve"], runtime.NodePending)
+	}
+	// The retried attempt is appended (history stays append-only) with the
+	// decision's retry_context, and is still alive.
+	var attemptNo int
+	var attemptStatus, retryCtx string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT a.attempt_number, a.status, coalesce(a.retry_context::text, '')
+		FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id
+		WHERE ne.run_id = $1::uuid AND ne.node_instance_key = '/plan'
+		ORDER BY a.attempt_number DESC LIMIT 1`, view.ID).
+		Scan(&attemptNo, &attemptStatus, &retryCtx); err != nil {
+		t.Fatalf("read retried attempt: %v", err)
+	}
+	t.Logf("retried plan attempt: #%d %s ctx=%s", attemptNo, attemptStatus, retryCtx)
+	if attemptNo != 4 || attemptStatus != runtime.AttemptQueued {
+		t.Errorf("retried plan attempt = #%d %s, want #4 queued", attemptNo, attemptStatus)
+	}
+	if !strings.Contains(retryCtx, "error_class") {
+		t.Errorf("retried attempt retry_context = %s, want the failed attempt's error_class", retryCtx)
+	}
+
+	// --- the retried attempt lands: the run proceeds as a fresh run would.
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE attempts SET scheduled_at = now() - interval '1 minute'
+		WHERE run_id = $1::uuid AND status = 'queued'`, view.ID); err != nil {
+		t.Fatalf("age retried attempt: %v", err)
+	}
+	a, err := m4Runtime.Claim(ctx, view.ID, workerID)
+	if err != nil || a == nil {
+		t.Fatalf("claim retried attempt: a=%v err=%v", a, err)
+	}
+	if err := m4Runtime.Start(ctx, view.ID, a.ID, workerID, a.FencingToken); err != nil {
+		t.Fatalf("start retried attempt: %v", err)
+	}
+	var workspaceID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO workspaces (organization_id, project_id, scope_kind, run_id, worker_id,
+		                        volume_id, root_path, state, ready_at)
+		VALUES ($1, $2, 'run', $3, $4, 'sha256:' || repeat('1', 64), '/workspaces/runs/retry', 'ready', now())
+		RETURNING id`, f.orgID, f.projectID, view.ID, workerID).Scan(&workspaceID); err != nil {
+		t.Fatalf("seed run workspace: %v", err)
+	}
+	ckpt := runtime.CheckpointRecord{
+		InputsDigest: "sha256:" + strings.Repeat("1", 64), OutputsDigest: "sha256:" + strings.Repeat("2", 64),
+		VolumeID: "sha256:" + strings.Repeat("1", 64), WorkspaceID: workspaceID, WorkerID: workerID,
+	}
+	if err := m4Runtime.Complete(ctx, view.ID, a.ID, workerID, a.FencingToken,
+		map[string]any{"plan": "step 1: read the spec"}, "sha256:"+strings.Repeat("3", 64),
+		nil, "", ckpt); err != nil {
+		t.Fatalf("complete retried attempt: %v", err)
+	}
+	done := m4LifeNodeStatuses(t, f, view.ID)
+	events := m4LifeEvents(t, f, view.ID)
+	t.Logf("after the retried plan succeeded: nodes=%v events=%v", done, events)
+	if done["/plan"] != runtime.NodeSucceeded {
+		t.Errorf("/plan = %s after the retried attempt succeeded, want succeeded", done["/plan"])
+	}
+	if done["/approve"] != runtime.NodeWaiting {
+		t.Errorf("/approve = %s after the retried plan succeeded, want waiting (gate open)",
+			done["/approve"])
+	}
+	var gates int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM approval_requests ar JOIN node_executions ne ON ne.id = ar.node_execution_id
+		WHERE ne.run_id = $1::uuid AND ne.node_instance_key = '/approve'
+		  AND ar.state = 'pending'`, view.ID).Scan(&gates); err != nil {
+		t.Fatalf("count approval requests: %v", err)
+	}
+	if gates != 1 {
+		t.Errorf("pending /approve gates = %d, want 1", gates)
+	}
+	var failedAfterRetry int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM domain_events WHERE run_id = $1::uuid
+		  AND type IN ('run.failed','node.execution_failed')`, view.ID).
+		Scan(&failedAfterRetry); err != nil {
+		t.Fatalf("count failure events: %v", err)
+	}
+	if failedAfterRetry != 1 {
+		t.Errorf("run.failed/node.execution_failed events = %d, want exactly 1 (the original failure): "+
+			"the retry cascade-cancelled its own attempt (%v)", failedAfterRetry, events)
+	}
+}
