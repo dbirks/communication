@@ -169,8 +169,8 @@ describe("/artifacts/:artifactId", () => {
     expect(provenance.getAttribute("href")).toBe(
       `/projects/${projectId}/conversations/${conversationId}`,
     );
-    expect(provenance.textContent).toContain(conversationId.slice(0, 8));
-    expect(screen.getByTestId("artifact-turn").textContent).toBe(turnId.slice(0, 8));
+    expect(provenance.textContent).toContain(conversationId.slice(-8));
+    expect(screen.getByTestId("artifact-turn").textContent).toBe(turnId.slice(-8));
   });
 
   it("names a worker-created artifact as a worker, not as a uuid", async () => {

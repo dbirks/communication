@@ -29,7 +29,7 @@ import { Panel } from "./ds/Panel";
 import { StatusChip } from "./ds/Row";
 import { ARTIFACT_STATE, SENSITIVITY_STATE, stateOf } from "./ds/states";
 import { Spinner } from "./Feedback";
-import { formatAge, formatBytes, formatTime } from "../lib/format";
+import { formatAge, formatBytes, formatTime, shortId } from "../lib/format";
 
 /** One artifact row (`⟨T:artifact-row-*⟩`). Metadata only; bytes are never here. */
 export function ArtifactRow({ artifact }: { artifact: Artifact }) {
@@ -296,7 +296,7 @@ export function ArtifactDetail({ artifact, createdByName, currentOrigin }: Artif
             {artifact.turn_id ? (
               <div className="flex gap-2">
                 <dt className="text-muted">turn</dt>
-                <dd data-testid="artifact-turn">{artifact.turn_id.slice(0, 8)}</dd>
+                <dd data-testid="artifact-turn">{shortId(artifact.turn_id)}</dd>
               </div>
             ) : null}
           </dl>
@@ -328,7 +328,7 @@ export function ArtifactDetail({ artifact, createdByName, currentOrigin }: Artif
                 className="font-mono text-[11px] text-accent-text hover:text-ink"
                 data-testid="artifact-conversation-link"
               >
-                from conversation {artifact.conversation_id.slice(0, 8)}
+                from conversation {shortId(artifact.conversation_id)}
               </Link>
             ) : null}
           </div>

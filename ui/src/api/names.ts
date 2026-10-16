@@ -20,13 +20,17 @@ export type NameHint = readonly [
 export type NameLookup = (userId: string) => string | null;
 
 /**
- * Shorten an id for display. A uuid is opaque, so its first eight characters
- * distinguish it from its neighbours; a human-written key (`"worker_a"`,
- * `"github"`, `"system"`) is short already and is shown whole.
+ * Shorten an id for display, keeping it distinct from its neighbours. Every id
+ * this system issues is a UUIDv7, whose first 12 hex characters are a
+ * millisecond timestamp — everything created inside the same ~65 seconds shares
+ * a prefix, so the *leading* eight characters collide (three runs all rendered
+ * as `01a14350` in the Inbox). The tail is the random part, so that is what we
+ * show. A human-written key (`"worker_a"`, `"github"`, `"system"`) has no uuid
+ * shape and is short already, so it is shown whole.
  */
 export function shortId(id: string): string {
   const value = (id ?? "").trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ? value.slice(0, 8) : value;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(value) ? value.slice(-8) : value;
 }
 
 /** A lookup built from names the caller has already read; later hints win. */

@@ -1,6 +1,7 @@
 import { problemOf } from "../api/client";
 import { useHealth, useReadiness, useWorkers } from "../api/queries";
 import { useSystemScheduler } from "../api/runs";
+import { shortId } from "../lib/format";
 import { SandboxHealthPanel } from "../components/Sandbox";
 import { Spinner } from "../components/Feedback";
 import { Panel } from "../components/ds/Panel";
@@ -188,7 +189,7 @@ export default function Operations() {
   // by id, so the two surfaces agree on one label instead of one of them showing
   // a uuid.
   const nameOfWorker = (workerId: string) =>
-    workers.data?.items.find((worker) => worker.id === workerId)?.name ?? workerId.slice(0, 8);
+    workers.data?.items.find((worker) => worker.id === workerId)?.name ?? shortId(workerId);
 
   const healthProblem = health.error ? problemOf(health.error) : null;
   const readinessProblem = readiness.error ? problemOf(readiness.error) : null;

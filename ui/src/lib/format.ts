@@ -5,6 +5,8 @@
  * timestamp or byte count looks like.
  */
 
+import { shortId as shortenId } from "../api/names";
+
 /** `2026-10-14T18:03:07Z` → `2026-10-14 18:03:07 UTC`; anything odd is shown raw. */
 export function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
@@ -60,10 +62,17 @@ export function shortCommit(sha: string | null | undefined): string {
   return sha.slice(0, 7);
 }
 
-/** A uuid, shortened enough to tell two apart and to fit a row. */
+/**
+ * A uuid, shortened enough to tell two apart and to fit a row.
+ *
+ * The tail, not the head: ids here are UUIDv7, whose leading hex characters are
+ * a millisecond timestamp, so a prefix is the *least* distinguishing part of
+ * one. `../api/names.ts`'s `shortId` owns that rule (and the non-uuid key
+ * behavior) so no two screens can drift apart on it again.
+ */
 export function shortId(id: string | null | undefined): string {
   if (!id) return "—";
-  return id.slice(0, 8);
+  return shortenId(id) || "—";
 }
 
 /**

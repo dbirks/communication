@@ -102,9 +102,10 @@ describe("control events name the humans involved", () => {
 
     const lines = await transcriptLines();
     expect(lines.some((line) => line.includes("Control returned to Grace Hopper"))).toBe(true);
-    // A person the directory does not know is "someone (01987aaa)", never a bare
-    // uuid and never a guessed name.
-    expect(lines.some((line) => line.includes("someone (01987aaa)"))).toBe(true);
+    // A person the directory does not know is "someone (ef012345)" — the uuid's
+    // random tail, never its time prefix (which every id created nearby shares),
+    // never a bare uuid and never a guessed name.
+    expect(lines.some((line) => line.includes("someone (ef012345)"))).toBe(true);
     expect(lines.some((line) => line.includes(stranger))).toBe(false);
   });
 

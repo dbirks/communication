@@ -8,6 +8,7 @@ import { Field, Input, Select, Textarea } from "./ds/Field";
 import { Panel } from "./ds/Panel";
 import { Row, StatusChip } from "./ds/Row";
 import { CONVERSATION_STATE, stateOf } from "./ds/states";
+import { shortId } from "../lib/format";
 
 /**
  * Stable hook for the browser proof: `conversation-row-<title-slug>` mirrors how
@@ -19,7 +20,7 @@ export function titleSlug(title: string, id: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return slug || id.slice(0, 8);
+  return slug || shortId(id);
 }
 
 function controllerName(conversation: ConversationSummary): string {
