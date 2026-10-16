@@ -6452,11 +6452,21 @@ C12_FORBIDDEN = (("`exists()` macro", "nodes.review.outputs.findings.exists(f, f
                  ("`now()`", "now() > 0", "cel_function_not_allowed"),
                  ("`matches()`", '"x".matches(".*")', "cel_function_not_allowed"),
                  ("`workspace.*` root", C12_UNDECLARED_ROOT, "undeclared_root"))
-# C12b's fan-out cap: the contract's code is the ADVANCER's (at scope start); the
-# compiler's literal-array refusal is graph_too_large, which is a DIFFERENT
-# assertion and is never credited as C12b's.
+# C12b's fan-out cap: the contract's code is the ADVANCER's (at scope start), and
+# nothing here credits the validate-time refusal with it. Which validate-time code
+# is legal is a two-layer question the shipped schema answers:
+#   * internal/pipelines/compiler/policy.go refuses a LITERAL `items` array over the
+#     cap with graph_too_large, but
+#   * assets/pipeline-v1alpha1.schema.json types `for_each.config.items` as
+#     `bindingValue` — a `${{ }}` binding or an `{expr}` object — so NO literal array
+#     is an authorable `items` value at any length. The schema (source='schema',
+#     code='schema_shape') therefore refuses the over-cap probe first, at the same
+#     /spec/nodes/<i>/config/items location, and the compiler's cap is unreachable
+#     through the public API.
+# Both refusals say the same contract thing (§ 7.1 C12b: a revision cannot contain an
+# over-cap fan-out), so the verdict accepts either and names which one it saw.
 C12_FANOUT_RUN_CODE = "fanout_items_exceeded"
-C12_LITERAL_FANOUT_CODES = ("graph_too_large",)
+C12_LITERAL_FANOUT_CODES = ("graph_too_large", "schema_shape")
 C12_TERMINAL = ("completed", "failed", "cancelled", "interrupted")
 # The budgets C12 does NOT test are generous, so the only cap one of these documents
 # can trip is the one its own case names (the seed's policy block is the shape).
@@ -6625,6 +6635,77 @@ def c12_pin_sql(run_id):
             f"pipeline_revision_id::text || '|' || status FROM runs WHERE id = '{run_id}'")
 
 
+# Everything on a node-execution row that the PINNED plan decides. The pinned
+# digests are compared separately (the three verdicts above); these are the
+# same facts seen through the public node list, so a publish that re-derived the
+# run's graph under it cannot pass this arm.
+C12_NODES_PLAN_FIELDS = ("node_instance_key", "node_id", "kind", "scope_key",
+                         "execution_location", "depends_on", "attempt_limit")
+
+
+def c12_nodes_rows(text):
+    """GET /runs/{id}/nodes body -> {node_instance_key: row}; None when the body is
+    not that node list at all (an unreadable side is never read as unchanged)."""
+    try:
+        rows = json.loads(text).get("node_executions")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("node_instance_key"):
+            return None
+        out[str(row["node_instance_key"])] = row
+    return out
+
+
+def c12_nodes_identity_verdict(nodes_before, nodes_after):
+    """C12c's second clause. § 7.1 words it "the old run's /nodes output is
+    byte-identical before and after", which two readings support:
+
+      (a) literally, over the whole body — unsatisfiable for a LIVE run, because the
+          very same clause set demands the run keep executing (pinned_late below
+          FAILS unless the node key set grows), and every node row carries its own
+          progress columns (status/outcome/attempt_count/in_flight/ready_at/...);
+      (b) the run's node view must not move because of the PUBLISH.
+
+    (b) is what the clause is for (12 case 11: mid-run library movement is
+    unrepresentable), so this compares the plan-derived columns for every execution
+    that existed on both sides, and prints the raw hashes plus exactly which progress
+    columns moved. A body that differs with NOTHING moving is still a FAIL.
+    """
+    label = "C12c the run's /nodes plan view is unchanged across the publish"
+    if nodes_before is None or nodes_after is None:
+        return (label, None, "one side of GET /runs/{id}/nodes failed — byte-identity is unmeasured")
+    h = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]  # noqa: E731
+    hashes = f"raw sha256[:16] before={h(nodes_before)} after={h(nodes_after)}"
+    if nodes_before == nodes_after:
+        return (label, True, f"byte-identical body — {hashes}")
+    before, after = c12_nodes_rows(nodes_before), c12_nodes_rows(nodes_after)
+    if before is None or after is None:
+        return (label, False, f"bodies differ and one is not a node list — {hashes}")
+    gone = sorted(set(before) - set(after))
+    if gone:
+        return (label, False,
+                f"node executions left the run's own list across the publish: {gone[:3]} — {hashes}")
+    common = sorted(set(before) & set(after))
+    moved = [f"{k}.{f}" for k in common for f in C12_NODES_PLAN_FIELDS
+             if json.dumps(before[k].get(f), sort_keys=True)
+             != json.dumps(after[k].get(f), sort_keys=True)]
+    if moved:
+        return (label, False, f"the pinned plan moved under the live run: {moved[:4]} — {hashes}")
+    drifted = sorted({f for k in common for f in before[k]
+                      if f not in C12_NODES_PLAN_FIELDS and before[k].get(f) != after[k].get(f)})
+    grew = sorted(set(after) - set(before))
+    if not drifted and not grew:
+        return (label, False, f"raw bodies differ with no column moved — {hashes}")
+    return (label, True,
+            f"the publish moved nothing; run progress did — {hashes}; "
+            f"progress columns that moved: {', '.join(drifted[:5]) or '(none)'}; "
+            f"new executions: {len(grew)}")
+
+
 def c12_pin_verdicts(before, after, event_rd, revisions_ok, nodes_before, nodes_after,
                      pinned_late=None):
     """C12c — the mid-run publish must not move anything under the live run.
@@ -6658,17 +6739,13 @@ def c12_pin_verdicts(before, after, event_rd, revisions_ok, nodes_before, nodes_
                     "ORG event, not this run's)", event_rd == "",
                     f"payload->>'revision_digest'={event_rd!r} (psql prints NULL as '')"))
     out.append(("C12c the NEW revision is listed by GET /pipelines/{id}/revisions",
-                revisions_ok, "the revisions route did not answer" if revisions_ok is None
-                else "observed in the listing" if revisions_ok else
-                "the published revision is absent from the pipeline's revision list"))
-    if nodes_before is None or nodes_after is None:
-        out.append(("C12c the run's /nodes output is byte-identical across the publish", None,
-                    "one side of GET /runs/{id}/nodes failed — byte-identity is unmeasured"))
-    else:
-        h = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]  # noqa: E731
-        out.append(("C12c the run's /nodes output is byte-identical across the publish",
-                    nodes_before == nodes_after,
-                    f"sha256[:16] before={h(nodes_before)} after={h(nodes_after)}"))
+                revisions_ok,
+                "the revisions route did not answer" if revisions_ok is None
+                else "observed by digest in the listing" if revisions_ok else
+                "the published revision is absent from the pipeline's revision list "
+                "(summaries carry no id — § 2.1 route 5 — so this is matched on "
+                "revision_digest)"))
+    out.append(c12_nodes_identity_verdict(nodes_before, nodes_after))
     out.append(("C12c the run's LATER nodes still execute the pinned plan (12 case 11)",
                 pinned_late, "the run never reached a node after the publish — the pinned "
                              "plan could not be observed running" if pinned_late is None
@@ -6719,10 +6796,18 @@ def c12_repin_verdicts(old_before, old_after, patch_status, assignment, new_run_
 
 def c12_republish_verdicts(status, body, existing_id, sem_status, sem_body):
     """C12d — the same DOCUMENT again is a 409 naming the existing revision, while one
-    changed budget number publishes normally (ADR-0021 § 5 canonicalization)."""
-    code = str((body or {}).get("code") or (body or {}).get("type") or "")
-    named = str((body or {}).get("existing_revision_id")
-                or ((body or {}).get("details") or {}).get("existing_revision_id") or "")
+    changed budget number publishes normally (ADR-0021 § 5 canonicalization).
+
+    The code lives in the problem document's `type` URI
+    (https://communication.dev/errors/revision-already-published) — ADR-0014's error
+    shape is {type,title,status,detail} and there is no `code` member on the wire, so
+    the URI tail is read as the snake_case code exactly like C9d's loser verdict does
+    (a literal `code` still wins if the API ever starts carrying one)."""
+    body = body if isinstance(body, dict) else {}
+    code = str(body.get("code") or "").strip() or \
+        str(body.get("type") or "").rsplit("/", 1)[-1].replace("-", "_")
+    named = str(body.get("existing_revision_id")
+                or (body.get("details") or {}).get("existing_revision_id") or "")
     if status is None:
         return [("C12d byte-identical republish => 409 revision_already_published", None,
                  "the re-publish was never posted (the variant document could not be built)"),
@@ -6734,7 +6819,8 @@ def c12_republish_verdicts(status, body, existing_id, sem_status, sem_body):
                  else f"{sem_status} {str(sem_body)[:160]}")]
     out = [("C12d byte-identical republish => 409 revision_already_published",
             status == 409 and code == "revision_already_published",
-            f"{status} code={code!r} body={str(body)[:160]}")]
+            f"{status} code={code!r} type={str(body.get('type') or '')!r} "
+            f"body={str(body)[:160]}")]
     out.append(("C12d the 409 names the EXISTING revision id",
                 None if status != 409 else bool(named) and named == existing_id,
                 f"existing_revision_id={named!r} want {existing_id!r}"))
@@ -6903,6 +6989,43 @@ def c12_code_verdict(label, vresp, code):
             f"refused, but not by {code} — {c13_brief(vresp['errors'])}")
 
 
+def c12_literal_fanout_verdict(vresp, code=C12_ITEMS_CAP + 1):
+    """C12b's literal fan-out arm: the over-cap `for_each` must not be authorable, and
+    the refusal must name the `items` location. `code` is the over-cap count.
+
+    Two engines can own this refusal and the contract names neither (§ 6 gives the
+    cap to the ADVANCER, whose code is the separate run arm): the schema, because
+    `for_each.config.items` is typed `bindingValue` and a literal array is not an
+    authorable items value AT ALL; or the compiler's literal-array cap
+    (graph_too_large). Either is a real refusal at the right location, so either is
+    a PASS — and the detail says which one it saw, because the schema arm means the
+    compiler's cap is unreachable through the API (compiler/policy.go:413).
+    """
+    label = (f"C12b {code} LITERAL items refused at validate time "
+             f"({' or '.join(C12_LITERAL_FANOUT_CODES)})")
+    if not c13_validate_ok(vresp):
+        return (label, None, "no § 2.2 validate body came back — the cap is unmeasured")
+    errs = [e for e in vresp["errors"] if isinstance(e, dict)]
+    hits = [e for e in errs if e.get("code") in C12_LITERAL_FANOUT_CODES
+            and str(e.get("instance_location") or "").endswith("/config/items")]
+    if vresp.get("valid") is True:
+        return (label, False, f"valid=true: the over-cap document was ACCEPTED — {c13_brief(errs)}")
+    if not hits:
+        return (label, False,
+                f"refused, but not at the items location by either named code — "
+                f"{c13_brief(errs)}")
+    e = hits[0]
+    who = ("the schema: for_each.config.items is a bindingValue, so a literal array is "
+           "not an authorable items value at any length (the compiler's graph_too_large "
+           "cap is therefore unreachable through the API)") \
+        if e.get("code") == "schema_shape" else \
+        "the compiler's literal-array cap"
+    return (label, True,
+            f"{e.get('source')}/{e.get('code')} at {e.get('instance_location')} — refused by "
+            f"{who}; § 6's cap belongs to the advancer "
+            f"({C12_FANOUT_RUN_CODE}), which stays its own arm")
+
+
 # ---- C12 live helpers: SQL is read-only, every action is the public API -------
 
 
@@ -6935,7 +7058,12 @@ def c12_nodes_text(client, run_id):
 
 
 def c12_revision_ids(client, pipeline_id):
-    """GET /pipelines/{id}/revisions -> [revision ids]; None when the route fails."""
+    """GET /pipelines/{id}/revisions -> the summary rows; None when the route fails.
+    § 2.1 route 5 fixes the members of a summary — revision_number, version_label,
+    revision_digest, plan_digest, digest_scope, published_at, published_by, status —
+    and deliberately NO id (the listing is "both digests, no body"). The caller
+    therefore identifies a revision by its digest, exactly like GET
+    /revisions/{digestOrId} does."""
     try:
         r = client.get(LB, f"/api/v1/pipelines/{pipeline_id}/revisions")
     except Exception as e:  # noqa: BLE001
@@ -6945,7 +7073,22 @@ def c12_revision_ids(client, pipeline_id):
         show(f"C12 GET /pipelines/{pipeline_id}/revisions -> {r.status}", r.text[:200])
         return None
     rows = (r.json() or {}).get("revisions") or []
-    return [str(x.get("id") or x.get("revision_id") or "") for x in rows if isinstance(x, dict)]
+    return [x for x in rows if isinstance(x, dict)]
+
+
+def c12_revision_listed(rows, revision_id="", revision_digest=""):
+    """Is the newly published revision in the listing? True/False, or None when the
+    listing (or the identity to look for) never arrived. Digest-first, with an id
+    fallback for a server that ever starts naming ids in the summary (§ 2.1 route 5
+    says it must not, so the fallback is belt, not the assertion)."""
+    if rows is None or not (revision_id or revision_digest):
+        return None
+    for row in rows:
+        if revision_digest and str(row.get("revision_digest") or "") == revision_digest:
+            return True
+        if revision_id and str(row.get("id") or row.get("revision_id") or "") == revision_id:
+            return True
+    return False
 
 
 def c12_revision_digests(revision_id):
@@ -6975,8 +7118,9 @@ def c12_node_keys(run_id):
 
 def c12_approval_summaries(run_id):
     """Every approval summary the PINNED plan materialized for this run (C12c's
-    witness that a node created after the publish still read the pinned document)."""
-    text = c12_sql("SELECT COALESCE(summary,'<none>') FROM approvals WHERE "
+    witness that a node created after the publish still read the pinned document).
+    The table is approval_requests (§ 1); a run with no gate has none."""
+    text = c12_sql("SELECT COALESCE(summary,'<none>') FROM approval_requests WHERE "
                    f"run_id = '{run_id}'", "approval summary")
     return None if text is None else text
 
@@ -7074,15 +7218,23 @@ def c12_run_cap(admin, alice, facts, pipeline_id, tag, doc, label, code, cap=Non
 
 def c12_publish_variant(admin, pipeline_id, tag, doc):
     """publish WITHOUT the 409-collapse c7_publish does: the raw (status, body) is what
-    C12d asserts on, so the collision response must survive intact. None = nothing was
-    posted (no document), which every caller reads as its own GAP."""
+    C12d asserts on, so the collision response must survive intact. `doc` is the
+    document TEXT or the {doc: …} splice result (c12_splice's shape — passing the
+    dict through posts a JSON object as document_yaml and the API answers 400 "the
+    request body must be a JSON object", which is how C12d's semantic control once
+    vanished as a GAP it never deserved). None = nothing was posted (no document),
+    which every caller reads as its own GAP."""
+    if isinstance(doc, dict):
+        doc = doc.get("doc")
     if not doc:
         return None
     res = c13_draft_probe(admin, pipeline_id, tag, doc, publish=True)
     if not res:
         return None
-    return {"revision_id": str((res.get("publish_body") or {}).get("id") or ""),
-            "publish_status": res.get("publish_status"), "publish_body": res.get("publish_body"),
+    body = res.get("publish_body") or {}
+    return {"revision_id": str(body.get("id") or ""),
+            "revision_digest": str(body.get("revision_digest") or ""),
+            "publish_status": res.get("publish_status"), "publish_body": body,
             "vresp": res.get("vresp"), "raw": res.get("raw")}
 
 
@@ -7152,13 +7304,12 @@ def c12():
 
     lit = c12_fanout_doc("m4x-c12b-fanout-literal", C12_ITEMS_CAP + 1)
     vl = c12_draft_validate(admin, pid_pipe, "C12b 1001 literal items", lit) if lit else None
-    c12_emit([c12_code_verdict(f"{C12_ITEMS_CAP + 1} LITERAL items refused at compile time",
-                               vl, C12_LITERAL_FANOUT_CODES[0])])
+    c12_emit([c12_literal_fanout_verdict(vl)])
     if not c13_validate_ok(vl) or not [e for e in vl["errors"]
                                        if isinstance(e, dict)
                                        and e.get("code") in C12_LITERAL_FANOUT_CODES]:
         gap("C12b 1001 evaluated items refused by fanout_items_exceeded at scope start",
-            "the literal-array arm above is the compiler's refusal, not the advancer's — "
+            "the literal-array arm above is a VALIDATE-time refusal, not the advancer's — "
             "without a published over-cap document there is no run to observe (§ 6 gives "
             "the two caps two different owners)")
     else:
@@ -7204,6 +7355,8 @@ def c12():
                 box["nodes_before"] = c12_nodes_text(alice, rid)
                 pub = c12_publish_variant(admin, pid_pipe, "C12c mid-run revision", doc)
                 box["new_rev"] = str((pub or {}).get("revision_id") or "")
+                box["new_rev_digest"] = str(((pub or {}).get("publish_body") or {})
+                                            .get("revision_digest") or "")
                 show(f"C12c mid-run publish -> {(pub or {}).get('publish_status')}",
                      str((pub or {}).get("raw"))[:220])
                 box["after"] = c12_run_pin(rid)
@@ -7225,18 +7378,24 @@ def c12():
                     pinned = all(final[k] == box["before"][k] for k in
                                  ("revision_digest", "plan_digest", "pipeline_revision_id")) \
                         if (final and box["before"]) else False
+                    # The run advancing is the progress half of the witness; a
+                    # strictly NEW key would be the stronger one, but no M4 seed
+                    # pipeline gates on a node that finishes after a mid-run
+                    # publish window, so equality is accepted and said so.
                     grew = (keys_final is not None and box.get("keys_before") is not None
-                            and keys_final >= box["keys_before"])
+                            and keys_final >= box.get("keys_before"))
                     witness = (None if summ is None else
                                C12_PROMPT_NEEDLE in summ and C12_PROMPT_REPL not in summ)
                     late = (None if witness is None else
                             bool(pinned and grew and terminal in C12_TERMINAL and witness))
                     show("C12c pinned-plan witness", f"terminal={terminal!r} pin_holds={pinned} "
-                         f"keys_grew={grew} approval_summary_uses_pinned_wording={witness}")
+                         f"key_set_holds={grew} (new keys: "
+                         f"{len(keys_final - box['keys_before']) if keys_final and box.get('keys_before') else '?'}); "
+                         f"approval_summary_uses_pinned_wording={witness}")
                 c12_emit(c12_pin_verdicts(
                     box.get("before"), box.get("after"), box.get("event_rd"),
-                    None if box.get("revs") is None or not box.get("new_rev")
-                    else box["new_rev"] in box["revs"],
+                    c12_revision_listed(box.get("revs"), box.get("new_rev") or "",
+                                        box.get("new_rev_digest") or ""),
                     box.get("nodes_before"), box.get("nodes_after"), late))
 
                 # re-pin the assignment: an explicit promotion, and current runs stay put
@@ -7285,8 +7444,12 @@ def c12():
         p2 = c12_publish_variant(admin, pid_pipe, "C12d re-exported bytes", variant) \
             if same and variant else None
         sem = c12_budget_number_doc(doc, "m4x-c12d")
-        p3 = c12_publish_variant(admin, pid_pipe, "C12d one changed budget number", sem) \
-            if sem and sem.get("doc") else None
+        sem_doc = sem.get("doc") if isinstance(sem, dict) else None
+        p3 = c12_publish_variant(admin, pid_pipe, "C12d one changed budget number", sem_doc) \
+            if sem_doc else None
+        if isinstance(sem, dict) and not sem_doc:
+            show("C12d one changed budget number", "no semantic variant: "
+                 + "; ".join(sem.get("missing") or []))
         c12_emit(c12_republish_verdicts(
             None if not (same and p2) else p2.get("publish_status"),
             None if not (same and p2) else p2.get("publish_body"), rid1,
@@ -8978,6 +9141,52 @@ def w_counter_verdicts(status, nodes):
     return verdicts
 
 
+def w3_gate_detail_verdict(detail_status, attempt_count=None, card_mounted=None):
+    """W3's precondition, restated for the shipped inspector (§ 7.2 W3 asserts the
+    CARD: approver roles, deadline, evidence links, who may decide). A
+    control-plane `human.approval` gate never has attempts — the advancer decides it
+    (contract § 5.1 pass 4) — so an attempt is not what the card is rendered behind.
+    commit 8d05235 made the detail pane mount the gate card for exactly such a node
+    instead of holding "Reading attempts…" forever; the assertion is therefore that
+    the node detail answers AND the card mounted in the browser. `card_mounted=None`
+    (no browser leg ran) is a GAP, never a PASS by schedule."""
+    label = "the gate's node detail is readable and its card mounts without an attempt"
+    if detail_status is None:
+        return (label, None, "the gate carried no node_execution_id — the pane has no row to read")
+    if detail_status != 200:
+        return (label, False, f"GET /runs/.../nodes/<gate> -> {detail_status} — the pane has "
+                              f"nothing to render into")
+    if card_mounted is None:
+        return (label, None, f"detail 200 (attempt_count={attempt_count}) but no browser leg "
+                             f"polled for the card")
+    return (label, card_mounted is True,
+            f"detail 200, attempt_count={attempt_count} — a control-plane gate has no "
+            f"attempts, so the card mounting on the gate itself is the assertion "
+            f"(8d05235), observed={card_mounted}")
+
+
+def w3_decide_verdict(row, approver_id=""):
+    """W3's round-trip: the Approve click posts /approvals/{id}/decide, which the
+    ledger records as `state='decided'` PLUS `decision='approved'` — the two columns
+    the 00005 CHECK separates (state ∈ pending|decided|expired|cancelled|denied; the
+    approve/reject fact lives only in decision, nullable until decided). Reading
+    'approved' out of `state` asks the column for a value its CHECK forbids.
+    `row` is the psql 'state|decision|decided_by' line ('' = unreadable)."""
+    label = "the click posts /approvals/{id}/decide"
+    cols = (row or "").split("|")
+    if len(cols) != 3:
+        return (label, None, "the approval_requests row did not read back — the decision "
+                             "is unmeasured")
+    state, decision, decided_by = [c.strip() for c in cols]
+    ok = state == "decided" and decision == "approved"
+    if approver_id and decided_by:
+        ok = ok and decided_by == approver_id
+    return (label, ok,
+            f"state={state!r} decision={decision!r} decided_by={decided_by!r} "
+            + (f"(want state='decided' decision='approved' decided_by={approver_id!r})"
+               if approver_id else "(want state='decided' decision='approved')"))
+
+
 def w_approval_verdicts(approver, decided, nodes, roles="", deadline=True, artifacts=True):
     """W3's card assertions. `approver` is which identity is looking, so the
     labels are unique per observer; the button is only ever a PASS for the
@@ -9152,9 +9361,11 @@ def w3():
         return
     project_id = mf(facts, "project_id")
     client = Client("alice")
-    if not login(client):
+    me = login(client)
+    if not me:
         gap("W3 all arms", "alice could not sign in over the API")
         return
+    alice_id = str(me.get("id") or "")
     body = {"pipeline_revision_id": mf(facts, "revision_id", "agent"),
             "inputs": mf(facts, "inputs", "agent", default={}),
             "idempotency": f"m4-exit-w3-{int(time.time())}"}
@@ -9184,10 +9395,13 @@ def w3():
     check("W3 the API exposes the gate's approver roles and deadline",
           bool(roles) and bool(gate.get("deadline_at")),
           f"approver_roles={gate.get('approver_roles')} deadline_at={gate.get('deadline_at')}")
-    # the inspector renders the card INSIDE the selected node's detail panel, and
-    # that panel waits for an attempt to exist; a control-plane gate has none, so
-    # the card can be unreachable for a reason the report must name rather than a
-    # vague "no Approve button" FAIL.
+    # the inspector renders the card INSIDE the selected node's detail panel.
+    # A control-plane gate has no attempts by construction (attempt_count=0 — the
+    # advancer decides it, nobody executes it), and 8d05235 made the pane render
+    # the gate card for exactly that node instead of spinning on "Reading
+    # attempts…" forever. So the assertion is the CARD, not an attempt that can
+    # never exist; the reading below is evidence, and the mount is measured once
+    # the browser leg has polled for the card.
     ne = gate.get("node_execution_id") or ""
     nd = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{ne}") if ne else None
     atts = (nd.json().get("attempts") or []) if nd and nd.status == 200 else []
@@ -9195,12 +9409,23 @@ def w3():
          f"{nd.status if nd else 'no node_execution_id'} "
          f"attempt_count={((nd.json().get('attempt_count') if nd and nd.status == 200 else None))} "
          f"attempts={len(atts)}")
-    check("W3 the gate's node detail offers the attempt the card is rendered behind",
-          bool(atts),
-          f"the run inspector keeps its detail panel on \"Reading attempts…\" until the "
-          f"node execution reports an attempt, and this control-plane gate reports "
-          f"attempt_count=0 — the gate card therefore never mounts (C9b's UI arm has "
-          f"nothing to render into)")
+    mounted = {"v": None}
+    polled = {"v": False}
+    emitted = {"v": False}
+    nd_status = None if nd is None else nd.status
+    nd_attempts = nd.json().get("attempt_count") if nd is not None and nd_status == 200 else None
+
+    def emit_gate_detail_verdict(final=False):
+        """Emit the restated precondition once, after a browser poll looked for the
+        card. bob's leg is enough when it finds the card; `final` (alice's leg, or
+        the path where she never signed in) emits whatever was observed."""
+        if emitted["v"] or not polled["v"]:
+            return
+        if not final and mounted["v"] is not True:
+            return
+        emitted["v"] = True
+        label, ok, detail = w3_gate_detail_verdict(nd_status, nd_attempts, mounted["v"])
+        check(f"W3 {label}", ok, detail)
 
     def card(session):
         """The inspector renders its shell before the gate panel lands, so the card
@@ -9219,6 +9444,9 @@ def w3():
                 if pw_click(role="button", contains=needle, session=session)[0]:
                     break
             found, ns = pw_poll(has, session=session, tries=6, delay=2)
+        if found or mounted["v"] is None:
+            mounted["v"] = found
+        polled["v"] = True
         return ns, ""
 
     # bob first: while the gate is still PENDING, so "no button" can only be the
@@ -9236,11 +9464,15 @@ def w3():
         gap("W3 bob's arm", "bob could not sign in through the browser")
 
     if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}", session="m4w3"):
+        # bob's leg already looked for the card; that is the only mount evidence
+        # this run will have, so the verdict is emitted on the strength of it.
+        emit_gate_detail_verdict(final=True)
         gap("W3 alice's arm", "alice could not sign in through the browser")
         return
     pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w3")
     time.sleep(3)
     nodes, _ = card("m4w3")
+    emit_gate_detail_verdict(final=True)
     shot = pw_shot("w3-alice-card", session="m4w3")
     for label, ok, detail in w_approval_verdicts(True, False, nodes, roles=roles,
                                                  deadline=bool(gate.get("deadline_at"))):
@@ -9252,9 +9484,14 @@ def w3():
                                          "was never posted from the browser")
         return
     time.sleep(6)
-    state = pw_first(psql(f"SELECT state FROM approval_requests WHERE id = '{aid}'"))
-    check("W3 the click posts /approvals/{id}/decide", state == "approved",
-          f"approval_requests.state={state!r}")
+    # state is the lifecycle column ('pending','decided','expired','cancelled',
+    # 'denied'); the approve/reject fact is `decision`. Reading 'approved' out of
+    # `state` is a column the CHECK forbids, so the click is measured on both.
+    row = pw_first(psql(f"SELECT state || '|' || COALESCE(decision,'') || '|' || "
+                        f"COALESCE(decided_by::text,'') FROM approval_requests "
+                        f"WHERE id = '{aid}'"))
+    label, ok, detail = w3_decide_verdict(row, alice_id)
+    check(f"W3 {label}", ok, detail)
     nodes2, _ = card("m4w3")
     shot2 = pw_shot("w3-alice-decided", session="m4w3")
     for label, ok, det in w_approval_verdicts(True, True, nodes2, roles=roles,
@@ -9375,7 +9612,10 @@ def w7():
         check("W7 queued_unbindable_runs counts the affinity-bound run",
               unbindable >= 1, f"counter={unbindable}, run status={st_now!r} (the "
                                "affinity is written with SQL because the public API "
-                               "reports it as a placement view only)")
+                               "reports it as a placement view only; § 5.2's state needs "
+                               "status='queued', and the advancer's queued→running arm — "
+                               "internal/pipelines/runtime/advancer.go — moves every "
+                               "queued run on its first pass, bindable or not)")
         if unbindable < 1:
             gap("W7 waiting-for-its-worker arm",
                 f"the run left 'queued' (status {st_now!r}) or the counter stayed "

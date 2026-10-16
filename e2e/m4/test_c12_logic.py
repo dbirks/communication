@@ -132,6 +132,27 @@ class C12bBudgets(unittest.TestCase):
         self.assertNotIn(m.BIND_OPEN, doc.split("  nodes:")[1])
         self.assertIn(f"maxIterations: {m.C12_MAX_ITER}", doc)
 
+    def test_literal_fanout_accepts_either_owner_of_the_refusal(self):
+        # The shipped schema types for_each.config.items as a bindingValue, so a
+        # literal array — of ANY length — is refused by the schema before the
+        # compiler's graph_too_large cap can be reached (§ 2.1 route 6's schema).
+        schema = {"source": "schema", "code": "schema_shape",
+                  "instance_location": "/spec/nodes/0/config/items",
+                  "message": "got array, want string"}
+        got = m.c12_literal_fanout_verdict(vbody(schema))
+        self.assertIs(True, got[1], got[2])
+        self.assertIn("bindingValue", got[2])
+        comp = {"source": "compiler", "code": "graph_too_large",
+                "instance_location": "/spec/nodes/0/config/items", "hint": "the limit is 1000"}
+        self.assertIs(True, m.c12_literal_fanout_verdict(vbody(comp))[1])
+        # a refusal that never names the items location is not this cap
+        self.assertIs(False, m.c12_literal_fanout_verdict(
+            vbody(err("cel_compile_error", "/spec/nodes/0/config/prompt")))[1])
+        self.assertIs(False, m.c12_literal_fanout_verdict(vbody(schema, valid=True))[1])
+        self.assertIsNone(m.c12_literal_fanout_verdict(None)[1])
+        # and the § 6 cap's OWN code is never credited to this arm
+        self.assertNotIn(m.C12_FANOUT_RUN_CODE, m.C12_LITERAL_FANOUT_CODES)
+
     def test_run_owned_cap_reads_the_code_off_the_run(self):
         v = m.c12_run_code_verdicts("1001 evaluated items", "fanout_items_exceeded",
                                     "failed", "fanout_items_exceeded")
@@ -189,8 +210,39 @@ class C12cPinnedRun(unittest.TestCase):
         self.assertIsNone(one(self._emit(event_rd=None), "journal carries no revision_digest"))
 
     def test_node_output_must_be_byte_identical(self):
-        self.assertIs(False, one(self._emit(nodes_after="{\"nodes\":[1]}"), "/nodes output"))
-        self.assertIsNone(one(self._emit(nodes_before=None), "/nodes output"))
+        self.assertIs(True, one(self._emit(), "/nodes plan view"))
+        self.assertIs(False, one(self._emit(nodes_after="{\"nodes\":[1]}"),
+                                 "/nodes plan view"))
+        self.assertIsNone(one(self._emit(nodes_before=None), "/nodes plan view"))
+
+    def test_progress_moves_the_body_but_never_the_pinned_plan(self):
+        # The live run keeps executing across the publish (§ 5.1), so the raw body
+        # moves with its own progress columns. That is not C12c's failure: only a
+        # plan-derived column moving (or an execution vanishing) is.
+        before = ('{"node_executions":[{"node_instance_key":"/plan","node_id":"plan",'
+                  '"kind":"process.exec","scope_key":"/","execution_location":"worker",'
+                  '"depends_on":[],"attempt_limit":3,"status":"running","attempt_count":1}]}')
+        progressed = before.replace('"status":"running","attempt_count":1',
+                                    '"status":"succeeded","attempt_count":2')
+        got = m.c12_nodes_identity_verdict(before, progressed)
+        self.assertIs(True, got[1], got[2])
+        self.assertIn("attempt_count", got[2])
+        moved_plan = before.replace('"execution_location":"worker"',
+                                    '"execution_location":"control_plane"')
+        self.assertIs(False, m.c12_nodes_identity_verdict(before, moved_plan)[1])
+        vanished = '{"node_executions":[]}'
+        self.assertIs(False, m.c12_nodes_identity_verdict(before, vanished)[1])
+        self.assertIn("left the run's own list", m.c12_nodes_identity_verdict(before,
+                                                                              vanished)[2])
+
+    def test_revisions_list_identifies_by_digest_not_id(self):
+        # § 2.1 route 5: a revision SUMMARY carries no id.
+        rows = [{"revision_number": 2, "revision_digest": "sha:NEW", "status": "published"}]
+        self.assertIs(True, m.c12_revision_listed(rows, "rev-2", "sha:NEW"))
+        self.assertIs(False, m.c12_revision_listed(rows, "rev-9", "sha:OTHER"))
+        self.assertIs(False, m.c12_revision_listed(rows, "rev-2", ""))  # no id member exists
+        self.assertIsNone(m.c12_revision_listed(None, "rev-2", "sha:NEW"))
+        self.assertIsNone(m.c12_revision_listed(rows, "", ""))
 
     def test_later_nodes_on_the_pinned_plan(self):
         self.assertIs(True, one(self._emit(pinned_late=True), "LATER nodes"))
@@ -249,6 +301,33 @@ class C12dCanonicalization(unittest.TestCase):
         rows = m.c12_republish_verdicts(None, None, "rev-1", None, None)
         self.assertIsNone(one(rows, "409 revision_already_published"))
         self.assertIsNone(one(rows, "budget number publishes normally"))
+
+
+class C12dProblemCode(unittest.TestCase):
+    def test_409_reads_the_code_from_the_problem_type_uri(self):
+        # ADR-0014: {type,title,status,detail} — the code arrives as the type URI's
+        # last segment (revision-already-published), never as a `code` member.
+        body = {"type": "https://communication.dev/errors/revision-already-published",
+                "title": "Revision Already Published", "status": 409,
+                "detail": "a revision with this document's digest is already published (r-1).",
+                "existing_revision_id": "r-1"}
+        rows = m.c12_republish_verdicts(409, body, "r-1", 201, {"id": "r-2"})
+        self.assertIs(True, one(rows, "409 revision_already_published"), detail(rows, "409"))
+        self.assertIs(True, one(rows, "names the EXISTING revision id"))
+        self.assertIs(True, one(rows, "budget number publishes normally"))
+
+    def test_a_literal_code_member_still_wins(self):
+        rows = m.c12_republish_verdicts(409, {"code": "revision_already_published",
+                                             "type": "about:blank",
+                                             "existing_revision_id": "r-1"}, "r-1", 201, {})
+        self.assertIs(True, one(rows, "409 revision_already_published"))
+
+    def test_a_different_409_is_still_a_fail(self):
+        rows = m.c12_republish_verdicts(
+            409, {"type": "https://communication.dev/errors/draft-changed-since-validation"},
+            "r-1", 201, {})
+        self.assertIs(False, one(rows, "409 revision_already_published"), detail(rows, "409"))
+        self.assertIs(False, one(rows, "names the EXISTING revision id"))
 
 
 class C12eDigestSplit(unittest.TestCase):

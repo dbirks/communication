@@ -12,6 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_approval_verdicts,
+    w3_decide_verdict,
+    w3_gate_detail_verdict,
     w_counter_verdicts,
     w_form_field_verdicts,
     w_input_expectations,
@@ -149,9 +151,38 @@ def test_approval_verdicts():
     _assert("verdict labels are unique", len(set(k for k, _, _ in v)) == len(v), v)
 
 
+def test_w3_gate_detail_verdict():
+    # A control-plane gate has NO attempts (attempt_count=0), and 8d05235 made the
+    # run inspector mount the gate card on such a node. Plain asserts, so pytest
+    # fails on a regression rather than only printing one (the file's _assert
+    # collects counts for the __main__ path only).
+    got = w3_gate_detail_verdict(200, 0, True)
+    assert got[1] is True, got
+    assert "no attempts" in got[2], got
+    assert w3_gate_detail_verdict(404, None, True)[1] is False
+    assert w3_gate_detail_verdict(None)[1] is None, "no node_execution_id is a GAP"
+    assert w3_gate_detail_verdict(200, 0, None)[1] is None, "no browser leg is a GAP"
+    assert w3_gate_detail_verdict(200, 0, False)[1] is False, "an unmounted card FAILS"
+    assert w3_gate_detail_verdict(200, 2, True)[1] is True, "an attempt-bearing node is fine"
+
+
+def test_w3_decide_verdict():
+    # state is the lifecycle column ('pending','decided','expired','cancelled',
+    # 'denied'); the approve/reject fact is `decision` (00005's CHECK). The old arm
+    # asked `state` for 'approved', a value the column can never hold.
+    ok = w3_decide_verdict("decided|approved|u-alice", "u-alice")
+    assert ok[1] is True, ok
+    assert w3_decide_verdict("pending||", "u-alice")[1] is False
+    assert w3_decide_verdict("decided|rejected|u-alice", "u-alice")[1] is False
+    assert w3_decide_verdict("decided|approved|u-bob", "u-alice")[1] is False
+    assert w3_decide_verdict("")[1] is None, "an unreadable row is a GAP"
+    assert w3_decide_verdict("decided")[1] is None, "a half row is a GAP"
+    assert "state='decided'" in ok[2], ok
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
-               test_approval_verdicts):
+               test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict):
         print(f"\n{fn.__name__}")
         fn()
     bad = globals().get("BAD", 0)
