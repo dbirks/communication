@@ -96,8 +96,8 @@ spec:
         stdout_preview: {type: string}
   # 2. Severity grading. The binding syntax is the probe document's
   #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.test.outputs.result }}).
-  #    KNOWN GAP: a ${{ … }} inside a message content is not a binding position in the
-  #    shipped schema asset, so it reaches the model verbatim; see README.md.
+  #    Message content is a binding position (ADR-0029) and resolves at claim time
+  #    (ADR-0027), so the scan output reaches the model interpolated, not verbatim.
   - id: summarize
     kind: model.chat
     dependsOn: [scan]

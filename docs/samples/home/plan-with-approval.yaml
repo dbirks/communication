@@ -91,9 +91,9 @@ spec:
   #    ${{ nodes.<id>.outputs.<name> }} binding the approval summary below uses
   #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.plan.outputs.plan }}).
   #    stdout_preview is the worker's bounded 8 KiB capture of the survey (contract § 6).
-  #    KNOWN GAP: the shipped schema types messages items as bare objects, so a ${{ … }}
-  #    in a message content is not a binding position and arrives verbatim (the compiler
-  #    records it as a literal). Authored against the intended shape; see README.md.
+  #    A ${{ … }} in a message content is a binding position (ADR-0029: messages are
+  #    typed {role, content}, content is bindingText) and the control plane interpolates
+  #    it at claim time (ADR-0027), so the model reads this run's goal, not the syntax.
   - id: plan
     kind: model.chat
     dependsOn: [survey]

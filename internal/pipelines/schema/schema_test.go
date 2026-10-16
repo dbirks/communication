@@ -314,6 +314,81 @@ func TestUnquotedBooleanReportsItsOwnSlot(t *testing.T) {
 	mustBeAt(t, schema.MustCompile().Validate(tree), "/spec/nodes/0/config/carryForward")
 }
 
+// modelChatDoc is a minimal valid Pipeline holding one model.chat node (ADR-0029):
+// messages are typed {role, content}, and content is the same bindingText shape
+// agent.acp's prompt is, so the position walker can place a binding inside a
+// prompt. oneofBase's frame is reused; only the config differs.
+const modelChatBase = "apiVersion: communication.dev/v1alpha1\n" +
+	"kind: Pipeline\nmetadata:\n  name: model-chat-probe\nspec:\n  inputs: {type: object}\n  nodes:\n"
+
+const modelChatDoc = modelChatBase +
+	"  - id: plan\n    kind: model.chat\n    config:\n      model: m\n      messages:\n" +
+	"      - role: system\n        content: Reply with a plan.\n" +
+	"      - role: user\n        content: 'Goal: ${{ inputs.goal }}'\n"
+
+func loadTree(t *testing.T, src string) any {
+	t.Helper()
+	doc, d := loader.Load([]byte(src))
+	if !d.Valid() {
+		t.Fatalf("loader: %v", d)
+	}
+	return doc.Value
+}
+
+// TestModelChatMessageContentIsATypedBindingSlot is ADR-0029 in the schema door:
+// the typed message shape validates, content is a bindingText position (so the
+// compiler compiles what it holds rather than recording a literal), and role is
+// not one.
+func TestModelChatMessageContentIsATypedBindingSlot(t *testing.T) {
+	tree := loadTree(t, modelChatDoc)
+	if d := schema.MustCompile().Validate(tree); !d.Valid() {
+		t.Fatalf("a typed model.chat message must validate: %v", d)
+	}
+	at := ptr.Pointer("/spec/nodes/0/config/messages/1/content")
+	if got := schema.Position(tree, at); got != schema.PositionText {
+		t.Errorf("Position(%s) = %s, want %s", at, got, schema.PositionText)
+	}
+	_, def := schema.PositionAndDef(tree, at)
+	if def != "bindingText" {
+		t.Errorf("$defs for %s = %q, want bindingText (the shape agent.acp's prompt uses)", at, def)
+	}
+	if got := schema.Position(tree, "/spec/nodes/0/config/messages/1/role"); got == schema.PositionText {
+		t.Errorf("role = %s; it is a literal enum, nothing binds there", got)
+	}
+	// The array itself stays a scope-less container: the walker must not read a
+	// message as a node body (classify's id/properties heuristic).
+	if got := schema.Position(tree, "/spec/nodes/0/config/messages"); got == schema.PositionScope {
+		t.Error("config.messages classified as a scope")
+	}
+}
+
+// TestModelChatMessageKeysFailClosed: role and content are the only keys a
+// message may hold, and role must be one of the three OpenAI-compatible names.
+func TestModelChatMessageKeysFailClosed(t *testing.T) {
+	cases := []struct {
+		src  string
+		want ptr.Pointer
+	}{
+		{strings.Replace(modelChatDoc, "        content: Reply with a plan.\n",
+			"        content: Reply with a plan.\n        name: planner\n", 1),
+			"/spec/nodes/0/config/messages/0/name"},
+		{strings.Replace(modelChatDoc, "      - role: system\n",
+			"      - role: tool\n", 1),
+			"/spec/nodes/0/config/messages/0/role"},
+		{strings.Replace(modelChatDoc, "      - role: system\n        content: Reply with a plan.\n",
+			"      - content: Reply with a plan.\n", 1),
+			"/spec/nodes/0/config/messages/0"},
+	}
+	for _, c := range cases {
+		d := schema.MustCompile().Validate(loadTree(t, c.src))
+		if d.Valid() {
+			t.Errorf("message shape validated, want refusal at %s", c.want)
+			continue
+		}
+		mustBeAt(t, d, string(c.want))
+	}
+}
+
 // TestUnknownKindKeepsEveryBranch is the unchanged half of the fix: with no
 // branch to pick, the validator's full answer is the only evidence available.
 func TestUnknownKindKeepsEveryBranch(t *testing.T) {

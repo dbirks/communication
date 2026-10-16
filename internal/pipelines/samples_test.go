@@ -12,16 +12,13 @@ package samples_test
 // kinds only (no agent.acp, which this cluster has no ACP credentials for) and
 // every model.chat node naming the one model the operator allowlists.
 //
-// Known gap these samples do NOT paper over: configModelChat.messages is
-// `items: {type: object}` in the shipped schema asset, so the binding-position
-// walker cannot place config.messages[i].content (schema.Position returns
-// "unknown") and the compiler records it as a literal — the ${{ … }} in a
-// message reaches the model verbatim. The samples are authored against the
-// intended shape (03 § node table: "messages, model/provider, JSON schema"),
-// so they start interpolating the moment the asset types message role/content
-// as bindingText. That needs a schema change and an ADR; until then the
-// published artifact and the approval summary — both real binding positions —
-// carry the run's content.
+// ADR-0029 closed the gap this file used to document: configModelChat.messages is
+// typed {role, content} in the shipped schema asset, content is a bindingText
+// slot — the same shape agent.acp's prompt is — and the claim-time resolver
+// (ADR-0027) interpolates it before the config reaches a worker. TestSample-
+// ModelChatMessageContentBinds proves it for both samples: `${{ inputs.goal }}`
+// and `${{ nodes.<id>.outputs.<name> }}` inside a prompt become compiled
+// expressions, not text the model reads verbatim.
 
 import (
 	"os"
@@ -51,7 +48,7 @@ var samples = []sample{
 		},
 	},
 	{
-		path: "../../docs/samples/home/security-review.yaml",
+		path:  "../../docs/samples/home/security-review.yaml",
 		kinds: []string{"process.exec", "model.chat", "artifact.publish"},
 	},
 }
@@ -152,6 +149,43 @@ func TestSampleModelChatNodesNameTheAllowlistedModel(t *testing.T) {
 		}
 		if seen == 0 {
 			t.Errorf("%s: no model.chat node — the sample no longer shows the kind it exists for", s.path)
+		}
+	}
+}
+
+// TestSampleModelChatMessageContentBinds is ADR-0029 read off the samples
+// themselves: a ${{ … }} written inside a message content compiles into an
+// expression at that exact pointer. Before the message shape was typed, the
+// position walker could not place it, the compiler recorded a literal, and the
+// model was handed the author's raw `${{ inputs.goal }}` text.
+func TestSampleModelChatMessageContentBinds(t *testing.T) {
+	for _, s := range samples {
+		plan := compileSample(t, s.path)
+		bound := 0
+		for _, n := range plan.Nodes {
+			if n.Kind != "model.chat" {
+				continue
+			}
+			for _, b := range n.ConfigBindings {
+				if !strings.HasSuffix(b.Pointer, "/config/messages/1/content") {
+					continue
+				}
+				if b.Position != schema.PositionText {
+					t.Errorf("%s: node %q %s position = %q, want bindingText", s.path, n.ID, b.Pointer, b.Position)
+					continue
+				}
+				if len(b.ExprIDs) == 0 {
+					t.Errorf("%s: node %q %s is recorded as a literal — the model receives ${{ … }} verbatim", s.path, n.ID, b.Pointer)
+					continue
+				}
+				if strings.Contains(b.Template, "${{") {
+					t.Errorf("%s: node %q template still holds binding syntax: %q", s.path, n.ID, b.Template)
+				}
+				bound += len(b.ExprIDs)
+			}
+		}
+		if bound < 2 {
+			t.Errorf("%s: only %d expression(s) bound inside model.chat message content, want at least the run input and the upstream output", s.path, bound)
 		}
 	}
 }

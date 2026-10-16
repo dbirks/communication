@@ -1017,7 +1017,25 @@
      "minItems": 1,
      "maxItems": 64,
      "items": {
-      "type": "object"
+      "type": "object",
+      "required": [
+       "role",
+       "content"
+      ],
+      "additionalProperties": false,
+      "properties": {
+       "role": {
+        "enum": [
+         "system",
+         "user",
+         "assistant"
+        ],
+        "description": "OpenAI-compatible message role (ADR-0029). A literal name: the worker forwards messages verbatim, so a ${{ … }} here has nothing to bind to."
+       },
+       "content": {
+        "$ref": "#/$defs/bindingText"
+       }
+      }
      }
     },
     "responseSchema": {

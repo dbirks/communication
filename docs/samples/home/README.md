@@ -22,11 +22,13 @@ is not here yet — timer/cron triggers land in M6, so start a run by hand.
 **Click path:** Library → New pipeline → New draft → paste the file → Validate → Publish
 → open the project → Pipelines → Assign → Runs → New run.
 
-**Known gap, stated plainly:** the shipped schema types `config.messages` items as bare
-objects, so `${{ … }}` inside a message `content` is not a binding position — it reaches
-the model verbatim (see `internal/pipelines/samples_test.go`). Inputs and upstream outputs
-flow through positions that *do* bind (`human.approval.summary`, `artifact.publish.from.value`).
-Fixing the message shape is a schema change and needs an ADR.
+**Message bindings work** (ADR-0029): `config.messages` is typed `{role, content}`
+(`role`: `system` | `user` | `assistant`) and `content` is a bindingText slot — the
+same shape `agent.acp`'s `prompt` is — so `${{ inputs.goal }}` and
+`${{ nodes.<id>.outputs.<name> }}` inside a prompt compile to expressions and the
+control plane interpolates them at claim time (ADR-0027) before the request leaves the
+worker. Inputs and upstream outputs likewise flow through `human.approval.summary` and
+`artifact.publish.from.value`.
 
 Proven by `go test ./internal/pipelines/ -run Sample`: both files pass loader, schema
 validator and compiler with zero diagnostics.

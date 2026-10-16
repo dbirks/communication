@@ -1,0 +1,46 @@
+# ADR-0029: a model.chat prompt is a binding position. survey's captured output
+# and the run's own goal reach the model as interpolated text, the way agent.acp's
+# prompt does — the plan node below is authored exactly as an author would write
+# it, with ${{ … }} inside message content.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: model-chat-bindings
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: survey
+    kind: process.exec
+    config:
+      executable: survey
+    outputs:
+      type: object
+      required: [stdout_preview]
+      properties:
+        stdout_preview: {type: string}
+  - id: plan
+    kind: model.chat
+    dependsOn: [survey]
+    config:
+      model: qwen3-8-flash-next
+      messages:
+      - role: system
+        content: Reply with a numbered plan and nothing else.
+      - role: user
+        content: |
+          Goal: ${{ inputs.goal }}
+          Files: ${{ nodes.survey.outputs.stdout_preview }}
+    outputs:
+      type: object
+      required: [text]
+      properties:
+        text: {type: string, minLength: 1}

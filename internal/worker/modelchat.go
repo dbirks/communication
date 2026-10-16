@@ -209,9 +209,38 @@ func parseModelChat(c AttemptClaim) (*modelChatSpec, *AttemptResult) {
 			"model.chat: config.messages must resolve to a non-empty array of message objects")
 	}
 	for i, msg := range msgs {
-		if _, ok := msg.(map[string]any); !ok {
+		m, ok := msg.(map[string]any)
+		if !ok {
 			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
 				fmt.Sprintf("model.chat: config.messages[%d] is not an object (schema: items are objects with role/content)", i))
+		}
+		// ADR-0029 makes content a binding position, so a claim whose config this
+		// control plane could not hydrate would otherwise POST an unevaluated
+		// expression tree to the endpoint. The worker never evaluates (§ 4 step 14):
+		// the marker stays a visible binding_error, exactly as agent.acp's prompt.
+		if isUnresolved(m) {
+			return nil, mcBad(ErrorClassBindingError, ModelChatCodeConfig,
+				fmt.Sprintf("model.chat: config.messages[%d] still carries unresolved bindings; claim resolution interpolates message content (ADR-0027/ADR-0029) and the worker never evaluates it (§ 4 step 14)", i))
+		}
+		role, _ := m["role"].(string)
+		switch role {
+		case "system", "user", "assistant":
+		default:
+			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+				fmt.Sprintf("model.chat: config.messages[%d].role = %q; the schema admits system, user or assistant (ADR-0029)", i, role))
+		}
+		content, isStr := m["content"].(string)
+		if !isStr {
+			if isUnresolved(m["content"]) {
+				return nil, mcBad(ErrorClassBindingError, ModelChatCodeConfig,
+					fmt.Sprintf("model.chat: config.messages[%d].content still carries unresolved bindings (ADR-0027/ADR-0029)", i))
+			}
+			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+				fmt.Sprintf("model.chat: config.messages[%d].content must be a string after resolution, got %T", i, m["content"]))
+		}
+		if content == "" {
+			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+				fmt.Sprintf("model.chat: config.messages[%d].content is empty; the schema's bindingText requires minLength 1", i))
 		}
 	}
 	if len(msgs) > 64 {
