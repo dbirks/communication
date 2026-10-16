@@ -2634,6 +2634,7 @@ def c4():
     if not isinstance(tw, dict) or not tw.get("revision_id"):
         gap("C4", "the seed manifest carries no twin variant (the deterministic pipeline "
                   "whose ~40s process.exec gives the freezer a live lease to expire)")
+        c4e_agent_turn(facts)      # C4e needs no twin — it fences the agent leg's own turn
         return
     alice = CTX.get("alice") or Client("alice")
     if login(alice) is None:
@@ -2643,6 +2644,7 @@ def c4():
     run_id = post_c1_run(alice, tw, f"m4x-c4-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
                          "c4", hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
+        c4e_agent_turn(facts, alice)
         return
     CTX["c4_run"] = run_id
     # The /approve gate is decided BEFORE the live-lease poll: the twin parks at
@@ -2658,6 +2660,7 @@ def c4():
             "ever leasing, not the driver waiting on a parked approval; with no lease "
             "there is no stale owner, so nothing below is measurable (evidence dumped "
             "above)")
+        c4e_agent_turn(facts, alice)
         return
     att, owner = live["id"], live["worker"]
     svc = c4_worker_service(owner)
@@ -2665,6 +2668,7 @@ def c4():
         gap("C4a pause the owning worker",
             f"the claim belongs to worker row {owner!r}, which is not one of this project's "
             "two lab workers — the driver freezes nothing it did not create (§ 7.0 host safety)")
+        c4e_agent_turn(facts, alice)
         return
     if owner != "worker-a":
         show("C4a note — which container gets frozen",
@@ -2784,11 +2788,15 @@ def c4():
             f"the frozen run never reached a terminal status (see the dump above)")
 
     if not turn:
-        gap("C4e the fenced turn adds no transcript after unpause",
-            f"the fenced attempt is {live['key']} with attempts.turn_id NULL — a "
-            "process.exec node owns no ACP turn, so conversation.turn.interrupted and the "
-            "transcript-timing arm are unmeasurable on it (they need an agent.acp attempt: "
-            "C6/C7's territory)")
+        # Not a verdict: § 7.1 C4e is about an ACP child, and this lease belonged to a
+        # process.exec node. The measurement now happens on the agent pipeline — the
+        # c4e_agent_turn leg c4() runs after this block (live9/C4.out:66 GAPped here
+        # because nothing else went looking for an agent.acp attempt).
+        show("C4e note — why this attempt carries no transcript arm",
+             f"the fenced attempt is {live['key']} with attempts.turn_id NULL: a "
+             "process.exec node owns no ACP turn, so conversation.turn.interrupted and "
+             "the transcript-timing arm are unmeasurable on it. C4e is measured below on "
+             "the agent pipeline's live /build_until_verified[1]/implement instead.")
     else:
         tev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(psql(
             f"SELECT type || '|' || actor_kind || '|' || coalesce(payload->>'reason','-') "
@@ -2806,6 +2814,9 @@ def c4():
             check(label, ok, detail)
     CTX["c4"] = {"run_id": run_id, "attempt_id": att, "owner": owner,
                  "fencing_token": live["token"], "unpause_ts": unpause_ts}
+    # § 7.1 C4e cannot be measured on the twin's process.exec lease at all: it names
+    # the still-running ACP child and its transcript. Run it on the agent pipeline.
+    c4e_agent_turn(facts, alice)
 
 
 # --- C5 pure logic — unit-tested offline by e2e/m4/test_c5_logic.py -----------
@@ -3266,6 +3277,347 @@ def wait_live_past_gate(client, project_id, run_id, timeout, tag, target=None):
               "POST /api/v1/approvals/{id}/decide never returning 200 — nothing was "
               "ever released, so nothing was ever leased")
     return None
+
+
+# --- C4e — the fenced turn's transcript arm (§ 7.1 C4e, agent.acp) -----------
+#
+# C4's twin arm fences whatever lease it catches, and live9 caught /plan — a
+# process.exec node with attempts.turn_id NULL — so § 7.1 C4e's row had nothing to
+# measure (live9/C4.out:66). docs/m4-contract.md § 7.1 C4e, verbatim:
+#   C4e  worker-a's still-running ACP child: its turn was fenced too (ADR-0023 § 4's
+#        single renewal statement), so conversation.turn.interrupted{reason:
+#        'lease_expired'} is present and NO transcript row was appended after
+#        unpause —
+#        psql -tAc "select max(global_seq) from domain_events where turn_id='$TURN'
+#                     and type='conversation.message.agent'"
+#        compared against the fence timestamp (§ 8's timing assertion).
+# This arm therefore runs the REAL-Claude pipeline the way C1's agent leg posts it,
+# approves the gate, and fences the live /build_until_verified[1]/implement — an
+# agent.acp attempt that holds its lease for the length of a real Claude turn. A
+# leg that never reaches that attempt says GAP with the reason: an attempt that
+# never existed proves nothing about a turn staying quiet.
+
+C4E_TARGET_KEY = C_LIVE_TARGET_KEY      # /build_until_verified[1]/implement
+C4E_FREEZE_S = C_FAULT_LEASE_S          # lease 30s + reconciler tick 15s (§ 7.1 C4a)
+C4E_CLOSE_POLL_S = 150                  # the wake-up: reconciler + retry bookkeeping
+C4E_QUIET_S = 20                        # grace for a stale append to become visible
+C4E_WINDOW_S = 900                      # the real /plan turn precedes the gate
+
+
+def c4e_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS —
+    C4e has more unmeasurable-than-false rows than a normal arm."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c4e_turn_events_sql(turn):
+    """§ 7.1 C4e's `where turn_id='$TURN'` read. domain_events has NO turn_id
+    column (00001 + 00005 give it conversation_id/run_id/node_execution_id/
+    attempt_id only), and the two writers of conversation.turn.interrupted
+    disagree on the columns: the reconciler appends conversation-scoped with
+    attempt_id NULL (internal/store/postgres/reconciler.go interruptExpiredTurns)
+    while the attempt's terminal write appends via trnAppendTx the same way.
+    The turn id inside the payload is the only key that sees both, so that is
+    what the contract's `turn_id` maps to."""
+    return (f"SELECT type || '|' || actor_kind || '|' || "
+            f"coalesce(payload->>'reason','-') FROM domain_events "
+            f"WHERE payload->>'turn_id' = '{turn}' AND "
+            f"type = 'conversation.turn.interrupted' ORDER BY global_seq")
+
+
+def c4e_turn_types_sql(turn):
+    """Everything the journal DID say about the fenced turn — the read that makes
+    'conversation.turn.interrupted is absent' a statement about the product
+    rather than about a query that matched nothing."""
+    return (f"SELECT type || '|' || actor_kind FROM domain_events "
+            f"WHERE payload->>'turn_id' = '{turn}' ORDER BY global_seq")
+
+
+def c4e_transcript_seq_sql(turn):
+    """§ 7.1 C4e's literal max(global_seq) over the fenced turn's agent transcript
+    rows, read the same turn-scoped way (§ 7.1's `where turn_id='$TURN'`)."""
+    return (f"SELECT coalesce(max(global_seq), 0)::text FROM domain_events "
+            f"WHERE payload->>'turn_id' = '{turn}' "
+            f"AND type = 'conversation.message.agent'")
+
+
+def c4e_transcript_predates_sql(turn, ts):
+    """§ 8's timing arm, compared in Postgres's own clock: did every agent
+    transcript row of the fenced turn land at or before the unpause?"""
+    return (f"SELECT coalesce(max(occurred_at) <= '{ts}'::timestamptz, true) "
+            f"FROM domain_events WHERE payload->>'turn_id' = '{turn}' "
+            f"AND type = 'conversation.message.agent'")
+
+
+def c4e_attempt_shape_sql(att):
+    """Is the claim C4e caught really an agent.acp attempt owning an ACP turn?
+    kind is on node_executions, turn_id/conversation_id on attempts (00005 § 4
+    step 6's stamped pair); every column is qualified because both tables carry
+    a status (live4/C4.out's `column reference "status" is ambiguous`)."""
+    return (f"SELECT ne.kind || '|' || coalesce(a.turn_id::text, '(none)') || '|' || "
+            f"coalesce(a.conversation_id::text, '(none)') || '|' || "
+            f"ne.node_instance_key FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE a.id = '{att}'")
+
+
+def c4e_turn_row_sql(turn):
+    """The fenced turn's own row: interrupted with no stop_reason is C4e's other
+    half (00003's conversation_turn_interrupted_unreasoned CHECK)."""
+    return (f"SELECT coalesce(status, '(none)') || '|' || "
+            f"coalesce(stop_reason, '(none)') FROM conversation_turns "
+            f"WHERE id = '{turn}'")
+
+
+def c4e_attempt_status_sql(att):
+    """The fenced attempt's terminal row (single table, so a bare status is
+    unambiguous here)."""
+    return (f"SELECT status || '|' || coalesce(error_class, '-') FROM attempts "
+            f"WHERE id = '{att}'")
+
+
+def c4e_agent_shape_verdicts(row):
+    """C4e's precondition in the ledger's own words: the fenced attempt is an
+    agent.acp node that owns a turn. No row / no turn is a GAP — § 7.1 C4e is
+    only about turns, and inventing one is how a leg goes vacuously green."""
+    if not isinstance(row, dict):
+        return [("C4e the fenced attempt is an agent.acp attempt owning an ACP turn "
+                 "(§ 7.1 C4e needs a turn, not a process.exec lease)", None,
+                 "the claim's row could not be re-read from attempts joined to "
+                 "node_executions — kind and turn_id are what make C4e measurable")]
+    kind, turn = str(row.get("kind")), str(row.get("turn"))
+    has_turn = turn not in ("", "-", "(none)", "null", "None")
+    if not has_turn:
+        ok = None if kind != "agent.acp" else False
+    else:
+        ok = kind == "agent.acp"
+    return [("C4e the fenced attempt is an agent.acp attempt owning an ACP turn "
+             "(§ 7.1 C4e needs a turn, not a process.exec lease)", ok,
+             f"kind={kind!r} turn={turn!r} node={row.get('key')!r}")]
+
+
+def c4e_turn_row_verdicts(row):
+    """The turn row after the wake-up: interrupted, and carrying no stop_reason
+    (ADR-0016: nobody reported an outcome). ok=None when there was no row."""
+    if not isinstance(row, dict):
+        return [("C4e the fenced turn row is interrupted (ADR-0023 § 4: a turn lease "
+                 "can never outlive its attempt)", None,
+                 "no conversation_turns row could be read for the fenced turn")]
+    status, stop = str(row.get("status")), str(row.get("stop_reason"))
+    return [
+        ("C4e the fenced turn row is interrupted (ADR-0023 § 4: a turn lease "
+         "can never outlive its attempt)", status == "interrupted",
+         f"observed {status!r}"),
+        ("C4e the interrupted turn carries NO stop_reason (00003's "
+         "conversation_turn_interrupted_unreasoned)",
+         None if status != "interrupted" else stop in ("", "-", "(none)", "NULL"),
+         f"stop_reason={stop!r} status={status!r}"),
+    ]
+
+
+def c4e_pre_transcript_verdict(before_seq):
+    """C4e's own precondition: the turn had a transcript before the fence, or
+    'max(global_seq) unchanged' is a comparison over nothing. GAP (None), never a
+    PASS, when the fenced turn had appended no agent transcript row at all."""
+    seq = _int(before_seq)
+    return [("C4e the fenced turn had a transcript to keep quiet (>=1 "
+             "conversation.message.agent row before the unpause)",
+             True if seq > 0 else None,
+             f"max(global_seq) before the unpause={before_seq!r} — a turn whose first "
+             "chunk never landed cannot be proven quiet")]
+
+
+def c4e_turn_event_verdicts(rows):
+    """§ 7.1 C4e's journal half, over the fenced turn's rows: "its turn was fenced
+    too … so conversation.turn.interrupted{reason:'lease_expired'} is present".
+    The contract names the REASON, not the actor, and two writers may legitimately
+    close it: the reconciler's expired-turn pass (actor_kind='system',
+    internal/store/postgres/reconciler.go interruptExpiredTurns) or the attempt's
+    paired close inside its fenced terminal write (actor_kind='worker',
+    attempts.go closeAttemptTurnTx). The actor is therefore REPORTED — an
+    unexpected one is not the failure C4e exists to catch."""
+    if not rows:
+        return [("conversation.turn.interrupted present for the fenced turn (§ 7.1 C4e: "
+                 "its turn was fenced too)", False,
+                 "no conversation.turn.interrupted row names this turn — the journal "
+                 "slice printed above says what the store DID write for it")]
+    reasons = sorted({str(r.get("reason")) for r in rows})
+    actors = sorted({str(r.get("actor_kind")) for r in rows})
+    return [
+        ("conversation.turn.interrupted present for the fenced turn (§ 7.1 C4e: its "
+         "turn was fenced too)", True,
+         f"{len(rows)} row(s); actors={','.join(actors) or '-'}"),
+        ("conversation.turn.interrupted reason=lease_expired (§ 7.1 C4e's literal)",
+         reasons == ["lease_expired"], f"reasons={','.join(reasons) or '-'}"),
+        ("conversation.turn.interrupted was written by a writer allowed to close a turn "
+         "(the reconciler's 'system' or the attempt's own fenced close as 'worker' — "
+         "ADR-0016 § 4, ADR-0023 § 4)",
+         "system" in actors or "worker" in actors, f"actors={','.join(actors) or '-'}"),
+    ]
+
+
+def c4e_attempt_verdicts(row):
+    """The fence landed on the attempt that OWNS the turn: C4e's turn arm means
+    nothing if the attempt it belongs to survived (ADR-0023 § 4's single renewal
+    statement — a turn lease can never outlive its attempt, and the reconciler
+    pairs the two writes). ok=None when the row cannot be read."""
+    if not isinstance(row, dict):
+        return [("C4e the fenced turn's attempt was interrupted too (ADR-0023 § 4: one "
+                 "renewal statement for attempt and turn)", None,
+                 "the attempt's row could not be read after the wake-up")]
+    status = str(row.get("status"))
+    return [("C4e the fenced turn's attempt was interrupted too (ADR-0023 § 4: one "
+             "renewal statement for attempt and turn)", status == "interrupted",
+             f"observed {status!r}")]
+
+
+def c4e_transcript_verdicts(before_seq, after_seq, fence_ts_ok, has_turn=True):
+    """c4_transcript_verdicts plus C4e's vacuity guard: a turn whose transcript was
+    still EMPTY when the fence landed cannot prove 'nothing was appended after the
+    unpause' by having nothing at all — silence over 0==0 would green a measurement
+    that was never taken. A row that DID land after the fence is the failure § 7.1
+    C4e names, so that comparison is always reported."""
+    if has_turn and not _int(before_seq) and not _int(after_seq):
+        return []
+    return c4_transcript_verdicts(before_seq, after_seq, fence_ts_ok, has_turn=has_turn)
+
+
+def c4e_no_live_gap(run_id, status, timeout):
+    """The honest sentence for an agent leg that never reached the node C4e fences
+    — said in terms of what the ledger was seen doing (12-test-strategy.md: a
+    missing measurement is reported, never greened)."""
+    return (f"no live agent.acp attempt at {C4E_TARGET_KEY} on run {run_id} within "
+            f"{timeout}s (last observed run status={status!r}) — the REAL-Claude "
+            "pipeline never reached an /implement turn a worker still held, so "
+            "conversation.turn.interrupted and the transcript-timing arm have no turn "
+            "to measure (§ 7.1 C4e needs an agent.acp attempt). GAP, never PASS.")
+
+
+def c4e_agent_turn(facts=None, alice=None):
+    """§ 7.1 C4e measured on an agent.acp attempt: post the REAL-Claude pipeline the
+    way C1's agent leg posts it (no hold_seconds — the model's own turn is the
+    hold), decide the /approve gate, wait for the live /build_until_verified[1]/
+    implement, and fence it EXACTLY as C4 fences (compose pause the owning worker's
+    SERVICE, let the lease expire, unpause). C4e's row then reads: conversation.
+    turn.interrupted journalled, and no transcript appended after the unpause by
+    the stale owner. Called by c4() on every path where a session and a manifest
+    exist, so the twin arm's early GAP cannot hide this one."""
+    label = "C4e the fenced turn adds no transcript after unpause"
+    facts = facts if isinstance(facts, dict) else (CTX.get("manifest") or
+                                                   load_manifest_facts())
+    if not isinstance(facts, dict):
+        gap(label, f"no § 7.0 seed manifest at {MANIFEST_PATH}: with no agent revision to "
+                   "pin there is no agent.acp attempt to fence")
+        return
+    agent = mvariant(facts, "agent")
+    if not isinstance(agent, dict) or not agent.get("revision_id"):
+        gap(label, "the seed manifest carries no agent variant (the feature-development "
+                   "pipeline whose /implement node owns an ACP turn) — C4's twin is a "
+                   "process.exec pipeline and cannot produce the row § 7.1 C4e names")
+        return
+    alice = alice if alice is not None else (CTX.get("alice") or Client("alice"))
+    if login(alice) is None:
+        gap(label, "no alice session — the /approve gate cannot be decided, so no "
+                   "agent.acp attempt is ever leased")
+        return
+    CTX["alice"] = alice
+    idem = f"m4x-c4e-agent-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    run_id = post_c1_run(alice, agent, idem, "c4e-agent")
+    if not run_id:
+        return                      # post_c1_run already made its own FAIL line
+    CTX["c4e_run"] = run_id
+    window = hold_window(C4E_WINDOW_S)
+    live = wait_live_past_gate(alice, mf(agent, "project_id"), run_id, window,
+                              "C4e", target=C4E_TARGET_KEY)
+    if live is None:
+        dump_run_evidence(alice, run_id)
+        gap("C4e a live agent.acp attempt to fence",
+            c4e_no_live_gap(run_id, run_status(run_id), window))
+        return
+    att, owner, turn = live["id"], live["worker"], live["turn"]
+    show(f"C4e the agent.acp attempt caught mid-turn ({live['key']})",
+         psql(c4_frozen_attempt_sql(att)))
+    svc = c4_worker_service(owner)
+    if svc is None:
+        gap("C4e pause the turn's owning worker",
+            f"the claim belongs to worker row {owner!r}, which is not one of this project's "
+            "two lab workers — the leg freezes nothing it did not create (§ 7.0 host safety)")
+        return
+    show(f"C4e the container this freeze stops (worker {owner} -> service {svc})",
+         compose_container(svc) or "(compose reported no single container for the service "
+         "— the pause below is addressed by service, which compose resolves itself)")
+    shape = psql_rows(psql(c4e_attempt_shape_sql(att)), 4)
+    shape_row = dict(zip(("kind", "turn", "conversation", "key"), shape[0])) if shape else None
+    c4e_emit(c4e_agent_shape_verdicts(shape_row))
+    if turn == "-":
+        gap(label, f"the claim at {live['key']} carries attempts.turn_id NULL, so § 7.1 "
+                   "C4e's turn-scoped reads have no $TURN to scope to (the shape line "
+                   "above says whether the node was agent.acp at all)")
+        return
+    rc, out = run(COMPOSE + ["pause", owner])
+    if rc != 0:
+        gap("C4e compose pause the turn's owning worker (freezer, not a kill)",
+            f"rc={rc}: {out[-240:]} — with no freezer the lease never expires under a live "
+            "ACP child, and a killed worker is C5's scenario, not C4e's")
+        return
+    show(f"compose pause {owner} — the ACP child keeps its session while its lease rots",
+         out[-240:])
+    time.sleep(C4E_FREEZE_S)                        # § 7.1 C4a's 45s
+    before = psql(c4e_transcript_seq_sql(turn))     # read DURING the freeze
+    rc, out = run(COMPOSE + ["unpause", owner])
+    unpause_ts = psql("SELECT now()::text")         # Postgres's own clock (§ 8's rule)
+    check(f"C4e unpause {owner} after {C4E_FREEZE_S}s of frozen renewals", rc == 0,
+          out[-200:] or unpause_ts)
+
+    # The reconciler writes in the API, not in the frozen worker: the interruption
+    # usually lands DURING the pause. Poll the ledger rather than assume it.
+    deadline, arow, trow = time.time() + C4E_CLOSE_POLL_S, [], []
+    while time.time() < deadline:
+        arow = psql_rows(psql(c4e_attempt_status_sql(att)), 2)
+        trow = psql_rows(psql(c4e_turn_row_sql(turn)), 2)
+        if arow and arow[0][0] == "interrupted" and trow and trow[0][0] == "interrupted":
+            break
+        time.sleep(3)
+    time.sleep(C4E_QUIET_S)    # give a stale owner's late append time to become visible
+    show(f"C4e the fenced attempt's row after the wake-up ({att})",
+         " | ".join(arow[0]) if arow else "(no row)")
+    show(f"C4e the fenced turn's row after the wake-up ({turn})",
+         " | ".join(trow[0]) if trow else "(no row)")
+    c4e_emit(c4e_turn_row_verdicts(dict(zip(("status", "stop_reason"), trow[0]))
+                                   if trow else None))
+    c4e_emit(c4e_attempt_verdicts(dict(zip(("status", "error_class"), arow[0]))
+                                  if arow else None))
+
+    tev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(
+        psql(c4e_turn_events_sql(turn)), 3)]
+    show(f"C4e the fenced turn's journal slice ({turn})",
+         "\n".join(f"{e['type']} reason={e['reason']} actor={e['actor_kind']}" for e in tev)
+         or "(no conversation.turn.interrupted row names this turn)")
+    if not tev:
+        show(f"C4e every journal row naming the turn {turn}",
+             "\n".join(" | ".join(r) for r in psql_rows(psql(c4e_turn_types_sql(turn)), 2))
+             or "(the journal says nothing about this turn at all)")
+    c4e_emit(c4e_turn_event_verdicts(tev))
+
+    after = psql(c4e_transcript_seq_sql(turn))
+    ts_ok = psql(c4e_transcript_predates_sql(turn, unpause_ts))
+    show(f"C4e max(global_seq) of the turn's agent transcript across the wake-up",
+         f"before={before} after={after} (unpause at {unpause_ts})")
+    c4e_emit(c4e_pre_transcript_verdict(before))
+    c4e_emit(c4e_transcript_verdicts(before, after, ts_ok, has_turn=True))
+
+    # The arm's evidence is read; the retry would only spend another real Claude
+    # turn against the lab's shared worker capacity (C8f/C8g's cleanup route).
+    r = alice.post(LB, f"/api/v1/runs/{run_id}/cancel",
+                   {"reason": "M4 exit C4e: the transcript arm is measured; the retry "
+                              "would spend another real Claude turn"})
+    show(f"C4e cleanup POST /runs/{run_id}/cancel -> {r.status}", r.text[:160])
+    CTX["c4e"] = {"run_id": run_id, "attempt_id": att, "turn_id": turn, "owner": owner,
+                  "fencing_token": live["token"], "unpause_ts": unpause_ts}
 
 
 def c5_kill_landed_verdicts(state, tries, proven):
