@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
+import { FRAME_BATCH_MS } from "../api/events";
 import {
   FakeEventSource,
   envelopeFixture,
@@ -275,9 +276,12 @@ describe("/projects/:projectId", () => {
       within(screen.getByTestId("activity-list")).getAllByTestId("activity-item"),
     ).toHaveLength(1);
 
-    // A change made through another replica must show up without a reload.
-    await waitFor(() =>
-      expect(requestsTo(requests, reposPath, "GET").length).toBeGreaterThan(before),
+    // A change made through another replica must show up without a reload —
+    // once the feed's coalescing window closes (a journal replay must not
+    // refetch once per frame; see `FRAME_BATCH_MS` in `api/events.ts`).
+    await waitFor(
+      () => expect(requestsTo(requests, reposPath, "GET").length).toBeGreaterThan(before),
+      { timeout: FRAME_BATCH_MS + 1_000 },
     );
     expect(requestsTo(requests, membersPath, "GET").length).toBeGreaterThan(0);
     expect(screen.getByTestId("activity-status").textContent).toBe("live");

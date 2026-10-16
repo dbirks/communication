@@ -503,8 +503,11 @@ export function usePutMember(projectId: string) {
 }
 
 /**
- * Forget cached reads for one project. Called for every SSE frame so a change
- * committed through *another* replica lands in this browser without a reload.
+ * Forget cached reads for one project. Driven by the project SSE feed — co-
+ * alesced there into at most one call per `FRAME_BATCH_MS` window, because a
+ * journal replay delivers frames faster than any read can round-trip — so a
+ * change committed through *another* replica lands in this browser without a
+ * reload.
  */
 export function invalidateProject(
   queryClient: ReturnType<typeof useQueryClient>,

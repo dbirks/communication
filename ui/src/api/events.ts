@@ -21,7 +21,7 @@
  * it with its rendered rows intact (a reload would repaint the timeline from a
  * cold read and is exactly what W10 measures as "document replaced").
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { M4_PROJECT_EVENT_TYPES } from "../lib/pipeline/runEvents";
 import { invalidateConversation, invalidateProject, queryKeys } from "./queries";
@@ -259,8 +259,63 @@ export interface ProjectEvents extends EventStream {
   events: EventEnvelope[];
 }
 
+/**
+ * Frames arrive far faster than the reads they invalidate can round-trip.
+ * Opening a project screen replays the project's whole journal down the fresh
+ * stream, and invalidating per frame turns that replay into a read storm — the
+ * live lab measured 950 `GET /api/v1/projects/:id` in ~6s and
+ * `net::ERR_INSUFFICIENT_RESOURCES` until the browser stopped loading pages.
+ * So invalidations are coalesced: every frame within the window marks the
+ * dirty ids, and one flush performs one invalidation per id. The activity feed
+ * renders the buffered frames themselves, so only REST refetches wait at most
+ * one window for a change committed through another replica.
+ */
+export const FRAME_BATCH_MS = 1_000;
+
+interface FrameBatch {
+  /** Project ids whose `"project"` subtree a frame dirtied. */
+  projectIds: Set<string>;
+  /** Run ids outside the project key (Run Inspector subtrees). */
+  runIds: Set<string>;
+  /** A `pipeline.*`/`assignment.*` frame dirtied the global pipeline list. */
+  pipelines: boolean;
+}
+
+function emptyFrameBatch(): FrameBatch {
+  return { projectIds: new Set(), runIds: new Set(), pipelines: false };
+}
+
 export function useProjectEvents(projectId: string): ProjectEvents {
   const queryClient = useQueryClient();
+  const batch = useRef<FrameBatch>(emptyFrameBatch());
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flush = useCallback(() => {
+    timer.current = null;
+    const { projectIds, runIds, pipelines } = batch.current;
+    batch.current = emptyFrameBatch();
+    for (const runId of runIds) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
+    }
+    if (pipelines) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+    }
+    for (const dirtyProjectId of projectIds) {
+      void invalidateProject(queryClient, dirtyProjectId);
+    }
+  }, [queryClient]);
+
+  // An unmount cancels the pending flush; the ids it named were already stale
+  // on the server, and the next mount refetches them.
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+      batch.current = emptyFrameBatch();
+    },
+    [],
+  );
+
   const { events, status } = useEventStream({
     url: projectId ? `/api/v1/projects/${projectId}/events` : "",
     types: PROJECT_EVENT_TYPES,
@@ -269,13 +324,12 @@ export function useProjectEvents(projectId: string): ProjectEvents {
       // M4 rows carry `run_id`: an open Run Inspector is a `["run", id]`
       // subtree, outside the project key, so name it too (docs/m4-contract.md
       // § 3: the project stream remains the superset).
-      if (event.run_id) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.run(event.run_id) });
-      }
+      if (event.run_id) batch.current.runIds.add(event.run_id);
       if (event.type.startsWith("pipeline.") || event.type.startsWith("assignment.")) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+        batch.current.pipelines = true;
       }
-      void invalidateProject(queryClient, event.project_id ?? projectId);
+      batch.current.projectIds.add(event.project_id ?? projectId);
+      if (!timer.current) timer.current = setTimeout(flush, FRAME_BATCH_MS);
     },
   });
   // The activity feed shows the newest frame at the top.
