@@ -465,3 +465,115 @@ func TestArtifactPublishRefusesMissingSource(t *testing.T) {
 		}
 	}
 }
+
+// pubRunValues is how cmd/communication/worker.go wires the § 4 step 9 scan:
+// the values are answered per RUN (postgres.RunSecretValues reads
+// secret_materializations for every attempt of the run and re-resolves them
+// through the keyring), and the hook is built before the publish. internal/worker
+// may not import postgres, so the fake is the shape of that seam; the real
+// adapter is proven against Postgres in internal/store/postgres/
+// run_secret_values_test.go. What this pins is the consumer's half: the
+// publishing attempt materialized nothing of its own — the seam that M3 called
+// Materialized.Redact is nil here (17ffa32) — and a run-scoped hook is what
+// stands between an upstream node echoing a secret and that secret being
+// published as evidence.
+type pubRunValues struct {
+	byRun map[string][][]byte
+}
+
+func (p *pubRunValues) redactorFor(runID string) func(string) (string, int) {
+	values := p.byRun[runID]
+	if len(values) == 0 {
+		return nil // the real adapter returns nil for a run holding nothing
+	}
+	needles := make([]string, 0, len(values))
+	for _, v := range values {
+		needles = append(needles, string(v))
+	}
+	return func(text string) (string, int) {
+		count := 0
+		for _, needle := range needles {
+			n := strings.Count(text, needle)
+			if n == 0 {
+				continue
+			}
+			text = strings.ReplaceAll(text, needle, "[REDACTED]")
+			count += n
+		}
+		return text, count
+	}
+}
+
+func TestArtifactPublishRedactsRunSecret(t *testing.T) {
+	const (
+		secretA = "ghp_runASentinelValue0123456789abcd"
+		secretB = "ghp_runBSentinelValue0123456789abcd"
+		runB    = "1f51cf22-4c2d-7abc-9def-0123456789ab"
+	)
+	values := &pubRunValues{byRun: map[string][][]byte{
+		pubRunID: {[]byte(secretA)},
+		runB:     {[]byte(secretB)},
+	}}
+	pubCfg := func(leaked string) map[string]any {
+		return map[string]any{"name": "review-evidence.json", "kind": "json",
+			"from": map[string]any{"mode": "output_json", "value": map[string]any{
+				"token": leaked, "note": "the agent echoed its environment"}}}
+	}
+
+	// Run A's publish carries run A's secret: marker in the bytes, real count.
+	bytesFake, rows := &pubBytesFake{}, &pubRowsFake{}
+	res, err := pubExecutor(bytesFake, rows, values.redactorFor(pubRunID), nil).
+		Execute(context.Background(), pubClaim(pubCfg(secretA)), nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("status = %s (%s / %s), want succeeded", res.Status, res.ErrorClass, res.Detail)
+	}
+	if len(bytesFake.puts) != 1 || len(rows.calls) != 1 {
+		t.Fatalf("puts=%d rows=%d, want 1 and 1", len(bytesFake.puts), len(rows.calls))
+	}
+	body := string(bytesFake.puts[0].body)
+	if strings.Contains(body, secretA) {
+		t.Errorf("run A's secret reached published bytes: %s", body)
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("no redaction marker in published bytes: %s", body)
+	}
+	if rows.calls[0].RedactionCount != 1 {
+		t.Errorf("row redaction_count = %d, want 1 (ADR-0020 D4: the count is the scan's, not a placeholder)",
+			rows.calls[0].RedactionCount)
+	}
+	if got := pubOutputs(t, res)["redaction_count"]; got != 1 {
+		t.Errorf("outputs redaction_count = %v, want 1", got)
+	}
+
+	// A different run of the same worker is scanned against its OWN values: run
+	// B's payload is clean as far as run A's secret goes, and run B's own value
+	// is what gets replaced.
+	bytesFake, rows = &pubBytesFake{}, &pubRowsFake{}
+	claim := pubClaim(pubCfg(secretB))
+	claim.RunID = runB
+	if _, err := pubExecutor(bytesFake, rows, values.redactorFor(runB), nil).
+		Execute(context.Background(), claim, nil); err != nil {
+		t.Fatalf("execute run B: %v", err)
+	}
+	if strings.Contains(string(bytesFake.puts[0].body), secretB) || rows.calls[0].RedactionCount != 1 {
+		t.Errorf("run B's secret survived its own scan (count %d): %s",
+			rows.calls[0].RedactionCount, bytesFake.puts[0].body)
+	}
+
+	// A run that holds nothing reports zero honestly — the executor does not
+	// invent a count, and it does not fail: "the scanner ran and saw nothing"
+	// stays distinguishable from "the scanner is broken" (ADR-0020 D4).
+	bytesFake, rows = &pubBytesFake{}, &pubRowsFake{}
+	clean := pubClaim(pubCfg("nothing-sensitive-here"))
+	clean.RunID = runB
+	if _, err := pubExecutor(bytesFake, rows, values.redactorFor("2f51cf22-4c2d-7abc-9def-0123456789ab"), nil).
+		Execute(context.Background(), clean, nil); err != nil {
+		t.Fatalf("execute with no values: %v", err)
+	}
+	if rows.calls[0].RedactionCount != 0 {
+		t.Errorf("redaction_count = %d for a run holding no secret, want 0", rows.calls[0].RedactionCount)
+	}
+}

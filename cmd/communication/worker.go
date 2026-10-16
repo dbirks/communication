@@ -447,18 +447,26 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
 			// others: a workspace_path publish reads the run tree, so that tree
 			// has to exist first even when this worker only publishes.
-			// Redact is deliberately nil: the secret scan is a unit's
-			// Materialized.Redact (worker/seams.go), i.e. the values THIS UNIT
-			// materialized, and an M4 attempt publishes with no unit-scoped
-			// materialization in hand. Nil is the honest answer — the executor
-			// then reports redaction_count 0 ("nothing was materialized here")
-			// rather than a count over values it never saw (ADR-0020 D4).
+			//
+			// The scan is no longer M3's unit-scoped one. Materialized.Redact
+			// knows only what THIS unit materialized, and a publishing attempt
+			// materializes nothing — so an attempt whose upstream echoed a
+			// node_attempt `env` value into its outputs would have published it
+			// verbatim with redaction_count 0 (17ffa32's honest nil). Now the
+			// scanner reads secret_materializations for every attempt of the run
+			// and re-resolves those versions through the same keyring path the
+			// materializer used: what the run ever held is what the artifact is
+			// scanned for, and a value that cannot be resolved fails the attempt
+			// (sandbox_enforcement_failed) instead of publishing unscanned.
 			worker.NodeKindArtifactPublish: &worker.RunWorkspaceExecutor{
-				Inner: &worker.ArtifactPublish{
-					Bytes:      attemptArtifactBytes,
-					Rows:       &postgres.AttemptArtifacts{Pool: pool},
-					Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
-					Logger:     log,
+				Inner: &postgres.ArtifactPublishSecretScan{
+					Publish: &worker.ArtifactPublish{
+						Bytes:      attemptArtifactBytes,
+						Rows:       &postgres.AttemptArtifacts{Pool: pool},
+						Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
+						Logger:     log,
+					},
+					Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
 				},
 				Prepare: prepareRunWorkspace,
 				Logger:  log,
