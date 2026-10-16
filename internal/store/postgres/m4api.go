@@ -205,6 +205,19 @@ func (a APIPipelineStore) pool() (*pgxpool.Pool, error) {
 const m4PipelineShape = pipPipelineShape + `
 	WHERE p.organization_id = $1::uuid`
 
+// m4PipelineFrom is pipPipelineShape's FROM/JOIN tail without its SELECT list,
+// for the routes that project a narrower shape than the full
+// pipeline row (route 1's summary). pipPipelineShape already carries its own
+// SELECT, so a caller that prepends its own list must reuse this tail and not
+// the full shape.
+const m4PipelineFrom = `
+	FROM pipelines p
+	LEFT JOIN LATERAL (
+		SELECT max(revision_number) AS latest, count(*) AS total
+		FROM pipeline_revisions pr WHERE pr.pipeline_id = p.id
+	) r ON true
+	WHERE p.organization_id = $1::uuid`
+
 func m4PipelineView(p Pipeline) api.PipelineView {
 	return api.PipelineView{
 		ID: p.ID, Slug: p.Slug, DisplayName: p.DisplayName, Description: p.Description,
@@ -239,7 +252,7 @@ func (a APIPipelineStore) ListPipelines(ctx context.Context, c api.Caller) ([]ap
 	rows, err := pool.Query(ctx, `
 		SELECT p.id, p.slug, p.display_name, COALESCE(r.latest, 0), COALESCE(r.total, 0),
 		       p.archived_at IS NOT NULL
-		`+m4PipelineShape+`
+		`+m4PipelineFrom+`
 		ORDER BY p.slug`, c.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: api list pipelines: %w", err)
@@ -474,12 +487,20 @@ func m4DraftView(d Draft) api.DraftView {
 	return v
 }
 
+// m4OrgDraftColumns is pipDraftColumns qualified for m4OrgDraft's join: under
+// `pipeline_drafts d JOIN pipelines p` the bare `id`/`created_at` of
+// pipDraftColumns answer 42702 column reference "id" is ambiguous.
+const m4OrgDraftColumns = `d.id, d.pipeline_id, d.status, d.document_text, d.source_kind, d.source_sha256,
+	d.canonical_document, d.ui_layout, d.revision_digest, d.compiled_plan, d.plan_digest,
+	d.digest_scope, d.validation, d.version, d.edited_by::text, d.created_at, d.updated_at,
+	d.published_revision_id::text`
+
 // m4OrgDraft reads one draft with its pipeline's organization — the org
 // predicate the committed GetDraft does not carry (drafts are read by id at
 // the routes, and an id of another organization must answer not-found).
 func m4OrgDraft(ctx context.Context, pool *pgxpool.Pool, s *PipelineStore, orgID, draftID string) (Draft, string, error) {
 	d, err := s.scanDraft(pool.QueryRow(ctx, `
-		SELECT `+pipDraftColumns+`
+		SELECT `+m4OrgDraftColumns+`
 		FROM pipeline_drafts d JOIN pipelines p ON p.id = d.pipeline_id
 		WHERE d.id = $2::uuid AND p.organization_id = $1::uuid`, orgID, draftID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -757,7 +778,9 @@ func (a APIPipelineStore) PublishDraft(ctx context.Context, c api.Caller, draftI
 		in.SchemaDigest, in.CelEnvDigest, c.UserID))
 	if err != nil {
 		if m4UniqueViolation(err) {
-			existing := a.revisionIDForDigest(ctx, tx, orgID, draftRevID)
+			// The 23505 aborts this transaction, so the read-back that
+			// names the winner runs on the pool, not on tx.
+			existing := a.revisionIDForDigest(ctx, pool, orgID, draftRevID)
 			return api.RevisionView{}, &api.DraftConflictError{
 				Kind: api.DraftConflictAlreadyPublished, DraftID: draftID,
 				ExistingRevisionID: existing,
@@ -792,12 +815,12 @@ func (a APIPipelineStore) PublishDraft(ctx context.Context, c api.Caller, draftI
 // revisionIDForDigest reads back the winning revision after a digest-collision
 // 23505, so the 409 body can name it. An unresolvable digest (someone
 // deleted? nothing can) yields "" and the client re-reads the revision list.
-func (a APIPipelineStore) revisionIDForDigest(ctx context.Context, tx pgx.Tx, orgID, digest string) string {
+func (a APIPipelineStore) revisionIDForDigest(ctx context.Context, pool *pgxpool.Pool, orgID, digest string) string {
 	if digest == "" {
 		return ""
 	}
 	var id string
-	if err := tx.QueryRow(ctx, `
+	if err := pool.QueryRow(ctx, `
 		SELECT id::text FROM pipeline_revisions
 		WHERE organization_id = $1::uuid AND revision_digest = $2 LIMIT 1`, orgID, digest).
 		Scan(&id); err != nil {
@@ -819,24 +842,39 @@ func m4RevisionView(r PipelineRevision) api.RevisionView {
 }
 
 // GetRevision resolves by id OR revision_digest inside the caller's
-// organization (route 13) — the committed ResolveRevision already carries
-// the org predicate, so a digest held only by another organization answers
-// the uniform not-found.
+// organization (route 13): a digest held only by another organization, a
+// nonsense reference and a deleted id all answer the uniform not-found, so
+// none of the three is distinguishable from the outside.
 func (a APIPipelineStore) GetRevision(ctx context.Context, c api.Caller, digestOrID string) (api.RevisionView, error) {
-	if _, err := a.pool(); err != nil {
+	pool, err := a.pool()
+	if err != nil {
 		return api.RevisionView{}, err
 	}
 	if err := prjRequireCaller(callerFromAPI(c)); err != nil {
 		return api.RevisionView{}, err
 	}
-	r, err := a.S.ResolveRevision(ctx, c.OrganizationID, digestOrID)
-	if errors.Is(err, ErrPipelineNotFound) {
+	r, err := a.S.scanRevision(pool.QueryRow(ctx, pipRevisionSelect+`
+		WHERE organization_id = $1::uuid AND `+m4RevisionRefPredicate(digestOrID)+`
+		LIMIT 1`, c.OrganizationID, digestOrID))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return api.RevisionView{}, api.ErrPipelineNotFound
 	}
 	if err != nil {
-		return api.RevisionView{}, err
+		return api.RevisionView{}, fmt.Errorf("postgres: api resolve revision %s in %s: %w", digestOrID, c.OrganizationID, err)
 	}
 	return m4RevisionView(r), nil
+}
+
+// m4RevisionRefPredicate picks the id or the digest arm of route 13's
+// lookup. The uuid cast is applied only when the reference IS a uuid: an
+// unguarded `$2::uuid` (the committed ResolveRevision's shape) makes
+// Postgres evaluate the cast for every digest lookup and answer a nonsense
+// reference with 22P02 / a 500 instead of the uniform not-found.
+func m4RevisionRefPredicate(ref string) string {
+	if prjValidUUID(ref) {
+		return `id = $2::uuid`
+	}
+	return `revision_digest = $2`
 }
 
 // DeprecateRevision is route 15: status only, org-predicated, with
