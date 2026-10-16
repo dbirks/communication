@@ -410,8 +410,14 @@ type RunStore interface {
 	// checkpoint_unavailable and NOTHING is reset (12 C6d: a destructive
 	// default would be a data-loss bug wearing a feature badge). running /
 	// completed / cancelled-successfully runs refuse with
-	// run_not_retriable. Retry-time Inputs are recorded as run inputs;
-	// run.override.applied stays reserved (ADR-0024 § 3).
+	// run_not_retriable. When a target is a human.approval gate the reopen
+	// RE-ARMS that node's existing approval_requests row — its decision and
+	// deadline reset, its CAS version bumps, its created_at stays, and
+	// re_requested marks the re-ask — because ADR-0023 § 9 admits ONE gate
+	// row per node execution; a gate whose row carries a decision or a
+	// recorded refusal cannot be re-asked and answers the same
+	// run_not_retriable, never a 500. Retry-time Inputs are recorded as run
+	// inputs; run.override.applied stays reserved (ADR-0024 § 3).
 	RetryRun(ctx context.Context, c Caller, runID string, in RunRetryInput) (RunView, error)
 	// GetAttempt is route 32 (openapi numbering: /attempts/{attemptId});
 	// the view type has no lease columns to leak.

@@ -859,6 +859,54 @@ func (ap *Approval) Decide(version int, decision, comments, decidedBy string, at
 	return ap.Check()
 }
 
+// ErrGateNotRearmable says a retried run's gate cannot be opened again. It is
+// typed, not a bare fmt.Errorf, because route 31 must answer 409
+// run_not_retriable rather than let the second insert hit
+// approval_requests_node_execution_id_key and surface a 500.
+type ErrGateNotRearmable struct {
+	ApprovalID      string
+	NodeInstanceKey string
+	State           string
+	Reason          string
+}
+
+func (e ErrGateNotRearmable) Error() string {
+	return fmt.Sprintf("runtime: gate %s (%s) is not re-armable (%s: %s)",
+		e.ApprovalID, e.NodeInstanceKey, e.State, e.Reason)
+}
+
+// Rearm re-opens a closed, unanswered gate for a retried run (contract route
+// 31). approval_requests UNIQUE (node_execution_id) admits ONE row per node
+// execution (ADR-0023 § 9), so the reopened gate asks again THROUGH its row:
+// the decision (there is none — only expired/cancelled re-arm), the deadline
+// and the CAS version move, and re_requested — the only re-request marker the
+// table carries — says so. created_at stays: the ask's age is the row's, not
+// the retry's. A denial is never re-armed: it names who refused and when, and
+// overwriting that fact to hand the wheel back is exactly the lie the ledger
+// exists to prevent (12 case 9).
+func (ap *Approval) Rearm(deadlineAt time.Time) error {
+	switch ap.State {
+	case ApprovalExpired, ApprovalCancelled:
+	default:
+		return ErrGateNotRearmable{ApprovalID: ap.ID, State: ap.State,
+			Reason: "only a closed, unanswered gate re-arms; a " + ap.State + " row is a decision or a refusal"}
+	}
+	ap.State = ApprovalPending
+	ap.Decision = ""
+	ap.Comments = ""
+	ap.DecidedBy = ""
+	ap.DecidedAt = time.Time{}
+	ap.DeadlineAt = deadlineAt
+	// re_requested is the only re-request marker the table carries, and the
+	// retry's re-ask is exactly that. It is behaviourally inert here: the
+	// expire arm reads it only when its OWN on_timeout is expire (state.go's
+	// Expire), and a gate on that arm reached `expired` with the flag already
+	// set — so this marks the fact, it never spends the arm's window twice.
+	ap.ReRequested = true
+	ap.Version++
+	return ap.Check()
+}
+
 // Expire applies the reconciler's deadline arm. on_timeout=expire re-requests
 // exactly once, which the re_requested flag records (contract § 5.4 pass 2).
 func (ap *Approval) Expire(at time.Time) (reRequest bool, err error) {

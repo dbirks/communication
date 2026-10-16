@@ -861,6 +861,19 @@ func (a APIRunStore) RetryRun(ctx context.Context, c api.Caller, runID string, i
 		if errors.As(err, &unknown) {
 			return api.RunView{}, &api.NodeExecutionNotFound{NodeInstanceKey: unknown.InstanceKey}
 		}
+		// A retried run whose target is a gate whose row cannot be re-armed (a
+		// decided gate, or one closed by a recorded refusal) is the same shape
+		// of refusal with a different reason: approval_requests admits ONE row
+		// per node execution, so "ask again" has no row to write — the reopen
+		// answers the documented run_not_retriable naming the gate, and the
+		// transaction rolls back whole. It is never the 500 the second insert
+		// used to raise.
+		var notGate runtime.ErrGateNotRearmable
+		if errors.As(err, &notGate) {
+			return api.RunView{}, m4RunConflict(api.RunConflictNotRetriable,
+				fmt.Sprintf("gate %s (%s) is %s: %s", notGate.ApprovalID, notGate.NodeInstanceKey,
+					notGate.State, notGate.Reason), r)
+		}
 		return api.RunView{}, err
 	}
 	updated, err := a.Runs.GetRun(ctx, r.ID)

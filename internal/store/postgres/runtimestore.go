@@ -963,14 +963,44 @@ func insertApprovalTx(ctx context.Context, tx pgx.Tx, r *runtime.Run, id, nodeID
 }
 
 func updateApprovalTx(ctx context.Context, tx pgx.Tx, id string, ap *runtime.Approval) error {
+	// The write-back mirrors the gate's whole mutable shape, not only its
+	// state. That matters for the reopened gate: a retried run re-arms its
+	// approval_requests row (route 31 / ADR-0023 § 9's one row per node
+	// execution) and resolves the ASK again — retry-time inputs feed the
+	// summary — so a row that kept the pre-retry text while approval.requested
+	// carried the new one's digest would be a false record. An empty
+	// resolution keeps the stored value (summary is NOT NULL, and an empty
+	// approver set never replaces a designated one).
+	roles := ap.ApproverRoles
+	if roles == nil {
+		roles = []string{}
+	}
+	userIDs := make([]string, 0, len(ap.ApproverUserIDs))
+	for _, u := range ap.ApproverUserIDs {
+		userIDs = append(userIDs, rteIdentity(u))
+	}
+	if len(userIDs) == 0 {
+		userIDs = nil
+	}
+	onTimeout := ap.OnTimeout
+	if onTimeout == "" {
+		onTimeout = "fail"
+	}
 	_, err := tx.Exec(ctx, `
 		UPDATE approval_requests
 		SET state = $2, decision = NULLIF($3, ''), comments = LEFT(NULLIF($4, ''), 8192),
 		    decided_by = NULLIF($5, '')::uuid, decided_at = $6, version = $7,
-		    deadline_at = $8, re_requested = $9
+		    deadline_at = $8, re_requested = $9, on_timeout = $10,
+		    summary = COALESCE(NULLIF($11, ''), summary),
+		    approver_roles = CASE WHEN cardinality($12::text[]) = 0 THEN approval_requests.approver_roles
+		                          ELSE $12::text[] END,
+		    approver_user_ids = CASE WHEN $13::uuid[] IS NULL OR cardinality($13::uuid[]) = 0
+		                          THEN approval_requests.approver_user_ids
+		                          ELSE $13::uuid[] END
 		WHERE id = $1::uuid`,
 		id, ap.State, ap.Decision, ap.Comments, rteIdentity(ap.DecidedBy),
-		rteTimePtr(ap.DecidedAt), ap.Version, ap.DeadlineAt.UTC(), ap.ReRequested)
+		rteTimePtr(ap.DecidedAt), ap.Version, ap.DeadlineAt.UTC(), ap.ReRequested, onTimeout,
+		ap.Summary, roles, userIDs)
 	if err != nil {
 		return fmt.Errorf("postgres: update approval %s (%s): %w", id, ap.State, err)
 	}

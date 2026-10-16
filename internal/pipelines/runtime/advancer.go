@@ -793,19 +793,22 @@ func (ac *advanceCtx) runCondition(pn *compiler.Node, row *NodeExecution, scopeK
 }
 
 func (ac *advanceCtx) openGate(pn *compiler.Node, row *NodeExecution, scopeKey string, idx map[string]int) error {
-	// One live gate per node execution (approval_requests UNIQUE
+	// One gate ROW per node execution (approval_requests UNIQUE
 	// (node_execution_id)) — re-derive, never trust a memory.
+	var closed *Approval
 	for _, ap := range ac.st.Approvals {
-		if ap.NodeExecutionID == row.ID && ap.State == ApprovalPending {
+		if ap.NodeExecutionID != row.ID {
+			continue
+		}
+		if ap.State == ApprovalPending {
 			return nil
 		}
-	}
-	// A decided gate that has not yet been delivered to the node row (a crash
-	// between the decide transaction and this pass) completes the node now.
-	for _, ap := range ac.st.Approvals {
-		if ap.NodeExecutionID == row.ID && ap.State == ApprovalDecided {
+		// A decided gate that has not yet been delivered to the node row (a crash
+		// between the decide transaction and this pass) completes the node now.
+		if ap.State == ApprovalDecided {
 			return ac.closeGate(pn, row, ap)
 		}
+		closed = ap
 	}
 	tree, err := ConfigTree(pn)
 	if err != nil {
@@ -826,13 +829,43 @@ func (ac *advanceCtx) openGate(pn *compiler.Node, row *NodeExecution, scopeKey s
 	if !ok || onTimeout == "" {
 		onTimeout = "fail"
 	}
+	deadlineAt := ac.now.Add(time.Duration(deadline) * time.Second)
+	// A retried run's gate re-ARMS its own row (contract route 31: the reopen
+	// target is the FAILED gate, and ADR-0023 § 9's one-live-gate-per-node-
+	// execution is what an expired gate must not violate): asking for a fresh
+	// row here used to land on approval_requests_node_execution_id_key and
+	// answer 500, leaving the expired gate a dead end. The re-ask carries the
+	// ask the run's CURRENT inputs resolve (a retry may override them); where a
+	// resolution comes back empty the row keeps what it had, because an
+	// unanswered gate with no designated approver is unanswerable.
+	if closed != nil {
+		if summary != "" {
+			closed.Summary = summary
+		}
+		closed.OnTimeout = onTimeout
+		if r := rawConfigStrings(pn, "/config/approverRoles"); len(r) > 0 {
+			closed.ApproverRoles = r
+		}
+		if u := rawConfigStrings(pn, "/config/approverUserIds"); len(u) > 0 {
+			closed.ApproverUserIDs = u
+		}
+		if err := closed.Rearm(deadlineAt); err != nil {
+			var nr ErrGateNotRearmable
+			if errors.As(err, &nr) {
+				nr.NodeInstanceKey = row.InstanceKey
+				err = nr
+			}
+			return err
+		}
+		return ac.armGate(pn, row, closed, closed.Summary)
+	}
 	ap := &Approval{
 		ID:              ac.st.NewID("ap"),
 		RunID:           ac.st.Run.ID,
 		NodeExecutionID: row.ID,
 		Kind:            "pipeline_gate",
 		Summary:         summary,
-		DeadlineAt:      ac.now.Add(time.Duration(deadline) * time.Second),
+		DeadlineAt:      deadlineAt,
 		OnTimeout:       onTimeout,
 		State:           ApprovalPending,
 		Version:         1,
@@ -848,6 +881,15 @@ func (ac *advanceCtx) openGate(pn *compiler.Node, row *NodeExecution, scopeKey s
 		return err
 	}
 	ac.st.Approvals = append(ac.st.Approvals, ap)
+	return ac.armGate(pn, row, ap, summary)
+}
+
+// armGate is the shared second half of a gate opening — the node's
+// ready→waiting move, the approval.requested row, and the run's waiting_human
+// flip (contract § 5.3: the scope waits, not the run). Both arms reach it
+// identically, so a re-armed gate and a first-time gate are the SAME live
+// thing to the API, the claim predicate and the Inbox.
+func (ac *advanceCtx) armGate(pn *compiler.Node, row *NodeExecution, ap *Approval, summary string) error {
 	if err := row.Move(NodeWaiting, ac.now); err != nil {
 		return err
 	}

@@ -205,6 +205,16 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 			}
 		}
 	}
+	// The gate arm of validate-then-mutate, stated BEFORE any row moves: a
+	// reopened human.approval re-arms its own approval_requests row (UNIQUE
+	// (node_execution_id) admits no second one), and a gate closed by a
+	// recorded refusal has nothing left to re-arm — that is the typed
+	// run_not_retriable, not a unique-violation 500.
+	for _, key := range sortedKeys(reopen) {
+		if err := checkGateRetry(st, reopen[key]); err != nil {
+			return err
+		}
+	}
 	at := ms.now()
 	for _, key := range sortedKeys(reopen) {
 		if err := reopen[key].Reopen(at); err != nil {
@@ -270,6 +280,36 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		return ms.Adv.Advance(st, at)
 	}
 	return nil
+}
+
+// checkGateRetry is route 31's gate arm of validate-then-mutate: the reopened
+// human.approval row RE-ARMS its own approval_requests row (UNIQUE
+// (node_execution_id) admits no second one — ADR-0023 § 9's one live gate per
+// node execution), and only a closed, unanswered gate can be re-asked. A gate
+// whose row carries a decision or a recorded refusal is a fact, not a wait, so
+// the retry names it with the typed run_not_retriable the API already maps to
+// 409 — never the unique-violation 500 this route used to answer.
+func checkGateRetry(st *State, n *NodeExecution) error {
+	var row *Approval
+	for _, ap := range st.Approvals {
+		if ap.NodeExecutionID == n.ID {
+			row = ap
+		}
+	}
+	if row == nil {
+		return nil // the advancer opens a fresh gate on this pass
+	}
+	switch row.State {
+	case ApprovalPending, ApprovalDecided, ApprovalExpired, ApprovalCancelled:
+		return nil
+	}
+	reason := "only a closed, unanswered gate re-arms; approval_requests.state " + row.State +
+		" is not"
+	if row.State == ApprovalDenied {
+		reason = "the row carries a recorded refusal, not an unanswered ask"
+	}
+	return ErrGateNotRearmable{ApprovalID: row.ID, NodeInstanceKey: n.InstanceKey,
+		State: row.State, Reason: reason}
 }
 
 func decisionFor(ds []RetryDecision, key string) (RetryDecision, bool) {
