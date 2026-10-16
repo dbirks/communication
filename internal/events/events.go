@@ -1678,3 +1678,33 @@ type AssignmentUpdatedPayload struct {
 	Before            map[string]any `json:"before"`
 	After             map[string]any `json:"after"`
 }
+
+// ------------------------------------------------------------ M6: schedules
+
+// TypeScheduleFired is M6's trigger audit row (ADR-0032 § 4): one per
+// schedule slot that created a run, appended in the transaction that advances
+// the schedule row, correlated to the run it started (domain_events.run_id).
+// A slot that was refused — assignment at its concurrency ceiling, disabled
+// assignment, a failed create — writes nothing: the absence of a row is the
+// honest record, and the tick's log line carries the reason.
+const TypeScheduleFired = "schedule.fired"
+
+// ScheduleFiredPayload is schedule.fired's shape. Per § 3's rules it is an
+// object carrying project_id plus the ids it correlates on, and nothing else:
+// the inputs a fire submitted are on the run's run_inputs rows, never copied
+// here (an input can be pointed at a secret), and the fired slot travels as
+// scheduled_for — the wall-clock minute the cron expression named, which is
+// what distinguishes a late fire from an on-time one.
+type ScheduleFiredPayload struct {
+	ProjectID    string    `json:"project_id"`
+	ScheduleID   string    `json:"schedule_id"`
+	AssignmentID string    `json:"assignment_id"`
+	RunID        string    `json:"run_id"`
+	CronExpr     string    `json:"cron_expr"`
+	ScheduledFor time.Time `json:"scheduled_for"`
+	// LateFireCount is how many cron slots between the previous next_run_at
+	// and this one were skipped rather than backfilled (ADR-0032 § 4: a
+	// replica that was down for a day fires once for the latest slot). 0 is
+	// the on-time answer.
+	LateFireCount int `json:"late_fire_count"`
+}
