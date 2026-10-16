@@ -247,20 +247,114 @@ class RetryApiVerdictsTest(unittest.TestCase):
 
 
 class AppendOnlyTest(unittest.TestCase):
+    """C5g — 'repeated attempts append, not overwrite' (ADR-0023 § 6) read off the
+    ledger the way ADR-0023 § 3 shapes it: an ATTEMPT row is a LEASE, so
+    control-plane kinds have none and a when-skipped worker has none either."""
+
+    def row(self, key="/build_until_verified[1]/implement", ne="1", att="2",
+            loc="worker", st="succeeded"):
+        return {"key": key, "ne": ne, "attempts": att, "location": loc, "status": st}
+
     def test_one_node_execution_many_attempts_passes(self):
         v = m.c5_append_only_verdicts([
-            {"key": "/build_until_verified[1]/implement", "ne": "1", "attempts": "2"},
-            {"key": "/build_until_verified[1]/test", "ne": "1", "attempts": "1"}])
+            self.row(att="2"), self.row(key="/build_until_verified[1]/test", att="1")])
         self.assertTrue(all(ok for _, ok, _ in v), v)
 
     def test_a_second_node_execution_for_one_key_fails(self):
-        v = m.c5_append_only_verdicts([{"key": "/implement", "ne": "2", "attempts": "3"}])
+        v = m.c5_append_only_verdicts([self.row(ne="2", att="3")])
         self.assertFalse(ok_of(v, "one node_executions row"))
 
-    def test_a_node_with_no_attempt_row_fails(self):
-        self.assertFalse(ok_of(m.c5_append_only_verdicts([{"key": "/x", "ne": "1",
-                                                          "attempts": "0"}]),
+    def test_a_worker_node_that_ran_with_no_attempt_row_fails(self):
+        v = m.c5_append_only_verdicts([self.row(att="0")])
+        self.assertFalse(ok_of(v, "one node_executions row"))
+        self.assertIn("attempts appended", detail_of(v, "one node_executions row"))
+
+    def test_a_control_plane_node_needs_no_attempt_row(self):
+        # live4/C5's seven FAILs: /approve, /fan_out, /verdict, /publish_* and the
+        # 00005 CHECK node_executions_control_plane_never_leased say zero is correct.
+        for key in ("/approve", "/fan_out", "/verdict", "/publish_verified"):
+            v = m.c5_append_only_verdicts([self.row(key=key, att="0", loc="control_plane")])
+            self.assertTrue(ok_of(v, "one node_executions row"), v)
+            self.assertIn("NO attempt rows", detail_of(v, "one node_executions row"))
+
+    def test_a_control_plane_node_carrying_attempts_is_a_fail(self):
+        v = m.c5_append_only_verdicts([self.row(key="/gate", att="1", loc="control_plane")])
+        self.assertFalse(ok_of(v, "one node_executions row"))
+
+    def test_a_skipped_node_was_never_attempted(self):
+        v = m.c5_append_only_verdicts([self.row(key="/emit_items", att="0", st="skipped")])
+        self.assertTrue(ok_of(v, "one node_executions row"), v)
+        self.assertIn("never attempted", detail_of(v, "one node_executions row"))
+
+    def test_a_skipped_node_with_attempts_is_a_fail(self):
+        v = m.c5_append_only_verdicts([self.row(key="/emit_items", att="1", st="skipped")])
+        self.assertFalse(ok_of(v, "one node_executions row"))
+
+    def test_a_node_that_never_ran_needs_nothing_yet(self):
+        for st in ("pending", "ready", "waiting"):
+            v = m.c5_append_only_verdicts([self.row(att="0", st=st)])
+            self.assertTrue(ok_of(v, "one node_executions row"), v)
+        # but a not-yet-executed node with attempt rows is still a ledger lie
+        self.assertFalse(ok_of(m.c5_append_only_verdicts([self.row(att="3", st="ready")]),
                               "one node_executions row"))
+
+    def test_an_unknown_status_asserts_only_the_single_row(self):
+        v = m.c5_append_only_verdicts([self.row(att="0", st="")])
+        self.assertTrue(ok_of(v, "one node_executions row"), v)
+        self.assertFalse(ok_of(m.c5_append_only_verdicts([self.row(ne="2", att="0", st="")]),
+                              "one node_executions row"))
+
+
+class KillLandedTest(unittest.TestCase):
+    """live4/C5's root cause: the twin's /plan step closes in <1s, so a kill issued
+    after reading the ledger arrives AFTER the node completed. The gate only earns
+    its interrupted-write claims when the freeze proves the lease was live."""
+
+    def test_state_classification(self):
+        self.assertEqual(m.c5_attempt_state({"status": "interrupted"}), "interrupted")
+        self.assertEqual(m.c5_attempt_state({"status": "succeeded"}), "closed")
+        self.assertEqual(m.c5_attempt_state({"status": "running"}), "live")
+        self.assertEqual(m.c5_attempt_state({"status": "queued"}), "live")
+        self.assertEqual(m.c5_attempt_state({}), "")
+        self.assertEqual(m.c5_attempt_state({"status": "waiting"}), "")
+        self.assertEqual(m.c5_attempt_state(None), "")
+
+    def test_freeze_proof_needs_the_lease_live_at_and_across_the_signal(self):
+        self.assertIs(m.c5_freeze_proof("running", "running"), True)
+        self.assertIs(m.c5_freeze_proof("leased", "leased"), True)
+        self.assertIs(m.c5_freeze_proof("succeeded", "succeeded"), False)
+        self.assertIs(m.c5_freeze_proof("running", "succeeded"), False)
+        self.assertIsNone(m.c5_freeze_proof("", "running"))
+        self.assertIsNone(m.c5_freeze_proof("running", "waiting"))
+
+    def test_an_interrupted_attempt_after_a_proved_freeze_is_a_pass(self):
+        v = m.c5_kill_landed_verdicts("interrupted", 2, True)
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+        self.assertIn("kill #2", detail_of(v, "died holding a live lease"))
+
+    def test_a_wasted_pick_is_a_gap_never_a_blame(self):
+        v = m.c5_kill_landed_verdicts("closed", 4, False)
+        self.assertIsNone(ok_of(v, "died holding a live lease"))
+        self.assertIn("wasted", detail_of(v, "died holding a live lease"))
+
+    def test_a_terminal_write_that_survived_the_freeze_is_a_fail(self):
+        v = m.c5_kill_landed_verdicts("closed", 1, True)
+        self.assertFalse(ok_of(v, "died holding a live lease"))
+
+    def test_a_lease_nobody_interrupted_fails_only_when_the_freeze_was_proved(self):
+        self.assertFalse(ok_of(m.c5_kill_landed_verdicts("live", 1, True),
+                              "died holding a live lease"))
+        self.assertIsNone(ok_of(m.c5_kill_landed_verdicts("live", 1, None),
+                               "died holding a live lease"))
+
+    def test_an_unreadable_ledger_gaps_the_kill(self):
+        self.assertIsNone(ok_of(m.c5_kill_landed_verdicts("", 3, None),
+                               "died holding a live lease"))
+
+    def test_a_run_that_stops_offering_live_attempts_gaps_too(self):
+        v = m.c5_kill_landed_verdicts("unattainable", 2, False)
+        self.assertIsNone(ok_of(v, "died holding a live lease"))
+        self.assertIn("idle", detail_of(v, "died holding a live lease"))
 
 
 class ContinueWorkspaceTest(unittest.TestCase):

@@ -53,6 +53,15 @@ IDP = "http://localhost:18095"
 PREVIEW = "http://preview.localhost:18094"
 COLLECTOR = "http://localhost:18099"
 
+# An API replica disappears under the driver for a moment at a time (live4/W4 died
+# on the leg's very first call: URLError [Errno 111] Connection refused, and with
+# it every check after it). A request that never reached a server is a property of
+# the lab, not a verdict about the product, so the transport re-sends it a BOUNDED
+# number of times. It stops at that: an HTTP status — 403, 409, 422, 500 — is the
+# control plane answering, and an answer is returned to the caller untouched.
+HTTP_CONNECT_RETRIES = 3
+HTTP_CONNECT_RETRY_WAIT_S = 2
+
 REPO_DIR = os.environ.get("COMM_REPO_DIR") or os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 WS_BIND = os.path.join(REPO_DIR, ".harness", "workspaces")     # = /workspaces
@@ -179,6 +188,30 @@ class Resp:
         return json.loads(self.body or b"{}")
 
 
+def http_is_connection_blip(exc):
+    """True ONLY for a request that never reached a server: ECONNREFUSED (an API
+    replica mid-restart), ECONNRESET / EPIPE / ECONNABORTED on the way in.
+    live4/W4 lost its whole leg to `URLError: <urlopen error [Errno 111] Connection
+    refused>` on the driver's first call — a hiccup in the stack, not an answer.
+
+    Everything else is False, deliberately: an HTTPError carries a STATUS (a real
+    refusal the gate must report), and a DNS failure, TLS error or timeout says
+    nothing about the server being briefly absent — those keep raising as they did."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if not isinstance(exc, urllib.error.URLError):
+        return False
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (ConnectionRefusedError, ConnectionResetError, BrokenPipeError,
+                           ConnectionAbortedError)):
+        return True
+    if isinstance(reason, OSError) and getattr(reason, "errno", None) in (111, 104, 32, 103):
+        return True
+    return isinstance(reason, str) and any(
+        t in reason for t in ("Connection refused", "Connection reset by peer",
+                              "Broken pipe", "Connection aborted"))
+
+
 class Client:
     def __init__(self, who):
         self.who, self.cookies, self.csrf = who, {}, None
@@ -192,11 +225,25 @@ class Client:
         if self.cookies:
             hdrs["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
         req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
-        try:
-            r = self.opener.open(req, timeout=timeout)
-            status, rh, payload = r.status, r.headers, r.read()
-        except urllib.error.HTTPError as e:
-            status, rh, payload = e.code, e.headers, e.read()
+        for try_no in range(1, HTTP_CONNECT_RETRIES + 1):
+            try:
+                r = self.opener.open(req, timeout=timeout)
+                status, rh, payload = r.status, r.headers, r.read()
+                break
+            except urllib.error.HTTPError as e:
+                # A status is an ANSWER. 4xx/5xx go straight back to the caller:
+                # re-sending a POST that the control plane refused would create a
+                # second run or fight an idempotency mapping the gate is measuring.
+                status, rh, payload = e.code, e.headers, e.read()
+                break
+            except urllib.error.URLError as e:
+                if not http_is_connection_blip(e) or try_no == HTTP_CONNECT_RETRIES:
+                    raise
+                show(f"{self.who}: {method} {url} never reached the server "
+                     f"({getattr(e, 'reason', e)})", f"retry {try_no} of "
+                     f"{HTTP_CONNECT_RETRIES - 1} in {HTTP_CONNECT_RETRY_WAIT_S}s "
+                     "(connection-refused/reset only — never an HTTP status)")
+                time.sleep(HTTP_CONNECT_RETRY_WAIT_S)
         for line in rh.get_all("Set-Cookie") or []:
             name, _, value = line.split(";", 1)[0].partition("=")
             if value in ("", "deleted"):
@@ -2226,6 +2273,24 @@ def c4():
 # kill (12-test-strategy.md: a mocked green is not done).
 
 C5_LIVE_STATES = ("queued", "leased", "running")
+# Node statuses that prove the node WAS executed (so its attempt rows are the
+# append-not-overwrite evidence), as opposed to pending/ready/waiting (not yet
+# executed) and skipped (never executed) — 00005's node_executions status CHECK.
+C5_RAN_STATES = ("leased", "running", "succeeded", "failed", "interrupted", "cancelled")
+# § 7.1 C5b's wait: lease 30s + reconciler tick 15s, plus margin for the kill's own rc.
+C5_KILL_WAIT_S = 50
+C5_KILL_POLL_S = 150
+# How many times the driver re-arms the kill when the attempt it targeted had
+# ALREADY closed before the signal landed (live4/C5: the twin's /plan step is a
+# printf, so the first kill always arrives after it succeeded — and an idle
+# worker's death proves nothing about recovery).
+C5_KILL_TRIES = 4
+# Terminal writes an attempt row can carry that are NOT the reconciler's: a
+# 'closed' target means the node had already finished when the signal arrived.
+C5_CLOSED_STATES = ("succeeded", "failed", "cancelled", "skipped")
+C5_STOP_SIGNAL = "STOP"
+C5_CONT_SIGNAL = "CONT"
+C5_FREEZE_PROOF_S = 3          # a frozen process writes nothing inside 3s
 C5_TAB = "\t"
 
 # docs/m4-contract.md § 7.1 C5f requires this sentence to appear VERBATIM in the
@@ -2421,13 +2486,42 @@ def c5_retry_api_verdicts(status, body, live_rows):
 def c5_append_only_verdicts(rows):
     """C5e/C5g — 'Repeated attempts append, not overwrite' (ADR-0023 § 6): every
     node_instance_key of the run still owns EXACTLY ONE node_executions row; the
-    retry added an attempt, never a second node execution for a finished node."""
+    retry added an attempt, never a second node execution for a finished node.
+
+    An ATTEMPT row is a lease, and ADR-0023 § 3 (00005's
+    node_executions_control_plane_never_leased CHECK) keeps control-plane kinds
+    out of the ledger's attempt table entirely: /approve, /build_until_verified,
+    /fan_out and /verdict prove the append rule on their SINGLE
+    node_executions row, never on attempts that may not exist. A worker kind
+    that actually ran is the one that must show the appended attempts; a
+    when-skipped worker kind must show NONE (live4/C5's seven FAILs were this
+    assertion firing on keys that have no attempts by design)."""
     out = []
     for r in rows:
         key = str(r.get("key"))
         ne, att = _int(r.get("ne")), _int(r.get("attempts"))
-        out.append((f"C5g {key}: one node_executions row (attempt rows appended: {att})",
-                    ne == 1 and att >= 1, f"node_executions={ne} attempts={att}"))
+        loc = str(r.get("location") or "").strip() or "worker"
+        st = str(r.get("status") or "").strip()
+        if st in ("", "-"):
+            want, rule = None, "status unreadable — only the single-row rule applies"
+        elif "," in st:
+            want, rule = None, "several node_executions rows share this key — the append rule " \
+                               "cannot be read off a run the ledger already duplicated"
+        elif loc == "control_plane":
+            want = att == 0
+            rule = ("control_plane kind: ADR-0023 § 3 gives it NO attempt rows — the single "
+                    "node_executions row IS the evidence")
+        elif st == "skipped":
+            want, rule = att == 0, "when-skipped node: never attempted, so no attempt rows"
+        elif st in C5_RAN_STATES:
+            want = att >= 1
+            rule = "worker node that ran: attempts appended, never overwritten"
+        else:
+            want, rule = att == 0, "node not reached yet (pending/ready/waiting): no attempts"
+        ok = ne == 1 and (want is None or bool(want))
+        out.append((f"C5g {key}: one node_executions row (attempt rows appended: {att})", ok,
+                    f"node_executions={ne} attempts={att} location={loc} status={st or '-'} "
+                    f"— the rule checked: {rule}"))
     return out
 
 
@@ -2489,8 +2583,74 @@ def c5_budget_verdicts(attempt_limit, status, cause):
              bool(ok), f"status={status!r} failed_cause={str(cause)[:90]!r}")]
 
 
+def c5_attempt_state(row):
+    """What the ledger says about an attempt the gate just signalled:
+    'interrupted' (the reconciler wrote the dead worker's terminal state — the case
+    the gate is about), 'closed' (the node had already finished on its own, so the
+    worker that died was idle), 'live' (still holding a lease nothing renews), or ''
+    for a row the ledger would not answer."""
+    st = str((row or {}).get("status") if isinstance(row, dict) else row or "").strip()
+    if st == "interrupted":
+        return "interrupted"
+    if st in C5_CLOSED_STATES:
+        return "closed"
+    if st in C5_LIVE_STATES:
+        return "live"
+    return ""
+
+
+def c5_freeze_proof(status_stop, status_after):
+    """Did SIGSTOP catch the worker holding a LIVE lease? The frozen worker cannot
+    renew a lease or write a terminal event, so the same live status read at the
+    signal and C5_FREEZE_PROOF_S later is the evidence that the SIGKILL which
+    follows lands MID-NODE rather than after a <1s process.exec step closed
+    (live4/C5 graded the reconciler for a death that never happened). True =
+    proved, False = the target had already closed, None = the ledger unreadable."""
+    a, b = str(status_stop or "").strip(), str(status_after or "").strip()
+    if a not in C5_LIVE_STATES + C5_CLOSED_STATES or b not in C5_LIVE_STATES + C5_CLOSED_STATES:
+        return None
+    return a in C5_LIVE_STATES and b in C5_LIVE_STATES
+
+
+def c5_kill_landed_verdicts(state, tries, proven):
+    """C5a/C5b's precondition stated as the ledger read it, before any of the
+    interrupted/checkpoint claims below are allowed to be made."""
+    label = ("C5b the worker died holding a live lease (SIGKILL mid-node: no cleanup, "
+             "no terminal write)")
+    proof = ("the lease was still live " + str(C5_FREEZE_PROOF_S) + "s after SIGSTOP"
+             if proven else "the SIGSTOP proof is unreadable")
+    if state == "interrupted":
+        return [(label, True, f"kill #{tries}: reconciler wrote interrupted ({proof})")]
+    if state == "closed":
+        if proven:
+            return [(label, False,
+                     "the attempt CLOSED although it was frozen live — a terminal write "
+                     "survived SIGSTOP, which the ledger must never accept from a worker "
+                     "that cannot write (suspected: internal/worker or the lease "
+                     "reconciler)")]
+        return [(label, None,
+                 f"kill #{tries} wasted: that targeted attempt had already closed "
+                 f"before the signal — the § 7.1 twin's process.exec steps are printfs that "
+                 "finish in <1s while § 7.1 names a ~40s node the lab does not ship, so the "
+                 "worker that died was idle and its death proves nothing")]
+    if state == "unattainable":
+        return [(label, None,
+                 f"the run stopped offering a live attempt after {tries} pick(s): every "
+                 "process.exec step closed before a kill could be aimed at it, so the "
+                 "worker that would have had to die mid-node was idle")]
+    if state == "live":
+        return [(label, False if proven else None,
+                 f"the attempt is still live after lease 30s + reconciler 15s + "
+                 f"{C5_KILL_WAIT_S + C5_KILL_POLL_S}s of polling ({proof}) — "
+                 + ("a frozen, killed worker's lease was never interrupted: product bug, "
+                    "suspected internal/pipelines/runtime reconciler" if proven else
+                    "the gate cannot say which worker owned the lease"))]
+    return [(label, None, f"no attempt row readable after {tries} kill attempt(s) — the "
+                          "ledger gave status for nothing, so nothing below is measurable")]
+
+
 def c5():
-    """C5 — THE exit gate: kill the worker mid-node, retry from the last checkpoint (12 case 5).
+    """C5 — THE exit gate: kill the worker mid-node, retry from the last checkpoint, retry from the last checkpoint (12 case 5).
     Acceptance: on the deterministic twin, `compose kill worker-a` during a ~40s
     process.exec; reconciler writes interrupted (never the dead process); checkpoints
     and ready artifacts survive byte-identical; `up -d worker-a` reclaims the SAME
@@ -2523,78 +2683,154 @@ def c5():
         return
     CTX["c5_run"] = run_id
 
-    # C5a — the boundary is recorded BEFORE the kill; without it every claim
-    # below would be an inference from whatever the crash happened to leave.
-    live = c4_wait_live_attempt(run_id, 300)
-    if live is None:
-        dump_run_evidence(alice, run_id)
-        gap("C5a a live attempt to kill",
-            f"no attempt on run {run_id} was ever held by a worker within 300s (status="
-            f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
-            "nothing below is measurable (evidence dumped above)")
-        return
-    att, owner, key = live["id"], live["worker"], live["key"]
-    svc = c4_worker_container(owner)
-    if svc is None:
-        gap("C5a compose kill the owning worker",
-            f"the live claim belongs to worker row {owner!r}, which is not one of this project's "
-            "two lab workers — the driver never kills a container it did not create (§ 7.0)")
-        return
-    if owner != "worker-a":
-        show("C5a note — which container gets killed",
-             f"§ 7.1 names worker-a, but the live claim landed on {owner}; the gate is about the "
-             f"OWNER dying mid-node, so {owner} is killed and this report says so")
-    show("C5a the live attempt and the boundary BEFORE the kill", psql(
-        f"SELECT a.id || ' attempt=' || a.attempt_number::text || ' worker=' || "
-        f"coalesce((SELECT name FROM workers WHERE id = a.worker_id),'-') || ' token=' || "
-        f"a.fencing_token::text || ' node=' || ne.node_instance_key FROM attempts a "
-        f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'"))
-    ck_before = c5_checkpoint_set(psql(
-        f"SELECT node_execution_id || '|' || outputs_digest FROM run_checkpoints "
-        f"WHERE run_id = '{run_id}'"))
-    show("C5a CKPT_BEFORE (run_checkpoints: node_execution_id:outputs_digest)",
-         "\n".join(ck_before) or "(no checkpoint rows yet — the killed node is the run's first "
-                                "completed boundary)")
+    # C5a — find a LIVE attempt and record the boundary BEFORE the kill; without
+    # both, every claim below is an inference from whatever the crash left behind.
+    # § 7.1 kills inside a ~40s process.exec; the shipped twin's steps are printfs
+    # that close in <1s, so "read the ledger, then compose kill" races the node to
+    # its own terminal write (live4/C5: /plan had already succeeded and the
+    # reconciler was graded for a death that never happened). The gate therefore
+    # freezes the owning worker with SIGSTOP, reads the lease back to PROVE it was
+    # live and stayed live while frozen, and only then delivers the SIGKILL § 7.1
+    # demands. A target that had already closed before the signal is a WASTED pick
+    # rather than a product FAIL: the kill is re-armed against the next live
+    # attempt, up to C5_KILL_TRIES times.
+    def att_row(aid):
+        try:
+            r = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
+                               f"FROM attempts WHERE id = '{aid}'"), 2)
+        except RuntimeError as e:
+            show("C5b the killed attempt's row (psql)", str(e)[:240])
+            return {}
+        return dict(zip(("status", "error_class"), r[0])) if r else {}
+
     def wsrow():
         r = psql_rows(psql(f"SELECT coalesce(state,'-') || '|' || coalesce(volume_id,'-') "
                            f"FROM workspaces WHERE run_id = '{run_id}'"), 2)
         return dict(zip(("state", "volume_id"), r[0])) if r else {}
+
     def gitout(sh):
         rc, out = wexec(f"git -C /workspaces/run/{run_id}/repos/app {sh}", worker=svc)
         if rc != 0 or "fatal:" in out:
             return ""
         return out.strip()
+
     def artcount(state):
         return psql(f"SELECT count(*)::text FROM artifacts WHERE run_id = '{run_id}' "
                     f"AND state = '{state}'")
-    ws_before = wsrow()
-    head_before, dirty_before = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
-    ready_before, uploading_before = artcount("ready"), artcount("uploading")
-    show("C5a HEAD_BEFORE / DIRTY_BEFORE / artifacts ready,uploading",
-         f"{head_before[:12] or '(unreadable)'} dirty={dirty_before or '(unreadable)'} "
-         f"ready={ready_before} uploading={uploading_before}")
 
-    # C5b — SIGKILL, no cleanup, no terminal write. The worker is ALWAYS started
-    # again on every exit path below: the gate must never leave the lab down.
+    live, killed = None, None
+    frozen = None            # a worker left SIGSTOPped is a worker the lab cannot use
+    kill_state, tries, proven = "", 0, None
+    ck_before, ws_before, head_before, dirty_before = [], {}, "", ""
+    ready_before, uploading_before = "", ""
     try:
-        rc, out = run(COMPOSE + ["kill", owner])
-        if rc != 0:
-            gap("C5b compose kill (SIGKILL: the honest case)",
-                f"rc={rc}: {out[-240:]} — without a kill there is no crash to recover from")
-            return
-        show(f"compose kill {owner} — the owning worker and its child die together", out[-240:])
-        time.sleep(50)                             # lease 30s + reconciler tick 15s + margin
-        row = []
-        deadline = time.time() + 150
-        while time.time() < deadline:
-            row = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
-                                 f"FROM attempts WHERE id = '{att}'"), 2)
-            if row and row[0][0] == "interrupted":
+        while tries < C5_KILL_TRIES and not killed:
+            live = c4_wait_live_attempt(run_id, C5_KILL_POLL_S if tries else 300)
+            if live is None:
+                if tries:
+                    kill_state = "unattainable"
                 break
-            time.sleep(3)
-        ledger = dict(zip(("status", "error_class"), row[0])) if row else {}
+            att, owner, key = live["id"], live["worker"], live["key"]
+            svc = c4_worker_container(owner)
+            if svc is None:
+                gap("C5a compose kill the owning worker",
+                    f"the live claim belongs to worker row {owner!r}, which is not one of this "
+                    "project's two lab workers — the driver never kills a container it did not "
+                    "create (§ 7.0)")
+                return
+            tries += 1
+            if owner != "worker-a":
+                show("C5a note — which container gets killed",
+                     f"§ 7.1 names worker-a, but the live claim landed on {owner}; the gate is "
+                     f"about the OWNER dying mid-node, so {owner} is killed and this report "
+                     "says so")
+            show(f"C5a the live attempt and the boundary BEFORE the kill (pick #{tries})", psql(
+                f"SELECT a.id || ' attempt=' || a.attempt_number::text || ' worker=' || "
+                f"coalesce((SELECT name FROM workers WHERE id = a.worker_id),'-') || ' token=' || "
+                f"a.fencing_token::text || ' node=' || ne.node_instance_key FROM attempts a "
+                f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'"))
+            ck_before = c5_checkpoint_set(psql(
+                f"SELECT node_execution_id || '|' || outputs_digest FROM run_checkpoints "
+                f"WHERE run_id = '{run_id}'"))
+            show("C5a CKPT_BEFORE (run_checkpoints: node_execution_id:outputs_digest)",
+                 "\n".join(ck_before) or "(no checkpoint rows yet — the killed node is the run's "
+                                         "first completed boundary)")
+            ws_before = wsrow()
+            head_before = gitout("rev-parse HEAD")
+            dirty_before = gitout("status --porcelain | wc -l")
+            ready_before, uploading_before = artcount("ready"), artcount("uploading")
+            show("C5a HEAD_BEFORE / DIRTY_BEFORE / artifacts ready,uploading",
+                 f"{head_before[:12] or '(unreadable)'} dirty={dirty_before or '(unreadable)'} "
+                 f"ready={ready_before} uploading={uploading_before}")
+
+            # C5b — freeze first (SIGSTOP takes away the worker's voice, not its
+            # bytes), prove the lease was live and stayed live, then SIGKILL.
+            rc, out = run(["docker", "kill", "-s", C5_STOP_SIGNAL, svc])
+            if rc != 0:
+                gap("C5b freeze the owning worker (SIGSTOP ahead of the SIGKILL)",
+                    f"rc={rc}: {out[-240:]} — without the freeze the gate cannot prove the "
+                    "kill landed mid-node, and it will not guess that it did")
+                kill_state = ""
+                break
+            frozen = svc
+            s_stop = att_row(att).get("status", "")
+            time.sleep(C5_FREEZE_PROOF_S)
+            s_after = att_row(att).get("status", "")
+            proven = c5_freeze_proof(s_stop, s_after)
+            show(f"C5b freeze {svc}: the lease at the signal and {C5_FREEZE_PROOF_S}s later",
+                 f"status@stop={s_stop or '(unreadable)'} "
+                 f"status+{C5_FREEZE_PROOF_S}s={s_after or '(unreadable)'} proved={proven}")
+
+            if not proven:
+                show(f"C5a kill #{tries} wasted — {key} had already closed",
+                     "the deterministic twin's process.exec step finished before the signal "
+                     "landed; the worker is unfrozen (SIGCONT) and unharmed, so the gate "
+                     "re-arms on its next live claim")
+                rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, svc])
+                show(f"docker kill -s {C5_CONT_SIGNAL} {svc} — the freeze is lifted "
+                     f"(rc={rc})", out[-160:] or svc)
+                if run_status(run_id) == "waiting_human":
+                    approve_gate(alice, mf(tw, "project_id"), run_id)
+                continue
+            rc, out = run(["docker", "kill", svc])
+            if rc != 0:
+                gap("C5b compose kill (SIGKILL: the honest case)",
+                    f"rc={rc}: {out[-240:]} — without a kill there is no crash to recover from")
+                kill_state = ""
+                break
+            killed = owner
+            show(f"docker kill {svc} — the frozen worker and its child die together "
+                 "(no cleanup, no terminal write)", out[-240:] or svc)
+            time.sleep(C5_KILL_WAIT_S)       # lease 30s + reconciler tick 15s + margin
+            deadline = time.time() + C5_KILL_POLL_S
+            while time.time() < deadline:
+                if c5_attempt_state(att_row(att)) != "live":
+                    break
+                time.sleep(3)
+            kill_state = c5_attempt_state(att_row(att))
+            if kill_state in ("interrupted", "live") or (kill_state == "closed" and proven):
+                break
+
+        if tries == 0:
+            dump_run_evidence(alice, run_id)
+            gap("C5a a live attempt to kill",
+                f"no attempt on run {run_id} was ever held by a worker within 300s (status="
+                f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
+                "nothing below is measurable (evidence dumped above)")
+            return
+        c5_emit(c5_kill_landed_verdicts(kill_state, tries, proven))
+        if kill_state != "interrupted" and not (kill_state == "closed" and proven):
+            gap("C5 remaining cases — the mid-node kill",
+                f"{tries} kill pick(s), none provably caught an attempt live (last ledger read: "
+                f"{kill_state or 'unreadable'}) — the reconciler's interrupted write, the "
+                "checkpoint boundary, the retry and continue_workspace are all unmeasurable "
+                "(§ 7.1 names a ~40s process.exec the lab does not ship)")
+            return
+
+        # C5b — the terminal write and the journal of the attempt that died.
+        ledger = att_row(att)
         show(f"C5b the killed attempt's row ({att}) after lease 30s + reconciler 15s",
-             " | ".join(row[0]) if row else "(no row)")
+             f"{ledger.get('status') or '(no row)'} | {ledger.get('error_class') or '(no row)'}")
         for label, ok, detail in c5_interrupted_verdicts(ledger):
             check(label, ok, detail)
         ev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(psql(
@@ -2619,10 +2855,15 @@ def c5():
         c5_emit(c5_boundary_verdicts(ck_before, ck_after, ready_before, artcount("ready"),
                                      artcount("uploading")))
     finally:
-        rc, out = run(COMPOSE + ["start", owner])
-        show(f"compose start {owner} — the killed worker is brought back (host safety: the gate "
-             f"never leaves the lab down; rc={rc})", out[-240:] or WORKER_A)
-        wait_worker_row(owner, 120)
+        if frozen and not killed:
+            rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, frozen])
+            show(f"C5b unfreeze {frozen} (SIGCONT) — the gate never leaves a stopped worker "
+                 f"behind (rc={rc})", out[-160:] or frozen)
+        if killed:
+            rc, out = run(COMPOSE + ["start", killed])
+            show(f"compose start {killed} — the killed worker is brought back (host safety: the "
+                 f"gate never leaves the lab down; rc={rc})", out[-240:] or killed)
+            wait_worker_row(killed, 120)
 
     # C5d — same-volume reclaim: the run's workspace must be RECLAIMED, not rebuilt.
     ws_after = wsrow()
@@ -2687,11 +2928,12 @@ def c5():
     EVIDENCE["C5f"] = C5_CONTINUE_SENTENCE
 
     # C5g — history is append-only and the run's final state is valid.
-    ne_rows = [dict(zip(("key", "ne", "attempts"), r)) for r in psql_rows(psql(
+    ne_rows = [dict(zip(("key", "ne", "attempts", "location", "status"), r)) for r in psql_rows(psql(
         f"SELECT ne.node_instance_key || '|' || count(DISTINCT ne.id)::text || '|' || "
-        f"count(a.id)::text FROM node_executions ne LEFT JOIN attempts a "
-        f"ON a.node_execution_id = ne.id WHERE ne.run_id = '{run_id}' "
-        f"GROUP BY ne.node_instance_key ORDER BY ne.node_instance_key"), 3)]
+        f"count(a.id)::text || '|' || min(ne.execution_location) || '|' || "
+        f"coalesce(string_agg(DISTINCT ne.status, ','), '-') FROM node_executions ne "
+        f"LEFT JOIN attempts a ON a.node_execution_id = ne.id WHERE ne.run_id = '{run_id}' "
+        f"GROUP BY ne.node_instance_key ORDER BY ne.node_instance_key"), 5)]
     c5_emit(c5_append_only_verdicts(ne_rows))
     status, _watch = watch_run(alice, tw, run_id, 900, "c5")
     if status is None:
@@ -2763,11 +3005,13 @@ C6_PAIR_SENTENCE = (
 # whose name embedded one was refused: observed live, schema_shape "'m4x-c6-restore-
 # T083004Z' does not match pattern '^[a-z][a-z0-9.-]{0,127}$'" at /metadata/name
 # (C6, C7 and C10 all GAPed on it). Anything that goes INTO A DOCUMENT therefore
-# comes from schema_name(); idempotency keys and run labels posted to the API keep
-# the raw stamp (the Idempotency-Key pattern ^[A-Za-z0-9._-]{1,128}$ allows
-# uppercase). e2e/m4/test_names_logic.py checks this helper against the pattern it
-# READS from internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json, so the
-# rule cannot drift away from the schema silently.
+# comes from schema_name(); idempotency keys and run labels posted to the API come
+# from idem_key() (the Idempotency-Key pattern ^[A-Za-z0-9._-]{1,128}$ allows
+# uppercase but forbids the spaces and slashes a gate label is full of — live4/C12
+# posted 'C12b 1001-item fan-out' and ate a 422). e2e/m4/test_names_logic.py checks
+# this helper against the pattern it READS from
+# internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json, so the rule cannot
+# drift away from the schema silently.
 
 
 def _schema_slug(text):
@@ -2795,6 +3039,36 @@ def schema_name(prefix, suffix=None, cap=128):
     room = cap - len(stamp) - len(sep)
     name = (head[:room] + sep + stamp) if room >= 1 else stamp
     return name if re.match(r"^[a-z]", name) else "n" + name[: cap - 1]
+
+
+def _idem_slug(text):
+    """`text` squeezed into the Idempotency-Key character class: runs of characters
+    outside [A-Za-z0-9._-] collapse to one '-', separators at the ends are dropped.
+    Case is KEPT — unlike metadata.name, the API's key pattern allows uppercase."""
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text)).strip("-._")
+    return s or "x"
+
+
+def idem_key(prefix, suffix=None, cap=128):
+    """An idempotency key the API accepts: ^[A-Za-z0-9._-]{1,128}$ (api/openapi.yaml,
+    both the Idempotency-Key header and a run body's `idempotency` member).
+    schema_name() cannot serve it — that class forbids uppercase and '_', this one
+    allows both and forbids spaces, '/' and everything else outside the set.
+    Observed live (live4/C12): the gate posted its own label, 'C12b 1001-item
+    fan-out', as the key and the API answered 422 "idempotency key must match
+    ^[A-Za-z0-9._-]{1,128}$." — the arm never ran and reported a refusal it did not
+    earn. suffix=None stamps the current UTC second, so a re-run never replays a
+    key the server may still be holding for 24 h; suffix='' means 'no stamp'."""
+    if suffix is None:
+        stamp = _idem_slug(time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    elif suffix == "":
+        stamp = ""
+    else:
+        stamp = _idem_slug(suffix)
+    head, sep = _idem_slug(prefix), ("-" if stamp else "")
+    room = cap - len(stamp) - len(sep)
+    key = (head[:room] + sep + stamp) if room >= 1 else stamp
+    return (key or "x")[:cap]
 
 
 def doc_scalar(v, flow=False):
@@ -4556,6 +4830,25 @@ def c8_depth_guard_verdicts(validate_body, third_level_status):
 # --- C8 live helpers — the stack-facing half -----------------------------------
 
 
+def c8_children_verdicts(children, want=C8_ITEMS):
+    """C8d — the scope row's outputs.children, already parsed (None = 'no readable
+    array'). The detail is built from the SAME value the verdict reads: live4/C8
+    died with TypeError: 'NoneType' object is not iterable because the evidence
+    string walked `children` unconditionally while the verdict guarded it, and the
+    rest of the gate (its cancel and depth arms) never ran."""
+    sample = [sorted(c)[:4] for c in (children or []) if isinstance(c, dict)]
+    return [
+        (f"C8d outputs.children carries one entry per item ({want})",
+         None if children is None else len(children) == want,
+         f"{len(children) if children is not None else 'unparsed'} entries"),
+        ("C8d each child entry names its own child_run_id",
+         None if not children else all(
+             isinstance(c, dict) and (c.get("child_run_id") or c.get("run_id") or c.get("id"))
+             for c in children),
+         str(sample[:3])[:200]),
+    ]
+
+
 def c8_sql(sql, what):
     """C8's psql reader: text, or None (an honest GAP upstream) with the failure
     printed — a ledger that will not answer is never read as a zero. Without this
@@ -4568,23 +4861,32 @@ def c8_sql(sql, what):
 
 
 def c8_seed_facts():
-    """seed-manifest/1 -> what C8 arms a run against: the feature-development
-    ASSIGNMENT (the for_each branch lives in that published revision, gated by
-    inputs.fanout) and the published issue-implementation child. {} = no manifest."""
+    """seed-manifest/1 -> what C8 arms a run against: the DETERMINISTIC TWIN's
+    ASSIGNMENT (docs/m4-contract.md § 7.1 C8 counts fan-out off the LEDGER — 25
+    invoke rows, 25 child runs — and the twin is the variant whose every
+    predecessor of /fan_out is a process.exec) and the published
+    issue-implementation child. {} = no manifest.
+
+    The for_each branch is authored in BOTH documents (it is gated by
+    inputs.fanout), but the agent variant cannot reach it unattended: its /plan is
+    an agent.acp node that dies on a permission prompt with nobody to answer
+    (ADR-0016, docs/design/attempt-permissions.md), and live4/C8 measured the
+    RESULT of that — /fan_out 'cancelled', 0 invoke rows, run 'failed'. The gate
+    would then be reporting its own fixture choice as a product failure."""
     obj = c9_manifest_json()
     pipes = mf(obj, "pipelines") or {}
     if not isinstance(pipes, dict):
         return {}
-    fd = pipes.get(FD_SLUG) or {}
+    tw = pipes.get(TW_SLUG) or {}
     ii = pipes.get(II_SLUG) or {}
     proj = mf(obj, "project_id") or mf(mf(obj, "project") or {}, "id")
     runs = [r for r in (mf(obj, "runs") or []) if isinstance(r, dict)]
     base = next((r.get("inputs") or {} for r in runs
-                 if r.get("pipeline_slug") == FD_SLUG), {})
-    if not (proj and fd.get("assignment_id") and fd.get("revision_id")):
+                 if r.get("pipeline_slug") == TW_SLUG or r.get("variant") == "twin"), {})
+    if not (proj and tw.get("assignment_id") and tw.get("revision_id")):
         return {}
-    return {"project_id": str(proj), "assignment_id": str(fd["assignment_id"]),
-            "revision_id": str(fd["revision_id"]), "pipeline_id": str(fd.get("pipeline_id")),
+    return {"project_id": str(proj), "assignment_id": str(tw["assignment_id"]),
+            "revision_id": str(tw["revision_id"]), "pipeline_id": str(tw.get("pipeline_id")),
             "child_pipeline_id": str(ii.get("pipeline_id") or ""),
             "child_revision_id": str(ii.get("revision_id") or ""), "inputs": base}
 
@@ -4770,8 +5072,9 @@ def c8():
     facts = c8_seed_facts()
     if not facts:
         gap("C8", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
-                  "there is no fan-out-capable published revision, no project assignment to "
-                  "run it through, and no published issue-implementation child to invoke "
+                  "there is no twin (feature-development-deterministic) assignment to arm a "
+                  "fan-out run through, no published revision to read the authored child "
+                  "policy off, and no published issue-implementation child to invoke "
                   "(C1 seeds on demand)")
         return
     alice = CTX.get("alice") or Client("alice")
@@ -4847,16 +5150,7 @@ def c8():
                 children = json.loads(kids) if kids and kids[0] in "[{" else None
             except ValueError:
                 children = None
-            c8_emit([
-                ("C8d outputs.children carries one entry per item (25)",
-                 None if children is None else len(children) == C8_ITEMS,
-                 f"{len(children) if children is not None else 'unparsed'} entries"),
-                ("C8d each child entry names its own child_run_id",
-                 None if not children else all(
-                     (c.get("child_run_id") or c.get("run_id") or c.get("id")) for c in children
-                     if isinstance(c, dict)),
-                 str([sorted(c)[:4] for c in children if isinstance(c, dict)][:3])[:200]),
-            ])
+            c8_emit(c8_children_verdicts(children))
             c8_emit(c8_tree_verdicts(c8_tree_doc(alice, run25), run25, C8_ITEMS))
             fan = {"run_id": run25, "status": st25, "scope": row25, "peak": c8_max_in_flight(
                 samples or []), "policy": authored, "children": children}
@@ -5306,7 +5600,7 @@ def c9_acquire_gate(alice, facts, used, label):
     r = alice.post(LB, f"/api/v1/projects/{pid}/runs",
                    {"pipeline_revision_id": tw["revision_id"],
                     "inputs": tw.get("inputs") or {},
-                    "idempotency": f"m4x-c9-{stamp}-{label.lower()}"})
+                    "idempotency": idem_key(f"m4x-c9-{stamp}-{label}")})
     if not check(f"{label}: POST /projects/{{id}}/runs (twin) -> 201 queued",
                  r.status in (200, 201), f"{r.status} {r.text[:200]}"):
         return None, None, "POST /runs refused (the line above says how)"
@@ -7648,7 +7942,7 @@ def c12_run_cap(admin, alice, facts, pipeline_id, tag, doc, label, code, cap=Non
                  f"the over-cap document never published (validate "
                  f"{(pub or {}).get('validate_status')} publish "
                  f"{(pub or {}).get('publish_status')} {str((pub or {}).get('raw'))[:140]})")]
-    run_id = c7_post_run(alice, facts, rid, tag, label)
+    run_id = c7_post_run(alice, facts, rid, idem_key(tag), label)
     if not run_id:
         return [(label_run, None, f"no run was created on revision {rid} — the public API "
                                   "refused the over-cap document (see the check above)")]
@@ -7782,7 +8076,7 @@ def c12():
         if not one["doc"]:
             gap("C12c", "the mid-run revision could not be authored: "
                         + "; ".join(one["missing"]))
-        run_id = c7_post_run(alice, twin, rev_twin, "m4x-c12c-pin", "C12c")
+        run_id = c7_post_run(alice, twin, rev_twin, idem_key("m4x-c12c-pin"), "C12c")
         if not run_id:
             gap("C12c", "no run could be started on the pinned twin revision — with no live "
                         "run there is nothing for a new revision to move under")
@@ -7854,7 +8148,7 @@ def c12():
                                      if str(x.get("id")) == str(aid)), None)
                     nr = admin.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
                                    {"assignment_id": aid, "inputs": mf(facts, "inputs", "twin")
-                                    or {}, "idempotency": "m4x-c12c-repinned"})
+                                    or {}, "idempotency": idem_key("m4x-c12c-repinned")})
                     show(f"C12c POST runs (assignment {aid}, after re-pin) -> {nr.status}",
                          nr.text[:200])
                     nid = str((nr.json() or {}).get("run_id")) if nr.status in (200, 201) else ""

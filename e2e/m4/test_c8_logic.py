@@ -312,7 +312,40 @@ class SeedShapeTest(unittest.TestCase):
         finally:
             m.MANIFEST_PATH = keep
 
-    def test_seed_facts_take_the_assignment_verbatim(self):
+    def test_seed_facts_take_the_TWIN_assignment_verbatim(self):
+        """docs/m4-contract.md § 7.1 C8's counts come from the LEDGER, so the gate
+        arms the deterministic twin; the agent variant's /plan dies on an unattended
+        permission prompt (ADR-0016) and live4/C8 measured that instead of fan-out."""
+        import tempfile
+        keep = m.MANIFEST_PATH
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"project": {"id": "P"},
+                           "pipelines": {m.FD_SLUG: {"pipeline_id": "AGENT_PIPE",
+                                                     "revision_id": "AGENT_R",
+                                                     "assignment_id": "AGENT_A"},
+                                         m.TW_SLUG: {"pipeline_id": "TWIN_PIPE",
+                                                     "revision_id": "TWIN_R",
+                                                     "assignment_id": "TWIN_A"},
+                                         m.II_SLUG: {"pipeline_id": "CHILD",
+                                                     "revision_id": "CREV"}},
+                           "runs": [{"pipeline_slug": m.FD_SLUG, "variant": "agent",
+                                     "inputs": {"goal": "agent goal", "fanout": False}},
+                                    {"pipeline_slug": m.TW_SLUG, "variant": "twin",
+                                     "inputs": {"goal": "g", "fanout": False}}]}, f)
+                m.MANIFEST_PATH = f.name
+            got = m.c8_seed_facts()
+            self.assertEqual("TWIN_A", got["assignment_id"])
+            self.assertEqual("TWIN_R", got["revision_id"])
+            self.assertEqual("TWIN_PIPE", got["pipeline_id"])
+            self.assertEqual("CHILD", got["child_pipeline_id"])
+            self.assertEqual("g", got["inputs"]["goal"])
+        finally:
+            m.MANIFEST_PATH = keep
+
+    def test_an_agent_only_manifest_is_no_facts_at_all(self):
+        """The agent variant is not a fallback: a fan-out arm that cannot reach
+        /fan_out unattended is a GAP naming the missing twin, never an agent run."""
         import tempfile
         keep = m.MANIFEST_PATH
         try:
@@ -320,17 +353,47 @@ class SeedShapeTest(unittest.TestCase):
                 json.dump({"project": {"id": "P"},
                            "pipelines": {m.FD_SLUG: {"pipeline_id": "PIPE", "revision_id": "R",
                                                      "assignment_id": "A"},
-                                         "issue-implementation": {"pipeline_id": "CHILD",
-                                                                  "revision_id": "CREV"}},
-                           "runs": [{"pipeline_slug": m.FD_SLUG,
-                                     "inputs": {"goal": "g", "fanout": False}}]}, f)
+                                         m.II_SLUG: {"pipeline_id": "CHILD"}},
+                           "runs": [{"pipeline_slug": m.FD_SLUG, "inputs": {}}]}, f)
                 m.MANIFEST_PATH = f.name
-            got = m.c8_seed_facts()
-            self.assertEqual("A", got["assignment_id"])
-            self.assertEqual("CHILD", got["child_pipeline_id"])
-            self.assertEqual("g", got["inputs"]["goal"])
+            self.assertEqual({}, m.c8_seed_facts())
         finally:
             m.MANIFEST_PATH = keep
+
+    def test_twin_run_is_found_by_variant_alone(self):
+        """seed.sh's runs[] name the variant; the slug is not always repeated."""
+        import tempfile
+        keep = m.MANIFEST_PATH
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"project": {"id": "P"},
+                           "pipelines": {m.TW_SLUG: {"pipeline_id": "TP", "revision_id": "TR",
+                                                     "assignment_id": "TA"},
+                                         m.II_SLUG: {"pipeline_id": "CHILD"}},
+                           "runs": [{"variant": "twin", "inputs": {"goal": "tg"}}]}, f)
+                m.MANIFEST_PATH = f.name
+            self.assertEqual("tg", m.c8_seed_facts()["inputs"]["goal"])
+        finally:
+            m.MANIFEST_PATH = keep
+
+    def test_children_verdicts_survive_an_unreadable_children_array(self):
+        """live4/C8: the C8d detail string iterated `children` while the verdict
+        guarded it — the TypeError took the cancel and depth arms down with it."""
+        v = m.c8_children_verdicts(None)
+        self.assertEqual([None, None], [ok for _l, ok, _d in v])
+        self.assertEqual("unparsed entries", [d for _l, _o, d in v][0])
+        v = m.c8_children_verdicts([])
+        self.assertEqual([False, None], [ok for _l, ok, _d in v])
+        kids = [{"child_run_id": f"r{n}", "number": n} for n in range(1, m.C8_ITEMS + 1)]
+        v = m.c8_children_verdicts(kids)
+        self.assertTrue(all(ok for _l, ok, _d in v), v)
+        bad = kids[:m.C8_ITEMS - 1] + [{"number": m.C8_ITEMS}]
+        self.assertFalse([ok for _l, ok, _d in m.c8_children_verdicts(bad)][1])
+        # a non-dict entry is a malformed child: the verdict says so, no TypeError
+        mixed = [{"child_run_id": "r1"}, "not-a-child"]
+        lmixed = m.c8_children_verdicts(mixed)
+        self.assertFalse([ok for _l, ok, _d in lmixed][1])
+        self.assertEqual("[['child_run_id']]", [d for _l, _o, d in lmixed][1])
 
     def test_self_invoke_document_splices_a_real_invoke_node(self):
         doc = m.C8_SELF_DOC_NODE.replace("@@NAME@@", "issue-implementation")

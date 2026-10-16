@@ -604,5 +604,65 @@ class C12cPinnedWordingWitness(unittest.TestCase):
         self.assertIn("cannot distinguish", why)
 
 
+class C12IdempotencyKey(unittest.TestCase):
+    """live4/C12: c12_run_cap posted the gate's own LABEL as the run's idempotency
+    key — 'C12b 1001-item fan-out' — and the API refused the whole arm with 422
+    'idempotency key must match ^[A-Za-z0-9._-]{1,128}$.' before the over-cap
+    document was ever run. The pattern below is READ from api/openapi.yaml, never
+    copied, so the helper fails the day the API tightens."""
+
+    OPENAPI = os.path.join(REPO, "api", "openapi.yaml")
+
+    def patterns(self):
+        text = open(self.OPENAPI, encoding="utf-8").read()
+        header = re.search(r"name: Idempotency-Key[\s\S]{0,800}?pattern: \"([^\"]+)\"", text)
+        body = re.search(r"\n        idempotency:\n +type: string\n +pattern: \"([^\"]+)\"", text)
+        self.assertTrue(header and body, "the idempotency pattern vanished from openapi.yaml")
+        return header.group(1), body.group(1)
+
+    def test_header_and_body_agree_and_the_helper_follows_them(self):
+        pat, pat2 = self.patterns()
+        self.assertEqual(pat, pat2)
+        rx = re.compile(pat)
+        for label in ("C12b 1001-item fan-out", "C12c", "exec budget cap / nodes",
+                      "1001 evaluated items", "", "—", "a/b", "x" * 400):
+            key = m.idem_key(label, "20261016T081233Z")
+            self.assertTrue(rx.match(key), f"{label!r} -> {key!r} breaks {pat}")
+            self.assertTrue(key, "an empty key is not a key")
+
+    def test_the_stamp_survives_and_only_the_prefix_shrinks(self):
+        rx = re.compile(self.patterns()[0])
+        key = m.idem_key("C12b 1001-item fan-out", "20261016T081233Z")
+        self.assertEqual("C12b-1001-item-fan-out-20261016T081233Z", key)
+        long = m.idem_key("n" * 300, "20261016T081233Z")
+        self.assertTrue(rx.match(long))
+        self.assertTrue(long.endswith("20261016T081233Z"), long)
+        self.assertLessEqual(len(long), 128)
+
+    def test_case_underscores_and_dots_are_kept_as_is(self):
+        # unlike metadata.name, the key class allows uppercase and '_'
+        self.assertEqual("C12b_x.1-2", m.idem_key("C12b_x.1-2", ""))
+        self.assertEqual("m4x-c12c-pin-20261016T081233Z",
+                         m.idem_key("m4x-c12c-pin", "20261016T081233Z"))
+
+    def test_two_calls_in_the_same_second_on_different_labels_differ(self):
+        a = m.idem_key("C12b 1001-item fan-out", "20261016T081233Z")
+        b = m.idem_key("C12b node-exec budget", "20261016T081233Z")
+        self.assertNotEqual(a, b, "a stamped key must not collapse two arms onto one run")
+
+    def test_driver_posts_idempotency_keys_through_the_helper(self):
+        """No gate hands the API a raw label again: every literal the driver posts
+        as `idempotency` must itself satisfy the pattern."""
+        _pat, = self.patterns()[:1]
+        rx = re.compile(_pat)
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "e2e_m4_exit.py"), encoding="utf-8").read()
+        for literal in re.findall(r'"idempotency": f?"([^"]+)"', src):
+            probe = re.sub(r"\{[^}]*\}", "x", literal)
+            self.assertTrue(rx.match(probe) and len(probe) <= 128 and probe,
+                            f"posted idempotency literal {literal!r} breaks {_pat}")
+        self.assertIn("c7_post_run(alice, facts, rid, idem_key(tag), label)", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

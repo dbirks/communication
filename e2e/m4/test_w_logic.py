@@ -382,11 +382,98 @@ def test_snapshot_spill_guard():
         "the seed pipeline document must never pass for a page tree"
 
 
+def test_http_connection_blip_retry():
+    """live4/W4: the leg's very first call hit an API replica mid-restart (URLError
+    [Errno 111] Connection refused) and the traceback took every later check with
+    it. The transport may re-send a request that never reached a server — and must
+    never re-send one that came back with a status."""
+    import email.message
+    import io
+    import socket
+    import urllib.error
+    import urllib.request
+
+    import e2e_m4_exit as m
+    from e2e_m4_exit import Client, http_is_connection_blip
+
+    refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+    reset = urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+    _assert("connection refused is a blip", http_is_connection_blip(refused))
+    _assert("connection reset is a blip", http_is_connection_blip(reset))
+    _assert("the textual form is a blip too", bool(
+        http_is_connection_blip(urllib.error.URLError("[Errno 111] Connection refused"))))
+    http503 = urllib.error.HTTPError("http://x/y", 503, "Service Unavailable",
+                                     email.message.Message(), io.BytesIO(b"down"))
+    _assert("a 503 is an answer, never a blip", not http_is_connection_blip(http503))
+    _assert("DNS is not a blip", not http_is_connection_blip(
+        urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))))
+    _assert("a timeout is not a blip", not http_is_connection_blip(
+        urllib.error.URLError(TimeoutError("timed out"))))
+
+    class Resp:
+        def __init__(self, status, headers, payload):
+            self.status, self.headers, self._p = status, headers, payload
+
+        def read(self):
+            return self._p
+
+    class Opener:
+        """Raises each queued error in turn, then answers 200 once."""
+        def __init__(self, errors):
+            self.errors, self.n = list(errors), 0
+
+        def open(self, req, timeout=None):
+            self.n += 1
+            if self.errors:
+                raise self.errors.pop(0)
+            h = email.message.Message()
+            h["Set-Cookie"] = "communication_session=abc; Path=/"
+            return Resp(200, h, b'{"id":"u1"}')
+
+    keep = m.HTTP_CONNECT_RETRY_WAIT_S
+    m.HTTP_CONNECT_RETRY_WAIT_S = 0
+    try:
+        c = Client("w4")
+        c.opener = Opener([refused, reset])
+        r = c.call("http://localhost:18091/api/v1/me")
+        _assert("two blips then an answer = 3 attempts", c.opener.n == 3, c.opener.n)
+        _assert("the retried call answers 200", r.status == 200, r.status)
+        _assert("the retried call keeps its session cookie", c.cookies.get("communication_session")
+                == "abc", c.cookies)
+        c2 = Client("w4")
+        c2.opener = Opener([refused, refused, refused])
+        raised = None
+        try:
+            c2.call("http://localhost:18091/api/v1/me")
+        except urllib.error.URLError as e:
+            raised = e
+        _assert("a refusal outlasting the budget still raises", raised is not None)
+        _assert("the budget is exactly 3 tries", c2.opener.n == m.HTTP_CONNECT_RETRIES,
+                c2.opener.n)
+        c3 = Client("w4")
+        c3.opener = Opener([http503])
+        r3 = c3.call("http://localhost:18091/api/v1/runs/zzz")
+        _assert("a 503 is returned after exactly one attempt",
+                r3.status == 503 and c3.opener.n == 1, f"{r3.status}/{c3.opener.n}")
+        c4 = Client("w4")
+        c4.opener = Opener([urllib.error.URLError(TimeoutError("timed out"))])
+        try:
+            c4.call("http://localhost:18091/api/v1/me")
+            slow = "no raise"
+        except urllib.error.URLError:
+            slow = "raised"
+        _assert("a timeout raises immediately, it is not retried",
+                slow == "raised" and c4.opener.n == 1, f"{slow}/{c4.opener.n}")
+    finally:
+        m.HTTP_CONNECT_RETRY_WAIT_S = keep
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
-               test_w9_outsider_verdicts, test_w9_outsider_observer_arm):
+               test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
+               test_http_connection_blip_retry):
         print(f"\n{fn.__name__}")
         fn()
     bad = globals().get("BAD", 0)
