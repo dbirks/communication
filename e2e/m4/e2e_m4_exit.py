@@ -4563,6 +4563,21 @@ def c6_doc_verdicts(splices):
     return v
 
 
+def c6_policy_in_plan(admin, revision_id):
+    """True only when the published revision's COMPILED PLAN carries
+    restore_checkpoint. GET /revisions/{id} -> compiled_plan is the only place
+    the API publishes a plan (the validate response is valid/digests/errors —
+    api/pipelines.go's ValidateResponse has no plan member); live13 read
+    vresp['plan'], a field that never exists, so the leg GAPped on a phantom
+    rather than measuring the compiler."""
+    r = admin.get(LB, f"/api/v1/revisions/{revision_id}")
+    plan = r.json().get("compiled_plan") if r.status == 200 else None
+    found = isinstance(plan, (dict, list)) and C6_RESTORE_POLICY in json.dumps(plan)
+    show(f"C6a GET /api/v1/revisions/{revision_id} -> compiled_plan",
+         f"{r.status}; restore_checkpoint {'IN' if found else 'NOT in'} the plan")
+    return found
+
+
 def c6_ckpts_sql(run_id):
     """run_checkpoints rows with the boundary facts C6 reads: the recorded repo
     states (committed / modified_path_count / head_commit — D-024's same-volume
@@ -4945,12 +4960,12 @@ def c6():
         return
     check("C6a the restore_checkpoint twin published as its own immutable revision", True,
           f"revision {rev} (the seed's revision {twin.get('revision_id')} is untouched)")
-    pol = (pub.get("vresp") or {}).get("workspace_policies") or {}
-    policy_in_plan = C6_RESTORE_POLICY in json.dumps((pub.get("vresp") or {}).get("plan") or {})
+    policy_in_plan = c6_policy_in_plan(admin, rev)
     if not policy_in_plan:
-        show("C6a note — the compiled plan the validate returned",
-             "no restore_checkpoint string found in the validate response's plan: the "
-             "restore verdicts below will GAP rather than assume the splice compiled")
+        show("C6a note — the compiled plan the revision carries",
+             "no restore_checkpoint string found in the published revision's "
+             "compiled_plan: the restore verdicts below will GAP rather than "
+             "assume the splice compiled")
 
     if not require_fault_hold("C6b"):
         return

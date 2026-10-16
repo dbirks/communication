@@ -183,6 +183,22 @@ class C6bRestored(unittest.TestCase):
                                    policy_in_plan=False)
         self.assertTrue(all(ok is None for _l, ok, _d in v), f"no plan => GAP: {v}")
 
+    def test_the_policy_is_measured_from_the_revisions_compiled_plan(self):
+        """live13 C6b read vresp['plan'] — the validate response (api ValidateResponse)
+        has NO plan member, so the leg GAPped forever on a phantom field. The
+        compiled plan is only ever published at GET /revisions/{id} -> compiled_plan."""
+        self.assertIn("c6_policy_in_plan", defined_functions())
+        called, _args = calls_and_args("c6")
+        self.assertIn("c6_policy_in_plan", called,
+                      "C6 must measure the policy where the API publishes the plan")
+        with open(DRIVER, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn('.get("plan")', src,
+                         "nothing may read a plan member off the validate response")
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)
+                  and n.name == "c6_policy_in_plan")
+        self.assertIn("compiled_plan", ast.unparse(fn))
+
     def test_fail_wrong_head_or_dirty_worktree_or_wrong_boundary(self):
         ev = restored_ev(key="/other", frm="beef" + "3" * 60, discarded=())
         v = m.c6_restored_verdicts(ev, m.c6_ckpts(ckpt(node="/verdict")), BOUNDARY,
