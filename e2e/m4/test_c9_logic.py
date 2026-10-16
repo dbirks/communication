@@ -253,6 +253,24 @@ class RejectionTest(unittest.TestCase):
                                     ["dependency_skipped"])
         self.assertFalse(ok_of(v, "condition_default"))
 
+    def test_direct_dependant_carries_condition_default_and_transitive_one_the_skip(self):
+        # row 14 keeps BOTH reasons: the when-gated node itself is condition_default,
+        # everything downstream of a skipped parent is dependency_skipped.
+        v = m.c9_rejection_verdicts(
+            self.GATE, "completed", "-",
+            [{"key": "/emit_items", "reason": "condition_default"},
+             {"key": "/fan_out", "reason": "dependency_skipped"}],
+            ["condition_default", "dependency_skipped"])
+        self.assertTrue(ok_of(v, "condition_default"), v)
+
+    def test_a_failed_dependant_instead_of_a_skipped_one_is_not_credited(self):
+        v = m.c9_rejection_verdicts(
+            self.GATE, "completed", "-",
+            [{"key": "/emit_items", "reason": "condition_default"},
+             {"key": "/fan_out", "reason": "case_not_selected"}],
+            ["condition_default", "case_not_selected"])
+        self.assertFalse(ok_of(v, "condition_default"))
+
     def test_no_skipped_rows_fails_the_graph_arm(self):
         self.assertFalse(ok_of(m.c9_rejection_verdicts(self.GATE, "completed", "-", [], []),
                               "condition_default"))

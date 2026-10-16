@@ -19,6 +19,11 @@ import re
 import sys
 import unittest
 
+try:  # the YAML probes below need a parser; the verdict algebra does not
+    import yaml
+except ImportError:  # pragma: no cover - environment without PyYAML
+    yaml = None
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
 
@@ -92,7 +97,7 @@ class C12aAuthoringSubset(unittest.TestCase):
         self.assertEqual(["`exists()` macro", "`now()`", "`matches()`", "`workspace.*` root"],
                          [d[0] for d in docs])
         for _l, expr, _c, doc, loc in docs:
-            self.assertIn(f"passWhen: {expr}", doc)
+            self.assertIn(f"passWhen: {m.c12_scalar(expr)}", doc)
             self.assertIn("kind: until", doc)
             self.assertEqual("/spec/nodes/0/config/passWhen", loc)
 
@@ -289,6 +294,105 @@ class C12Documents(unittest.TestCase):
         got = m.c12_ws_doc(twin_doc(), "n")["doc"]
         self.assertIn("${{  inputs.goal  }}", got)
         self.assertNotIn(m.C12_WS_FROM, got)
+
+
+EXPORT_4SPACE = (
+    "apiVersion: communication.dev/v1alpha1\n"
+    "kind: Pipeline\n"
+    "metadata:\n"
+    "    name: m4-exit-twin\n"
+    "    description: a deterministic twin\n"
+    "spec:\n"
+    "    policies:\n"
+    "        maxConcurrentNodes: 2\n"
+    "        maxDurationSeconds: 3600\n"
+    "    nodes: []\n")
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
+class C12ProbeDocumentsAreValidYaml(unittest.TestCase):
+    """Every C12 probe must be VALID YAML carrying exactly ONE semantic problem. A
+    document the loader itself refuses (loader/invalid_yaml) proves nothing about the
+    CEL subset or the § 6 caps — the live pass found two such generators (an
+    expression starting with a double quote, and node fields indented by 4)."""
+
+    def probes(self):
+        docs = {f"C12a {label}": doc
+                for label, _e, _c, doc, _loc in m.c12_forbidden_docs()}
+        docs["C12b 65 expressions"] = m.c12_exprs_doc("m4x-c12b", m.C12_EXPR_CAP + 1)
+        docs["C12b 64 expressions"] = m.c12_exprs_doc("m4x-c12b", m.C12_EXPR_CAP)
+        docs["C12b 1001 literal items"] = m.c12_fanout_doc("m4x-c12b", m.C12_ITEMS_CAP + 1)
+        docs["C12b wide until body"] = m.c12_exec_budget_doc("m4x-c12b")
+        return docs
+
+    def test_each_generated_probe_document_parses_as_yaml(self):
+        for label, doc in self.probes().items():
+            self.assertTrue(doc, label)
+            try:
+                loaded = list(yaml.safe_load_all(doc))
+            except yaml.YAMLError as e:
+                self.fail(f"{label} is not valid YAML: {str(e)[:400]}")
+            self.assertEqual("Pipeline", loaded[0]["kind"], label)
+
+    def test_the_yaml_holds_the_semantic_error_not_a_parse_error(self):
+        matches_doc = dict(self.probes())["C12a `matches()`"]
+        node = list(yaml.safe_load_all(matches_doc))[0]["spec"]["nodes"][0]
+        self.assertEqual("until", node["kind"])
+        self.assertEqual('"x".matches(".*")', node["config"]["passWhen"])
+        over = list(yaml.safe_load_all(self.probes()["C12b 65 expressions"]))[0]
+        self.assertEqual(m.C12_EXPR_CAP + 1, len(over["spec"]["nodes"]))
+        self.assertEqual(m.C12_EXPR_CAP + 1,
+                         sum(str(n["config"].get("prompt", "")).count(m.BIND_OPEN)
+                             for n in over["spec"]["nodes"]))
+        exact = list(yaml.safe_load_all(self.probes()["C12b 64 expressions"]))[0]
+        self.assertEqual(m.C12_EXPR_CAP, len(exact["spec"]["nodes"]))
+        fan = list(yaml.safe_load_all(self.probes()["C12b 1001 literal items"]))[0]
+        self.assertEqual(m.C12_ITEMS_CAP + 1,
+                         len(fan["spec"]["nodes"][0]["config"]["items"]))
+        wide = list(yaml.safe_load_all(self.probes()["C12b wide until body"]))[0]
+        self.assertEqual(m.C12_BODY_NODES,
+                         len(wide["spec"]["nodes"][0]["config"]["body"]["nodes"]))
+        self.assertEqual(m.C12_EXEC_BUDGET, wide["spec"]["policies"]["maxNodeExecutions"])
+
+
+@unittest.skipIf(yaml is None, "PyYAML is not installed in this environment")
+class C12dVariantIsContentBlind(unittest.TestCase):
+    """C12d's variant changes BYTES only: re-parsing both documents must give the same
+    value — on the seed's 2-space source AND on the server's 4-space canonical export,
+    whose indentation the first generator assumed away and so emitted '' (a variant 12KB
+    shorter than its base, i.e. no variant at all)."""
+
+    def _cases(self):
+        seed = twin_doc()
+        exported = yaml.dump(yaml.safe_load(seed), sort_keys=False, indent=4, width=100000)
+        return {"seed (2-space)": seed, "canonical export (4-space)": exported}
+
+    def test_variant_reparses_equal_to_its_original(self):
+        for label, doc in self._cases().items():
+            base = m.c12_rename(doc, "m4x-c12d")
+            variant = m.c12_invariance_variant(base)
+            self.assertTrue(variant, f"{label}: the generator produced no variant")
+            self.assertNotEqual(base, variant, label)
+            self.assertEqual(yaml.safe_load(base), yaml.safe_load(variant), label)
+            self.assertEqual("m4x-c12d", yaml.safe_load(variant)["metadata"]["name"], label)
+            self.assertTrue(m.c12_variant_is_same_doc(base, variant), label)
+
+    def test_rename_and_variant_survive_the_4space_export(self):
+        renamed = m.c12_rename(EXPORT_4SPACE, "m4x-c12d")
+        self.assertIn("    name: m4x-c12d", renamed)
+        self.assertNotIn("m4-exit-twin", renamed)
+        variant = m.c12_invariance_variant(renamed)
+        self.assertTrue(variant)
+        self.assertEqual(yaml.safe_load(renamed), yaml.safe_load(variant))
+        self.assertTrue(m.c12_variant_is_same_doc(renamed, variant))
+
+    def test_a_value_move_is_still_caught(self):
+        for label, doc in self._cases().items():
+            base = m.c12_rename(doc, "m4x-c12d")
+            sem = m.c12_budget_number_doc(base, "m4x-c12d-sem")
+            self.assertEqual([], sem["missing"], label)
+            self.assertFalse(m.c12_variant_is_same_doc(base, sem["doc"]), label)
+            self.assertNotEqual(yaml.safe_load(base), yaml.safe_load(sem["doc"]), label)
 
 
 if __name__ == "__main__":

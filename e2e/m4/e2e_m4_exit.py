@@ -1929,7 +1929,7 @@ def c3():
         "active_attempts::text FROM workers ORDER BY name"))
     check("C3a both lab workers online — two claimers must exist to contend",
           int(psql("SELECT count(*) FROM workers WHERE status = 'online'") or 0) >= 2,
-          psql("SELECT string_agg(name || '=' || status, ' ') FROM workers ORDER BY name"))
+          psql("SELECT string_agg(name || '=' || status, ' ' ORDER BY name) FROM workers"))
     fan = CTX.get("c8_run")
     if fan:
         show(f"C3a hand-out over the C8 fan-out run {fan}", psql(
@@ -4848,11 +4848,20 @@ def c9_rejection_verdicts(snap, run_st, failed_cause, skipped, skip_reasons):
          f"error_class={snap.get('node_error_class')!r}"),
     ]
     reason_of = {str(r.get("key")): str(r.get("reason")) for r in skipped or []}
-    out.append(("C9e the when-gated dependants are node.execution_skipped"
-                "{{reason:'condition_default'}} rows, not failures",
-                bool(reason_of) and all(v == "condition_default" for v in reason_of.values())
+    # Event table row 14 keeps TWO reasons precisely because a skip propagates: the
+    # directly `when`-gated dependant carries condition_default (its own condition
+    # decided), everything downstream of it carries dependency_skipped. Requiring
+    # condition_default on every row would demand the engine forget that distinction.
+    direct = sorted(k for k, v in reason_of.items() if v == "condition_default")
+    transitive = {k: v for k, v in reason_of.items() if v != "condition_default"}
+    out.append(("C9e the when-gated dependant is skipped with {{reason:'condition_default'}} "
+                "and its own dependants with dependency_skipped (row 14) — none failed",
+                bool(direct)
+                and all(v == "dependency_skipped" for v in transitive.values())
                 and any("condition_default" in str(x) for x in skip_reasons or []),
-                f"skipped={reason_of or '(none)'} journal reasons={skip_reasons or '(none)'}"))
+                f"condition_default={direct or '(none)'} dependency_skipped="
+                f"{sorted(transitive) or '(none)'} "
+                f"journal reasons={skip_reasons or '(none)'}"))
     out.append(("C9e the run terminates on the graph's terms — never run.failed{{"
                 "error_class:'approval_expired'}} for a decision a human made",
                 str(run_st) in C9_TERMINAL_RUNS
@@ -6495,12 +6504,19 @@ def _c12_body_nodes(count, pad=8):
                    for i in range(max(1, count)))
 
 
+def c12_scalar(text):
+    """An expression as a YAML single-quoted scalar. A plain scalar cannot hold C12a's
+    `matches()` probe (`"x".matches(".*")` STARTS with a double quote), so that probe was
+    dying at the loader as invalid_yaml before the compiler ever saw the CEL subset."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
 def c12_until_doc(name, pass_when, body_nodes=1, max_iter=1, policies=C12_POLICIES):
     """A seed-header document whose ONLY node is an `until` over `pass_when` with a
     `body_nodes`-wide body. '' when there is no base header to build on."""
     nodes = ["  - id: until1", "    kind: until", "    timeoutSeconds: 600", "    config:",
              f"      maxIterations: {max(1, max_iter)}",
-             f"      passWhen: {pass_when}", "      body:", "        nodes:"]
+             f"      passWhen: {c12_scalar(pass_when)}", "      body:", "        nodes:"]
     return c13_doc(name, "\n".join(nodes) + "\n" + _c12_body_nodes(body_nodes),
                    policies=policies)
 
@@ -6519,8 +6535,9 @@ def c12_forbidden_docs(prefix="m4x-c12a"):
 def c12_exprs_doc(name, count, prefix="m4x-c12b"):
     """C12a's budget arm: `count` chain-length nodes, each carrying exactly ONE
     `${{ … }}` binding, so compiled expressions == count (one over the cap = a
-    refusal, at the last expression's own location)."""
-    p, nodes = "    ", []
+    refusal, at the last expression's own location). Node fields sit at indent 4 (the
+    `- id:` dash takes 2), so the prefix is two spaces, not four."""
+    p, nodes = "  ", []
     for i in range(count):
         dep = None if i == 0 else f"n{i - 1}"
         nodes += [f"  - id: n{i}", "    kind: agent.acp"]
@@ -6751,10 +6768,24 @@ def c12_digest_split_verdicts(label, want, before, after):
 # ---- C12 pure logic part 3: the documents the gate authors itself ----------
 
 
+def c12_name_indent(text):
+    """The indentation of the document's OWN `name:` line, or '' when there is none.
+    The seed file nests by two spaces; GET /revisions/{id}/document?format=yaml EXPORTS
+    with four, and a hard-coded `^  name:` matched nothing there — so C12 authored the
+    twin under the twin's own name (publish => 409) and C12c/C12d GAPed."""
+    m = re.search(r"(?m)^(\s+)name:", text or "")
+    return m.group(1) if m else ""
+
+
 def c12_rename(doc, name):
     """metadata.name swap — every revision C12 authors carries its own name (the seed's
     two names are taken by the seed's own revisions)."""
-    return re.sub(r"(?m)^  name: .*$", "  name: " + name, doc or "", count=1)
+    text = doc or ""
+    ind = c12_name_indent(text)
+    if not ind:
+        return text
+    return re.sub(r"(?m)^%sname: .*$" % re.escape(ind),
+                  lambda _m: ind + "name: " + name, text, count=1)
 
 
 def c12_splice(doc, name, needle, repl, label):
@@ -6766,7 +6797,8 @@ def c12_splice(doc, name, needle, repl, label):
     if "apiVersion:" not in text[:600] or "kind: Pipeline" not in text[:600]:
         out["missing"].append("source document (not a kind: Pipeline document)")
         return out
-    text, k = re.subn(r"(?m)^  name: .*$", "  name: " + name, text, count=1)
+    text = c12_rename(text, name)
+    k = 1 if c12_name_indent(text) else 0
     (out["applied"] if k == 1 else out["missing"]).append("metadata.name")
     n = text.count(needle)
     if n == 1:
@@ -6807,21 +6839,29 @@ def c12_budget_number_doc(doc, name):
 def c12_invariance_variant(doc):
     """C12d's re-export: DIFFERENT BYTES, same document — a comment header, the
     metadata.name re-quoted, and the two policy lines swapped (key order, quoting and
-    comments are all canonicalization-invariant per ADR-0021 § 5). Returns '' when the
-    document is not the shape this probe needs, and never changes a VALUE."""
+    comments are all canonicalization-invariant per ADR-0021 § 5). Every edit locates
+    its own indentation (`c12_name_indent`): the seed file nests by two, the server's
+    canonical export by four. Returns '' when the document is not the shape this probe
+    needs, and never changes a VALUE."""
     text = doc or ""
     if "apiVersion:" not in text[:600]:
         return ""
-    m = re.search(r"(?m)^  name: (.*)$", text)
-    if not m:
+    ind = c12_name_indent(text)
+    if not ind:
+        return ""
+    name_at = re.compile(r"(?m)^%sname: (.*)$" % re.escape(ind))
+    m = name_at.search(text)
+    if not m or not m.group(1).strip():
         return ""
     value = m.group(1).strip()
     quoted = value if value[:1] in ("'", '"') else '"' + value + '"'
-    text = re.sub(r"(?m)^  name: .*$", lambda _m: "  name: " + quoted, text, count=1)
-    pol = re.search(r"(?m)^    maxConcurrentNodes: (\d+)\n(    maxDurationSeconds: \d+)\n", text)
+    text = name_at.sub(lambda _m: ind + "name: " + quoted, text, count=1)
+    pol = re.search(r"(?m)^(?P<i>[ \t]+)maxConcurrentNodes: (?P<a>\d+)\n"
+                    r"(?P=i)maxDurationSeconds: (?P<b>\d+)\n", text)
     if pol:
-        text = (text[:pol.start()] + pol.group(2) + "\n    maxConcurrentNodes: "
-                + pol.group(1) + "\n" + text[pol.end():])
+        i = pol.group("i")
+        text = (text[:pol.start()] + f"{i}maxDurationSeconds: {pol.group('b')}\n"
+                + f"{i}maxConcurrentNodes: {pol.group('a')}\n" + text[pol.end():])
     return "# c12 canonicalization probe: comments do not survive into the digest\n" + text
 
 
@@ -9249,6 +9289,21 @@ def w6():
     _playwright_stub("W6", "cross-volume loss says 'lost', never 'resumed'")
 
 
+def w7_worker_state(action, svc, want_online, tries=24, delay=5):
+    """start/stop ONE communication-m4 worker service and wait for the workers table to
+    agree — returns (compose_ok, observed_status). Only the communication-m4 project is
+    ever touched (the compose argv pins -p communication-m4)."""
+    rc, out = run(COMPOSE + [action, svc])
+    show(f"docker compose -p communication-m4 {action} {svc} (rc={rc})", out[-300:])
+    seen = ""
+    for _ in range(tries):
+        seen = pw_first(psql(f"SELECT status FROM workers WHERE name LIKE '%{svc}'"))
+        if seen and (seen == "online") == bool(want_online):
+            break
+        time.sleep(delay)
+    return rc == 0, seen
+
+
 def w7():
     """W7 — Ops page: § 6.2 counters (queued/running/waiting attempts, lease
     expirations, retry loops, queued_unbindable_runs, per-worker
@@ -9283,19 +9338,16 @@ def w7():
         check(f"W7 {label}", ok, f"{detail} [{shot}]")
 
     # the honest sentence: one worker stopped, one run waiting for exactly it.
-    stopped = False
+    # The arm has to be RACE-FREE: worker-a (capacity 3) claims any queued run the
+    # moment it exists, so the affinity could never be written under a run that was
+    # already 'running'. BOTH workers are therefore down before the run is POSTed.
+    down = []
     try:
-        rc1, out1 = run(COMPOSE + ["stop", "worker-b"])
-        stopped = rc1 == 0
-        show(f"docker compose -p communication-m4 stop worker-b (rc={rc1})", out1[-300:])
-        gone = ""
-        for _ in range(24):
-            gone = pw_first(psql("SELECT status FROM workers WHERE name LIKE '%worker-b'"))
-            if gone and gone != "online":
-                break
-            time.sleep(5)
-        check("W7 worker-b is offline in the workers table", gone != "online",
-              f"workers.status={gone!r}")
+        for svc in ("worker-b", "worker-a"):
+            down.append(svc)  # registered BEFORE the read: a crash still restarts it
+            _ok, gone = w7_worker_state("stop", svc, want_online=False)
+            check(f"W7 {svc} is offline in the workers table", gone != "online",
+                  f"workers.status={gone!r}")
         body = {"pipeline_revision_id": mf(facts, "revision_id", "agent"),
                 "inputs": mf(facts, "inputs", "agent", default={}),
                 "idempotency": f"m4-exit-w7-{int(time.time())}"}
@@ -9345,15 +9397,13 @@ def w7():
             except Exception:  # noqa: BLE001 — housekeeping
                 pass
     finally:
-        if stopped:
-            rc3, out3 = run(COMPOSE + ["start", "worker-b"])
-            show(f"docker compose -p communication-m4 start worker-b (rc={rc3})", out3[-300:])
-            for _ in range(24):
-                back = pw_first(psql("SELECT status FROM workers WHERE name LIKE '%worker-b'"))
-                if back == "online":
-                    break
-                time.sleep(5)
-            check("W7 worker-b restored to online", back == "online", f"status={back!r}")
+        # start in the reverse order they were stopped, and only the services this
+        # gate actually stopped (the communication-m4 project, nothing else).
+        for svc in reversed(down):
+            _ok, back = w7_worker_state("start", svc, want_online=True)
+            check(f"W7 {svc} restored to online", back == "online",
+                  f"status={back!r} (compose start rc ok={_ok})")
+        down = []
     pw("close", session="m4w7")
 
 
