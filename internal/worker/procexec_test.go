@@ -742,3 +742,267 @@ func (stubCheckpoints) RunWorkspace(context.Context, string) (RunWorkspaceRef, b
 		RepoStates: []CheckpointRepoState{{RepositoryID: "r1", BaseCommit: "aaa", HeadCommit: "bbb"}},
 	}, true, nil
 }
+
+// --- ADR-0026: the command sandbox's tool read grants -----------------------
+//
+// § 4 step 5 names the workspace a command works ON; ADR-0026 adds the
+// directory the program itself lives in, read-only, so the worker's PATH
+// lookup and the sandbox's reach cannot disagree (the lab's uniform exit 126).
+// The lab's exit-126 → success transition is the live proof; these are the Go
+// pins that keep it from regressing, asserted through the same
+// recordingSandbox seam that pins the profile kind and the --block-net claim.
+
+// toolReadsFixture is a required-mode launch whose spec is captured without a
+// kernel; /bin/echo stands in for nono and exits 0.
+func toolReadsFixture(t *testing.T) (*procExecFixture, *recordingSandbox) {
+	t.Helper()
+	f := newProcExecFixture(t, domain.EnforceRequired)
+	fake := &recordingSandbox{result: &nono.VerificationResult{
+		Backend: "nono", Version: nono.PinnedVersion,
+		PolicyRef: nono.ProfileCommand, PolicyDigest: "sha256:fake",
+		AfUnixMediation: "pathname", NetworkEnforced: true, Verified: true,
+	}}
+	f.proc.Sandbox = fake
+	f.proc.SandboxPath = "/bin/echo"
+	f.proc.Checkpoints = stubCheckpoints{}
+	return f, fake
+}
+
+// prependPATH puts dir first on the WORKER's PATH — the deployment knob
+// resolveExecutable documents: the M4 worker image prepends /opt/m4/bin the
+// same way, and it is the worker's environment that is searched, never the
+// child's.
+func prependPATH(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// toolReadsBin is a program directory OUTSIDE every workspace grant, under
+// lab scratch (never the temp tree — grant paths refuse it).
+func toolReadsBin(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(procExecScratch(t, "toolreads"), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create tool dir: %v", err)
+	}
+	if err := wsgit.RefuseTempPath(dir); err != nil {
+		t.Fatalf("tool dir is not grant-legitimate: %v", err)
+	}
+	prependPATH(t, dir)
+	return dir
+}
+
+func toolReadsProgram(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+// toolReadsWant resolves a program path the way commandToolReads does, so the
+// assertion names the directory the sandbox is actually handed (/bin prints
+// back as /usr/bin on a merged-usr host, and N-d compares path-for-path).
+func toolReadsWant(t *testing.T, path string) string {
+	t.Helper()
+	dir := filepath.Dir(path)
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = filepath.Clean(resolved)
+	}
+	return dir
+}
+
+func toolReadsHas(t *testing.T, spec nono.LaunchSpec, want string) {
+	t.Helper()
+	for _, got := range spec.ToolReads {
+		if got == want {
+			return
+		}
+	}
+	t.Errorf("ToolReads = %v, want an entry for %s (ADR-0026 § Decision 2)", spec.ToolReads, want)
+}
+
+// toolReadsAreDirs pins § Decision 2's granularity as observed: the entries
+// are directories, never the resolved program file (the file-level narrowing is
+// the ADR's "tighten later" direction, not what shipped in 4fe3f68).
+func toolReadsAreDirs(t *testing.T, spec nono.LaunchSpec) {
+	t.Helper()
+	for _, got := range spec.ToolReads {
+		st, err := os.Stat(got)
+		if err != nil {
+			t.Errorf("tool read %s does not exist: %v", got, err)
+			continue
+		}
+		if !st.IsDir() {
+			t.Errorf("tool read %s is not a directory: ADR-0026 grants filepath.Dir() of the resolved program", got)
+		}
+	}
+}
+
+func toolReadsLacks(t *testing.T, spec nono.LaunchSpec, unwanted string) {
+	t.Helper()
+	for _, got := range spec.ToolReads {
+		if got == unwanted {
+			t.Errorf("ToolReads = %v, want no entry for %s", spec.ToolReads, unwanted)
+			return
+		}
+	}
+}
+
+// toolReadsAreReadOnly scans the argv the real launch would carry: a tool path
+// may only ever follow --read. `--allow` (rw) on a program directory is the
+// broadening § Decision 3 forbids — Option A's writable copied tool — and N-d
+// would refuse it as grant_mismatch. It also pins that no tool path collides
+// with a plan grant, which is the two-levels-on-one-path refusal.
+func toolReadsAreReadOnly(t *testing.T, spec nono.LaunchSpec) {
+	t.Helper()
+	argv, err := spec.BuildLaunchArgv()
+	if err != nil {
+		t.Fatalf("BuildLaunchArgv: %v", err)
+	}
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--" {
+			break
+		}
+		if argv[i] != "--read" && argv[i] != "--allow" {
+			continue
+		}
+		for _, tool := range spec.ToolReads {
+			if argv[i+1] != tool {
+				continue
+			}
+			if argv[i] != "--read" {
+				t.Errorf("tool path %s was granted %s: tool reads are read-only (ADR-0026 § Decision 3)", tool, argv[i])
+			}
+			for _, g := range spec.Plan.Grants {
+				if g.Path == tool {
+					t.Errorf("tool path %s is also workspace grant %s (%s): two levels on one path refuse the launch", tool, g.Role, g.Access())
+				}
+			}
+		}
+	}
+}
+
+// TestProcExecToolReads is ADR-0026's Decision 2-4 in Go: the resolved
+// program's directory, plus its `#!` interpreter's, at read level, deduped and
+// skipped when a workspace grant already reaches them.
+func TestProcExecToolReads(t *testing.T) {
+	t.Run("an executable outside every workspace grant contributes its own directory", func(t *testing.T) {
+		dir := toolReadsBin(t, "opt-m4-bin")
+		// No `#!` line: the interpreter arm must contribute nothing, so the
+		// set is exactly one entry. The kernel could not exec this — that is
+		// the point: the grant is computed from what the worker RESOLVED.
+		tool := toolReadsProgram(t, dir, "m4-exit.sh", "exit 0\n")
+		f, fake := toolReadsFixture(t)
+		res, err := f.proc.Execute(context.Background(), f.claim(execArgs("m4-exit.sh")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want the echo stand-in to carry the launch", res)
+		}
+		spec := fake.lastSpec()
+		want := toolReadsWant(t, tool)
+		if len(spec.ToolReads) != 1 || spec.ToolReads[0] != want {
+			t.Fatalf("ToolReads = %v, want exactly [%s] (ADR-0026 § Decision 2: at most the program and its interpreter)", spec.ToolReads, want)
+		}
+		// The premise of the whole ADR: this directory is NOT already granted.
+		for _, g := range spec.Plan.Grants {
+			if inside(g.Path, want) {
+				t.Fatalf("the workspace grant %s (%s) already covers %s — the test is not measuring a widening",
+					g.Role, g.Path, want)
+			}
+		}
+		toolReadsAreReadOnly(t, spec)
+	})
+
+	t.Run("#!/usr/bin/env sh contributes the PATH-resolved interpreter's directory", func(t *testing.T) {
+		shPath := procExecLookPath(t, "sh")
+		dir := toolReadsBin(t, "env-sh-bin")
+		tool := toolReadsProgram(t, dir, "twin.sh", "#!/usr/bin/env sh\nexit 0\n")
+		f, fake := toolReadsFixture(t)
+		if _, err := f.proc.Execute(context.Background(), f.claim(execArgs("twin.sh")), f.sink); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		spec := fake.lastSpec()
+		// `env` itself is never granted; the program whose execution is being
+		// granted is the env-resolved one (§ Decision 2).
+		toolReadsHas(t, spec, toolReadsWant(t, tool))
+		toolReadsHas(t, spec, toolReadsWant(t, shPath))
+		if len(spec.ToolReads) > 2 {
+			t.Errorf("ToolReads = %v, want at most two entries (ADR-0026 § Decision 2)", spec.ToolReads)
+		}
+		// `env` itself is not the grant's subject and never a file-level entry:
+		// what arrives is the DIRECTORY of the program whose execution is being
+		// granted, which is why a host where `env` and `sh` share /usr/bin
+		// dedupes to one interpreter grant rather than two.
+		toolReadsAreDirs(t, spec)
+		toolReadsAreReadOnly(t, spec)
+	})
+
+	t.Run("#!/bin/sh contributes that interpreter's directory", func(t *testing.T) {
+		dir := toolReadsBin(t, "plain-sh-bin")
+		tool := toolReadsProgram(t, dir, "plain.sh", "#!/bin/sh\nexit 0\n")
+		f, fake := toolReadsFixture(t)
+		if _, err := f.proc.Execute(context.Background(), f.claim(execArgs("plain.sh")), f.sink); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		spec := fake.lastSpec()
+		toolReadsHas(t, spec, toolReadsWant(t, tool))
+		toolReadsHas(t, spec, toolReadsWant(t, "/bin/sh"))
+		toolReadsAreReadOnly(t, spec)
+	})
+
+	t.Run("a program already inside a workspace grant is not re-granted", func(t *testing.T) {
+		// The checked-out build script's case (§ Decision 4): its parent's
+		// ruleset reaches its subtree, and a second, read-level rule on the
+		// same path would refuse the launch outright.
+		f, fake := toolReadsFixture(t)
+		dir := filepath.Join(f.layout.Scratch, "checkedout-bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create the in-workspace tool dir: %v", err)
+		}
+		prependPATH(t, dir)
+		tool := toolReadsProgram(t, dir, "build.sh", "#!/bin/sh\nexit 0\n")
+		if _, err := f.proc.Execute(context.Background(), f.claim(execArgs("build.sh")), f.sink); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		spec := fake.lastSpec()
+		covered := false
+		for _, g := range spec.Plan.Grants {
+			if inside(g.Path, dir) {
+				covered = true
+			}
+		}
+		if !covered {
+			t.Fatalf("plan grants %v do not cover %s — the premise of this case is gone", spec.Plan.Grants, dir)
+		}
+		toolReadsLacks(t, spec, toolReadsWant(t, tool))
+		// The interpreter arm still arrives: it sits outside the workspace.
+		toolReadsHas(t, spec, toolReadsWant(t, "/bin/sh"))
+		toolReadsAreReadOnly(t, spec)
+	})
+
+	t.Run("a program the PATH does not resolve contributes no grant", func(t *testing.T) {
+		// § Decision 4's fail direction: no grant is computed for a program
+		// that is not a regular existing file, and the launch is not widened
+		// on a guess.
+		f, fake := toolReadsFixture(t)
+		dir := filepath.Join(procExecScratch(t, "toolreads"), "empty-bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create the empty tool dir: %v", err)
+		}
+		prependPATH(t, dir)
+		res, err := f.proc.Execute(context.Background(), f.claim(execArgs("m4-helper-that-does-not-exist")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want the unable-to-start infra arm", res)
+		}
+		if fake.calls() != 0 {
+			t.Fatalf("Verify calls = %d, want 0 — nothing is launched for an unresolvable command", fake.calls())
+		}
+	})
+}
