@@ -271,8 +271,7 @@ func TestGateTimeoutCancelRunAsksTheLiveAttempt(t *testing.T) {
 	if st.Run.Status != runtime.RunCancelled {
 		t.Fatalf("run = %s/%s, want cancelled", st.Run.Status, st.Run.FailedCause)
 	}
-	if ids, _ := lastPayload(t, st, pevents.TypeRunCancelled)["cancelled_attempts"].([]any);
-		len(ids) != 1 {
+	if ids, _ := lastPayload(t, st, pevents.TypeRunCancelled)["cancelled_attempts"].([]any); len(ids) != 1 {
 		t.Errorf("run.cancelled cancelled_attempts = %v, want the one cancelled attempt", ids)
 	}
 }
