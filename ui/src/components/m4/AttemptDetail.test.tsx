@@ -5,9 +5,16 @@
  * attempt and the one a UI is most tempted to answer falsely.
  */
 import { afterEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { AttemptDetail, CheckpointBlock, ErrorClassChip, attemptWord } from "./AttemptDetail";
+import {
+  AttemptDetail,
+  AttemptAgentWork,
+  CheckpointBlock,
+  ErrorClassChip,
+  attemptWord,
+} from "./AttemptDetail";
+import type { AttemptDetail as Attempt, NodeExecutionSummary } from "../../lib/pipeline/contract";
 import {
   featureCheckpoints,
   featureNodes,
@@ -200,6 +207,80 @@ describe("ErrorClassChip", () => {
     render(<ErrorClassChip errorClass="brand_new_class" />);
     expect(screen.getByTestId("error-class-brand_new_class").textContent).toContain(
       "brand_new_class",
+    );
+  });
+});
+
+/* ------------------------------------------- what the pane shows, and how */
+
+describe("the pane's own behaviour (run-view-3b/4a)", () => {
+  const execNode: NodeExecutionSummary = {
+    ...node,
+    kind: "process.exec",
+    node_instance_key: "/checks[1]/test",
+  };
+  const execAttempt: Attempt = {
+    ...implementAttempts[1],
+    detail: "go test ./... exited 1",
+    outputs: {
+      exit_code: 1,
+      stdout_bytes: 4096,
+      stderr_bytes: 128,
+      stdout_preview: "ok  \tinternal/api\t0.411s\nFAIL\tinternal/store\t0.902s",
+      stderr_preview: "panic: runtime error",
+    },
+  };
+
+  it("keeps the outputs document collapsed until it is asked for", () => {
+    render(<AttemptDetail attempt={implementAttempts[1]} node={node} />);
+    const pre = screen.getByTestId("attempt-outputs");
+    // Collapsed by default: the payload is in the DOM (it is the node's own
+    // answer) but hidden, and the toggle says so.
+    expect(pre.hasAttribute("hidden")).toBe(true);
+    expect(screen.getByTestId("attempt-outputs-toggle").getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+
+    fireEvent.click(screen.getByTestId("attempt-outputs-toggle"));
+    expect(pre.hasAttribute("hidden")).toBe(false);
+    expect(screen.getByTestId("attempt-outputs-toggle").getAttribute("aria-expanded")).toBe("true");
+    expect(pre.textContent).toContain("Implemented the approved plan");
+  });
+
+  it("reports a process.exec attempt by exit code and captured previews", () => {
+    render(<AttemptDetail attempt={execAttempt} node={execNode} />);
+    expect(screen.getByTestId("attempt-exit-code").textContent).toBe("1");
+    expect(screen.getByTestId("attempt-capture-bytes").textContent).toContain("4096");
+    expect(screen.getByTestId("attempt-stdout").textContent).toContain("FAIL\tinternal/store");
+    expect(screen.getByTestId("attempt-stderr").textContent).toContain("panic: runtime error");
+    // The preview is labelled a preview: the full bytes are the artifact's story.
+    expect(screen.getByTestId("attempt-process-facts").textContent).toContain("(preview)");
+  });
+
+  it("says no exit code was served rather than inventing one", () => {
+    render(
+      <AttemptDetail attempt={{ ...execAttempt, outputs: { stdout_bytes: 12 } }} node={execNode} />,
+    );
+    expect(screen.getByTestId("attempt-exit-code").textContent).toBe("not served");
+    expect(screen.queryByTestId("attempt-stdout")).toBeNull();
+  });
+
+  it("says plainly when an attempt owns no conversation", () => {
+    render(
+      <AttemptDetail
+        attempt={{ ...implementAttempts[1], conversation_id: null, turn_id: null }}
+        node={node}
+        work={
+          <AttemptAgentWork
+            attempt={{ ...implementAttempts[1], conversation_id: null }}
+            projectId="prj"
+            node={node}
+          />
+        }
+      />,
+    );
+    expect(screen.getByTestId("attempt-no-conversation").textContent).toContain(
+      "reports no conversation",
     );
   });
 });

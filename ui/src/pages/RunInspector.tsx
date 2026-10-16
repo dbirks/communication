@@ -22,7 +22,7 @@ import { Alert } from "../components/ds/Alert";
 import { Button } from "../components/ds/Button";
 import { ApprovalCard } from "../components/m4/ApprovalCard";
 import { ProblemBanner, Spinner } from "../components/Feedback";
-import { AttemptDetail } from "../components/m4/AttemptDetail";
+import { AttemptDetail, AttemptAgentWork } from "../components/m4/AttemptDetail";
 import { BranchGrid } from "../components/m4/BranchGrid";
 import { branchPlaceOf, branchesOf, findBranch } from "../lib/pipeline/branches";
 import { useActorNames } from "../api/actors";
@@ -887,6 +887,7 @@ function RunNodeDetail({
         node={node}
         checkpoint={detail.data?.checkpoint ? viewRunCheckpoint(detail.data.checkpoint) : null}
         events={attemptEvents}
+        work={<AttemptAgentWork attempt={lastAttempt} projectId={projectId} node={node} />}
         headingId="run-attempt-heading"
       />
       {gate ? (

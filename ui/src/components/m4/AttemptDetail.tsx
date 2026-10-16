@@ -15,6 +15,25 @@
  * modified-paths artifact, and the volume id. Paths are never shown because the
  * API never serves them (route 27).
  */
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useActorNames } from "../../api/actors";
+import { useConversationEvents } from "../../api/events";
+import {
+  useConversation,
+  useDecideConversationPermission,
+  useMe,
+  usePostConversationMessage,
+  useProject,
+  useReturnConversationControl,
+  useTakeConversationControl,
+} from "../../api/queries";
+import { describeTurn, projectTranscript } from "../../api/transcript";
+import type { PermissionOption } from "../../api/types";
+import Transcript from "../Transcript";
+import { controllerCopy } from "../../pages/Conversation";
+import { FormError, ProblemBanner } from "../Feedback";
+import { Button } from "../ds/Button";
+import { Textarea } from "../ds/Field";
 import type {
   AttemptDetail as Attempt,
   NodeExecutionSummary,
@@ -36,6 +55,14 @@ export interface AttemptDetailProps {
   checkpoint?: RunCheckpoint | null;
   /** Events correlated on this attempt — the retry countdown lives here. */
   events?: RunEvent[];
+  /**
+   * The agent's own work for this attempt — the transcript, its permission
+   * prompts and the control surface (`run-view-3b/4a`, `docs/m4-contract.md`
+   * § 4 step 6). It is passed in rather than fetched here because the pane is
+   * also rendered by previews and tests that hold no query client; the caller
+   * that owns the cache renders `AttemptAgentWork` into this slot.
+   */
+  work?: ReactNode;
   headingId?: string;
   className?: string;
 }
@@ -45,6 +72,7 @@ export function AttemptDetail({
   node = null,
   checkpoint = null,
   events = [],
+  work = null,
   headingId = "attempt-detail-heading",
   className = "",
 }: AttemptDetailProps) {
@@ -158,19 +186,11 @@ export function AttemptDetail({
           </div>
         ) : null}
 
-        {attempt.outputs ? (
-          <div>
-            <p className="font-mono text-[10px] font-semibold tracking-[.04em] text-muted uppercase">
-              outputs
-            </p>
-            <pre
-              data-testid="attempt-outputs"
-              className="mt-[4px] overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
-            >
-              {JSON.stringify(attempt.outputs, null, 2)}
-            </pre>
-          </div>
-        ) : null}
+        <ProcessExecFacts attempt={attempt} node={node} />
+
+        {work}
+
+        <OutputsSection outputs={attempt.outputs} />
 
         {attempt.artifact_refs.length > 0 ? (
           <div>
@@ -261,6 +281,129 @@ function Fact({ label, value, testid }: { label: string; value: string; testid?:
     <div className="flex gap-2" data-testid={testid}>
       <dt className="text-muted">{label}</dt>
       <dd className="break-all">{value}</dd>
+    </div>
+  );
+}
+
+/**
+ * The `outputs` block, collapsed by default. A successful agent node's output
+ * is a machine document (`run-view-3b`): the reader came to see the agent's
+ * work, not a JSON dump, so the JSON is one honest click away rather than the
+ * pane itself. `aria-expanded` carries the state and the payload is only in
+ * the DOM once it is asked for — a collapsed section that keeps its 32 KiB
+ * mounted is not collapsed.
+ */
+function OutputsSection({ outputs }: { outputs: Record<string, unknown> | null }) {
+  const [open, setOpen] = useState(false);
+  if (!outputs) return null;
+  return (
+    <div data-testid="attempt-outputs-section">
+      <button
+        type="button"
+        data-testid="attempt-outputs-toggle"
+        aria-expanded={open}
+        aria-controls="attempt-outputs"
+        onClick={() => setOpen((previous) => !previous)}
+        className="flex w-full items-center gap-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted hover:text-ink"
+      >
+        <span aria-hidden="true">{open ? "\u25be" : "\u25b8"}</span>
+        outputs ({Object.keys(outputs).length})
+      </button>
+      {open ? (
+        <p className="mt-[2px] sr-only" data-testid="attempt-outputs-open-hint">
+          Shown below: the output document exactly as the API served it.
+        </p>
+      ) : (
+        <p className="mt-[2px] text-[11.5px] text-faint" data-testid="attempt-outputs-collapsed">
+          Collapsed — the node&apos;s validated output document. Open to read it.
+        </p>
+      )}
+      <pre
+        id="attempt-outputs"
+        data-testid="attempt-outputs"
+        hidden={!open}
+        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
+      >
+        {JSON.stringify(outputs, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+/** A bounded preview string from the inline envelope (`§ 8`: ≤ 1 MiB, the rest
+ * only as an artifact). Never guessed: absent means the worker served none. */
+function previewOf(outputs: Record<string, unknown> | null, key: string): string | null {
+  const value = outputs?.[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function countOf(outputs: Record<string, unknown> | null, key: string): number | null {
+  const value = outputs?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+/**
+ * `process.exec` facts: the exit code, and the captured stdout/stderr previews.
+ *
+ * The worker captures the bytes in full to the run workspace and puts bounded
+ * previews plus the byte counts in the inline output document
+ * (`docs/m4-contract.md` § 8); this block renders exactly that and says what it
+ * is — a preview with a known byte count, not the whole log.
+ */
+function ProcessExecFacts({
+  attempt,
+  node,
+}: {
+  attempt: Attempt;
+  node: NodeExecutionSummary | null;
+}) {
+  if (node?.kind !== "process.exec") return null;
+  const outputs = attempt.outputs ?? null;
+  const exitCode = countOf(outputs, "exit_code");
+  const stdout = previewOf(outputs, "stdout_preview");
+  const stderr = previewOf(outputs, "stderr_preview");
+  const stdoutBytes = countOf(outputs, "stdout_bytes");
+  const stderrBytes = countOf(outputs, "stderr_bytes");
+  return (
+    <div className="space-y-[6px]" data-testid="attempt-process-facts">
+      <div className="flex flex-wrap items-center gap-[6px] font-mono text-[11px]">
+        <span className="text-muted">exit code</span>
+        <span
+          className={`rounded-[2px] border px-[6px] py-[1px] ${
+            exitCode === null
+              ? "border-line text-faint"
+              : exitCode === 0
+                ? "border-line-strong text-ink"
+                : "border-st-failed-pale-edge bg-st-failed-pale-body text-st-failed-tag-fg"
+          }`}
+          data-testid="attempt-exit-code"
+        >
+          {exitCode === null ? "not served" : String(exitCode)}
+        </span>
+        {stdoutBytes !== null || stderrBytes !== null ? (
+          <span className="text-faint" data-testid="attempt-capture-bytes">
+            captured {stdoutBytes ?? 0} / {stderrBytes ?? 0} bytes (stdout / stderr)
+          </span>
+        ) : null}
+      </div>
+      {stdout ? <Capture label="stdout" text={stdout} /> : null}
+      {stderr ? <Capture label="stderr" text={stderr} /> : null}
+    </div>
+  );
+}
+
+function Capture({ label, text }: { label: string; text: string }) {
+  return (
+    <div>
+      <p className="font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-faint">
+        {label} (preview)
+      </p>
+      <pre
+        data-testid={`attempt-${label}`}
+        className="mt-[2px] max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[15px] text-muted"
+      >
+        {text}
+      </pre>
     </div>
   );
 }
@@ -434,4 +577,216 @@ function continuityCopy(attempt: Attempt): ContinuityCopy | null {
         degraded,
       };
   }
+}
+
+/* ------------------------------------------------ the agent's own work */
+
+export interface AttemptAgentWorkProps {
+  attempt: Attempt;
+  projectId: string;
+  /** Names the node the pane's header line belongs to. */
+  node?: NodeExecutionSummary | null;
+}
+
+/**
+ * The attempt pane as the design draws it (`run-view-3b`, `run-view-4a`): the
+ * agent's work, not its result document. An `agent.acp` attempt owns a
+ * conversation and a turn (`docs/m4-contract.md` § 4 step 6,
+ * `attempts.conversation_id` / `turn_id`), so everything below is that
+ * conversation read through the same components the conversation page uses —
+ * `Transcript` for messages, tool calls and permission prompts, and the same
+ * control routes for take/return and prompting. Nothing is re-implemented and
+ * nothing is invented: the watcher count, for instance, is not served by the
+ * API, so the banner says who has control and that you are watching, never a
+ * number.
+ */
+export function AttemptAgentWork({ attempt, projectId, node = null }: AttemptAgentWorkProps) {
+  if (!attempt.conversation_id) {
+    return (
+      <p className="text-[12px] text-muted" data-testid="attempt-no-conversation">
+        This attempt reports no conversation, so there is no agent work to read here — only its
+        outputs and evidence below.
+      </p>
+    );
+  }
+  return <AttemptConversationWork attempt={attempt} projectId={projectId} node={node} />;
+}
+
+/** The conversation-backed half, one attempt's turn. Split out because the
+ * reads below only make sense for a conversation that exists — a gate on the
+ * hooks would be a conditional hook call. */
+function AttemptConversationWork({
+  attempt,
+  projectId,
+  node,
+}: Required<Omit<AttemptAgentWorkProps, "node">> & { node: NodeExecutionSummary | null }) {
+  const conversationId = attempt.conversation_id ?? "";
+  const conversation = useConversation(conversationId);
+  const me = useMe();
+  const project = useProject(projectId);
+  const actors = useActorNames(projectId);
+  const { events, status } = useConversationEvents(conversationId);
+  const sendMessage = usePostConversationMessage(conversationId);
+  const takeControl = useTakeConversationControl(conversationId);
+  const returnControl = useReturnConversationControl(conversationId);
+  const decide = useDecideConversationPermission(conversationId);
+  const [prompt, setPrompt] = useState("");
+  const [decidingRequestId, setDecidingRequestId] = useState<string | null>(null);
+
+  const data = conversation.data;
+  const control = data?.control;
+  const isController = Boolean(
+    data && me.data && data.control.kind === "human" && data.control.user_id === me.data.id,
+  );
+  // A viewer may watch but may not take control (`06`, ADR-0016 § 8); while the
+  // role is unread the button stays disabled rather than flickering in.
+  const roleKnown = project.data !== undefined;
+  const canRequestControl = roleKnown ? project.data.my_role !== "viewer" : true;
+
+  // Fold the conversation journal, then keep only this attempt's turn — the
+  // attempt pane shows the attempt, not every turn the conversation ever ran.
+  const transcript = useMemo(() => projectTranscript(events, actors.nameOf), [events, actors]);
+  // A journal `system` row carries no turn id, so it cannot be attributed to
+  // this attempt and is not shown here — the conversation page is where it
+  // belongs.
+  const items = attempt.turn_id
+    ? transcript.items.filter((item) => "turnId" in item && item.turnId === attempt.turn_id)
+    : transcript.items;
+  const described = describeTurn(transcript.turns, data?.active_turn);
+  const turnInProgress = Boolean(described.active);
+
+  const onSend = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    sendMessage.mutate({ prompt: trimmed }, { onSuccess: () => setPrompt("") });
+  };
+
+  const onDecide = (requestId: string, option: PermissionOption) => {
+    setDecidingRequestId(requestId);
+    decide.mutate(
+      { requestId, body: { option_id: option.option_id } },
+      { onSuccess: () => setDecidingRequestId(null), onError: () => setDecidingRequestId(null) },
+    );
+  };
+
+  if (conversation.isPending) {
+    return (
+      <p className="font-mono text-[11px] text-muted" data-testid="attempt-work-pending">
+        Reading the agent&apos;s turn…
+      </p>
+    );
+  }
+  if (!data || !control) {
+    return (
+      <ProblemBanner
+        error={conversation.error}
+        fallback="The agent's conversation for this attempt could not be read."
+      />
+    );
+  }
+
+  return (
+    <section className="space-y-[8px]" aria-label="Agent work" data-testid="attempt-agent-work">
+      <p className="truncate font-mono text-[10.5px] text-muted" data-testid="attempt-work-title">
+        {node ? `${node.node_instance_key} · ` : ""}attempt {attempt.attempt_number}
+        {data.title ? ` · ${data.title}` : ""}
+      </p>
+
+      <div
+        className="flex flex-wrap items-center justify-between gap-2 rounded-[3px] border border-line-strong bg-surface px-[8px] py-[6px]"
+        data-testid="attempt-control-banner"
+      >
+        <span className="text-[12px] font-semibold" data-testid="attempt-controller">
+          {controllerCopy(control, isController, actors.nameOf)}
+          <span className="ml-1 font-normal text-muted">· you are watching</span>
+        </span>
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-[10.5px] text-faint" data-testid="attempt-work-stream">
+            {status}
+          </span>
+          {isController ? (
+            <Button
+              variant="secondaryPlain"
+              data-testid="attempt-return-control"
+              disabled={returnControl.isPending}
+              onClick={() => returnControl.mutate({ version: control.version })}
+            >
+              {returnControl.isPending ? "Returning…" : "Return control"}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              data-testid="attempt-take-control"
+              disabled={takeControl.isPending || !roleKnown}
+              onClick={() => takeControl.mutate({ version: control.version })}
+            >
+              {takeControl.isPending ? "Taking…" : "Take control"}
+            </Button>
+          )}
+        </span>
+      </div>
+
+      {takeControl.error || returnControl.error ? (
+        <FormError error={takeControl.error ?? returnControl.error} />
+      ) : null}
+
+      {items.length === 0 ? (
+        <p className="text-[12px] text-muted" data-testid="attempt-work-empty">
+          No journal frames for this turn yet — the agent has not answered.
+        </p>
+      ) : (
+        <Transcript
+          items={items}
+          canDecide={isController}
+          controllerName={
+            control.display_name ?? (control.user_id ? actors.nameOf(control.user_id) : null)
+          }
+          nameOf={actors.nameOf}
+          onDecide={onDecide}
+          decidingRequestId={decidingRequestId}
+          decisionError={decide.error}
+          decisionErrorRequestId={decide.isError ? (decide.variables?.requestId ?? null) : null}
+        />
+      )}
+
+      <form className="space-y-[4px]" onSubmit={onSend} data-testid="attempt-composer">
+        <label className="sr-only" htmlFor={`attempt-prompt-${attempt.id}`}>
+          Prompt for the agent
+        </label>
+        <Textarea
+          id={`attempt-prompt-${attempt.id}`}
+          data-testid="attempt-composer-input"
+          rows={2}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          disabled={!isController}
+          placeholder={
+            isController ? "Ask the agent for something…" : "Take control to prompt this agent"
+          }
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            type="submit"
+            variant="primary"
+            data-testid="attempt-composer-send"
+            disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
+          >
+            {sendMessage.isPending ? "Sending…" : "Send"}
+          </Button>
+          {!isController && canRequestControl ? (
+            <span className="text-[11.5px] text-muted" data-testid="attempt-composer-explainer">
+              Only the controller can prompt. Take control to drive.
+            </span>
+          ) : null}
+          {turnInProgress && isController ? (
+            <span className="text-[11.5px] text-muted" data-testid="attempt-composer-explainer">
+              A turn is open (status: {described.status}) — a second prompt into it is refused.
+            </span>
+          ) : null}
+        </div>
+        {sendMessage.error ? <FormError error={sendMessage.error} /> : null}
+      </form>
+    </section>
+  );
 }

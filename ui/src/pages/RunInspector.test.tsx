@@ -8,9 +8,16 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   FakeEventSource,
+  claudeProfile,
+  controlledByOther,
+  conversationEvent,
+  conversationFixture,
+  conversationId,
   meFixture,
+  permissionRequestFixture,
   projectFixture,
   requestsTo,
+  turnId,
   type RouteStub,
 } from "../test/fakes";
 import { renderApp } from "../test/render";
@@ -34,6 +41,7 @@ import {
   wireRun,
   wireRunEvent,
   wireRunList,
+  wireAttempt,
   wireTree,
 } from "../test/fixtures/m4/wire";
 
@@ -530,5 +538,155 @@ describe("attentionNodeId", () => {
   it("says nothing is owed on a run with no open work", () => {
     expect(attentionNodeId([row("n-plan", "agent.acp", "succeeded")])).toBeNull();
     expect(attentionNodeId([])).toBeNull();
+  });
+});
+
+/* ------------------------------------- the pane shows the agent's own work */
+
+const conversationWorkRoute = {
+  ...wireNodeDetail,
+  attempts: [
+    {
+      ...wireAttempt,
+      conversation_id: conversationId,
+      turn_id: turnId,
+      outputs: { summary: "Fixed the TTL comparison", files_changed: ["backend/cart/ttl.go"] },
+      outputs_digest: "sha256:9c1f7a2e4d6b8c0a2e4d6b8c0a2e4d6b8c0a2e4d6b8c0a2e4d6b8c0a2e4d6b8c",
+    },
+  ],
+};
+
+function mountAgentAttempt(extra: RouteStub[] = []) {
+  return mountRun(`?node=${WIRE_NODE_IMPLEMENT}`, [
+    ...extra,
+    { path: `/api/v1/conversations/${conversationId}`, body: controlledByOther },
+    { path: "/api/v1/agent-profiles", body: { items: [claudeProfile] } },
+    { path: `${RUN_PATH}/nodes/${WIRE_NODE_IMPLEMENT}`, body: conversationWorkRoute },
+  ]);
+}
+
+/** The stream the pane opened, not the run stream — two `EventSource`s are live
+ * on this screen and each test drives exactly one of them. */
+function sourceFor(url: string): FakeEventSource {
+  const source = FakeEventSource.instances.find((instance) => instance.url === url);
+  if (!source) throw new Error(`no EventSource opened for ${url}`);
+  return source;
+}
+
+describe("the attempt pane as the agent's work log", () => {
+  it("renders the agent's turn: control banner, tool rows and a permission prompt", async () => {
+    mountAgentAttempt();
+    await screen.findByTestId("attempt-agent-work");
+
+    const conversationStream = sourceFor(`/api/v1/conversations/${conversationId}/events`);
+    act(() => {
+      conversationStream.emit(
+        conversationEvent("conversation.message.agent", {
+          text: "Fixing the TTL comparison.",
+          final: true,
+        }),
+      );
+      conversationStream.emit(
+        conversationEvent("conversation.tool.call", {
+          tool_call_id: "toolu_edit",
+          title: "edit backend/cart/ttl.go",
+          kind: "edit",
+          status: "in_progress",
+          input_preview: '{"+12":"added","-3":"removed"}',
+        }),
+      );
+      conversationStream.emit(
+        conversationEvent("conversation.permission.requested", {
+          permission_request_id: permissionRequestFixture.id,
+          title: "Network access: proxy.golang.org?",
+          kind: "execute",
+          options: permissionRequestFixture.options,
+        }),
+      );
+    });
+
+    expect(screen.getAllByTestId("transcript-item").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("edit backend/cart/ttl.go")).toBeTruthy();
+    expect(screen.getByTestId("tool-status-toolu_edit").textContent).toContain("in_progress");
+    // The prompt is offered read-only: the run's attempt holds control, so the
+    // card says who must answer instead of handing out dead buttons.
+    const card = screen.getByTestId("permission-card");
+    expect(card.textContent).toContain("Network access: proxy.golang.org?");
+    expect(screen.getByTestId("permission-readonly")).toBeTruthy();
+    expect(screen.queryByTestId("permission-allow")).toBeNull();
+    // ...and the pane offers the handoff that would make them live.
+    expect(screen.getByTestId("attempt-take-control").textContent).toContain("Take control");
+    expect(screen.getByTestId("attempt-composer-input").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByTestId("attempt-composer-input").getAttribute("placeholder")).toContain(
+      "Take control to prompt this agent",
+    );
+  });
+
+  it("gives the decide buttons to the controller, and only to the controller", async () => {
+    const { requests } = mountAgentAttempt([
+      { path: `/api/v1/conversations/${conversationId}`, body: conversationFixture },
+    ]);
+    await screen.findByTestId("attempt-agent-work");
+
+    act(() => {
+      sourceFor(`/api/v1/conversations/${conversationId}/events`).emit(
+        conversationEvent("conversation.permission.requested", {
+          permission_request_id: permissionRequestFixture.id,
+          title: "Network access: proxy.golang.org?",
+          kind: "execute",
+          options: permissionRequestFixture.options,
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("permission-allow"));
+    await waitFor(() =>
+      expect(
+        requestsTo(
+          requests,
+          `/api/v1/conversations/${conversationId}/permissions/${permissionRequestFixture.id}`,
+          "POST",
+        ).length,
+      ).toBeGreaterThan(0),
+    );
+  });
+
+  it("shows the outputs collapsed, next to the work, not instead of it", async () => {
+    mountAgentAttempt();
+    await screen.findByTestId("attempt-agent-work");
+    const toggle = screen.getByTestId("attempt-outputs-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("attempt-outputs").hasAttribute("hidden")).toBe(false);
+  });
+});
+
+/* -------------------------------------------------- the header stays honest */
+
+describe("the run header follows the stream", () => {
+  it("leaves waiting_human when the gate is decided — no run.* frame is ever written for it", async () => {
+    mountRun("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "waiting_human" } },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+    ]);
+    await screen.findByTestId("run-header-status");
+    expect(screen.getByTestId("run-header-status").textContent).toContain("waiting");
+
+    act(() => {
+      // The journal replays from the start on connect, so the park is folded
+      // before the decision is — the fold must un-park on the decision.
+      FakeEventSource.last().emit(wireRunEvent("run.waiting_human", {}, { global_seq: 9201 }));
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "approval.decided",
+          { approval_id: wireApproval.id, decision: "approved", version: 2 },
+          { node_execution_id: WIRE_NODE_APPROVE, global_seq: 9202 },
+        ),
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("run-header-status").textContent).toContain("running");
+    });
   });
 });

@@ -150,6 +150,29 @@ const RUN_STATUS_BY_TYPE: Partial<Record<RunEventType, RunStatus>> = {
   "run.interrupted": "interrupted",
 };
 
+/**
+ * The gate rows that end a gate's claim on a human (`01`, `docs/m4-contract.md`
+ * § 5.3). Deciding, denying, expiring or cancelling a gate is the *only* thing
+ * the journal records for the run leaving `waiting_human`: the decide path
+ * flips `runs.status` in the same commit as `approval.decided` and lets the
+ * advancer re-derive readiness, and `run.resumed` is reserved for the manual
+ * pause/resume and retry arms — it is never written for a gate decision.
+ * Folding a gate's end as "no longer parked on a human" is therefore what the
+ * stream actually says, and it is what keeps the run header honest.
+ */
+const GATE_ENDED_TYPES: ReadonlySet<RunEventType> = new Set<RunEventType>([
+  "approval.decided",
+  "approval.denied",
+  "approval.expired",
+  "approval.cancelled",
+]);
+
+/** Frames that prove work is moving again under the run row. */
+const WORK_IN_FLIGHT_TYPES: ReadonlySet<RunEventType> = new Set<RunEventType>([
+  "node.attempt.started",
+  "node.scope.started",
+]);
+
 const APPROVAL_STATE_BY_TYPE: Partial<Record<RunEventType, ApprovalState>> = {
   "approval.requested": "pending",
   "approval.decided": "decided",
@@ -222,6 +245,13 @@ export function projectRun(baseline: RunBaseline, events: readonly EventEnvelope
     if (run && run.id === (event.run_id ?? run.id)) {
       const patch: Partial<RunDetail> = {};
       if (runStatus) patch.status = runStatus;
+      // A run parked `waiting_human` with no gate left to answer is not parked.
+      // The frames arrive in journal order, so a *later* `run.waiting_human`
+      // (the advancer parking the run on the next gate) re-applies the park
+      // over this un-park — the fold never has to guess which came first.
+      if (run.status === "waiting_human" && !runStatus)
+        if (GATE_ENDED_TYPES.has(type) || WORK_IN_FLIGHT_TYPES.has(type)) patch.status = "running";
+
       if (type === "run.started") patch.started_at = event.occurred_at;
       if (type === "run.paused") {
         const reason = str(payload, "paused_reason");
