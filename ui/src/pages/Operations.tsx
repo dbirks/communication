@@ -72,8 +72,9 @@ export interface SchedulerPanelProps {
 
 /**
  * Scheduler telemetry (`docs/m4-contract.md` § 6.2 via `SchedulerStatus`), plus
- * the two honest sentences W7/C13f demand: unbindable runs are *waiting for its
- * worker*, and CPU/memory/disk limits are not implemented at all.
+ * the honest sentence W7 demands: unbindable runs are *waiting for its worker*.
+ * The C13f resource-limits sentence lives in `Operations` itself so it renders
+ * even when this panel has no data.
  */
 export function SchedulerPanel({ scheduler }: SchedulerPanelProps) {
   const problem = scheduler.error ? problemOf(scheduler.error) : null;
@@ -136,9 +137,6 @@ export function SchedulerPanel({ scheduler }: SchedulerPanelProps) {
                 holds its workspace is offline, draining or full
               </p>
             ) : null}
-            <p className="pt-2 text-[12.5px] text-muted" data-testid="scheduler-no-resource-limits">
-              Resource limits (CPU, memory, disk): not implemented — nothing is silently capped.
-            </p>
             {status.workers.length === 0 ? (
               <p className="pt-2 text-[12.5px] text-muted">No worker load reported</p>
             ) : (
@@ -324,6 +322,16 @@ export default function Operations() {
       </Panel>
 
       <SchedulerPanel scheduler={scheduler} />
+
+      {/* C13f (`docs/m4-contract.md` § 7.1): the page must say in words that
+          per-run resource limits do not exist, so no one reads a silent cap
+          into the absence. Always rendered — with or without scheduler data. */}
+      <p
+        className="rounded-[3px] border border-line-strong bg-fill p-[10px] font-mono text-[11px] text-ink-2"
+        data-testid="ops-resource-limits"
+      >
+        Resource limits: not implemented — runs have no cpu, memory or disk caps in this release.
+      </p>
 
       {/* M3: the fleet's sandbox verdict. A worker that never verified, or that
           registered `permissive-dev`/`disabled`, is a finding an operator must

@@ -93,12 +93,24 @@ describe("/ops scheduler", () => {
     expect(screen.queryByTestId("scheduler-unbindable-note")).toBeNull();
   });
 
-  it("states that resource limits are not implemented", async () => {
+  it("states that resource limits are not implemented, in the contract's words", async () => {
     renderApp({ path: "/ops", routes: opsRoutes(loaded) });
 
-    const line = await screen.findByTestId("scheduler-no-resource-limits");
-    expect(line.textContent).toContain("Resource limits (CPU, memory, disk): not implemented");
-    expect(line.textContent).toContain("nothing is silently capped");
+    const line = await screen.findByTestId("ops-resource-limits");
+    expect(line.textContent).toContain(
+      "Resource limits: not implemented — runs have no cpu, memory or disk caps in this release",
+    );
+  });
+
+  it("still says resource limits are not implemented when the scheduler cannot be read", async () => {
+    renderApp({
+      path: "/ops",
+      routes: opsRoutes(loaded).filter((stub) => stub.path !== schedulerPath),
+    });
+
+    // No /system/scheduler stub at all: the honest sentence must not depend on
+    // the panel having data (C13f — no one infers a limit from silence).
+    await screen.findByTestId("ops-resource-limits");
   });
 
   it("reports a scheduler status it cannot read instead of an empty section", async () => {
