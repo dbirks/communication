@@ -108,8 +108,10 @@ class FaultLegRunBodyTest(unittest.TestCase):
     """Which legs post the hold — read off the driver's own call sites."""
 
     def test_the_fault_legs_post_the_hold(self):
-        for fn, poster in (("c4", "post_c1_run"), ("c5", "post_c1_run"),
-                           ("c6", "c7_post_run")):
+        # c2 holds too: C2a reads the live process environment DURING the attempt
+        # (docs/m4-contract.md § 7.1), which a <1s printf step never allows.
+        for fn, poster in (("c2", "post_c1_run"), ("c4", "post_c1_run"),
+                           ("c5", "post_c1_run"), ("c6", "c7_post_run")):
             self.assertTrue(posts_with_hold(fn, poster),
                             f"{fn} must post {poster} with hold_seconds (live6: its "
                             "fault landed on an attempt that had already succeeded)")
@@ -120,7 +122,7 @@ class FaultLegRunBodyTest(unittest.TestCase):
                                 "lease 30s + reconciler tick 15s (§ 7.1 C4a)")
 
     def test_the_timing_and_concurrency_legs_keep_the_default_zero(self):
-        for fn in ("c1", "c2", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14",
+        for fn in ("c1", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14",
                    "w2", "w10", "w11"):
             for c in calls_in(fn):
                 self.assertNotIn(

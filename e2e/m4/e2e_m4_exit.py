@@ -1725,8 +1725,48 @@ def c1():
 
 C2_SECRET_SLUG = "test-database-url"
 C2_ENV_NAME = "DATABASE_URL"                       # § 7.0's delivery env_name
+# The ledger spellings of an implement node (the suffix is the until-loop iteration).
+# The live wait no longer verdicts on whatever these match — it aims at
+# C2_LIVE_TARGET_KEY below — but a held attempt has to be one of them for C2a to read it.
 C2_IMPLEMENT_KEYS = ("/implement", "[1]/implement", "[2]/implement")
 C2_PROC_RE = re.compile(r"^PROC\|(\d+)\|([0-9a-f]{64})\|(.*)$")
+
+# --- C2's hold: the time window § 7.1 C2a/C2b are written IN -----------------
+#
+# docs/m4-contract.md § 7.1 C2, verbatim:
+#   C2a  during the implement attempt: docker compose -p communication-m4 exec worker-a
+#           sh -c 'test -e /workspaces/run/$RUN/repos/app/.env.test.local; echo $?'
+#                                                          # 1 (env delivery, not env_file)
+#        docker compose -p communication-m4 exec worker-a sh -c
+#           'tr "\0" "\n" < /proc/$AGENT_PID/environ | grep -c "^DATABASE_URL=SENTINEL-m4"' # 1
+#   C2b  after the attempt (node boundary crossed): the worker has unmounted it —
+#        psql -tAc "select cleaned_at is not null, cleaned_by from secret_materializations
+#                     where attempt_id='$ATT'"                                     # t | worker
+#   C2c  the sentinel is nowhere durable:  # 0 / 0 / NO_MATCH / 0 / 1 over domain_events,
+#        audit_events, /artifacts, the container logs and every ref of the mirror
+#   C2d  and the reviewer prompt proves the split the milestone turns on: GET
+#        /attempts/$REV_ATTEMPT shows no `DATABASE_URL` anywhere in its prompt, and the
+#        agent asked to print the environment produces a tool output with no sentinel
+#        (C2c re-run stays 0).
+# C2a is a read INSIDE a window and C2b is the read after it. The shipped twin's
+# implement step is a printf that closes in <1s, so pass 4 saw no worker-held attempt at
+# all and C2a GAPped "no /implement attempt was ever held by a worker within the poll
+# window (run status='completed')" (live4/C2.out:63, rows C2a/C2b/C2d of
+# docs/m4-exit-status.md); C2b's unmount and C2d's reviewer read ride on that attempt too.
+# C2 therefore posts `hold_seconds` like C4/C5/C6 do (cefe995), and reads the live process
+# environment inside the held attempt — the value never printed, only its sha256.
+#
+# 45s = the fault legs' number: C2's live reads are one ledger poll plus two execs (a
+# materialization read and a /proc scan), each a couple of seconds, so the hold outlasts
+# them by an order of magnitude — and reusing the constant keeps hold_window()'s cover
+# (45s x steps + the lease window) honest for every wait below.
+C2_HOLD_SECONDS = C_FAULT_HOLD_SECONDS
+# The node C2a reads a live environment INSIDE. /plan is held too, but it is held BEFORE
+# /approve, so the gate is decided first and the wait is aimed here — the same lesson
+# live8/C6.out taught the kill legs (C_LIVE_TARGET_KEY, defined with them below).
+C2_LIVE_TARGET_KEY = "/build_until_verified[1]/implement"
+C2_LIVE_STATUSES = ("leased", "running")   # a worker holds the attempt in these
+C2_HOLD_PROVEN_S = 5                       # an unhurried printf step answers 0
 
 
 def c2_proc_scan_sh(env_name=C2_ENV_NAME):
@@ -1912,6 +1952,75 @@ def c2_turn_ownership_verdicts(rows, human_count=None):
 
 # --- C2 live helpers — reading a LIVE attempt's process environment ----------
 
+# The two reads that make C2a's window measurable: the claim row the shared gate-and-
+# hold wait hands back, and the attempt's own status at the moment the exec runs.
+def c2_live_from_claim(row):
+    """Map the claim row `wait_live_past_gate` returns (c4_live_attempt's keys: id,
+    key, worker, token, attempt_number, turn) onto the shape c2() reads below. The
+    row came from a query selecting only leased/running, so `status` says exactly
+    that — c2_attempt_state is what sharpens it to one of the two. Pure; None in,
+    None out (the caller GAPs with the hold diagnosis)."""
+    if not row:
+        return None
+    return {"id": row.get("id"), "key": row.get("key"), "worker": row.get("worker"),
+            "status": "leased/running", "n": row.get("attempt_number"),
+            "token": row.get("token")}
+
+
+def c2_attempt_is_live(status):
+    """Does this attempt status mean a worker still HOLDS the attempt? Only
+    leased/running do; '' (the ledger did not answer) is not a live attempt and is
+    never a closed one either — the caller reads both. Pure."""
+    return str(status or "").strip().lower() in C2_LIVE_STATUSES
+
+
+def c2_hold_proof_verdicts(posted, held_s, fixture_state, floor_s=C2_HOLD_PROVEN_S):
+    """Grade the hold C2 POSTED before any of its window claims are worth reading:
+    the ledger must show an attempt a worker held for more than the <1s a printf step
+    answers (`held_s` is the longest worker-held stretch on the run), and the mounted
+    fixture must be able to honour the input at all. `hold_diagnosis` is appended
+    whenever the reads contradict the leg, so a lab artefact names itself instead of
+    wearing a product gap. Unreadable ledger -> GAP, never a PASS by inference. Pure."""
+    want = _int(posted)
+    if not want:
+        return [("C2a the hold this leg posted took effect", None,
+                 "the run was posted with no hold_seconds, so the twin ran at shipped "
+                 "speed (<1s steps) and no attempt can be caught live — C2a's window "
+                 "read is unmeasurable by construction")]
+    floor = min(_int(floor_s), want)
+    held_txt = "unreadable" if held_s is None else f"{_int(held_s)}s"
+    need = (f"hold_seconds={want} posted, longest worker-held attempt observed {held_txt} "
+            f"on the run's ledger, mounted fixture {fixture_state}")
+    why = hold_diagnosis(want, held_s, fixture_state)
+    ok = None if held_s is None else _int(held_s) >= floor
+    if fixture_state == "stale":
+        ok = False                      # the script sleeps for nothing: no hold is real
+    return [(f"C2a the hold_seconds={want} this leg posted took effect — a worker held an "
+             f"attempt open long enough to read inside it (>= {floor}s)", ok,
+             need + (f" — {why}" if why else " — so C2a's live reads land INSIDE an "
+                     "attempt rather than after one"))]
+
+
+def c2_no_live_attempt_verdict(status, why=""):
+    """Grade C2a's 'nothing was ever held at the target' outcome: an abnormally ended
+    run is the product's own failure (it died before its implement node leased), while
+    a completed/still-running run with no held attempt is a GAP — the window the
+    contract asks about simply was not there to measure. Never a PASS by absence.
+    `why` is the hold diagnosis (hold_diagnosis/fault_hold_evidence). Returns
+    (kind, label, detail) with kind in ('check', 'gap'); pure."""
+    st = str(status or "").strip().lower()
+    detail = (f"no attempt was ever HELD by a worker at {C2_LIVE_TARGET_KEY} within the "
+              f"poll window (run status={st!r}) — the gate was put through C1b's decide "
+              "route first and the wait was aimed at the post-gate implement node, so with "
+              "nothing running there is no live process environment and 'exactly one place' "
+              "is unmeasurable (evidence dumped above)" + (f"; {why}" if why else ""))
+    if st in ("failed", "cancelled", "interrupted"):
+        return ("check", "C2a a live implement attempt to read",
+                f"the run is {st!r} without ever holding an implement attempt — there was "
+                "no live process to read" + (f"; {why}" if why else ""))
+    return ("gap", "C2a a live implement attempt to read", detail)
+
+
 # Every operational text column is searched for the sentinel; the encrypted
 # store's own rows (secret_versions/secret_metadata) are the ONE place a value
 # commitment legitimately lives, so they are excluded from the plaintext sweep
@@ -1942,29 +2051,19 @@ def c2_db_scan_sql(places, needle=SENTINEL):
     return " UNION ALL ".join(parts) if parts else ""
 
 
-def c2_live_attempt(run_id, keys=C2_IMPLEMENT_KEYS, timeout=300):
-    """Poll the ledger for a LIVE attempt on an implement node — the unit of work
-    whose process environment C2 reads. Returns {id,key,worker,status,n} / None."""
-    like = " OR ".join(f"ne.node_instance_key LIKE '%{k}'" for k in keys)
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if run_status(run_id) in ("completed", "failed", "cancelled", "interrupted"):
-            return None
-        try:
-            rows = psql_rows(psql(
-                f"SELECT a.id || '|' || ne.node_instance_key || '|' || w.name || '|' || "
-                f"a.status || '|' || a.attempt_number::text FROM attempts a "
-                f"JOIN node_executions ne ON ne.id = a.node_execution_id "
-                f"JOIN workers w ON w.id = a.worker_id "
-                f"WHERE a.run_id = '{run_id}' AND a.status IN ('leased','running') "
-                f"AND ({like}) ORDER BY a.started_at DESC NULLS LAST LIMIT 1"), 5)
-        except RuntimeError as e:
-            show("C2a attempt poll (psql)", str(e)[:240])
-            return None
-        if rows:
-            return dict(zip(("id", "key", "worker", "status", "n"), rows[0]))
-        time.sleep(2)
-    return None
+def c2_attempt_state(attempt_id):
+    """One attempt's OWN status as the ledger reads it right now — 'leased'/'running'
+    while a worker still holds it, a terminal status once it closes, '' when the
+    ledger would not answer. C2a reads the live environment only while the answer is
+    a holding status (a closed step has no child process left to hash), and C2b waits
+    on the same read for the node boundary. The poll C4/C5/C6 do through
+    wait_live_past_gate, C2 aims with this."""
+    try:
+        rows = psql_rows(psql(f"SELECT status FROM attempts WHERE id = '{attempt_id}'"), 1)
+    except RuntimeError as e:
+        show("C2a attempt status poll (psql)", str(e)[:240])
+        return ""
+    return rows[0][0] if rows else ""
 
 
 def c2_mat_rows(attempt_id):
@@ -2057,12 +2156,25 @@ def c2_git_mirror_grep(svc, mirror_path, needle=SENTINEL):
     if code == 1:
         return 0, f"git grep over every ref of {mirror_path}: no match (rc=1)"
     if code == 0:
-        return max(1, len([ln for ln in body.splitlines() if ":" in ln])), body[-400:]
+        # A match is a LEAK, and the leaked line is the secret's own text: the
+        # evidence names the ref/path only, never what the blob says.
+        hits = [ln for ln in body.splitlines() if ":" in ln]
+        where = sorted({":".join(ln.split(":")[:2]) for ln in hits})
+        return max(1, len(hits)), (f"{len(hits)} matching line(s) under "
+                                   f"{len(where)} ref/path(s), MATCHING TEXT REDACTED: "
+                                   + ", ".join(where)[:300])
     return None, f"{svc}: git grep rc={code} (not the 0/1 the contract predicts): {body[-200:]}"
 
 
 def c2():
     """C2 - the unit of work is the attempt, not the turn (01 invariant 5 + ADR-0018).
+    The twin's run posts hold_seconds=C2_HOLD_SECONDS (45, the fault legs' value) and the
+    live wait goes through wait_live_past_gate(target=C2_LIVE_TARGET_KEY), so the read
+    below lands INSIDE § 7.1 C2a's "during the implement attempt" window at
+    /build_until_verified[1]/implement instead of after a printf step that closed in <1s
+    (live4/C2.out:63). require_fault_hold says up front whether the mounted fixture can
+    honour the hold and fault_hold_evidence/hold_diagnosis grade it afterwards — a lab
+    artefact never gets reported as a product gap.
     Acceptance: during the implement attempt the sentinel sits in EXACTLY ONE live
     process environment (/proc/<pid>/environ of the child the attempt launched, read
     by digest, value never printed) and NOT in any .env file; the materialization row
@@ -2087,9 +2199,10 @@ def c2():
     CTX["manifest"] = facts
     tw = mvariant(facts, "twin")
     if not isinstance(tw, dict) or not tw.get("revision_id"):
-        gap("C2", "the seed manifest carries no twin variant to run (the deterministic twin is "
-                  "the only variant whose implement node is long enough to read a live /proc "
-                  "inside; the agent variant needs a working claude ACP launcher in the image)")
+        gap("C2", "the seed manifest carries no twin variant to run (the deterministic twin "
+                  "is the only variant whose implement attempt can be held open by "
+                  "hold_seconds to read a live /proc inside; the agent variant needs a "
+                  "working claude ACP launcher in the image)")
         return
     # Precondition: the section 7.0 mount really is env/DATABASE_URL/node_attempt.
     try:
@@ -2124,49 +2237,61 @@ def c2():
     except RuntimeError as e:
         gap("C2 the encrypted store holds the value", str(e)[:180])
 
+    # The hold is C2a's precondition, not a nice-to-have: § 7.1 words the read as
+    # "during the implement attempt", and a fixture left from before the hold honours
+    # nothing — the leg says so BEFORE spending its window instead of after 300s of
+    # polling a run whose every step closed in under a second (live4/C2.out:63).
+    if not require_fault_hold("C2a", expected=C2_HOLD_SECONDS):
+        return
     run_id = post_c1_run(alice, tw, f"m4x-c2-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
-                         "c2")
+                         "c2", hold_seconds=C2_HOLD_SECONDS)
     if not run_id:
         return
     CTX["c2_run"] = run_id
-    approved, deadline = False, time.time() + 300
-    while time.time() < deadline and not approved:
-        st = run_status(run_id)
-        if st == "waiting_human":
-            approved = approve_gate(alice, tw["project_id"], run_id)
-        elif st in ("completed", "failed", "cancelled", "interrupted"):
-            break
-        time.sleep(3)
-    if not approved:
-        dump_run_evidence(alice, run_id)
-        st_now = run_status(run_id)
-        if st_now in ("failed", "cancelled", "interrupted"):
-            check("C2a the run reached its approval gate", False,
-                  f"the run is {st_now!r} without ever reaching an implement attempt - "
-                  "there was no live process to read (evidence above)")
-        else:
-            gap("C2a the run reached its approval gate",
-                f"no approval was decided within 300s (status={st_now!r}) - the run never "
-                "reached an implement attempt, so there was no live process to read")
-        return
-    check("C2a the gate was approved so the implement attempt could run", True, run_id)
-    live = c2_live_attempt(run_id)
+    # The gate is decided FIRST and the wait is AIMED (wait_live_past_gate, the shared
+    # helper C4/C5/C6 use since 522a82b/1e75c23): /plan is held open too, but it is held
+    # BEFORE /approve, so a picker that takes whatever is live reads the environment of the
+    # wrong attempt — the lesson live8/C6.out taught the kill legs.
+    live = c2_live_from_claim(wait_live_past_gate(
+        alice, mf(tw, "project_id"), run_id, hold_window(300), "C2a",
+        target=C2_LIVE_TARGET_KEY))
     if live is None:
         dump_run_evidence(alice, run_id)
-        gap("C2a a live implement attempt to read",
-            f"no /implement attempt was ever held by a worker within the poll window "
-            f"(run status={run_status(run_id)!r}) - with nothing running there is no live "
-            "process environment, so 'exactly one place' is unmeasurable (evidence above)")
+        kind, label, detail = c2_no_live_attempt_verdict(
+            run_status(run_id),
+            fault_hold_evidence(alice, run_id, "C2a", expected=C2_HOLD_SECONDS))
+        if kind == "check":
+            check(label, False, detail)
+        else:
+            gap(label, detail)
         return
+    check(f"C2a the gate was decided (C1b's route) and the held attempt is the post-gate "
+          f"implement node ({C2_LIVE_TARGET_KEY}), so § 7.1's 'during the implement attempt' "
+          "window is open",
+          live["key"] == C2_LIVE_TARGET_KEY,
+          f"run {run_id} leased {live['key']} attempt#{live['n']} status={live['status']}")
     svc = c4_worker_service(live["worker"])
     if svc is None:
         gap("C2a read the live process environment",
             f"the claim belongs to worker row {live['worker']!r}, which is not one of this "
             "project's two lab workers - the driver never execs a container it did not create")
         return
+    held_now = c2_attempt_state(live["id"])
     show("C2a the attempt whose environment is about to be read",
-         f"attempt={live['id']} node={live['key']} attempt#{live['n']} status={live['status']} "
-         f"worker={live['worker']} container={svc}")
+         f"attempt={live['id']} node={live['key']} attempt#{live['n']} "
+         f"status={held_now or live['status']} worker={live['worker']} container={svc}")
+    if held_now and not c2_attempt_is_live(held_now):
+        # The step closed between the ledger catch and this read: no child process is left
+        # whose environment can be hashed, and scanning now would read the attempt AFTER
+        # its own boundary — C2b's question, not C2a's.
+        dump_run_evidence(alice, run_id)
+        why = fault_hold_evidence(alice, run_id, "C2a", expected=C2_HOLD_SECONDS)
+        gap("C2a the held attempt was still live when the environment was read",
+            f"attempt {str(live['id'])[:8]} on {live['key']} had already closed "
+            f"({held_now}) between the claim poll and the exec — the hold_seconds="
+            f"{C2_HOLD_SECONDS} window had run out, so there is no live process environment "
+            "to localize" + (f"; {why}" if why else ""))
+        return
     mat_live = c2_mat_rows(live["id"])
     show(f"C2a secret_materializations rows DURING the attempt ({live['id'][:8]})",
          "\n".join(f"{r['delivery_mode']} target={r['target']} lifecycle={r['lifecycle']} "
@@ -2184,14 +2309,9 @@ def c2():
 
     # C2b - cross the node boundary: the unit ends with the attempt, so the
     # materialization must be cleaned by the worker before anything else happens.
-    terminal, deadline = "", time.time() + 600
+    terminal, deadline = "", time.time() + hold_window(600)
     while time.time() < deadline:
-        try:
-            rows = psql_rows(psql(f"SELECT status FROM attempts WHERE id = '{live['id']}'"), 1)
-        except RuntimeError as e:
-            show("C2b attempt poll", str(e)[:200])
-            rows = []
-        terminal = rows[0][0] if rows else ""
+        terminal = c2_attempt_state(live["id"])
         if terminal in ("succeeded", "failed", "cancelled", "interrupted"):
             break
         time.sleep(3)
@@ -2204,6 +2324,24 @@ def c2():
                                         want_lifecycle="node_attempt",
                                         terminal=terminal in ("succeeded", "failed",
                                                               "cancelled", "interrupted")))
+    # Was the window C2a read a window at all? The hold this leg POSTED has to show up as
+    # an attempt a worker actually held: an unhurried printf answers 0s, and every
+    # "exactly one place" / "nowhere durable" read above would then be a read of nothing
+    # (live4/C2.out:63). Graded here, where the boundary makes the ledger answer.
+    c2_emit(c2_hold_proof_verdicts(C2_HOLD_SECONDS, held_attempt_window_s(run_id),
+                                   fixture_hold_state()))
+
+    # C2c sweeps DURABLE surfaces and C2d reads the reviewer's stored prompt — both are
+    # claims about the finished run. With hold_seconds posted the twin still has its
+    # test/review steps and iteration 2 to spend after the implement boundary, and
+    # /publish_evidence's artifacts are a swept place, so sweeping a live run would grade
+    # silence as cleanliness. Wait for the terminal state first.
+    terminal_run, _watch = watch_run(alice, tw, run_id, hold_window(900), "c2")
+    if terminal_run != "completed":
+        gap("C2c the durable sweep covers a completed run",
+            f"run {run_id} did not read status='completed' inside the hold window (last "
+            f"read {run_status(run_id)!r}) — the sweep and the reviewer read below still "
+            "ran, but a surface this run never wrote is absence, not proof")
 
     # C2c - the sentinel is nowhere durable. Every place is read; a place the lab
     # cannot read GAPs rather than counting as a zero.

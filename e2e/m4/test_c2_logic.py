@@ -7,6 +7,10 @@ Runs WITHOUT a stack (stdlib unittest only): the /proc scan parser, THE central
 (an unreadable place GAPs, it never counts as a clean zero), the
 lifecycle=node_attempt + attempt_id + cleaned-by-the-worker rule, and the
 attempt-owns-its-conversation_turns rule that leaves M3's human turns alone.
+And the hold wiring live4 proved missing: C2 posts `hold_seconds` and aims its
+live wait at the held /build_until_verified[1]/implement behind the gate, so
+§ 7.1 C2a's "during the implement attempt" window exists to be read at all
+(test_hold_logic.py's "only the fault legs hold" list predates C2 joining them).
 
 A green here means the VERDICT ALGEBRA is right. It never substitutes for C2's
 live read of /proc/<pid>/environ inside a running worker
@@ -18,6 +22,7 @@ import hashlib
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import e2e_m4_exit as m  # noqa: E402 — importing the driver is the point
@@ -216,6 +221,132 @@ class SqlTest(unittest.TestCase):
         # swept for ciphertext/commitment separately, never as a plaintext place
         for t in ("secret_versions", "secret_metadata"):
             self.assertNotIn(f"'{t}'", sql, t)
+
+
+class HoldWiringTest(unittest.TestCase):
+    """C2 posts the twin's hold (C2a is a read DURING the attempt; the shipped twin's
+    implement step is a printf — live4/C2.out:63, rows C2a/C2b/C2d of
+    docs/m4-exit-status.md) and aims its live wait at the post-gate implement node."""
+
+    def driver_body(self):
+        import ast
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "e2e_m4_exit.py"), encoding="utf-8").read()
+        tree = ast.parse(src)
+        node = next(n for n in tree.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "c2")
+        return ast.get_source_segment(src, node)
+
+    def test_c2_posts_the_fault_legs_hold_within_the_schema_maximum(self):
+        self.assertEqual(m.C2_HOLD_SECONDS, m.C_FAULT_HOLD_SECONDS)
+        self.assertLessEqual(m.C2_HOLD_SECONDS, 600)
+        self.assertIn("hold_seconds=C2_HOLD_SECONDS", self.driver_body(),
+                      "c2() must post its twin run with the hold or C2a has no window")
+        self.assertIn("require_fault_hold(", self.driver_body(),
+                      "c2() owes the up-front fixture precondition like every leg that holds")
+
+    def test_c2_aims_the_live_wait_at_the_held_post_gate_implement(self):
+        body = self.driver_body()
+        self.assertIn("wait_live_past_gate(", body,
+                      "c2() uses the shared gate-then-live helper C4/C5/C6 use")
+        self.assertIn("target=C2_LIVE_TARGET_KEY", body,
+                      "an unaimed wait reads the environment of the held /plan BEFORE "
+                      "the gate instead of the implement attempt (live8/C6.out)")
+        self.assertEqual(m.C2_LIVE_TARGET_KEY, m.C_LIVE_TARGET_KEY,
+                         "one post-gate held node, named once in the driver")
+        self.assertTrue(any(m.C2_LIVE_TARGET_KEY.endswith(k)
+                            for k in m.C2_IMPLEMENT_KEYS), "a held implement spelling")
+        self.assertNotIn("c2_live_attempt(", body,
+                         "the bare implement poll is gone: it verdicted on whatever "
+                         "was live, gate or no gate")
+
+    def test_claim_row_maps_onto_the_shape_c2_reads(self):
+        row = {"id": "a-1", "key": "/build_until_verified[1]/implement",
+               "worker": "worker-a", "token": "9", "attempt_number": "1", "turn": "-"}
+        got = m.c2_live_from_claim(row)
+        self.assertEqual((got["id"], got["key"], got["worker"], got["n"]),
+                         ("a-1", "/build_until_verified[1]/implement", "worker-a", "1"))
+        self.assertTrue(all(m.c2_attempt_is_live(s) for s in got["status"].split("/")),
+                        "the catch-time read selects only leased/running, so the mapped "
+                        "status says a worker holds it either way")
+        self.assertIsNone(m.c2_live_from_claim(None))
+
+    def test_only_leased_and_running_mean_a_worker_holds_the_attempt(self):
+        for st in ("leased", "running", " LEASED "):
+            self.assertTrue(m.c2_attempt_is_live(st), st)
+        for st in ("succeeded", "failed", "queued", "interrupted", "", None):
+            self.assertFalse(m.c2_attempt_is_live(st), st)
+
+    def test_attempt_state_reads_the_one_row_and_never_invents_a_status(self):
+        seen = []
+
+        def fake_psql(sql):
+            seen.append(sql)
+            return "leased"
+        with patch.object(m, "psql", fake_psql):
+            self.assertEqual(m.c2_attempt_state("a-1"), "leased")
+        self.assertIn("WHERE id = 'a-1'", seen[0])
+        self.assertNotIn("run_id", seen[0], "the read is aimed at ONE attempt")
+        with patch.object(m, "psql", lambda sql: (_ for _ in ()).throw(RuntimeError("down"))):
+            self.assertEqual(m.c2_attempt_state("a-1"), "",
+                             "an unreadable ledger is neither live nor closed")
+
+    def test_a_held_attempt_proves_the_hold_and_a_printf_does_not(self):
+        v = m.c2_hold_proof_verdicts(45, 46, "honours")
+        self.assertTrue(v[0][1], v)
+        self.assertFalse(m.c2_hold_proof_verdicts(45, 0, "honours")[0][1])
+        self.assertIn("LAB FAULT", m.c2_hold_proof_verdicts(45, 0, "honours")[0][2])
+        self.assertIn("M4_HOLD_SECONDS",
+                      m.c2_hold_proof_verdicts(45, 0, "honours")[0][2])
+
+    def test_a_stale_fixture_or_a_missing_read_never_passes_the_hold(self):
+        self.assertFalse(m.c2_hold_proof_verdicts(45, 46, "stale")[0][1],
+                         "the mounted script sleeps for nothing: no hold is real")
+        self.assertIn("make_fixture_repo.sh", m.c2_hold_proof_verdicts(45, 46, "stale")[0][2])
+        self.assertIsNone(m.c2_hold_proof_verdicts(45, None, "unreadable")[0][1],
+                          "an unreadable ledger GAPs, it never passes by inference")
+        self.assertIsNone(m.c2_hold_proof_verdicts(0, 30, "honours")[0][1],
+                          "a leg that posted no hold has no window to prove")
+
+    def test_held_shorter_than_posted_is_still_a_window_worth_reading(self):
+        """The floor is the leg's own (<1s printf vs a real hold), not the full 45s —"""
+        v = m.c2_hold_proof_verdicts(45, 8, "honours")
+        self.assertTrue(v[0][1], v)
+        self.assertIn("shorter than the 45s", v[0][2],
+                      "but hold_diagnosis still says the window came up short")
+
+    def test_nothing_ever_held_gaps_unless_the_run_died_first(self):
+        kind, label, detail = m.c2_no_live_attempt_verdict("completed", "hold honoured? no")
+        self.assertEqual((kind, label), ("gap", "C2a a live implement attempt to read"))
+        self.assertIn(m.C2_LIVE_TARGET_KEY, detail)
+        self.assertIn("hold honoured? no", detail)
+        for st in ("failed", "cancelled", "interrupted"):
+            self.assertEqual(m.c2_no_live_attempt_verdict(st)[0], "check",
+                             f"{st} is the product's own failure, not an unmeasurable state")
+        self.assertEqual(m.c2_no_live_attempt_verdict("running")[0], "gap")
+
+
+class EvidenceRedactionTest(unittest.TestCase):
+    """C2's own rule: the sentinel's VALUE never enters the report — presence and
+    digests only — including on the failure path that has every reason to print it."""
+
+    def test_a_mirror_hit_names_the_ref_and_redacts_the_matching_text(self):
+        out = f"refs/heads/master:hello.py:{m.C2_ENV_NAME}={m.SENTINEL}\nrc=0"
+        with patch.object(m, "run", lambda cmd, **kw: (0, out)):
+            n, listing = m.c2_git_mirror_grep("worker-a", "/repos/p/app.git")
+        self.assertEqual(n, 1)
+        self.assertNotIn(m.SENTINEL, listing, "the leaked line IS the secret")
+        self.assertIn("REDACTED", listing)
+        self.assertIn("refs/heads/master", listing)
+
+    def test_a_clean_mirror_and_the_scan_script_carry_no_value(self):
+        with patch.object(m, "run", lambda cmd, **kw: (0, "rc=1")):
+            self.assertEqual(m.c2_git_mirror_grep("worker-a", "/repos/p/app.git")[0], 0)
+        self.assertNotIn(m.SENTINEL, m.c2_proc_scan_sh())
+        self.assertNotIn(m.SENTINEL, m.c2_place_inventory_sql())
+        v = m.c2_live_home_verdicts([{"pid": "4", "sha": "a" * 64, "cmd": "m4-exit.sh"}],
+                                    "b" * 64)
+        self.assertNotIn(m.SENTINEL, " ".join(d for _, _, d in v))
 
 
 if __name__ == "__main__":
