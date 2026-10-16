@@ -60,7 +60,7 @@ import {
   viewRunTree,
 } from "../api/m4view";
 import { normalizeRunFrames, projectRun, toRunEvent } from "../lib/pipeline/runEvents";
-import { shortCommit } from "../lib/format";
+import { formatTime, shortCommit } from "../lib/format";
 import {
   isScopeKind,
   scopeBody,
@@ -71,6 +71,7 @@ import type {
   NodeExecutionStatus,
   NodeExecutionSummary,
   RunDetail,
+  RunEvent,
   RunEventType,
   RunTreeRoot,
 } from "../lib/pipeline/contract";
@@ -742,6 +743,8 @@ interface TimelineRow {
    * such so a digest prefix cannot be misread as an attempt number. */
   boundary: string | null;
   detail: string | null;
+  /** The contract's own sentence for the two frames a dead worker writes (W5). */
+  copy: string | null;
   failure: boolean;
   human: boolean;
 }
@@ -792,6 +795,28 @@ function boundaryOf(type: RunEventType, payload: Record<string, unknown>): strin
       : "checkpoint";
   }
   if (type === "run.checkpoint_saved") return "checkpoint";
+  return null;
+}
+
+/**
+ * W5 (`docs/m4-contract.md` § 7.2): the two frames a worker's death writes get
+ * their contract wording in the timeline, not just the type name —
+ * `node.attempt.interrupted` reads *interrupted — the worker disappeared
+ * mid-node*, and `node.attempt.retry_scheduled` reads as the countdown, whose
+ * moment is the frame's own `scheduled_at`. Nothing here may imply the work
+ * carried on by itself: "resumed", "restored" and "no data lost" are the words
+ * `10` J7 forbids on this page.
+ */
+function timelineCopy(type: RunEventType, payload: Record<string, unknown>): string | null {
+  if (type === "node.attempt.interrupted") return "interrupted — the worker disappeared mid-node";
+  if (type === "node.attempt.retry_scheduled") {
+    const scheduledAt = payload.scheduled_at;
+    if (typeof scheduledAt !== "string" || !scheduledAt) return "retry scheduled";
+    const delay = payload.delay_seconds;
+    return `retry scheduled — next attempt at ${formatTime(scheduledAt)}${
+      typeof delay === "number" ? ` (in ${delay}s)` : ""
+    }`;
+  }
   return null;
 }
 
@@ -854,6 +879,7 @@ function RunTimelineTab({
           (payload.reason as string | undefined) ??
           (payload.failed_cause as string | undefined) ??
           null,
+        copy: timelineCopy(event.type, payload),
         failure: isFailureFrame(event.type, payload),
         human: isHumanFrame(event.type, envelope.actor.kind, payload),
       });
@@ -877,7 +903,9 @@ function RunTimelineTab({
       if (filter !== "all" && filter.startsWith("stage:") && row.stage !== filter.slice(6))
         return false;
       if (!needle) return true;
-      return `${row.type} ${row.nodeKey ?? ""} ${row.stage ?? ""} ${row.actor} ${row.detail ?? ""}`
+      return `${row.type} ${row.nodeKey ?? ""} ${row.stage ?? ""} ${row.actor} ${row.detail ?? ""} ${
+        row.copy ?? ""
+      }`
         .toLowerCase()
         .includes(needle);
     });
@@ -972,6 +1000,11 @@ function RunTimelineTab({
                   </span>
                 ) : null}
                 {row.detail ? <span className="text-muted">{row.detail}</span> : null}
+                {row.copy ? (
+                  <span className="text-ink-2" data-testid={`run-timeline-copy-${row.seq}`}>
+                    {row.copy}
+                  </span>
+                ) : null}
               </button>
             </li>
           ))}
@@ -1006,20 +1039,32 @@ function RunNodeDetail({
   const project = useProject(projectId);
   const [conflict, setConflict] = useState<string | null>(null);
 
-  const attemptViews = useMemo(() => (detail.data?.attempts ?? []).map(viewAttempt), [detail.data]);
-  const lastAttempt = attemptViews.at(-1) ?? null;
-  const attemptEvents = useMemo(
+  // Every attempt of the node, in the order they happened. W5's page has to
+  // read *attempt 1 interrupted, then the retry, then attempt 2*: a pane that
+  // keeps only its newest row hides the fact the journal just recorded, which
+  // is the one thing the honesty rule (`10` J7) says must stay visible.
+  const attemptViews = useMemo(
     () =>
-      lastAttempt
-        ? frames
-            .map(toRunEvent)
-            .filter(
-              (event): event is NonNullable<typeof event> =>
-                event !== null && event.attempt_id === lastAttempt.id,
-            )
-        : [],
-    [frames, lastAttempt],
+      (detail.data?.attempts ?? [])
+        .map(viewAttempt)
+        .sort((a, b) => a.attempt_number - b.attempt_number),
+    [detail.data],
   );
+  const lastAttempt = attemptViews.at(-1) ?? null;
+  // Frames grouped by the attempt they name. The retry countdown belongs to the
+  // attempt that was interrupted, not to the one that replaced it, so the
+  // newest attempt's slice is not the only one read.
+  const eventsByAttempt = useMemo(() => {
+    const grouped = new Map<string, RunEvent[]>();
+    for (const frame of frames) {
+      const event = toRunEvent(frame);
+      if (!event?.attempt_id) continue;
+      const list = grouped.get(event.attempt_id);
+      if (list) list.push(event);
+      else grouped.set(event.attempt_id, [event]);
+    }
+    return grouped;
+  }, [frames]);
   const gate = (approvalsQuery.data?.approvals ?? [])
     .map(viewApproval)
     .find((approval) => approval.node_execution_id === nodeId);
@@ -1108,14 +1153,30 @@ function RunNodeDetail({
   return (
     <div className="space-y-[10px]">
       <NodePaneHeader node={node} nodes={nodes} attemptNumber={lastAttempt.attempt_number} />
-      <AttemptDetail
-        attempt={lastAttempt}
-        node={node}
-        checkpoint={detail.data?.checkpoint ? viewRunCheckpoint(detail.data.checkpoint) : null}
-        events={attemptEvents}
-        work={<AttemptAgentWork attempt={lastAttempt} projectId={projectId} node={node} />}
-        headingId="run-attempt-heading"
-      />
+      {attemptViews.map((attempt) => {
+        const isLatest = attempt.id === lastAttempt?.id;
+        return (
+          <AttemptDetail
+            key={attempt.id}
+            attempt={attempt}
+            node={node}
+            // The node serves one boundary record — the newest attempt's. An
+            // older attempt is not shown a checkpoint it never saved.
+            checkpoint={
+              isLatest && detail.data?.checkpoint ? viewRunCheckpoint(detail.data.checkpoint) : null
+            }
+            events={eventsByAttempt.get(attempt.id) ?? []}
+            // The live agent work is the newest attempt's conversation; a
+            // superseded attempt keeps its facts, not a second streaming pane.
+            work={
+              isLatest ? (
+                <AttemptAgentWork attempt={attempt} projectId={projectId} node={node} />
+              ) : null
+            }
+            headingId={`run-attempt-heading-${attempt.attempt_number}`}
+          />
+        );
+      })}
       {gateCard}
     </div>
   );
