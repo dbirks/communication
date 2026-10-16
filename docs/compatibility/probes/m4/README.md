@@ -280,6 +280,26 @@ four deliberate, provenance-headed adjustments:
    across the two manifest runs. The `until` stays bounded
    (`maxIterations: 4`) so exhaustion (`failed_cause: until_exhausted`) is
    reachable without a runaway.
+5. **`inputs.hold_seconds` on the twin only** (integer, 0–600, default `0`):
+   each twin `process.exec` (`plan`, `implement`, `test`, `review`) passes it as
+   `env: M4_HOLD_SECONDS`, and `m4-exit.sh` sleeps that many seconds **before**
+   the step does anything. The shipped steps are `printf`s that close in <1s, so
+   without a hold C4's lease freeze, C5's `docker kill` and C6's restore all land
+   on an attempt that has already `succeeded` (live6: `C4 FAIL=14`,
+   `C5 GAP`, `C6 FAIL=9` — every one of them "nothing was running"). The fault
+   gates therefore have to post their runs with `hold_seconds: 45` (≥ the 30s
+   lease + 15s reconciler tick and the gate's own 45s freeze — the arms are
+   `c4()`/`c5()`/`c6()`'s `post_c1_run` calls in `e2e/m4/e2e_m4_exit.py`);
+   C1's two manifest runs, C7's
+   exhaustion twin and C8's fan-out keep the default `0`, which sleeps nothing and
+   leaves stdout byte-identical (`emit_items`/`fan_out` and the C8 child carry no
+   hold on purpose — C8b measures real in-flight concurrency). Node ids, count
+   and the `until` cap are unchanged, so C1's key-set equality still holds
+   (measured by compiling both documents: 12 identical `node_instance_key`s).
+   Document 2's leading comment block cannot grow: `c12_splice` requires
+   `apiVersion:`/`kind: Pipeline` inside the first 600 characters of the
+   document's text, and they already sit at 543/582 — hence this note lives in
+   the README rather than in the YAML header.
 
 ### Offline validation (no server needed)
 

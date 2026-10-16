@@ -296,6 +296,12 @@ spec:
         maximum: 1000
         default: 0
         description: Items the m4-exit.sh items fixture emits (C8a 0, C8b-e 25).
+      hold_seconds:
+        type: integer
+        minimum: 0
+        maximum: 600
+        default: 0
+        description: Seconds each process.exec step holds its attempt open (m4-exit.sh M4_HOLD_SECONDS) before any work, so C4/C5/C6 fault injection lands on a LIVE attempt; 0 = shipped speed.
   outputs:
     type: object
     required: [implementation_summary]
@@ -321,6 +327,8 @@ spec:
     config:
       executable: m4-exit.sh
       args: [plan]
+      env:
+        M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}
       outputExtraction: {mode: json_from_stdout}
     outputs:
       type: object
@@ -360,6 +368,8 @@ spec:
           config:
             executable: m4-exit.sh
             args: [implement]
+            env:
+              M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}
             cwd: repos/app
             workspace:
               mode: run_workspace
@@ -383,6 +393,8 @@ spec:
           config:
             executable: m4-exit.sh
             args: [test]
+            env:
+              M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}
             cwd: repos/app
             workspace:
               mode: run_workspace
@@ -410,6 +422,8 @@ spec:
           config:
             executable: m4-exit.sh
             args: [review]
+            env:
+              M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}
             workspace:
               mode: read_only
               repositories: ['${{ inputs.repository }}']

@@ -29,6 +29,11 @@
 # neither python3 nor pytest, and the test step's static check is exactly the
 # two fixture assertions — passes after BOTH implement edits, fails before.
 #
+# Fault-gates only: M4_HOLD_SECONDS (set from the twin's hold_seconds run input,
+# default 0) makes plan/implement/test/review sleep before their work so C4's
+# lease freeze, C5's kill and C6's restore land on a live attempt. At 0 the
+# script is byte-identical to before: no sleep, no extra bytes on stdout.
+#
 # Disposable: re-running replaces OUT_DIR/app.git wholesale; it removes only
 # its own generated paths and writes nothing else. Fixture lives under the
 # gitignored .harness/ tree (lab state, never committed).
@@ -124,6 +129,11 @@ cat > "$BIN/m4-exit.sh" <<'SCRIPT'
 #                fanout=false in C1 keeps these rows skipped).
 #   issue     -> child step; exits 1 for M4_ISSUE_NUMBER=13 (C8d/e arm).
 #
+# M4_HOLD_SECONDS (default 0; the twin's hold_seconds run input, env on plan/
+# implement/test/review): N>0 makes the step announce the hold on STDERR and sleep
+# N seconds before doing anything, so C4/C5/C6's fault gates catch a LIVE attempt.
+# 0 = the shipped <1s steps, byte-for-byte unchanged stdout.
+#
 # POSIX sh + GNU sed/grep only — no python3, no pytest in the worker image.
 set -eu
 
@@ -135,13 +145,36 @@ in_app() {  # implement/test run with cwd repos/app; anything else is a lab faul
 has_doc()  { grep -q '"""' hello.py; }
 bad_assert() { grep -Eq 'add\(1, ?2\) *== *99' tests/test_hello.py; }
 
+# hold — opt-in pause on the twin's process.exec steps, fed by the run input
+# hold_seconds (docs/compatibility/probes/m4/pipeline.yaml) as M4_HOLD_SECONDS.
+# The fault-injection gates (C4 lease freeze, C5 worker kill, C6 restore) have to
+# catch an attempt that is STILL RUNNING: these steps are printfs that close in
+# <1s, so a 45s compose pause or a docker kill always landed on an attempt that
+# had already succeeded (live6 C4/C5/C6). Semantics:
+#   unset / 0 / not a plain integer -> no sleep, no output: today's behaviour.
+#   N > 0 -> one stderr line (stdout stays the single JSON document the
+#            json_from_stdout extractor reads) then `sleep N` BEFORE the step
+#            touches anything, so a fenced or killed attempt has published no
+#            output, written no file and recorded no checkpoint.
+# `items`/`issue` (C8's arms) deliberately carry no hold: C8b samples real
+# concurrency, and a hold there would measure the pause instead of the fan-out.
+hold() {
+    n="${M4_HOLD_SECONDS:-0}"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    [ "$n" -eq 0 ] && return 0
+    echo "m4-exit.sh $1: holding the attempt open for ${n}s (M4_HOLD_SECONDS=$n)" >&2
+    sleep "$n"
+}
+
 step="${1:-}"
 case "$step" in
 plan)
+    hold plan
     printf '{"plan": "1. Give add() a docstring so test_add_is_documented passes. 2. Correct the add(1, 2) assertion to true sum semantics so test_add_sums passes."}\n'
     ;;
 implement)
     in_app implement
+    hold implement
     if ! has_doc; then
         sed -i '/def add(a, b):/a\    """Return the sum of a and b."""' hello.py
         printf '{"summary": "added the add() docstring (iteration 1; the add(1,2) assertion stays red until corrected)", "files_changed": ["hello.py"]}\n'
@@ -154,6 +187,7 @@ implement)
     ;;
 test)
     in_app test
+    hold test
     mkdir -p build
     if command -v pytest >/dev/null 2>&1; then RUNNER=pytest
     elif command -v python3 >/dev/null 2>&1 && python3 -m pytest --version >/dev/null 2>&1; then RUNNER="python3 -m pytest"
@@ -171,6 +205,7 @@ test)
     exit 0
     ;;
 review)
+    hold review
     printf '{"approved": true, "evidence": "deterministic review: plan followed (docstring + corrected assertion), test-result.json carries the machine-checked outcome", "findings": []}\n'
     ;;
 items)
