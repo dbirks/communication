@@ -39,8 +39,10 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w10_new_type_verdicts,
     w10_resume_verdicts,
     w11_attempt_verdicts,
+    w11_child_view,
     w11_extra_frames_verdict,
     w11_internals_verdict,
+    w11_pick_attempted_node,
     w11_rendered_children,
     w11_short_id,
     w11_tree_verdicts,
@@ -55,6 +57,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w2_turn_arm_verdict,
     w2_visible_types,
     w_frame_surfaces,
+    w_gate_release_verdict,
     w_type_matches,
     w3_decide_verdict,
     w3_gate_detail_verdict,
@@ -939,6 +942,81 @@ def test_c11_report_honesty_tolerates_a_labelled_true_row():
     assert one(rows, "SANDBOX.md") is True, rows[0][2]
 
 
+def test_gate_release_verdict_names_the_twin_speed_instead_of_blaming_the_ui():
+    """live6/W2.out FAILed 'an attempt is live on a worker' twice because the
+    deterministic twin's process.exec steps finish in <1s — the poll's 2s interval never
+    sees a lease. The shared helper that replaced those probes GAPs that reading (and
+    never credits a lease it did not see), while a run still parked at the gate, or one
+    that left the gate with no attempt rows at all, stays a real FAIL."""
+    live = {"id": "452c647c", "key": "/build_until_verified[1]/review", "worker": "worker-a"}
+    rows = [w_gate_release_verdict(live, "running", "8", tag="W10")]
+    assert one(rows, "the gate released the run into real work") is True, rows
+    assert "452c647c" in one(rows, "the gate released the run into real work", detail=True), rows
+    _label, ok, detail = w_gate_release_verdict(None, "completed", "8", tag="W11")
+    assert ok is None, detail
+    assert "finish faster than the poll's 2s interval" in detail, detail
+    assert detail.startswith("no attempt was sampled MID-LEASE"), detail
+    assert one([w_gate_release_verdict(None, "waiting_human", "1")],
+               "the gate released the run into real work") is False, "the gate never released it"
+    assert one([w_gate_release_verdict(None, "completed", "0")],
+               "the gate released the run into real work") is False, "no attempts = no work to watch"
+
+
+def test_w11_opens_a_node_whose_attempt_list_has_rows():
+    """live6/W11 opened `/fan_out[0]/invoke`, whose attempt list is empty in the ROUTE
+    and in the ledger (an invocation node is run by the advancer, no worker ever leases
+    it), so the row's attempt arms could only GAP on "did not read back". The choice
+    prefers a real interrupted pair, then any execution that owns attempts."""
+    nodes = [{"id": "n0", "node_instance_key": "/fan_out[0]/invoke",
+              "kind": "pipeline.invoke", "attempt_count": 0},
+             {"id": "n1", "node_instance_key": "/plan", "kind": "agent.acp",
+              "attempt_count": 1},
+             {"id": "n2", "node_instance_key": "/build_until_verified[1]/review",
+              "kind": "process.exec", "attempt_count": 3}]
+    assert w11_pick_attempted_node(nodes)["id"] == "n2", "the retry loop is the pair's home"
+    assert w11_pick_attempted_node(nodes, "n0")["id"] == "n0", "a ledger-named interrupted row wins"
+    assert w11_pick_attempted_node(nodes[:2])["id"] == "n1", "a list with one row beats an empty invoke"
+    assert w11_pick_attempted_node(nodes[:1])["id"] == "n0", "nothing else exists -> name it and GAP"
+    assert w11_pick_attempted_node([]) is None, "no executions at all"
+    assert w11_pick_attempted_node(None) is None
+    assert w11_pick_attempted_node(["junk", nodes[1]])["id"] == "n1", "a ragged row is not a node"
+
+
+NESTED_TREE_CHILDREN = [{"run": {"id": "01a144d1-0000-7000-8000-00003f5a9c1d",
+                                 "status": "completed", "depth": 1},
+                        "node_instance_key": "/fan_out[1]/invoke",
+                        "wait_policy": "completion", "depth": 1, "children": []},
+                       {"run": {"id": "01a144d1-0000-7000-8000-00007b2e1140",
+                               "status": "running", "depth": 1},
+                        "node_instance_key": "/fan_out[2]/invoke",
+                        "wait_policy": "completion", "children": []}]
+
+
+def test_w11_reads_the_tree_route_its_own_shape():
+    """`GET /runs/{id}/tree` answers RunTreeView: the child's id and status are NESTED
+    under `run` (internal/api/runs.go:293-300), which is how C8d reads them. W11's first
+    live run read the top level only, so every child looked like `child_run_id=None,
+    status='None'` and ten child rows sitting on screen were reported as "naming no child
+    of this run" — the driver failing to spell its own answer key, not the page hiding
+    children. The normaliser takes both shapes."""
+    assert w11_child_view(NESTED_TREE_CHILDREN[0]) == {
+        "child_run_id": "01a144d1-0000-7000-8000-00003f5a9c1d", "status": "completed",
+        "depth": 1, "node_instance_key": "/fan_out[1]/invoke",
+        "wait_policy": "completion"}, w11_child_view(NESTED_TREE_CHILDREN[0])
+    assert w11_child_view(TREE_CHILDREN[1])["child_run_id"].endswith("7b2e1140")
+    assert w11_child_view(None)["child_run_id"] == "" and w11_child_view(None)["status"] == ""
+    v = w11_tree_verdicts(NESTED_TREE_CHILDREN, CANNED_TREE)
+    assert one(v, "depth-1 children with their own statuses") is True, v
+    assert one(v, "reachable in the DOM") is True, v
+    assert "completed" in one(v, "depth-1 children", detail=True), \
+        "the route's own child statuses must reach the evidence line"
+    # A child the page does not render is STILL the honest FAIL it was:
+    assert one(w11_tree_verdicts(NESTED_TREE_CHILDREN[:1] + [dict(
+        NESTED_TREE_CHILDREN[1], run=dict(NESTED_TREE_CHILDREN[1]["run"],
+                                         id="01a144d1-0000-7000-8000-0000deadbeef"))],
+        CANNED_TREE), "depth-1 children") is False, "one child of 2 never drawn"
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
@@ -950,6 +1028,9 @@ if __name__ == "__main__":
                test_w11_short_id_is_the_uuid_tail_the_tree_prints, test_w11_tree_verdicts,
                test_w11_attempt_list_verdicts, test_w11_internals_stay_out_of_the_dom,
                test_frames_are_rows_not_string_occurrences,
+               test_gate_release_verdict_names_the_twin_speed_instead_of_blaming_the_ui,
+               test_w11_opens_a_node_whose_attempt_list_has_rows,
+               test_w11_reads_the_tree_route_its_own_shape,
                test_c11_report_honesty_tolerates_a_labelled_true_row,
                test_http_connection_blip_retry):
         print(f"\n{fn.__name__}")

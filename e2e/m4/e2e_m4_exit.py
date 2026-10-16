@@ -11244,6 +11244,25 @@ def w11_short_id(run_id):
     return v[-8:] if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", v, re.I) else v
 
 
+def w11_child_view(child):
+    """One `/tree` child, however the route spelled it. `RunTreeView` NESTS the child:
+    `{"run": {"id", "status", "depth", …}, "node_instance_key": …, "wait_policy": …,
+    "depth": 1, "children": []}` (internal/api/runs.go:293-300, and C8d reads exactly
+    that), while a flat child row would carry `child_run_id`/`status` at the top level.
+    Reading only the flat spelling is what made live W11.out report
+    `statuses=['None']` and eight rendered child rows as "naming no child of this run":
+    the leg could not spell its own answer key, which is a driver bug and not a page
+    that hides children. Pure."""
+    c = child if isinstance(child, dict) else {}
+    run = c.get("run") if isinstance(c.get("run"), dict) else {}
+    return {"child_run_id": str(c.get("child_run_id") or c.get("run_id")
+                                 or run.get("id") or ""),
+            "status": str(c.get("status") or run.get("status") or ""),
+            "depth": c.get("depth") if c.get("depth") is not None else run.get("depth"),
+            "node_instance_key": str(c.get("node_instance_key") or ""),
+            "wait_policy": c.get("wait_policy") or ""}
+
+
 def w11_rendered_children(dom_text):
     """The tree's child rows as the page wrote them: `child run {shortId} · depth {n}
     · waits for {policy}` (RunTree.tsx:478) -> {shortId: {"depth", "wait_policy",
@@ -11271,7 +11290,7 @@ def w11_tree_verdicts(children, dom_text):
     branch at `pageSize` 10 and its `N more` row is not expandable, so a child past
     the page cannot be opened from the tree at all."""
     out = []
-    rows = [c for c in (children or []) if isinstance(c, dict)]
+    rows = [w11_child_view(c) for c in (children or []) if isinstance(c, dict)]
     rendered = w11_rendered_children(dom_text)
     label = "W11 the tree renders depth-1 children with their own statuses"
     if not rows:
@@ -12605,6 +12624,31 @@ def w10():
         pw("close", session="m4w10")
 
 
+def w11_pick_attempted_node(api_nodes, interrupted_ne=""):
+    """Which node execution the leg opens for row W11's "one node execution's attempt
+    list". Preference order is the row's own need, not convenience:
+
+    1. an execution the ledger says was INTERRUPTED — the only shape with the pair the
+       row names (attempt 1 interrupted + retry_context, attempt 2 succeeded);
+    2. the execution with the most attempts (a retry loop, if the run had one);
+    3. any execution that owns at least ONE attempt, so the pane has a list to render;
+       a `pipeline.invoke` row owns none — the advancer runs it and no worker takes a
+       lease (live6/W11 opened `/fan_out[0]/invoke`, read attempt_count=0 from the route
+       AND from the ledger, and the arm could only GAP on an empty read);
+    4. the `/plan` node, then the first row — so something is always named when the run
+       reported executions at all, and the GAP says which empty list it measured.
+
+    Pure: it judges the route's own rows, never the ledger."""
+    rows = [n for n in (api_nodes or []) if isinstance(n, dict)]
+    return (next((n for n in rows if str(n.get("id")) == str(interrupted_ne or "-")), None)
+            or max((n for n in rows if (n.get("attempt_count") or 0) > 1),
+                   key=lambda n: int(n.get("attempt_count") or 0), default=None)
+            or next((n for n in rows if (n.get("attempt_count") or 0) >= 1), None)
+            or next((n for n in rows if n.get("kind") == "pipeline.invoke"), None)
+            or next((n for n in rows if n.get("node_instance_key") == "/plan"), None)
+            or (rows[0] if rows else None))
+
+
 def w11_attempts_ledger(node_execution_id):
     """One node execution's attempt rows read from the LEDGER — the fallback when
     `GET /runs/{id}/nodes/{id}` answers without carrying them (live6/W11: the pane drew
@@ -12761,9 +12805,11 @@ def w11():
         return
     CTX["w11_run_id"] = run_id
     live = wait_live_past_gate(client, project_id, run_id, 300, "W11")
-    check("W11 the fan-out run is released past its gate", live is not None,
-          f"live claim row={live if live else '(none within 300s)'} "
-          f"status={run_status(run_id)!r}")
+    # The same reading W2/W10 owe: the twin's process.exec steps close inside the poll's
+    # 2s window, so 'no lease seen' is a fixture speed, not a stuck run — and the tree
+    # arms below judge the ledger and the DOM, not this poll.
+    c5_emit([w_gate_release_verdict(live, run_status(run_id), c1_attempt_count(run_id),
+                                    tag="W11")])
     # --- the fan-out really happened: GET /runs/{id}/tree is the answer key ----
     children, deadline = [], time.time() + 300
     while time.time() < deadline:
@@ -12773,8 +12819,8 @@ def w11():
             break
         time.sleep(5)
     show(f"W11 GET /runs/{run_id}/tree",
-         f"{len(children)} child row(s); depths={sorted({c.get('depth') for c in children})}; "
-         f"statuses={sorted({str(c.get('status')) for c in children})} "
+         f"{len(children)} child row(s); depths={sorted({w11_child_view(c)['depth'] for c in children})}; "
+         f"statuses={sorted({w11_child_view(c)['status'] for c in children} or {'(none)'})} "
          f"(run status={run_status(run_id)!r})")
     if not children:
         gap("W11 the child-run tree arms",
@@ -12810,10 +12856,6 @@ def w11():
         nodes_r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
         api_nodes = [n for n in ((nodes_r.json() or {}).get("node_executions") or [])
                      if isinstance(n, dict)] if nodes_r.status == 200 else []
-        # The row names a PAIR (attempt 1 interrupted with retry_context, attempt 2
-        # succeeded), so an execution that was actually interrupted is opened first when
-        # this run has one; with none, the fan-out's own invoke row is the honest choice
-        # and the pair's absence is reported as the GAP it is.
         interrupted_ne = ""
         try:
             interrupted_ne = psql(f"SELECT node_execution_id::text FROM attempts WHERE "
@@ -12821,11 +12863,14 @@ def w11():
                                   "ORDER BY attempt_number LIMIT 1").strip()
         except RuntimeError as e:  # the choice below GAPs on its own if this is unreadable
             show("W11 interrupted-attempt read (psql)", str(e)[:200])
-        want = (next((n for n in api_nodes if str(n.get("id")) == interrupted_ne), None)
-                or next((n for n in api_nodes if (n.get("attempt_count") or 0) > 1), None)
-                or next((n for n in api_nodes if n.get("kind") == "pipeline.invoke"), None)
-                or next((n for n in api_nodes if n.get("node_instance_key") == "/plan"), None)
-                or (api_nodes[0] if api_nodes else None))
+        # The row names a PAIR (attempt 1 interrupted with retry_context, attempt 2
+        # succeeded), so an execution that was actually interrupted is opened first; when
+        # this run has none, the honest choice is any execution that owns AT LEAST ONE
+        # attempt — `pipeline.invoke` rows own none (live6/W11 opened one and the attempt
+        # arm could only GAP on an empty read), and § 7.2's row is about a list with rows
+        # in it. The pair's absence is still reported as the GAP it is: this leg kills no
+        # worker, so no attempt is ever interrupted mid-node.
+        want = w11_pick_attempted_node(api_nodes, interrupted_ne)
         show(f"W11 GET /runs/{run_id}/nodes -> {nodes_r.status}",
              f"{len(api_nodes)} row(s); the attempt list is opened for "
              f"{(want or {}).get('node_instance_key')!r} "
