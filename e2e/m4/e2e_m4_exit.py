@@ -2704,6 +2704,169 @@ C6_PAIR_SENTENCE = (
     "same-volume record, never a portable-checkpoint claim.")
 
 
+# --- shared document surgery (RC3 / D1 fix) ------------------------------------
+# C6/C7/C10 re-author the seed twin through POST /drafts WITHOUT editing the
+# fixture. They used to splice the YAML that GET /revisions/{id}/document returns
+# — but route 14 REGENERATES those bytes from canonical_document (go-yaml: 4-space
+# indent, block sequences, alphabetical keys), so every regex written against the
+# fixture's authored shape (`^  name:`, `- id: implement`, `args: [implement]`)
+# matched nothing and the gates GAPed. The gates change VALUES, not bytes, so they
+# now edit the canonical JSON document the API also serves (GET /revisions/{id}
+# -> .canonical_document), which the driver re-emits as plain YAML for the draft.
+# Formatting is then the emitter's choice, not a assumption about someone else's.
+# (C12 deliberately keeps TEXT splices — it tests canonicalization invariance, so
+# its probes must be different BYTES; see c12_name_indent/c12_rename.)
+
+
+def doc_scalar(v, flow=False):
+    """One YAML scalar. Plain when a parser cannot misread it, else JSON-quoted
+    (JSON string escapes are valid YAML flow scalars for go-yaml and PyYAML)."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return json.dumps(v)
+    s = str(v)
+    return s if doc_plain_ok(s, flow) else json.dumps(s)
+
+
+def doc_plain_ok(s, flow=False):
+    """True when `s` survives a plain (unquoted) round-trip through any YAML 1.2
+    parser: not empty/padded, no line breaks, no `: `/trailing `:`/` #`, no leading
+    indicator, not a bool/null/number lookalike; inside a flow collection even
+    `,[]{}` are forbidden."""
+    if not s or s != s.strip() or "\n" in s or "\r" in s or "\t" in s:
+        return False
+    if ": " in s or s.endswith(":") or " #" in s:
+        return False
+    if s[0] in ",[]{}#&*!|>'\"%@`" or (s[0] in "-?:" and (len(s) == 1 or s[1] == " ")):
+        return False
+    if s[0] == "~" or s.lower() in ("true", "false", "null", "yes", "no", "on", "off",
+                                    "y", "n"):
+        return False
+    if flow and any(c in s for c in ",[]{}:"):
+        return False
+    try:
+        float(s)
+        return False
+    except ValueError:
+        return True
+
+
+def doc_inline(v, ind):
+    """What follows `key:` for one value: a scalar, a flow collection when the
+    whole value is scalar-only (keeps `args: [implement]`, `{type: string}` and
+    friends on one line, exactly where the doc verdicts look), or '\n'+block
+    lines starting at column ind."""
+    if not isinstance(v, (dict, list)):
+        return " " + doc_scalar(v)
+    if not v:
+        return " {}" if isinstance(v, dict) else " []"
+    if isinstance(v, dict) and all(not isinstance(x, (dict, list)) for x in v.values()):
+        return " {" + ", ".join(f"{doc_key(k)}: {doc_scalar(x, flow=True)}"
+                                for k, x in v.items()) + "}"
+    if isinstance(v, list) and all(not isinstance(x, (dict, list)) for x in v):
+        return " [" + ", ".join(doc_scalar(x, flow=True) for x in v) + "]"
+    return "\n" + "\n".join(doc_yaml_lines(v, ind))
+
+
+def doc_key(k):
+    k = str(k)
+    return k if doc_plain_ok(k) else json.dumps(k)
+
+
+def doc_yaml_lines(value, ind):
+    """Block lines (no trailing newline) for a non-empty dict/list at column ind.
+    Sequences indent under their key like the fixture does (`nodes:` / `  - id:`)."""
+    pad = " " * ind
+    out = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            out.append(f"{pad}{doc_key(k)}:{doc_inline(v, ind + 2)}")
+    else:
+        for item in value:
+            tail = doc_inline(item, ind + 2)
+            if tail.startswith("\n"):
+                first, _, rest = tail[1:].partition("\n")
+                out.append(f"{pad}- {first.strip()}" + (f"\n{rest}" if rest else ""))
+            else:
+                out.append(f"{pad}-{tail}" if tail.strip() else f"{pad}-")
+    return out
+
+
+def doc_yaml_emit(value):
+    """Canonical JSON document -> a YAML document string the draft route accepts.
+    Key ORDER is insertion order (irrelevant: the server re-canonicalizes, and
+    § 7's digests ride the canonical form, not these bytes)."""
+    if isinstance(value, (dict, list)) and value:
+        return "\n".join(doc_yaml_lines(value, 0)) + "\n"
+    return doc_scalar(value) + "\n"
+
+
+def doc_revision_canonical(client, revision_id):
+    """GET /revisions/{id} -> its canonical_document dict, or None. This is the
+    document the compiler actually read (ADR: the YAML route regenerates from it,
+    never re-hashes), so it is the document the gates are allowed to edit."""
+    if not revision_id:
+        return None
+    r = client.get(LB, f"/api/v1/revisions/{revision_id}")
+    doc = r.json().get("canonical_document") if r.status == 200 else None
+    show(f"C6/C7/C10 GET /api/v1/revisions/{revision_id}",
+         f"{r.status} canonical_document {'Pipeline' if isinstance(doc, dict) and doc.get('kind') == 'Pipeline' else 'absent'}")
+    if isinstance(doc, dict) and doc.get("apiVersion") and doc.get("kind") == "Pipeline":
+        return doc
+    return None
+
+
+def doc_nodes_by_id(canonical, node_id):
+    """Every node dict in spec.nodes with this id (top level only — the gates
+    splice until BODIES, found via doc_until_body_nodes)."""
+    nodes = (canonical or {}).get("spec", {}).get("nodes") if isinstance(canonical, dict) else None
+    if not isinstance(nodes, list):
+        return []
+    return [n for n in nodes if isinstance(n, dict) and n.get("id") == node_id]
+
+
+def doc_until_node(canonical):
+    """The until loop the gates re-author (kind: until anywhere in spec.nodes),
+    or None when the document has none."""
+    nodes = ((canonical or {}).get("spec") or {}).get("nodes") if isinstance(canonical, dict) else None
+    for node in nodes if isinstance(nodes, list) else []:
+        if isinstance(node, dict) and node.get("kind") == "until":
+            return node
+    return None
+
+
+def doc_until_body(canonical):
+    """The body node LIST of the until loop the gates re-author (config.body.nodes),
+    or None. `config.resultBindings` sits beside it — C7 appends its witness node
+    to this list, which is exactly where the old text splice parked it."""
+    body = ((doc_until_node(canonical) or {}).get("config") or {}).get("body")
+    nodes = body.get("nodes") if isinstance(body, dict) else None
+    return nodes if isinstance(nodes, list) and nodes else None
+
+
+def doc_body_node(canonical, node_id):
+    """The ONE body node with this id inside the until loop; None unless exactly
+    one exists (the splice refuses to guess which reviewer is the until's)."""
+    nodes = doc_until_body(canonical) or []
+    hits = [n for n in nodes if isinstance(n, dict) and n.get("id") == node_id]
+    return hits[0] if len(hits) == 1 else None
+
+
+def doc_body_count(canonical, node_id):
+    """How many until-body nodes carry this id — the honest count the old
+    `text.count('- id: review')` could never produce on regenerated bytes."""
+    nodes = doc_until_body(canonical) or []
+    return sum(1 for n in nodes if isinstance(n, dict) and n.get("id") == node_id)
+
+
+def doc_is_pipeline(value):
+    return (isinstance(value, dict) and value.get("apiVersion")
+            and value.get("kind") == "Pipeline")
+
+
 def c6_emit(verdicts):
     """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
     for label, ok, detail in verdicts:
@@ -2713,42 +2876,44 @@ def c6_emit(verdicts):
             check(label, ok, detail)
 
 
-def c6_restore_doc(doc, name):
+def c6_restore_doc(canonical, name):
     """Re-author the seed twin for C6 WITHOUT editing the fixture (README: 'publish
-    extra revisions, don't widen this one'): splice `workspacePolicy:
-    restore_checkpoint` into the until body's implement node's existing retry block
+    extra revisions, don't widen this one'): set `workspacePolicy:
+    restore_checkpoint` on the until body's implement node's existing retry block
     — the ONLY change, so the C6 run's node/key set stays C1's and the only
-    variable is the workspace policy. Returns {doc, applied, missing}."""
+    variable is the workspace policy. Edits the revision's canonical_document JSON
+    (GET /revisions/{id}) rather than the route-14 regenerated YAML: a value edit
+    is formatting-independent (RC3/D1). Returns {doc, applied, missing} with doc
+    the YAML re-emitted for POST /drafts."""
     out = {"doc": None, "applied": [], "missing": []}
-    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
-        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is "
-                              "not a kind: Pipeline document)")
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document, the form "
+                              "the compiler actually read)")
         return out
-    text, applied, missing = doc, [], []
-    new, k = re.subn(r"(?m)^(  name: ).*$", rf"\g<1>{name}", text, count=1)
-    (applied if k == 1 else missing).append("metadata.name")
-    text = new
-    if C6_RESTORE_POLICY in text:
+    doc = json.loads(json.dumps(canonical))            # deep copy; the seed stays untouched
+    applied, missing = out["applied"], out["missing"]
+    if not isinstance(doc.get("metadata"), dict):
+        missing.append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        applied.append("metadata.name")
+    if C6_RESTORE_POLICY in json.dumps(doc):
         missing.append("the seed twin already declares restore_checkpoint — C6's own "
                        "revision would prove nothing the seed's does not")
-        out["doc"], out["applied"], out["missing"] = None, applied, missing
         return out
-    blk = c7_node_block(text, "implement")
-    if not blk:
+    node = doc_body_node(doc, "implement")
+    if node is None:
         missing.append("the until body's implement node")
     else:
-        s, e, ind = blk
-        src = text.splitlines(keepends=True)
-        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
-        new, k = re.subn(r"(?m)^( *)retriableErrors: .*$", lambda m: (
-            f"{m.group(1)}retriableErrors: {m.group(0).split(':', 1)[1].strip()}\n"
-            f"{m.group(1)}workspacePolicy: {C6_RESTORE_POLICY}"), body, count=1)
-        (applied if k == 1 else missing).append(
-            f"implement retry.workspacePolicy: {C6_RESTORE_POLICY}")
-        body = new
-        text = head + body + tail
-    out["applied"], out["missing"] = applied, missing
-    out["doc"] = None if missing else text
+        retry = node.get("retry")
+        if not isinstance(retry, dict):
+            missing.append(f"implement retry.workspacePolicy: {C6_RESTORE_POLICY} "
+                           "(the implement node has no retry block to carry it)")
+        else:
+            retry["workspacePolicy"] = C6_RESTORE_POLICY
+            applied.append(f"implement retry.workspacePolicy: {C6_RESTORE_POLICY}")
+    out["doc"] = None if missing else doc_yaml_emit(doc)
     return out
 
 
@@ -3064,9 +3229,9 @@ def c6():
 
     # C6a — the gate's OWN revision: the seed twin plus ONE line, the workspace
     # policy. The seed's published revisions are immutable and stay untouched.
-    src = c7_twin_doc(admin, twin.get("revision_id"))
+    src = doc_revision_canonical(admin, twin.get("revision_id"))
     if src is None:
-        gap("C6", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+        gap("C6", f"GET /api/v1/revisions/{twin.get('revision_id')!r} gave no canonical "
                   "Pipeline document — the gate refuses to author a restore policy into a "
                   "document it cannot show the compiler actually read")
         return
@@ -3600,115 +3765,118 @@ def c7_carry_verdicts(probe_rows, prompt_text=None):
     return v
 
 
-def c7_node_block(doc, node_id):
-    """(start, end, indent) of a `- id: <node_id>` block in a pipeline YAML document,
-    end being the next sibling `- id:` line or a dedent; None when absent."""
-    lines = (doc or "").splitlines(keepends=True)
-    start, indent = None, ""
-    for i, ln in enumerate(lines):
-        s = ln.rstrip("\n")
-        if s.strip() == f"- id: {node_id}":
-            start, indent = i, s[:len(s) - len(s.lstrip())]
-            break
-    if start is None:
-        return None
-    for j in range(start + 1, len(lines)):
-        s = lines[j].rstrip("\n")
-        if not s.strip():
-            continue
-        cur = s[:len(s) - len(s.lstrip())]
-        if len(cur) < len(indent) or (len(cur) == len(indent) and s.strip().startswith("- id:")):
-            return (start, j, indent)
-    return (start, len(lines), indent)
-
-
-def c7_exhaustion_doc(doc, name, max_iter=C7_MAX_ITERATIONS, pass_when=None):
+def c7_exhaustion_doc(canonical, name, max_iter=C7_MAX_ITERATIONS, pass_when=None):
     """Re-author the seed twin for C7 WITHOUT editing the fixture (README: 'publish
     extra revisions, don't widen this one'): maxIterations->3, the implementer's step
     argument switched to m4-exit.sh's edit-free `plan` step (a true no-op: it prints
     {plan} and touches no file, so passWhen can never become true), its output schema
     and the until's resultBinding follow that rename, and a has(previous.review_feedback)
     probe node witnesses C7d. pass_when, when given, replaces the predicate wholesale —
-    that is C7c's indeterminate arm. Returns {doc, applied, missing}."""
+    that is C7c's indeterminate arm. Edits the revision's canonical_document JSON so
+    the re-authoring is formatting-independent (RC3/D1); returns {doc, applied,
+    missing} with doc the YAML re-emitted for POST /drafts."""
     out = {"doc": None, "applied": [], "missing": []}
-    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
-        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is not "
-                              "a kind: Pipeline document)")
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document, the form "
+                              "the compiler actually read)")
         return out
-    text, applied, missing = doc, [], []
-
-    def sub(pat, rep, label, flags=0, count=1):
-        nonlocal text
-        new, k = re.subn(pat, rep, text, count=count, flags=flags)
-        (applied if k == count else missing).append(label)
-        text = new
-
-    sub(r"(?m)^(  name: ).*$", rf"\g<1>{name}", "metadata.name")
-    sub(r"maxIterations: \d+", f"maxIterations: {max_iter}", f"maxIterations: {max_iter}")
-    if "carryForward: true" not in text:
+    doc = json.loads(json.dumps(canonical))            # deep copy; the seed stays untouched
+    applied, missing = out["applied"], out["missing"]
+    if not isinstance(doc.get("metadata"), dict):
+        missing.append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        applied.append("metadata.name")
+    until = doc_until_node(doc)
+    cfg = (until or {}).get("config") if isinstance((until or {}).get("config"), dict) else None
+    if cfg is None:
+        missing.append("the until loop's config (no maxIterations to bound, no body to "
+                       "downgrade, nowhere to splice the "
+                       f"{C7_PROBE_NODE} witness node)")
+        out["doc"] = None
+        return out
+    if not isinstance(cfg.get("maxIterations"), int):
+        missing.append(f"maxIterations: {max_iter} (the until loop declares none)")
+    else:
+        cfg["maxIterations"] = max_iter
+        applied.append(f"maxIterations: {max_iter}")
+    if cfg.get("carryForward") is not True:
         missing.append("carryForward: true already authored (C7d needs it)")
-    blk = c7_node_block(text, "implement")
-    if not blk:
+    node = doc_body_node(doc, "implement")
+    if node is None:
         missing.append("the until body's implement node")
     else:
-        s, e, _ind = blk
-        src = text.splitlines(keepends=True)
-        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
-
-        def repl(pat, rep, label, sub_re=None):
-            nonlocal body
-            new, k = re.subn(pat, rep, body, count=1)
-            (applied if k else missing).append(label)
-            body = new
-
-        repl(r"args: ?\[\s*implement\s*\]", f"args: [{C7_NOOP_STEP}]",
-             f"implement step switched to m4-exit.sh {C7_NOOP_STEP} (a true no-op: it prints "
-             "{plan} and writes no file, so passWhen can never turn true)")
-        repl(r"required: \[summary\]", "required: [plan]",
-             "implement outputs.required -> [plan] (the no-op's own shape)")
-        repl(r"summary: \{type: string\}", "plan: {type: string}",
-             "implement outputs.properties.plan declared")
-        text = head + body + tail
-    sub(r"nodes\.implement\.outputs\.summary", "nodes.implement.outputs.plan",
-        "until resultBindings read outputs.plan")
+        ncfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if ncfg.get("args") != ["implement"]:
+            missing.append(f"implement step switched to m4-exit.sh {C7_NOOP_STEP} "
+                           f"(the body node's args are {ncfg.get('args')!r}, not ['implement'])")
+        else:
+            ncfg["args"] = [C7_NOOP_STEP]
+            applied.append(f"implement step switched to m4-exit.sh {C7_NOOP_STEP} (a true "
+                           "no-op: it prints {plan} and writes no file, so passWhen can "
+                           "never turn true)")
+        outs = node.get("outputs") if isinstance(node.get("outputs"), dict) else {}
+        if outs.get("required") != ["summary"]:
+            missing.append("implement outputs.required -> [plan] (the no-op's own shape: "
+                           f"required is {outs.get('required')!r})")
+        else:
+            outs["required"] = ["plan"]
+            applied.append("implement outputs.required -> [plan] (the no-op's own shape)")
+        props = outs.get("properties") if isinstance(outs.get("properties"), dict) else {}
+        if props.get("summary") != {"type": "string"}:
+            missing.append("implement outputs.properties.plan declared (no "
+                           "`summary: {type: string}` slot to rename)")
+        else:
+            outs["properties"] = {("plan" if k == "summary" else k): v
+                                  for k, v in props.items()}
+            applied.append("implement outputs.properties.plan declared")
+    binds = cfg.get("resultBindings") if isinstance(cfg.get("resultBindings"), dict) else {}
+    moved = [k for k, v in binds.items() if isinstance(v, str)
+             and "nodes.implement.outputs.summary" in v]
+    if not moved:
+        missing.append("until resultBindings read outputs.plan (no binding references "
+                       "nodes.implement.outputs.summary)")
+    else:
+        for k in moved:
+            binds[k] = binds[k].replace("nodes.implement.outputs.summary",
+                                        "nodes.implement.outputs.plan")
+        applied.append("until resultBindings read outputs.plan")
     if pass_when:
-        new, k = re.subn(r"(?m)^(\s*)passWhen: .*$",
-                         lambda m: f"{m.group(1)}passWhen: {pass_when}", text, count=1)
-        (applied if k else missing).append(f"passWhen := {pass_when[:40]}")
-        text = new
-    m = re.search(r"(?m)^([ \t]{4,})resultBindings:\s*$", text)
-    if not m:
+        cfg["passWhen"] = pass_when
+        applied.append(f"passWhen := {pass_when[:40]}")
+    body_nodes = doc_until_body(doc)
+    if body_nodes is None:
         missing.append("the until's resultBindings anchor (nowhere to splice the "
                        f"{C7_PROBE_NODE} witness node)")
     else:
-        ind = m.group(1)
-        text = text[:m.start()] + C7_PROBE_NODE_DOC.replace("@@IND@@", ind) + text[m.start():]
-        applied.append(f"{C7_PROBE_NODE} has(previous.review_feedback) witness node spliced into the body")
-    out["applied"], out["missing"] = applied, missing
-    out["doc"] = None if missing else text
+        body_nodes.append(json.loads(json.dumps(C7_PROBE_NODE_SPEC)))
+        applied.append(f"{C7_PROBE_NODE} has(previous.review_feedback) witness node spliced "
+                       "into the body")
+    out["doc"] = None if missing else doc_yaml_emit(doc)
     return out
 
 
-C7_PROBE_NODE_DOC = """@@IND@@  - id: prev_probe
-@@IND@@    kind: process.exec
-@@IND@@    timeoutSeconds: 300
-@@IND@@    when: has(previous.review_feedback)
-@@IND@@    retry:
-@@IND@@      maxAttempts: 1
-@@IND@@    config:
-@@IND@@      executable: m4-exit.sh
-@@IND@@      args: [review]
-@@IND@@      workspace:
-@@IND@@        mode: read_only
-@@IND@@        repositories: ['${{ inputs.repository }}']
-@@IND@@      outputExtraction: {mode: json_from_stdout}
-@@IND@@    outputs:
-@@IND@@      type: object
-@@IND@@      required: [approved]
-@@IND@@      properties:
-@@IND@@        approved: {type: boolean}
-@@IND@@        evidence: {type: string}
-"""
+C7_PROBE_NODE_SPEC = {                     # the has(previous.*)-gated C7d witness —
+    "id": C7_PROBE_NODE,                   # a canonical-document node dict, appended
+    "kind": "process.exec",                # to the until body verbatim (RC3: no text
+    "timeoutSeconds": 300,                 # splice, so no @@IND@@ indentation dance)
+    "when": "has(previous.review_feedback)",
+    "retry": {"maxAttempts": 1},
+    "config": {
+        "executable": "m4-exit.sh",
+        "args": ["review"],
+        "workspace": {"mode": "read_only",
+                      "repositories": ["${{ inputs.repository }}"]},
+        "outputExtraction": {"mode": "json_from_stdout"},
+    },
+    "outputs": {
+        "type": "object",
+        "required": ["approved"],
+        "properties": {"approved": {"type": "boolean"},
+                       "evidence": {"type": "string"}},
+    },
+}
 
 
 def c7_doc_verdicts(splices, max_iter=C7_MAX_ITERATIONS):
@@ -3750,9 +3918,12 @@ def c7_sql(sql, what):
 
 
 def c7_twin_doc(admin, revision_id):
-    """GET /revisions/{id}/document?format=yaml — the exported twin bytes C7 splices.
-    None unless the body is a Pipeline document (a YAML that is not one cannot be
-    re-authored into the exhaustion twin without editing the fixture)."""
+    """GET /revisions/{id}/document?format=yaml — the exported twin BYTES. Only C12
+    may splice this (it tests canonicalization invariance, so its probes must be
+    different bytes of the same document); C6/C7/C10 changed values and edit the
+    canonical_document instead (doc_revision_canonical — RC3: the regenerated YAML
+    has no authored shape to regex against).
+    None unless the body is a Pipeline document."""
     if not revision_id:
         return None
     r = admin.get(LB, f"/api/v1/revisions/{revision_id}/document?format=yaml")
@@ -3925,9 +4096,9 @@ def c7():
     suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
     # ---- the re-authored document: seed twin + maxIterations 3 + no-op implement ----
-    src = c7_twin_doc(admin, twin.get("revision_id"))
+    src = doc_revision_canonical(admin, twin.get("revision_id"))
     if src is None:
-        gap("C7", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+        gap("C7", f"GET /api/v1/revisions/{twin.get('revision_id')!r} gave no canonical "
                   "Pipeline document — the gate refuses to author a loop from an invented "
                   "document, because a passWhen/maxIterations the engine never compiled "
                   "proves nothing about exhaustion")
@@ -5700,7 +5871,7 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None):
 # --- C10 authored document — re-use the fixture, re-author only the SCHEMA ------
 
 
-def c10_malformed_doc(doc, name, field=C10_MALFORMED_FIELD):
+def c10_malformed_doc(canonical, name, field=C10_MALFORMED_FIELD):
     """Re-author the seed twin so the reviewer's OWN reply is invalid against its
     declared outputs schema, WITHOUT editing the fixture (README: publish extra
     revisions, don't widen the seed one): inside the until body's `review` node
@@ -5711,38 +5882,43 @@ def c10_malformed_doc(doc, name, field=C10_MALFORMED_FIELD):
     make_fixture_repo.sh is not editable). `approved` stays boolean and args stay
     [review], so an engine that skipped validation would see a perfectly good
     `approved == true` and PASS the loop: the FAIL this arm can produce is loud.
-    Returns {doc, applied, missing}."""
-    out = {"doc": None, "applied": [], "missing": []}
-    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
-        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is "
-                              "not a kind: Pipeline document)")
+    Edits the revision's canonical_document JSON, so the switch is independent of
+    how route 14 happens to print the YAML (RC3/D1). Returns {doc, applied, missing,
+    edited} with doc the YAML re-emitted for POST /drafts."""
+    out = {"doc": None, "applied": [], "missing": [], "edited": None}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document, the form "
+                              "the compiler actually read)")
         return out
-    text, applied, missing = doc, [], []
-    new, k = re.subn(r"(?m)^(  name: ).*$", rf"\g<1>{name}", text, count=1)
-    (applied if k else missing).append("metadata.name")
-    text = new
-    if text.count("- id: review") != 1:
-        missing.append(f"exactly one `review` node in the twin document (found "
-                       f"{text.count('- id: review')} — the splice refuses to guess which "
-                       "one is the until body's reviewer)")
-        out["applied"], out["missing"] = applied, missing
-        out["doc"] = None
-        return out
-    blk = c7_node_block(text, "review")
-    if not blk:
-        missing.append("the until body's review node block")
+    doc = json.loads(json.dumps(canonical))            # deep copy; the seed stays untouched
+    applied, missing = out["applied"], out["missing"]
+    if not isinstance(doc.get("metadata"), dict):
+        missing.append("metadata.name (no metadata block to rename)")
     else:
-        s, e, _ind = blk
-        src = text.splitlines(keepends=True)
-        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
-        new, k = re.subn(rf"(?m)^(\s*){field}: ?\{{type: string\}}\s*$",
-                         rf"\g<1>{field}: {{type: boolean}}", body, count=1)
-        (applied if k else missing).append(
-            f"review outputs.{field}: string -> boolean (the reviewer's own reply is now "
-            "schema-INVALID: a string where the declared type is boolean)")
-        text = head + new + tail
-    out["applied"], out["missing"] = applied, missing
-    out["doc"] = None if missing else text
+        doc["metadata"]["name"] = name
+        applied.append("metadata.name")
+    n = doc_body_count(doc, "review")
+    if n != 1:
+        missing.append(f"exactly one `review` node in the twin document (found {n} — the "
+                       "splice refuses to guess which one is the until body's reviewer)")
+    else:
+        node = doc_body_node(doc, "review")
+        props = ((node.get("outputs") or {}).get("properties")
+                 if isinstance(node, dict) else None)
+        if not isinstance(props, dict) or props.get(field) != {"type": "string"}:
+            missing.append(f"review outputs.{field}: string -> boolean (no "
+                           f"`{field}: {{type: string}}` slot to switch)")
+        else:
+            props[field] = {"type": "boolean"}
+            applied.append(
+                f"review outputs.{field}: string -> boolean (the reviewer's own reply is "
+                "now schema-INVALID: a string where the declared type is boolean)")
+    if not missing:
+        out["edited"] = doc        # the structure the verdicts re-check: the twin
+                                   # LEGALLY contains args: [plan] up top, so only the
+                                   # review node's own step can be proof-texted here
+    out["doc"] = None if missing else doc_yaml_emit(doc)
     return out
 
 
@@ -5752,6 +5928,8 @@ def c10_doc_verdicts(splices, field=C10_MALFORMED_FIELD):
     the reviewer step it still runs is the fixture's real review step."""
     sp = splices or {}
     applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    edited = sp.get("edited") if isinstance(sp.get("edited"), dict) else None
+    review = doc_body_node(edited, "review") if edited else None
     nothing = not applied and not missing and not isinstance(doc, str)
     v = [("C10 authored twin: the reviewer's declared output type was switched "
           "(string -> boolean) and nothing else was touched",
@@ -5766,7 +5944,10 @@ def c10_doc_verdicts(splices, field=C10_MALFORMED_FIELD):
                   f"{field}: {{type: boolean}}" in doc, "the reply's field is a boolean slot"))
         v.append(("C10 authored twin still runs the fixture's REAL review step (the reply is "
                   "the shipped bytes, not an invented one)",
-                  "args: [review]" in doc and "args: [plan]" not in doc, "args: [review] kept"))
+                  bool(review) and ((review.get("config") or {}).get("args") == ["review"]),
+                  f"review node args={((review or {}).get('config') or {}).get('args')!r} "
+                  "(the twin's own top-level plan step also says args: [plan], so this is "
+                  "checked on the review node, not the bytes)"))
         v.append(("C10 authored twin keeps `approved` a boolean, so an UNvalidated reply would "
                   "still satisfy passWhen (a leak routes the loop onward — a FAIL, not a "
                   "silently different run)", "approved: {type: boolean}" in doc,
@@ -5791,14 +5972,11 @@ def c10_sql(sql, what):
 
 
 def c10_twin_doc(admin, revision_id):
-    """The seed twin's exported YAML bytes — the document C10 splices its ONE schema
-    change into. None unless it is a Pipeline document: the gate refuses to author a
-    reviewer from an invented document."""
-    if not revision_id:
-        return None
-    r = admin.get(LB, f"/api/v1/revisions/{revision_id}/document?format=yaml")
-    show(f"C10 GET /revisions/{revision_id}/document -> {r.status}", (r.text or "")[:110])
-    return r.text if r.status == 200 and "apiVersion:" in (r.text or "")[:400] else None
+    """The seed twin's canonical_document JSON — the document C10 switches ONE
+    declared output type inside (doc_revision_canonical; the route-14 YAML is a
+    regenerated view, wrong to splice — RC3). None unless it is a Pipeline
+    document: the gate refuses to author a reviewer from an invented document."""
+    return doc_revision_canonical(admin, revision_id)
 
 
 def c10_post_run(client, facts, revision_id, idem, label):
@@ -5965,9 +6143,9 @@ def c10():
     CTX["alice"] = alice
     suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
-    src = c10_twin_doc(admin, twin.get("revision_id"))
+    src = doc_revision_canonical(admin, twin.get("revision_id"))
     if src is None:
-        gap("C10", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+        gap("C10", f"GET /api/v1/revisions/{twin.get('revision_id')!r} gave no canonical "
                    "Pipeline document — the gate will not invent a reviewer schema the engine "
                    "never compiled, because a reply rejected against a schema nobody authored "
                    "proves nothing")
