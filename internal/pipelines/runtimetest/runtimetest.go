@@ -46,6 +46,14 @@ const (
 	// PipelineGate is one human.approval node: the Decide/CAS shapes
 	// (12 case 9, contract § 5.3, ADR-0023 § 9).
 	PipelineGate Pipeline = "conform-gate"
+	// PipelineOutputs is one process.exec reviewer that DECLARES
+	// `evidence: boolean` with `invalid_output` in its retriable errors: the
+	// § 7.1 C10 shape (a reply its own plan refuses, at the boundary).
+	PipelineOutputs Pipeline = "conform-outputs"
+	// PipelineUntil is a bounded `until` whose passWhen can never become
+	// true (maxIterations 3, one process.exec body node): the § 7.1 C7 shape
+	// — one node.scope.iteration per iteration, run failed|until_exhausted.
+	PipelineUntil Pipeline = "conform-until"
 	// PipelineSkip has a worker node gated false (when: false for every
 	// admitted input), its dependant, and one plain work node: the
 	// pending → skipped edge that contract § 1's
@@ -236,6 +244,12 @@ func ConformanceTests(t *testing.T, f Factory) {
 	t.Run("TwoWorkers_ClaimExactlyOneWins", func(t *testing.T) { testTwoClaimRace(t, f) })
 	t.Run("ReconcilerInterrupt_AppendOnly_LateCompleteRefused", func(t *testing.T) { testInterruptAndLateComplete(t, f) })
 	t.Run("Boundary_CompletePersistsEverythingOrNothing", func(t *testing.T) { testBoundaryAtomicity(t, f) })
+	t.Run("Boundary_DeclaredOutputsRefused_InvalidOutputAndRetry", func(t *testing.T) {
+		testDeclaredOutputsBoundary(t, f)
+	})
+	t.Run("Until_IterationEvents_AppendOncePerIteration_ExhaustedFailsRun", func(t *testing.T) {
+		testUntilIterationEventsOnce(t, f)
+	})
 	t.Run("Decide_AuthorizationRefusalAndVersionCAS", func(t *testing.T) { testDecideRefusalAndCAS(t, f) })
 	t.Run("Decide_DoubleDecideRefused", func(t *testing.T) { testDecideDouble(t, f) })
 	t.Run("Decide_ResumedRunIsRunningAndClaimable", func(t *testing.T) { testDecideResumesRun(t, f) })

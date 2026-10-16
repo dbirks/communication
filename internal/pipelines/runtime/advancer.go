@@ -903,21 +903,25 @@ func (ac *advanceCtx) advanceUntil(pn *compiler.Node, row *NodeExecution, scopeK
 		return fmt.Errorf("runtime: until %s names sub-scope %q, which the plan does not declare", pn.ID, pn.SubScope)
 	}
 	if row.Scope == nil {
-		row.Scope = &ScopeState{
-			Kind:         "until",
-			Iteration:    1,
-			Previous:     map[string]any{},
-			StartedAt:    ac.now,
-			CarryForward: configBool(pn, "carryForward"),
-		}
-		if err := ac.enterScope(sub.Key, childIdx(idx, pn.ID, 1), scopeKeyOf(pn.Path, idx, 1)); err != nil {
+		// No in-memory state means this transaction hydrated the row: re-derive
+		// the loop's position from the ledger rather than restarting it (§ 5.1
+		// step 1, ADR-0023 § 6).
+		st, err := ac.rederiveUntil(pn, row, &sub, idx)
+		if err != nil {
 			return err
 		}
-		ac.event(pevents.TypeNodeScopeStarted, row, "", pevents.NodeScopeStarted{
-			ProjectID: ac.st.Run.ProjectID, RunID: ac.st.Run.ID,
-			ScopeKey: scopeKeyOf(pn.Path, idx, 1), NodeInstanceKey: row.InstanceKey,
-			Kind: "until", Iteration: 1,
-		})
+		row.Scope = st
+		if err := ac.enterScope(sub.Key, childIdx(idx, pn.ID, st.Iteration),
+			scopeKeyOf(pn.Path, idx, st.Iteration)); err != nil {
+			return err
+		}
+		if !ac.scopeEventRecorded(row, pevents.TypeNodeScopeStarted, iterationScopeKey(pn, idx, st.Iteration)) {
+			ac.event(pevents.TypeNodeScopeStarted, row, "", pevents.NodeScopeStarted{
+				ProjectID: ac.st.Run.ProjectID, RunID: ac.st.Run.ID,
+				ScopeKey: iterationScopeKey(pn, idx, st.Iteration), NodeInstanceKey: row.InstanceKey,
+				Kind: "until", Iteration: st.Iteration,
+			})
+		}
 		ac.changed = true
 		return nil
 	}
@@ -953,13 +957,19 @@ func (ac *advanceCtx) advanceUntil(pn *compiler.Node, row *NodeExecution, scopeK
 		return ac.scopePredicateError(row, st, err)
 	}
 	truth := pass
-	st.Evidence = append(st.Evidence, IterationEvidence{Iteration: st.Iteration, PassWhenResult: &truth})
-	ac.event(pevents.TypeNodeScopeIteration, row, "", pevents.NodeScopeIteration{
-		ProjectID: ac.st.Run.ProjectID, RunID: ac.st.Run.ID,
-		ScopeKey: bodyKey, NodeInstanceKey: row.InstanceKey,
-		Iteration: st.Iteration, PassWhenResult: &truth,
-	})
-	ac.changed = true
+	// One node.scope.iteration per iteration, ever (§ 3 row 17). The journal is
+	// the record that an iteration closed, so a pass that re-walks rows another
+	// replica already settled appends no second copy.
+	closed := ac.iterationRecorded(row, st.Iteration)
+	if !closed {
+		st.Evidence = append(st.Evidence, IterationEvidence{Iteration: st.Iteration, PassWhenResult: &truth})
+		ac.event(pevents.TypeNodeScopeIteration, row, "", pevents.NodeScopeIteration{
+			ProjectID: ac.st.Run.ProjectID, RunID: ac.st.Run.ID,
+			ScopeKey: bodyKey, NodeInstanceKey: row.InstanceKey,
+			Iteration: st.Iteration, PassWhenResult: &truth,
+		})
+		ac.changed = true
+	}
 	if pass {
 		outs := map[string]any{"iterations": int64(st.Iteration)}
 		for k, v := range results {
@@ -970,8 +980,25 @@ func (ac *advanceCtx) advanceUntil(pn *compiler.Node, row *NodeExecution, scopeK
 	if st.Iteration >= sub.MaxIterations {
 		// Case 7: the bound is reached with the predicate never true. The
 		// scope FAILS with until_exhausted and the per-iteration evidence
-		// preserved — never a silent truncation.
-		return ac.failScope(row, "until_exhausted", "", &sub, bodyIdx)
+		// preserved — never a silent truncation. The cause is the ADVANCER's
+		// own named verdict, not a node's execution error, so it names the run
+		// too (§ 7.1 C7a reads failed_cause off `runs`, and run.failed carries
+		// the per-iteration evidence pointers, C7b) — the same treatment
+		// fanout_items_exceeded gets at § 6.
+		if err := ac.failScopeNamed(row, "until_exhausted", "", &sub, bodyIdx); err != nil {
+			return err
+		}
+		ev := ac.scopeEvidenceArtifacts(row, &sub, idx, st.Iteration)
+		if len(ev) == 0 {
+			ev = scopeEventEvidence(row.Scope)
+		}
+		if pn.Failure.OnExecutionError != "stop" {
+			// § 5.1 step 5: only a stop-policy node drags the run down with it.
+			// The scope still says until_exhausted on its own row and the
+			// author's continue/route arm decides the rest.
+			return nil
+		}
+		return ac.failRunWithEvidence("until_exhausted", "", row.InstanceKey, ev)
 	}
 	if st.CarryForward {
 		st.Previous = results
@@ -1792,11 +1819,17 @@ func (ac *advanceCtx) cascadeCancel() error {
 // failRun is the single place a run reaches 'failed': the cause is always
 // named (runs_terminal_cause's CHECK mirrored by MoveRun).
 func (ac *advanceCtx) failRun(cause, class, nodeKey string) error {
+	return ac.failRunWithEvidence(cause, class, nodeKey, nil)
+}
+
+// failRunWithEvidence is failRun for the arms that HAVE evidence to name: § 3
+// row 10's run.failed carries evidence_artifacts, which for a scope failure is
+// the per-iteration pointer set (§ 7.1 C7b), not a copy of the bytes.
+func (ac *advanceCtx) failRunWithEvidence(cause, class, nodeKey string, evidence []any) error {
 	run := ac.st.Run
 	if RunTerminal(run.Status) {
 		return nil
 	}
-	var evidence []any
 	var key string
 	if nodeKey != "" {
 		key = nodeKey

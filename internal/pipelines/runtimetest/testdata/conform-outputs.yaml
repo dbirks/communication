@@ -1,0 +1,40 @@
+# Conformant declared-outputs plan (docs/m4-contract.md § 7.1 C10, ADR-0022 § 4
+# rule 2): one process.exec reviewer whose DECLARED outputs say
+# `evidence: boolean`, with `invalid_output` inside its retry policy. The
+# suite's C10 arm answers a STRING for that field, so the boundary — not the
+# adapter and not the routing layer — owns the refusal, and the refusal must
+# cost an attempt and be retried per policy.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-outputs
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: review
+    kind: process.exec
+    retry:
+      maxAttempts: 2
+      backoff: {baseSeconds: 1, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted, invalid_output]
+    config:
+      executable: review
+    outputs:
+      type: object
+      required: [approved, evidence]
+      properties:
+        approved: {type: boolean}
+        # The reply the fixture answers is a string HERE: a boolean slot
+        # receiving a string is § 7.1 C10a's malformed reviewer reply.
+        evidence: {type: boolean}
+  resultBindings:
+    approved: ${{ nodes.review.outputs.approved }}

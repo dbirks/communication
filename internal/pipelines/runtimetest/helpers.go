@@ -1,6 +1,9 @@
 package runtimetest
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 )
 
@@ -13,4 +16,14 @@ func attemptByID(st *runtime.State, id string) *runtime.Attempt {
 		}
 	}
 	return nil
+}
+
+// encodeJSON renders a value for substring assertions. Failure messages quote
+// it so a reader sees the stored evidence verbatim instead of a Go dump.
+func encodeJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%#v", v)
+	}
+	return string(raw)
 }

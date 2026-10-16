@@ -315,17 +315,7 @@ func parsePlanShape(raw []byte) *planShape {
 }
 
 func (p *planShape) nodeConfig(scope, id string) map[string]any {
-	if p == nil {
-		return nil
-	}
-	var node *planShapeNode
-	for i := range p.Nodes {
-		n := &p.Nodes[i]
-		if n.ID == id && n.Scope == scope {
-			node = n
-			break
-		}
-	}
+	node := p.find(scope, id)
 	if node == nil {
 		return nil
 	}
@@ -354,6 +344,7 @@ func (p *planShape) nodeConfig(scope, id string) map[string]any {
 type planShapeNode struct {
 	ID             string `json:"id"`
 	Scope          string `json:"scope"`
+	Kind           string `json:"kind"`
 	ConfigBindings []struct {
 		Pointer  string   `json:"pointer"`
 		Position string   `json:"position"`
@@ -361,6 +352,35 @@ type planShapeNode struct {
 		Template string   `json:"template,omitempty"`
 		Literal  any      `json:"literal,omitempty"`
 	} `json:"configBindings,omitempty"`
+	// DeclaredOutputs is the node's own outputs JSON Schema — the boundary's
+	// validation source (ADR-0022 § 4 rule 2). Engine-shaped keys
+	// (exit_code/stdout_*) ride in the envelope alongside the payload, so an
+	// author who forbids unknown properties must declare them (§ 4 step 7).
+	DeclaredOutputs any `json:"outputs,omitempty"`
+}
+
+// nodeOutputs reads one plan node's declared outputs schema. A nil answer
+// means either no entry or a node that declares no schema, and both are "the
+// plan promises nothing about this envelope" — accepted, never invented.
+func (p *planShape) nodeOutputs(scope, id string) any {
+	n := p.find(scope, id)
+	if n == nil {
+		return nil
+	}
+	return n.DeclaredOutputs
+}
+
+func (p *planShape) find(scope, id string) *planShapeNode {
+	if p == nil {
+		return nil
+	}
+	for i := range p.Nodes {
+		n := &p.Nodes[i]
+		if n.ID == id && n.Scope == scope {
+			return n
+		}
+	}
+	return nil
 }
 
 // configRelPath maps a plan pointer like /spec/nodes/3/config/argv/0 to the
@@ -516,6 +536,20 @@ func (s *AttemptStore) CompleteAttempt(ctx context.Context, c worker.AttemptClai
 		return fmt.Errorf("postgres: cannot complete attempt %s without outputs (01 invariant 4): %w",
 			st.AttemptID, ErrConflict)
 	}
+	// ADR-0022 § 4 rule 2 / contract § 4 step 8: a produced envelope is
+	// JSON-Schema-validated against its node's DECLARED outputs BEFORE any of it
+	// becomes visible — this write, not an adapter, owns the guarantee, so
+	// process.exec, agent.acp and model.chat are refused identically (C10c). A
+	// refused reply closes the attempt failed with its schema locations in
+	// output_errors and carries NO outputs, and the node returns to ready for
+	// the advancer's policy-driven retry.
+	rej, err := s.declaredOutputRejection(ctx, st, outputs)
+	if err != nil {
+		return err
+	}
+	if rej != nil {
+		return s.rejectOutputs(ctx, st, rej)
+	}
 	raw, err := json.Marshal(outputs)
 	if err != nil {
 		return fmt.Errorf("postgres: encode outputs for attempt %s: %w", st.AttemptID, err)
@@ -575,6 +609,81 @@ func (s *AttemptStore) CompleteAttempt(ctx context.Context, c worker.AttemptClai
 						InputsDigest:    ckpt.InputsDigest, OutputsDigest: ckpt.OutputsDigest,
 						RepoStates: repoStates, ArtifactRefs: refs, VolumeID: ckpt.VolumeID,
 					},
+				}},
+		},
+	}))
+}
+
+// declaredOutputRejection reads the attempt's node out of its run's PINNED
+// plan_snapshot (the same immutable source § 4 step 2's claim hydrates Config
+// from) and answers whether the completion envelope violates the outputs schema
+// that node declares. nil means ACCEPTED: the node declares no schema, the
+// snapshot is a hand-seeded placeholder with no entry for the node, or the
+// envelope satisfies the schema. A non-nil error is the unusable-schema arm —
+// the boundary refuses to answer either way rather than closing a success it
+// could not check.
+func (s *AttemptStore) declaredOutputRejection(ctx context.Context, st AttemptClaim, outputs any) (*runtime.OutputRejection, error) {
+	if s.Runs == nil || s.Runs.Pool == nil {
+		return nil, errors.New("postgres: attempt store has no pool to read the pinned plan")
+	}
+	var (
+		snapshot []byte
+		nodeID   string
+		scopeKey string
+		execLoc  string
+	)
+	if err := s.Runs.Pool.QueryRow(ctx, `
+		SELECT ne.node_id, ne.scope_key, ne.execution_location, COALESCE(r.plan_snapshot, '{}'::jsonb)::text
+		FROM node_executions ne JOIN runs r ON r.id = ne.run_id
+		WHERE ne.id = $1::uuid`, st.NodeExecutionID).Scan(&nodeID, &scopeKey, &execLoc, &snapshot); err != nil {
+		if isNoRows(err) {
+			// No node row: FinishAttempt's own fence is the place that says so.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("postgres: read the pinned plan of attempt %s: %w", st.AttemptID, err)
+	}
+	if execLoc != "" && execLoc != "worker" {
+		// A control-plane row reaching this write is the fence's business, not
+		// the schema check's — the engine owns that kind's outputs (§ 4 step 8).
+		return nil, nil
+	}
+	if runtime.EmptyPlanSnapshot(snapshot) {
+		return nil, nil
+	}
+	plan := parsePlanShape(snapshot)
+	scope := scopePathNoIndexes(scopeKey)
+	declared := plan.nodeOutputs(scope, nodeID)
+	if declared == nil {
+		// A node with no entry in the snapshot, or one that declares no outputs
+		// schema: the plan promises nothing about this envelope and the boundary
+		// invents no promise to check it against.
+		return nil, nil
+	}
+	rej, err := runtime.CheckNodeOutputs("\x00attempt\x00"+scope+"\x00"+nodeID, st.NodeInstanceKey, declared, outputs)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: attempt %s cannot be validated against its plan: %w", st.AttemptID, err)
+	}
+	return rej, nil
+}
+
+// rejectOutputs closes the attempt as the execution error it is (invalid_output,
+// never a business verdict) with its JSON-Schema locations as the evidence and
+// NOTHING else: no outputs on the attempt, none on the node, no checkpoint, no
+// node.attempt.completed, and the node back to ready so the advancer decides
+// retry vs terminal from the retry policy (ADR-0023 § 5, contract § 4 step 8).
+func (s *AttemptStore) rejectOutputs(ctx context.Context, st AttemptClaim, rej *runtime.OutputRejection) error {
+	errs := rej.Entries()
+	detail := attemptBounded(rej.Error(), 512)
+	return attemptErrStaleLease(s.Runs.FinishAttempt(ctx, st, AttemptFinish{
+		Status: "failed", ErrorClass: runtime.ErrInvalidOutput, Detail: detail,
+		OutputErrors: json.RawMessage(marshalOrEmptyArray(errs)),
+		NodeStatus:   "ready",
+		Events: []RunEvent{
+			{Type: string(pevents.TypeNodeAttemptFailed), ActorKind: events.ActorKindWorker, ActorID: st.WorkerID,
+				Payload: pevents.NodeAttemptFailed{
+					ProjectID: st.ProjectID, RunID: st.RunID, NodeInstanceKey: st.NodeInstanceKey,
+					AttemptNumber: st.AttemptNumber, ErrorClass: runtime.ErrInvalidOutput,
+					Detail: detail, OutputErrors: errs,
 				}},
 		},
 	}))

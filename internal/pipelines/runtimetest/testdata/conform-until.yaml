@@ -1,0 +1,43 @@
+# Bounded `until` that can never pass (docs/m4-contract.md § 7.1 C7, 12 case 7):
+# three iterations, one process.exec body node whose honest answer is always
+# `approved: false`, so passWhen stays false to the bound. The suite drives it
+# through BOTH stores; only the Postgres adapter re-hydrates the loop from the
+# ledger on every advance, which is where the duplicated
+# `node.scope.iteration` appends (21 journal rows for 3 iterations, § 5.1
+# step 1 / ADR-0023 § 6) showed up live.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: conform-until
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal: {type: string, minLength: 1}
+  policies:
+    maxConcurrentNodes: 4
+    maxDurationSeconds: 3600
+    maxNodeExecutions: 50
+    cancelPolicy: cascade
+  nodes:
+  - id: build
+    kind: until
+    config:
+      maxIterations: 3
+      passWhen: nodes.review.outputs.approved == true
+      body:
+        nodes:
+        - id: review
+          kind: process.exec
+          config:
+            executable: review
+          outputs:
+            type: object
+            required: [approved]
+            properties:
+              approved: {type: boolean}
+    outputs:
+      type: object
+      properties:
+        iterations: {type: integer}

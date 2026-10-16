@@ -31,8 +31,16 @@ func TestSampleLoopBoundExhausted(t *testing.T) {
 	}
 	dv.pump(200)
 	st := dv.state()
-	if st.Run.Status != runtime.RunFailed || st.Run.FailedCause != "node_execution_failed:/build_until_verified" {
-		t.Fatalf("run = %s/%s, want failed / node_execution_failed:/build_until_verified", st.Run.Status, st.Run.FailedCause)
+	// Contract § 7.1 C7a reads the cause off `runs.failed_cause`, and line 1137
+	// names it `until_exhausted`: the exhaustion is the advancer's own verdict,
+	// so it names the run instead of being masked as an execution error (the
+	// live gate's C7a FAIL: 'node_execution_failed:/build_until_verified').
+	if st.Run.Status != runtime.RunFailed || st.Run.FailedCause != "until_exhausted" {
+		t.Fatalf("run = %s/%s, want failed / until_exhausted", st.Run.Status, st.Run.FailedCause)
+	}
+	rf := lastPayload(t, st, pevents.TypeRunFailed)
+	if ev, _ := rf["evidence_artifacts"].([]any); len(ev) == 0 {
+		t.Errorf("run.failed evidence_artifacts empty, want the per-iteration pointers (§ 7.1 C7b)")
 	}
 	body := 0
 	for _, n := range st.Nodes {

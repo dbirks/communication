@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -281,7 +282,14 @@ func (ms *MemStore) Complete(runID, attemptID, workerID string, token int64,
 	if ms.Adv != nil && ms.Adv.Prog != nil {
 		if pn := ms.Adv.Prog.PlanNode(n.scopeRef(), n.NodeID); pn != nil {
 			if verr := ms.Adv.Prog.ValidateOutputs(n, pn, outputs); verr != nil {
-				return ms.failLocked(st, runID, a, n, workerID, token, ErrInvalidOutput, verr.Error(), nil)
+				var rej *OutputRejection
+				if errors.As(verr, &rej) {
+					return ms.failLocked(st, runID, a, n, workerID, token, ErrInvalidOutput,
+						verr.Error(), rej.Entries())
+				}
+				return ms.failLocked(st, runID, a, n, workerID, token, ErrInvalidOutput, verr.Error(),
+					[]any{map[string]any{"keyword": "validation_error", "location": "#",
+						"instance_location": "/", "message": verr.Error()}})
 			}
 		}
 	}

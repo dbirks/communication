@@ -15,6 +15,10 @@ var (
 	gateYAML []byte
 	//go:embed testdata/conform-skip.yaml
 	skipYAML []byte
+	//go:embed testdata/conform-outputs.yaml
+	outputsYAML []byte
+	//go:embed testdata/conform-until.yaml
+	untilYAML []byte
 )
 
 func pipelineYAML(name Pipeline) []byte {
@@ -27,6 +31,10 @@ func pipelineYAML(name Pipeline) []byte {
 		return gateYAML
 	case PipelineSkip:
 		return skipYAML
+	case PipelineOutputs:
+		return outputsYAML
+	case PipelineUntil:
+		return untilYAML
 	}
 	return nil
 }
