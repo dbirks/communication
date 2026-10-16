@@ -1862,6 +1862,43 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/assistant/ask": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Ask one question of the caller's own read view (read-only tools)
+     * @description ADR-0034's broker. The caller's question plus the UI context is answered in ONE bounded turn: at most 4 completions and 8 tool calls against a closed, hard-coded registry of read-only tools (`project.list`, `run.list`, `run.nodes`, `approval.pending`, `pipeline.revisions`, `palette.search`). Every tool is the store method that already serves the matching route, called with the caller's own identity, so the answer can never contain a row the caller could not read at that route — and a resource outside the caller's memberships is refused with `ok: false` and a stable `reason` and **no name** (the 404 rule of ADR-0014 § 3 applies to the answer text too).
+     *     * Tool output is untrusted DATA: it returns to the model inside a
+     *       user-role envelope, never as a system instruction, and the model has
+     *       no capability to write anything.
+     *     * `links` are what the UI renders as buttons. Every `href` was produced
+     *       by a tool from rows the caller may read AND matched against the app's
+     *       own route list; a model-invented or off-allowlist URL is dropped
+     *       before the response is written (the drop is counted, not returned).
+     *     * `answer_markdown` is rendered sanitized (ADR-0020's viewer rules),
+     *       never as the app's origin.
+     *     * Nothing is stored: no table, no transcript, no action trace. A reload
+     *       loses the turn, and there is no assistant history endpoint to build.
+     *     * The request body is secret-scanned before a single byte is sent
+     *       (ADR-0018); a match is `400` `secret_in_request` with zero egress.
+     *     * With `COMMUNICATION_ASSISTANT_BASE_URL` unset the deployment has no
+     *       assistant at all: `503` `assistant_not_configured`, and the palette
+     *       stays jump-only. Model unreachable is `503`, a deadline is `504`, a
+     *       cap hit is `503` — each naming the cause in `degraded`.
+     */
+    post: operations["askAssistant"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3870,6 +3907,90 @@ export interface components {
       workers: components["schemas"]["SchedulerWorkerLoad"][];
     };
     EventEnvelope: components["schemas"]["event-envelope.schema"];
+    /**
+     * AssistantAsk
+     * @description Request body for `askAssistant`. `context` is what the UI knows where the question was asked; every member of it is untrusted input, so an off-allowlist `route` or palette `to` contributes nothing rather than being forwarded to the model.
+     */
+    AssistantAsk: {
+      question: string;
+      context?: {
+        /** @description The UI's current route, so "this run" means the run on screen. */
+        route?: string;
+        /** Format: uuid */
+        project_id?: string;
+        /** @description The client's own jump index (the `palette.search` corpus). */
+        palette_index?: components["schemas"]["AssistantPaletteEntry"][];
+      };
+    };
+    /** AssistantPaletteEntry */
+    AssistantPaletteEntry: {
+      label?: string;
+      secondary?: string;
+      /** @description An app route. Server-validated against the route allowlist; anything else is dropped before it reaches the model. */
+      to?: string;
+    };
+    /**
+     * AssistantAnswer
+     * @description The one-turn answer. Nothing here is persisted.
+     */
+    AssistantAnswer: {
+      /** @description Short markdown, sanitized client-side, never rendered as the app origin. */
+      answer_markdown: string;
+      links: components["schemas"]["AssistantLink"][];
+      /** @description Transparency, not a replay log: the tool's arguments and whether it ran. A refused call carries `reason` and no data. */
+      tool_calls: components["schemas"]["AssistantToolCall"][];
+      /** @description Correlation label for this response only. v1 stores nothing, so it addresses no row and cannot be re-read. */
+      assistant_turn_id: string;
+      /** @description Always null on a 200; the name of the failure on a 5xx problem document. */
+      degraded?: string | null;
+    };
+    /** AssistantLink */
+    AssistantLink: {
+      label: string;
+      /** @description Same-origin app route only (`/`, `/inbox`, `/library`, `/library/{id}`, `/agents`, `/ops`, `/projects/{id}`, `/projects/{id}/runs`, `/projects/{id}/runs/{runId}`, `/projects/{id}/approvals`, `/projects/{id}/pipelines`, `/projects/{id}/artifacts`, `/projects/{id}/settings`, `/projects/{id}/conversations/{id}`, `/artifacts/{id}`). A tool-produced href outside that list is dropped and counted, never returned. */
+      href: string;
+    };
+    /** AssistantToolCall */
+    AssistantToolCall: {
+      /**
+       * @description One of the registry's six read-only tools. A name the model asked for that is outside the registry is reported under its own record with `ok: false` — see `reason`.
+       * @enum {string}
+       */
+      name:
+        | "project.list"
+        | "run.list"
+        | "run.nodes"
+        | "approval.pending"
+        | "pipeline.revisions"
+        | "palette.search"
+        | "unknown_tool"
+        | "unnamed";
+      /** @description The arguments the call was made with, after validation. */
+      args?: {
+        [key: string]: string;
+      };
+      ok: boolean;
+      /**
+       * @description Present only when `ok` is false. `not_found` is the 404 rule: the caller may not know the resource exists, and the refusal carries no name. `write_not_allowed` is a mutation the model asked for — v1 has no write tool at all.
+       * @enum {string}
+       */
+      reason?:
+        | "unknown_tool"
+        | "write_not_allowed"
+        | "bad_arguments"
+        | "not_found"
+        | "forbidden"
+        | "unavailable"
+        | "tool_cap_exceeded";
+    };
+    /**
+     * AssistantProblem
+     * @description The `Problem` shape plus `degraded`, so the UI branches on a code: the palette keeps the jump list working and shows one inline line.
+     */
+    AssistantProblem: components["schemas"]["Problem"] & {
+      /** @description Stable cause: `assistant_not_configured`, `model_unreachable`, `model_timeout`, `malformed_completion`, `model_call_cap_exceeded`, `tool_cap_exceeded` or `secret_in_request`. */
+      degraded: string;
+    };
     /**
      * Communication durable event envelope
      * @description Envelope for every row of the `domain_events` journal and every `data:` frame of the project SSE stream (communication-spec/09-api-events-data.md, 'Durable event envelope'). Identifiers are Postgres `uuid` values rendered as strings; timestamps are RFC 3339 in UTC. `global_seq` is the monotonic replay cursor used for SSE `Last-Event-ID` / `?after=`. The envelope is stable; the shape of `payload` is defined per event `type` and per `schema_version` by the event type's own schema.
@@ -6839,6 +6960,60 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+    };
+  };
+  askAssistant: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssistantAsk"];
+      };
+    };
+    responses: {
+      /** @description The answer, the tool calls that produced it and the jumps it justifies. Arrives whole — v1 has no stream. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantAnswer"];
+        };
+      };
+      /** @description Missing/oversized question, a malformed body, a client-supplied `tool` field (the registry is closed), or a request body carrying secret-shaped material (`degraded: secret_in_request`). */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      /** @description `assistant_not_configured` (the feature is absent on this deployment), `model_unreachable`, or a cap hit (`model_call_cap_exceeded` / `tool_cap_exceeded`). The UI keeps the jump list on screen with one inline line. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
+      /** @description The endpoint did not answer within its arm (`degraded` is `model_timeout`). */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
     };
   };
 }

@@ -188,6 +188,11 @@ tags:
       Durable pipeline gates (`approval_requests`): decided through the API by
       designated approvers at decision time (ADR-0023 § 9, `12` case 9). Not
       the ACP permission prompts of M2.
+  - name: assistant
+    description: >
+      The read-only in-app assistant behind Ctrl K (ADR-0034): one question, a
+      bounded turn of READ-ONLY tools that are the same store reads the routes
+      above serve, issued as the caller. No write tool, no stored transcript.
 paths:
   /api/v1/system/health:
     get:
@@ -3775,6 +3780,90 @@ paths:
                 $ref: "#/components/schemas/SchedulerStatus"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/assistant/ask:
+    post:
+      operationId: askAssistant
+      tags: [assistant]
+      summary: Ask one question of the caller's own read view (read-only tools)
+      description: >
+        ADR-0034's broker. The caller's question plus the UI context is answered
+        in ONE bounded turn: at most 4 completions and 8 tool calls against a
+        closed, hard-coded registry of read-only tools (`project.list`,
+        `run.list`, `run.nodes`, `approval.pending`, `pipeline.revisions`,
+        `palette.search`). Every tool is the store method that already serves
+        the matching route, called with the caller's own identity, so the answer
+        can never contain a row the caller could not read at that route — and a
+        resource outside the caller's memberships is refused with `ok: false`
+        and a stable `reason` and **no name** (the 404 rule of ADR-0014 § 3
+        applies to the answer text too).
+
+        * Tool output is untrusted DATA: it returns to the model inside a
+          user-role envelope, never as a system instruction, and the model has
+          no capability to write anything.
+        * `links` are what the UI renders as buttons. Every `href` was produced
+          by a tool from rows the caller may read AND matched against the app's
+          own route list; a model-invented or off-allowlist URL is dropped
+          before the response is written (the drop is counted, not returned).
+        * `answer_markdown` is rendered sanitized (ADR-0020's viewer rules),
+          never as the app's origin.
+        * Nothing is stored: no table, no transcript, no action trace. A reload
+          loses the turn, and there is no assistant history endpoint to build.
+        * The request body is secret-scanned before a single byte is sent
+          (ADR-0018); a match is `400` `secret_in_request` with zero egress.
+        * With `COMMUNICATION_ASSISTANT_BASE_URL` unset the deployment has no
+          assistant at all: `503` `assistant_not_configured`, and the palette
+          stays jump-only. Model unreachable is `503`, a deadline is `504`, a
+          cap hit is `503` — each naming the cause in `degraded`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantAsk"
+      responses:
+        "200":
+          description: >
+            The answer, the tool calls that produced it and the jumps it
+            justifies. Arrives whole — v1 has no stream.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantAnswer"
+        "400":
+          description: >
+            Missing/oversized question, a malformed body, a client-supplied
+            `tool` field (the registry is closed), or a request body carrying
+            secret-shaped material (`degraded: secret_in_request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: >
+            `assistant_not_configured` (the feature is absent on this
+            deployment), `model_unreachable`, or a cap hit
+            (`model_call_cap_exceeded` / `tool_cap_exceeded`). The UI keeps the
+            jump list on screen with one inline line.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "504":
+          description: "The endpoint did not answer within its arm (`degraded` is `model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
 
 components:
   securitySchemes:
@@ -7859,3 +7948,145 @@ components:
             $ref: "#/components/schemas/SchedulerWorkerLoad"
     EventEnvelope:
       $ref: ./schemas/event-envelope.schema.json
+    AssistantAsk:
+      title: AssistantAsk
+      description: >
+        Request body for `askAssistant`. `context` is what the UI knows where the
+        question was asked; every member of it is untrusted input, so an
+        off-allowlist `route` or palette `to` contributes nothing rather than
+        being forwarded to the model.
+      type: object
+      required: [question]
+      additionalProperties: false
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        context:
+          type: object
+          additionalProperties: false
+          properties:
+            route:
+              type: string
+              maxLength: 2000
+              description: The UI's current route, so "this run" means the run on screen.
+            project_id:
+              type: string
+              format: uuid
+            palette_index:
+              type: array
+              maxItems: 64
+              description: The client's own jump index (the `palette.search` corpus).
+              items:
+                $ref: "#/components/schemas/AssistantPaletteEntry"
+    AssistantPaletteEntry:
+      title: AssistantPaletteEntry
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          maxLength: 200
+        secondary:
+          type: string
+          maxLength: 200
+        to:
+          type: string
+          maxLength: 2000
+          description: >
+            An app route. Server-validated against the route allowlist; anything
+            else is dropped before it reaches the model.
+    AssistantAnswer:
+      title: AssistantAnswer
+      description: The one-turn answer. Nothing here is persisted.
+      type: object
+      required: [answer_markdown, links, tool_calls, assistant_turn_id]
+      properties:
+        answer_markdown:
+          type: string
+          description: Short markdown, sanitized client-side, never rendered as the app origin.
+        links:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/AssistantLink"
+        tool_calls:
+          type: array
+          maxItems: 8
+          description: >
+            Transparency, not a replay log: the tool's arguments and whether it
+            ran. A refused call carries `reason` and no data.
+          items:
+            $ref: "#/components/schemas/AssistantToolCall"
+        assistant_turn_id:
+          type: string
+          description: >
+            Correlation label for this response only. v1 stores nothing, so it
+            addresses no row and cannot be re-read.
+        degraded:
+          type: ["string", "null"]
+          description: Always null on a 200; the name of the failure on a 5xx problem document.
+    AssistantLink:
+      title: AssistantLink
+      type: object
+      required: [label, href]
+      properties:
+        label:
+          type: string
+          maxLength: 200
+        href:
+          type: string
+          description: >
+            Same-origin app route only (`/`, `/inbox`, `/library`, `/library/{id}`,
+            `/agents`, `/ops`, `/projects/{id}`, `/projects/{id}/runs`,
+            `/projects/{id}/runs/{runId}`, `/projects/{id}/approvals`,
+            `/projects/{id}/pipelines`, `/projects/{id}/artifacts`,
+            `/projects/{id}/settings`, `/projects/{id}/conversations/{id}`,
+            `/artifacts/{id}`). A tool-produced href outside that list is dropped
+            and counted, never returned.
+    AssistantToolCall:
+      title: AssistantToolCall
+      type: object
+      required: [name, ok]
+      properties:
+        name:
+          type: string
+          enum: [project.list, run.list, run.nodes, approval.pending, pipeline.revisions, palette.search,
+            unknown_tool, unnamed]
+          description: >
+            One of the registry's six read-only tools. A name the model asked for
+            that is outside the registry is reported under its own record with
+            `ok: false` — see `reason`.
+        args:
+          type: object
+          description: The arguments the call was made with, after validation.
+          additionalProperties:
+            type: string
+        ok:
+          type: boolean
+        reason:
+          type: string
+          enum: [unknown_tool, write_not_allowed, bad_arguments, not_found, forbidden, unavailable, tool_cap_exceeded]
+          description: >
+            Present only when `ok` is false. `not_found` is the 404 rule: the
+            caller may not know the resource exists, and the refusal carries no
+            name. `write_not_allowed` is a mutation the model asked for — v1 has
+            no write tool at all.
+    AssistantProblem:
+      title: AssistantProblem
+      description: >
+        The `Problem` shape plus `degraded`, so the UI branches on a code: the
+        palette keeps the jump list working and shows one inline line.
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [degraded]
+          properties:
+            degraded:
+              type: string
+              description: >
+                Stable cause: `assistant_not_configured`, `model_unreachable`,
+                `model_timeout`, `malformed_completion`,
+                `model_call_cap_exceeded`, `tool_cap_exceeded` or
+                `secret_in_request`.

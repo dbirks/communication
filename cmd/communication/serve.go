@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/api/auth"
 	"github.com/dbirks/communication/internal/artifacts"
+	"github.com/dbirks/communication/internal/assistant"
 	"github.com/dbirks/communication/internal/integrations/github"
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 	"github.com/dbirks/communication/internal/secrets"
@@ -112,6 +113,27 @@ environment:
                                         the stack silently cross-verifying
                                         nothing.
 
+  COMMUNICATION_ASSISTANT_BASE_URL      OpenAI-compatible server root for the
+                                        in-app assistant (ADR-0034). UNSET means
+                                        the assistant is absent: POST
+                                        /api/v1/assistant/ask answers 503
+                                        assistant_not_configured and the palette
+                                        stays jump-only. NOTE: setting it makes
+                                        THIS replica egress app content to a third
+                                        party (the question, the route on screen
+                                        and the caller-visible rows a read tool
+                                        returns); an operator who must not let
+                                        content leave the host leaves it unset.
+                                        Must be an http(s) root with no credentials,
+                                        query or fragment — anything else is a
+                                        startup refusal.
+  COMMUNICATION_ASSISTANT_API_KEY       /…_API_KEY_FILE
+                                        bearer token for that endpoint. Never
+                                        logged, never placed in a prompt; the _FILE
+                                        form is trimmed of trailing whitespace.
+  COMMUNICATION_ASSISTANT_MODEL         model name to send (default
+                                        "qwen3-8-flash-next", ADR-0034).
+
 migrations are applied separately: communication migrate up
 `
 
@@ -172,6 +194,16 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		// A tick cadence the process cannot parse must be a startup refusal,
 		// not a silent fallback to the default: the operator chose it.
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	assistantCfg, err := serveAssistantConfig(os.Getenv)
+	if err != nil {
+		// ADR-0034 gives serve a new egress site, so the endpoint it points at is
+		// validated at startup with the worker's own rules: an operator who typed
+		// an unusable URL meant to configure egress, and silently running with no
+		// assistant would hide that. An unset base URL is not an error — it is the
+		// feature being absent.
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
@@ -241,6 +273,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		UI:        webUI,
 		Logger:    log,
 		M3:        m3,
+		Assistant: assistantCfg,
 	})
 	if err != nil {
 		stop()
@@ -448,6 +481,12 @@ type serveStackDeps struct {
 	// due rows. Zero means the 30 s default.
 	ScheduleTick time.Duration
 
+	// Assistant is the resolved COMMUNICATION_ASSISTANT_* egress triple
+	// (serveAssistantConfig). The zero value keeps the feature absent: the ask
+	// route answers 503 assistant_not_configured and the palette stays jump-only
+	// (ADR-0034 Migration/rollback: unset = feature absent).
+	Assistant serveAssistant
+
 	// scheduleTickRunner overrides the schedule ticker loop; nil means
 	// production's runScheduleTicker over a postgres.ScheduleStore. Like
 	// m4DriverRunner, it exists so a test can observe whether the stack
@@ -528,6 +567,43 @@ func serveScheduleTick(getenv func(string) string) (time.Duration, error) {
 		return 0, fmt.Errorf("%s must be positive, got %s", envScheduleTick, d)
 	}
 	return d, nil
+}
+
+// serveAssistant is the parsed COMMUNICATION_ASSISTANT_* triple (ADR-0034).
+// Separate names from the worker's COMMUNICATION_MODEL_CHAT_* on purpose: one
+// process's endpoint and cost budget must not silently become another's.
+type serveAssistant struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
+// serveAssistantConfig resolves the assistant's egress. An unset base URL is
+// not a failure — it is the honest absence, and the ask route says so. A set but
+// malformed one is a startup refusal, with the worker's rules applied verbatim
+// (http(s) root, no credentials in the URL). The key is read from
+// COMMUNICATION_ASSISTANT_API_KEY or its _FILE and is never logged: no line here
+// prints it, and the broker only ever puts it in a request header.
+func serveAssistantConfig(getenv func(string) string) (serveAssistant, error) {
+	var out serveAssistant
+	if raw := strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_MODEL")); raw != "" {
+		out.Model = raw
+	} else {
+		out.Model = assistant.DefaultModel
+	}
+	out.BaseURL = strings.TrimRight(strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_BASE_URL")), "/")
+	out.APIKey = strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_API_KEY"))
+	if file := strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_API_KEY_FILE")); out.APIKey == "" && file != "" {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return out, fmt.Errorf("COMMUNICATION_ASSISTANT_API_KEY_FILE %q is unreadable: %v", file, err)
+		}
+		out.APIKey = string(trimSecret(raw))
+	}
+	if err := (assistant.Config{BaseURL: out.BaseURL}).Validate(); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // scheduleTicker is the slice of the schedule store the ticker loop needs —
@@ -726,6 +802,23 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
 	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool})
+	// ADR-0034's read-only assistant: one route, mounted unconditionally and
+	// honest about being unconfigured (503 assistant_not_configured). Its tools
+	// are the very store reads mounted above, each issued with the CALLER's own
+	// identity — the assistant holds no handle it does not pass a Caller to, and
+	// the narrow read interfaces in api/assistant.go expose no write method.
+	api.RegisterAssistant(handler, api.AssistantDeps{
+		Projects:  apiProjects,
+		Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+		Approvals: postgres.APIApprovalStore{R: m4Runtime},
+		Pipelines: postgres.APIPipelineStore{S: pipelineStore},
+		Profiles:  apiConversations,
+		Config: api.AssistantConfig{
+			BaseURL: d.Assistant.BaseURL,
+			APIKey:  d.Assistant.APIKey,
+			Model:   d.Assistant.Model,
+		},
+	})
 	api.RegisterSandbox(handler,
 		postgres.APITurnSandboxStore{Pool: d.Pool},
 		postgres.APISystemSandboxStore{
