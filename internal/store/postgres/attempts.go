@@ -468,13 +468,13 @@ type AttemptFinish struct {
 	NodeFailedCause string
 	Checkpoint      *NewCheckpoint
 	Events          []RunEvent
-	// CloseTurn optionally closes the paired agent turn as interrupted in the
-	// same transaction (worker shutdown arm; the turn must never outlive the
-	// attempt that owns it). When the attempt row carries a conversation the
-	// matching conversation.turn.interrupted is journalled beside the row,
-	// mapped onto M2's closed reason vocabulary (contract § 4 step 12); a
-	// reason with no M2 word closes the row only, because the wave that owns
-	// that vocabulary (ADR-0016 § 5's takeover machinery) also owns its event.
+	// CloseTurnReason names why an INTERRUPTED attempt stopped, and is the
+	// reason carried into the paired turn's conversation.turn.interrupted after
+	// the same M2 vocabulary mapping as before (a reason with no M2 word closes
+	// the row only, because the wave that owns that vocabulary — ADR-0016 § 5's
+	// takeover machinery — also owns its event). Every terminal write closes
+	// its paired turn regardless of this field (closeAttemptTurnTx): the turn
+	// must never outlive the attempt that owns it, in any arm.
 	CloseTurnReason string
 }
 
@@ -549,50 +549,11 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 				return err
 			}
 		}
-		if in.CloseTurnReason != "" {
-			var closedTurn, closedConv, turnOrg, turnProject string
-			err := tx.QueryRow(ctx, `
-				SELECT t.id::text, COALESCE(t.conversation_id::text, ''),
-				       r.organization_id::text, r.project_id::text
-				FROM conversation_turns t
-				JOIN attempts a2 ON a2.id = t.node_attempt_id
-				JOIN runs r ON r.id = a2.run_id
-				WHERE t.node_attempt_id = $1::uuid AND t.status IN ('queued', 'leased', 'running')`,
-				c.AttemptID).Scan(&closedTurn, &closedConv, &turnOrg, &turnProject)
-			switch {
-			case errors.Is(err, pgx.ErrNoRows):
-				// No live paired turn: there is nothing to close or journal.
-			case err != nil:
-				return fmt.Errorf("postgres: find paired turn for attempt %s: %w", c.AttemptID, err)
-			default:
-				if _, err := tx.Exec(ctx, `
-					UPDATE conversation_turns
-					SET status = 'interrupted', finished_at = now(), stop_reason = NULL
-					WHERE id = $1::uuid`, closedTurn); err != nil {
-					return fmt.Errorf("postgres: close paired turn for attempt %s: %w", c.AttemptID, err)
-				}
-				// § 4 step 12 pairs node.attempt.interrupted with
-				// conversation.turn.interrupted in the SAME transaction. The
-				// turn's reason vocabulary is M2's closed set (internal/events
-				// owns it); a reason with no M2 word (e.g. human_takeover,
-				// whose machinery journals its own pair) closes the row only.
-				if reason, ok := attemptTurnInterruptReason(in.CloseTurnReason); ok && closedConv != "" {
-					if _, err := trnAppendTx(ctx, tx, turnOrg, turnProject, closedConv, worker.TurnEvent{
-						Type:      events.TypeConversationTurnInterrupted,
-						ActorKind: events.ActorKindWorker,
-						ActorID:   c.WorkerID,
-						Payload: events.TurnInterruptedPayload{
-							ConversationID: closedConv,
-							TurnID:         closedTurn,
-							WorkerID:       c.WorkerID,
-							FencingToken:   c.FencingToken,
-							Reason:         reason,
-						},
-					}); err != nil {
-						return err
-					}
-				}
-			}
+		// § 4 step 10 pairs with step 6's turn row and step 12's event: the
+		// attempt's terminal row and its turn's terminal write are ONE
+		// transaction, in every arm.
+		if err := closeAttemptTurnTx(ctx, tx, c, in); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE workers SET active_attempts = active_attempts - 1
@@ -606,6 +567,115 @@ func (s *RunStore) FinishAttempt(ctx context.Context, c AttemptClaim, in Attempt
 		}
 		return nil
 	})
+}
+
+// ---------------------------------------------------------- paired turn
+
+// attemptTurnCloseShape is the paired turn's honest terminal write derived from
+// the attempt's own terminal write: status, the stop_reason column value, and
+// the conversation.turn.<terminal> event it owes (contract § 4 step 12).
+type attemptTurnCloseShape struct {
+	Status    string
+	Stop      string // "" -> NULL (the DB forbids a stop reason on interrupted)
+	EventType string
+	Payload   any
+	Journal   bool // false: close the row only, the vocabulary belongs elsewhere
+}
+
+// attemptTurnCloseFor maps an attempt terminal onto the turn terminal. The
+// turn's status/stop-reason/event vocabulary is M2's (internal/events owns it);
+// succeeded is the only rename (attempt 'succeeded' -> turn 'completed'). No
+// caller carries the harness ACP stopReason across the attempt boundary
+// (internal/worker attemptport.go's CompleteAttempt has no such parameter), so
+// completed/failed/cancelled write a NULL stop_reason rather than inventing one
+// — the CHECK only forbids a stop reason on 'interrupted'.
+func attemptTurnCloseFor(c AttemptClaim, turnID, convID string, in AttemptFinish) attemptTurnCloseShape {
+	switch in.Status {
+	case "succeeded":
+		return attemptTurnCloseShape{Status: events.TurnStatusCompleted, Journal: true,
+			EventType: events.TypeConversationTurnCompleted,
+			Payload: events.TurnCompletedPayload{
+				ConversationID: convID, TurnID: turnID, WorkerID: c.WorkerID,
+				FencingToken: c.FencingToken,
+			}}
+	case "failed":
+		return attemptTurnCloseShape{Status: events.TurnStatusFailed, Journal: true,
+			EventType: events.TypeConversationTurnFailed,
+			Payload: events.TurnFailedPayload{
+				ConversationID: convID, TurnID: turnID, WorkerID: c.WorkerID,
+				FencingToken: c.FencingToken, Message: attemptBounded(in.Detail, 512),
+			}}
+	case "cancelled":
+		return attemptTurnCloseShape{Status: events.TurnStatusCancelled, Journal: true,
+			EventType: events.TypeConversationTurnCancelled,
+			Payload: events.TurnCancelledPayload{
+				ConversationID: convID, TurnID: turnID, WorkerID: c.WorkerID,
+				FencingToken: c.FencingToken,
+			}}
+	default: // interrupted
+		// § 4 step 12 pairs node.attempt.interrupted with
+		// conversation.turn.interrupted in the SAME transaction. The reason
+		// vocabulary is M2's closed set; a reason with no M2 word (e.g.
+		// human_takeover, whose machinery journals its own pair) closes the row
+		// only rather than forking the vocabulary.
+		reason, ok := attemptTurnInterruptReason(in.CloseTurnReason)
+		if !ok {
+			return attemptTurnCloseShape{Status: events.TurnStatusInterrupted}
+		}
+		return attemptTurnCloseShape{Status: events.TurnStatusInterrupted, Journal: true,
+			EventType: events.TypeConversationTurnInterrupted,
+			Payload: events.TurnInterruptedPayload{
+				ConversationID: convID, TurnID: turnID, WorkerID: c.WorkerID,
+				FencingToken: c.FencingToken, Reason: reason,
+			}}
+	}
+}
+
+// closeAttemptTurnTx closes the attempt's paired non-terminal turn inside the
+// SAME fenced transaction as the attempt's terminal row. A terminal attempt
+// whose turn is still live is precisely the moment the retry enqueue refusal is
+// manufactured: conversation_turns_one_active_idx rejects the next attempt's
+// turn on the same conversation, and agentturn_seams.go's refusal names this
+// writer as the debtor. There is therefore never an instant where the attempt is
+// terminal and its turn is not.
+//
+// Only the turn stamped with this attempt's node_attempt_id is touched — a
+// human turn on the same conversation belongs to M2's turn loop (TurnStore.
+// FinishTurn), and an attempt with no paired turn (a non-agent node) is a no-op.
+func closeAttemptTurnTx(ctx context.Context, tx pgx.Tx, c AttemptClaim, in AttemptFinish) error {
+	var turnID, convID, turnOrg, turnProject string
+	err := tx.QueryRow(ctx, `
+		SELECT t.id::text, COALESCE(t.conversation_id::text, ''),
+		       r.organization_id::text, r.project_id::text
+		FROM conversation_turns t
+		JOIN attempts a2 ON a2.id = t.node_attempt_id
+		JOIN runs r ON r.id = a2.run_id
+		WHERE t.node_attempt_id = $1::uuid AND t.status IN ('queued', 'leased', 'running')`,
+		c.AttemptID).Scan(&turnID, &convID, &turnOrg, &turnProject)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil // no live paired turn: nothing to close and nothing to journal
+	case err != nil:
+		return fmt.Errorf("postgres: find paired turn for attempt %s: %w", c.AttemptID, err)
+	}
+	cl := attemptTurnCloseFor(c, turnID, convID, in)
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_turns
+		SET status = $2, finished_at = now(), stop_reason = NULLIF($3, '')
+		WHERE id = $1::uuid`, turnID, cl.Status, cl.Stop); err != nil {
+		return fmt.Errorf("postgres: close paired turn %s for attempt %s as %s: %w",
+			turnID, c.AttemptID, cl.Status, err)
+	}
+	if !cl.Journal || convID == "" {
+		return nil
+	}
+	_, err = trnAppendTx(ctx, tx, turnOrg, turnProject, convID, worker.TurnEvent{
+		Type:      cl.EventType,
+		ActorKind: events.ActorKindWorker,
+		ActorID:   c.WorkerID,
+		Payload:   cl.Payload,
+	})
+	return err
 }
 
 // ------------------------------------------------------------- checkpoints
