@@ -258,3 +258,166 @@ func TestRunWorkspacePrepareRefusals(t *testing.T) {
 		t.Errorf("ref.RepoStates = %+v, want the boundary state echoed", ref.RepoStates)
 	}
 }
+
+// runWorkspaceRowState reads the workspace row's state and its repo-row count.
+func runWorkspaceRowState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID string) (string, int, bool) {
+	t.Helper()
+	var state string
+	var n int
+	var readyAt bool
+	if err := pool.QueryRow(ctx, `
+		SELECT w.state,
+			(SELECT count(*) FROM workspace_repos wr WHERE wr.workspace_id = w.id),
+			w.ready_at IS NOT NULL
+		FROM workspaces w WHERE w.id = $1::uuid`, workspaceID).
+		Scan(&state, &n, &readyAt); err != nil {
+		t.Fatalf("read workspace %s: %v", workspaceID, err)
+	}
+	return state, n, readyAt
+}
+
+// TestRunWorkspaceRepoRowsRecordedOnce is the run-workspace bug's regression
+// gate in the seams cmd/communication's newRunWorkspacePreparer drives: the
+// first preparation must be able to tell "no rows yet" from the commit states
+// Prepare echoes back (which are the caller's own input on the arm that created
+// the row), record its repos, and reach 'ready' exactly once; a re-entry adds
+// no duplicate rows; a different worker is still refused. Integration layer —
+// every assertion counts rows a real Postgres wrote.
+func TestRunWorkspaceRepoRowsRecordedOnce(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	store := &RunWorkspaces{Pool: f.pool}
+	workspaces := &WorkspaceStore{Pool: f.pool}
+
+	runID := m4RunsReadSeedRun(t, ctx, f)
+	w1 := m4Worker(t, ctx, f.pool, "rwrec-a", 2)
+	vol1 := runWorkspaceVolume(t, ctx, f.pool, w1, "rwrec-a")
+	repoID := runWorkspaceRepo(t, ctx, f.pool, f)
+	// This test is the one that writes workspace_repos rows, so it also owns
+	// deleting them first — registered last, it runs first (LIFO), before the
+	// repository cleanup above can be blocked by the FK.
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(),
+			`DELETE FROM workspace_repos WHERE workspace_id IN (SELECT id FROM workspaces WHERE run_id = $1)`, runID)
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM workspaces WHERE run_id = $1`, runID)
+	})
+	states := []worker.CheckpointRepoState{{RepositoryID: repoID, BaseCommit: "a1", HeadCommit: "b2"}}
+
+	// Before any preparation: nothing exists, nothing is written, nothing is
+	// ready. This is the answer the preparer must key its write on.
+	if exists, rows, ready, err := store.RunWorkspaceRepoState(ctx, runID); err != nil || exists || rows || ready {
+		t.Fatalf("RunWorkspaceRepoState before prepare = (%v, %v, %v, %v), want false/false/false/nil", exists, rows, ready, err)
+	}
+
+	// Step 4 of § 4: the door closes, the row opens 'preparing'.
+	ref, err := store.Prepare(ctx, runID, w1, vol1, states)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	// The echo the bug mistook for recorded rows, pinned as behaviour: the ref
+	// carries the caller's states...
+	if len(ref.RepoStates) != 1 || ref.RepoStates[0].RepositoryID != repoID {
+		t.Fatalf("Prepare echoed %+v, want the boundary state", ref.RepoStates)
+	}
+	// ...while the store says there are NO rows and the workspace is not ready.
+	// A preparer that trusted the echo would return here and leave the run
+	// workspace 'preparing' with no authorized checkout forever.
+	exists, rows, ready, err := store.RunWorkspaceRepoState(ctx, runID)
+	if err != nil || !exists || rows || ready {
+		t.Fatalf("RunWorkspaceRepoState after Prepare = (%v, %v, %v, %v), want exists/rows=false/ready=false", exists, rows, ready, err)
+	}
+
+	// Step 5: the paths and 'ready' land in one transaction.
+	if err := workspaces.RecordRepos(ctx, ref.WorkspaceID, []worker.WorkspaceRepo{{
+		WorkspaceID: ref.WorkspaceID, OrganizationID: f.orgID, ProjectID: f.projectID,
+		RepositoryID: repoID, CheckoutPath: "/work/run/" + runID + "/work/repos/backend",
+		MirrorPath: "/repos/" + f.projectID + "/backend.git", MirrorVolumeID: m4Digest("mirror/rwrec"),
+		AdminDir: "/work/run/" + runID + "/meta/admin", RunRef: runID + "/backend", BaseCommit: "a1",
+	}}, true); err != nil {
+		t.Fatalf("RecordRepos: %v", err)
+	}
+	if state, n, readyAt := runWorkspaceRowState(t, ctx, f.pool, ref.WorkspaceID); state != "ready" || n != 1 || !readyAt {
+		t.Fatalf("after RecordRepos: state=%q rows=%d ready_at_set=%v, want ready/1/true", state, n, readyAt)
+	}
+	if _, rows, ready, err := store.RunWorkspaceRepoState(ctx, runID); err != nil || !rows || !ready {
+		t.Fatalf("RunWorkspaceRepoState after RecordRepos = (%v, %v, %v), want rows/ready true", rows, ready, err)
+	}
+	// The resolver now reads commit identity back from those rows.
+	resolved, ok, err := store.RunWorkspace(ctx, runID)
+	if err != nil || !ok || len(resolved.RepoStates) != 1 || resolved.RepoStates[0].BaseCommit != "a1" {
+		t.Fatalf("RunWorkspace = (%+v, %v, %v), want one recorded state", resolved, ok, err)
+	}
+
+	// Re-entry: a later attempt of the same run on the same worker checks the
+	// door and finds the facts already committed — one row, still ready, no
+	// duplicate.
+	again, err := store.Prepare(ctx, runID, w1, vol1, states)
+	if err != nil {
+		t.Fatalf("Prepare (re-entry): %v", err)
+	}
+	if again.WorkspaceID != ref.WorkspaceID {
+		t.Fatalf("re-entry Prepare workspace = %s, want %s", again.WorkspaceID, ref.WorkspaceID)
+	}
+	if _, rows, ready, err := store.RunWorkspaceRepoState(ctx, runID); err != nil || rows != true || !ready {
+		t.Fatalf("re-entry state = (%v, %v, %v), want rows/ready true", rows, ready, err)
+	}
+	// Idempotent under a concurrent same-worker attempt: replaying the write
+	// upserts the same row rather than adding a second one.
+	if err := workspaces.RecordRepos(ctx, ref.WorkspaceID, []worker.WorkspaceRepo{{
+		WorkspaceID: ref.WorkspaceID, OrganizationID: f.orgID, ProjectID: f.projectID,
+		RepositoryID: repoID, CheckoutPath: "/work/run/" + runID + "/work/repos/backend",
+		MirrorPath: "/repos/" + f.projectID + "/backend.git", MirrorVolumeID: m4Digest("mirror/rwrec"),
+		AdminDir: "/work/run/" + runID + "/meta/admin", RunRef: runID + "/backend", BaseCommit: "a1",
+	}}, false); err != nil {
+		t.Fatalf("RecordRepos (replay): %v", err)
+	}
+	if state, n, _ := runWorkspaceRowState(t, ctx, f.pool, ref.WorkspaceID); state != "ready" || n != 1 {
+		t.Fatalf("after replay: state=%q rows=%d, want ready/1", state, n)
+	}
+	// The ready move is one-way: a replay that still asks for it is refused
+	// rather than silently re-writing history (the preparer turns this refusal
+	// into a no-op by reading the facts back).
+	if err := workspaces.RecordRepos(ctx, ref.WorkspaceID, nil, true); err == nil {
+		t.Fatal("RecordRepos(markReady) on a ready workspace succeeded, want the not-preparing refusal")
+	}
+
+	// A different worker is still refused, and the refusal is journalled.
+	w2 := m4Worker(t, ctx, f.pool, "rwrec-b", 2)
+	vol2 := runWorkspaceVolume(t, ctx, f.pool, w2, "rwrec-b")
+	if _, err := store.Prepare(ctx, runID, w2, vol2, nil); !errors.Is(err, ErrRunWorkspaceDifferentWorker) {
+		t.Fatalf("Prepare on worker B = %v, want ErrRunWorkspaceDifferentWorker", err)
+	}
+	if n, reason := runWorkspaceEvents(t, ctx, f.pool, runID); n != 1 || reason != "different_worker" {
+		t.Fatalf("recovery_lost rows = %d reason %q, want 1 different_worker", n, reason)
+	}
+	if state, n, _ := runWorkspaceRowState(t, ctx, f.pool, ref.WorkspaceID); state != "ready" || n != 1 {
+		t.Fatalf("after refusal: state=%q rows=%d, want ready/1", state, n)
+	}
+}
+
+// TestRunWorkspaceRepoStateNoRepos covers the project that holds no repository:
+// the tree is prepared, so the workspace must still leave 'preparing' — the
+// old len(rows) > 0 gate kept it there forever on a second path.
+func TestRunWorkspaceRepoStateNoRepos(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	store := &RunWorkspaces{Pool: f.pool}
+	workspaces := &WorkspaceStore{Pool: f.pool}
+
+	runID := m4RunsReadSeedRun(t, ctx, f)
+	w := m4Worker(t, ctx, f.pool, "rwrec-empty", 2)
+	vol := runWorkspaceVolume(t, ctx, f.pool, w, "rwrec-empty")
+	ref, err := store.Prepare(ctx, runID, w, vol, nil)
+	if err != nil {
+		t.Fatalf("Prepare (no repos): %v", err)
+	}
+	if _, rows, ready, err := store.RunWorkspaceRepoState(ctx, runID); err != nil || rows || ready {
+		t.Fatalf("state before RecordRepos = (%v, %v, %v), want false/false", rows, ready, err)
+	}
+	if err := workspaces.RecordRepos(ctx, ref.WorkspaceID, nil, true); err != nil {
+		t.Fatalf("RecordRepos (no repos, markReady): %v", err)
+	}
+	if state, n, readyAt := runWorkspaceRowState(t, ctx, f.pool, ref.WorkspaceID); state != "ready" || n != 0 || !readyAt {
+		t.Fatalf("repo-less workspace: state=%q rows=%d ready_at_set=%v, want ready/0/true", state, n, readyAt)
+	}
+}

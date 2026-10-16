@@ -426,3 +426,28 @@ func TestNewAgentTurnWiring(t *testing.T) {
 func promptWithKind(kind string) domain.PermissionPrompt {
 	return domain.PermissionPrompt{Options: []domain.PermissionOption{{OptionID: "o1", Kind: kind}}}
 }
+
+// TestDecideRunWorkspaceRepoRecording is the run-workspace bug's unit gate: the
+// preparer decides whether to write workspace_repos from what the store reports
+// about those rows, and the decision takes NO commit-state argument at all —
+// Prepare's RunWorkspaceRef.RepoStates is the caller's own input echoed back on
+// the arm that created the row, so it is non-empty for every project with a
+// repository. Trusting that echo is what skipped RecordRepos and left each run
+// workspace 'preparing' with no authorized checkout.
+func TestDecideRunWorkspaceRepoRecording(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		f    workspaceReposFacts
+		want runWorkspaceRepoAction
+	}{
+		{"fresh prepare has no rows yet", workspaceReposFacts{exists: true}, runWorkspaceRepoRecord},
+		{"concurrent attempt wrote them", workspaceReposFacts{exists: true, rowsWritten: true, ready: true}, runWorkspaceRepoAlreadyRecorded},
+		{"rows without ready still counts as recorded", workspaceReposFacts{exists: true, rowsWritten: true}, runWorkspaceRepoAlreadyRecorded},
+		{"already ready", workspaceReposFacts{exists: true, ready: true}, runWorkspaceRepoAlreadyRecorded},
+		{"no workspace row at all", workspaceReposFacts{}, runWorkspaceRepoRecord},
+	} {
+		if got := decideRunWorkspaceRepoRecording(tc.f); got != tc.want {
+			t.Errorf("%s: decideRunWorkspaceRepoRecording(%+v) = %v, want %v", tc.name, tc.f, got, tc.want)
+		}
+	}
+}

@@ -675,7 +675,11 @@ func acpAskModeID(launcherID string) string {
 //     records no paths itself — those are RecordRepos' by contract).
 //  5. RecordRepos writes the paths and moves the workspace to `ready` in one
 //     transaction, so no attempt can resolve a boundary whose tree the rows do
-//     not describe.
+//     not describe. Whether step 5 has anything to do is decided from
+//     workspace_repos itself (decideRunWorkspaceRepoRecording), never from the
+//     commit states step 4 echoes back — the echo is this call's own input on
+//     the arm that created the row, and trusting it is what left run workspaces
+//     'preparing' with no repo rows at all.
 func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID func() string,
 	log *slog.Logger) worker.RunWorkspacePreparer {
 	mgr, mgrErr := wsgit.NewManager(opts.workspaceRoot, opts.reposRoot, nil)
@@ -758,11 +762,28 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 		if err != nil {
 			return runWorkspaceRefusal(err)
 		}
-		if len(bound.RepoStates) > 0 {
+		// Whether the rows still need writing is a question about
+		// workspace_repos, so it is answered from workspace_repos
+		// (runWorkspaceRepoState), never from bound.RepoStates: on the arm that
+		// created the row, that field is the echo of `states` we just handed
+		// Prepare, which records no paths itself. Reading the echo as proof of
+		// committed rows made every project with at least one repo skip
+		// RecordRepos, and the workspace stayed `preparing` with no authorized
+		// checkout forever (live M4 lab evidence).
+		seen, err := readRunWorkspaceRepoState(ctx, runs, c.RunID)
+		if err != nil {
+			return fmt.Errorf("read back the repo rows of run workspace %s: %w", bound.WorkspaceID, err)
+		}
+		if !seen.exists {
+			return fmt.Errorf("the workspace row of run %s (%s) is gone between preparation and the repo rows", c.RunID, bound.WorkspaceID)
+		}
+		if decideRunWorkspaceRepoRecording(seen) == runWorkspaceRepoAlreadyRecorded {
 			// A concurrent attempt of this run finished the same prepare while we
 			// were cloning: its rows describe this same tree (the idempotent reuse
 			// arm only answers for this worker on this volume), so there is
 			// nothing left to record.
+			log.Info("run workspace repo rows already recorded by another attempt",
+				slog.String("run_id", c.RunID), slog.String("workspace_id", bound.WorkspaceID))
 			return nil
 		}
 
@@ -775,11 +796,16 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 				BaseCommit: r.BaseCommit,
 			})
 		}
-		if err := workspaces.RecordRepos(ctx, bound.WorkspaceID, rows, len(rows) > 0); err != nil {
+		// markReady is unconditional, exactly as M3's unit builder does it
+		// (internal/worker/unit.go): the rows and the preparing → ready move are
+		// one transaction, and a tree the worker finished preparing is ready
+		// even when the project holds no repository at all.
+		if err := workspaces.RecordRepos(ctx, bound.WorkspaceID, rows, true); err != nil {
 			// A second attempt of the same run can win the race between the
 			// lookup above and this write (capacity > 1). Its rows describe the
 			// same tree, so the fact this call wanted is already committed.
-			if again, ok, err2 := runs.RunWorkspace(ctx, c.RunID); err2 == nil && ok && len(again.RepoStates) > 0 {
+			if again, err2 := readRunWorkspaceRepoState(ctx, runs, c.RunID); err2 == nil &&
+				decideRunWorkspaceRepoRecording(again) == runWorkspaceRepoAlreadyRecorded {
 				log.Warn("run workspace repo rows were written by a concurrent attempt",
 					slog.String("run_id", c.RunID), slog.String("workspace_id", bound.WorkspaceID),
 					slog.String("error", err.Error()))
@@ -793,6 +819,49 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 			slog.Int("repos", len(rows)))
 		return nil
 	}
+}
+
+// workspaceReposFacts is everything the preparer needs to know about a run
+// workspace's repo rows — read from the store, where the rows either exist or
+// they do not, rather than from the commit states Prepare echoes back.
+type workspaceReposFacts struct {
+	exists      bool // a live workspace row for the run
+	rowsWritten bool // workspace_repos has at least one row for it
+	ready       bool // the row is already in state 'ready'
+}
+
+type runWorkspaceRepoAction int
+
+const (
+	// runWorkspaceRepoRecord: write the prepared paths into workspace_repos and
+	// take the row to 'ready' in the same transaction.
+	runWorkspaceRepoRecord runWorkspaceRepoAction = iota
+	// runWorkspaceRepoAlreadyRecorded: somebody (this call's earlier attempt, or
+	// a concurrent one on the same worker) already did. Cheap no-op.
+	runWorkspaceRepoAlreadyRecorded
+)
+
+// decideRunWorkspaceRepoRecording is the whole fix for the run workspaces that
+// stayed 'preparing' forever: the decision is made ONLY from what the store
+// reports about workspace_repos. It deliberately takes no commit-state
+// argument, because the `RunWorkspaceRef.RepoStates` that Prepare returns on
+// the arm that created the row is the caller's own input echoed back — with a
+// repo in the project it was always non-empty, and the preparer read that
+// echo as "rows already written" and returned before RecordRepos.
+func decideRunWorkspaceRepoRecording(f workspaceReposFacts) runWorkspaceRepoAction {
+	if f.rowsWritten || f.ready {
+		return runWorkspaceRepoAlreadyRecorded
+	}
+	return runWorkspaceRepoRecord
+}
+
+// readRunWorkspaceRepoState asks the database the question above.
+func readRunWorkspaceRepoState(ctx context.Context, runs *postgres.RunWorkspaces, runID string) (workspaceReposFacts, error) {
+	exists, rowsWritten, ready, err := runs.RunWorkspaceRepoState(ctx, runID)
+	if err != nil {
+		return workspaceReposFacts{}, err
+	}
+	return workspaceReposFacts{exists: exists, rowsWritten: rowsWritten, ready: ready}, nil
 }
 
 // runWorkspaceRefusal restates the store's typed one-way-door refusal in the

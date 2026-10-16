@@ -233,6 +233,40 @@ func (s *RunWorkspaces) RunWorkspace(ctx context.Context, runID string) (worker.
 	return worker.RunWorkspaceRef{WorkspaceID: id, VolumeID: volumeID, RepoStates: states}, true, nil
 }
 
+// RunWorkspaceRepoState answers the preparer's one question about its own
+// write — does the run's workspace actually have workspace_repos rows, and is
+// the row already `ready`? — in a single statement, so the two facts cannot be
+// read on opposite sides of a concurrent attempt's commit. Prepare must not
+// answer it: the ref it returns carries the caller's own commit states on the
+// arm that created the row (it records no paths by contract), and an echo is
+// not evidence of a row.
+func (s *RunWorkspaces) RunWorkspaceRepoState(ctx context.Context, runID string) (exists, rowsWritten, ready bool, err error) {
+	pool, err := m4Pool(s.Pool, "run workspace repo state")
+	if err != nil {
+		return false, false, false, err
+	}
+	if runID == "" {
+		return false, false, false, errors.New("postgres: run workspace repo state lookup requires a run id")
+	}
+	var state string
+	err = pool.QueryRow(ctx, `
+		SELECT w.state, EXISTS(
+			SELECT 1 FROM workspace_repos wr WHERE wr.workspace_id = w.id)
+		FROM workspaces w
+		WHERE w.scope_kind = 'run' AND w.run_id = $1::uuid
+			AND w.state IN ('preparing','ready','quarantined')`,
+		runID).Scan(&state, &rowsWritten)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, false, nil
+	}
+	if err != nil {
+		return false, false, false, fmt.Errorf("postgres: read repo state of run %s workspace: %w", runID, err)
+	}
+	// Only the literal 'ready' state counts, so the caller cannot mistake a
+	// 'quarantined' row for a prepared one.
+	return true, rowsWritten, state == "ready", nil
+}
+
 // liveWorkspaceTx reads the run's live workspace row FOR UPDATE inside the
 // caller's transaction. Empty id means there is none yet.
 func (s *RunWorkspaces) liveWorkspaceTx(ctx context.Context, tx pgx.Tx, runID string) (workspaceID, volumeID string, err error) {
