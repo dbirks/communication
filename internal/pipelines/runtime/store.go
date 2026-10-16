@@ -233,7 +233,7 @@ func (ms *MemStore) Start(runID, attemptID, workerID string, token int64) error 
 }
 
 func (ms *MemStore) timeoutOf(n *NodeExecution) time.Duration {
-	if ms.Adv == nil || n == nil {
+	if ms.Adv == nil || n == nil || ms.Adv.Prog == nil {
 		return 0
 	}
 	if pn, ok := ms.Adv.Prog.Plan().FindNode(trimInstanceSuffixes(n.ScopeKey), n.NodeID); ok {

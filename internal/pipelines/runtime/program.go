@@ -1,8 +1,11 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,6 +126,116 @@ func PreparePlan(plan *compiler.Plan) (*Program, diag.List) {
 		p.preps[e.ID] = &prepCopy
 	}
 	return p, diags
+}
+
+// EmptyPlanSnapshot reports the bytes a run row carries when it pins no plan
+// at all: NULL, the empty string, or jsonb's empty object. Hand-seeded rows
+// (schema tests, fixtures) look like this; a run created through the API
+// never does.
+func EmptyPlanSnapshot(raw []byte) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || string(t) == "{}" || string(t) == "null"
+}
+
+// PreparePlanSnapshot rebuilds the Program one run executes from its stored
+// plan_snapshot bytes (ADR-0023 § 2: the run runs the plan it pinned, and
+// nothing else). The snapshot is the compiler's canonical JSON, so decoding
+// it back into the plan's untyped (canon.Value) positions yields JSON numbers
+// — restoreSnapshotNumbers puts them back in the engine's numeric model
+// (integers are int64) exactly as the compiler's own normalization left them.
+// Non-empty diagnostics mean the snapshot cannot execute: the caller refuses
+// the run rather than evaluating an expression its revision would have
+// refused to publish. (nil, nil) means the row pins a placeholder that carries
+// no plan at all, which is not corruption — see the scope test below.
+func PreparePlanSnapshot(raw []byte) (*Program, diag.List) {
+	if EmptyPlanSnapshot(raw) {
+		return nil, diag.List{{
+			Code:   diag.CodeUnknownDocument,
+			Source: diag.SourceRuntime,
+			Message: "run pins no plan snapshot: there is nothing for the " +
+				"advancer to execute",
+		}}
+	}
+	var plan compiler.Plan
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&plan); err != nil {
+		return nil, diag.List{{
+			Code:    diag.CodeUnknownDocument,
+			Source:  diag.SourceRuntime,
+			Message: fmt.Sprintf("plan snapshot is not a readable plan: %v", err),
+		}}
+	}
+	if plan.Version != "" && plan.Version != compiler.PlanVersion {
+		return nil, diag.List{{
+			Code:   diag.CodeUnknownDocument,
+			Source: diag.SourceRuntime,
+			Message: fmt.Sprintf("plan snapshot version %q is not executable by this engine (%q)",
+				plan.Version, compiler.PlanVersion),
+		}}
+	}
+	if len(plan.Scopes) == 0 {
+		// A placeholder, not a plan: the compiler always emits the root scope,
+		// so a snapshot declaring none is a hand-seeded fixture row
+		// (`{"nodes":[]}`, the shape several stores' tests pin). No program is
+		// rebuilt; the caller decides whether its wired advancer stands in.
+		return nil, nil
+	}
+	restoreSnapshotNumbers(reflect.ValueOf(&plan).Elem())
+	return PreparePlan(&plan)
+}
+
+// restoreSnapshotNumbers walks a decoded plan and replaces every JSON number
+// that reached an untyped (canon.Value / any) position with the engine's own
+// numeric model — int64 when the literal is integral, float64 otherwise.
+// Reflection rather than a field list: new untyped plan fields are covered by
+// construction instead of by remembering to add them here.
+func restoreSnapshotNumbers(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		if n, ok := v.Interface().(json.Number); ok {
+			if !v.CanSet() {
+				return
+			}
+			if i, err := n.Int64(); err == nil {
+				v.Set(reflect.ValueOf(i))
+				return
+			}
+			if f, err := n.Float64(); err == nil {
+				v.Set(reflect.ValueOf(f))
+				return
+			}
+			v.Set(reflect.ValueOf(n.String()))
+			return
+		}
+		restoreSnapshotNumbers(v.Elem())
+	case reflect.Pointer:
+		if !v.IsNil() {
+			restoreSnapshotNumbers(v.Elem())
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			restoreSnapshotNumbers(v.Field(i))
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			restoreSnapshotNumbers(v.Index(i))
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			elem := v.MapIndex(k)
+			if !elem.IsValid() || elem.Kind() != reflect.Interface {
+				continue
+			}
+			fresh := reflect.New(elem.Type()).Elem()
+			fresh.Set(elem)
+			restoreSnapshotNumbers(fresh)
+			v.SetMapIndex(k, fresh)
+		}
+	}
 }
 
 func (p *Program) ownerNode(s *compiler.Scope) (*compiler.Node, bool) {

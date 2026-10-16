@@ -58,9 +58,12 @@ import (
 type RuntimeStore struct {
 	Pool *pgxpool.Pool
 
-	// Adv is the advancer every transaction runs after fn (§ 5.1). It
-	// pins the run's compiled plan exactly as the MemStore harness does
-	// (ADR-0023 § 1/§ 2: the run executes a plan snapshot).
+	// Adv is the deployment's advancer shell: its child resolver (and any
+	// program a caller wired for a plan-less run row). Per transaction, the
+	// adapter rebuilds it around the RUN's own compiled plan, hydrated from
+	// runs.plan_snapshot (ADR-0023 § 1/§ 2: the run executes a plan snapshot,
+	// so a replica driving two revisions never drives either with the wrong
+	// graph).
 	Adv *runtime.Advancer
 	// Now is the deployment's clock; tests drive it (the reconciler
 	// poll's hermetic twin, § 5.4).
@@ -142,12 +145,16 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 	if err != nil {
 		return err
 	}
+	adv, err := s.advancerForTx(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
 	journalLen := len(st.Events)
 	hydrated := snapshotRows(st)
 
 	// (3) Apply through the engine. The throwaway MemStore carries this
 	// transaction's clock, lease and advancer; it dies with the call.
-	ms := runtime.NewMemStore(s.Adv)
+	ms := runtime.NewMemStore(adv)
 	ms.AddRun(st)
 	ms.Now = s.Now
 	ms.Lease = s.Lease
@@ -165,6 +172,42 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 		return fmt.Errorf("postgres: commit runtime tx for run %s: %w", runID, err)
 	}
 	return opErr
+}
+
+// advancerForTx assembles the advancer for ONE transaction on ONE run: the
+// run's own pinned program (runs.plan_snapshot, hydrated per call — no plan
+// is cached across a transaction, exactly as no State is) with the
+// deployment's child resolver and clock that s.Adv carries.
+//
+// This is why the deployment wires a single Advancer for every run: the plan
+// is per-run state that lives in the database, so a replica serving two
+// pipelines — or a parent and a child run of different revisions — drives each
+// with the plan that run pinned. A run row with no pinned snapshot (a
+// hand-seeded fixture, never an API-created run) falls back to s.Adv's program
+// so the wired advancer stays meaningful; when neither exists, the engine
+// refuses with runtime.ErrNoProgram rather than panicking (see Advance).
+func (s *RuntimeStore) advancerForTx(ctx context.Context, tx pgx.Tx, runID string) (*runtime.Advancer, error) {
+	adv := &runtime.Advancer{}
+	if s.Adv != nil {
+		cp := *s.Adv
+		adv = &cp
+	}
+	prog, err := hydrateProgramTx(ctx, tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if prog == nil {
+		// A row that pins no plan (a hand-seeded fixture). A store wired
+		// with no advancer at all stays "no advancer": the engine's own
+		// guards treat nil as "this caller does not schedule", exactly as
+		// before the run's plan became the source of its program.
+		if s.Adv == nil {
+			return nil, nil
+		}
+		return adv, nil
+	}
+	adv.Prog = prog
+	return adv, nil
 }
 
 // drawFence is attempt_fencing_seq's one draw per claim (ADR-0016 § 3). A

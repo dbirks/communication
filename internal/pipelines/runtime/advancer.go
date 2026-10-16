@@ -63,10 +63,19 @@ type Advancer struct {
 	Deps AdvancerDeps
 }
 
+// ErrNoProgram is the typed refusal of a run the engine cannot execute: no
+// compiled plan was wired for it. A corrupt or hand-seeded row is a failure
+// the caller answers, never a nil-pointer panic that takes the request (and
+// the replica's in-flight work) down with it.
+var ErrNoProgram = errors.New("runtime: no compiled program for this run")
+
 // Advance runs the advancer pass over st at time now. Errors here are bugs
 // or impossible states (a row that violates its own machine); business
 // outcomes — failed nodes, exhausted loops — are STATE, not errors.
 func (adv *Advancer) Advance(st *State, now time.Time) error {
+	if adv == nil || st == nil || st.Run == nil {
+		return fmt.Errorf("%w: nothing to advance", ErrNoProgram)
+	}
 	ac := &advanceCtx{
 		st:   st,
 		prog: adv.Prog,
@@ -78,6 +87,10 @@ func (adv *Advancer) Advance(st *State, now time.Time) error {
 		// Pause stops FUTURE scheduling only: in-flight attempts finish
 		// honestly through the store's worker ops, not through here.
 		return nil
+	}
+	if adv.Prog == nil {
+		return fmt.Errorf("%w: run %s has no executable plan snapshot",
+			ErrNoProgram, st.Run.ID)
 	}
 	if st.Run.Status == RunQueued {
 		// queued → running once the run owns work. The real deployment's

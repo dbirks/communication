@@ -50,6 +50,9 @@ func RetryPlan(st *State, prog *Program, instanceKey string) (RetryDecision, err
 	if row == nil {
 		return RetryDecision{}, fmt.Errorf("runtime: no node execution %s in run %s", instanceKey, st.Run.ID)
 	}
+	if prog == nil {
+		return RetryDecision{}, fmt.Errorf("%w: retry of node %s", ErrNoProgram, instanceKey)
+	}
 	pn, ok := prog.Plan().FindNode(trimInstanceSuffixes(row.ScopeKey), row.NodeID)
 	if !ok {
 		return RetryDecision{}, fmt.Errorf("runtime: node %s is not in the pinned plan", instanceKey)

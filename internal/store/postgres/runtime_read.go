@@ -193,6 +193,36 @@ func rteRepoStates(raw []byte) ([]runtime.RepoState, error) {
 
 // -------------------------------------------------------------------- hydrate
 
+// hydrateProgramTx rebuilds the run's OWN compiled program from
+// runs.plan_snapshot (ADR-0023 § 2: the run executes the plan it pinned, not
+// whatever plan the process happens to have wired). Runs created through the
+// API always carry one; a run row that predates the pin (a hand-seeded
+// fixture) yields nil, and the caller decides whether its wired advancer is
+// an acceptable stand-in.
+func hydrateProgramTx(ctx context.Context, tx pgx.Tx, runID string) (*runtime.Program, error) {
+	var raw []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(plan_snapshot, '{}'::jsonb)::text FROM runs WHERE id = $1::uuid`, runID).
+		Scan(&raw); err != nil {
+		if isNoRows(err) {
+			return nil, ErrRunNotFound
+		}
+		return nil, fmt.Errorf("postgres: hydrate plan snapshot of run %s: %w", runID, err)
+	}
+	if runtime.EmptyPlanSnapshot(raw) {
+		return nil, nil
+	}
+	prog, diags := runtime.PreparePlanSnapshot(raw)
+	if !diags.Valid() {
+		// A snapshot that cannot be programmed is corrupt data, and corrupt
+		// data is a typed refusal the handler answers — not a nil *Program
+		// reaching the advancer and panicking inside the request.
+		return nil, fmt.Errorf("postgres: run %s pins an unexecutable plan snapshot: %v",
+			runID, diags[0])
+	}
+	return prog, nil
+}
+
 // hydrateTx reads the run's FULL row set inside the caller's transaction.
 // Called only after the advancer lock and the run row lock are held, so the
 // scan is the run's truth at this instant (contract § 5.1 step 1).
