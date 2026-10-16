@@ -1564,6 +1564,276 @@ def c4():
                  "fencing_token": live["token"], "unpause_ts": unpause_ts}
 
 
+# --- C5 pure logic — unit-tested offline by e2e/m4/test_c5_logic.py -----------
+# Verdict algebra for the crash/retry gate, computed over canned ledger rows so
+# the live gate only has to feed it real Postgres/git output. `ok is None` is a
+# GAP: the lab produced no row to measure. Nothing here substitutes for the live
+# kill (12-test-strategy.md: a mocked green is not done).
+
+C5_LIVE_STATES = ("queued", "leased", "running")
+C5_TAB = "\t"
+
+# docs/m4-contract.md § 7.1 C5f requires this sentence to appear VERBATIM in the
+# acceptance report, because 03 reads the other way at first glance.
+C5_CONTINUE_SENTENCE = (
+    "continue_workspace semantics proven as the DEFAULT: HEAD_AFTER_RETRY_START = "
+    "HEAD_BEFORE and DIRTY_AFTER >= DIRTY_BEFORE — the interrupted agent's edits "
+    "are still there, the retry was TOLD about them, and nothing was destroyed. "
+    "D-009 says users accept redoing the incomplete node, not losing it.")
+
+
+def c5_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c5_checkpoint_set(text):
+    """§ 7.1 C5a/C5c's boundary view: run_checkpoints rows -> the sorted list of
+    'node_execution_id:outputs_digest' the crash must leave IDENTICAL."""
+    return sorted(f"{ne}:{dg}" for ne, dg in psql_rows(text, 2))
+
+
+def c5_parse_retry_context(v):
+    """attempts.retry_context (jsonb text) -> dict; None when NULL/unparseable,
+    so an absent context GAPs its own arm instead of reading as an empty pass."""
+    s = str(v or "").strip()
+    if s in ("", "-", "NULL", "null"):
+        return None
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def c5_interrupted_verdicts(a):
+    """C5b over the KILLED attempt's row {status, error_class} — the reconciler,
+    not the dead process, must have written it."""
+    st, ec = str(a.get("status", "")).strip(), str(a.get("error_class", "")).strip()
+    if not st:
+        return [("C5b the killed attempt's row is readable", None,
+                 "no attempt row came back — the ledger is unmeasurable")]
+    return [
+        ("C5b the killed attempt is interrupted (the write came from the reconciler, "
+         f"never the dead process)", st == "interrupted", f"observed status={st!r}"),
+        ("C5b error_class=interrupted on the killed attempt (§ 7.1 C5b)",
+         ec == "interrupted", f"observed error_class={ec!r}"),
+    ]
+
+
+def c5_journal_verdicts(rows, run_st):
+    """C5b over the killed attempt's journal slice rows {type, actor_kind, reason}
+    plus the run's status immediately after the interruption."""
+    types = [str(r.get("type")) for r in rows]
+    hits = [r for r in rows if str(r.get("type")) == "node.attempt.interrupted"]
+    done = [t for t in types if t == "node.attempt.completed"]
+    tail = f"journal={types[-8:]}"
+    reasons = ",".join(sorted({str(r.get("reason")) for r in hits}) or ["-"])
+    actors = ",".join(sorted({str(r.get("actor_kind")) for r in hits}) or ["-"])
+    return [
+        ("C5b node.attempt.interrupted{reason:lease_expired} actor=system is present",
+         bool(hits) and all(str(r.get("reason")) == "lease_expired"
+                            and str(r.get("actor_kind")) == "system" for r in hits),
+         f"reasons={reasons} actors={actors} {tail}"),
+        ("C5b NO node.attempt.completed event exists for the killed attempt", not done, tail),
+        ("C5b the run is still 'running' (retry armed) — or 'interrupted' only where the "
+         "budget refused", str(run_st).strip() in ("running", "interrupted"),
+         f"observed run status={run_st!r}"),
+    ]
+
+
+def c5_boundary_verdicts(before, after, ready_before, ready_after, uploading_after):
+    """C5c — the durable boundary survived the SIGKILL. before/after are
+    c5_checkpoint_set lists; the artifact counts are ledger counts of ready /
+    uploading rows for the run."""
+    if not before:
+        return [("C5c the durable checkpoint boundary survived the kill", None,
+                 "0 run_checkpoints rows existed BEFORE the kill (the killed attempt was the "
+                 "run's first node, so no completed boundary had been written yet) — the "
+                 "durable-boundary arm needs a node that already succeeded")]
+    same = before == after
+    r0, r1, up = (count_or_none(ready_before), count_or_none(ready_after),
+                  count_or_none(uploading_after))
+    return [
+        ("C5c the run_checkpoints set after the kill is IDENTICAL to before (D-009)", same,
+         f"before={len(before)} after={len(after)} "
+         f"diff={sorted(set(before) ^ set(after))[:2]}"),
+        ("C5c the last completed node's boundary is still queryable after the crash",
+         same and ":sha256:" in after[-1] and after[-1].split(":", 1)[1].startswith("sha256:"),
+         f"last={after[-1:][0][:60] if after else '(none)'!r}"),
+        ("C5c the ready artifact count is unchanged across the kill",
+         r0 is not None and r1 == r0, f"before={r0} after={r1}"),
+        ("C5c no artifact was left in 'uploading' by the kill", up == 0,
+         f"uploading={up}"),
+    ]
+
+
+def c5_workspace_verdicts(before, after, events):
+    """C5d — ADR-0017's W-rule with a run on it: the reclaimed workspace is ready
+    on the SAME volume. events: workspace.% rows {type, reason}."""
+    if not str(after.get("volume_id", "")).strip():
+        return [("C5d the workspace was reclaimed on the same volume", None,
+                 "no workspaces row for the run — the reclaim is unreadable")]
+    lost = sorted({f"{e.get('type')}:{e.get('reason')}" for e in events
+                   if "recovery_lost" in str(e.get("type"))})
+    return [
+        ("C5d the run's workspace is ready after the worker came back",
+         str(after.get("state")) == "ready", f"state={after.get('state')!r}"),
+        ("C5d same-volume reclaim: volume_id unchanged across the kill (ADR-0017's W-rule — "
+         "reclaimed, not re-created)",
+         str(before.get("volume_id")) == str(after.get("volume_id")),
+         f"before={before.get('volume_id')!r} after={after.get('volume_id')!r}"),
+        ("C5d no workspace.recovery_lost event was emitted", not lost, f"observed={lost[:3]}"),
+    ]
+
+
+def c5_retry_row_verdicts(rows, head_before=None, dirty_before=None):
+    """C5e — the retry resumed FROM the last checkpoint, not from scratch. rows are
+    the killed node key's attempt rows in attempt_number order {attempt_number,
+    status, error_class, retry_context, scheduled_at}."""
+    if not rows:
+        return [("C5e the killed node execution has attempt rows", None,
+                 "no attempt rows came back for the killed node — nothing to compare")]
+    rows = sorted(rows, key=lambda r: _int(r.get("attempt_number")))
+    first, later = rows[0], [r for r in rows
+                             if _int(r.get("attempt_number")) > _int(rows[0].get("attempt_number"))]
+    out = [("C5e the killed attempt (attempt 1 of that node) is interrupted",
+            str(first.get("status")) == "interrupted",
+            f"attempt_number={first.get('attempt_number')} status={first.get('status')!r}")]
+    if not later:
+        out.append(("C5e a second attempt exists for the killed node (the retry)", None,
+                    f"only attempt {first.get('attempt_number')!r} is in the ledger — no retry "
+                    "row was queued within the gate's window (see the POST /retry line above)"))
+        return out
+    nxt = later[0]
+    rcx = c5_parse_retry_context(nxt.get("retry_context"))
+    out.append(("C5e attempt 2 is queued/running (the retry was armed)",
+                str(nxt.get("status")) in C5_LIVE_STATES + ("succeeded",),
+                f"status={nxt.get('status')!r} scheduled_at={nxt.get('scheduled_at')!r}"))
+    if rcx is None:
+        out.append(("C5e attempt 2 carries retry_context (the previous attempt's facts, "
+                    "never a memory)", None,
+                    f"retry_context is NULL/unparseable: {str(nxt.get('retry_context'))[:80]!r}"))
+        return out
+    out += [
+        ("C5e retry_context.attempt names the interrupted attempt",
+         _int(rcx.get("attempt")) == _int(first.get("attempt_number")),
+         f"retry_context.attempt={rcx.get('attempt')!r} vs {first.get('attempt_number')!r}"),
+        ("C5e retry_context.error_class=interrupted",
+         str(rcx.get("error_class")) == "interrupted",
+         f"observed {rcx.get('error_class')!r}"),
+    ]
+    if str(head_before or "").strip():
+        out.append(("C5e retry_context.head_commit = the HEAD read BEFORE the kill — the retry "
+                    "resumed FROM the checkpoint, not from scratch",
+                    str(rcx.get("head_commit")) == str(head_before).strip(),
+                    f"retry_context={str(rcx.get('head_commit'))[:12]!r} "
+                    f"before={str(head_before)[:12]!r}"))
+    dirty = count_or_none(rcx.get("modified_path_count"))
+    out.append(("C5e retry_context.modified_path_count is carried (the worktree the interrupted "
+                "attempt left behind is described, not discarded)", dirty is not None,
+                f"retry_context.modified_path_count={dirty} "
+                f"(dirty lines before the kill={count_or_none(dirty_before)})"))
+    return out
+
+
+def c5_retry_api_verdicts(status, body, live_rows):
+    """C5e's POST /runs/{id}/retry arm. Either the explicit retry is accepted, or the
+    budget had ALREADY armed attempt 2 (409 run_not_retriable on a still-running run) —
+    the gate reports WHICH path it observed instead of hiding the difference."""
+    retry_armed = any(_int(r.get("attempt_number")) > 1 for r in live_rows)
+    if status == 200:
+        return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
+                 True, f"{status} {str(body)[:120]} — retried rows: "
+                 f"{[(r.get('attempt_number'), r.get('status')) for r in live_rows]}")]
+    if status == 409 and "run_not_retriable" in str(body):
+        if retry_armed:
+            return [("C5e POST /runs/{id}/retry -> 200 (the UI's button)", None,
+                     f"observed 409 run_not_retriable: the run was still 'running' because the "
+                     f"retry budget had already armed attempt 2 on its own ({str(body)[:120]}) — "
+                     "the explicit route only applies to a run the budget refused (C5h's arm)")]
+        return [("C5e POST /runs/{id}/retry re-queued the killed node", False,
+                 f"observed 409 run_not_retriable AND no attempt 2 exists — the run neither "
+                 f"accepted the retry nor armed one ({str(body)[:160]})")]
+    return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
+             False, f"observed {status} {str(body)[:160]}")]
+
+
+def c5_append_only_verdicts(rows):
+    """C5e/C5g — 'Repeated attempts append, not overwrite' (ADR-0023 § 6): every
+    node_instance_key of the run still owns EXACTLY ONE node_executions row; the
+    retry added an attempt, never a second node execution for a finished node."""
+    out = []
+    for r in rows:
+        key = str(r.get("key"))
+        ne, att = _int(r.get("ne")), _int(r.get("attempts"))
+        out.append((f"C5g {key}: one node_executions row (attempt rows appended: {att})",
+                    ne == 1 and att >= 1, f"node_executions={ne} attempts={att}"))
+    return out
+
+
+def c5_continue_verdicts(head_before, head_after, dirty_before, dirty_after, restored):
+    """C5f — continue_workspace is the DEFAULT: nothing reset, the edits still on
+    disk, and zero run.checkpoint_restored events in this mode."""
+    if not str(head_before or "").strip() or not str(head_after or "").strip():
+        return [("C5f HEAD unchanged at the retry's start (continue_workspace, not a reset)",
+                 None, f"git HEAD unreadable across the restart "
+                       f"(before={str(head_before)[:12]!r} after={str(head_after)[:12]!r}) — "
+                       "the worktree could not be read inside the retry window")]
+    out = [("C5f HEAD_AFTER_RETRY_START = HEAD_BEFORE — the interrupted attempt's worktree was "
+            "reused, not reset or recreated",
+            str(head_before).strip() == str(head_after).strip(),
+            f"before={str(head_before)[:12]!r} after={str(head_after)[:12]!r}")]
+    d0, d1 = count_or_none(dirty_before), count_or_none(dirty_after)
+    out.append(("C5f the interrupted attempt's uncommitted edits survived (dirty path count did "
+                "not shrink across the retry)", d0 is not None and d1 is not None and d1 >= d0,
+                f"DIRTY_BEFORE={d0} DIRTY_AFTER={d1}"))
+    n = count_or_none(restored)
+    out.append(("C5f zero run.checkpoint_restored events — continue_workspace, NOT "
+                "restore_checkpoint (C6's policy)", n == 0, f"count={n}"))
+    return out
+
+
+def c5_final_verdicts(status, c1_keys, c5_keys):
+    """C5g — the run's final state is valid and its history was never rewritten."""
+    out = [("C5g the killed run reached 'completed' after the checkpointed retry",
+            str(status) == "completed", f"observed {status!r}")]
+    if not c1_keys or not c5_keys:
+        out.append(("C5g the run's node_instance_key set matches C1's twin run", None,
+                    "no C1 key set in this pass (CTX['c1'] empty) — the append-not-rewrite "
+                    "identity claim has nothing to compare against"))
+        return out
+    ident, only1, only5 = compare_key_sets(c1_keys, c5_keys)
+    out.append(("C5g node_instance_key SET identical to C1's twin run (01: repeated attempts "
+                "append, not overwrite)", ident, f"c1_only={only1} c5_only={only5}"))
+    if not ident:
+        ident_n, n1, n5 = compare_key_sets(collapse_iterations(c1_keys),
+                                           collapse_iterations(c5_keys))
+        out.append(("C5g iteration-normalized key set identical (the retry's loop may have "
+                    "spent a different iteration count)", ident_n,
+                    f"c1_only={n1} c5_only={n5}"))
+    return out
+
+
+def c5_budget_verdicts(attempt_limit, status, cause):
+    """C5h — the refusal arm needs a node authored with maxAttempts=1. Where the § 7.0
+    twin authors more, the precondition simply does not exist in the lab: GAP."""
+    if _int(attempt_limit) != 1:
+        return [("C5h with maxAttempts=1 the retry is refused and the run fails honestly", None,
+                 f"the killed node is authored with attempt_limit={_int(attempt_limit)} in the "
+                 "§ 7.0 twin (docs/compatibility/probes/m4/pipeline.yaml), so no node the "
+                 "worker can be killed mid-way through has a budget of 1 — the refusal arm "
+                 "needs a maxAttempts:1 long-running twin node that the lab does not ship")]
+    ok = (str(status) == "failed"
+          and str(cause).startswith("node_execution_failed:"))
+    return [("C5h with maxAttempts=1 the retry is refused and the run fails honestly",
+             bool(ok), f"status={status!r} failed_cause={str(cause)[:90]!r}")]
+
+
 def c5():
     """C5 — THE exit gate: kill the worker mid-node, retry from the last checkpoint (12 case 5).
     Acceptance: on the deterministic twin, `compose kill worker-a` during a ~40s
@@ -1573,7 +1843,220 @@ def c5():
     with retry_context{head_commit, modified_path_count}; continue_workspace is the
     DEFAULT — HEAD unchanged and dirty edits preserved; run completes with the same
     node_instance_key set; the maxAttempts=1 arm fails the run honestly."""
-    skip("C5", "docker kill mid-node → interrupted → bounded retry → completed, same volume")
+    if not CTX.get("stack_up"):
+        skip("C5", "docker kill mid-node → interrupted → bounded retry → completed, same volume")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C5", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: without the twin revision "
+                  "there is no ~40s process.exec to be killed mid-way through (C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    tw = facts.get("twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        gap("C5", "the seed manifest carries no twin variant (the deterministic pipeline whose "
+                  "~40s process.exec is the only node long enough to kill a worker inside)")
+        return
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        check("C5: alice signed in", False, "no session — the gate cannot start a run")
+        return
+    CTX["alice"] = alice
+    run_id = post_c1_run(alice, tw, f"m4x-c5-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
+                         "c5")
+    if not run_id:
+        return
+    CTX["c5_run"] = run_id
+
+    # C5a — the boundary is recorded BEFORE the kill; without it every claim
+    # below would be an inference from whatever the crash happened to leave.
+    live = c4_wait_live_attempt(run_id, 300)
+    if live is None:
+        dump_run_evidence(alice, run_id)
+        gap("C5a a live attempt to kill",
+            f"no attempt on run {run_id} was ever held by a worker within 300s (status="
+            f"{run_status(run_id)!r}) — with nothing running there is no mid-node kill, so "
+            "nothing below is measurable (evidence dumped above)")
+        return
+    att, owner, key = live["id"], live["worker"], live["key"]
+    svc = c4_worker_container(owner)
+    if svc is None:
+        gap("C5a compose kill the owning worker",
+            f"the live claim belongs to worker row {owner!r}, which is not one of this project's "
+            "two lab workers — the driver never kills a container it did not create (§ 7.0)")
+        return
+    if owner != "worker-a":
+        show("C5a note — which container gets killed",
+             f"§ 7.1 names worker-a, but the live claim landed on {owner}; the gate is about the "
+             f"OWNER dying mid-node, so {owner} is killed and this report says so")
+    show("C5a the live attempt and the boundary BEFORE the kill", psql(
+        f"SELECT a.id || ' attempt=' || a.attempt_number::text || ' worker=' || "
+        f"coalesce((SELECT name FROM workers WHERE id = a.worker_id),'-') || ' token=' || "
+        f"a.fencing_token::text || ' node=' || ne.node_instance_key FROM attempts a "
+        f"JOIN node_executions ne ON ne.id = a.node_execution_id WHERE a.id = '{att}'"))
+    ck_before = c5_checkpoint_set(psql(
+        f"SELECT node_execution_id || '|' || outputs_digest FROM run_checkpoints "
+        f"WHERE run_id = '{run_id}'"))
+    show("C5a CKPT_BEFORE (run_checkpoints: node_execution_id:outputs_digest)",
+         "\n".join(ck_before) or "(no checkpoint rows yet — the killed node is the run's first "
+                                "completed boundary)")
+    def wsrow():
+        r = psql_rows(psql(f"SELECT coalesce(state,'-') || '|' || coalesce(volume_id,'-') "
+                           f"FROM workspaces WHERE run_id = '{run_id}'"), 2)
+        return dict(zip(("state", "volume_id"), r[0])) if r else {}
+    def gitout(sh):
+        rc, out = wexec(f"git -C /workspaces/run/{run_id}/repos/app {sh}", worker=svc)
+        if rc != 0 or "fatal:" in out:
+            return ""
+        return out.strip()
+    def artcount(state):
+        return psql(f"SELECT count(*)::text FROM artifacts WHERE run_id = '{run_id}' "
+                    f"AND state = '{state}'")
+    ws_before = wsrow()
+    head_before, dirty_before = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
+    ready_before, uploading_before = artcount("ready"), artcount("uploading")
+    show("C5a HEAD_BEFORE / DIRTY_BEFORE / artifacts ready,uploading",
+         f"{head_before[:12] or '(unreadable)'} dirty={dirty_before or '(unreadable)'} "
+         f"ready={ready_before} uploading={uploading_before}")
+
+    # C5b — SIGKILL, no cleanup, no terminal write. The worker is ALWAYS started
+    # again on every exit path below: the gate must never leave the lab down.
+    try:
+        rc, out = run(COMPOSE + ["kill", owner])
+        if rc != 0:
+            gap("C5b compose kill (SIGKILL: the honest case)",
+                f"rc={rc}: {out[-240:]} — without a kill there is no crash to recover from")
+            return
+        show(f"compose kill {owner} — the owning worker and its child die together", out[-240:])
+        time.sleep(50)                             # lease 30s + reconciler tick 15s + margin
+        row = []
+        deadline = time.time() + 150
+        while time.time() < deadline:
+            row = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
+                                 f"FROM attempts WHERE id = '{att}'"), 2)
+            if row and row[0][0] == "interrupted":
+                break
+            time.sleep(3)
+        ledger = dict(zip(("status", "error_class"), row[0])) if row else {}
+        show(f"C5b the killed attempt's row ({att}) after lease 30s + reconciler 15s",
+             " | ".join(row[0]) if row else "(no row)")
+        for label, ok, detail in c5_interrupted_verdicts(ledger):
+            check(label, ok, detail)
+        ev = [dict(zip(("type", "actor_kind", "reason"), r)) for r in psql_rows(psql(
+            f"SELECT type || '|' || actor_kind || '|' || coalesce(payload->>'reason','-') "
+            f"FROM domain_events WHERE attempt_id = '{att}' AND type IN "
+            f"('node.attempt.interrupted', 'node.attempt.completed', "
+            f"'node.attempt.retry_scheduled') ORDER BY global_seq"), 3)]
+        show(f"C5b the killed attempt's journal slice ({att})",
+             "\n".join(f"{e['type']} reason={e['reason']} actor={e['actor_kind']}" for e in ev)
+             or "(no attempt-correlated rows)")
+        c5_emit(c5_journal_verdicts(ev, run_status(run_id)))
+
+        # C5c — the durable boundary must be untouched by the crash.
+        ck_after = c5_checkpoint_set(psql(
+            f"SELECT node_execution_id || '|' || outputs_digest FROM run_checkpoints "
+            f"WHERE run_id = '{run_id}'"))
+        show("C5c run_checkpoints AFTER the kill", "\n".join(ck_after) or "(none)")
+        show("C5c artifacts by state after the kill", psql(
+            f"SELECT coalesce(string_agg(state || '=' || c::text, ' '), '(none)') FROM "
+            f"(SELECT state, count(*) AS c FROM artifacts WHERE run_id = '{run_id}' "
+            f"GROUP BY state) t"))
+        c5_emit(c5_boundary_verdicts(ck_before, ck_after, ready_before, artcount("ready"),
+                                     artcount("uploading")))
+    finally:
+        rc, out = run(COMPOSE + ["start", owner])
+        show(f"compose start {owner} — the killed worker is brought back (host safety: the gate "
+             f"never leaves the lab down; rc={rc})", out[-240:] or WORKER_A)
+        wait_worker_row(owner, 120)
+
+    # C5d — same-volume reclaim: the run's workspace must be RECLAIMED, not rebuilt.
+    ws_after = wsrow()
+    show("C5d workspaces row after the worker came back", psql(
+        f"SELECT state || ' volume=' || volume_id || ' worker=' || "
+        f"coalesce((SELECT name FROM workers WHERE id = workspaces.worker_id),'-') "
+        f"FROM workspaces WHERE run_id = '{run_id}'"))
+    wev = [dict(zip(("type", "reason"), r)) for r in psql_rows(psql(
+        f"SELECT type || '|' || coalesce(payload->>'reason','-') FROM domain_events "
+        f"WHERE project_id = (SELECT project_id FROM runs WHERE id = '{run_id}') "
+        f"AND type LIKE 'workspace.%' AND run_id = '{run_id}' ORDER BY global_seq DESC "
+        f"LIMIT 5"), 2)]
+    show("C5d the run's workspace.% events (last 5)",
+         "\n".join(f"{e['type']} reason={e['reason']}" for e in wev) or "(none)")
+    c5_emit(c5_workspace_verdicts(ws_before, ws_after, wev))
+
+    # C5e — the retry: attempt 2 must carry the boundary as retry_context.
+    def attempts_of_key():
+        return [dict(zip(("attempt_number", "status", "error_class", "retry_context",
+                          "scheduled_at"), r)) for r in psql_rows(psql(
+            f"SELECT a.attempt_number::text || chr(9) || a.status || chr(9) || "
+            f"coalesce(a.error_class,'-') || chr(9) || coalesce(a.retry_context::text,'-') "
+            f"|| chr(9) || coalesce(a.scheduled_at::text,'-') FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+            f"ORDER BY a.attempt_number"), 5, sep="\t")]
+    r = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "crash"})
+    show(f"C5e POST /api/v1/runs/{run_id}/retry -> {r.status}", r.text[:300])
+    rows = attempts_of_key()
+    c5_emit(c5_retry_api_verdicts(r.status, r.text[:200], rows))
+    deadline = time.time() + 180
+    while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1 for x in rows):
+        time.sleep(5)
+        rows = attempts_of_key()
+    show(f"C5e every attempt of the killed node {key}",
+         "\n".join(f"{x['attempt_number']}: {x['status']} {x['error_class']} "
+                   f"retry_context={x['retry_context']}" for x in rows) or "(none)")
+    r = alice.get(LB, f"/api/v1/runs/{run_id}")
+    show("C5e GET /api/v1/runs/{id} (the run state the UI would show)", f"{r.status} "
+         f"{str(r.text)[:300]}")
+
+    # C5f — read the worktree DURING the retry's own window, before it can move HEAD.
+    for x in rows:
+        if _int(x.get("attempt_number")) > 1 and x.get("status") in C5_LIVE_STATES:
+            time.sleep(3)                       # let the retry attach the reclaimed worktree
+            break
+    head_after, dirty_after = gitout("rev-parse HEAD"), gitout("status --porcelain | wc -l")
+    show("C5f HEAD_AFTER_RETRY_START / DIRTY_AFTER",
+         f"{head_after[:12] or '(unreadable)'} dirty={dirty_after or '(unreadable)'}")
+    restored = psql(f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' "
+                    f"AND type = 'run.checkpoint_restored'")
+    show("C5f show the retry_context and the worktree state", psql(
+        f"SELECT a.attempt_number::text || ' ' || a.status || ' ctx=' || "
+        f"coalesce(a.retry_context::text,'(none)') FROM attempts a "
+        f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+        f"WHERE ne.node_instance_key = '{key}' AND a.run_id = '{run_id}' "
+        f"ORDER BY a.attempt_number"))
+    c5_emit(c5_retry_row_verdicts(rows, head_before, dirty_before))
+    c5_emit(c5_continue_verdicts(head_before, head_after, dirty_before, dirty_after, restored))
+    show("C5f the sentence § 7.1 C5f requires the report to repeat verbatim",
+         C5_CONTINUE_SENTENCE)
+    EVIDENCE["C5f"] = C5_CONTINUE_SENTENCE
+
+    # C5g — history is append-only and the run's final state is valid.
+    ne_rows = [dict(zip(("key", "ne", "attempts"), r)) for r in psql_rows(psql(
+        f"SELECT ne.node_instance_key || '|' || count(DISTINCT ne.id)::text || '|' || "
+        f"count(a.id)::text FROM node_executions ne LEFT JOIN attempts a "
+        f"ON a.node_execution_id = ne.id WHERE ne.run_id = '{run_id}' "
+        f"GROUP BY ne.node_instance_key ORDER BY ne.node_instance_key"), 3)]
+    c5_emit(c5_append_only_verdicts(ne_rows))
+    status, _watch = watch_run(alice, tw, run_id, 900, "c5")
+    if status is None:
+        gap("C5g the run's final state is valid", "the retried run never reached a terminal "
+                                                 "status within 900s (dumped above)")
+    c1_keys = ((CTX.get("c1") or {}).get("twin") or {}).get("keys") or set()
+    c5_emit(c5_final_verdicts(status, c1_keys, {r["key"] for r in ne_rows}))
+
+    # C5h — the budget arm.
+    limit = psql(f"SELECT attempt_limit::text FROM node_executions WHERE id = "
+                 f"(SELECT node_execution_id FROM attempts WHERE id = '{att}')")
+    show("C5h the killed node's authored attempt_limit", limit)
+    final = psql_rows(psql(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
+                           f"WHERE id = '{run_id}'"), 2)
+    c5_emit(c5_budget_verdicts(limit, final[0][0] if final else "",
+                               final[0][1] if final else ""))
+    CTX["c5"] = {"run_id": run_id, "attempt_id": att, "owner": owner, "key": key,
+                 "head_before": head_before, "dirty_before": dirty_before,
+                 "volume_before": ws_before.get("volume_id"),
+                 "volume_after": ws_after.get("volume_id"), "checkpoints": ck_after}
 
 
 def c6():
