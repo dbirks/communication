@@ -2,6 +2,7 @@ package schema_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -227,6 +228,103 @@ func TestPositionTable(t *testing.T) {
 	}
 	if _, def := schema.PositionAndDef(doc.Value, "/spec/nodes/0/config/prompt"); def == "" {
 		t.Error("PositionAndDef must name the $defs slot the walk resolved")
+	}
+}
+
+// oneofBase is a minimal valid Pipeline: the schema requires inputs and nodes,
+// and the § 9.3 sample is too large to mutate by eye (exit gate C13b).
+const oneofBase = "apiVersion: communication.dev/v1alpha1\n" +
+	"kind: Pipeline\nmetadata:\n  name: oneof-probe\nspec:\n  inputs: {type: object}\n  nodes:\n" +
+	"  - id: step\n    kind: %s\n    config: %s\n"
+
+// oneofDoc loads a minimal valid Pipeline holding one node of the given kind
+// and config, proves the base validates, and returns the tree for mutation.
+func oneofDoc(t *testing.T, kind, config string) map[string]any {
+	t.Helper()
+	var src string
+	switch kind {
+	case "agent.acp":
+		src = fmt.Sprintf(oneofBase, kind, "{profile: planner, prompt: hi}")
+	case "for_each":
+		src = fmt.Sprintf(oneofBase, kind, "\n      items: '${{ inputs.goal }}'\n      maxConcurrency: 2\n      body:\n        nodes: [{id: inner, kind: process.exec, config: {executable: python3}}]")
+	case "until":
+		src = fmt.Sprintf(oneofBase, kind, "\n      maxIterations: 2\n      passWhen: 'inputs.goal == \"x\"'\n      body:\n        nodes: [{id: inner, kind: process.exec, config: {executable: python3}}]")
+	default:
+		t.Fatalf("unknown kind %q", kind)
+	}
+	doc, ld := loader.Load([]byte(src))
+	if !ld.Valid() {
+		t.Fatalf("base document does not load: %v\n%s", ld, src)
+	}
+	if v := schema.MustCompile().Validate(doc.Value); !v.Valid() {
+		t.Fatalf("base document must validate: %v\n%s", v, src)
+	}
+	raw, err := json.Marshal(doc.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+func nodeConfig(tree map[string]any, i int) map[string]any {
+	return tree["spec"].(map[string]any)["nodes"].([]any)[i].(map[string]any)["config"].(map[string]any)
+}
+
+// mustBeAt asserts a diagnostic points at want, and that none of the other
+// root oneOf branch's noise (/kind, /metadata) came along (exit gate C13b: the
+// editor can only highlight what it is given).
+func mustBeAt(t *testing.T, d diag.List, want string) {
+	t.Helper()
+	if d.Valid() {
+		t.Fatalf("the defect validated clean; want a finding at %s", want)
+	}
+	hit := false
+	for _, x := range d {
+		if x.InstanceLocation.String() == "/kind" || x.InstanceLocation.String() == "/metadata" {
+			t.Errorf("the sibling oneOf branch leaked into the report: %s", x)
+		}
+		if x.InstanceLocation.String() == want {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("no finding at %s: %v", want, d)
+	}
+}
+
+func TestDeepErrorIsNotCrowdedOutBySiblingBranch(t *testing.T) {
+	tree := oneofDoc(t, "agent.acp", "")
+	nodeConfig(tree, 0)["typo"] = 1
+	mustBeAt(t, schema.MustCompile().Validate(tree), "/spec/nodes/0/config/typo")
+}
+
+func TestBindingInIntegerSlotReportsItsOwnSlot(t *testing.T) {
+	tree := oneofDoc(t, "for_each", "")
+	nodeConfig(tree, 0)["maxConcurrency"] = "${{ inputs.goal }}"
+	mustBeAt(t, schema.MustCompile().Validate(tree), "/spec/nodes/0/config/maxConcurrency")
+}
+
+func TestUnquotedBooleanReportsItsOwnSlot(t *testing.T) {
+	tree := oneofDoc(t, "until", "")
+	nodeConfig(tree, 0)["carryForward"] = "yes" // YAML 1.2 reads yes as a string
+	mustBeAt(t, schema.MustCompile().Validate(tree), "/spec/nodes/0/config/carryForward")
+}
+
+// TestUnknownKindKeepsEveryBranch is the unchanged half of the fix: with no
+// branch to pick, the validator's full answer is the only evidence available.
+func TestUnknownKindKeepsEveryBranch(t *testing.T) {
+	tree := oneofDoc(t, "agent.acp", "")
+	tree["kind"] = "Bogus"
+	d := schema.MustCompile().Validate(tree)
+	if d.Valid() {
+		t.Fatal("kind: Bogus validated")
+	}
+	if len(d) < 1 {
+		t.Fatalf("an unknown kind must still produce findings: %v", d)
 	}
 }
 

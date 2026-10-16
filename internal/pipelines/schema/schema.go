@@ -14,9 +14,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 
 	"github.com/dbirks/communication/internal/pipelines/canon"
 	"github.com/dbirks/communication/internal/pipelines/diag"
@@ -73,6 +75,11 @@ func MustCompile() *Validator {
 // Validate checks a loader-clean document against the schema. The result holds
 // one diagnostic per validator error unit (contract § 2.2: the source is
 // "schema", the code is schema_shape, and the location is the payload).
+//
+// When the document's kind resolves to exactly one root oneOf branch, only that
+// branch's units are reported: the sibling branch's /kind, /metadata and /spec
+// refusals describe a different document and would crowd out the deep location
+// the editor needs. An unknown or missing kind keeps every branch's findings.
 func (v *Validator) Validate(doc canon.Value) diag.List {
 	var out diag.List
 	err := v.schema.Validate(doc)
@@ -84,29 +91,152 @@ func (v *Validator) Validate(doc canon.Value) diag.List {
 		out.Addf(diag.SourceSchema, diag.CodeSchemaShape, ptr.Root, "%s", err.Error())
 		return out
 	}
-	basic := ve.BasicOutput()
-	var walk func(u jsonschema.OutputUnit)
-	walk = func(u jsonschema.OutputUnit) {
-		if u.Error != nil && u.InstanceLocation != "" {
-			out.Add(diag.Diagnostic{
-				Code:             diag.CodeSchemaShape,
-				Source:           diag.SourceSchema,
-				Message:          collapse(u.Error.String()),
-				InstanceLocation: ptr.Pointer(u.InstanceLocation),
-				SchemaLocation:   absoluteLocation(u.AbsoluteKeywordLocation),
-				Hint:             hintFor(u.Error.String()),
-			})
-			return
+	// The root oneOf is a dispatch, not a diagnosis. When the document's kind
+	// names exactly one branch, the other branch's findings are noise about a
+	// document the author is not writing (/kind, /metadata, /spec) and the
+	// editor would highlight those instead of the real miss (exit gate C13b).
+	idx, refTarget := chosenBranch(doc)
+	for _, u := range leafUnits(*ve.DetailedOutput()) {
+		if u.InstanceLocation == "" {
+			continue
 		}
-		for _, sub := range u.Errors {
-			walk(sub)
+		if idx >= 0 && !inBranch(u, idx, refTarget) {
+			continue
+		}
+		for _, d := range diagnosticsFor(u, doc) {
+			out.Add(d)
 		}
 	}
-	walk(*basic)
 	if len(out) == 0 {
 		out.Addf(diag.SourceSchema, diag.CodeSchemaShape, ptr.Root, "%s", collapse(ve.Error()))
 	}
 	return out
+}
+
+// diagnosticsFor converts one validator unit into the findings an editor can
+// highlight. An additional-properties refusal names the offending keys but
+// points at the object that holds them; the unit is reported per key instead,
+// so a misspelled field is located at its own pointer. Everything else is
+// reported where the validator put it.
+func diagnosticsFor(u jsonschema.OutputUnit, doc canon.Value) []diag.Diagnostic {
+	msg := collapse(u.Error.String())
+	base := diag.Diagnostic{
+		Code:             diag.CodeSchemaShape,
+		Source:           diag.SourceSchema,
+		Message:          msg,
+		InstanceLocation: ptr.Pointer(u.InstanceLocation),
+		SchemaLocation:   absoluteLocation(u.AbsoluteKeywordLocation),
+		Hint:             hintFor(u.Error.String()),
+	}
+	ap, ok := u.Error.Kind.(*kind.AdditionalProperties)
+	if !ok {
+		return []diag.Diagnostic{base}
+	}
+	obj, ok := atPointer(doc, u.InstanceLocation).(map[string]canon.Value)
+	if !ok {
+		return []diag.Diagnostic{base}
+	}
+	var out []diag.Diagnostic
+	for _, name := range ap.Properties {
+		if _, held := obj[name]; !held {
+			continue // the validator named something the document does not hold
+		}
+		d := base
+		d.InstanceLocation = base.InstanceLocation.Child(name)
+		out = append(out, d)
+	}
+	if len(out) == 0 {
+		return []diag.Diagnostic{base}
+	}
+	return out
+}
+
+// atPointer resolves a validator instance location against the document.
+func atPointer(doc canon.Value, location string) canon.Value {
+	cur := doc
+	for _, tok := range ptr.Pointer(location).Segments() {
+		switch v := cur.(type) {
+		case map[string]canon.Value:
+			cur = v[tok]
+		case []canon.Value:
+			i, err := strconv.Atoi(tok)
+			if err != nil || i < 0 || i >= len(v) {
+				return nil
+			}
+			cur = v[i]
+		default:
+			return nil
+		}
+	}
+	return cur
+}
+
+// leafUnits flattens the validator's output tree into the units that carry a
+// message of their own. The detailed tree is the source rather than BasicOutput
+// because the library's basic output hoists grandchildren into a flat list and,
+// where a $ref wrapper has a single cause, keeps only that cause's first child:
+// the deep unit (a misspelled key under a node config) disappears and only the
+// wrapper survives, at the wrong location.
+func leafUnits(u jsonschema.OutputUnit) []jsonschema.OutputUnit {
+	if u.Error != nil {
+		return []jsonschema.OutputUnit{u}
+	}
+	var out []jsonschema.OutputUnit
+	for _, sub := range u.Errors {
+		out = append(out, leafUnits(sub)...)
+	}
+	return out
+}
+
+// chosenBranch finds the root oneOf branch whose `kind` const equals the
+// document's kind. It returns the branch index and, when the branch is a $ref,
+// the local target it resolves to; idx is -1 when the kind is missing, unknown,
+// or claimed by more than one branch, in which case Validate keeps every
+// branch's findings as it always has.
+func chosenBranch(doc canon.Value) (int, string) {
+	kind := DocumentKind(doc)
+	if kind == "" {
+		return -1, ""
+	}
+	branches, ok := positionCache.root["oneOf"].([]any)
+	if !ok {
+		return -1, ""
+	}
+	idx, target := -1, ""
+	for i, b := range branches {
+		bm, ok := b.(map[string]any)
+		if !ok {
+			continue
+		}
+		resolved, okBranch := followRef(positionCache.root, bm)
+		if !okBranch || resolved == nil || constKind(resolved) != kind {
+			continue
+		}
+		if idx >= 0 {
+			return -1, "" // ambiguous: two branches call themselves this kind
+		}
+		idx = i
+		if ref, _ := bm["$ref"].(string); strings.HasPrefix(ref, "#") {
+			target = strings.TrimPrefix(ref, "#")
+		}
+	}
+	return idx, target
+}
+
+// inBranch reports whether a unit's schema location lies under root oneOf
+// branch idx: by keyword path (/oneOf/<i>/…), or under the $ref target that
+// path resolves to (#/$defs/PipelineDocument/…).
+func inBranch(u jsonschema.OutputUnit, idx int, refTarget string) bool {
+	if strings.HasPrefix(u.KeywordLocation, fmt.Sprintf("/oneOf/%d/", idx)) {
+		return true
+	}
+	if refTarget != "" {
+		loc := absoluteLocation(u.AbsoluteKeywordLocation)
+		if loc == refTarget || strings.HasPrefix(loc, refTarget+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // collapse keeps a validator message on one line: the API embeds these in
