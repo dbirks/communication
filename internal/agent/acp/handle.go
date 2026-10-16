@@ -60,6 +60,18 @@ type handle struct {
 	// exited is closed when cmd.Wait returns (or immediately for
 	// process-less test handles).
 	exited chan struct{}
+	// exitErr holds cmd.Wait's verdict, written before exited closes.
+	exitErrMu sync.Mutex
+	exitErr   error
+
+	// discMu guards the mid-turn disconnect record: the transport death that
+	// happened *while* a turn was in flight, if any (disconnect.go). It is
+	// sticky until the next turn begins so the caller can ask after Prompt
+	// returns, and it is cleared at the start of every turn so one death can
+	// never be blamed on a later, healthy answer.
+	discMu   sync.Mutex
+	inTurn   bool
+	turnDisc *DisconnectInfo
 
 	closeOnce sync.Once
 
@@ -259,6 +271,9 @@ func (h *handle) attachProcess(cmd *exec.Cmd, stdout io.ReadCloser) {
 		// leak if Wait blocks on a live pipe.
 		err := cmd.Wait()
 		_ = stdout.Close()
+		h.exitErrMu.Lock()
+		h.exitErr = err
+		h.exitErrMu.Unlock()
 		if err != nil && h.logger != nil {
 			h.logger.Debug("acp: agent process exited", "err", err)
 		}
@@ -266,6 +281,12 @@ func (h *handle) attachProcess(cmd *exec.Cmd, stdout io.ReadCloser) {
 }
 
 const eventBuffer = 1024
+
+// disconnectReapWait bounds how long Prompt waits for cmd.Wait to agree that
+// the peer it lost was a process that died. Sub-second on purpose: the reap
+// of a dead child is immediate, and an attempt deadline is never worth
+// microseconds of certainty.
+const disconnectReapWait = 500 * time.Millisecond
 
 // emit publishes one normalized event. It never drops the oldest unread
 // event: when the buffer is full it blocks until space frees up or the
@@ -285,6 +306,98 @@ func (h *handle) emit(ev domain.ConversationEvent) {
 	}
 }
 
+// exitDetail returns cmd.Wait's verdict as text ("" while the process lives
+// or when it exited cleanly).
+func (h *handle) exitDetail() string {
+	h.exitErrMu.Lock()
+	defer h.exitErrMu.Unlock()
+	if h.exitErr == nil {
+		return ""
+	}
+	return h.exitErr.Error()
+}
+
+// beginTurn opens a turn: any earlier disconnect record is dropped, because
+// from here on the only death that matters is one that outruns this answer.
+func (h *handle) beginTurn() {
+	h.discMu.Lock()
+	defer h.discMu.Unlock()
+	h.inTurn = true
+	h.turnDisc = nil
+}
+
+// endTurn closes a turn. The record itself stays readable (Disconnect) until
+// the next turn begins; only the in-flight window shuts.
+func (h *handle) endTurn() {
+	h.discMu.Lock()
+	defer h.discMu.Unlock()
+	h.inTurn = false
+}
+
+// recordDisconnect notes a transport death, but only while a turn is in
+// flight: a harness that answers and then exits is the protocol working as
+// designed, and its exit is not a mid-turn disconnect.
+func (h *handle) recordDisconnect(info DisconnectInfo) {
+	h.discMu.Lock()
+	defer h.discMu.Unlock()
+	if !h.inTurn || h.turnDisc != nil {
+		return
+	}
+	stored := info
+	h.turnDisc = &stored
+}
+
+// Disconnect reports the transport death observed during the turn that
+// Prompt last reported on, if any (DisconnectReporter).
+func (h *handle) Disconnect() (DisconnectInfo, bool) {
+	h.discMu.Lock()
+	defer h.discMu.Unlock()
+	if h.turnDisc == nil || h.turnDisc.Reason == "" {
+		return DisconnectInfo{}, false
+	}
+	return *h.turnDisc, true
+}
+
+// awaitReap waits a bounded moment for the process behind a closed connection
+// to be reaped, so a mid-turn death reports the stronger reason it deserves.
+// The bound keeps a wedged reap from ever stalling an attempt.
+func (h *handle) awaitReap(wait time.Duration) (DisconnectInfo, bool) {
+	if h.cmd == nil || h.exited == nil {
+		return DisconnectInfo{}, false
+	}
+	select {
+	case <-h.exited:
+		return DisconnectInfo{Reason: DisconnectReasonProcessExited, Detail: h.exitDetail()}, true
+	case <-time.After(wait):
+		return DisconnectInfo{}, false
+	}
+}
+
+// watchProcessDeath records the harness dying while the turn is open. done
+// closes the moment the SDK returns an answer, which is the ordering that
+// keeps a normal end-then-exit from reading as a disconnect.
+func (h *handle) watchProcessDeath(done <-chan struct{}) {
+	if h.cmd == nil || h.exited == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-h.exited:
+			select {
+			case <-done:
+				return
+			default:
+			}
+			h.recordDisconnect(DisconnectInfo{
+				Reason: DisconnectReasonProcessExited,
+				Detail: h.exitDetail(),
+			})
+		}
+	}()
+}
+
 // Prompt sends one user turn and blocks until it completes.
 func (h *handle) Prompt(ctx context.Context, text string) (domain.StopReason, error) {
 	h.permMu.Lock()
@@ -300,15 +413,43 @@ func (h *handle) Prompt(ctx context.Context, text string) (domain.StopReason, er
 		h.turnCtxMu.Unlock()
 	}()
 
+	h.beginTurn()
+	done := make(chan struct{})
+	h.watchProcessDeath(done)
+
 	resp, err := h.conn.Prompt(ctx, acp.PromptRequest{
 		SessionId: acp.SessionId(h.sessionID),
 		Prompt: []acp.ContentBlock{{
 			Text: &acp.ContentBlockText{Type: "text", Text: text},
 		}},
 	})
+	close(done)
 	if err != nil {
+		// The transport dying mid-turn is a transport fact, and the caller
+		// must be able to tell it from an agent that answered badly: name it
+		// once, here, rather than letting each caller re-parse SDK prose. The
+		// turn window stays open while we work out *which* death it was — a
+		// peer that vanished mid-request is usually a process that died, and
+		// the reap lands a moment after the read error.
+		info, dead := h.Disconnect()
+		if !dead {
+			info, dead = disconnectFromError(err)
+			if dead && info.Reason == DisconnectReasonConnectionClosed {
+				if reaped, ok := h.awaitReap(disconnectReapWait); ok {
+					info = reaped
+				}
+			}
+		}
+		if dead {
+			h.recordDisconnect(info)
+		}
+		h.endTurn()
+		if dead {
+			return "", &DisconnectedError{Info: info, Err: err}
+		}
 		return "", err
 	}
+	h.endTurn()
 	return mapStopReason(resp.StopReason), nil
 }
 

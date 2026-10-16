@@ -57,6 +57,26 @@ type agentSessionStub struct {
 	cancelled  chan struct{}
 	closeOnce  sync.Once
 	closed     chan struct{}
+
+	// disc, when set, makes the stub answer like an acp handle whose
+	// transport died while the turn was in flight.
+	disc *acp.DisconnectInfo
+}
+
+// Disconnect implements acp.DisconnectReporter for the stub.
+func (s *agentSessionStub) Disconnect() (acp.DisconnectInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.disc == nil {
+		return acp.DisconnectInfo{}, false
+	}
+	return *s.disc, true
+}
+
+func (s *agentSessionStub) diedMidTurn(info acp.DisconnectInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.disc = &info
 }
 
 func newAgentSessionStub(info domain.SessionInfo) *agentSessionStub {
@@ -523,6 +543,108 @@ func TestAgentTurnOutcomeMapping(t *testing.T) {
 		}
 		if res.Status != "" || res.CancelReason != "" || res.ErrorClass != "" {
 			t.Fatalf("res = %+v, want nothing honest claimed: the loop's shutdown flag writes interrupted{worker_shutdown} (§ 4 step 12)", res)
+		}
+	})
+}
+
+// TestAgentTurnMidTurnDisconnectIsNotInvalidOutput is the live15 C2 fix: a
+// harness whose ACP session died before the turn ended produced
+// invalid_output{“produced no text”}, which is not an agent verdict — the
+// agent never got to give one — and invalid_output is outside the
+// implement node's retriableErrors (docs/compatibility/probes/m4/pipeline.yaml
+// doc 1:150 [infra, interrupted, timeout, agent_error]), so the until scope
+// died unretried. ADR-0023 § 7 reserves invalid_output for a reply that
+// fails its JSON Schema; a dead harness is infra, retriable by default.
+func TestAgentTurnMidTurnDisconnectIsNotInvalidOutput(t *testing.T) {
+	t.Run("session died mid-turn, no final text: the reason rides the detail", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.sendChunk("working on it")
+			s.sendToolCall() // the buffer resets; the death follows the tool call
+			s.diedMidTurn(acp.DisconnectInfo{
+				Reason: acp.DisconnectReasonProcessExited, Detail: "exit status 7",
+			})
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed {
+			t.Fatalf("status = %q, want failed (%s)", res.Status, res.Detail)
+		}
+		if res.ErrorClass == ErrorClassInvalidOutput {
+			t.Fatalf("a dead harness was reported as an invalid answer: %+v", res)
+		}
+		if res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("error_class = %q, want infra (ADR-0023 § 7: not an agent verdict, and retriable)", res.ErrorClass)
+		}
+		for _, want := range []string{"disconnected before the turn ended", acp.DisconnectReasonProcessExited, "exit status 7"} {
+			if !strings.Contains(res.Detail, want) {
+				t.Errorf("detail %q must name the disconnect reason and carry the evidence (want %q)", res.Detail, want)
+			}
+		}
+	})
+
+	t.Run("disconnect carried on the prompt error names the transport", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(context.Context, *agentSessionStub, string) (domain.StopReason, error) {
+			return "", &acp.DisconnectedError{
+				Info: acp.DisconnectInfo{
+					Reason: acp.DisconnectReasonConnectionClosed,
+					Detail: `{"code":-32603,"message":"Internal error","data":{"error":"peer disconnected before response"}}`,
+				},
+				Err: errors.New("peer disconnected before response"),
+			}
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want failed/infra", res)
+		}
+		if !strings.Contains(res.Detail, acp.DisconnectReasonConnectionClosed) {
+			t.Errorf("detail %q must name %q", res.Detail, acp.DisconnectReasonConnectionClosed)
+		}
+	})
+
+	t.Run("a completed turn whose reply fails the schema is still invalid_output", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.sendChunk("I could not do it") // a real answer, a bad one: the schema judges it
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInvalidOutput {
+			t.Fatalf("res = %+v, want failed/invalid_output — the disconnect rule must not swallow real schema failures", res)
+		}
+	})
+
+	t.Run("a late death never undoes an answer that arrived", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.sendChunk(`{"summary":"done"}`)
+			s.diedMidTurn(acp.DisconnectInfo{Reason: acp.DisconnectReasonProcessExited, Detail: "exit status 0"})
+			return domain.StopEndTurn, nil // the response arrived first: the turn ended
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want succeeded — the harness answered before it exited", res)
 		}
 	})
 }

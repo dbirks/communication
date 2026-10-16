@@ -18,6 +18,10 @@ import (
 const (
 	fakeSessionID = "fake-session"
 	fakeEnvMarker = "ACP_GO_TEST_FAKE_AGENT"
+	// fakeDieMidTurnEnv makes the stdio fake answer a prompt by streaming a
+	// chunk, opening a tool call, and killing itself: the live-harness death
+	// the disconnect classification exists for.
+	fakeDieMidTurnEnv = "ACP_GO_TEST_DIE_MID_TURN"
 )
 
 // TestMain re-executes the test binary as a minimal ACP agent process for
@@ -676,6 +680,18 @@ func TestRingBufferKeepsLastBytes(t *testing.T) {
 func runFakeAgentProcess() {
 	fmt.Fprintln(os.Stderr, "fake-agent stderr noise")
 	ag := newFakeAgent()
+	if os.Getenv(fakeDieMidTurnEnv) == "1" {
+		ag.promptFn = func(ctx context.Context, f *fakeAgent) (acp.PromptResponse, error) {
+			send := func(u acp.SessionUpdate) { _ = f.conn.SessionUpdate(ctx, sessionUpdate(u)) }
+			send(acp.SessionUpdate{AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
+				SessionUpdate: "agent_message_chunk", Content: textBlock("working on it")}})
+			send(acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
+				SessionUpdate: "tool_call", ToolCallId: "t1", Title: "edit hello.py"}})
+			// No answer after the tool call: the process is gone.
+			os.Exit(7)
+			return acp.PromptResponse{}, nil
+		}
+	}
 	asc := acp.NewAgentSideConnection(ag, os.Stdout, os.Stdin)
 	ag.bind(asc, os.Stdout)
 	<-asc.Done()

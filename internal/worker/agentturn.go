@@ -646,6 +646,11 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		p := <-pproc
 		stop, promptErr = p.stop, p.err
 	}
+	// Ask the session before retiring it: did its transport die while this
+	// turn was in flight? ACP handles answer (acp.DisconnectReporter); a
+	// session that cannot answer is honest absence, not a disconnect.
+	discInfo, midTurnDisc := acp.SessionDisconnect(sess)
+
 	_ = sess.Close()
 	select {
 	case <-pdone:
@@ -663,7 +668,17 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	if endTurn {
 		built, fail := a.attachOutputs(c, spec, prof, final.text())
 		if fail != nil {
-			res = *fail
+			// Extraction refused the reply. Before blaming the agent's answer,
+			// ask whether there was an answer to blame: a harness whose
+			// transport died mid-turn leaves a silence, and ADR-0023 § 7 does
+			// not let that silence be reported as invalid_output — the class is
+			// reserved for a reply that fails its schema. A completed turn with
+			// a bad reply still says invalid_output (the case below).
+			if midTurnDisc {
+				res = failedResult(ErrorClassInfra, disconnectDetail(discInfo))
+			} else {
+				res = *fail
+			}
 		} else {
 			built.Checkpoint = a.checkpointFor(ctx, c, spec, prof, built.OutputsDigest)
 			if built.Checkpoint.VolumeID == "" {
@@ -1114,7 +1129,13 @@ func (a *AgentTurn) mapTurnOutcome(ctx context.Context, stop domain.StopReason, 
 		return AttemptResult{CancelReason: CancelReasonACPAck}
 	case promptErr != nil:
 		// The session died or errored mid-turn with no stop request: honest
-		// infra, exactly M2's mapOutcome failed arm.
+		// infra, exactly M2's mapOutcome failed arm. A death the adapter
+		// proved was a disconnect is named for what it is — the reason rides
+		// the detail, because "the agent said nothing" and "the agent was
+		// killed" are different stories for the retry that follows.
+		if info, ok := acp.DisconnectInfoOf(promptErr); ok {
+			return failedResult(ErrorClassInfra, disconnectDetail(info))
+		}
 		return failedResult(ErrorClassInfra, "agent session failed mid-turn: "+bounded(promptErr.Error(), 400))
 	case stop == domain.StopRefusal:
 		return failedResult(ErrorClassAgentError, "agent refused the prompt turn (ACP stopReason refusal)")
@@ -1131,6 +1152,25 @@ func (a *AgentTurn) mapTurnOutcome(ctx context.Context, stop domain.StopReason, 
 		// result here is the caller's branch marker, not a terminal.
 		return AttemptResult{}
 	}
+}
+
+// disconnectDetail is the honest sentence for a session that went away
+// before its turn ended. ADR-0023 § 7 keeps the classes apart: invalid_output
+// is a reply that fails its JSON Schema, and here there is no reply — the
+// harness died. The class is infra, the word this executor already uses for a
+// dead agent (a dead agent is not an agent verdict), and § 7 leaves infra
+// retriable by default, so a crashing harness costs an attempt, not the node.
+func disconnectDetail(info acp.DisconnectInfo) string {
+	reason := strings.TrimSpace(info.Reason)
+	if reason == "" {
+		reason = "unobserved"
+	}
+	detail := "agent session disconnected before the turn ended (" + reason
+	if ev := strings.TrimSpace(info.Detail); ev != "" {
+		detail += ": " + bounded(ev, 240)
+	}
+	detail += ") — the ACP turn never completed, so there is no reply for the output schema to judge; invalid_output is reserved for a reply that violates its schema (ADR-0023 § 7)"
+	return bounded(detail, 512)
 }
 
 // ptrResult lifts a value refusal into the pointer the parse helpers return.
