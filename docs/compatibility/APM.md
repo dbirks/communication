@@ -158,3 +158,63 @@ local-path case).
 - T5: single-skill selection persists in both apm.yml and the lock, so it
   survives frozen per-run staging; the `--skill` flag itself is not needed by
   `Stage` (manifest-authored is enough).
+
+## Profile APM package end to end (2026-10-16)
+
+Lab: compose project `communication-m4` (LB :18091, api-a/b :18092/:18093,
+worker-a/worker-b), seeded at HEAD. Profile `skills-demo` (launcher claude,
+permission_mode `ask`) pins `mattpocock/skills#v1.3.1` / target `claude` /
+digest `sha256:f6bfa2d6…e33`. Scratch client: `$HOME/.cache/apm-e2e/probe.py`
+(login + conversation helpers copied from `e2e/m4/e2e_m4_exit.py`).
+
+Steps: alice → `POST /api/v1/projects/<M4 Exit>/conversations` with
+`agent_profile_id=skills-demo` + the prompt "List the names of the skills
+available to you in .claude/skills, one per line, nothing else." → poll
+`GET /api/v1/conversations/<id>` → read `domain_events`.
+
+**Verdict: FAIL (end to end) — staging refuses before the agent launches.**
+Turn `01a143bc-f8d5-7848-92b3-60e4a4926d67` → `failed` in 0.8s; no
+`conversation.message.agent`, no permission prompt, nothing in `.claude/`.
+
+Literal evidence (`conversation.turn.failed`, also the only apm worker log line):
+
+```
+worker: stage apm context into app: apm install --frozen --target claude in
+/workspaces/conversation/01a143bc-f8d4-7dd6-8113-ae62e979919b/work/repos/app:
+exit status 1 ([x] No apm.yml found
+[i] Run 'apm init' to create one, or:
+[i]   apm install <org/repo> to auto-create + install
+[!] Install interrupted after 0.0s.)
+```
+(worker-b-1, `logs worker-a worker-b --since 20m | grep -i apm`; ran on
+`communication-m4-worker-b-1`)
+
+```
+$ ls -a …/work/repos/app   ->  . .. .git README.md hello.py pytest.ini tests
+$ find …/<workspace> -maxdepth 5 -name .claude   ->  (none; only work/home/.cache/apm)
+```
+
+**Finding F1 (the blocker).** No code path turns `apm_package_ref` into an
+`apm.yml` in the run checkout (`grep -rn "apm.yml" internal/` → comments only);
+`Stage` runs the install against a checkout that carries only what the project
+repo tracks — and the M4 fixture repo tracks no manifest. So every APM-pinned
+profile fails the turn at staging. Fix sketch (not applied): `prepare`/`Stage`
+must materialize the manifest (`dependencies.apm: [<ref>]`, object form for
+`--skill`/subdirectory refs) into the checkout *before* `apm install`, and keep
+it in the exclusion set so it never reaches a checkpoint.
+
+**Finding F2 (`--frozen` cannot bootstrap a lock).** Proven offline in the same
+image (`communication-m4-worker-b-1`, throwaway `/tmp`, `HOME` per run): with
+`apm.yml` authored but no lock, `apm install --frozen --target claude` →
+`[x] --frozen requires apm.lock.yaml to exist at …`. `apm lock` writes it
+(`[+] mattpocock/skills #v1.3.1 @24fe0ef7`), then frozen install →
+"Lockfile presence verified", `sha256(apm.lock.yaml) =
+f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33` — **equal to
+the pin** — and `.claude/skills/grill-me/SKILL.md` present. So `Stage`'s
+install-then-compare order can never work for a fresh checkout: the lock has to
+come from `apm lock` (or be tracked in the repo), which is what T4's "lock is
+generated with `apm lock`" note already says.
+
+Next: implement F1+F2 (materialize apm.yml + `apm lock`, or track a lock) and
+re-run this probe; PASS requires the reply to name `grill-me` and the checkout
+to contain `.claude/skills/grill-me/SKILL.md`.
