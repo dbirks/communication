@@ -2632,6 +2632,570 @@ def c6():
     skip("C6", "restore_checkpoint reset is real; the loss arm says 'lost', never 'resumed'")
 
 
+# --- C7 pure logic — unit-tested offline by e2e/m4/test_c7_logic.py -----------
+# Verdict algebra for the `until`-never-passes gate (docs/m4-contract.md § 7.1 C7).
+# Every verdict is computed over canned ledger rows, canned journal payloads and the
+# canned document splices, so the live half only has to read Postgres and the draft
+# routes. `ok is None` is an honest GAP (the lab produced no row to measure — e.g. no
+# iteration ever opened); a loop that overshoots maxIterations, or an exhaustion run
+# whose `pass_when_result` was ever null, is always a FAIL: ADR-0022 § 3 makes
+# indeterminate an ERROR, never a false, and `until_exhausted` is only honest if the
+# bound was reached by evaluating the predicate maxIterations times.
+
+C7_UNTIL_KEY = "/build_until_verified"
+C7_BODY_NODES = ("implement", "test", "review")
+C7_PROBE_NODE = "prev_probe"          # the has(previous.*)-gated C7d witness
+C7_MAX_ITERATIONS = 3                 # § 7.1 C7: the re-authored bound (seed ships 4)
+C7_ARTIFACT_PREFIX = "test-"
+C7_EVAL_CAP = 10000                   # § 6 'Evaluations per run'
+C7_ROUTE = "needs_attention"          # /verdict's default arm — the authors' exhausted path
+C7_NOOP_STEP = "plan"                 # m4-exit.sh's edit-free step: prints {plan}, writes no file
+C7_TERMINAL = ("succeeded", "failed", "skipped", "cancelled", "interrupted")
+
+
+def c7_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c7_split_key(key):
+    """'/build_until_verified[2]/review' -> (2, 'review'); None outside the loop body."""
+    m = re.match(rf"^{re.escape(C7_UNTIL_KEY)}\[(\d+)\]/([A-Za-z0-9_-]+)$", key or "")
+    return (int(m.group(1)), m.group(2)) if m else None
+
+
+def c7_body_rows(text):
+    """'key|status|attempt_count|outputs' ledger rows -> loop-body rows.
+    Keys outside the until body are dropped; an unreadable attempt count stays None
+    so the attempt verdict FAILS rather than reading as a clean zero."""
+    out = []
+    for key, st, att, outs in psql_rows(text, 4):
+        pair = c7_split_key(key)
+        if not pair:
+            continue
+        out.append({"key": key, "n": pair[0], "node": pair[1], "status": st,
+                    "attempts": count_or_none(att),
+                    "has_outputs": outs.strip() not in ("", "<none>", "NULL")})
+    return out
+
+
+def c7_iteration_count(rows):
+    """Highest iteration index with a body row (0 when the loop never opened)."""
+    return max([r["n"] for r in rows or []], default=0)
+
+
+def c7_exhausted_verdicts(rows, run_st="", run_cause="", max_iter=C7_MAX_ITERATIONS,
+                          want=C7_BODY_NODES):
+    """C7a/C7b — the bound held: the run failed until_exhausted, exactly
+    max_iter iterations x len(want) body nodes, every row terminal, every
+    iteration's own row/attempt/output preserved (append-only, never overwritten)."""
+    v = [("C7a runs status|failed_cause = failed|until_exhausted",
+         None if not run_st else (run_st == "failed" and run_cause == "until_exhausted"),
+         f"observed {run_st!r}|{run_cause!r}")]
+    if not rows:
+        v.append((f"C7a node_executions carry {max_iter} iterations x {len(want)} body nodes, "
+                  "all terminal (no infinite loop)", None,
+                  f"no {C7_UNTIL_KEY}[n]/* rows — the loop never opened, so the bound "
+                  "cannot be measured (the run row above is the only evidence)")
+        )
+        return v
+    ns = sorted({r["n"] for r in rows})
+    top = c7_iteration_count(rows)
+    body = [r for r in rows if r["node"] in want]
+    pairs = sorted({(r["n"], r["node"]) for r in body})
+    keys = [r["key"] for r in rows]
+    nonterm = sorted({r["key"] + ":" + r["status"] for r in body if r["status"] not in C7_TERMINAL})
+    dupes = sorted({f"{k}x{keys.count(k)}" for k in set(keys) if keys.count(k) > 1})
+    v += [
+        (f"C7a exactly {max_iter} iterations of the loop, no overshoot (top iteration={top})",
+         ns == list(range(1, max_iter + 1)), f"iterations={ns} want 1..{max_iter}"),
+        (f"C7a {max_iter} x {len(want)} = {max_iter * len(want)} body rows, all terminal "
+         f"(observed {len(body)})", len(body) == max_iter * len(want) and not nonterm,
+         f"{len(body)} rows; non-terminal={nonterm or 'none'}"),
+        ("C7b every iteration ran every body node (distinct (iteration,node) pairs)",
+         pairs == sorted((i, n) for i in range(1, max_iter + 1) for n in want),
+         f"{len(pairs)} pairs: {pairs[:4]}…"),
+        ("C7b append-only: one node_execution row per iteration key (never reused)",
+         not dupes, f"duplicate keys={dupes or 'none'}"),
+        ("C7b each iteration's attempt_count >= 1 (its own attempt, not a shared one)",
+         None if any(r["attempts"] is None for r in body)
+         else all(r["attempts"] >= 1 for r in body),
+         f"counts={[r['attempts'] for r in body]}"),
+        ("C7b each iteration's outputs are preserved and readable",
+         all(r["has_outputs"] for r in body),
+         f"missing outputs={[r['key'] for r in body if not r['has_outputs']] or 'none'}"),
+    ]
+    return v
+
+
+def c7_event_verdicts(events, max_iter=C7_MAX_ITERATIONS):
+    """C7b — the journal tells the exhaustion story in order: `pass_when_result=false`
+    once per iteration, then node.scope.failed{until_exhausted, evidence:[…]}, then
+    run.failed{until_exhausted, evidence_artifacts:[…]}. A null pass_when_result is a
+    FAIL here (indeterminate must be predicate_error, ADR-0022 § 3), not a gap."""
+    ev = [e for e in (events or []) if isinstance(e, dict) and e.get("type")]
+    if not ev:
+        return [("C7b journal: node.scope.iteration x3 pass_when_result=false then "
+                 "node.scope.failed then run.failed", None,
+                 "no journal rows readable — the exhaustion story is unmeasurable")]
+    idx = {t: [i for i, e in enumerate(ev) if e["type"] == t] for t in
+           ("node.scope.iteration", "node.scope.failed", "run.failed")}
+    its = [dict(e.get("payload") or {}) for e in (ev[i] for i in idx["node.scope.iteration"])]
+    pw = [p.get("pass_when_result") for p in its]
+    v = [
+        (f"C7b node.scope.iteration x{max_iter}", None if not its else len(its) == max_iter,
+         f"{len(its)} rows, iterations={[p.get('iteration') for p in its]}"),
+        ("C7b every node.scope.iteration carries pass_when_result=false (never null/true)",
+         None if not its else all(p is False for p in pw), f"pass_when_result={pw}"),
+        ("C7b node.scope.iteration precedes node.scope.failed precedes run.failed",
+         bool(idx["node.scope.failed"]) and bool(idx["run.failed"])
+         and idx["node.scope.iteration"] and max(idx["node.scope.iteration"])
+         < idx["node.scope.failed"][0] < idx["run.failed"][0],
+         f"seq idx={{{', '.join(f'{k0}:{idx[k0][:3]}' for k0 in idx)}}}"),
+    ]
+    sf = [dict(e.get("payload") or {}) for e in (ev[i] for i in idx["node.scope.failed"])]
+    rf = [dict(e.get("payload") or {}) for e in (ev[i] for i in idx["run.failed"])]
+    v += [
+        ("C7b node.scope.failed{failed_cause: until_exhausted, evidence non-empty}",
+         bool(sf) and any(p.get("failed_cause") == "until_exhausted"
+                           and isinstance(p.get("evidence"), list) and p.get("evidence")
+                           for p in sf),
+         f"causes={[p.get('failed_cause') for p in sf]} "
+         f"evidence_len={[len(p.get('evidence') or []) for p in sf]}"),
+        ("C7b run.failed{failed_cause: until_exhausted, evidence_artifacts non-empty}",
+         bool(rf) and any(p.get("failed_cause") == "until_exhausted"
+                          and isinstance(p.get("evidence_artifacts"), list)
+                          and p.get("evidence_artifacts") for p in rf),
+         f"causes={[p.get('failed_cause') for p in rf]} "
+         f"artifacts={[len(p.get('evidence_artifacts') or []) for p in rf]}"),
+        ("C7b NO run.completed on the exhausted run",
+         not any(e["type"] == "run.completed" for e in ev), "run.completed present"),
+    ]
+    return v
+
+
+def c7_artifact_verdicts(names, want=C7_MAX_ITERATIONS, prefix=C7_ARTIFACT_PREFIX):
+    """C7b — per-iteration evidence preserved: one `test-<n>` artifact per iteration,
+    distinct names (append-only — an overwrite would collapse the set)."""
+    names = [str(x).strip() for x in (names or []) if str(x).strip()]
+    if not names:
+        return [(f"C7b artifacts: {want} distinct '{prefix}*' rows (per-iteration evidence)",
+                 None, "no artifact rows readable for this run")]
+    hit = sorted({n for n in names if n.startswith(prefix)})
+    return [
+        (f"C7b artifacts: {want} distinct '{prefix}*' rows (one per iteration)",
+         len(hit) == want, f"{len(hit)} of {want}: {hit[:6]}"),
+        ("C7b evidence artifacts are append-only (no duplicate name per iteration)",
+         len(hit) == len([n for n in names if n.startswith(prefix)]),
+         f"names={sorted(names)[:8]}"),
+    ]
+
+
+def c7_route_verdicts(root_rows, rb=None, max_iter=C7_MAX_ITERATIONS):
+    """C7a/C7f — the route the pipeline AUTHORS takes when the loop exhausts:
+    /verdict defaults to needs_attention, so publish_needs_attention succeeded and
+    publish_verified skipped. root_rows: 'key|status|outcome' of the ROOT scope."""
+    rows = {k.strip(): (s.strip(), o.strip()) for k, s, o in psql_rows(root_rows, 3)}
+    out = [] if rows else [("C7f /verdict routes the exhausted loop to needs_attention",
+                            None, "no root-scope rows readable")]
+    def st(key):
+        return rows.get(key, ("", ""))[0]
+    if rows:
+        out += [
+            ("C7f /build_until_verified failed with until_exhausted (root row)",
+             st(C7_UNTIL_KEY) == "failed", f"{st(C7_UNTIL_KEY)!r}"),
+            (f"C7f /verdict took the authored default route {C7_ROUTE!r}",
+             st("/verdict") == "succeeded"
+             and rows.get("/verdict", ("", ""))[1] in (C7_ROUTE, "-", ""),
+             f"/verdict={rows.get('/verdict', ('absent','?'))}"),
+            (f"C7f /publish_needs_attention succeeded (the exhausted path ran)",
+             st("/publish_needs_attention") == "succeeded", f"{st('/publish_needs_attention')!r}"),
+            ("C7f /publish_verified skipped (the passing path did NOT)",
+             st("/publish_verified") == "skipped", f"{st('/publish_verified')!r}"),
+        ]
+    rb = rb if isinstance(rb, dict) else {}
+    it = rb.get("iterations")
+    out.append((f"C7f the until scope's own ledger row reports iterations == {max_iter}",
+                None if it is None else (isinstance(it, int) and not isinstance(it, bool)
+                                         and it == max_iter),
+                f"iterations={it!r} (root scope statuses above are the routed half)"))
+    return out
+
+
+def c7_budget_verdicts(evals, detail=None, cap=C7_EVAL_CAP):
+    """C7g — every when/passWhen/resultBindings evaluation is COUNTED in
+    runs.expression_evaluations (§ 5.1 step 3): a loop that evaluated the predicate
+    three times cannot report zero, and the count must stay under the § 6 cap."""
+    n = count_or_none(evals)
+    v = [("C7g runs.expression_evaluations counted (> 0, <= "
+          f"{cap} per § 6)", None if n is None else 0 < n <= cap, f"observed {evals!r}"),
+         ("C7g the count grows with the iterations (>= one passWhen per iteration)",
+          None if n is None else n >= C7_MAX_ITERATIONS,
+          f"{n} evaluations over {C7_MAX_ITERATIONS} iterations")]
+    if detail is not None:
+        v.append(("C7g GET /runs/{id} reports expression_evaluations (ledger agree)",
+                  detail == n, f"api={detail!r} ledger={n!r}"))
+    return v
+
+
+def c7_predicate_error_verdicts(vresp=None, scope_row=None, run_st="", events=None,
+                                body_rows=None):
+    """C7c — indeterminate is NOT false (ADR-0022 § 3). Two legal arms:
+    (1) validate refuses the passWhen with unknown_field because the review node
+    DECLARES its outputs — publish-time refusal, no run exists to fail; or
+    (2) the document validates and the run must then fail the SCOPE at once with
+    predicate_error, stop at iteration 1 and never complete."""
+    codes = {str((e or {}).get("code") or "") for e in
+             ((vresp or {}).get("errors") if isinstance(vresp, dict) else []) or []}
+    refused = bool(codes & {"unknown_field", "undeclared_output_schema", "predicate_error"})
+    if vresp is not None and refused:
+        return [
+            ("C7c passWhen over an undeclared output refused at validate (unknown_field)",
+             True, f"codes={sorted(codes)}"),
+            ("C7c the SAME rule at eval time (predicate_error, iterations_stopped=1)",
+             None, "the schema-declared field is refused at publish time, so the contract's "
+                   "other arm (an eval error failing the scope) has no published document to "
+                   "run — the eval arm is proven offline in test_c7_logic.py"),
+        ]
+    scope_row = scope_row or {}
+    ev = [e for e in (events or []) if isinstance(e, dict)]
+    its_stopped = c7_iteration_count(c7_body_rows(body_rows) if isinstance(body_rows, str)
+                                    else (body_rows or []))
+    return [
+        ("C7c node.scope.failed{failed_cause: predicate_error} — never counted false",
+         scope_row.get("failed_cause") == "predicate_error", f"scope row={scope_row}"),
+        ("C7c iterations_stopped=1 (no iteration-2 body rows, no second passWhen)",
+         None if not its_stopped else its_stopped == 1, f"top iteration with body rows={its_stopped}"),
+        ("C7c NO run.completed (the scope failed at once)",
+         not any(e.get("type") == "run.completed" for e in ev),
+         "run.completed present" if ev else None),
+        ("C7c the run reaches failed (it does not complete on an indeterminate predicate)",
+         None if not run_st else run_st == "failed", f"observed {run_st!r}"),
+    ]
+
+
+def c7_carry_verdicts(probe_rows, prompt_text=None):
+    """C7d — carryForward: `previous` is an empty object on iteration 1 and non-empty
+    from iteration 2 on. Measured, not asserted: the re-authored loop carries a
+    `when: has(previous.review_feedback)` probe node, so iteration 1 must read
+    `skipped` and every later iteration `succeeded`. The twin is process.exec, so it
+    has no prompt echoing `previous` — that half of C7d belongs to the agent variant's
+    transcript and is GAPped here rather than inferred."""
+    rows = [tuple(r) for r in (psql_rows(probe_rows, 2) if isinstance(probe_rows, str)
+                              else [tuple(r) for r in (probe_rows or [])])]
+    seen = {}
+    for n, st in rows:
+        try:
+            seen[int(n)] = st
+        except ValueError:
+            continue
+    v = [("C7d `previous` empty on iteration 1 (has(previous.*) probe skipped), "
+          "non-empty on iteration 2+ (probe terminal-not-skipped)",
+          None if not seen else (seen.get(1) == "skipped"
+                                 and all(s in ("succeeded",) for i, s in seen.items()
+                                         if i >= 2) and any(i >= 2 for i in seen)),
+          f"probe rows by iteration={{{', '.join(f'{k}:{v0}' for k, v0 in sorted(seen.items()))}}}"),
+         ("C7d the twin's prompt echoes `previous` (transcript line)",
+          None if prompt_text is None else "previous" in prompt_text,
+          "the deterministic twin's body is process.exec — there is no prompt and no "
+          "conversation.turn transcript to echo `previous` (C7d's transcript half is the "
+          "agent variant's, whose prompt the § 9.3 sample guards with has()); the ledger "
+          "witness above is what this lab can actually measure")]
+    return v
+
+
+def c7_node_block(doc, node_id):
+    """(start, end, indent) of a `- id: <node_id>` block in a pipeline YAML document,
+    end being the next sibling `- id:` line or a dedent; None when absent."""
+    lines = (doc or "").splitlines(keepends=True)
+    start, indent = None, ""
+    for i, ln in enumerate(lines):
+        s = ln.rstrip("\n")
+        if s.strip() == f"- id: {node_id}":
+            start, indent = i, s[:len(s) - len(s.lstrip())]
+            break
+    if start is None:
+        return None
+    for j in range(start + 1, len(lines)):
+        s = lines[j].rstrip("\n")
+        if not s.strip():
+            continue
+        cur = s[:len(s) - len(s.lstrip())]
+        if len(cur) < len(indent) or (len(cur) == len(indent) and s.strip().startswith("- id:")):
+            return (start, j, indent)
+    return (start, len(lines), indent)
+
+
+def c7_exhaustion_doc(doc, name, max_iter=C7_MAX_ITERATIONS, pass_when=None):
+    """Re-author the seed twin for C7 WITHOUT editing the fixture (README: 'publish
+    extra revisions, don't widen this one'): maxIterations->3, the implementer's step
+    argument switched to m4-exit.sh's edit-free `plan` step (a true no-op: it prints
+    {plan} and touches no file, so passWhen can never become true), its output schema
+    and the until's resultBinding follow that rename, and a has(previous.review_feedback)
+    probe node witnesses C7d. pass_when, when given, replaces the predicate wholesale —
+    that is C7c's indeterminate arm. Returns {doc, applied, missing}."""
+    out = {"doc": None, "applied": [], "missing": []}
+    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
+        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is not "
+                              "a kind: Pipeline document)")
+        return out
+    text, applied, missing = doc, [], []
+
+    def sub(pat, rep, label, flags=0, count=1):
+        nonlocal text
+        new, k = re.subn(pat, rep, text, count=count, flags=flags)
+        (applied if k == count else missing).append(label)
+        text = new
+
+    sub(r"(?m)^(  name: ).*$", rf"\g<1>{name}", "metadata.name")
+    sub(r"maxIterations: \d+", f"maxIterations: {max_iter}", f"maxIterations: {max_iter}")
+    if "carryForward: true" not in text:
+        missing.append("carryForward: true already authored (C7d needs it)")
+    blk = c7_node_block(text, "implement")
+    if not blk:
+        missing.append("the until body's implement node")
+    else:
+        s, e, _ind = blk
+        src = text.splitlines(keepends=True)
+        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
+
+        def repl(pat, rep, label, sub_re=None):
+            nonlocal body
+            new, k = re.subn(pat, rep, body, count=1)
+            (applied if k else missing).append(label)
+            body = new
+
+        repl(r"args: ?\[\s*implement\s*\]", f"args: [{C7_NOOP_STEP}]",
+             f"implement step switched to m4-exit.sh {C7_NOOP_STEP} (a true no-op: it prints "
+             "{plan} and writes no file, so passWhen can never turn true)")
+        repl(r"required: \[summary\]", "required: [plan]",
+             "implement outputs.required -> [plan] (the no-op's own shape)")
+        repl(r"summary: \{type: string\}", "plan: {type: string}",
+             "implement outputs.properties.plan declared")
+        text = head + body + tail
+    sub(r"nodes\.implement\.outputs\.summary", "nodes.implement.outputs.plan",
+        "until resultBindings read outputs.plan")
+    if pass_when:
+        new, k = re.subn(r"(?m)^(\s*)passWhen: .*$",
+                         lambda m: f"{m.group(1)}passWhen: {pass_when}", text, count=1)
+        (applied if k else missing).append(f"passWhen := {pass_when[:40]}")
+        text = new
+    m = re.search(r"(?m)^([ \t]{4,})resultBindings:\s*$", text)
+    if not m:
+        missing.append("the until's resultBindings anchor (nowhere to splice the "
+                       f"{C7_PROBE_NODE} witness node)")
+    else:
+        ind = m.group(1)
+        text = text[:m.start()] + C7_PROBE_NODE_DOC.replace("@@IND@@", ind) + text[m.start():]
+        applied.append(f"{C7_PROBE_NODE} has(previous.review_feedback) witness node spliced into the body")
+    out["applied"], out["missing"] = applied, missing
+    out["doc"] = None if missing else text
+    return out
+
+
+C7_PROBE_NODE_DOC = """@@IND@@  - id: prev_probe
+@@IND@@    kind: process.exec
+@@IND@@    timeoutSeconds: 300
+@@IND@@    when: has(previous.review_feedback)
+@@IND@@    retry:
+@@IND@@      maxAttempts: 1
+@@IND@@    config:
+@@IND@@      executable: m4-exit.sh
+@@IND@@      args: [review]
+@@IND@@      workspace:
+@@IND@@        mode: read_only
+@@IND@@        repositories: ['${{ inputs.repository }}']
+@@IND@@      outputExtraction: {mode: json_from_stdout}
+@@IND@@    outputs:
+@@IND@@      type: object
+@@IND@@      required: [approved]
+@@IND@@      properties:
+@@IND@@        approved: {type: boolean}
+@@IND@@        evidence: {type: string}
+"""
+
+
+def c7_doc_verdicts(splices, max_iter=C7_MAX_ITERATIONS):
+    """Honesty gate on the re-authored document itself: every splice the gate claims
+    must have applied, or nothing downstream proves C7 (a loop that can still pass,
+    or a maxIterations the gate never changed, would make every later verdict a lie)."""
+    sp = splices or {}
+    applied, missing = sp.get("applied") or [], sp.get("missing") or []
+    doc = sp.get("doc")
+    v = [(f"C7 re-authored twin: maxIterations {max_iter} spliced from the seed revision",
+          any(f"maxIterations: {max_iter}" in a for a in applied), f"applied={applied[:3]}")]
+    v.append(("C7 re-authored twin: the implementer is the fixture's no-op step",
+              any("no-op" in a for a in applied),
+              f"applied={[a for a in applied if 'implement' in a]}"))
+    if missing:
+        v.append(("C7 re-authored twin: every required splice applied", False,
+                  f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append((f"C7 authored doc no longer runs the editing implement step",
+                  "args: [implement]" not in doc and f"maxIterations: {max_iter}" in doc,
+                  f"{len(doc)} bytes"))
+        v.append(("C7d authored doc carries the has(previous.review_feedback) witness",
+                  f"id: {C7_PROBE_NODE}" in doc and "has(previous.review_feedback)" in doc,
+                  "probe node present"))
+    return v
+
+
+# --- C7 live helpers — re-author the twin through the public draft routes ------
+
+
+def c7_sql(sql, what):
+    """C7's psql reader: text, or None (an honest GAP upstream) with the failure
+    printed — a ledger that will not answer is never read as a zero."""
+    try:
+        return psql(sql)
+    except RuntimeError as e:
+        show(f"C7 {what} (psql)", str(e)[:240])
+        return None
+
+
+def c7_twin_doc(admin, revision_id):
+    """GET /revisions/{id}/document?format=yaml — the exported twin bytes C7 splices.
+    None unless the body is a Pipeline document (a YAML that is not one cannot be
+    re-authored into the exhaustion twin without editing the fixture)."""
+    if not revision_id:
+        return None
+    r = admin.get(LB, f"/api/v1/revisions/{revision_id}/document?format=yaml")
+    show(f"C7 GET /revisions/{revision_id}/document -> {r.status}", (r.text or "")[:110])
+    return r.text if r.status == 200 and "apiVersion:" in (r.text or "")[:400] else None
+
+
+def c7_publish(admin, pipeline_id, tag, doc):
+    """draft -> validate -> publish the gate's OWN revision through the library role
+    (the seed's published revisions are immutable and stay untouched).
+    {revision_id, vresp, raw, validate_status, publish_status} or None."""
+    res = c13_draft_probe(admin, pipeline_id, tag, doc, publish=True)
+    if not res:
+        return None
+    body = res.get("publish_body") or {}
+    rid = str(body.get("id") or "") if res.get("publish_status") == 201 else ""
+    if not rid and res.get("publish_status") == 409:
+        rid = str(body.get("existing_revision_id") or "")   # identical digest already published
+    return {"revision_id": rid, "vresp": res.get("vresp"), "raw": res.get("raw"),
+            "validate_status": res.get("validate_status"),
+            "publish_status": res.get("publish_status")}
+
+
+def c7_body_sql(run_id):
+    """'key|status|attempt_count|outputs' for every until-body row."""
+    return (f"SELECT node_instance_key || '|' || status || '|' || attempt_count::text || '|' || "
+            f"COALESCE(outputs::text,'<none>') FROM node_executions WHERE run_id = '{run_id}' "
+            f"AND node_instance_key LIKE '{C7_UNTIL_KEY}[%' ORDER BY node_instance_key")
+
+
+def c7_run_row(run_id):
+    """(status, failed_cause) of the run — C7a's first psql."""
+    rows = psql_rows(c7_sql(f"SELECT status || '|' || COALESCE(failed_cause,'-') FROM runs "
+                            f"WHERE id = '{run_id}'", "run row"), 2)
+    return (rows[0][0], rows[0][1]) if rows else ("", "")
+
+
+def c7_events(run_id):
+    """Journal rows in global_seq order as [{type, payload}] (payload {} when unreadable)."""
+    text = c7_sql("SELECT type || '@@' || COALESCE(payload::text,'{}') FROM domain_events "
+                  f"WHERE run_id = '{run_id}' AND type IN ('node.scope.iteration',"
+                  "'node.scope.failed','node.scope.completed','run.failed','run.completed') "
+                  "ORDER BY global_seq", "journal rows")
+    if text is None:
+        return None
+    out = []
+    for line in text.splitlines():
+        typ, sep, pl = line.partition("@@")
+        if not sep:
+            continue
+        try:
+            pay = json.loads(pl) if pl.strip() else {}
+        except ValueError:
+            pay = {}
+        out.append({"type": typ.strip(), "payload": pay if isinstance(pay, dict) else {}})
+    return out
+
+
+def c7_artifact_names(run_id):
+    """Artifact names for the run, oldest first (per-iteration evidence is append-only)."""
+    text = c7_sql(f"SELECT name FROM artifacts WHERE run_id = '{run_id}' ORDER BY created_at",
+                  "artifact rows")
+    return None if text is None else [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def c7_root_rows(run_id):
+    """'key|status|outcome' of the ROOT scope only (no iteration/scope-prefixed keys)."""
+    return c7_sql(f"SELECT node_instance_key || '|' || status || '|' || COALESCE(outcome,'-') "
+                  f"FROM node_executions WHERE run_id = '{run_id}' "
+                  f"AND node_instance_key NOT LIKE '%[%' ORDER BY node_instance_key",
+                  "root scope rows")
+
+
+def c7_probe_rows(run_id):
+    """'iteration|status' for the has(previous.review_feedback) witness node."""
+    return c7_sql(f"SELECT regexp_replace(split_part(node_instance_key,'/',2),'[^0-9]','','g') "
+                  f"|| '|' || status "
+                  f"FROM node_executions WHERE run_id = '{run_id}' "
+                  f"AND node_instance_key LIKE '{C7_UNTIL_KEY}[%/{C7_PROBE_NODE}' "
+                  "ORDER BY node_instance_key", "previous-witness rows")
+
+
+def c7_evaluations(run_id):
+    """runs.expression_evaluations (§ 5.1 step 3's counter)."""
+    return c7_sql(f"SELECT expression_evaluations::text FROM runs WHERE id = '{run_id}'",
+                  "expression_evaluations")
+
+
+def c7_evaluations_api(client, run_id):
+    """The same count as GET /runs/{id} reports — int, or None when unreadable."""
+    try:
+        r = client.get(LB, f"/api/v1/runs/{run_id}")
+        show(f"C7g GET /runs/{run_id} -> {r.status}", r.text[:200])
+        return (r.json() or {}).get("expression_evaluations") if r.status == 200 else None
+    except Exception as e:  # noqa: BLE001 — an unreadable detail route is a GAP
+        show("C7g GET /runs/{id}", f"{type(e).__name__}: {e}"[:200])
+        return None
+
+
+def c7_post_run(client, facts, revision_id, idem, label):
+    """Start the run ONLY through the public API: POST /projects/{p}/runs pinned to the
+    gate's own published revision (the same § 3 body C1 uses)."""
+    body = {"pipeline_revision_id": revision_id, "inputs": facts.get("inputs") or {},
+            "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    if not check(f"C7 {label}: POST runs (revision {revision_id}) -> 201", r.status in (200, 201),
+                 f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
+def c7_scope_row(run_id):
+    """The until scope's own row: status|outcome|failed_cause (C7c reads the cause)."""
+    rows = psql_rows(c7_sql(f"SELECT status || '|' || COALESCE(outcome,'-') || '|' || "
+                            f"COALESCE(failed_cause,'-') FROM node_executions WHERE run_id = "
+                            f"'{run_id}' AND node_instance_key = '{C7_UNTIL_KEY}'", "scope row"), 3)
+    if not rows:
+        return {}
+    st, oc, fc = rows[0]
+    return {"status": st, "outcome": oc, "failed_cause": fc}
+
+
+def c7_scope_iterations(run_id):
+    """The until row's `iterations` counter (route 24's member) — int or None."""
+    text = c7_sql(f"SELECT iterations::text FROM node_executions WHERE run_id = '{run_id}' "
+                  f"AND node_instance_key = '{C7_UNTIL_KEY}'", "scope iterations")
+    return count_or_none(text) if text else None
+
+
+def c7_run_to_terminal(client, facts, run_id, cap, label):
+    """Poll to a terminal state, landing alice's gate on the way. Unlike C1's watcher
+    this one EXPECTS `failed` and dumps evidence on timeout."""
+    return c8_watch(client, facts, run_id, cap, label)
+
+
 def c7():
     """C7 — `until` never passes (12 case 7).
     Acceptance: no-op implementer twin, maxIterations 3 => run failed|until_exhausted;
@@ -2640,7 +3204,137 @@ def c7():
     run.failed with evidence_artifacts; an indeterminate passWhen is predicate_error
     (scope fails at once, NEVER counted false); carryForward: `previous` empty on
     iteration 1, non-empty on iteration 2, echoed in the twin's prompt."""
-    skip("C7", "bounded until terminates by exhaustion with per-iteration evidence")
+    if not CTX.get("stack_up"):
+        skip("C7", "bounded until terminates by exhaustion with per-iteration evidence")
+        return
+    facts = load_manifest_facts()
+    twin = (facts or {}).get("twin") or {}
+    if not facts:
+        gap("C7", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                  "there is no deterministic twin revision to re-author (C7 must publish its "
+                  "own maxIterations: 3 / no-op-implementer document rather than edit the "
+                  "fixture), no assignment to run under and no published pipeline to hold a "
+                  "draft (C1 seeds on demand)")
+        return
+    show("C7 arms against the seed manifest's twin",
+         json.dumps({k: twin.get(k) for k in ("pipeline_id", "revision_id", "project_id")}))
+
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C7", "no admin (library-role) session — the exhaustion twin and the C7c probe "
+                  "are extra PUBLISHED revisions, and only the library role may draft them")
+        return
+    CTX["admin"] = admin
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        check("C7: alice signed in", False, "no session — the exhaustion run cannot be posted")
+        return
+    CTX["alice"] = alice
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+    # ---- the re-authored document: seed twin + maxIterations 3 + no-op implement ----
+    src = c7_twin_doc(admin, twin.get("revision_id"))
+    if src is None:
+        gap("C7", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+                  "Pipeline document — the gate refuses to author a loop from an invented "
+                  "document, because a passWhen/maxIterations the engine never compiled "
+                  "proves nothing about exhaustion")
+        return
+
+    exh = c7_exhaustion_doc(src, f"m4x-c7-exhaust-{suffix[-8:]}", C7_MAX_ITERATIONS)
+    c7_emit(c7_doc_verdicts(exh))
+    show("C7 splices applied to the seed twin document",
+         " | ".join(exh["applied"]) or "(none)")
+    if exh["missing"]:
+        gap("C7 exhaustion run", f"the seed twin document is not the shape C7 splices "
+                                 f"({exh['missing']}) — a document the gate cannot honestly "
+                                 "downgrade to a never-passing loop would make every "
+                                 "exhaustion verdict a coincidence")
+        return
+    pub = c7_publish(admin, twin.get("pipeline_id"), "C7 exhaustion twin", exh["doc"])
+    rev = (pub or {}).get("revision_id") or ""
+    if pub is None:
+        gap("C7 exhaustion run", "no draft could be created on the twin's pipeline — nothing "
+                                 "to publish and therefore no loop to exhaust")
+        return
+    if pub.get("validate_status") != 200 or (pub.get("vresp") or {}).get("valid") is False:
+        gap("C7 exhaustion run", f"the re-authored document did not validate "
+                                f"(validate -> {pub.get('validate_status')}): "
+                                f"{(pub.get('raw') or '')[:300]} — the gate will not run a loop "
+                                "whose own splice it cannot show compiled")
+        return
+    if not rev:
+        gap("C7 exhaustion run", f"publish -> {pub.get('publish_status')} without a revision id "
+                                 f"({(pub.get('raw') or '')[:200]}) — no revision to pin a run to")
+        return
+    check("C7 the exhaustion twin published as its own immutable revision", True,
+          f"revision {rev} (the seed's revision {twin.get('revision_id')} is untouched)")
+
+    run_id = c7_post_run(alice, twin, rev, f"m4x-c7-exhaust-{suffix}", "exhaustion twin")
+    exh_ev = None
+    if not run_id:
+        gap("C7a/C7b/C7d/C7g", "the exhaustion run could not be posted through "
+                              "POST /projects/{p}/runs — the ledger has nothing to measure")
+    else:
+        st = c7_run_to_terminal(alice, twin, run_id, 2400, "exhaustion twin")
+        if st is None:
+            gap("C7a/C7b/C7d/C7g", f"run {run_id} never reached a terminal state — the "
+                                    "iteration bound, the journal story and the route are "
+                                    "unmeasurable (evidence dumped by the watcher)")
+        else:
+            run_st, cause = c7_run_row(run_id)
+            rows = c7_body_rows(c7_sql(c7_body_sql(run_id), "body rows"))
+            show("C7a until-body ledger",
+                 " ".join(f"{r['key']}={r['status']}(att={r['attempts']})" for r in rows)[:600])
+            exh_ev = c7_events(run_id)
+            c7_emit(c7_exhausted_verdicts(rows, run_st, cause))
+            c7_emit(c7_event_verdicts(exh_ev))
+            c7_emit(c7_artifact_verdicts(c7_artifact_names(run_id)))
+            c7_emit(c7_route_verdicts(c7_root_rows(run_id),
+                                      {"iterations": c7_scope_iterations(run_id)}))
+            c7_emit(c7_budget_verdicts(c7_evaluations(run_id),
+                                       c7_evaluations_api(alice, run_id)))
+            c7_emit(c7_carry_verdicts(c7_probe_rows(run_id)))
+            dump_run_evidence(alice, run_id)
+            CTX["c7_exhaustion_run"] = run_id
+
+    # ---- C7c — indeterminate is NOT false: passWhen at an undeclared output ----
+    bad = c7_exhaustion_doc(src, f"m4x-c7-pred-{suffix[-8:]}", C7_MAX_ITERATIONS,
+                           pass_when="nodes.review.outputs.verdict == true")
+    if bad["doc"] is None:
+        gap("C7c indeterminate predicate", f"could not splice the undeclared-output passWhen "
+                                          f"({bad['missing']}) — a probe document that differs "
+                                          "from the twin in other ways proves nothing about "
+                                          "the predicate")
+    else:
+        pub2 = c7_publish(admin, twin.get("pipeline_id"), "C7c indeterminate passWhen",
+                         bad["doc"])
+        v2 = (pub2 or {}).get("vresp")
+        if pub2 is None:
+            gap("C7c indeterminate predicate", "no draft could be created for the undeclared-"
+                                              "output passWhen — the refusal (either publish-"
+                                              "time or eval-time) is unmeasurable")
+        elif c7_predicate_error_verdicts(vresp=v2)[0][1] is not False:
+            c7_emit(c7_predicate_error_verdicts(vresp=v2))
+        elif not pub2["revision_id"]:
+            gap("C7c indeterminate predicate",
+                f"the document validated but publish -> {pub2['publish_status']} gave no "
+                f"revision ({(pub2.get('raw') or '')[:200]}) — the eval-time arm needs a run")
+        else:
+            run2 = c7_post_run(alice, twin, pub2["revision_id"], f"m4x-c7-pred-{suffix}",
+                               "C7c indeterminate passWhen")
+            if not run2:
+                gap("C7c indeterminate predicate", "the eval-time run could not be posted")
+            else:
+                st2 = c7_run_to_terminal(alice, twin, run2, 1800, "C7c indeterminate passWhen")
+                c7_emit(c7_predicate_error_verdicts(
+                    scope_row=c7_scope_row(run2), run_st=st2 or "", events=c7_events(run2),
+                    body_rows=c7_sql(c7_body_sql(run2), "C7c body rows")))
+                check("C7c NO run.completed anywhere for the indeterminate run",
+                      st2 != "completed", f"terminal={st2!r}")
+                CTX["c7_predicate_run"] = run2
+    CTX["c7"] = {"revision_id": rev, "exhaustion_run": run_id,
+                 "splices": exh["applied"], "events": exh_ev}
 
 
 # --- C8 pure logic — unit-tested offline by e2e/m4/test_c8_logic.py -----------
