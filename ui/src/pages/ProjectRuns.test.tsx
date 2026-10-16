@@ -60,6 +60,30 @@ describe("/projects/:projectId/runs", () => {
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
   });
 
+  it("the attention lens gathers runs a person owes or that broke", async () => {
+    const broken = [
+      { ...wireRun, id: "01987b11-0000-0000-8000-0000000000a1", status: "failed" },
+      { ...wireRun, id: "01987b11-0000-0000-8000-0000000000a2", status: "interrupted" },
+      { ...wireRun, id: "01987b11-0000-0000-8000-0000000000a3", status: "waiting_human" },
+    ];
+    mountRuns({ runs: [wireRun, ...broken] });
+
+    // Wait for the list to have data, then read the counts off the chips.
+    expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+    // 4a leads with the attention lens: waiting, paused, failed, interrupted.
+    const chip = screen.getByTestId("runs-filter-attention");
+    expect(chip.textContent).toContain("attention 3");
+    // The default lens stays `active` — adding attention changes no one's default.
+    expect(screen.queryByTestId(`run-row-${broken[0].id}`)).toBeNull();
+
+    fireEvent.click(chip);
+    for (const run of broken) {
+      expect(await screen.findByTestId(`run-row-${run.id}`)).toBeTruthy();
+    }
+    // A healthy running run is not "needing attention".
+    expect(screen.queryByTestId(`run-row-${WIRE_RUN_ID}`)).toBeNull();
+  });
+
   it("shows the honest empty state when the project has never run", async () => {
     mountRuns({ runs: [] });
     expect((await screen.findByTestId("runs-empty")).textContent).toContain("No runs yet");

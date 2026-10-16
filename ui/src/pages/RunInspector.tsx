@@ -27,6 +27,7 @@ import { BranchGrid } from "../components/m4/BranchGrid";
 import { branchPlaceOf, branchesOf, findBranch } from "../lib/pipeline/branches";
 import { useActorNames } from "../api/actors";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
+import { NodePaneHeader } from "../components/m4/NodePaneHeader";
 import { RunStageStrip } from "../components/m4/RunStageStrip";
 import { RunTree } from "../components/m4/RunTree";
 import { usePipelineRevisions, usePipelines, useRevision } from "../api/pipelines";
@@ -160,6 +161,17 @@ export default function RunInspector() {
   const slugsById = useMemo(
     () => new Map((pipelines.data?.pipelines ?? []).map((p) => [p.id, p.slug])),
     [pipelines.data],
+  );
+  // 4a draws the stage strip as a compact header across the run, not as
+  // content that hides behind a tab — so the page itself owns the read. Same
+  // cached revision as the Definition tab: one request, two readers.
+  const stripRevision = useRevision(baseRun?.revision_digest ?? "");
+  const definitionOrder = useMemo(
+    () =>
+      stripRevision.data
+        ? definitionOrderOf(stripRevision.data.canonical_document as unknown as DefinitionDocument)
+        : undefined,
+    [stripRevision.data],
   );
   const tree = useMemo(
     () => (treeQuery.data ? viewRunTree(treeQuery.data, (id) => slugsById.get(id) ?? id) : null),
@@ -364,6 +376,18 @@ export default function RunInspector() {
           </div>
         ) : null}
 
+        {/* The strip rides above every tab, as in 4a: it is how a reader
+            orients in the run, and selecting from it works from any tab. */}
+        <div className="pb-3">
+          <RunStageStrip
+            nodes={projection.nodes}
+            definitionOrder={definitionOrder}
+            selectedNodeId={selectedNode?.node_id ?? null}
+            onSelectNode={selectNode}
+            headingId="run-stage-strip-heading"
+          />
+        </div>
+
         <div className="flex gap-1 py-3" role="tablist" aria-label="Run views">
           {TABS.map((item) => (
             <button
@@ -406,10 +430,9 @@ export default function RunInspector() {
         {tab === "execution" ? (
           <RunExecutionTab
             projectId={projectId}
-            digest={run.revision_digest}
             nodes={projection.nodes}
             tree={tree}
-            selectedNodeId={selectedNode?.node_id ?? null}
+            definitionOrder={definitionOrder}
             selectedKey={instanceKey}
             selectedBranch={selectedBranch}
             onSelect={selectNode}
@@ -432,10 +455,11 @@ export default function RunInspector() {
         className="min-w-0 border-t border-line bg-surface px-3 py-3 xl:border-l xl:border-t-0"
         data-testid="run-inspector-detail"
       >
-        <RunNodeDetail
+      <RunNodeDetail
           runId={runId}
           projectId={projectId}
           node={selectedNode}
+          nodes={projection.nodes}
           frames={stream.events}
         />
       </aside>
@@ -551,22 +575,20 @@ function RunDefinitionTab({
 
 function RunExecutionTab({
   projectId,
-  digest,
   nodes,
   tree,
-  selectedNodeId,
+  definitionOrder,
   selectedKey,
   selectedBranch,
   onSelect,
   onSelectBranch,
 }: {
   projectId: string;
-  digest: string;
   nodes: NodeExecutionSummary[];
   tree: RunTreeRoot | null;
-  /** The selected node execution's definition id — the strip and the tree
-   * select by it, and the URL still carries the execution id. */
-  selectedNodeId: string | null;
+  /** The pinned revision's node ids in document order, read once by the page
+   * for the strip, the grids and the tree. */
+  definitionOrder: string[] | undefined;
   selectedKey: string | null;
   /** `?branch=` — which fan-out branch the reader picked, or null. */
   selectedBranch: number | null;
@@ -574,17 +596,6 @@ function RunExecutionTab({
   onSelectBranch: (scope: string, index: number) => void;
 }) {
   const [expanded, setExpanded] = useState<string[]>([]);
-  // The strip and the tree read against the pinned graph, not against the order
-  // the API sorted the rows into. Same cached read as the Definition tab; the
-  // strip degrades to the caller's order until it lands.
-  const revision = useRevision(digest);
-  const definitionOrder = useMemo(
-    () =>
-      revision.data
-        ? definitionOrderOf(revision.data.canonical_document as unknown as DefinitionDocument)
-        : undefined,
-    [revision.data],
-  );
   // One grid per fan-out / loop scope the run actually has a row for, under the
   // strip: the strip says which stage the run is in, the grid says which of its
   // items a person owes attention to. `parallel` scopes are left out — they
@@ -595,13 +606,6 @@ function RunExecutionTab({
   const branchOwner = branchOwnerOf(scopes, selectedKey);
   return (
     <div className="space-y-[10px]">
-      <RunStageStrip
-        nodes={nodes}
-        definitionOrder={definitionOrder}
-        selectedNodeId={selectedNodeId}
-        onSelectNode={onSelect}
-        headingId="run-stage-strip-heading"
-      />
       {scopes.map((scope) => (
         <BranchGrid
           key={scope.node_instance_key}
@@ -863,11 +867,14 @@ function RunNodeDetail({
   runId,
   projectId,
   node,
+  nodes,
   frames,
 }: {
   runId: string;
   projectId: string;
   node: NodeExecutionSummary | null;
+  /** The run's rows — the pane header reads the scope a `[n]` belongs to. */
+  nodes: readonly NodeExecutionSummary[];
   frames: readonly EventEnvelope[];
 }) {
   const nodeId = node?.id ?? null;
@@ -946,14 +953,28 @@ function RunNodeDetail({
   // gate does not flash "No attempts yet" before its card can appear.
   if (detail.isPending || (!lastAttempt && approvalsQuery.isPending)) {
     return (
-      <p className="font-mono text-[11px] text-muted" data-testid="run-detail-pending">
-        Reading attempts for <code className="font-mono">{node.node_instance_key}</code>…
-      </p>
+      <div className="space-y-[10px]">
+        {node ? (
+          <NodePaneHeader
+            node={node}
+            nodes={nodes}
+            attemptNumber={node.attempt_count > 0 ? node.attempt_count : null}
+          />
+        ) : null}
+        <p className="font-mono text-[11px] text-muted" data-testid="run-detail-pending">
+          Reading attempts for <code className="font-mono">{node.node_instance_key}</code>…
+        </p>
+      </div>
     );
   }
   if (!lastAttempt) {
     return (
       <div className="space-y-[10px]">
+        <NodePaneHeader
+          node={node}
+          nodes={nodes}
+          attemptNumber={node.attempt_count > 0 ? node.attempt_count : null}
+        />
         {gateCard}
         {gate ? null : (
           <p className="font-mono text-[11px] text-muted" data-testid="run-detail-no-attempts">
@@ -966,6 +987,11 @@ function RunNodeDetail({
   }
   return (
     <div className="space-y-[10px]">
+      <NodePaneHeader
+        node={node}
+        nodes={nodes}
+        attemptNumber={lastAttempt.attempt_number}
+      />
       <AttemptDetail
         attempt={lastAttempt}
         node={node}

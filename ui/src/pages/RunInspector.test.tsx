@@ -154,6 +154,21 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
   });
 
+  it("4a: the stage strip rides above the tabs, on every tab", async () => {
+    // 4a draws the strip as the run's compact header, not as content that
+    // hides behind a tab — so it answers before anyone clicks Execution.
+    const { requests } = mountRun();
+    await screen.findByTestId("run-stage-strip");
+    expect(screen.getByTestId("definition-graph")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("run-tab-timeline"));
+    expect(screen.getByTestId("run-stage-strip")).toBeTruthy();
+    // Selecting from the strip works from any tab: the pane reads the cell's node.
+    fireEvent.click(screen.getByTestId("run-stage-cell-plan"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`)).toHaveLength(1),
+    );
+  });
   it("W4: shows the pinned-revision notice only when a newer revision is published", async () => {
     // The run's pinned r7 is the newest published revision: 12 case 11 must
     // stay invisible when nothing newer exists.
@@ -359,6 +374,30 @@ describe(`/projects/:projectId/runs/:runId`, () => {
 
     expect(await screen.findByTestId("attempt-status")).toBeTruthy();
     expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_IMPLEMENT}`)).toHaveLength(1);
+  });
+
+  it("names the pane's node 4a-style: stage · place · attempt", async () => {
+    // `/build_until_verified[1]/implement` is an `until` pass, so the crumb
+    // says `iter`, and the attempt shown is the one the pane reads.
+    mountRun(`?node=${WIRE_NODE_IMPLEMENT}`);
+    expect((await screen.findByTestId("node-pane-crumb")).textContent).toBe(
+      "implement \u00b7 iter 1 \u00b7 attempt 1",
+    );
+    expect(screen.getByTestId("node-pane-key").textContent).toBe(
+      "/build_until_verified[1]/implement",
+    );
+  });
+
+  it("calls a for_each item task in the pane crumb, like the branch history does", async () => {
+    mountRun(`?tab=execution&branch=1&node=${WIRE_NODE_MOD_1}`, [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireFanOutNodes } },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_MOD_1}`, body: wireNodeDetail },
+    ]);
+    await screen.findByTestId("branch-grid");
+
+    expect((await screen.findByTestId("node-pane-crumb")).textContent).toBe(
+      "check_module \u00b7 task 1 \u00b7 attempt 1",
+    );
   });
 
   it("shows the pinned revision in the Definition tab, not the library's newest", async () => {

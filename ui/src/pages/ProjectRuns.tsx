@@ -27,8 +27,16 @@ import type { RunStatus } from "../lib/pipeline/contract";
 
 const ACTIVE_STATES: readonly RunStatus[] = ["queued", "preparing", "running"];
 const WAITING_STATES: readonly RunStatus[] = ["waiting_human", "paused"];
+/** 4a's first lens: a person owes an answer, or the run broke and nobody has
+ * cleaned it up. A union of states the wire already reports — never a guess. */
+const ATTENTION_STATES: readonly RunStatus[] = [
+  "waiting_human",
+  "paused",
+  "failed",
+  "interrupted",
+];
 
-export type RunsFilter = "active" | "waiting" | "all";
+export type RunsFilter = "attention" | "active" | "waiting" | "all";
 
 export interface RunsListColumnProps {
   projectId: string;
@@ -58,16 +66,19 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
     const matching =
       filter === "all"
         ? all
-        : all.filter((run) =>
-            filter === "waiting"
-              ? WAITING_STATES.includes(run.status)
-              : ACTIVE_STATES.includes(run.status),
-          );
+        : filter === "attention"
+          ? all.filter((run) => ATTENTION_STATES.includes(run.status))
+          : filter === "waiting"
+            ? all.filter((run) => WAITING_STATES.includes(run.status))
+            : all.filter((run) => ACTIVE_STATES.includes(run.status));
     return matching;
   }, [runs.data, filter]);
 
   const counts = useMemo(
     () => ({
+      attention: (runs.data?.runs ?? []).filter(
+        (r) => r.depth === 0 && ATTENTION_STATES.includes(r.status),
+      ).length,
       active: (runs.data?.runs ?? []).filter(
         (r) => r.depth === 0 && ACTIVE_STATES.includes(r.status),
       ).length,
@@ -107,7 +118,7 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
         </Panel>
       ) : null}
       <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Filter runs">
-        {(["active", "waiting", "all"] as const).map((name) => (
+        {(["attention", "active", "waiting", "all"] as const).map((name) => (
           <button
             key={name}
             type="button"
@@ -133,7 +144,9 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
           <p className="px-1 text-[12.5px] text-muted" data-testid="runs-empty">
             {counts.all === 0
               ? "No runs yet — this project has never started a pipeline."
-              : `No ${filter} runs.`}
+              : filter === "attention"
+                ? "Nothing needs attention — no run is waiting on a person or lying broken."
+                : `No ${filter} runs.`}
           </p>
         ) : null}
         {rows.map((run) => (
