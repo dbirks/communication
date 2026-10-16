@@ -11941,19 +11941,840 @@ def w4():
 
 
 
+# --- W5/W6 pure logic — unit-tested offline by e2e/m4/test_w_logic.py ---------
+# Row § 7.2 W5: "`docker kill worker-a` (C5), watch the run page" → "`node.attempt.
+# interrupted` renders as *interrupted — the worker disappeared mid-node*, then the
+# retry countdown (`node.attempt.retry_scheduled`'s `scheduled_at`), then attempt 2.
+# The words "resumed", "restored" and "no data lost" must **not** appear anywhere on
+# the page (`10` J7's honesty rule, C5f's UI arm). No console error, no stuck spinner",
+# and W6: "run the C6e different-volume case, open the run" → "'prior edits lost, rerun
+# required' and an error class chip `workspace_lost`; no auto-retry is offered (M3 W8's
+# rule, unchanged wording)". Everything here is pure over page text and canned ledger
+# reads; the live halves only feed it what Postgres and the browser actually said.
+
+W5_FORBIDDEN_WORDS = ("resumed", "restored", "no data lost")
+W5_INTERRUPTED_COPY = "interrupted — the worker disappeared mid-node"
+W5_COUNTDOWN_COPY = "next attempt scheduled"
+W6_LOSS_COPY = ("prior edits lost", "rerun required")
+W6_ERROR_CLASS = "workspace_lost"
+W5_LAB_PROJECT = "communication-m4"
+
+
+def w_norm(text):
+    """Page text as the wording assertions read it: case-folded, whitespace collapsed,
+    em/en dashes unified — the snapshot and the component do not agree on how a
+    sentence is broken across lines, and only the WORDS carry the contract."""
+    low = str(text or "").replace("\u2014", "-").replace("\u2013", "-")
+    return re.sub(r"\s+", " ", low).lower()
+
+
+def w_quotes(dom, needle, limit=3, width=180):
+    """The page's OWN lines that mention `needle` — a FAIL has to say what the page
+    actually says (row W5's wording rule), never just that a phrase was missing."""
+    hits = [ln.strip()[:width] for ln in str(dom or "").splitlines() if needle.lower() in ln.lower()]
+    return hits[:limit] or [f"(no line mentions {needle!r})"]
+
+
+def w_forbidden_word_hits(dom, forbidden=W5_FORBIDDEN_WORDS):
+    """(word, page line) for every forbidden word on screen — verbatim, because the
+    line IS the evidence when the honesty rule is broken."""
+    low = str(dom or "").lower()
+    return [(w, ln.strip()[:180]) for w in forbidden or ()
+            for ln in low.splitlines() if w in ln]
+
+
+def w_forbidden_word_verdicts(dom, forbidden=W5_FORBIDDEN_WORDS, tag="W5"):
+    """`10` J7's honesty rule as one verdict over the whole page text: the words must
+    appear NOWHERE. One verdict, not one per word: the rule is a single property of the
+    page and a reader wants to see every violation at once."""
+    lines = len(str(dom or "").splitlines())
+    label = (f"{tag} " + ", ".join(f"'{w}'" for w in forbidden)
+             + " appear nowhere on the page (10 J7's honesty rule)")
+    hits = w_forbidden_word_hits(dom, forbidden)
+    if not hits:
+        return [(label, True, f"none of {len(forbidden)} forbidden word(s) in {lines} line(s) "
+                              "of rendered page text (all samples of this leg are scanned "
+                              "together by the caller)")]
+    return [(label, False, "; ".join(f"{w!r} drawn on screen: {ln!r}" for w, ln in hits[:5]))]
+
+
+def w_spinner_nodes(nodes):
+    """The app's announced loading state (`ui/src/components/Feedback.tsx`):
+    `<p role="status">· {label}…</p>`. State ALERTS share role=status, so the Spinner is
+    named by its own copy — a bullet opening a run of words ending in an ellipsis — and
+    not by the role alone. A spinner with no such copy is never counted."""
+    out = []
+    for n in nodes or []:
+        text = pw_text(n).strip()
+        if text.startswith("·") and text.endswith("…"):
+            out.append(text[:90])
+    return out
+
+
+def w5_spinner_verdict(nodes, terminal):
+    """"no stuck spinner" is only measurable once the run is terminal: while it is
+    running a loading state is the correct rendering, and while it never terminated
+    there is nothing to be stuck after."""
+    label = "W5 no spinner remains once the run reaches its terminal state"
+    spins = w_spinner_nodes(nodes)
+    if not terminal:
+        return (label, None, f"the run never reached a terminal state in this leg's window, so "
+                             f"'stuck' is unmeasurable (loading copy on screen: {spins[:3]})")
+    if spins:
+        return (label, False, f"run terminal, {len(spins)} announced loading state(s) still "
+                              f"on the page: {spins[:3]}")
+    return (label, True, f"run terminal ({terminal}) and no `· …` loading copy on screen")
+
+
+def w5_console_verdict(text, rc=0, benign=()):
+    """"No console error" — the same reading of the CLI's own console listing W9
+    applies, relabelled so this leg's verdict line names this leg."""
+    label, ok, detail = w9_console_verdict(text, rc, benign)
+    return (label.replace("W9 ", "W5 ", 1), ok, detail)
+
+
+def w5_interrupted_verdict(dom):
+    """The row's first wording arm, quoted exactly: the interrupted attempt must say
+    *interrupted — the worker disappeared mid-node*. Missing copy is a FAIL naming what
+    the page does say, never a GAP — the page was rendered and read."""
+    label = f"W5 node.attempt.interrupted renders as '{W5_INTERRUPTED_COPY}'"
+    if w_norm(W5_INTERRUPTED_COPY) in w_norm(dom):
+        return (label, True, f"on screen: {w_quotes(dom, 'interrupted', limit=1)}")
+    return (label, False, f"the row's copy is absent; the page says {w_quotes(dom, 'interrupt')}")
+
+
+def w5_countdown_verdict(dom, scheduled):
+    """The row names the countdown's CONTENT, not a phrase: "the retry countdown
+    (`node.attempt.retry_scheduled`'s `scheduled_at`)". So the verdict is that the time
+    the engine promised is on screen — `AttemptDetail` draws it either as the dead
+    attempt's '↻ next attempt scheduled … UTC · backoff Ns' line or as the retried
+    attempt's own `scheduled` fact (the same value the event carries). Which of the two
+    drew it goes in the detail; NEITHER on screen is the FAIL, with the page quoted.
+    Ledger unreadable → GAP: the copy alone cannot be checked against a promise."""
+    label = "W5 the retry countdown shows node.attempt.retry_scheduled's scheduled_at"
+    times = [str(t).strip() for t in (scheduled or ()) if str(t or "").strip()]
+    copy = w_norm(W5_COUNTDOWN_COPY) in w_norm(dom)
+    rendered = [t for t in times if w_norm(t) in w_norm(dom)]
+    if not times:
+        return (label, None, f"the ledger would not give up the scheduled_at it promised "
+                             f"(retry-countdown copy on screen: {copy}); the page cannot be "
+                             "checked against an unreadable promise")
+    if rendered:
+        how = ("as the countdown line" if copy else
+               "as the retried attempt's own 'scheduled' fact — the same value the "
+               "node.attempt.retry_scheduled payload carries")
+        return (label, True, f"scheduled_at {rendered[0]!r} drawn on the page {how}: "
+                             f"{w_quotes(dom, 'scheduled', 1)}")
+    return (label, False, f"neither the countdown copy nor the promised time "
+                          f"{times[:3]!r} is on the page (countdown copy={copy}); the page "
+                          f"says {w_quotes(dom, 'schedul')}")
+
+
+def w5_attempt2_verdict(dom, key):
+    """"then attempt 2" — the pane names the attempt it is showing ('attempt {n}' in
+    AttemptDetail's header), so attempt 2 has to be on screen."""
+    label = "W5 attempt 2 renders after the countdown"
+    if "attempt 2" in w_norm(dom):
+        return (label, True, f"node {key!r}: {w_quotes(dom, 'attempt 2', limit=1)}")
+    return (label, False, f"no 'attempt 2' for {key!r} on screen; the page says "
+                          f"{w_quotes(dom, 'attempt')}")
+
+
+def w5_kill_landed_verdicts(state, tries, proven):
+    """The row's precondition, stated as the ledger reads it: nothing below W5's
+    interrupted/countdown/attempt-2 claims is honest unless a worker actually died while
+    holding a live lease — the same SIGSTOP-proof C5b demands (c5_freeze_proof)."""
+    label = "W5 the worker died holding a live lease (docker kill of this project's worker)"
+    proof = (f"the lease was still live {C5_FREEZE_PROOF_S}s after SIGSTOP" if proven
+             else "the SIGSTOP proof is unreadable")
+    if state == "interrupted":
+        return [(label, True, f"kill #{tries}: the reconciler wrote interrupted ({proof})")]
+    if state == "closed":
+        return [(label, False if proven else None,
+                 f"kill #{tries}: the targeted attempt had already closed before the signal "
+                 f"({proof}) — the death proves nothing about mid-node interruption")]
+    if state == "live":
+        return [(label, False, f"the attempt stayed live after the kill ({proof}) — no "
+                               "interrupted write, so the page had nothing to render")]
+    if state == "unattainable":
+        return [(label, None, f"the twin stopped offering a live attempt after {tries} pick(s) "
+                              "— its process.exec steps close in <1s, so the worker that would "
+                              "have had to die mid-node was idle (§ 7.1 names a ~40s node the "
+                              "lab does not ship)")]
+    return [(label, None, f"no attempt row readable after {tries} kill pick(s) — the ledger "
+                          "gave status for nothing")]
+
+
+def w_pick_container(names, service, project=W5_LAB_PROJECT):
+    """compose names this project's containers `<project>-<service>-<n>`; WORKER_A is
+    that PREFIX, not a container reference — `docker kill communication-m4-worker-a`
+    answers `no such object: communication-m4-worker-a`. Picks the real container of one
+    of THIS project's two lab workers, '' for anything else (never a guessed id, never a
+    container belonging to another compose project).
+    """
+    want = f"{project}-{str(service or '').strip()}-"
+    hits = sorted(str(n).strip() for n in names or []
+                  if str(n).strip().startswith(want)
+                  and str(n).strip()[len(want):].isdigit())
+    return hits[0] if hits else ""
+
+
+def w6_loss_copy_verdict(dom):
+    """"prior edits lost, rerun required" — case-insensitive, both halves, on the run
+    page (M3 W8's rule, unchanged wording)."""
+    label = "W6 the run page says " + ", ".join(f"'{c}'" for c in W6_LOSS_COPY)
+    norm = w_norm(dom)
+    missing = [c for c in W6_LOSS_COPY if w_norm(c) not in norm]
+    if not missing:
+        return (label, True, f"on screen: {w_quotes(dom, 'lost', limit=1)}")
+    return (label, False, f"{missing} missing from the page; it says "
+                          f"{w_quotes(dom, 'lost') or w_quotes(dom, 'workspace')}")
+
+
+def w6_chip_verdict(nodes, dom, error_class=W6_ERROR_CLASS):
+    """"an error class chip `workspace_lost`" — ErrorClassChip draws the class string
+    itself, and the aria snapshot carries no attributes (no data-testid), so the chip is
+    recognised by the class string reaching the rendered text."""
+    label = f"W6 an error-class chip '{error_class}' renders"
+    hits = [pw_text(n).strip()[:120] for n in nodes or [] if error_class in pw_text(n)]
+    if hits:
+        return (label, True, f"{len(hits)} element(s) carry the class: {hits[:2]}")
+    if error_class in str(dom or ""):
+        return (label, True, f"the class string is in the page text: "
+                             f"{w_quotes(dom, error_class, limit=1)}")
+    return (label, False, f"'{error_class}' is nowhere in the DOM; the page's error-class "
+                          f"surface says {w_quotes(dom, 'error class')}")
+
+
+def w_retry_controls(nodes):
+    """Every role=button whose own accessible name offers a retry — the control W6
+    says must not be offered for a lost workspace. `disabled`/`title` are filled in by
+    the caller's `pw eval` reads (the snapshot strips attributes)."""
+    out = []
+    for n in nodes or []:
+        text = pw_text(n).strip()
+        if n.get("role") == "button" and re.search(r"\bretry\b|\bretrying\b", text, re.I) \
+                and n.get("ref"):
+            out.append({"ref": n["ref"], "text": text[:80], "disabled": None, "title": ""})
+    return out
+
+
+def w6_retry_control_verdict(controls, dom, auto_retried=None):
+    """"no auto-retry is offered" (M3 W8's rule) read as this row's brief words it: no
+    retry control at all is the clean answer, and a control the page does show must be
+    DISABLED or say 'not retriable'. The ledger's retry_scheduled count is quoted
+    alongside so the engine's half (no scheduled retry) stays readable apart from the
+    UI's half — an enabled manual 'Retry' is a rerun offer, not an engine auto-retry,
+    and the detail line says which of the two it found."""
+    label = "W6 no Retry/auto-retry control is offered for the lost workspace"
+    auto = (f"; ledger node.attempt.retry_scheduled rows carrying "
+            f"error_class={W6_ERROR_CLASS} for the run={auto_retried!r} (0 = the engine "
+            "scheduled none)")
+    if not controls:
+        return (label, True, f"the run page offers no retry control at all; retry-ish copy "
+                             f"on screen: {w_quotes(dom, 'retry', limit=2)}{auto}")
+    excused = [c for c in controls if c.get("disabled") is True
+               or "not retriable" in f"{c.get('text')} {c.get('title')}".lower()]
+    if len(excused) == len(controls):
+        return (label, True, f"{len(controls)} retry control(s) shown and every one is "
+                             f"disabled or says 'not retriable': "
+                             f"{[(c['text'], c['disabled'], c['title'][:60]) for c in controls][:2]}"
+                             f"{auto}")
+    offered = [c for c in controls if c not in excused]
+    if any(c.get("disabled") is None for c in offered):
+        return (label, None, f"the retry control's own disabled state did not read back: "
+                             f"{[(c['text'], c['disabled'], c['title'][:60]) for c in offered][:2]}"
+                             f"{auto} — an unreadable control has never proven that a page "
+                             "offers (or withholds) an action")
+    return (label, False, f"{len(offered)} retry control(s) offered ENABLED: "
+                          f"{[(c['text'], c['disabled'], c['title'][:60]) for c in offered][:2]}"
+                          f"{auto} — the copy on screen says 'No automatic retry is offered' "
+                          "(engine half intact), but this row's UI arm asks for a disabled or "
+                          "'not retriable' control and the page hands out a live one")
+
+
+# --- W5/W6 live helpers -------------------------------------------------------
+
+
+def w5_container_of(service):
+    """Resolve a compose SERVICE name (the worker row's name) to this project's real
+    container and PROVE the compose-project label before anything is killed: the
+    boundary is `docker compose -p communication-m4` / `docker kill` of one of THIS
+    project's two lab workers and nothing else."""
+    if not service:
+        return ""
+    rc, out = run(["docker", "ps", "--format", "{{.Names}}"])
+    if rc != 0:
+        show("docker ps (container names)", out[-200:])
+        return ""
+    name = w_pick_container(out.splitlines(), service)
+    if not name:
+        return ""
+    rc2, lab = run(["docker", "inspect", "-f",
+                    '{{index .Config.Labels "com.docker.compose.project"}}', name])
+    if rc2 != 0 or str(lab).strip() != W5_LAB_PROJECT:
+        gap("W5/W6 container resolution for the owning worker",
+            f"{name!r} does not report com.docker.compose.project={W5_LAB_PROJECT!r} "
+            f"(rc={rc2}: {str(lab).strip()[:80]!r}) — the leg never kills a container it "
+            "cannot prove belongs to this project")
+        return ""
+    return name
+
+
+def w_node_execution_id(attempt_id):
+    """The node execution an attempt belongs to — the `?node=` the attempt pane reads.
+    '' on an unreadable ledger (the caller then judges the run page it does have)."""
+    try:
+        return psql(f"SELECT node_execution_id::text FROM attempts WHERE id = "
+                    f"'{attempt_id}'").strip()
+    except RuntimeError as e:
+        show("W5 the killed attempt's node_execution_id (psql)", str(e)[:200])
+        return ""
+
+
+def w_scheduled_times(run_id, key):
+    """The times the countdown is asked to show: attempt >1's `scheduled_at` and the
+    `node.attempt.retry_scheduled` payload, both in the exact UTC form the page's
+    formatTime() draws (`YYYY-MM-DD HH:MM:SS`). [] when the ledger will not answer."""
+    out = []
+    for sql in (f"SELECT to_char(a.scheduled_at AT TIME ZONE 'UTC', "
+                f"'YYYY-MM-DD HH24:MI:SS') FROM attempts a "
+                f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+                f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+                f"AND a.attempt_number > 1 AND a.scheduled_at IS NOT NULL "
+                f"ORDER BY a.attempt_number",
+                f"SELECT to_char((payload->>'scheduled_at')::timestamptz AT TIME ZONE "
+                f"'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM domain_events WHERE run_id = "
+                f"'{run_id}' AND type = 'node.attempt.retry_scheduled' "
+                f"ORDER BY global_seq DESC LIMIT 2"):
+        try:
+            out.extend([ln.strip() for ln in psql(sql).splitlines() if ln.strip()])
+        except RuntimeError as e:
+            show("W5 the retry's scheduled_at (psql)", str(e)[:200])
+    return out
+
+
+def w_deliver_signal(sig, service, container, tag):
+    """Deliver one signal to ONE of this project's lab workers. The row's literal
+    command is `docker kill worker-a`, aimed at the container this leg has PROVEN
+    belongs to communication-m4; if docker will not take that reference the signal goes
+    through `docker compose -p communication-m4 kill [-s SIG] <service>` instead. Both
+    name this project only — neither ever reaches another stack's container. Returns
+    (rc, output, how) so the verdict line says which command landed."""
+    argv = ["docker", "kill"] + (["-s", sig] if sig != "KILL" else []) + [container]
+    rc, out = run(argv)
+    if rc == 0:
+        return rc, out, " ".join(argv)
+    rc2, out2 = run(COMPOSE + ["kill"] + (["-s", sig] if sig != "KILL" else []) + [service])
+    if rc2 != 0:
+        return rc2, f"{out}\n{out2}", f"{argv} then compose kill {service}"
+    return rc2, out2, f"docker compose -p {W5_LAB_PROJECT} kill {sig} {service}"
+
+
+def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart=True):
+    """C5's own kill sequence, factored so the browser legs watch the SAME crash C5
+    grades: decide the gate first (wait_live_past_gate), prove the target held a live
+    lease with SIGSTOP (c5_freeze_proof), `docker kill` ONLY this project's owning
+    worker, then bring it back with `docker compose -p communication-m4 start`.
+    `sample(tag)` runs at every stage so the watcher records the page WHILE the crash
+    happens; a sampler that raises can never strand the lab with a dead worker.
+    `restart=False` hands the drained worker to the caller (W6 has to keep it drained
+    while the retry lands on another volume) — the caller then owns the start-back in
+    its own finally. Returns the facts (state='interrupted' when the reconciler wrote
+    it) or None when there was nothing to kill or the container could not be resolved.
+    """
+    def att_row(aid):
+        try:
+            rows = psql_rows(psql(f"SELECT status || '|' || coalesce(error_class,'-') "
+                                  f"FROM attempts WHERE id = '{aid}'"), 2)
+        except RuntimeError as e:
+            show(f"{tag} the targeted attempt's row (psql)", str(e)[:200])
+            return {}
+        return dict(zip(("status", "error_class"), rows[0])) if rows else {}
+
+    def tick(label):
+        if not sample:
+            return
+        try:
+            sample(label)
+        except Exception as e:  # noqa: BLE001 — a sampler never holds the lab down
+            show(f"{tag} page sample {label}", f"{type(e).__name__}: {str(e)[:160]}")
+
+    facts = {"run_id": run_id, "state": "", "tries": 0, "proven": None, "owner": "",
+             "service": "", "container": "", "attempt_id": "", "key": "", "ne_id": ""}
+    frozen, killed = "", ""
+    try:
+        while facts["tries"] < C5_KILL_TRIES:
+            live = wait_live_past_gate(client, project_id, run_id,
+                                       C5_KILL_POLL_S if facts["tries"] else 300, tag)
+            if live is None:
+                if facts["tries"]:
+                    facts["state"] = "unattainable"
+                break
+            att, owner, key = live["id"], live["worker"], live["key"]
+            service = c4_worker_container(owner)
+            container = w5_container_of(service)
+            if not container:
+                gap(f"{tag} docker kill this project's owning worker",
+                    f"the live claim belongs to worker row {owner!r} (container "
+                    f"{service!r}): with no container this leg can prove belongs to "
+                    "communication-m4 there is nothing it is allowed to kill (§ 7.0)")
+                return None
+            if owner != "worker-a":
+                show(f"{tag} note — which container gets killed",
+                     f"§ 7.2 names worker-a, but the live claim landed on {owner}; the row is "
+                     f"about the OWNER dying mid-node, so {owner} is killed and says so")
+            facts.update({"tries": facts["tries"] + 1, "owner": owner, "service": service,
+                          "container": container, "attempt_id": att, "key": key,
+                          "ne_id": w_node_execution_id(att)})
+            tick(f"pre-kill{facts['tries']}")
+            rc, out, how = w_deliver_signal(C5_STOP_SIGNAL, service, container, tag)
+            if rc != 0:
+                gap(f"{tag} freeze the owning worker (SIGSTOP ahead of the SIGKILL)",
+                    f"{how} -> rc={rc}: {out[-240:]} — without the freeze the leg cannot "
+                    "prove the kill landed mid-node, and it will not guess that it did")
+                break
+            frozen = container
+            s_stop = att_row(att).get("status", "")
+            tick(f"frozen{facts['tries']}")
+            time.sleep(C5_FREEZE_PROOF_S)
+            s_after = att_row(att).get("status", "")
+            facts["proven"] = c5_freeze_proof(s_stop, s_after)
+            show(f"{tag} freeze {container}: the lease at the signal and "
+                 f"{C5_FREEZE_PROOF_S}s later",
+                 f"status@stop={s_stop or '(unreadable)'} status+{C5_FREEZE_PROOF_S}s="
+                 f"{s_after or '(unreadable)'} proved={facts['proven']}")
+            if not facts["proven"]:
+                show(f"{tag} kill #{facts['tries']} wasted — {key} had already closed",
+                     "the deterministic twin's process.exec step finished before the signal "
+                     "landed; the worker is unfrozen, so the leg re-arms on its next live claim")
+                rc2, out2, _how2 = w_deliver_signal(C5_CONT_SIGNAL, service, container, tag)
+                show(f"{C5_CONT_SIGNAL} on {container} via {service} (rc={rc2})",
+                     out2[-160:] or container)
+                frozen = ""
+                if run_status(run_id) == "waiting_human":
+                    approve_gate(client, project_id, run_id)
+                continue
+            rc3, out3, how3 = w_deliver_signal("KILL", service, container, tag)
+            if rc3 != 0:
+                gap(f"{tag} docker kill (SIGKILL: the honest case)",
+                    f"{how3} -> rc={rc3}: {out3[-240:]} — without a kill there is no crash "
+                    "to watch")
+                break
+            killed = container
+            show(f"{how3} — the frozen worker and its child die together "
+                 "(no cleanup, no terminal write)", out3[-200:] or container)
+            tick("killed")
+            time.sleep(C5_KILL_WAIT_S)           # lease 30s + reconciler tick 15s + margin
+            deadline = time.time() + C5_KILL_POLL_S
+            while time.time() < deadline:
+                tick(f"reconciling{max(0, int(deadline - time.time()))}")
+                if c5_attempt_state(att_row(att)) != "live":
+                    break
+                time.sleep(6)
+            facts["state"] = c5_attempt_state(att_row(att))
+            if facts["state"] in ("interrupted", "live") or (
+                    facts["state"] == "closed" and facts["proven"]):
+                break
+        return facts
+    finally:
+        if frozen and not killed:
+            rc, out = run(["docker", "kill", "-s", C5_CONT_SIGNAL, frozen])
+            show(f"{tag} unfreeze {frozen} (SIGCONT) — the leg never leaves a stopped "
+                 f"worker behind (rc={rc})", out[-160:] or frozen)
+        if killed and facts["service"] and not restart:
+            show(f"{tag} {facts['service']} stays DOWN — the caller owns the start-back "
+                 "(W6 keeps the owning worker drained so only the other volume's worker "
+                 "can take the retry)")
+        elif killed and facts["service"]:
+            rc, out = run(COMPOSE + ["start", facts["service"]])
+            show(f"docker compose -p communication-m4 start {facts['service']} — the killed "
+                 f"worker is brought back (rc={rc})", out[-200:] or killed)
+            wait_worker_row(facts["service"], 120)
+
+
 def w5():
     """W5 — docker kill worker-a (C5) watched in the browser: interrupted
     'the worker disappeared mid-node', then the retry countdown, then attempt 2.
     The words 'resumed'/'restored'/'no data lost' appear NOWHERE; no console
-    error, no stuck spinner."""
-    _playwright_stub("W5", "kill -> honest interrupted wording, no 'resumed' anywhere")
+    error, no stuck spinner.
+
+    The crash is C5's own sequence (w_kill_worker_mid_node: gate first via
+    wait_live_past_gate, SIGSTOP-proof, SIGKILL of THIS project's owning worker,
+    compose start to bring it back), and the run page stays open in a named
+    Playwright session the whole time — it is SAMPLED at every stage (before the
+    freeze, while frozen, at the kill, through the reconciler window and after the
+    terminal state), so the wording below is judged against the DOM the operator saw
+    while the worker was dying, not against a page opened afterwards.
+    """
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W5 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no twin run "
+                           "to kill a worker inside, so there is no run page to watch")
+        return
+    twin = mvariant(facts, "twin")
+    if not isinstance(twin, dict) or not twin.get("revision_id"):
+        gap("W5 all arms", "the seed manifest carries no twin variant — the deterministic "
+                           "pipeline's process.exec node is the only work a worker can be "
+                           "killed inside")
+        return
+    project_id = mf(twin, "project_id")
+    client = CTX.get("alice") or Client("alice")
+    if login(client) is None:
+        gap("W5 all arms", "alice could not sign in over the API — the run the row watches "
+                           "cannot be posted")
+        return
+    CTX["alice"] = client
+    r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
+                    {"pipeline_revision_id": mf(twin, "revision_id"),
+                     "inputs": mf(twin, "inputs", default={}),
+                     "idempotency": f"m4-exit-w5-{int(time.time())}"})
+    run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
+    if not check("W5 the run whose worker gets killed is started", r.status in (200, 201)
+                 and bool(run_id), f"{r.status} {r.text[:160]}"):
+        gap("W5 all arms", "no run exists — there is no page to watch and no worker to kill")
+        return
+    CTX["w5_run_id"] = run_id
+    session = "m4w5"
+    samples = []
+
+    def sample(tag):
+        """One reading of the open run page, appended to the leg's evidence trail.
+        The DOM is kept for EVERY sample (the forbidden-word scan reads them all); the
+        printed line only appears when what the page SHOWS changes, because the
+        reconciler window samples every ~6s for two minutes and a wall of identical
+        lines hides the transitions that matter."""
+        rc, raw = pw_snapshot(session=session, timeout=120)
+        nodes = pw_snapshot_nodes(raw)
+        dom = w8_dom_text(nodes, raw)
+        flags = (w_norm(W5_INTERRUPTED_COPY) in w_norm(dom),
+                 "attempt 2" in w_norm(dom), w_norm(W5_COUNTDOWN_COPY) in w_norm(dom),
+                 bool(w_spinner_nodes(nodes)))
+        shot = {"tag": tag, "dom": dom, "nodes": nodes, "raw": raw, "rc": rc,
+                "flags": flags}
+        if not samples or flags != samples[-1]["flags"]:
+            show(f"W5 page sample {tag} (run {run_status(run_id)})",
+                 f"{len(dom.splitlines())} line(s); interrupted-copy={flags[0]} "
+                 f"attempt2={flags[1]} countdown-copy={flags[2]} loading-copy={flags[3]}")
+        samples.append(shot)
+        return shot
+
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}?tab=execution",
+                    session=session):
+        gap("W5 browser arms", "the mock IdP did not sign alice in, so the run page was never "
+                               "rendered and nothing about its DOM can be claimed")
+        return
+    try:
+        pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution", session=session)
+        landed, _n = pw_poll(lambda ns: "attempt" in w8_dom_text(ns).lower()
+                             or "node" in w8_dom_text(ns).lower(), session=session,
+                             tries=12, delay=2)
+        shot_open = pw_shot("w5-before-kill", session=session)
+        if not check("W5 the run page is open before the kill", landed,
+                     f"run {run_id} status={run_status(run_id)!r} [{shot_open}]"):
+            gap("W5 every DOM arm", "the run page never rendered a node/attempt surface, so "
+                                    "the wording, the spinner and the console have nothing "
+                                    "to be read from")
+            return
+        sample("open")
+        kill = w_kill_worker_mid_node(client, project_id, run_id, "W5", sample=sample)
+        if kill is None:
+            return          # w_kill_worker_mid_node / w5_container_of gapped the reason
+        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"]))
+        if kill["state"] != "interrupted":
+            gap("W5 the interrupted wording, the countdown and attempt 2",
+                f"no provable mid-node death (last ledger read: {kill['state'] or 'unreadable'} "
+                f"after {kill['tries']} kill pick(s)) — with no interrupted attempt the page has "
+                "nothing honest to say, so its wording is unmeasurable")
+            return
+        # the attempt pane of the node that died: the row's copy lives there
+        if kill["ne_id"]:
+            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution"
+                    f"&node={kill['ne_id']}", session=session)
+            pw_poll(lambda ns: w_norm(W5_INTERRUPTED_COPY) in w_norm(w8_dom_text(ns)),
+                    session=session, tries=15, delay=2)
+        pane = sample("attempt-pane")
+        shot_int = pw_shot("w5-interrupted", session=session)
+        c5_emit([w5_interrupted_verdict(pane["dom"])])
+        sched = w_scheduled_times(run_id, kill["key"])
+        show(f"W5 the retry promise the ledger holds for {kill['key']}",
+             f"scheduled_at candidates={sched[:3]} (the page draws formatTime()'s "
+             "`YYYY-MM-DD HH:MM:SS UTC`)")
+        pw_poll(lambda ns: w_norm(W5_COUNTDOWN_COPY) in w_norm(w8_dom_text(ns))
+                or "attempt 2" in w_norm(w8_dom_text(ns)), session=session, tries=20, delay=4)
+        sched = sched or w_scheduled_times(run_id, kill["key"])
+        cdown = sample("countdown")
+        shot_cd = pw_shot("w5-retry-countdown", session=session)
+        c5_emit([w5_countdown_verdict(cdown["dom"], sched)])
+        # attempt 2 runs and the run terminates: the page is kept open the whole way
+        deadline = time.time() + 600
+        while time.time() < deadline and run_status(run_id) not in C14_TERMINAL:
+            if len(samples) < 40:               # bounded: the evidence stays readable
+                sample(f"attempt2-{len(samples)}")
+            time.sleep(15)
+        terminal = run_status(run_id)
+        time.sleep(5)                       # let the terminal frames paint
+        final = sample("terminal")
+        shot_end = pw_shot("w5-terminal", session=session)
+        alltext = "\n".join(s["dom"] for s in samples)
+        show(f"W5 {len(samples)} sample(s) of one open run page (terminal={terminal!r})",
+             f"tags={[s['tag'] for s in samples][:24]}")
+        c5_emit([w5_attempt2_verdict(alltext, kill["key"])])
+        c5_emit(w_forbidden_word_verdicts(alltext))
+        c5_emit([w5_spinner_verdict(final["nodes"],
+                                    terminal if terminal in C14_TERMINAL else "")])
+        rc9, cons = pw("console", session=session, timeout=120)
+        c5_emit([w5_console_verdict(cons, rc9)])
+        show(f"W5 evidence for run {run_id} (node {kill['key']}, attempt {kill['attempt_id']})",
+             f"[{shot_open}] [{shot_int}] [{shot_cd}] [{shot_end}]")
+        CTX["w5"] = dict(kill, terminal=terminal, samples=len(samples))
+    finally:
+        if run_status(run_id) not in C14_TERMINAL:
+            try:
+                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception:  # noqa: BLE001 — housekeeping only, never a verdict
+                pass
+        pw("close", session=session)
+
+
+# --- W6 live helpers — reuse C6e's different-volume case ----------------------
+
+
+def w6_find_loss_case(project_id):
+    """A workspace_lost case this lab ALREADY has: C6e writes exactly this row
+    (attempts.error_class='workspace_lost' on one of this project's runs), so an
+    earlier pass is the cheapest honest subject for this leg. {} when the ledger holds
+    none, which sends the caller to produce one."""
+    try:
+        rows = psql_rows(psql(
+            f"SELECT a.run_id || chr(9) || ne.node_instance_key || chr(9) || ne.id || "
+            f"chr(9) || a.attempt_number::text || chr(9) || coalesce(left(regexp_replace("
+            f"a.detail, '[[:space:]]+', ' ', 'g'), 300), '-') "
+            f"FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"JOIN runs r ON r.id = a.run_id WHERE a.error_class = '{W6_ERROR_CLASS}' "
+            f"AND r.project_id = '{project_id}' AND ne.run_id = a.run_id "
+            f"ORDER BY a.created_at DESC LIMIT 1"), 5, sep="\t")
+    except RuntimeError as e:
+        show("W6 an existing workspace_lost case (psql)", str(e)[:200])
+        return {}
+    if not rows:
+        return {}
+    run_id, key, ne_id, att, detail = rows[0]
+    return {"run_id": run_id, "key": key, "ne_id": ne_id, "attempt_number": att,
+            "detail": detail, "error_class": W6_ERROR_CLASS,
+            "source": "the ledger (a workspace_lost refusal this lab already recorded)"}
+
+
+def w6_auto_retried(run_id, error_class=W6_ERROR_CLASS):
+    """How many times the ENGINE scheduled a retry for this class of failure — the
+    half of 'no auto-retry is offered' that lives in the journal, read apart from any
+    control the page happens to draw. None when the ledger will not answer."""
+    try:
+        return _int(psql(
+            f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' AND "
+            f"type = 'node.attempt.retry_scheduled' AND "
+            f"payload->>'error_class' = '{error_class}'").strip())
+    except RuntimeError as e:
+        show("W6 the run's retry_scheduled rows (psql)", str(e)[:200])
+        return None
+
+
+def w6_control_state(controls, session="m4w6"):
+    """Fill in each retry control's OWN disabled/title from the live DOM — the aria
+    snapshot drops attributes, and the row's 'must be disabled or say not retriable'
+    arm is about the control, not about the page's general copy. An eval that answers
+    neither true nor false leaves disabled=None, which the verdict reads as a GAP."""
+    for c in controls or []:
+        if not c.get("ref"):
+            continue
+        rc, dis = pw("eval", "el => String(el.disabled)", c["ref"], session=session,
+                     timeout=60)
+        _rc, tit = pw("eval", "el => String(el.title)", c["ref"], session=session,
+                      timeout=60)
+        body = str(dis or "")
+        c["disabled"] = True if "true" in body.lower() else (
+            False if "false" in body.lower() else None)
+        c["title"] = (str(tit or "").strip()[:200] if rc == 0 else "")
+    return controls
+
+
+def w6_produce_loss(client, twin, tag="W6"):
+    """Run C6e's different-volume case for real, as the row words it: kill the owning
+    worker mid-node (w_kill_worker_mid_node — C5's own sequence), drain that service,
+    bring up this driver's throwaway worker-c on its OWN named repos volume, point the
+    run at it (the M3 D10 lab-side exception § 7.1 C6e already uses — no public route
+    writes affinity), and read the refusal the workspace cannot avoid writing. Returns
+    the facts, or None with the reason printed."""
+    project_id = mf(twin, "project_id")
+    r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
+                    {"pipeline_revision_id": mf(twin, "revision_id"),
+                     "inputs": mf(twin, "inputs", default={}),
+                     "idempotency": f"{tag.lower()}-loss-{int(time.time())}"})
+    run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
+    if not check(f"{tag} a run is started to lose its workspace", r.status in (200, 201)
+                 and bool(run_id), f"{r.status} {r.text[:160]}"):
+        return None
+    out = {"run_id": run_id, "key": "", "ne_id": "", "owner": "",
+           "service": "", "source": tag, "error_class": "", "detail": "",
+           "attempt_number": ""}
+    kill, owner_back = None, True
+    try:
+        # The kill itself is C5's sequence with the start-back HANDED TO US
+        # (restart=False): a worker that is dead cannot re-claim the scheduled retry on
+        # its own volume, which is exactly § 7.1 C6e's "drain a, run affinity forced".
+        kill = w_kill_worker_mid_node(client, project_id, run_id, tag, restart=False)
+        owner_back = False
+        c5_emit(w5_kill_landed_verdicts(kill["state"], kill["tries"], kill["proven"])
+                if kill else [(f"{tag} the worker died holding a live lease", None,
+                               "the container of the owning worker could not be resolved to "
+                               "this compose project — nothing was killed, so no workspace "
+                               "was ever left behind")])
+        if not kill or kill["state"] != "interrupted":
+            gap(f"{tag} the different-volume loss case",
+                f"no provable mid-node death (last ledger read: "
+                f"{(kill or {}).get('state') or 'unreadable'!r}) — the loss arm needs a "
+                "workspace that was really left behind on another worker's volume")
+            return None
+        out.update({"key": kill["key"], "ne_id": kill["ne_id"], "owner": kill["owner"],
+                    "service": kill["service"]})
+        time.sleep(40)                        # lease 30s + margin: the dead row goes stale
+        rc, o1 = run(COMPOSE + ["stop", kill["service"]])
+        show(f"docker compose -p communication-m4 stop {kill['service']} — the owning worker "
+             f"stays drained for the loss arm (rc={rc})", o1[-160:] or kill["service"])
+        start_throwaway(C6_LOSS_WORKER, "required", repos_volume=True)
+        cw = wait_worker_row(C6_LOSS_WORKER, 120)
+        if not cw or not cw[0]:
+            gap(f"{tag} worker-c registered on its own named volume",
+                f"row={cw!r} — with no second worker on a second volume there is no "
+                "different-volume case to open (that is C5d's arm, not C6e's)")
+            return None
+        show(f"{tag} worker-c's row", f"{cw[0]} enforcement={cw[1]} capacity={cw[2]}")
+        flip = c9_lab_write(
+            f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
+            f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
+            f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
+            f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}' AND worker_affinity = (SELECT id "
+            f"FROM workers WHERE name = '{kill['owner']}')",
+            f"{tag}: point the run at worker-c (§ 7.1 C6e's 'drain a, run affinity "
+            "forced' — no public route writes affinity)")
+        if not flip or flip.strip().endswith("0"):        # the guard matched no row
+            show(f"{tag} the guarded affinity flip matched nothing ({flip.strip() or 'unreadable'!r})",
+                 "the run carried no affinity to the owning worker, so the same write is "
+                 "re-issued unguarded — it still names only THIS run and only worker-c")
+            flip = c9_lab_write(
+                f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
+                f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
+                f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
+                f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}'",
+                f"{tag}: point the run at worker-c (unguarded retry of the same write)")
+        rr = client.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": f"{tag} cross-volume arm"})
+        show(f"{tag} POST /api/v1/runs/{run_id}/retry -> {rr.status}", rr.text[:200])
+        lost, deadline = None, time.time() + 180
+        while time.time() < deadline:
+            rows = [x for x in c6_attempts_of_key(run_id, kill["key"])
+                    if x.get("error_class") == W6_ERROR_CLASS]
+            if rows:
+                lost = rows[-1]
+                break
+            time.sleep(5)
+        if not lost:
+            seen = [(a.get("attempt_number"), a.get("status"), a.get("error_class"))
+                    for a in c6_attempts_of_key(run_id, kill["key"])]
+            gap(f"{tag} the different-volume loss case",
+                f"no attempt of {kill['key']} carries error_class='{W6_ERROR_CLASS}' within "
+                f"180s of the retry (ledger reads: {seen}) "
+                "— with no lost-workspace refusal the run page has nothing to say about "
+                "edits being gone")
+            return None
+        out.update({"error_class": lost.get("error_class", ""),
+                    "detail": lost.get("detail", ""),
+                    "attempt_number": lost.get("attempt_number", "")})
+        ev_c = c6_recovery_event(project_id, run_id)
+        show(f"{tag} the loss the ledger recorded", f"recovery_lost={json.dumps(ev_c) if ev_c else '(none)'} "
+             f"attempt={json.dumps(lost)[:240]}")
+        return out
+    finally:
+        if not owner_back and (kill or {}).get("service"):
+            rc3, o3 = run(COMPOSE + ["start", kill["service"]])
+            show(f"{tag} compose start {kill['service']} (finally — the lab is never left "
+                 f"without its worker; rc={rc3})", o3[-160:] or kill["service"])
+            wait_worker_row(kill["service"], 120)
+        stop_throwaway(C6_LOSS_WORKER, repos_volume=True)
 
 
 def w6():
     """W6 — the C6e different-volume run says 'prior edits lost, rerun
     required' with a workspace_lost chip and NO auto-retry offered (M3 W8's
-    rule, unchanged wording)."""
-    _playwright_stub("W6", "cross-volume loss says 'lost', never 'resumed'")
+    rule, unchanged wording).
+
+    Subject: C6e's different-volume case — an existing `workspace_lost` refusal this
+    lab already recorded if the ledger holds one, otherwise the same case produced for
+    this leg (w6_produce_loss: C5's kill, drain the owning service, worker-c on its own
+    named repos volume, affinity forced, retry). With neither, the leg reports GAP with
+    the reason it produced nothing — it never PASSes an absent case.
+    """
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W6 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no project "
+                           "to look a workspace_lost run up in and no twin to lose a "
+                           "workspace with")
+        return
+    twin = mvariant(facts, "twin")
+    project_id = mf(twin, "project_id") if isinstance(twin, dict) and twin.get("revision_id") \
+        else mf(facts, "project_id")
+    client = CTX.get("alice") or Client("alice")
+    if login(client) is None:
+        gap("W6 all arms", "alice could not sign in — the ledger cannot be read and the "
+                           "loss arm cannot be produced")
+        return
+    CTX["alice"] = client
+    loss = w6_find_loss_case(project_id)
+    if loss:
+        show("W6 reusing C6e's different-volume case from the ledger",
+             f"run={loss['run_id']} node={loss['key']!r} attempt "
+             f"{loss['attempt_number']} error_class={loss['error_class']}")
+    else:
+        show("W6 no workspace_lost row in the ledger — producing C6e's case now",
+             "the different-volume arm needs a workspace left behind on another worker's "
+             "volume, so this leg runs the kill, the drain and the forced affinity itself")
+        if not isinstance(twin, dict) or not twin.get("revision_id"):
+            gap("W6 the different-volume loss case", "the seed manifest carries no twin "
+                "variant — the deterministic pipeline's process.exec node is the only work "
+                "a worker can be killed inside, and with no mid-node kill no workspace is "
+                "ever left behind")
+            return
+        loss = w6_produce_loss(client, twin, tag="W6")
+    if not loss:
+        return                       # w6_produce_loss gapped its own reason
+    session = "m4w6"
+    url = f"/projects/{project_id}/runs/{loss['run_id']}?tab=execution"
+    if loss.get("ne_id"):
+        url += f"&node={loss['ne_id']}"
+    if not pw_login("alice", url, session=session):
+        gap("W6 browser arms", "the mock IdP did not sign alice in, so the run page was never "
+                               "rendered and the loss wording has nothing to be read from")
+        return
+    try:
+        pw_goto(url, session=session)
+        shown, _n = pw_poll(lambda ns: W6_ERROR_CLASS in w8_dom_text(ns), session=session,
+                            tries=12, delay=2)
+        rc, raw = pw_snapshot(session=session)
+        nodes = pw_snapshot_nodes(raw)
+        dom = w8_dom_text(nodes, raw)
+        shot = pw_shot("w6-workspace-lost", session=session)
+        check("W6 the lost run's page opens on the node that lost its workspace", shown,
+              f"run={loss['run_id']} node={loss['key']!r} attempt="
+              f"{loss['attempt_number']} detail={str(loss.get('detail'))[:120]!r} "
+              f"(source: {loss['source']}) [{shot}]")
+        c5_emit([w6_loss_copy_verdict(dom)])
+        c5_emit([w6_chip_verdict(nodes, dom)])
+        controls = w6_control_state(w_retry_controls(nodes), session=session)
+        show(f"W6 the retry controls the page draws ({len(controls)}/{len(nodes)} nodes)",
+             str([(c["text"], c["disabled"], c["title"][:60]) for c in controls][:4]))
+        c5_emit([w6_retry_control_verdict(controls, dom, w6_auto_retried(loss["run_id"]))])
+        CTX["w6"] = dict(loss, controls=controls, shot=shot)
+    finally:
+        pw("close", session=session)
 
 
 def w7_worker_state(action, svc, want_online, tries=24, delay=5):

@@ -64,6 +64,27 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w_counter_verdicts,
     w_form_field_verdicts,
     w_input_expectations,
+    W5_COUNTDOWN_COPY,
+    W5_FORBIDDEN_WORDS,
+    W5_INTERRUPTED_COPY,
+    W6_ERROR_CLASS,
+    W6_LOSS_COPY,
+    w5_attempt2_verdict,
+    w5_console_verdict,
+    w5_countdown_verdict,
+    w5_interrupted_verdict,
+    w5_kill_landed_verdicts,
+    w5_spinner_verdict,
+    w6_chip_verdict,
+    w6_loss_copy_verdict,
+    w6_retry_control_verdict,
+    w_forbidden_word_hits,
+    w_forbidden_word_verdicts,
+    w_norm,
+    w_pick_container,
+    w_quotes,
+    w_retry_controls,
+    w_spinner_nodes,
     pw_snapshot_nodes,
 )
 
@@ -1017,6 +1038,179 @@ def test_w11_reads_the_tree_route_its_own_shape():
         CANNED_TREE), "depth-1 children") is False, "one child of 2 never drawn"
 
 
+# --- W5/W6: the interrupted page, the forbidden words, the lost workspace -----
+# Row § 7.2 W5 quotes three pieces of copy and forbids three words; W6 quotes one
+# sentence, one chip and one withheld control. All of it is text work over a snapshot,
+# so it is pinned here WITHOUT a browser: the canned trees below are the shapes
+# playwright-cli prints for ui/src/components/m4/AttemptDetail.tsx and RunInspector.
+
+W5_PANE = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs/01a2
+### Snapshot
+```yaml
+- heading "/build_until_verified[1]/implement · attempt 1" [level=3] [ref=e50]
+- status "OUTCOME UNKNOWN" [ref=e51]: interrupted — the worker disappeared mid-node. Nothing
+  was finished on its side, and anything after the last completed boundary may be repeated
+- term "scheduled" [ref=e52]
+- definition [ref=e53]: 2026-10-16 11:02:15 UTC
+- paragraph: ↻ next attempt scheduled 2026-10-16 11:02:15 UTC · backoff 5s
+- status: · Loading artifacts…
+```
+"""
+
+W5_ATTEMPT2 = """
+- heading "/build_until_verified[1]/implement · attempt 2" [level=3] [ref=e60]
+- text: running
+- paragraph: ↻ next attempt scheduled 2026-10-16 11:02:15 UTC
+"""
+
+W5_DISHONEST = W5_ATTEMPT2 + """
+- status "RESUMED" [ref=e61]: the run was resumed after the crash — no data lost
+"""
+
+W6_PANE = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs/01a3
+### Snapshot
+```yaml
+- heading "/build_until_verified[1]/implement · attempt 2" [level=3] [ref=e70]
+- text: error class
+- generic: × workspace_lost — the workspace is gone
+- alert "EDITS LOST" [ref=e71]: prior edits lost, rerun required. No automatic retry is
+  offered: there is no workspace to continue in
+- button "Pause" [ref=e72]
+- button "Cancel" [ref=e73]
+- button "Retry" [ref=e74]
+```
+"""
+
+W6_CHIP_ONLY = """
+- text: error class
+- generic: × workspace_lost — the workspace is gone
+- button "Retry" [ref=e74]
+"""
+
+
+def test_w5_wording_and_forbidden_scan():
+    """W5's three wording arms plus 10 J7's honesty rule. The forbidden scan is the
+    verdict that matters most: ONE missing piece of honest copy is a FAIL, and a single
+    'resumed' anywhere on the page is a FAIL that quotes the line."""
+    assert w_norm("Interrupted  —\nthe WORKER") == "interrupted - the worker"
+    assert w_quotes("nothing here", "interrupt") == ["(no line mentions 'interrupt')"], \
+        "a FAIL detail still has to be a quote-shaped list"
+    nodes = pw_snapshot_nodes(W5_PANE)
+    dom = w8_dom_text(nodes, W5_PANE)
+    hit = w5_interrupted_verdict(dom)
+    assert hit[1] is True, hit
+    # the copy is matched case- and dash-insensitively but NOT loosely: a page that says
+    # 'interrupted' alone has not said the row's sentence.
+    assert w5_interrupted_verdict("- text: interrupted")[1] is False
+    assert "the page says" in w5_interrupted_verdict("- text: interrupted")[2]
+    # countdown: the row names the CONTENT (the promised scheduled_at), so the time the
+    # ledger promised must be on screen — as the countdown line or as the retried
+    # attempt's own `scheduled` fact, which carries the identical value
+    led = ["2026-10-16 11:02:15"]
+    assert w5_countdown_verdict(dom, led)[1] is True, w5_countdown_verdict(dom, led)
+    fact_only = '- term "scheduled"\n- definition: 2026-10-16 11:02:15 UTC\n'
+    assert w5_countdown_verdict(fact_only, led)[1] is True, \
+        "the scheduled fact IS the retry's promise"
+    assert "scheduled" in w5_countdown_verdict(fact_only, led)[2]
+    assert w5_countdown_verdict(dom, ["2026-10-16 11:99:99"])[1] is False, \
+        "a countdown copy that shows a time the ledger never promised is the FAIL"
+    assert w5_countdown_verdict(dom, [])[1] is None, \
+        "an unreadable promise cannot be checked — GAP, never PASS"
+    assert w5_countdown_verdict("- text: nothing", led)[1] is False
+    # attempt 2 across the leg's samples
+    assert w5_attempt2_verdict(dom + W5_ATTEMPT2, "/build_until_verified[1]/implement")[1] is True
+    assert w5_attempt2_verdict(dom, "/plan")[1] is False
+    # the honesty rule: none of the three words on the honest page…
+    assert w_forbidden_word_hits(dom, W5_FORBIDDEN_WORDS) == []
+    assert one(w_forbidden_word_verdicts(dom), "appear nowhere") is True
+    # …and every one of them drawn is a FAIL naming the words AND the line
+    hits = w_forbidden_word_hits(W5_DISHONEST, W5_FORBIDDEN_WORDS)
+    assert sorted(w for w, _ in hits) == ["no data lost", "resumed"], hits
+    v = one(w_forbidden_word_verdicts(W5_DISHONEST), "appear nowhere", detail=True)
+    assert "resumed" in v and "no data lost" in v, v
+    assert one(w_forbidden_word_verdicts(W5_DISHONEST), "appear nowhere") is False
+    # an empty scan is never a silent PASS over a page that was never read
+    assert one(w_forbidden_word_verdicts(""), "appear nowhere") is True, \
+        "no text has no forbidden words — the caller's 'page rendered' check carries that"
+
+
+def test_w5_kill_proof_console_and_spinner():
+    """The kill's own proof, the console, and the stuck spinner — all three read as
+    GAPs when there was nothing to measure, never as schedule-PASSes."""
+    assert one(w5_kill_landed_verdicts("interrupted", 2, True), "died holding a live lease") is True
+    assert one(w5_kill_landed_verdicts("closed", 1, True), "died holding") is False
+    assert one(w5_kill_landed_verdicts("closed", 1, None), "died holding") is None
+    assert one(w5_kill_landed_verdicts("unattainable", 4, None), "died holding") is None
+    assert one(w5_kill_landed_verdicts("live", 1, True), "died holding") is False
+    assert one(w5_kill_landed_verdicts("", 0, None), "died holding") is None
+    # console: the same reading as W9, relabelled, never re-invented
+    clean = "Total messages: 4 (Errors: 0, Warnings: 1)\n[log] hi\n"
+    label, ok, det = w5_console_verdict(clean, 0)
+    assert label.startswith("W5 ") and ok is True, (label, det)
+    assert w5_console_verdict("[error] boom\n", 0)[1] is False
+    assert w5_console_verdict("", 1)[1] is None, "an unreadable console proves nothing clean"
+    # spinner: the app's announced loading state is `· {label}…`
+    nodes = pw_snapshot_nodes(W5_PANE)
+    assert w_spinner_nodes(nodes) == ["· Loading artifacts…"], w_spinner_nodes(nodes)
+    assert w_spinner_nodes(pw_snapshot_nodes(W5_ATTEMPT2)) == []
+    assert w5_spinner_verdict(nodes, "")[1] is None, "no terminal state → unmeasurable"
+    assert w5_spinner_verdict(nodes, "completed")[1] is False, "terminal + spinner = stuck"
+    assert w5_spinner_verdict(pw_snapshot_nodes(W5_ATTEMPT2), "completed")[1] is True
+    # a state ALERT shares role=status but is not a spinner: it must never be counted
+    assert w_spinner_nodes(pw_snapshot_nodes('- status "INTERRUPTED" [ref=e1]: interrupted')) \
+        == [], "the honest interrupted banner is not a loading state"
+
+
+def test_w6_loss_copy_chip_and_retry_control():
+    """W6: the sentence (case-insensitive, both halves), the chip, and the control the
+    row says must not be offered."""
+    nodes = pw_snapshot_nodes(W6_PANE)
+    dom = w8_dom_text(nodes, W6_PANE)
+    assert w6_loss_copy_verdict(dom)[1] is True, w6_loss_copy_verdict(dom)
+    assert w6_loss_copy_verdict(dom.upper())[1] is True, "the row's check is case-insensitive"
+    label, ok, det = w6_loss_copy_verdict(W6_CHIP_ONLY)
+    assert ok is False and "missing" in det, (label, det)
+    assert W6_LOSS_COPY[0] in det and W6_LOSS_COPY[1] in det, det
+    assert w6_chip_verdict(nodes, dom)[1] is True
+    assert w6_chip_verdict([], "") [1] is False, "no chip is the honest FAIL the row asks for"
+    assert one([w6_chip_verdict(nodes, dom)], "chip", detail=True).startswith("1 element")
+    # the retry control: none → PASS; disabled/'not retriable' → PASS; live → FAIL
+    ctrls = w_retry_controls(nodes)
+    assert [c["text"] for c in ctrls] == ["Retry"], ctrls
+    assert w6_retry_control_verdict([], dom, 0)[1] is True
+    assert w6_retry_control_verdict([dict(c, disabled=True) for c in ctrls], dom, 0)[1] is True
+    assert w6_retry_control_verdict([dict(c, disabled=None, title="not retriable")
+                                     for c in ctrls], dom, 0)[1] is True
+    gap = w6_retry_control_verdict([dict(c, disabled=None) for c in ctrls], dom, 0)
+    assert gap[1] is None and "did not read back" in gap[2], gap
+    bad = w6_retry_control_verdict([dict(c, disabled=False) for c in ctrls], dom, 0)
+    assert bad[1] is False and "ENABLED" in bad[2] and "No automatic retry" in bad[2], bad
+    assert "run=0" in bad[2], "the engine's half is quoted so a reader can tell them apart"
+
+
+def test_w_pick_container_only_this_projects_worker():
+    """C5's kill has always been aimed at `communication-m4-worker-a`, which is a NAME
+    PREFIX: the container compose runs is communication-m4-worker-a-1, and docker
+    answers the prefix with 'no such object'. W5 kills the worker it can PROVE belongs
+    to this project and nothing else."""
+    seen = ["communication-m4-worker-a-1", "communication-m4-worker-b-1",
+            "llm-collective-worker-a-1", "communication-m4-api-a-1"]
+    assert w_pick_container(seen, "worker-a") == "communication-m4-worker-a-1"
+    assert w_pick_container(seen, "worker-b") == "communication-m4-worker-b-1"
+    assert w_pick_container(seen, "api-a") == "communication-m4-api-a-1", \
+        "the resolver is not worker-specific, it is project-specific"
+    assert w_pick_container(["communication-m4-worker-a"], "worker-a") == "", \
+        "the prefix alone is NOT a container — that is the bug this helper exists for"
+    assert w_pick_container(["communication-m4-worker-a-1"], "worker-b") == ""
+    assert w_pick_container(["communication-m4-worker-a-1x"], "worker-a") == ""
+    assert w_pick_container(["communication-m4-worker-a-1"], "worker-a", project="other") == ""
+    assert w_pick_container([], "worker-a") == "" and w_pick_container(None, "") == ""
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
@@ -1030,6 +1224,10 @@ if __name__ == "__main__":
                test_frames_are_rows_not_string_occurrences,
                test_gate_release_verdict_names_the_twin_speed_instead_of_blaming_the_ui,
                test_w11_opens_a_node_whose_attempt_list_has_rows,
+               test_w5_wording_and_forbidden_scan,
+               test_w5_kill_proof_console_and_spinner,
+               test_w6_loss_copy_chip_and_retry_control,
+               test_w_pick_container_only_this_projects_worker,
                test_w11_reads_the_tree_route_its_own_shape,
                test_c11_report_honesty_tolerates_a_labelled_true_row,
                test_http_connection_blip_retry):
