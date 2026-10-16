@@ -3,10 +3,13 @@ package postgres
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 
+	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/secrets"
+	"github.com/dbirks/communication/internal/secrets/materialize"
 	"github.com/dbirks/communication/internal/worker"
 )
 
@@ -514,5 +517,96 @@ func TestNodeAttemptMountSelectionNotAllowlistedRefusesWithoutJournaling(t *test
 	}
 	if n := f.countMaterializations(t); n != 0 {
 		t.Errorf("ledger rows = %d, want none", n)
+	}
+}
+
+// TestNodeAttemptEnvMountDeliversWithoutAnyCheckout reproduces the M4 lab's
+// failure: a node_attempt env mount on an attempt whose unit holds NO
+// repositories at all (a run workspace with no workspace_repos rows — the
+// state the lab's implement attempt was in). An env delivery writes no file,
+// so there is no checkout to authorize: it must succeed, not be journalled as
+// secret.materialization_failed with the catch-all bad_shape. This is the
+// regression for the run that bricked attempt 07ceb9ee.
+func TestNodeAttemptEnvMountDeliversWithoutAnyCheckout(t *testing.T) {
+	f := nodeAttemptSecretsSetup(t)
+	ctx := testCtx(t)
+	f.mount(t, "env-no-checkout", f.attemptEnv, "node_attempt")
+	f.declareRefs(t, "implement", f.mountRef("env-no-checkout"))
+
+	m, err := f.units.Materialize(ctx, worker.MaterializeRequest{
+		OrganizationID: f.orgID, ProjectID: f.projA, WorkerID: f.worker,
+		AgentProfileID: f.profile, AttemptID: f.attemptID,
+		Lifecycle: worker.LifecycleNodeAttempt, // Repos: deliberately nil
+	})
+	if err != nil {
+		t.Fatalf("Materialize(node_attempt, no repos) = %v, want the env value delivered", err)
+	}
+	if len(m.Env) != 1 || !strings.HasPrefix(m.Env[0], f.attemptEnv+"=") {
+		t.Fatalf("env = %v, want exactly %s=...", redactedEnvNames(m.Env), f.attemptEnv)
+	}
+	if n := f.countEvents(t, "secret.materialization_failed"); n != 0 {
+		t.Errorf("secret.materialization_failed = %d, want none", n)
+	}
+	if n := f.countMaterializations(t); n != 1 {
+		t.Errorf("ledger rows = %d, want the one env delivery", n)
+	}
+	if m.Done != nil {
+		if err := m.Done(ctx); err != nil {
+			t.Fatalf("Done: %v", err)
+		}
+	}
+}
+
+// TestSecretMaterializationFailureReasonMapping pins resolveFailureReason and
+// deliveryFailureReason onto the frozen event enum (api/openapi.yaml lists the
+// allowed values next to the type): every named resolver sentinel gets its own
+// honest class rather than falling into bad_shape silently, and no mapping can
+// ever emit a value the vocabulary does not carry.
+func TestSecretMaterializationFailureReasonMapping(t *testing.T) {
+	allowed := map[string]bool{}
+	for _, r := range []string{
+		events.MaterializationPathEscape, events.MaterializationAbsolutePath,
+		events.MaterializationBadShape, events.MaterializationTrackedTarget,
+		events.MaterializationExists, events.MaterializationSymlinkParent,
+		events.MaterializationKeyringUnreadable, events.MaterializationRevokedVersion,
+		events.MaterializationBrokerUnsupported, events.MaterializationMirrorWritable,
+	} {
+		allowed[r] = true
+	}
+	cases := []struct {
+		name     string
+		err      error
+		viaDeliv bool // assert through deliveryFailureReason, not the resolver map
+		want     string
+	}{
+		{"revoked", secrets.ErrRevoked, false, events.MaterializationRevokedVersion},
+		{"revoked wrapped", fmt.Errorf("resolve: %w", secrets.ErrRevoked), false, events.MaterializationRevokedVersion},
+		{"keyring unreadable", secrets.ErrKeyringUnreadable, false, events.MaterializationKeyringUnreadable},
+		{"unknown generation", secrets.ErrUnknownKeyID, false, events.MaterializationKeyringUnreadable},
+		{"decrypt failed", secrets.ErrDecrypt, false, events.MaterializationKeyringUnreadable},
+		{"broker mode", secrets.ErrDeliveryUnsupported, false, events.MaterializationBrokerUnsupported},
+		{"not authorized", secrets.ErrNotAuthorized, false, events.MaterializationBadShape},
+		{"bad ref", secrets.ErrBadRef, false, events.MaterializationBadShape},
+		{"missing row", ErrSecretNotFound, false, events.MaterializationBadShape},
+		{"missing row wrapped", fmt.Errorf("load: %w", ErrSecretNotFound), false, events.MaterializationBadShape},
+		{"unknown error", errors.New("some other refusal"), false, events.MaterializationBadShape},
+		{"delivery refusal", &materialize.Refusal{Reason: materialize.ReasonPathEscape, Err: fmt.Errorf("escape: %w", materialize.ErrRefused)}, true, events.MaterializationPathEscape},
+		{"delivery refusal exists", &materialize.Refusal{Reason: materialize.ReasonExists, Err: fmt.Errorf("clash: %w", materialize.ErrRefused)}, true, events.MaterializationExists},
+		{"plain io error", fmt.Errorf("write: %w", fs.ErrPermission), true, events.MaterializationBadShape},
+	}
+	for _, c := range cases {
+		got := resolveFailureReason(c.err)
+		if c.viaDeliv {
+			got = deliveryFailureReason(c.err)
+		}
+		if !allowed[got] {
+			t.Errorf("failure reason for %s = %q, not in the event enum", c.name, got)
+		}
+		if got != c.want {
+			t.Errorf("failure reason for %s = %q, want %q", c.name, got, c.want)
+		}
+		if alt := deliveryFailureReason(c.err); !allowed[alt] {
+			t.Errorf("deliveryFailureReason(%s) = %q, not in the event enum", c.name, alt)
+		}
 	}
 }

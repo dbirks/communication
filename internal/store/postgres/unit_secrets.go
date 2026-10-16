@@ -713,19 +713,38 @@ func deliveryFailureReason(err error) string {
 	return events.MaterializationBadShape
 }
 
-// resolveFailureReason maps a resolver refusal: revocation is its own case
-// (the "next launch refuses" clause), an unreadable keyring is its own, and
-// everything else is reported as bad_shape — a shape the mount should never
-// have reached — rather than inventing a fifth kind of failure.
+// resolveFailureReason maps a resolver refusal onto the event enum, one named
+// sentinel at a time so the journal always says which class of thing refused
+// rather than shrugging. The enum is frozen (api/openapi.yaml lists it next to
+// the type), so the truth is carried by which of these ten values is chosen:
+//
+//   - revoked_version — ADR-0018's "the next launch refuses".
+//   - keyring_unreadable — the worker cannot open the keyring at all
+//     (ErrKeyringUnreadable), the row's generation is not in it (ErrUnknownKeyID:
+//     the row outlived its key), or the AEAD tag failed (ErrDecrypt: not these
+//     bytes under this key). All three mean "the key side failed", which is what
+//     this value says to an operator.
+//   - broker_unsupported — a delivery mode nobody built (ADR-0018 clause 8).
+//   - bad_shape — everything else, and each "else" is named here rather than
+//     falling through silently: a mount pointing at a row that does not exist
+//     (ErrSecretNotFound), a malformed row identity (ErrBadRef), a resolver
+//     refusal with no enum of its own (ErrNotAuthorized — a node_attempt never
+//     reaches this function with it, it is skipped as a denial upstream; a
+//     turn-scope one is a mount that should never have been declared), and the
+//     resolver's own row-identity/pin inconsistencies, which are exactly the
+//     "a shape the mount should never have reached" this value names.
 func resolveFailureReason(err error) string {
 	switch {
 	case errors.Is(err, secrets.ErrRevoked):
 		return events.MaterializationRevokedVersion
-	case errors.Is(err, secrets.ErrUnknownKeyID), errors.Is(err, secrets.ErrKeyringUnreadable),
+	case errors.Is(err, secrets.ErrKeyringUnreadable), errors.Is(err, secrets.ErrUnknownKeyID),
 		errors.Is(err, secrets.ErrDecrypt):
 		return events.MaterializationKeyringUnreadable
 	case errors.Is(err, secrets.ErrDeliveryUnsupported):
 		return events.MaterializationBrokerUnsupported
+	case errors.Is(err, secrets.ErrNotAuthorized), errors.Is(err, secrets.ErrBadRef),
+		errors.Is(err, ErrSecretNotFound):
+		return events.MaterializationBadShape
 	default:
 		return events.MaterializationBadShape
 	}

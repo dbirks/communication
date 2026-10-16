@@ -230,12 +230,22 @@ func (m *Materializer) Deliver(ctx context.Context, d *Delivery) (*Receipt, erro
 	if d == nil {
 		return nil, errors.New("materialize: nil delivery")
 	}
-	repo, ok := m.repos[d.Mount.RepositoryName]
-	if !ok {
-		return nil, refuse(ReasonBadShape, d.Mount.RelativePath,
-			fmt.Errorf("repository %q is not authorized for this unit", d.Mount.RepositoryName))
+	// An env mount that names no repository writes no file: there is no
+	// checkout to authorize a write into, and requiring one turned a perfectly
+	// scoped env delivery into a bad_shape refusal the moment the unit held no
+	// repositories at all (ADR-0018 D4 clause 5: env delivery is a KEY=value on
+	// the launch Env and nothing else). A mount that DOES name a repository —
+	// any env_file mount, and an env mount declared against one — still passes
+	// the structural authorization check below, so no value can ever be steered
+	// into a checkout the unit was not granted.
+	if d.Mount.DeliveryMode != "env" || d.Mount.RepositoryName != "" {
+		repo, ok := m.repos[d.Mount.RepositoryName]
+		if !ok {
+			return nil, refuse(ReasonBadShape, d.Mount.RelativePath,
+				fmt.Errorf("repository %q is not authorized for this unit", d.Mount.RepositoryName))
+		}
+		d.Repository = repo
 	}
-	d.Repository = repo
 
 	switch d.Mount.DeliveryMode {
 	case "env":
