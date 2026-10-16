@@ -13,16 +13,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
 import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
 import { PIPELINE_TEMPLATES } from "../lib/pipeline/templates";
-import { meFixture, mockFetch, requestsTo, type RouteStub } from "../test/fakes";
+import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import {
+  WIRE_ASSIGNMENT_ID,
   WIRE_DRAFT_ID,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
+  wireAssignmentList,
   wireDraftSummaries,
   wirePipeline,
   wirePipelineList,
   wireRevision,
   wireUserId,
+  wireProjectId,
 } from "../test/fixtures/m4/wire";
 import { validValidation, w8DraftYaml, w8Validation } from "../test/fixtures/m4/w8Draft";
 
@@ -407,5 +410,154 @@ describe("/library/:pipelineId", () => {
     await waitFor(() =>
       expect(requestsTo(requests, draftsPath, "GET").length).toBeGreaterThanOrEqual(2),
     );
+  });
+
+  // "Assign to a project" — after a revision is PUBLISHED the org library
+  // surfaces the one-click path that makes the pipeline runnable: a select of
+  // the caller's maintainer projects that don't already pin it, and a Confirm
+  // that posts the **newest published revision id** (resolved digest → uuid via
+  // route 13, exactly as ProjectRunsPipelines.tsx's assign form does).
+  const secondProjectPath = "/api/v1/projects/01987a6c-9999-7f1a-9b2c-3d4e5f6a7b80/assignments";
+  const maintainerProject2 = {
+    ...projectFixture,
+    id: "01987a6c-9999-7f1a-9b2c-3d4e5f6a7b80",
+    name: "Gadgets",
+    slug: "gadgets",
+    my_role: "maintainer" as const,
+  };
+  const viewerProject = {
+    ...projectFixture,
+    id: "01987a6c-aaaa-7f1a-9b2c-3d4e5f6a7b80",
+    name: "Old",
+    my_role: "viewer" as const,
+  };
+  const emptyAssignments = { assignments: [] };
+
+  describe("/library/:pipelineId — Assign to a project", () => {
+    it("shows the assign control for a pipeline with a published revision", async () => {
+      mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture, maintainerProject2, viewerProject] },
+        },
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: emptyAssignments },
+        { path: secondProjectPath, body: emptyAssignments },
+      ]);
+      const btn = await screen.findByTestId("assign-open");
+      expect(btn.textContent).toBe("Assign to a project");
+    });
+
+    it("offers only maintainer projects that do NOT already have this pipeline assigned", async () => {
+      mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture, maintainerProject2, viewerProject] },
+        },
+        // projectFixture already has it — the wire's pinned pipeline_id matches.
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: wireAssignmentList },
+        // maintainerProject2 does not — it's offered.
+        { path: secondProjectPath, body: emptyAssignments },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      const select = (await screen.findByTestId("assign-project-select")) as HTMLSelectElement;
+      // projectFixture (Widgets) already has the assignment; Gadgets does not.
+      const options = [...select.options].filter((o) => o.value !== "").map((o) => o.textContent);
+      expect(options).toContain("Gadgets");
+      expect(options).not.toContain("Widgets"); // already assigned
+      expect(options).not.toContain("Old"); // viewer, not maintainer
+    });
+
+    it("confirming posts the assignment with the resolved revision uuid", async () => {
+      const createPath = `/api/v1/projects/${maintainerProject2.id}/assignments`;
+      const { requests } = mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture, maintainerProject2, viewerProject] },
+        },
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: wireAssignmentList },
+        { path: secondProjectPath, body: emptyAssignments },
+        {
+          path: createPath,
+          method: "POST",
+          status: 201,
+          body: {
+            ...wireAssignmentList.assignments[0],
+            project_id: maintainerProject2.id,
+            id: WIRE_ASSIGNMENT_ID,
+          },
+        },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      await screen.findByTestId("assign-project-select");
+      fireEvent.change(screen.getByTestId("assign-project-select"), {
+        target: { value: maintainerProject2.id },
+      });
+      fireEvent.change(screen.getByTestId("assign-ceiling"), {
+        target: { value: "3" },
+      });
+      await waitFor(
+        () =>
+          expect((screen.getByTestId("assign-confirm") as HTMLButtonElement).disabled).toBe(false),
+        settled,
+      );
+      fireEvent.click(screen.getByTestId("assign-confirm"));
+      await waitFor(
+        () => expect(requestsTo(requests, createPath, "POST")).toHaveLength(1),
+        settled,
+      );
+      const body = JSON.parse(requestsTo(requests, createPath, "POST")[0].body ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      // pinned_revision_id must be the real uuid WIRE_REVISION_ID, not the digest string.
+      expect(body.pinned_revision_id).toBe(WIRE_REVISION_ID);
+      expect(body.pipeline_id).toBe(WIRE_PIPELINE_ID);
+      expect(body.max_concurrent_runs).toBe(3);
+    });
+
+    it("links the success panel to the project's run list", async () => {
+      const createPath = `/api/v1/projects/${maintainerProject2.id}/assignments`;
+      mount(detail, [
+        {
+          path: "/api/v1/projects",
+          body: { items: [maintainerProject2] },
+        },
+        { path: secondProjectPath, body: emptyAssignments },
+        {
+          path: createPath,
+          method: "POST",
+          status: 201,
+          body: { ...wireAssignmentList.assignments[0], project_id: maintainerProject2.id },
+        },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      await screen.findByTestId("assign-project-select");
+      fireEvent.change(screen.getByTestId("assign-project-select"), {
+        target: { value: maintainerProject2.id },
+      });
+      await waitFor(
+        () =>
+          expect((screen.getByTestId("assign-confirm") as HTMLButtonElement).disabled).toBe(false),
+        settled,
+      );
+      fireEvent.click(screen.getByTestId("assign-confirm"));
+      const link = await screen.findByTestId("assign-start-run-link", undefined, settled);
+      expect(link.getAttribute("href")).toBe(`/projects/${maintainerProject2.id}/runs`);
+      expect(screen.getByTestId("assign-success-label").textContent).toContain("Gadgets");
+    });
+
+    it("shows no assign control when no published revisions exist", async () => {
+      // Override revisions list to be empty.
+      mount(detail, [
+        { path: revisionsPath, body: { revisions: [] } },
+        {
+          path: "/api/v1/projects",
+          body: { items: [projectFixture] },
+        },
+        { path: `/api/v1/projects/${wireProjectId}/assignments`, body: emptyAssignments },
+      ]);
+      await screen.findByTestId("pipeline-page");
+      expect(screen.queryByTestId("assign-open")).toBeNull();
+    });
   });
 });

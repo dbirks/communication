@@ -415,6 +415,85 @@ function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone: () => 
       {patch.isError ? (
         <ProblemCode error={patch.error} testid={`agents-apm-problem-${profile.id}`} />
       ) : null}
+      <DigestHelp refValue={trimmedRef} targetValue={target} profileId={profile.id} />
     </form>
+  );
+}
+
+/**
+ * "How do I get this?" — the two commands proven in docs/compatibility/APM.md
+ * ("Observed generated layout per target" + F2 finding) that compute a
+ * package's lock digest inside the worker image. `<ref>` and `<target>` are
+ * filled from the form's current values so the block is copy-paste runnable
+ * as soon as both fields are set. The copy button uses
+ * `navigator.clipboard.writeText` only; jsdom and non-secure-context browsers
+ * lack the API, so it is guarded and the button degrades to no-op.
+ *
+ * A plain warning accompanies the block: the digest is not a label the server
+ * can resolve at launch time — it pins the exact content, and a moved tag
+ * (a force-push that keeps the name) fails closed, refusing the staging.
+ */
+function DigestHelp({
+  refValue,
+  targetValue,
+  profileId,
+}: {
+  refValue: string;
+  targetValue: "claude" | "codex";
+  profileId: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const displayRef = refValue || "owner/repo#tag";
+  const displayTarget = targetValue;
+
+  const commandBlock = [
+    `printf 'name: x\\nversion: 0.1.0\\ndescription: x\\ndependencies:\\n  apm:\\n    - ${displayRef}\\n' > apm.yml`,
+    `docker run --rm -v "$PWD":/w -w /w --entrypoint sh ghcr.io/dbirks/communication-worker:main -c 'PATH=/opt/apm:$PATH apm install --target ${displayTarget} && sha256sum apm.lock.yaml'`,
+  ].join("\n");
+
+  function copy() {
+    // Guard: jsdom has no clipboard; non-secure-context browsers also lack it.
+    if (!navigator.clipboard) return;
+    void navigator.clipboard.writeText(commandBlock).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {},
+    );
+  }
+
+  return (
+    <details className="px-[10px] pb-[6px]" data-testid={`agents-digest-help-${profileId}`}>
+      <summary
+        className="cursor-pointer font-mono text-[10.5px] text-muted"
+        data-testid={`agents-digest-help-toggle-${profileId}`}
+      >
+        How do I get this?
+      </summary>
+      <p className="pt-1 text-[11.5px] text-muted">
+        The digest pins the exact skills a lockfile describes; a moved tag fails closed and staging
+        refuses — it does not silently restage new content.
+      </p>
+      <div
+        className="mt-1 flex items-start gap-1"
+        data-testid={`agents-digest-help-block-${profileId}`}
+      >
+        <pre className="min-w-0 flex-1 overflow-x-auto rounded-[3px] border border-line bg-fill px-2 py-1 font-mono text-[10.5px] whitespace-pre text-ink">
+          {commandBlock}
+        </pre>
+        <Button
+          type="button"
+          variant="ghost"
+          compact
+          disabled={!navigator.clipboard}
+          onClick={copy}
+          data-testid={`agents-digest-help-copy-${profileId}`}
+          title={navigator.clipboard ? "Copy commands" : "Clipboard not available in this context"}
+        >
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+    </details>
   );
 }

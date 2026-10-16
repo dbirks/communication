@@ -17,25 +17,26 @@
  *   publishing to org admins alone.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
 import { Button } from "../components/ds/Button";
 import { Field, Input, Select } from "../components/ds/Field";
 import { DRAFT_STATE, REVISION_STATE, stateOf } from "../components/ds/states";
-import { ProblemBanner, Spinner } from "../components/Feedback";
+import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
 import { DraftEditor } from "../components/m4/DraftEditor";
 import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
-import { problemOf } from "../api/client";
+import { apiFetch, problemOf } from "../api/client";
 import { useActorNames } from "../api/actors";
-import { useMe } from "../api/queries";
+import { queryKeys, useMe, useProjects } from "../api/queries";
 import { formatAge } from "../lib/format";
 import {
   pipelineDraftsQueryOptions,
   pipelineQueryOptions,
+  useCreateAssignment,
   useCreateDraft,
   useCreatePipeline,
   usePipeline,
@@ -51,6 +52,7 @@ import {
   viewPipelineSummary,
   viewRevisionSummary,
 } from "../api/m4view";
+import type { AssignmentList } from "../api/types";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
 import {
   PIPELINE_TEMPLATES,
@@ -389,6 +391,8 @@ export function PipelinePage() {
   }, [draftCreating, newestDocument.data, createDraft]);
 
   const summary = pipeline.data ? viewPipelineSummary(pipeline.data) : null;
+  // First `published` in newest-first order — the one the assign form pins.
+  const newestPublished = revisionRows.find((r) => r.status === "published");
 
   return (
     <div
@@ -582,8 +586,208 @@ export function PipelinePage() {
         {!draftId && revision.isPending && selectedRevisionKey ? (
           <Spinner label="Loading the revision document" />
         ) : null}
+        {!draftId && newestPublished ? (
+          <AssignToProjectPanel
+            pipelineId={pipelineId}
+            newestPublishedDigest={newestPublished.revision_digest}
+          />
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * "Assign to a project": the org library's one-click path from published
+ * revision to runnable project. A maintainer of a project (my_role ===
+ * "maintainer") can pin this pipeline's newest published revision to any
+ * project they maintain that does NOT already have it assigned — the store's
+ * UNIQUE constraint makes a second POST a 409, so we filter it client-side
+ * (the same way `ProjectRunsPipelines.tsx` filters the assignable list; but
+ * here the candidate set spans every maintainer project rather than one).
+ *
+ * The assignment pins an *id*, not a digest: route 5's summary carries no
+ * uuid (ADR-0021 § 5), while route 18 rejects anything that is not one, so
+ * the digest → id resolution goes through `useRevision` (route 13) and the
+ * fetch is armed only while the form is open — exactly as `AssignPipelineRow`
+ * does in `ProjectRunsPipelines.tsx`.
+ *
+ * After a successful assign the panel shows "Assigned to <name> — Start a run"
+ * linking to the project's run list, which is where a maintainer goes next.
+ */
+function AssignToProjectPanel({
+  pipelineId,
+  newestPublishedDigest,
+}: {
+  pipelineId: string;
+  newestPublishedDigest: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [projectId, setProjectId] = useState("");
+  const [maxConcurrentRuns, setMaxConcurrentRuns] = useState(1);
+  const [assignedName, setAssignedName] = useState<string | null>(null);
+
+  const projects = useProjects();
+  // Fan-out: one assignments read per maintainer project — the same useQueries
+  // style the inbox attention lists use (Inbox.tsx / lib/attention.ts), keyed
+  // identically to `useAssignments` so a shared cache entry serves both reads.
+  const maintainerProjects = useMemo(
+    () => (projects.data?.items ?? []).filter((p) => p.my_role === "maintainer"),
+    [projects.data],
+  );
+  const assignmentResults = useQueries({
+    queries: maintainerProjects.map((project) => ({
+      queryKey: queryKeys.assignments(project.id),
+      queryFn: () => apiFetch<AssignmentList>(`/api/v1/projects/${project.id}/assignments`),
+      enabled: open,
+    })),
+  });
+
+  // A candidate is a maintainer project whose assignments list has arrived and
+  // does not yet contain this pipeline. A project whose list is still loading
+  // is absent from the select rather than shown as an unknown.
+  const candidates = maintainerProjects.filter((_project, index) => {
+    const list = assignmentResults[index]?.data;
+    if (!list) return false;
+    return !list.assignments.some((a) => a.pipeline_id === pipelineId);
+  });
+
+  // Resolve the newest published revision digest → uuid (route 13). Armed only
+  // while the form is open and a project is chosen.
+  const resolvedRevision = useRevision(open && projectId ? newestPublishedDigest : "");
+  const create = useCreateAssignment(projectId);
+
+  function confirm() {
+    const revisionId = resolvedRevision.data?.id;
+    if (!revisionId || !projectId) return;
+    const name = maintainerProjects.find((p) => p.id === projectId)?.name ?? projectId;
+    create.mutate(
+      {
+        pipeline_id: pipelineId,
+        pinned_revision_id: revisionId,
+        max_concurrent_runs: maxConcurrentRuns,
+      },
+      { onSuccess: () => setAssignedName(name) },
+    );
+  }
+
+  if (!open) {
+    return (
+      <Button variant="secondary" compact data-testid="assign-open" onClick={() => setOpen(true)}>
+        Assign to a project
+      </Button>
+    );
+  }
+
+  if (assignedName) {
+    const assignedProject = maintainerProjects.find((p) => p.name === assignedName);
+    return (
+      <Panel title="ASSIGNED" headingId="assign-success-heading" headingLevel={2}>
+        <p className="p-[10px] text-[12.5px]" data-testid="assign-success-panel">
+          <span data-testid="assign-success-label">Assigned to {assignedName}</span>
+          {assignedProject ? (
+            <Link
+              to={`/projects/${assignedProject.id}/runs`}
+              className="ml-1 font-mono text-[11.5px] text-accent-text"
+              data-testid="assign-start-run-link"
+            >
+              — Start a run
+            </Link>
+          ) : null}
+        </p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="ASSIGN TO A PROJECT" headingId="assign-form-heading" headingLevel={2}>
+      <form
+        className="space-y-[10px] p-[10px]"
+        data-testid="assign-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          confirm();
+        }}
+      >
+        {projects.isPending ? <Spinner label="Loading projects" /> : null}
+        {projects.isError ? (
+          <ProblemBanner error={projects.error} fallback="Your projects could not be read." />
+        ) : null}
+        {maintainerProjects.length === 0 && projects.data ? (
+          <p className="font-mono text-[11px] text-muted" data-testid="assign-no-maintainer">
+            You are not a maintainer of any project — ask a maintainer to assign this pipeline.
+          </p>
+        ) : null}
+        {maintainerProjects.length > 0 ? (
+          <Field
+            id="assign-project-select"
+            label="project"
+            hint="projects you maintain that do not already have this pipeline assigned"
+            className="min-w-[16rem] flex-1"
+          >
+            <Select
+              id="assign-project-select"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+              className="font-ui"
+              data-testid="assign-project-select"
+            >
+              <option value="">— select a project —</option>
+              {candidates.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
+        <Field
+          id="assign-ceiling"
+          label="max concurrent runs"
+          hint="1 is the wire default; the server caps it at 8"
+          className="w-[12rem]"
+        >
+          <Input
+            id="assign-ceiling"
+            type="number"
+            min={1}
+            max={8}
+            value={maxConcurrentRuns}
+            onChange={(event) => setMaxConcurrentRuns(event.target.valueAsNumber || 1)}
+            data-testid="assign-ceiling"
+          />
+        </Field>
+        <div className="flex items-center gap-[8px]">
+          <Button
+            type="submit"
+            variant="primary"
+            compact
+            disabled={!projectId || !resolvedRevision.data || create.isPending}
+            data-testid="assign-confirm"
+          >
+            {create.isPending ? "Assigning…" : "Confirm"}
+          </Button>
+          <Button
+            variant="ghost"
+            compact
+            data-testid="assign-cancel"
+            onClick={() => setOpen(false)}
+          >
+            Cancel
+          </Button>
+        </div>
+        {resolvedRevision.isPending && projectId ? (
+          <Spinner label="Resolving the revision id" />
+        ) : null}
+        {resolvedRevision.isError ? (
+          <ProblemBanner
+            error={resolvedRevision.error}
+            fallback="The newest published revision could not be read."
+          />
+        ) : null}
+        {create.isError ? <FormError error={create.error} testid="assign-error" /> : null}
+      </form>
+    </Panel>
   );
 }
 

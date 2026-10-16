@@ -151,4 +151,41 @@ describe("/agents", () => {
       "[apm_pin_incomplete]",
     );
   });
+
+  it("shows the how-to-get-digest disclosure under the digest field", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
+    // The disclosure is visible (details/summary).
+    const details = screen.getByTestId(`agents-digest-help-${pinned.id}`);
+    expect(details.querySelector("summary")?.textContent).toContain("How do I get this?");
+    // It explains the fail-closed semantic in plain words.
+    expect(details.textContent).toContain("moved tag fails closed");
+  });
+
+  it("digest help commands reflect the form's current ref and target", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
+    // Change the ref and target to values different from the pin.
+    fireEvent.change(screen.getByTestId(`agents-ref-input-${pinned.id}`), {
+      target: { value: "acme/skills#v2.0.0" },
+    });
+    fireEvent.change(screen.getByTestId(`agents-target-select-${pinned.id}`), {
+      target: { value: "codex" },
+    });
+    const block = screen.getByTestId(`agents-digest-help-block-${pinned.id}`);
+    // The current ref appears in the printf command.
+    expect(block.textContent).toContain("acme/skills#v2.0.0");
+    // The current target appears in the docker-run command.
+    expect(block.textContent).toContain("--target codex");
+    // The worker image is named so the block is self-contained.
+    expect(block.textContent).toContain("ghcr.io/dbirks/communication-worker:main");
+  });
+
+  it("copy button is disabled when the Clipboard API is absent (jsdom default)", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
+    const copyBtn = screen.getByTestId(`agents-digest-help-copy-${pinned.id}`) as HTMLButtonElement;
+    // jsdom has no navigator.clipboard, so the button must render disabled.
+    expect(copyBtn.disabled).toBe(true);
+  });
 });
