@@ -160,7 +160,7 @@ func (l *Launcher) Verify(ctx context.Context, spec LaunchSpec) (*VerificationRe
 	if err != nil {
 		return res, &Failure{Stage: StageGrantAssert, Reason: "grant_mismatch", Err: err}
 	}
-	if err := assertGrants(spec.Plan, parsed); err != nil {
+	if err := assertGrants(spec.Plan, spec.ToolReads, parsed); err != nil {
 		return res, &Failure{Stage: StageGrantAssert, Reason: "grant_mismatch", Err: err}
 	}
 	for _, g := range parsed {
@@ -340,7 +340,16 @@ var nonoInjectedGrants = map[string]bool{
 
 // assertGrants is N-d's actual content: the resolved set must be the intended
 // set, path-for-path and level-for-level.
-func assertGrants(plan wsgit.LaunchPlan, got []grantEntry) error {
+//
+// toolReads are the launch's ToolReads (the resolved executable's directory
+// and its interpreter's). They belong to the intended set for exactly one
+// reason: an assertion that did not know them would refuse every command
+// whose program lives outside the workspace, and a launcher that quietly
+// allowed them would make "the resolved grant list is the recorded one" a
+// claim nobody checks. They are admitted at read level only — a [user] rule
+// at r+w for a tool path is a broadening, and falls through to the unknown
+// rule refusal below.
+func assertGrants(plan wsgit.LaunchPlan, toolReads []string, got []grantEntry) error {
 	want := map[string]string{} // path -> level
 	for _, g := range plan.Grants {
 		level := "r+w"
@@ -348,6 +357,12 @@ func assertGrants(plan wsgit.LaunchPlan, got []grantEntry) error {
 			level = "r"
 		}
 		want[filepath.Clean(g.Path)] = level
+	}
+	for _, p := range toolReads {
+		clean := filepath.Clean(p)
+		if _, taken := want[clean]; !taken {
+			want[clean] = "r"
+		}
 	}
 	seen := map[string]string{}
 	var unknown []string

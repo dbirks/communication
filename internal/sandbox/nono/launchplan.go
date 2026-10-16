@@ -39,6 +39,18 @@ type LaunchSpec struct {
 	AdapterEnv []string
 	// BlockNet adds --block-net. Only the egress-denied profile should ask.
 	BlockNet bool
+	// ToolReads are read-only grants for the *program* the sandbox is asked to
+	// exec, as opposed to the workspace it works on. A process.exec command is
+	// resolved from the worker's PATH (exec.LookPath), and a helper that lives
+	// outside the workspace tree — the lab's /opt/m4/bin fixtures, a vendored
+	// toolchain under /usr/local/share — is unreachable under Landlock unless
+	// its own directory is granted, which is what `nono run` answers with
+	// exit 126 (found, but not executable). Entries are the absolute
+	// directories of the resolved executable and of the interpreter named by
+	// its `#!` line; they carry read (which nono's Landlock ruleset pairs with
+	// exec) and never write, and they are asserted as [user] rules by N-d like
+	// every other per-launch grant.
+	ToolReads []string
 }
 
 // BuildLaunchArgv renders the silent (real) argv: `run -s -p <path> <grants>
@@ -104,6 +116,16 @@ func (s LaunchSpec) argv(verify bool) ([]string, error) {
 			flag = "--read"
 		}
 		args = append(args, flag, g.Path)
+	}
+	// The program's own directory, and its interpreter's, are read grants:
+	// they buy exec, never write. FC3's rule applies here too — an
+	// unresolvable path is a grant nono silently drops, so it is refused
+	// before the launch rather than becoming a 126 inside the sandbox.
+	for _, p := range s.ToolReads {
+		if err := wsgit.CheckGrantPath(p); err != nil {
+			return nil, fmt.Errorf("sandbox: tool read grant %s is not usable: %w (probe C-FC3: nono silently ignores an unresolvable grant path, which would launch a narrower sandbox than the one that was verified)", p, err)
+		}
+		args = append(args, "--read", p)
 	}
 	// --block-net is emitted only under a profile whose own recorded identity
 	// says egress is denied (ADR-0019 D3: network is an axis with two names,

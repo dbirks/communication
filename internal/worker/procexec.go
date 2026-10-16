@@ -567,7 +567,14 @@ func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c Attem
 	nspec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: p.LauncherHome,
 		AdapterPath: spec.argv[0], AdapterArgs: spec.argv[1:], AdapterEnv: adapterEnv,
-		BlockNet: true, // the command profile IS the egress-denied claim (§ 4 step 5)
+		// § 4 step 5's grant set is the workspace the command works ON; the
+		// program it IS needs its own read (which is what nono's Landlock
+		// ruleset pairs with exec). A resolved path outside the granted tree —
+		// a lab fixture under /opt, a vendored toolchain — was otherwise
+		// reachable by the worker's own lookup and unreachable by the sandbox,
+		// which is exactly the 126 (found, could not execute) this fills.
+		ToolReads: commandToolReads(plan, spec.argv[0]),
+		BlockNet:  true, // the command profile IS the egress-denied claim (§ 4 step 5)
 	}
 	res, verr := p.Sandbox.Verify(ctx, nspec)
 	if verr != nil {
@@ -1237,4 +1244,120 @@ func (p *ProcExec) checkpointFor(ctx context.Context, c AttemptClaim, spec procE
 
 func failedResult(class, detail string) AttemptResult {
 	return AttemptResult{Status: AttemptStatusFailed, ErrorClass: class, Detail: bounded(detail, 512)}
+}
+
+// commandToolReads is § 4 step 5's missing half: the grant set the contract
+// names is the workspace the command works ON, and nothing in it names the
+// directory the program itself lives in. Under Landlock that difference is an
+// exit 126 — `nono` found the file the worker's own PATH lookup resolved and
+// could not execute it, which classify() reports as the unable-to-start class.
+//
+// The grant is the resolved executable's directory and, when the program is a
+// script, the directory of the interpreter its `#!` line names — nothing else,
+// and never a write: read is the level nono's Landlock ruleset pairs with exec
+// (observed: --read /opt/m4/bin made m4-exit.sh runnable, egress unchanged).
+// Paths are symlink-resolved, because nono resolves them too and N-d compares
+// path-for-path: `--read /bin` is printed back as `r /usr/bin (dir) [user]`,
+// and a want-list naming /bin would then be "missing" while /usr/bin was
+// "never asked for".
+//
+// A program already inside a workspace grant (a checked-out build script) is
+// skipped: the parent's ruleset covers its subtree, and re-granting it read
+// would put two levels on one path and refuse the launch.
+func commandToolReads(plan wsgit.LaunchPlan, argv0 string) []string {
+	if argv0 == "" {
+		return nil
+	}
+	if !filepath.IsAbs(argv0) {
+		if resolved, err := exec.LookPath(argv0); err == nil {
+			argv0 = resolved
+		}
+	}
+	progs := []string{argv0}
+	if interp, ok := shebangInterpreter(argv0); ok {
+		progs = append(progs, interp)
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, prog := range progs {
+		if prog == "" || !fileExists(prog) {
+			continue
+		}
+		dir := filepath.Dir(prog)
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = filepath.Clean(resolved)
+		}
+		if seen[dir] {
+			continue
+		}
+		if coveredByGrant(plan, dir) {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, dir)
+	}
+	return out
+}
+
+// coveredByGrant reports whether path already sits inside one of the plan's
+// grants, in which case its ruleset reaches it.
+func coveredByGrant(plan wsgit.LaunchPlan, path string) bool {
+	for _, g := range plan.Grants {
+		if g.Path != "" && inside(g.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// shebangInterpreter reads the `#!` line of a script and names the program the
+// kernel would exec. `#!/usr/bin/env python3` is answered by the env-resolved
+// program, because that is the file whose execution is being granted; a bare
+// `#!/bin/sh` names /bin/sh itself. Binary executables (no `#!`) report false.
+func shebangInterpreter(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 256)
+	n, _ := io.ReadFull(f, buf)
+	line, _, ok := strings.Cut(string(buf[:n]), "\n")
+	if !ok && n < 2 {
+		return "", false
+	}
+	head, rest, _ := strings.Cut(line, "\r")
+	if !strings.HasPrefix(strings.TrimSpace(head), "#!") {
+		return "", false
+	}
+	_ = rest
+	fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(head), "#!")))
+	if len(fields) == 0 {
+		return "", false
+	}
+	interp := fields[0]
+	if filepath.Base(interp) == "env" && len(fields) > 1 {
+		name := fields[len(fields)-1]
+		if strings.HasPrefix(name, "-") {
+			return "", false
+		}
+		if resolved, err := exec.LookPath(name); err == nil {
+			return resolved, true
+		}
+		return "", false
+	}
+	if !filepath.IsAbs(interp) {
+		resolved, err := exec.LookPath(interp)
+		if err != nil {
+			return "", false
+		}
+		interp = resolved
+	}
+	return interp, true
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
 }
