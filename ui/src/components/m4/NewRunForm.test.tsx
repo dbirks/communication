@@ -238,3 +238,150 @@ describe("NewRunForm — submit is one run", () => {
     expect(screen.getByTestId("new-run-idempotency-key").textContent).toBe(key);
   });
 });
+
+/* -------------------------------------------------- W3: start from an issue */
+
+const APP_REPO_ID = "01987b40-0000-7000-8000-abcdef012345";
+const ISSUES_PATH = `/api/v1/projects/${wireProjectId}/repos/${APP_REPO_ID}/issues`;
+
+const issueList = {
+  repository: "example/app",
+  state: "open" as const,
+  items: [
+    {
+      number: 12,
+      title: "add() swallows negative inputs",
+      body: "Repro: add(-1, 2) returns 0.\n\nExpected 1.",
+      labels: ["bug", "help wanted"],
+      html_url: "https://github.com/example/app/issues/12",
+      state: "open" as const,
+      updated_at: new Date(Date.now() - 3 * 3_600_000).toISOString(),
+      body_truncated: false,
+    },
+    {
+      number: 9,
+      title: "Document the CLI flags",
+      body: "",
+      labels: [],
+      html_url: "https://github.com/example/app/issues/9",
+      state: "open" as const,
+      updated_at: "2026-10-16T18:00:00Z",
+      body_truncated: true,
+    },
+  ],
+};
+
+/** A revision that declares the input names the picker knows how to fill. */
+function revisionWithIssueInputs() {
+  const document = structuredClone(wireRevision.canonical_document) as {
+    spec: { inputs: Record<string, unknown> };
+  };
+  document.spec.inputs = {
+    type: "object",
+    required: ["goal", "repository"],
+    properties: {
+      goal: { type: "string", minLength: 1 },
+      repository: { type: "string", minLength: 1 },
+      issue_number: { type: "integer" },
+      acceptance_criteria: { type: "string" },
+    },
+  };
+  return { ...wireRevision, canonical_document: document };
+}
+
+/** Open the form, pick repo `app`, and expand the issue section. */
+async function openIssueSection(
+  routes: RouteStub[] = [],
+  revision: unknown = revisionWithIssueInputs(),
+) {
+  const mounted = await openForm([{ path: REVISION_PATH, body: revision }, ...routes]);
+  fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
+    target: { value: "app" },
+  });
+  const toggle = await screen.findByTestId("issue-section-toggle");
+  fireEvent.click(toggle);
+  return mounted;
+}
+
+describe("NewRunForm — start from a GitHub issue", () => {
+  it("lists the repository's open issues once one is chosen", async () => {
+    await openIssueSection([{ path: ISSUES_PATH, method: "GET", body: issueList }]);
+
+    const list = await screen.findByTestId("issue-list");
+    expect(within(list).getByTestId("issue-row-12").textContent).toContain(
+      "add() swallows negative inputs",
+    );
+    expect(within(list).getByTestId("issue-labels-12").textContent).toContain("help wanted");
+    expect(within(list).getByTestId("issue-age-12").textContent).toContain("3h ago");
+    const link = within(list).getByTestId("issue-link-12") as HTMLAnchorElement;
+    expect(link.href).toBe("https://github.com/example/app/issues/12");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noreferrer");
+    // Bodies GitHub clipped say so instead of reading short silently.
+    expect(within(list).getByTestId("issue-row-9").textContent).toContain("body clipped");
+  });
+
+  it("fills the declared goal and integer inputs from the chosen issue", async () => {
+    await openIssueSection([{ path: ISSUES_PATH, method: "GET", body: issueList }]);
+
+    fireEvent.click(await screen.findByTestId("issue-use-12"));
+
+    const goal = screen.getByTestId("new-run-input-goal") as HTMLTextAreaElement;
+    expect(goal.value).toBe(
+      "#12 add() swallows negative inputs\n\nRepro: add(-1, 2) returns 0.\n\nExpected 1.",
+    );
+    const number = screen.getByTestId("new-run-input-issue_number") as HTMLInputElement;
+    expect(number.value).toBe("12");
+    // An input the picker has no rule for is left exactly as it was.
+    expect(
+      (screen.getByTestId("new-run-input-acceptance_criteria") as HTMLTextAreaElement).value,
+    ).toBe("");
+    expect((await screen.findByTestId("issue-fill-note")).textContent).toBe(
+      "filled goal, issue_number from #12",
+    );
+  });
+
+  it("writes nothing the revision does not declare", async () => {
+    const document = structuredClone(wireRevision.canonical_document) as {
+      spec: { inputs: Record<string, unknown> };
+    };
+    document.spec.inputs = {
+      type: "object",
+      required: ["goal"],
+      properties: { goal: { type: "string", minLength: 1 }, repository: { type: "string" } },
+    };
+    const mounted = await openIssueSection(
+      [{ path: ISSUES_PATH, method: "GET", body: issueList }],
+      { ...wireRevision, canonical_document: document },
+    );
+    expect(mounted).toBeTruthy();
+    expect(screen.queryByTestId("new-run-input-issue_number")).toBeNull();
+
+    fireEvent.click(await screen.findByTestId("issue-use-9"));
+    const goal = screen.getByTestId("new-run-input-goal") as HTMLTextAreaElement;
+    expect(goal.value).toBe("#9 Document the CLI flags");
+    expect(screen.queryByTestId("new-run-input-issue_url")).toBeNull();
+    expect(screen.getByTestId("issue-fill-note").textContent).toBe("filled goal from #9");
+  });
+
+  it("a non-GitHub remote collapses the section into a muted line", async () => {
+    await openIssueSection([
+      {
+        path: ISSUES_PATH,
+        method: "GET",
+        status: 422,
+        body: {
+          type: "https://communication.dev/errors/not_a_github_repository",
+          title: "Not a GitHub repository",
+          status: 422,
+          detail: "git_url is not a GitHub remote.",
+          code: "not_a_github_repository",
+        },
+      },
+    ]);
+
+    const note = await screen.findByTestId("issue-section-not-github");
+    expect(note.textContent).toContain("not a GitHub remote");
+    expect(screen.queryByTestId("issue-section-toggle")).toBeNull();
+  });
+});

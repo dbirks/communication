@@ -25,8 +25,10 @@ import { useNavigate } from "react-router";
 import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
 import { useRepositories } from "../../api/queries";
 import { useCreateRun } from "../../api/runs";
+import { isNotGitHubRepository, useRepoIssues, type GitHubIssue } from "../../api/issues";
 import { problemOf } from "../../api/client";
-import type { RunCreate } from "../../api/types";
+import type { Repository, RunCreate } from "../../api/types";
+import { formatAge } from "../../lib/format";
 import { Button } from "../ds/Button";
 import { Field, Input, Select, Textarea } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
@@ -232,6 +234,39 @@ export function wireInputsOf(
   return inputs;
 }
 
+/**
+ * The values an issue writes into a revision's declared inputs — and nothing
+ * else. Matching is by the name the revision declares, never by inventing a
+ * field: `goal` (string) gets `#<number> <title>` plus the body, an integer
+ * `issue_number`/`number` gets the number, a string `issue_url`/`url` gets
+ * GitHub's link. An input the schema does not declare is never added, and an
+ * input it does declare but that no rule covers keeps whatever the user typed.
+ */
+export function issueValuesFor(
+  fields: readonly RunInputField[],
+  issue: GitHubIssue,
+): { values: Record<string, InputValue>; filled: string[] } {
+  const heading = `#${issue.number} ${issue.title}`;
+  const body = issue.body.trim();
+  const text = body === "" ? heading : `${heading}\n\n${issue.body}`;
+  const values: Record<string, InputValue> = {};
+  const filled: string[] = [];
+  for (const field of fields) {
+    if (field.kind === "unsupported") continue;
+    const name = field.name.toLowerCase();
+    const isText = field.kind === "textarea" || field.kind === "text";
+    const isInteger = field.kind === "integer" || field.kind === "number";
+    if (isText && name === "goal") values[field.name] = text;
+    else if (isInteger && (name === "issue_number" || name === "number"))
+      values[field.name] = issue.number;
+    else if (isText && (name === "issue_url" || name === "url"))
+      values[field.name] = issue.html_url;
+    else continue;
+    filled.push(field.name);
+  }
+  return { values, filled };
+}
+
 export interface NewRunFormProps {
   projectId: string;
   /** Called with the created run id; the form then navigates to the run. */
@@ -289,6 +324,30 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
   }, [fields, active]);
 
   const repoNames = (repositories.data?.items ?? []).map((repo) => repo.name);
+  const repos = repositories.data?.items ?? [];
+  // The repository the issue picker reads is the one a `repository`-typed
+  // input currently names — the form has no separate repo chooser.
+  const repositoryField = fields?.find((field) => field.kind === "repository") ?? null;
+  const repositoryValue = repositoryField ? values[repositoryField.name] : undefined;
+  const chosenRepo =
+    typeof repositoryValue === "string"
+      ? (repos.find((repo) => repo.name === repositoryValue) ?? null)
+      : null;
+  const [issueFillNote, setIssueFillNote] = useState<string | null>(null);
+  // A note about what was filled belongs to one repository choice.
+  useEffect(() => setIssueFillNote(null), [repositoryValue]);
+  const fillFromIssue = (issue: GitHubIssue) => {
+    if (!fields) return;
+    const patch = issueValuesFor(fields, issue);
+    if (patch.filled.length === 0) {
+      setIssueFillNote(
+        `#${issue.number} filled nothing — this revision declares no matching input`,
+      );
+      return;
+    }
+    setValues((current) => ({ ...current, ...patch.values }));
+    setIssueFillNote(`filled ${patch.filled.join(", ")} from #${issue.number}`);
+  };
   const problems = fields ? inputProblemsOf(fields, values) : {};
   const declaresFields = fields !== null && fields.length > 0;
   const blocked =
@@ -391,6 +450,16 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
           />
         ))}
       </div>
+
+      {chosenRepo ? (
+        <GitHubIssueSection
+          key={chosenRepo.id}
+          projectId={projectId}
+          repository={chosenRepo}
+          onFill={fillFromIssue}
+          fillNote={issueFillNote}
+        />
+      ) : null}
 
       {createRun.isError ? <RunCreateError error={createRun.error} /> : null}
 
@@ -599,5 +668,156 @@ export function InputFieldControl({
     <Field id={id} label={label} error={error} hint={hint}>
       {control}
     </Field>
+  );
+}
+
+interface GitHubIssueSectionProps {
+  projectId: string;
+  repository: Repository;
+  onFill: (issue: GitHubIssue) => void;
+  fillNote: string | null;
+}
+
+/**
+ * "Start from a GitHub issue" (W3's UI half, ADR-0031). The list is fetched as
+ * soon as a repository is chosen — that request is also how the form *learns*
+ * the remote is not GitHub — and the rows stay collapsed until the reader asks.
+ * A repository whose remote is not GitHub answers `422
+ * not_a_github_repository`, and this section collapses into a muted line rather
+ * than showing an empty tracker. Repeated label filters are the caller's click,
+ * never a keystroke, because the anonymous GitHub budget is 60 req/h per IP.
+ */
+export function GitHubIssueSection({
+  projectId,
+  repository,
+  onFill,
+  fillNote,
+}: GitHubIssueSectionProps) {
+  const [open, setOpen] = useState(false);
+  const [labelDraft, setLabelDraft] = useState("");
+  const [label, setLabel] = useState("");
+  const issues = useRepoIssues(projectId, repository.id, label);
+  const notGitHub = isNotGitHubRepository(issues.error);
+
+  if (notGitHub) {
+    return (
+      <p className="mt-3 font-mono text-[10.5px] text-faint" data-testid="issue-section-not-github">
+        {repository.name} is not a GitHub remote, so there is no issue to start a run from.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3" data-testid="issue-section">
+      <button
+        type="button"
+        data-testid="issue-section-toggle"
+        aria-expanded={open}
+        aria-controls="issue-section-body"
+        onClick={() => setOpen((previous) => !previous)}
+        className="flex w-full items-center gap-[6px] font-mono text-[10px] font-semibold uppercase tracking-[.04em] text-muted hover:text-ink"
+      >
+        <span aria-hidden="true">{open ? "\u25be" : "\u25b8"}</span>
+        Start from a GitHub issue
+      </button>
+      {open ? (
+        <div id="issue-section-body" className="mt-1 space-y-1">
+          <div className="flex items-center gap-2">
+            <input
+              id="issue-label-filter"
+              value={labelDraft}
+              onChange={(event) => setLabelDraft(event.target.value)}
+              placeholder="filter by label"
+              aria-label="Filter issues by label"
+              className="w-40 rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[11.5px] text-ink placeholder:text-faint focus-visible:border-ink focus-visible:outline-none"
+            />
+            <Button type="button" variant="ghost" onClick={() => setLabel(labelDraft)}>
+              Apply label
+            </Button>
+          </div>
+          {issues.isPending ? <Spinner label="Reading GitHub" /> : null}
+          {issues.isError ? (
+            <ProblemBanner error={issues.error} fallback="GitHub could not be read." />
+          ) : null}
+          {issues.data && issues.data.items.length === 0 ? (
+            <p className="font-mono text-[11px] text-muted" data-testid="issue-list-empty">
+              GitHub answered {issues.data.repository} with no open issues
+              {issues.data.label ? ` labelled ${issues.data.label}` : ""}.
+            </p>
+          ) : null}
+          <ul className="space-y-1" data-testid="issue-list">
+            {(issues.data?.items ?? []).map((issue) => (
+              <IssueRow key={issue.number} issue={issue} onFill={() => onFill(issue)} />
+            ))}
+          </ul>
+          {fillNote ? (
+            <p className="font-mono text-[10.5px] text-accent-text" data-testid="issue-fill-note">
+              {fillNote}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface IssueRowProps {
+  issue: GitHubIssue;
+  onFill: () => void;
+}
+
+/** One tracker row: number, title, labels, how stale, GitHub's own link, and
+ * the button that writes the issue into the declared inputs. */
+function IssueRow({ issue, onFill }: IssueRowProps) {
+  return (
+    <li
+      className="flex items-center gap-2 rounded-[3px] border border-line bg-paper px-[8px] py-[4px]"
+      data-testid={`issue-row-${issue.number}`}
+    >
+      <span className="font-mono text-[11px] text-ink-2">#{issue.number}</span>
+      <span
+        className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink"
+        title={issue.title}
+      >
+        {issue.title}
+      </span>
+      {issue.labels.length > 0 ? (
+        <span
+          className="font-mono text-[10px] text-muted"
+          data-testid={`issue-labels-${issue.number}`}
+        >
+          {issue.labels.join(", ")}
+        </span>
+      ) : null}
+      <span className="font-mono text-[10px] text-faint" data-testid={`issue-age-${issue.number}`}>
+        {formatAge(issue.updated_at)} ago
+      </span>
+      {issue.body_truncated ? (
+        <span
+          className="font-mono text-[10px] text-faint"
+          title="GitHub's body was clipped to 4000 bytes"
+        >
+          body clipped
+        </span>
+      ) : null}
+      <a
+        href={issue.html_url}
+        target="_blank"
+        rel="noreferrer"
+        className="font-mono text-[10.5px] text-accent-text hover:text-ink"
+        data-testid={`issue-link-${issue.number}`}
+      >
+        on GitHub
+      </a>
+      <Button
+        type="button"
+        variant="ghost"
+        compact
+        onClick={onFill}
+        data-testid={`issue-use-${issue.number}`}
+      >
+        Use this issue
+      </Button>
+    </li>
   );
 }
