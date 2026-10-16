@@ -7156,6 +7156,344 @@ def c13():
 
 
 
+# --- C14: the control-plane roll (docs/m4-contract.md § 7.1 C14a–C14c) ---------
+# 12 case 4 re-proven with the advancer as a WRITER: the roll now interrupts a
+# replica that may be mid-advance, so the verdicts are about the journal, not the
+# browser. Everything below the class is pure (offline-proved in
+# test_c14_logic.py); C14Stream/c14_roll_one/c14_wait_replica are the live half.
+
+C14_LOCK_MARK = "m4 driver acquired the advisory lock"   # cmd/communication/serve.go
+C14_DUP_TYPES = ("node.attempt.retry_scheduled", "node.scope.iteration",
+                 "run.completed")                        # § 7.1 C14b's own type list
+C14_ROLL = (("api-a", A), ("api-b", B))                  # one at a time, in this order
+C14_TERMINAL = ("completed", "failed", "cancelled", "interrupted")
+
+
+def c14_scan_seqs(seqs):
+    """(dups, regress, missing) over an ORDERED list of global_seq values.
+    dups = seqs delivered/journalled more than once; regress = adjacent pairs that
+    are not strictly ascending; missing = interior seqs absent from the list, which
+    only means anything over a window that is supposed to be gap-free (the whole
+    journal slice, not one run's own interleaved slice). Pure."""
+    ints, dups = [], []
+    for s in seqs or []:
+        n = count_or_none(s)
+        if n is None:
+            continue
+        if n in ints and n not in dups:
+            dups.append(n)
+        ints.append(n)
+    regress = [f"{a}>{b}" for a, b in zip(ints, ints[1:]) if b <= a]
+    missing = []
+    if ints:
+        seen = set(ints)
+        missing = [s for s in range(min(ints), max(ints) + 1) if s not in seen]
+    return dups, regress, missing
+
+
+def c14_journal_verdicts(window, run_slice):
+    """§ 7.1 C14b's half of the story read from the LEDGER: `window` is every
+    domain_events global_seq in the roll window (the gap-free contract of
+    ADR-0014 § 9 — a lost advance burns nothing and a duplicated one writes the seq
+    twice), `run_slice` is the live run's own seqs in order. None / empty => GAP.
+    Pure."""
+    if not window:
+        return [("C14b no advance is lost across the roll — the journal window is contiguous",
+                 None,
+                 f"no journal rows were read for the roll window ({window!r}) — there is "
+                 "nothing to measure, and a roll that journalled nothing is not a pass")]
+    dups, regress, missing = c14_scan_seqs(window)
+    out = [("C14b no advance is duplicated across the roll — no journal seq appears twice"
+            " (two writers, one transition)", not dups,
+            f"{len(window)} seqs read, duplicated: {dups[:5] or 'none'}")]
+    hole = (f"missing {missing[:5]} — a hole is what a writer that consumed a seq and never "
+            "committed leaves (ADR-0014 § 9 calls that gap-safe, not corruption), so the seq "
+            "alone cannot tell a lost advance from an aborted one: the run's own ledger rows "
+            "below are what judge a lost transition")
+    label = ("C14b no advance is lost across the roll — the journal window is contiguous")
+    out.append((label, None if missing else True,
+                hole if missing
+                else f"{len(window)} seqs, {min(int(s) for s in window)}.."
+                     f"{max(int(s) for s in window)}, no hole"))
+    rd, rr, _rm = c14_scan_seqs(run_slice)
+    if not run_slice:
+        out.append(("C14b the live run's journal slice stays strictly ascending across "
+                    "the roll", None, "the run journalled nothing — no slice to order"))
+    else:
+        out.append(("C14b the live run's journal slice stays strictly ascending across "
+                    "the roll", not rr and not rd,
+                    f"{len(run_slice)} rows, out of order: {rr[:4] or 'none'}, "
+                    f"duplicated: {rd[:4] or 'none'}"))
+    return out
+
+
+def c14_terminal_verdicts(counts, dup_keys):
+    """§ 7.1 C14b's two psql lines: `counts` = {type: n} over the run for
+    node.attempt.retry_scheduled / node.scope.iteration / run.completed (a terminal
+    event written twice IS the duplicate advance), `dup_keys` = ledger node keys with
+    more than one 'succeeded' row. None => GAP, never a silent zero. Pure."""
+    out = []
+    if not counts:
+        out.append(("C14b no duplicated terminal event (run.completed once, retries "
+                    "and iterations not double-written)", None,
+                    "the terminal-type group-by returned nothing to count"))
+    else:
+        bad = {t: n for t, n in counts.items() if t in ("run.completed",) and n > 1}
+        out.append(("C14b no duplicated terminal event — run.completed appears at most "
+                    "once for the run", not bad, f"counts: {counts}"))
+    if dup_keys is None:
+        out.append(("C14b ZERO node_instance_keys hold two 'succeeded' ledger rows "
+                    "(the loser of the two-replica race is a no-op)", None,
+                    "the succeeded-key duplicate count was unreadable"))
+    else:
+        out.append(("C14b ZERO node_instance_keys hold two 'succeeded' ledger rows "
+                    "(the loser of the two-replica race is a no-op)", dup_keys == 0,
+                    f"{dup_keys} duplicated key(s)"))
+    return out
+
+
+def c14_sse_verdicts(delivered, journal_seqs, reconnected, foreign):
+    """§ 7.1 C14a from the subscriber's side: `delivered` = every frame's global_seq
+    in arrival order ACROSS the reconnect, `journal_seqs` = the run's journalled seqs
+    inside the stream's own range, `reconnected` = whether the connection ever dropped
+    and came back with Last-Event-ID, `foreign` = frames from another project. None
+    means unmeasurable and GAPs. Pure."""
+    if not delivered:
+        return [("C14a the run SSE stream crosses the roll with no gap and no duplicate",
+                 None, "no frame was delivered over the whole roll — the stream is "
+                       "unobserved, which is a GAP and never a PASS")]
+    dups, regress, _m = c14_scan_seqs(delivered)
+    out = [("C14a no event crosses the roll twice (Last-Event-ID resume, not a replay)",
+            not dups, f"{len(delivered)} frames delivered, duplicated: {dups[:5] or 'none'}"),
+           ("C14a the delivered stream stays in ascending seq order", not regress,
+            f"out of order: {regress[:4] or 'none'}")]
+    if not journal_seqs:
+        out.append(("C14a no gap: every journalled event of the run reaches the stream",
+                    None, "the run's journal slice is empty/unreadable — the delivery "
+                          "set has nothing to be complete against"))
+    else:
+        lo, hi = min(int(s) for s in delivered), max(int(s) for s in delivered)
+        want = [int(s) for s in journal_seqs if lo <= int(s) <= hi]
+        lost = sorted(set(want) - set(int(s) for s in delivered))
+        out.append(("C14a no gap: every journalled event of the run reaches the stream",
+                    not lost, f"{len(want)} journalled seqs in the delivered range "
+                             f"{lo}..{hi}, undelivered: {lost[:5] or 'none'}"))
+    rec_ok = None if not reconnected else True
+    out.append(("C14a the stream carries a reconnect with Last-Event-ID (the roll "
+                "actually interrupted it)", rec_ok,
+                f"reconnects observed: {reconnected}"
+                + ("" if rec_ok else " — the stream never dropped, so no Last-Event-ID resume "
+                   "was exercised: the continuity verdicts above are then unmeasured")))
+    out.append(("C14a no cross-project event reaches this stream", foreign == 0 if foreign
+                is not None else None, f"foreign frames: {foreign}"))
+    return out
+
+
+def c14_roll_verdicts(samples):
+    """The never-both-down rule, from the samples the roll's own watcher took: list of
+    (restarting_service, probe_label, ok). Every phase must keep the lb answering and
+    must keep the OTHER replica answering. Pure."""
+    if not samples:
+        return [("C14a the lb keeps answering while exactly one replica is down", None,
+                 "nothing was sampled — the roll never ran")]
+    out = []
+    for svc in dict.fromkeys(s for s, _l, _o in samples):
+        lb = [ok for s, lbl, ok in samples if s == svc and lbl == "lb"]
+        other = [ok for s, lbl, ok in samples if s == svc and lbl == "other"]
+        out.append((f"C14a the lb answers every probe while {svc} restarts", all(lb) if lb
+                    else None, f"{sum(lb)}/{len(lb)} ok" if lb else "no sample taken"))
+        out.append((f"C14a the surviving replica answers every probe while {svc} restarts "
+                    f"(never both down at once)", all(other) if other else None,
+                    f"{sum(other)}/{len(other)} ok" if other else "no sample taken"))
+    return out
+
+
+def c14_lock_verdicts(before, after):
+    """The advisory lock MOVING is a NEW acquisition line in the post-roll logs — a
+    count comparison, because the line also prints at first boot. Pure."""
+    if after is None or before is None:
+        return [("C14b the m4 driver's advisory lock moves to a surviving replica "
+                 "(serve logs 'm4 driver acquired the advisory lock')", None,
+                 "the serve logs could not be read — an unobserved log never PASSes")]
+    moved = {s: after[s] - before.get(s, 0) for s in after}
+    return [("C14b the m4 driver's advisory lock moves to a surviving replica "
+             "(serve logs 'm4 driver acquired the advisory lock')", any(n > 0 for n in moved.values()),
+             f"new acquisition lines per replica: {moved}" if any(n > 0 for n in moved.values())
+             else f"no replica logged a NEW acquisition after the roll: {moved}")]
+
+
+def c14_state_verdicts(status, want="completed"):
+    """The run reaches the state it would have reached without the roll."""
+    return [(f"C14a the run reaches {want!r} — the roll changed the timing, not the "
+             f"outcome", status == want, f"observed status {status!r}")]
+
+
+def c14_approval_verdicts(decide_resp, decided_events):
+    """A decision posted WHILE the replicas roll must land exactly once: the route
+    answered 200 and the journal carries exactly one approval.decided for it. Pure."""
+    status = (decide_resp or {}).get("status")
+    out = [("C14a the approval decided during the roll is accepted (200)",
+            status == 200, f"route 36 -> {status}")]
+    if decided_events is None:
+        out.append(("C14a the approval decided during the roll lands EXACTLY ONCE "
+                    "(approval.decided written once, not twice by two replicas)", None,
+                    "the approval.decided count could not be read"))
+    else:
+        out.append(("C14a the approval decided during the roll lands EXACTLY ONCE "
+                    "(approval.decided written once, not twice by two replicas)",
+                    decided_events == 1, f"{decided_events} approval.decided rows"))
+    return out
+
+
+def c14_lock_marks(services=("api-a", "api-b")):
+    """{service: n} occurrences of the driver's lock-acquisition line in the compose
+    logs; None when the logs are unreadable (an unobservable log GAPs, never PASSes)."""
+    try:
+        out = compose_logs(*services)
+    except Exception:  # noqa: BLE001 — docker compose logs unreadable is a GAP, not a crash
+        return None
+    if not out.strip():
+        return None
+    return {s: len([l for l in out.splitlines()
+                    if l.startswith(s + " ") and C14_LOCK_MARK in l]) for s in services}
+
+
+def c14_wait_replica(base, timeout=120):
+    """Poll ONE replica's OWN readiness endpoint (never the lb — the lb would answer "
+    "for the other replica and hide the roll)."""
+    probe, deadline = Client("probe"), time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if probe.get(base, "/api/v1/system/readiness").status == 200:
+                return True
+        except Exception:  # noqa: BLE001 — the whole point is that it is down right now
+            pass
+        time.sleep(2)
+    return False
+
+
+class C14Stream:
+    """C14a's browser stand-in: ONE SSE subscription that survives the roll the way the
+    run page does. It records every frame's global_seq and, when the connection drops
+    (the replica behind the lb restarted), reconnects with Last-Event-ID set to the
+    highest seq already in hand. Appends only; the main thread reads after stop()."""
+
+    def __init__(self, client, run_id, project_id, from_seq=0):
+        self.client, self.run_id = client, run_id
+        self.project_id, self.from_seq = str(project_id), int(from_seq or 0)
+        self.frames, self.errors = [], []
+        self.reconnects = 0
+        self._stop = threading.Event()
+        self._resp = None
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    @property
+    def last_seq(self):
+        return max([f["seq"] for f in self.frames] + [self.from_seq])
+
+    def _loop(self):
+        url = LB + f"/api/v1/runs/{self.run_id}/events"
+        while not self._stop.is_set():
+            hdrs = {"Accept": "text/event-stream",
+                    "Cookie": "; ".join(f"{k}={v}" for k, v in self.client.cookies.items())}
+            if self.last_seq:
+                hdrs["Last-Event-ID"] = str(self.last_seq)
+            try:
+                req = urllib.request.Request(url, headers=hdrs)
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    self._resp = resp
+                    self._read(resp)
+            except Exception as e:  # noqa: BLE001 — a dropped stream is the SAMPLE, not the verdict
+                if not self._stop.is_set():
+                    self.errors.append(f"{type(e).__name__}: {e}"[:160])
+            if self._stop.is_set():
+                break
+            self.reconnects += 1
+            time.sleep(1)
+
+    def _read(self, resp):
+        parts, raw = [], b""
+        while not self._stop.is_set():
+            chunk = resp.read(1)
+            if not chunk:
+                return
+            raw += chunk
+            if not raw.endswith(b"\n"):
+                continue
+            line, raw = raw[:-1], b""
+            text = line.decode("utf-8", "replace").rstrip("\r")
+            if text == "":
+                if parts:
+                    try:
+                        env = json.loads("\n".join(parts))
+                        seq = count_or_none(env.get("global_seq"))
+                        if seq is not None:
+                            self.frames.append({"seq": seq, "type": env.get("type"),
+                                                "project_id": str(env.get("project_id"))})
+                    except ValueError:
+                        pass
+                    parts = []
+                continue
+            if text.startswith((":", "id:", "event:")):
+                continue
+            if text.startswith("data:"):
+                parts.append(text[5:].lstrip())
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._resp:
+                self._resp.close()
+        except Exception:  # noqa: BLE001 — close race with the daemon is fine
+            pass
+        self._thread.join(timeout=5)
+        return self
+
+    def foreign(self):
+        return len([f for f in self.frames
+                    if self.project_id and f["project_id"] not in (self.project_id, "None", "")])
+
+
+def c14_roll_one(svc, base, peer, samples):
+    """Restart ONE replica by compose service name and SAMPLE the lb and the peer
+    replica while it is down — the never-both-down rule is measured during the restart,
+    not after it. Returns (rc_ok, came_back_ready)."""
+    stop = threading.Event()
+
+    def watch():
+        probe = Client("probe")
+        while not stop.is_set():
+            for lbl, url in (("lb", LB), ("other", peer)):
+                try:
+                    ok = probe.get(url, "/api/v1/system/readiness", timeout=4).status == 200
+                except Exception:  # noqa: BLE001 — "it refused" IS the sample
+                    ok = False
+                samples.append((svc, lbl, bool(ok)))
+            time.sleep(0.5)
+
+    th = threading.Thread(target=watch, daemon=True)
+    th.start()
+    try:
+        rc, out = run(COMPOSE + ["restart", svc])
+        show(f"compose -p communication-m4 restart {svc} (rc={rc})", out[-200:])
+        ready = c14_wait_replica(base)      # the roll is one-at-a-time ONLY if we wait
+        probe = Client("probe")
+        for lbl, url in (("lb", LB), ("other", peer)):
+            try:
+                ok = probe.get(url, "/api/v1/system/readiness", timeout=4).status == 200
+            except Exception:  # noqa: BLE001
+                ok = False
+            samples.append((svc, lbl, bool(ok)))   # the peer must be alive BEFORE the next roll
+    finally:
+        stop.set()
+        th.join(timeout=5)
+    return rc == 0, ready
+
+
 def c14():
     """C14 — control-plane rolling update during a live run (12 case 4, advancer as writer).
     Acceptance: restart both API replicas mid-twin and the SSE stream reconnects with
@@ -7164,7 +7502,171 @@ def c14():
     a replica with COMMUNICATION_PIPELINE_SCHEDULER=off serves reads, never claims or
     advances, its run stays queued for the other replica, and with the flag off
     everywhere M2/M3 behaviour is fully intact."""
-    skip("C14", "replica restarts and the two-replica advance race change nothing")
+    if not CTX.get("stack_up"):
+        skip("C14", "a replica roll mid-run changes nothing the run can see")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C14", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                   "there is no live run to roll replicas over and no SSE stream to hold "
+                   "across it (C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None:
+        check("C14: alice signed in", False,
+              "no session — there is no run to roll over and no stream to reconnect")
+        return
+    CTX["alice"] = alice
+    pid = mf(facts, "project_id")
+
+    # ---- precondition: a ROLLING update needs two API replicas that each answer on "
+    # their own port. One up is a restart, not a roll, and GAPs. ----
+    up = {}
+    for name, base in C14_ROLL:
+        try:
+            up[name] = Client("probe").get(base, "/api/v1/system/readiness").status == 200
+        except Exception as e:  # noqa: BLE001 — an unreachable replica is False, not a crash
+            up[name] = False
+            show(f"{name} readiness probe", str(e)[:160])
+    if not all(up.values()):
+        gap("C14a the roll itself", f"only {up} answers its own readiness port: with fewer "
+                                    "than two API replicas there is no one-at-a-time roll to "
+                                    "observe — the lab cannot produce the precondition")
+        return
+
+    # ---- a run that is LIVE right now: the § 7.0 seed's own pending twin gate ----
+    run_id, aid, src = c9_acquire_gate(alice, facts, (), "C14")
+    if not run_id:
+        gap("C14a a run is live while the replicas roll", f"no live run to roll over ({src})")
+        return
+    show("C14 live run", f"run={run_id} source={src} gate={aid or '(none)'} "
+                          f"status={run_status(run_id)!r}")
+    seq0 = _int(c9_journal_seq())
+    marks0 = c14_lock_marks()
+    stream = C14Stream(alice, run_id, pid, seq0).start()
+    samples, rolled, decided = [], [], None
+    status = ""
+    try:
+        # ---- C14a: one replica at a time, readiness proven before the next one goes ----
+        for i, (name, base) in enumerate(C14_ROLL):
+            peer = C14_ROLL[1 - i][1]
+            ok, ready = c14_roll_one(name, base, peer, samples)
+            rolled.append(name)
+            check(f"C14a {name} restarted and is ready on {base} again "
+                  f"(the peer on {peer} stayed up throughout)", ok and ready,
+                  f"rc_ok={ok} ready={ready} — the next replica only goes once this one is back")
+            if name == "api-a" and aid:
+                # the mid-roll decision: read the gate DIRECTLY off the replica that is
+                # still up (that replica is serving reads alone), then decide via the lb.
+                cur = alice.get(peer, f"/api/v1/approvals/{aid}")
+                ver = (cur.json().get("version") if cur.status == 200 else None)
+                show(f"C14a GET /approvals/{{id}} on the surviving replica alone ("
+                     f"replica={cur.replica})", f"{cur.status} version={ver}")
+                if ver is None:
+                    gap("C14a an approval decided DURING the roll lands exactly once",
+                        f"the gate could not be read mid-roll ({cur.status}) — nothing was decided")
+                else:
+                    decided = c9_decide(alice, aid, "approved", ver,
+                                        "M4 exit C14a — decided while the replicas rolled")
+                    show("C14a POST /approvals/{id}/decide MID-ROLL", f"{decided['status']} "
+                         f"{str(decided['body'])[:160]}")
+
+        # ---- the run finishes on the rolled replicas; the stream stays subscribed ----
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            status = run_status(run_id)
+            if status in C14_TERMINAL:
+                break
+            time.sleep(5)
+    finally:
+        # restore BOTH replicas (a failed roll must never leave the lab one-replica)
+        for name, base in C14_ROLL:
+            try:
+                alive = Client("probe").get(base, "/api/v1/system/readiness", timeout=5).status == 200
+            except Exception:  # noqa: BLE001
+                alive = False
+            if not alive:
+                rc, out = run(COMPOSE + ["restart", name])
+                show(f"restore {name} (rc={rc})", out[-160:])
+            check(f"restore: {name} answers readiness on {base} again", c14_wait_replica(base, 30),
+                  "the stack is left as found, with both replicas serving")
+        stream.stop()
+
+    # ---- C14a/C14b verdicts, all from the LEDGER + what the stream actually got ----
+    run_slice, window = [], []
+    try:
+        run_slice = [l.strip() for l in psql(
+            f"SELECT global_seq::text FROM domain_events WHERE run_id = '{run_id}' "
+            f"AND global_seq > {seq0} ORDER BY global_seq").splitlines() if l.strip()]
+        window = [l.strip() for l in psql(
+            f"SELECT global_seq::text FROM domain_events WHERE global_seq > {seq0} "
+            f"ORDER BY global_seq").splitlines() if l.strip()]
+    except RuntimeError as e:
+        show("C14 journal read", str(e)[:260])
+    show(f"C14b the run's own journal rows after seq {seq0} (the roll window)",
+         f"{len(run_slice)} rows: {','.join(run_slice[:12]) or '(none)'}")
+    c5_emit(c14_journal_verdicts(window, run_slice))
+
+    counts, dup_keys = None, None
+    types = "', '".join(C14_DUP_TYPES)
+    try:
+        rows = psql_rows(psql(
+            f"SELECT type || '|' || count(*)::text FROM domain_events WHERE run_id = '{run_id}' "
+            f"AND type IN ('{types}') "
+            f"GROUP BY 1"), 2)
+        counts = {r[0]: _int(r[1]) for r in rows} or None
+    except RuntimeError as e:
+        show("C14b terminal-event group-by", str(e)[:260])
+    try:
+        dup_keys = count_or_none(psql(
+            f"SELECT count(*) FROM node_executions ne WHERE ne.run_id = '{run_id}' "
+            f"AND ne.status = 'succeeded' AND ne.node_instance_key IN (SELECT node_instance_key "
+            f"FROM node_executions WHERE run_id = '{run_id}' AND status = 'succeeded' "
+            f"GROUP BY 1 HAVING count(*) > 1)"))
+    except RuntimeError as e:
+        show("C14b duplicated succeeded-key count", str(e)[:260])
+    show("C14b terminal-type counts (the contract's own group-by)",
+         json.dumps(counts) if counts else "(unreadable)")
+    c5_emit(c14_terminal_verdicts(counts, dup_keys))
+    c5_emit(c14_roll_verdicts(samples))
+    c5_emit(c14_lock_verdicts(marks0, c14_lock_marks()))
+    c5_emit(c14_sse_verdicts([f["seq"] for f in stream.frames], run_slice,
+                             stream.reconnects, stream.foreign()))
+    if decided:
+        dec = None
+        try:
+            dec = count_or_none(psql(f"SELECT count(*) FROM domain_events "
+                                     f"WHERE run_id = '{run_id}' "
+                                     f"AND type = 'approval.decided'"))
+        except RuntimeError as e:
+            show("C14a approval.decided count", str(e)[:200])
+        c5_emit(c14_approval_verdicts(decided, dec))
+    elif aid is None:
+        gap("C14a an approval decided DURING the roll lands exactly once",
+            f"this live run has no gate to decide ({src}) — the mid-roll decision arm needs a "
+            "run waiting at its approval gate")
+    if status not in C14_TERMINAL:
+        dump_run_evidence(alice, run_id)
+        check("C14a the run reaches a terminal state within the 900s cap", False,
+              f"last observed status={status!r} (tree + journal dumped above)")
+    c5_emit(c14_state_verdicts(status))
+    gap("C14b the two-replica race is NOT forced", "the roll hands the driver's advisory lock "
+        "over (the verdicts above observe it) and the loser's advance is measured against the "
+        "ledger — but no lab lever holds a lock open across a restart to make BOTH replicas "
+        "advance the same run in one instant. § 7.1 C14b's own words: the row locks are the "
+        "safety argument and the advisory lock is an optimization; the no-duplicate verdicts "
+        "above are what actually re-prove the safety claim, and a forced simultaneous advance "
+        "would need a store-level seam this lab does not have")
+    gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica", "compose.m4.yml reads the "
+        "flag from ONE shell variable shared by api-a and api-b "
+        "(${COMMUNICATION_PIPELINE_SCHEDULER:-on}), so a single off-replica needs a recreate of "
+        "that one container (compose up -d), which § 7.0 keeps out of the gates: with the flag "
+        "either on-for-both or off-for-both there is no replica pair to compare, and the "
+        "'stays queued for the other replica' arm is unmeasurable here")
+    CTX["c14"] = {"run_id": run_id, "approval_id": aid, "rolled": rolled,
+                  "reconnects": stream.reconnects, "frames": len(stream.frames),
+                  "terminal": status}
 
 
 # --- gates: docs/m4-contract.md § 7.2 (W1–W11, Playwright legs) --------------
