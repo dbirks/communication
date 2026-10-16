@@ -168,3 +168,66 @@ describe("DraftEditor node form", () => {
     expect(screen.getByTestId("draft-editor-no-nodes")).toBeDefined();
   });
 });
+
+/**
+ * A draft that has never been validated has no verdict to show. That used to
+ * blank the page: the server sends a new draft whose `validation` is an empty
+ * block, `viewValidate` mapped over an absent `errors` array, and the thrown
+ * `TypeError` took the whole route with it. The editor must render the absence
+ * as itself — "not validated yet" — and never as a pass.
+ */
+function mountWithValidation(validation: unknown, status: Draft["status"] = "draft") {
+  return mount(status, [{ path: draftPath, body: { ...draftBody(status), validation } }]);
+}
+
+describe("DraftEditor with an unvalidated draft", () => {
+  it("says so when the draft carries no validation at all", async () => {
+    mount("draft");
+    await screen.findByTestId("draft-editor-input");
+    expect(screen.getByTestId("draft-editor-not-validated").textContent).toContain(
+      "not validated yet",
+    );
+    expect(screen.getByTestId("draft-editor-not-validated").textContent).toContain(
+      "press Validate",
+    );
+    expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("never validated");
+    expect(screen.queryByTestId("draft-editor-findings")).toBeNull();
+    // Validity is the server's to report; nothing here enables publish.
+    expect(screen.getByTestId("draft-editor-publish").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("renders the empty validation block a new draft really served", async () => {
+    mountWithValidation({});
+    await screen.findByTestId("draft-editor-input");
+    expect(screen.getByTestId("draft-editor-not-validated")).toBeDefined();
+    expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("never validated");
+  });
+
+  it("does not crash on a verdict with no findings array behind it", async () => {
+    mountWithValidation({ valid: false });
+    await screen.findByTestId("draft-editor-input");
+    expect(screen.getByTestId("draft-editor-findings")).toBeDefined();
+    expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("0 findings");
+    expect(screen.getByTestId("draft-editor-notes").textContent).toContain("no notes");
+  });
+
+  it("shows the findings a validated draft does serve", async () => {
+    mountWithValidation({
+      valid: false,
+      digest_scope: "v1alpha1-canonical-1",
+      errors: [
+        {
+          code: "unknown_profile",
+          source: "compiler",
+          message: "profile `m4-planner` is not known to this organization",
+          instance_location: "/spec/nodes/0/config/profile",
+        },
+      ],
+      notes: [],
+    });
+    await screen.findByTestId("draft-editor-input");
+    expect(screen.getByTestId("draft-editor-problem-0").textContent).toContain("unknown_profile");
+    expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("1 findings");
+    expect(screen.queryByTestId("draft-editor-not-validated")).toBeNull();
+  });
+});

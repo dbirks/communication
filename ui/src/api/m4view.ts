@@ -40,6 +40,7 @@ import type {
   DraftDocument,
   NodeExecutionSummary,
   PipelineDraftSummary,
+  ValidationIssue,
   PipelineRevisionSummary as RevisionSummaryView,
   PipelineSummary as PipelineSummaryView,
   RunCheckpoint,
@@ -267,23 +268,70 @@ export function viewApprovals(list: ApprovalListWire): ApprovalDetail[] {
   return list.approvals.map(viewApproval);
 }
 
-export function viewValidate(body?: ValidateResponseWire | null): ValidateBody | null {
-  if (!body) return null;
+/**
+ * One § 2.2 finding. An entry that is not a renderable finding — no `message`,
+ * or a `source` outside the three-stage vocabulary — is dropped rather
+ * guessed at (this module's rule: unknown wire members are dropped, never
+ * rejected), because `VALIDATION_SOURCE_STATE` has no fourth stage and an
+ * invented one would attribute the finding to a tool that did not speak.
+ */
+function viewValidateIssue(issue: unknown): ValidationIssue | null {
+  if (!issue || typeof issue !== "object") return null;
+  const source = issue as Record<string, unknown>;
+  const code = member(source, "code");
+  const message = member(source, "message");
+  const stage = source.source;
+  if (!code || !message) return null;
+  if (stage !== "loader" && stage !== "schema" && stage !== "compiler") return null;
+  const hint = member(source, "hint");
   return {
-    valid: body.valid,
-    revision_digest: body.revision_digest ?? null,
-    plan_digest: body.plan_digest ?? null,
-    digest_scope: body.digest_scope,
+    code,
+    source: stage,
+    message,
+    instance_location: member(source, "instance_location"),
+    schema_location: member(source, "schema_location"),
+    ...(hint ? { hint } : {}),
+  };
+}
+
+function stringList(values: unknown): string[] {
+  return Array.isArray(values) ? values.filter((v): v is string => typeof v === "string") : [];
+}
+
+/**
+ * The validate body onto the editor's verdict. Total over everything the wire
+ * may put where a validation goes: `Draft.validation` is "the last validate
+ * body verbatim, null when never validated", so a draft that has not been
+ * validated yet — or a row whose block arrived empty or with its arrays
+ * missing — is *not validated*, never a crash (`.map` over an absent `errors`
+ * blanked the whole pipeline page).
+ *
+ * A real body maps exactly as before; only the vacuous shapes (`null`,
+ * `undefined`, `{}`) collapse to `null`, which is the state the editor calls
+ * "not validated yet".
+ */
+export function viewValidate(
+  body?: ValidateResponseWire | Record<string, unknown> | null,
+): ValidateBody | null {
+  if (!body || typeof body !== "object") return null;
+  const source = body as Record<string, unknown>;
+  const errorList = Array.isArray(source.errors) ? source.errors : [];
+  const notes = stringList(source.notes);
+  const valid = source.valid === true;
+  // Nothing a verdict is made of: never validated, not validated-and-clean.
+  if (typeof source.valid !== "boolean" && errorList.length === 0 && notes.length === 0) {
+    return null;
+  }
+  return {
+    valid,
+    revision_digest: member(source, "revision_digest"),
+    plan_digest: member(source, "plan_digest"),
+    digest_scope: member(source, "digest_scope") ?? "",
     // Server order is a contract property (§ 2.2 stable sort), preserved.
-    errors: body.errors.map((issue) => ({
-      code: issue.code,
-      source: issue.source,
-      message: issue.message,
-      instance_location: issue.instance_location ?? null,
-      schema_location: issue.schema_location ?? null,
-      ...(issue.hint ? { hint: issue.hint } : {}),
-    })),
-    notes: [...body.notes],
+    errors: errorList
+      .map(viewValidateIssue)
+      .filter((issue): issue is ValidationIssue => issue !== null),
+    notes,
   };
 }
 

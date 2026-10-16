@@ -236,7 +236,20 @@ export function DraftEditor({
               {shortDigest(published.revision_digest)} — immutable from here on
             </p>
           ) : null}
-          {verdict ? <Verdict verdict={verdict} /> : null}
+          {verdict ? (
+            <Verdict verdict={verdict} />
+          ) : (
+            // A draft with no stored verdict has not been validated — the
+            // server has said nothing about it, so say that rather than leave
+            // the pane blank (`viewValidate` maps absent/empty to “nothing
+            // said yet”, never to a clean pass).
+            <p
+              className="font-mono text-[11px] text-faint"
+              data-testid="draft-editor-not-validated"
+            >
+              not validated yet — press Validate
+            </p>
+          )}
         </div>
         <NodeForm text={text} onApply={applyText} />
       </div>

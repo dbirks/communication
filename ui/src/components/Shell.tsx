@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useLogout, useMe } from "../api/queries";
 import { useReplicaName } from "../api/replica";
 import { problemOf } from "../api/client";
 import { AppBar, InitialsBox } from "./ds/AppBar";
 import { Button } from "./ds/Button";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
 const NAV_ITEMS = [
   { to: "/inbox", label: "Inbox" },
@@ -24,6 +25,7 @@ export default function Shell({ children }: ShellProps) {
   const me = useMe();
   const logout = useLogout();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const onSignOut = () => {
     logout.mutate(undefined, {
@@ -66,7 +68,11 @@ export default function Shell({ children }: ShellProps) {
           × {logoutError}
         </p>
       ) : null}
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6">{children}</main>
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6">
+        {/* Keyed by the path: navigating clears a caught render error instead
+            of leaving the crash banner on every later page. */}
+        <RouteErrorBoundary key={location.pathname}>{children}</RouteErrorBoundary>
+      </main>
       <footer className="border-t border-line px-4 py-2">
         <span data-testid="replica-badge" className="font-mono text-[11px] text-faint">
           replica: {replica}
