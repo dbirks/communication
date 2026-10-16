@@ -505,13 +505,24 @@ def wait_ready(timeout=180, hard=True):
 
 def start_throwaway(name, enforcement, repos_volume=None):
     """A THROWAWAY worker container — its own name, scratch dirs, artifact
-    root and (optionally) its OWN repos volume for C6e's cross-volume arm;
-    only the read-mostly state (workspace bind, remotes, keyring, agent
-    logins) is shared. Removed by stop_throwaway; the stack's worker-a/b are
-    never reconfigured."""
+    root, its OWN /workspaces root (a per-name scratch bind) and (optionally)
+    its OWN repos volume for C6e's cross-volume arm; only the truly
+    read-mostly state (remotes, keyring, agent logins) is shared.
+
+    The workspaces root MUST be the throwaway's own: ADR-0017 D2 derives the
+    volume identity from (st_dev, st_ino, path), and the engine compares the
+    WORKSPACES root (cmd/communication/worker.go passes wsVol.ID into
+    RunWorkspaces.Prepare). Sharing worker-a's .harness/workspaces bind made
+    worker-c measure a byte-identical volume_id, so the cross-volume loss arm
+    (C6e/W6) saw "same volume" and could never produce volume_changed — the
+    scratch bind is what makes the two roots genuinely different storage.
+    Removed by stop_throwaway; the stack's worker-a/b are never
+    reconfigured."""
     scr = os.path.join(SCRATCH, name)
-    for d in ("sandbox-home", "sandbox-policy", "sandbox-selftest", "home", "artifacts"):
+    for d in ("sandbox-home", "sandbox-policy", "sandbox-selftest", "home",
+              "artifacts", "workspaces"):
         os.makedirs(os.path.join(scr, d), exist_ok=True)
+    ws_vol = f"{scr}/workspaces"  # the throwaway's OWN workspaces root
     vol = f"communication-m4-{name}-repos" if repos_volume else f"{scr}/repos"
     if repos_volume:
         run(["docker", "volume", "create", vol])  # idempotent; removed by stop
@@ -519,7 +530,7 @@ def start_throwaway(name, enforcement, repos_volume=None):
     cmd = ["docker", "run", "-d", "--name", name,
            "--network", NETWORK,
            "-u", f"{os.getuid()}:{os.getgid()}",
-           "-v", f"{WS_BIND}:/workspaces",
+           "-v", f"{ws_vol}:/workspaces",
            "-v", f"{vol}:/repos",
            "-v", f"{FIXTURE_HOST}:/srv/m4/fixtures:ro",
            "-v", f"{FIXTURE_HOST}/bin:/opt/m4/bin:ro",
@@ -1729,7 +1740,21 @@ C2_ENV_NAME = "DATABASE_URL"                       # § 7.0's delivery env_name
 # The live wait no longer verdicts on whatever these match — it aims at
 # C2_LIVE_TARGET_KEY below — but a held attempt has to be one of them for C2a to read it.
 C2_IMPLEMENT_KEYS = ("/implement", "[1]/implement", "[2]/implement")
-C2_PROC_RE = re.compile(r"^PROC\|(\d+)\|([0-9a-f]{64})\|(.*)$")
+C2_PROC_RE = re.compile(r"^PROC\|(\d+)\|(\d+)\|([0-9a-f]{64})\|(.*)$")
+C2_PS_RE = re.compile(r"^PS\|(\d+)\|(\d+)$")
+# The argv shapes that decide the holder verdict. The worker daemon is
+# /usr/local/bin/communication with argv "worker" (worker/Dockerfile's ENTRYPOINT +
+# compose.yml's command) and must NEVER hold the sentinel — ADR-0018 names the
+# wholesale-env inherit as "the first leak to close". For an agent.acp attempt the
+# process the attempt LAUNCHED is the ACP adapter itself (live15/C2.out:
+# PROC|250|node /usr/local/bin/claude-agent-acp), whose own child — the claude CLI
+# under @agentclientprotocol/claude-agent-acp — inherits that launch environment.
+# ADR-0018 D5 says so out loud: "env values are readable by every process the agent
+# spawns". One attempt's process tree is therefore ONE place (the contract's own
+# C2a greps /proc/$AGENT_PID/environ of the adapter); a second INDEPENDENT tree, or
+# the daemon itself, is the leak the gate must fail on.
+C2_WORKER_DAEMON_RE = re.compile(r"/usr/local/bin/communication\b|\bcommunication\s+worker\b")
+C2_AGENT_LAUNCH_RE = re.compile(r"claude-agent-acp|@agentclientprotocol")
 
 # --- C2's hold: the time window § 7.1 C2a/C2b are written IN -----------------
 #
@@ -1784,25 +1809,46 @@ def c2_proc_scan_sh(env_name=C2_ENV_NAME):
     every readable /proc/<pid>/environ. The VALUE never leaves the container —
     only its sha256, which the gate compares to sha256(SENTINEL). A grep of the
     raw value would paste the secret into this report, which is the one thing
-    C2 must not do."""
+    C2 must not do. Every process also prints PS|pid|ppid (/proc/<pid>/status is
+    readable even when its environ is not — live15 had a Permission-denied pid),
+    so the driver can grade 'exactly one ATTEMPT'S PROCESS TREE holds the value'
+    rather than 'exactly one pid', which the adapter-plus-its-child launch
+    trivially breaks (ADR-0018 D5)."""
     return ("for p in /proc/[0-9]*/environ; do "
+            "d=$(basename $(dirname \"$p\")); "
+            "pp=$(sed -n 's/^PPid:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "
+            "/proc/$d/status 2>/dev/null); "
+            "echo \"PS|$d|${pp:-0}\"; "
             f"v=$(tr '\\0' '\\n' < \"$p\" 2>/dev/null | grep -m1 '^{env_name}=' || true); "
             "[ -n \"$v\" ] || continue; "
-            "d=$(basename $(dirname \"$p\")); "
             "s=$(printf %s \"${v#*=}\" | sha256sum | cut -d' ' -f1); "
             "c=$(tr '\\0' ' ' < /proc/$d/cmdline 2>/dev/null | cut -c1-60); "
-            "echo \"PROC|$d|$s|$c\"; done; echo SCAN_DONE")
+            "echo \"PROC|$d|${pp:-0}|$s|$c\"; done; echo SCAN_DONE")
 
 
 def c2_proc_scan(text):
-    """Parse c2_proc_scan_sh output -> [{pid, sha, cmd}]. Ragged lines are dropped,
-    never guessed (psql/docker print notes between rows)."""
+    """Parse c2_proc_scan_sh output -> [{pid, ppid, sha, cmd}] (the holders).
+    PS lines belong to c2_ps_map; ragged lines are dropped, never guessed
+    (psql/docker print notes between rows)."""
     recs = []
     for line in (text or "").splitlines():
         m = C2_PROC_RE.match(line.strip())
         if m:
-            recs.append({"pid": m.group(1), "sha": m.group(2), "cmd": m.group(3).strip()})
+            recs.append({"pid": m.group(1), "ppid": m.group(2),
+                         "sha": m.group(3), "cmd": m.group(4).strip()})
     return recs
+
+
+def c2_ps_map(text):
+    """PS|pid|ppid lines -> {pid: ppid}: the worker container's process tree,
+    argv-free (argv of non-holders stays unprinted — a holder's argv is already
+    evidence, an arbitrary argv could carry a value someone passed by flag)."""
+    ps = {}
+    for line in (text or "").splitlines():
+        m = C2_PS_RE.match(line.strip())
+        if m:
+            ps[m.group(1)] = m.group(2)
+    return ps
 
 
 def c2_emit(verdicts):
@@ -1814,18 +1860,68 @@ def c2_emit(verdicts):
             check(label, ok, detail)
 
 
-def c2_live_home_verdicts(recs, want_sha, scan_ok=True, authorized=True, holder=""):
-    """THE C2a verdict: the sentinel's digest matches in exactly ONE live process
-    environment of the authorized attempt — one place, not two, not zero.
-    scan_ok=False GAPs (the container refused the read); authorized=False GAPs
-    (no authorized attempt existed to hold it — nothing to measure)."""
+def c2_holder_tree(recs, want_sha, ps=None):
+    """Group the processes holding want_sha by parent chain. ps is the container
+    tree from c2_ps_map; a holder's own PROC line supplements it. Returns
+    {"matches", "roots", "daemon_holders", "unknown"}: roots are holders with no
+    holder above them in the chain (each an independent tree the secret entered),
+    unknown are holders whose climb stopped at a pid the scan never mapped (a
+    process that died mid-scan — their parent is unprovable), daemon_holders are
+    holders whose argv is the worker daemon or whose pid is 1. Pure; the verdict
+    below grades it: exactly one root, nothing unknown, no daemon, is 'one place'."""
+    matches = [r for r in recs or [] if r.get("sha") == want_sha]
+    pmap = {str(k): str(v) for k, v in (ps or {}).items()}
+    for r in matches:
+        pmap.setdefault(str(r.get("pid")), str(r.get("ppid") or "0"))
+    holders = {str(r.get("pid")) for r in matches}
+    daemon = [r for r in matches
+              if C2_WORKER_DAEMON_RE.search(str(r.get("cmd") or ""))
+              or str(r.get("pid")) == "1"]
+
+    def climb(pid):
+        seen, cur = {str(pid)}, str(pid)
+        while True:
+            parent = pmap.get(cur)
+            if parent is None:
+                return "unknown"
+            if parent in holders:
+                return "linked"
+            if parent in ("0", "1") or parent in seen:
+                return "top"
+            seen.add(parent)
+            cur = parent
+
+    roots, unknown = [], []
+    for r in matches:
+        state = climb(r.get("pid"))
+        if state != "linked":
+            roots.append(r)
+        if state == "unknown":
+            unknown.append(r)
+    return {"matches": matches, "roots": roots, "daemon_holders": daemon,
+            "unknown": unknown}
+
+
+def c2_live_home_verdicts(recs, want_sha, scan_ok=True, authorized=True, holder="",
+                          ps=None, want_launch=None):
+    """THE C2a verdict: the sentinel's digest matches in exactly ONE live place —
+    the authorized attempt's process tree. 'One place', not 'one pid': an
+    agent.acp attempt IS a process tree (the adapter plus the harness CLI it
+    spawns inherits its launch environment — ADR-0018 D5, and § 7.1's own C2a
+    reads /proc/$AGENT_PID/environ of that tree). Two INDEPENDENT holder trees,
+    a holder the scan cannot attach to one tree, or the worker daemon itself
+    holding the value is a LEAK and fails loudly — this arm never weakens to
+    accommodate a second tree. scan_ok=False GAPs (the container refused the
+    read); authorized=False GAPs (no authorized attempt existed — nothing to
+    measure). want_launch, when given, is the argv the attempt's launch root is
+    expected to show (the ACP adapter for the agent variant)."""
     where = f" ({holder})" if holder else ""
     if not scan_ok:
         return [("C2a the worker's /proc scan answered", None,
                  "the scan inside the worker container never printed SCAN_DONE — the live "
                  "process environment is unreadable, so 'exactly one place' is unmeasurable")]
-    matches = [r for r in recs if r["sha"] == want_sha]
-    others = [r for r in recs if r["sha"] != want_sha]
+    tree = c2_holder_tree(recs, want_sha, ps)
+    matches, others = tree["matches"], [r for r in recs or [] if r.get("sha") != want_sha]
     if not authorized:
         return [("C2a exactly one live process holds the sentinel", None,
                  "no attempt was authorized to hold " + C2_ENV_NAME + " on this run" + where
@@ -1834,16 +1930,49 @@ def c2_live_home_verdicts(recs, want_sha, scan_ok=True, authorized=True, holder=
                 (f"C2a no un-authorized process carries {C2_ENV_NAME} either",
                  not others, f"{len(others)} process(es) with a foreign value: "
                  + ",".join(r["pid"] for r in others) or "none")]
+    roots, unknown, daemon = tree["roots"], tree["unknown"], tree["daemon_holders"]
+    if not matches:
+        one_place, place_detail = False, (
+            f"0 match(es){where}; {len(others)} process(es) hold a different "
+            f"{C2_ENV_NAME} value (pids {','.join(r['pid'] for r in others) or 'none'}) "
+            "— the authorized attempt's live environment never held the value")
+    elif daemon:
+        one_place, place_detail = False, (
+            f"WORKER DAEMON ITSELF HOLDS THE SENTINEL (pids "
+            + ",".join(r["pid"] for r in daemon) + f") — a REAL LEAK: "
+            + f"{len(matches)} match(es){where}")
+    elif len(roots) == 1 and not unknown:
+        one_place, place_detail = True, (
+            f"{len(matches)} process(es), all in ONE attempt's process tree rooted at "
+            f"pid {roots[0]['pid']} (argv0={roots[0]['cmd'][:60]!r}){where}; "
+            f"{len(others)} process(es) hold a different "
+            f"{C2_ENV_NAME} value (pids {','.join(r['pid'] for r in others) or 'none'})")
+    else:
+        one_place, place_detail = False, (
+            f"{len(matches)} match(es){where} form {len(roots)} independent holder "
+            f"tree(s) (roots pids {','.join(r['pid'] for r in roots)})"
+            + (f", {len(unknown)} holder(s) with an unmappable parent "
+               f"(pids {','.join(r['pid'] for r in unknown)})" if unknown else "")
+            + " — a second tree means a second delivery, not one attempt's children")
+    root = roots[0] if len(roots) == 1 and not unknown and not daemon else None
+    if root is None:
+        holder_ok, holder_detail = False, ("no single holder tree to identify"
+                                           if matches else "no matching process")
+    elif want_launch is not None and not want_launch.search(root["cmd"] or ""):
+        holder_ok, holder_detail = False, (
+            f"argv0={root['cmd'][:60]!r} is not the process the attempt was to launch "
+            f"(expected {want_launch.pattern!r}) — the worker daemon's own environment "
+            "or an unrelated process holds the value")
+    else:
+        holder_ok, holder_detail = bool(root["cmd"]), f"argv0={root['cmd'][:60]!r}"
     return [
-        ("C2a the sentinel is in EXACTLY ONE live process environment — the authorized "
-         "attempt's (matched by digest, the value never printed)",
-         len(matches) == 1,
-         f"{len(matches)} match(es){where}; {len(others)} process(es) hold a different "
-         f"{C2_ENV_NAME} value (pids {','.join(r['pid'] for r in others) or 'none'})"),
+        ("C2a the sentinel is in EXACTLY ONE live process environment — one place: "
+         "the authorized attempt's process tree (matched by digest, the value never "
+         "printed; the adapter's own children inherit the launch env per ADR-0018 D5)",
+         one_place, place_detail),
         ("C2a the holder is the process the attempt launched, not the worker daemon's own "
          "environment (its argv is the agent/exec child)",
-         len(matches) == 1 and bool(matches[0]["cmd"]),
-         f"argv0={matches[0]['cmd'][:60]!r}" if matches else "no matching process"),
+         holder_ok and one_place, holder_detail),
     ]
 
 
@@ -2141,7 +2270,7 @@ def c2_probe_worker(svc, run_id):
     return {"rc": rc, "out": body,
             "dotenv_rc": int(dotenv.group(1)) if dotenv else None,
             "scan_ok": "SCAN_DONE" in body and dotenv is not None,
-            "recs": c2_proc_scan(body)}
+            "ps": c2_ps_map(body), "recs": c2_proc_scan(body)}
 
 
 def c2_grep_container(svc, path, needle=SENTINEL):
@@ -2335,12 +2464,19 @@ def c2():
                     f"attempt={r['attempt_id'][:8]} turn={r['turn_id'][:8]} "
                     f"cleaned={r['cleaned']}/{r['cleaned_by']}" for r in mat_live) or "(none)")
     probe = c2_probe_worker(svc, run_id)
-    show(f"C2a /proc scan inside {svc} (pid|sha256(value)|argv0 - the value never leaves "
+    show(f"C2a /proc scan inside {svc} (PS|pid|ppid for every process; "
+         "PROC|pid|ppid|sha256(value)|argv for holders - the value never leaves "
          "the container)", probe["out"][-1200:] or f"(rc={probe['rc']})")
     c2_emit(c2_live_home_verdicts(
         probe["recs"], want_sha, scan_ok=probe["scan_ok"],
         authorized=bool(mat_live),
-        holder=f"{svc}, attempt {live['id'][:8]} on {live['key']}"))
+        holder=f"{svc}, attempt {live['id'][:8]} on {live['key']}",
+        # the agent variant's /implement is agent.acp: the process the attempt
+        # launches IS the ACP adapter (live15/C2.out argv0 'node
+        # /usr/local/bin/claude-agent-acp'), and its child harness CLI inherits
+        # that launch environment (ADR-0018 D5) — so the tree, not one pid, is
+        # what "exactly one place" means here.
+        ps=probe["ps"], want_launch=C2_AGENT_LAUNCH_RE))
     c2_emit(c2_env_delivery_verdicts(mat_live, probe["dotenv_rc"],
                                      f"test -e /workspaces/run/{run_id}/repos/app/.env.test.local"))
 
@@ -2377,6 +2513,25 @@ def c2():
     # for the agent leg; allow_unattended mirrors C1's agent arm).
     terminal_run, _watch = watch_run(alice, ag, run_id, C2_RUN_CAP_S, "c2",
                                       allow_unattended=True)
+    if terminal_run and terminal_run != "completed":
+        # Which body node died and WHY — invalid_output vs a business fail vs an
+        # exhausted loop. C2 posts the manifest's own inputs (the same body C1's
+        # agent leg completes with), so a failure here is the product's, not a
+        # satisfiability gap in this driver: name the node and the engine's own
+        # error_class, and let the terminal-status FAIL above stand as printed.
+        fails = psql_rows(psql(
+            "SELECT e.global_seq::text || '|' || "
+            "coalesce(e.payload->>'node_instance_key','-') || '|' || "
+            "coalesce(e.payload->>'error_class','-') || '|' || left(regexp_replace("
+            "coalesce(e.payload->>'detail',''), '\\s+', ' ', 'g'), 160) "
+            "FROM domain_events e WHERE e.run_id = '" + run_id + "' "
+            "AND e.type = 'node.attempt.failed' ORDER BY e.global_seq"), 4)
+        show("c2 the failed attempt(s): node, error_class, detail (the terminal-status "
+             "FAIL is a PRODUCT issue, not a driver input the pipeline cannot satisfy "
+             "- C1's agent leg completes this same revision with these same inputs)",
+             "\n".join(f"seq {r[0]} {r[1]} error_class={r[2]} detail={r[3]}"
+                       for r in fails) or "(no node.attempt.failed row - see the "
+                       "tree/journal dump above)")
     if terminal_run != "completed":
         gap("C2c the durable sweep covers a completed run",
             f"run {run_id} did not read status='completed' inside the § 7.1 C1c agent "
@@ -4686,7 +4841,7 @@ def _c5h_kill_and_grade(alice, facts, run_id):
 C6_RESTORE_KEY = "/plan"            # the checkpointed boundary the restore resets to
 C6_KILL_KEY = C_LIVE_TARGET_KEY     # the held post-gate node C6 kills inside (§ 7.1)
 C6_RESTORE_POLICY = "restore_checkpoint"
-C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own named repos volume
+C6_LOSS_WORKER = "communication-m4-worker-c"   # throwaway, own workspaces + repos volumes
 C6_RECOVERY_REASONS = ("volume_changed", "different_worker")
 C6_LOSS_SENTENCE = "prior edits lost, rerun required"
 C6_RESTORED_EVENT = "run.checkpoint_restored"
@@ -8290,23 +8445,213 @@ def c10_visibility_verdicts(att, review_row):
     return v
 
 
+# --- C10b's skip arm, re-scoped to what the seeded graph can falsify ----------
+#
+# § 7.1 C10b claims the run's ROUTING never changed over the rejected reply. The
+# arm that used to enforce it ("no condition_default skip may appear") was
+# unfalsifiable here: the § 7.0 twin gates `/emit_items` on `inputs.fanout`, the
+# seed runs it FALSE, so the skip is authored into the graph and the arm could
+# only ever be red (live4/C10.out:58 vs :76). The re-scoped pair below asks the
+# question the contract actually asks:
+#   (1) no condition_default skip on any node whose routing the injected failure
+#       could have changed — the failing node's top-level scope and everything
+#       downstream of it (derived from the pinned document, so /verdict and its
+#       two publish targets, never a hard-coded list); and
+#   (2) every OTHER condition_default skip is one the run's OWN inputs explain —
+#       its `when` is an `inputs.X == <literal>` expression the posted inputs make
+#       false. The node name is never the excuse; the input value is.
+C10_SKIP_BUSINESS = "condition_default"
+C10_WHEN_EXPR_RE = re.compile(r"^inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=)\s*(true|false)$")
+
+
+def c10_inputs_map(inputs):
+    """A run's inputs as {name: value} from EITHER shape the gate can hold: the
+    manifest's dict, or run_inputs rows [{name,origin,value}] whose `value` is the
+    jsonb text psql printed. None (unmeasurable) is never a {} (a real nothing)."""
+    if inputs is None:
+        return None
+    if isinstance(inputs, dict):
+        return dict(inputs)
+    if isinstance(inputs, list):
+        out = {}
+        for row in inputs:
+            if isinstance(row, dict) and row.get("name"):
+                out[str(row["name"])] = c10_input_value(row.get("value"))
+        return out or None
+    return None
+
+
+def c10_input_value(raw):
+    """A jsonb/run-input value text -> python: 'true'/'false' -> bool, '"x"' -> 'x'.
+    Anything else stays the text it came in as (the only comparisons C10 makes are
+    against booleans, and a value that is neither is simply not a match)."""
+    text = str(raw).strip() if raw is not None else ""
+    low = text.lower().strip('"')
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    if text.startswith('"') and text.endswith('"') and len(text) > 1:
+        return text[1:-1]
+    return text
+
+
+def c10_when_expression(when):
+    """'inputs.fanout == true' -> ('fanout', '==', True). The ONLY `when` shape C10
+    can attribute to the run's inputs; anything else (compound, node-output gated,
+    absent) is None — which GAPs the attribution rather than excusing the skip."""
+    if not isinstance(when, str):
+        return None
+    text = when.replace("${{", " ").replace("}}", " ").strip()
+    m = C10_WHEN_EXPR_RE.match(text)
+    if not m:
+        return None
+    return (m.group(1), m.group(2), m.group(3) == "true")
+
+
+def c10_when_falsified(when, inputs, name="?"):
+    """(explained, why): True when the node's `when` is an inputs-only expression the
+    run's OWN inputs make false — the seeded authoring, not the injected failure,
+    skipped it. False when the inputs do not falsify it (a business reject nobody
+    authored), and None when the expression or the input cannot be read."""
+    expr = c10_when_expression(when)
+    if expr is None:
+        return (None, f"{name}: `when` {when!r} is not an `inputs.X == <literal>` "
+                      "expression, so its skip cannot be attributed to the run's inputs")
+    key, op, want = expr
+    if not isinstance(inputs, dict) or key not in inputs:
+        return (None, f"{name}: `when` reads inputs.{key}, which this run's inputs do not "
+                      "carry — the attribution is unreadable, not absent")
+    got = inputs.get(key)
+    same = (got is True) if want else (got is False)
+    hit = same if op == "==" else not same
+    return (not hit, f"{name}: when={when!r} x inputs.{key}={got!r} -> "
+                    f"{'skipped by authoring' if not hit else 'should have RUN'}")
+
+
+def c10_path_root(key):
+    """'/build_until_verified[1]/review' -> 'build_until_verified': the top-level
+    node a node_instance_key lives under (iteration indices and body paths stripped)."""
+    text = str(key or "").strip().lstrip("/")
+    first = text.split("/")[0] if text else ""
+    return first.split("[")[0].strip()
+
+
+def c10_downstream_ids(doc, root_id):
+    """Every top-level node id that (transitively) dependsOn `root_id` — the nodes
+    whose ROUTING the failing node's outcome could move. [] unless the document
+    reads; the walk is over spec.nodes' `dependsOn` only."""
+    nodes = ((doc or {}).get("spec") or {}).get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list) or not root_id:
+        return []
+    deps = {str(n.get("id")): [str(d) for d in (n.get("dependsOn") or [])]
+            for n in nodes if isinstance(n, dict) and n.get("id")}
+    want, frontier, seen = set(), [root_id], {root_id}
+    while frontier:
+        cur = frontier.pop()
+        for nid, parents in deps.items():
+            if nid in seen:
+                continue
+            if cur in parents:
+                seen.add(nid)
+                want.add(nid)
+                frontier.append(nid)
+    return sorted(want)
+
+
+def c10_routing_watch(doc, failing_key=C10_REVIEW_KEY):
+    """(keys, why) — the node_instance_keys whose routing the injected failure could
+    have changed: the failing node's own top-level scope plus everything downstream
+    of it, read off the pinned document. ({}, why) when the document does not answer
+    (the caller GAPs the arm — a guessed watch list proves nothing)."""
+    root = c10_path_root(failing_key)
+    nodes = ((doc or {}).get("spec") or {}).get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list) or not root:
+        return {}, "the pinned revision's document gave no spec.nodes to walk"
+    ids = {str(n.get("id")) for n in nodes if isinstance(n, dict) and n.get("id")}
+    if root not in ids:
+        return {}, f"{root!r} (the failing node's scope) is not a top-level node of the " \
+                   f"document — routing-sensitive keys cannot be derived"
+    return {f"/{x}" for x in [root] + c10_downstream_ids(doc, root)}, ""
+
+
+def c10_node_when(doc, key):
+    """(found, when) for a node_instance_key in the pinned document: the top-level
+    node's authored `when` (None when the node exists and declares none)."""
+    root = c10_path_root(key)
+    nodes = ((doc or {}).get("spec") or {}).get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, list) or not root:
+        return False, None
+    for node in nodes:
+        if isinstance(node, dict) and str(node.get("id")) == root:
+            return True, node.get("when")
+    return False, None
+
+
+def c10_skip_verdicts(skips, doc=None, inputs=None, watch=None, failing_key=C10_REVIEW_KEY):
+    """C10b's two re-scoped skip arms. skips: [{key, reason}] as the ledger reports
+    them (None when unreadable); doc: the run's pinned canonical document (where the
+    routing-sensitive set and each node's `when` come from); inputs: the run's OWN
+    validated inputs (a dict or run_inputs rows); watch: an override of the
+    routing-sensitive key set (tests only). Returns [(label, ok, detail)].
+    BOTH arms need BOTH reads: an unreadable ledger or an unreadable document is a
+    GAP on each of them, never a PASS by absence."""
+    arms = ("C10b no condition_default skip on ANY node the rejected reply could "
+            "have routed (the failing scope and everything downstream of it)",
+            "C10b every OTHER condition_default skip is one the run's own inputs "
+            "explain (its `when` is an inputs-only expression they make false)")
+    if watch is None:
+        watch, why = c10_routing_watch(doc, failing_key)
+        watch = watch or None
+    else:
+        watch, why = {str(k) for k in watch}, ""
+    if skips is None:
+        return [(arms[0], None, "the run's skipped node rows could not be read"),
+                (arms[1], None, "the run's skipped node rows could not be read")]
+    if watch is None:
+        return [(arms[0], None, f"the routing-sensitive nodes could not be derived from the "
+                                f"pinned document ({why or 'no spec.nodes'}) — the watch "
+                                "list is never guessed"),
+                (arms[1], None, "the skipped nodes' authored `when` cannot be read without "
+                                "the pinned document")]
+    business = [r for r in skips
+                if str(r.get("reason", "")).strip() == C10_SKIP_BUSINESS]
+    hits = sorted({str(r.get("key")) for r in business if str(r.get("key")) in watch})
+    v = [(arms[0], not hits,
+          f"business skips on watched nodes={hits or '(none)'}; watched={sorted(watch)}; "
+          f"condition_default rows={sorted({str(r.get('key')) for r in business}) or '(none)'}")]
+    outside = [r for r in business if str(r.get("key")) not in watch]
+    parsed = c10_inputs_map(inputs)
+    checks = [c10_when_falsified(c10_node_when(doc, str(r.get("key")))[1], parsed,
+                                 str(r.get("key"))) for r in outside]
+    bad = [w for ok, w in checks if ok is False]
+    blind = [w for ok, w in checks if ok is None]
+    good = [w for ok, w in checks if ok is True]
+    v.append((arms[1], None if (not bad and blind) else not bad,
+              f"unexplained={bad or '(none)'} unreadable={blind or '(none)'} "
+              f"explained={good or '(none)'}" if outside else
+              f"no condition_default skip outside the watched nodes {sorted(watch)}"))
+    return v
+
+
 C10_WAITING = ("queued", "leased", "running", "waiting", "waiting_attempt",
                "waiting_human", "in_progress")
 C10_BUSINESS_CAUSES = ("until_exhausted", "not_approved", "unapproved", "rejected",
                        "condition_default")
 
 
-def c10_routing_verdicts(live=None, final=None, run_status="", skipped_cond=None,
-                         iter_rows=None):
+def c10_routing_verdicts(live=None, final=None, run_status="", skips=None, doc=None,
+                         inputs=None, iter_rows=None, watch=None):
     """C10b — the run's ROUTING never changed over a rejected reply.
     live: the until scope's row as read WHILE the malformed attempt was being
     retried; final: the same row after the run terminated; run_status: the run's
-    terminal status; skipped_cond: count of
-    node.execution_skipped{reason:'condition_default'} events (C9e's business-reject
-    signature — it must NOT be how this run ends); iter_rows: [{key,status}].
-    A leak past validation would be LOUD here: the seed reviewer's `approved` is
-    itself a valid boolean, so an unvalidated reply makes passWhen true, the loop
-    passes, and the run completes."""
+    terminal status; skips: the run's [{key, reason}] skipped node rows (None when
+    unreadable); doc/inputs: the run's pinned canonical document and its OWN
+    validated inputs, which is how a skip is attributed (watched routing vs the
+    seeded `when`) — never by node name; iter_rows: [{key,status}]. A leak past
+    validation would be LOUD here: the seed reviewer's `approved` is itself a valid
+    boolean, so an unvalidated reply makes passWhen true, the loop passes, and the
+    run completes."""
     def nullish(v):
         return str(v or "").strip().lower() in ("", "-", "none", "null", "<none>")
 
@@ -8339,16 +8684,7 @@ def c10_routing_verdicts(live=None, final=None, run_status="", skipped_cond=None
     v.append(("C10b the run NEVER completed — an unvalidated reply would have made "
               "passWhen true (approved:true is itself valid) and routed the loop onward",
               run_status != "completed" if run_status else None, f"run status={run_status!r}"))
-    if skipped_cond is None:
-        v.append(("C10b nothing was skipped as a business reject "
-                  "(node.execution_skipped{reason:'condition_default'} is C9e's NOT-approved "
-                  "signature and must not appear here)", None,
-                  "the skip events could not be read"))
-    else:
-        v.append(("C10b nothing was skipped as a business reject "
-                  "(node.execution_skipped{reason:'condition_default'} is C9e's NOT-approved "
-                  "signature and must not appear here)", skipped_cond == 0,
-                  f"condition_default skips={skipped_cond}"))
+    v.extend(c10_skip_verdicts(skips, doc=doc, inputs=inputs, watch=watch))
     rows = [r for r in (iter_rows or []) if str(r.get("key", "")).startswith(C10_UNTIL_KEY)]
     if rows:
         bad = [r for r in rows if r.get("status") == "succeeded"
@@ -8402,7 +8738,9 @@ def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None):
                   f"every one of the {len(rows) or 0} attempt(s) answered identically: the "
                   "shipped fixture helper has no mode that returns a VALID reviewer reply on "
                   "one attempt and a malformed one on another, and make_fixture_repo.sh must "
-                  "not be edited — the retry happened, its success is unproducible here"))
+                  "not be edited — the retry happened, its success is unproducible here "
+                  "(hold_seconds is no help either: it sleeps BEFORE the step answers, so it "
+                  "widens the window without ever changing the bytes the twin replies with)"))
     return v
 
 
@@ -8537,7 +8875,10 @@ def c10_twin_doc(admin, revision_id):
 
 def c10_post_run(client, facts, revision_id, idem, label):
     """Start the run ONLY through the public API: POST /projects/{p}/runs pinned to the
-    gate's own published revision (the same § 3 body C1/C7 use)."""
+    gate's own published revision (the same § 3 body C1/C7 use). No hold_seconds: the
+    hold is not C10's to post — e2e/m4/test_hold_logic.py pins this leg to the schema
+    default 0, so the mid-failure sample is landed by DECIDING THE GATE in
+    c10_sample_failing_scope, not by slowing the twin down."""
     body = {"pipeline_revision_id": revision_id, "inputs": mf(facts, "inputs") or {},
             "idempotency": idem}
     r = client.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs", body)
@@ -8620,8 +8961,9 @@ def c10_completed_for(run_id, attempt_id):
 
 
 def c10_condition_skips(run_id):
-    """count of node.execution_skipped{reason:'condition_default'} — C9e's business
-    NOT-approved signature, the thing a malformed reply must never be read as.
+    """count of node.execution_skipped{reason:'condition_default'} — kept ONLY as the
+    evidence line the re-scoped arms quote: on the seeded graph this count is 1 BY
+    AUTHORING (`/emit_items` when inputs.fanout=false), so it is never a verdict.
     None when unreadable."""
     return count_or_none(c10_sql("SELECT count(*)::text FROM domain_events WHERE run_id = "
                                  f"'{run_id}' AND type = 'node.execution_skipped' AND "
@@ -8629,16 +8971,80 @@ def c10_condition_skips(run_id):
                                  "execution_skipped rows"))
 
 
-def c10_sample_failing_scope(run_id, timeout=420, every=4):
-    """C10b is only measurable LIVE: poll until the reviewer's first attempt has closed
-    as an execution error and return the until scope's row AS READ IN THAT MOMENT (a
-    post-mortem row shows the terminal close, never a scope waiting on its attempt).
-    Returns (scope_row_or_None, attempts_seen)."""
+def c10_skip_rows(run_id):
+    """Every SKIPPED node row with the reason the journal gave it:
+    [{key, reason}] — the read C10b's re-scoped arms attribute a business skip to
+    (live4/C10.out counted 1 and could not say which node; C9e's read can).
+    [] is a real 'nothing was skipped'; None is the ledger not answering."""
+    text = c10_sql("SELECT ne.node_instance_key || '@@' || "
+                   "COALESCE(e.payload->>'reason','-') FROM node_executions ne LEFT JOIN "
+                   "domain_events e ON e.node_execution_id = ne.id "
+                   "AND e.type = 'node.execution_skipped' WHERE ne.run_id = "
+                   f"'{run_id}' AND ne.status = 'skipped' ORDER BY ne.node_instance_key",
+                   "skipped node rows")
+    if text is None:
+        return None
+    out = []
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split("@@")]
+        if len(parts) != 2 or not parts[0]:
+            continue
+        out.append({"key": parts[0], "reason": parts[1] or "-"})
+    return out
+
+
+def c10_run_inputs(run_id):
+    """The run's OWN validated inputs as [{name,origin,value}] (C1's run_inputs read)
+    — the only record of what the API accepted, which is what makes a seeded `when`
+    skip provable. None when the ledger would not answer."""
+    return run_inputs_read(run_id)
+
+
+def c10_live_scope(scope):
+    """The until scope's row ONLY if it was caught mid-failure (C10_WAITING with no
+    outcome yet); None when the read landed after the scope had closed, which is a
+    GAP about the window, never evidence of the routing bug. Pure — the race guard
+    c10_sample_failing_scope runs on every sample."""
+    def nullish(v):
+        return str(v or "").strip().lower() in ("", "-", "none", "null", "<none>")
+
+    if not scope:
+        return None
+    st = str(scope.get("status") or "")
+    return scope if st in C10_WAITING and nullish(scope.get("outcome")) else None
+
+
+def c10_sample_failing_scope(client, facts, run_id, timeout=420, every=4):
+    """C10b is only measurable LIVE. The seeded twin waits on a HUMAN gate before the
+    loop even starts, and live4 sampled 420s of a run still sitting at /approve (only
+    c10_run_to_terminal decided it, AFTER the sample) — which is why the arm GAPped "no
+    mid-failure sample" at live4/C10.out:54. So: land the gate first (C1b's decide
+    route, the order wait_live_past_gate uses), then poll until the reviewer's first
+    attempt has closed as an execution error and return the until scope's row AS READ IN
+    THAT MOMENT. A scope that had ALREADY closed is not a mid-failure sample — it is
+    returned as None (an honest GAP) rather than graded as the routing bug, which is a
+    post-mortem row's business. Returns (scope_row_or_None, attempts_seen)."""
     deadline = time.time() + timeout
+    approved = False
     while time.time() < deadline:
+        status = run_status(run_id)
+        if status in ("completed", "failed", "cancelled", "interrupted"):
+            show("C10b mid-failure sample", f"the run reached {status!r} before any "
+                                            "reviewer attempt closed as failed — there was "
+                                            "no mid-failure moment to read")
+            break
+        if status == "waiting_human" and not approved:
+            approved = approve_gate(client, mf(facts, "project_id"), run_id)
         atts = c10_attempts(run_id)
         if any(a["status"] == "failed" for a in atts):
-            return c10_node_row(run_id, C10_UNTIL_KEY), atts
+            scope = c10_node_row(run_id, C10_UNTIL_KEY)
+            if scope and c10_live_scope(scope) is None:
+                show("C10b mid-failure sample", f"the until scope had already closed "
+                                                f"(status={scope.get('status')!r}) when the "
+                                                "first failed attempt was observed — the "
+                                                "window the arm asks about was gone")
+                return None, atts
+            return scope, atts
         time.sleep(every)
     return None, c10_attempts(run_id)
 
@@ -8673,7 +9079,13 @@ def c10():
     output_errors and NO node.attempt.completed for it; outputs stay invisible; the
     until scope is still waiting on the attempt, so `approved == true` was never
     reached; the reply is retried per policy; the same reply delivered through the
-    model.chat variant fails identically — the guarantee is the boundary's."""
+    model.chat variant fails identically — the guarantee is the boundary's.
+    C10b's routing claim is measured on the SKIP ATTRIBUTION (c10_skip_verdicts): no
+    condition_default skip may land on the failing scope or anything downstream of it
+    (/verdict and its two publish targets, derived from the pinned document), and any
+    other condition_default skip must be one the run's own inputs explain — the seed
+    runs `/emit_items` at inputs.fanout=false, so a bare "zero business skips" count
+    was never a claim this graph could falsify (docs/m4-exit-status.md row C10b)."""
     if not CTX.get("stack_up"):
         skip("C10", "schema validation precedes every expression: the malformed reply closes "
                     "failed|invalid_output and the loop never routes on it")
@@ -8739,7 +9151,7 @@ def c10():
         gap("C10a/C10b", "the run could not be posted through POST /projects/{p}/runs — the "
                          "ledger has no attempt to measure")
         return
-    live, seen = c10_sample_failing_scope(run_id)
+    live, seen = c10_sample_failing_scope(alice, twin, run_id)
     show("C10b the until scope AS READ while the reply was being rejected",
          json.dumps(live or {"note": "no mid-failure sample (the reviewer had no failed "
                                      "attempt inside the sampling window)"})[:300])
@@ -8755,8 +9167,24 @@ def c10():
     c10_emit(c10_attempt_verdicts(first, c10_completed_for(run_id, (first or {}).get("id"))))
     c10_emit(c10_visibility_verdicts(first, review))
     body = c7_body_rows(c7_sql(c7_body_sql(run_id), "until body rows") or "")
-    c10_emit(c10_routing_verdicts(live=live, final=final, run_status=st,
-                                  skipped_cond=c10_condition_skips(run_id), iter_rows=body))
+    # C10b's skip arm is attributed, not counted: the skipped NODE rows, the pinned
+    # document (which node's routing the failure could reach, and whose `when` reads an
+    # input), and the run's OWN validated inputs. The bare condition_default count is
+    # shown as evidence only — the seed skips /emit_items on inputs.fanout=false by
+    # authoring, so "count == 0" was never a claim the graph could falsify.
+    skips = c10_skip_rows(run_id)
+    run_inputs = c10_run_inputs(run_id)
+    pinned = doc_revision_canonical(admin, rev) or mal.get("edited")
+    show("C10b this run's skipped node rows (key + journal reason)",
+         " ".join(f"{s['key']} reason={s['reason']}" for s in (skips or []))
+         or ("(none)" if skips is not None else "(the skipped rows did not read)"))
+    show("C10b routing-sensitive nodes (the failing scope + its downstream, off the pinned "
+         "document)",
+         str(sorted(c10_routing_watch(pinned)[0]) or "(not derivable — see the GAP above)"))
+    show("C10b condition_default skips (evidence only: the seed's own when-gating authors one "
+         "on /emit_items at fanout=false)", str(c10_condition_skips(run_id)))
+    c10_emit(c10_routing_verdicts(live=live, final=final, run_status=st, skips=skips,
+                                  doc=pinned, inputs=run_inputs, iter_rows=body))
     c10_emit(c10_retry_verdicts(
         rows, max_attempts=_int(review.get("attempt_limit")) or C10_MAX_ATTEMPTS,
         retry_events=c10_event_payloads(run_id, "node.attempt.retry_scheduled")))

@@ -33,8 +33,12 @@ OTHER = hashlib.sha256(b"postgres://someone:else@db/app").hexdigest()
 ATT = "01987a82-3333-7000-8000-abcdef012345"
 
 
-def rec(pid, sha, cmd="/usr/local/bin/claude --acp"):
-    return f"PROC|{pid}|{sha}|{cmd}"
+def rec(pid, sha, cmd="/usr/local/bin/claude --acp", ppid="1"):
+    return f"PROC|{pid}|{ppid}|{sha}|{cmd}"
+
+
+def psline(pid, ppid):
+    return f"PS|{pid}|{ppid}"
 
 
 def scan(*lines):
@@ -63,14 +67,20 @@ class ProcScanTest(unittest.TestCase):
         self.assertIn("sha256sum", sh)
         self.assertIn("^DATABASE_URL=", sh)
         self.assertIn("SCAN_DONE", sh)
+        self.assertIn("PPid", sh, "the tree map (PS|pid|ppid) is what grades "
+                                  "'one attempt's process tree', not one pid")
         self.assertNotIn(m.SENTINEL, sh)
 
     def test_proc_lines_parse_and_ragged_ones_are_dropped(self):
         text = "\n".join([rec("41", SHA), "NOTICE: something", rec("57", OTHER, ""),
-                          "PROC|not-a-pid|zz|x", "SCAN_DONE"])
+                          "PROC|not-a-pid|zz|x", "PROC|5|6|zz|x",
+                          psline("41", "9"), "SCAN_DONE"])
         got = m.c2_proc_scan(text)
         self.assertEqual([r["pid"] for r in got], ["41", "57"])
         self.assertEqual(got[0]["sha"], SHA)
+        self.assertEqual(got[0]["ppid"], "1", "the holder's own PROC line carries its ppid")
+        self.assertEqual(m.c2_ps_map(text), {"41": "9"}, "PS lines feed the tree map only")
+        self.assertEqual(m.c2_ps_map(""), {})
 
     def test_empty_scan_is_zero_holders_not_a_crash(self):
         self.assertEqual(m.c2_proc_scan(""), [])
@@ -83,8 +93,55 @@ class LiveHomeTest(unittest.TestCase):
         self.assertTrue(all(ok for _, ok, _ in v), v)
 
     def test_two_holders_is_a_fail_even_though_the_value_is_present(self):
+        """Two holders that are NOT parent-and-child are two deliveries — the
+        leak shape (another attempt, or the daemon materializing twice)."""
         v = m.c2_live_home_verdicts(scan(rec("41", SHA), rec("77", SHA)), SHA)
         self.assertFalse(ok_of(v, "EXACTLY ONE"))
+        self.assertFalse(ok_of(v, "holder is the process"))
+
+    def test_a_holder_child_of_the_holder_is_one_attempt_tree_and_passes(self):
+        """live15/C2.out: the ACP adapter (pid 250) plus the claude CLI it spawns
+        (pid 266) — the child inherits the launch environment (ADR-0018 D5), so
+        the two /proc/<pid>/environ hits are ONE place, graded by the PPID chain
+        the scan now records, not by a raw pid count."""
+        scan_text = "\n".join([psline("9", "1"), psline("41", "9"), psline("77", "41"),
+                               rec("41", SHA, ppid="9"), rec("77", SHA, ppid="41"),
+                               "SCAN_DONE"])
+        v = m.c2_live_home_verdicts(m.c2_proc_scan(scan_text), SHA,
+                                    ps=m.c2_ps_map(scan_text))
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+        self.assertIn("ONE attempt's process tree rooted at pid 41", v[0][2])
+
+    def test_a_holder_whose_parent_the_scan_never_mapped_is_not_a_proven_tree(self):
+        v = m.c2_live_home_verdicts(scan(rec("41", SHA, ppid="9")), SHA,
+                                    ps={"41": "9"})  # pid 9 unmapped
+        self.assertFalse(ok_of(v, "EXACTLY ONE"),
+                         "an unmappable parent leaves 'one tree' unproven")
+
+    def test_the_worker_daemon_holding_the_value_fails_loudly(self):
+        """The real-leak arm: never weakened. A holder whose argv is the worker
+        daemon (compose command ['worker'] under /usr/local/bin/communication,
+        or pid 1 itself) is ADR-0018's wholesale-env inherit."""
+        for bad in (rec("41", SHA, cmd="/usr/local/bin/communication worker"),
+                    rec("1", SHA, cmd="./some-helper")):
+            v = m.c2_live_home_verdicts(scan(bad), SHA)
+            self.assertFalse(ok_of(v, "EXACTLY ONE"), bad)
+        v = m.c2_live_home_verdicts(scan(rec("1", SHA)), SHA)
+        self.assertIn("DAEMON", v[0][2])
+        self.assertIn("LEAK", v[0][2])
+
+    def test_want_launch_names_the_argv_the_attempt_was_to_launch(self):
+        """For the agent.acp variant the launch root IS the ACP adapter
+        (live15 argv0 'node /usr/local/bin/claude-agent-acp'); anything else —
+        e.g. the daemon's own shell — fails the holder arm even when the tree """
+        v = m.c2_live_home_verdicts(
+            scan(rec("41", SHA, cmd="node /usr/local/bin/claude-agent-acp")), SHA,
+            want_launch=m.C2_AGENT_LAUNCH_RE)
+        self.assertTrue(all(ok for _, ok, _ in v), v)
+        v = m.c2_live_home_verdicts(
+            scan(rec("41", SHA, cmd="/usr/local/bin/communication worker")), SHA,
+            want_launch=m.C2_AGENT_LAUNCH_RE)
+        self.assertFalse(ok_of(v, "holder is the process"))
 
     def test_zero_holders_fails_rather_than_reading_the_scan_as_clean(self):
         v = m.c2_live_home_verdicts(scan(rec("41", OTHER)), SHA)
@@ -277,6 +334,17 @@ class HoldWiringTest(unittest.TestCase):
         self.assertNotIn("c2_live_attempt(", body,
                          "the bare implement poll is gone: it verdicted on whatever "
                          "was live, gate or no gate")
+
+    def test_c2_grades_one_attempt_process_tree_not_one_pid(self):
+        body = self.driver_body()
+        self.assertIn('ps=probe["ps"]', body,
+                      "the holder verdict gets the container's PPID map: the "
+                      "agent.acp attempt's adapter spawns the harness CLI, which "
+                      "inherits the launch env (ADR-0018 D5) — a second environ "
+                      "hit inside the same attempt tree is not a second place")
+        self.assertIn("want_launch=C2_AGENT_LAUNCH_RE", body,
+                      "for an agent.acp attempt the process the attempt launched IS "
+                      "the ACP adapter — the expected argv is named, not guessed")
 
     def test_claim_row_maps_onto_the_shape_c2_reads(self):
         row = {"id": "a-1", "key": "/build_until_verified[1]/implement",

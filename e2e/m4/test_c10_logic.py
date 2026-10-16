@@ -123,24 +123,29 @@ class Routing(unittest.TestCase):
         v = m.c10_routing_verdicts(live={"status": "running", "outcome": None},
                                    final={"status": "failed", "outcome": None,
                                           "failed_cause": "attempt_limit"},
-                                   run_status="failed", skipped_cond=0, iter_rows=self._rows())
+                                   run_status="failed", skips=[], iter_rows=self._rows(),
+                                   doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
         self.assertTrue(one(v, "STILL WAITING"))
         self.assertTrue(one(v, "never SUCCEEDED"))
         self.assertTrue(one(v, "NEVER completed"))
-        self.assertTrue(one(v, "business reject"))
+        self.assertTrue(one(v, "rejected reply could"))
+        self.assertTrue(one(v, "own inputs"))
         self.assertTrue(one(v, "reports 'succeeded'"))
 
     def test_a_completed_run_is_the_silent_false_coercion(self):
         v = m.c10_routing_verdicts(live={"status": "succeeded", "outcome": "approved"},
                                    final={"status": "succeeded", "outcome": None,
                                           "failed_cause": None},
-                                   run_status="completed", skipped_cond=3,
-                                   iter_rows=[{"key": "/build_until_verified[1]/review",
-                                               "status": "succeeded"}])
+                                   run_status="completed", iter_rows=[
+                                       {"key": "/build_until_verified[1]/review",
+                                        "status": "succeeded"}],
+                                   skips=[{"key": "/publish_verified",
+                                           "reason": "condition_default"}],
+                                   doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
         self.assertFalse(one(v, "STILL WAITING"))
         self.assertFalse(one(v, "never SUCCEEDED"))
         self.assertFalse(one(v, "NEVER completed"))
-        self.assertFalse(one(v, "business reject"))
+        self.assertFalse(one(v, "rejected reply could"))
         self.assertFalse(one(v, "reports 'succeeded'"))
 
     def test_business_termination_causes_fail_the_classification(self):
@@ -152,6 +157,118 @@ class Routing(unittest.TestCase):
     def test_nothing_measured_gaps_every_arm(self):
         v = m.c10_routing_verdicts()
         self.assertTrue(all(ok is None for _l, ok, _d in v), str(v))
+
+
+SEEDED_GRAPH = {
+    "apiVersion": "communication.dev/v1alpha1", "kind": "Pipeline", "metadata": {"name": "t"},
+    "spec": {"nodes": [
+        {"id": "plan", "kind": "process.exec"},
+        {"id": "approve", "kind": "human.approval", "dependsOn": ["plan"]},
+        {"id": "build_until_verified", "kind": "until", "dependsOn": ["approve"]},
+        {"id": "emit_items", "kind": "process.exec", "dependsOn": ["approve"],
+         "when": "inputs.fanout == true"},
+        {"id": "fan_out", "kind": "for_each", "dependsOn": ["emit_items"],
+         "when": "inputs.fanout == true"},
+        {"id": "verdict", "kind": "condition", "dependsOn": ["build_until_verified"]},
+        {"id": "publish_verified", "kind": "artifact.publish", "dependsOn": ["verdict"],
+         "when": "nodes.verdict.outputs.route == 'verified'"},
+        {"id": "publish_needs_attention", "kind": "artifact.publish", "dependsOn": ["verdict"],
+         "when": "nodes.verdict.outputs.route == 'needs_attention'"},
+    ]},
+}
+# what the § 7.0 seed actually posts (seed.sh: fanout=false, fanout_count=0)
+SEEDED_INPUTS = {"goal": "g", "repository": "app", "fanout": False, "fanout_count": 0}
+
+
+class SkipAttribution(unittest.TestCase):
+    """docs/m4-exit-status.md row C10b: the old arm ("no condition_default skip may
+    appear") was unsatisfiable on the seeded graph, which skips /emit_items on
+    inputs.fanout=false BY DESIGN (live4/C10.out:58 vs :76). The re-scoped pair must
+    FAIL on a business-reject skip over the routing the failure could move, and must
+    NOT fire on the skip the run's own inputs explain."""
+
+    def watched(self):
+        return m.c10_routing_watch(SEEDED_GRAPH)[0]
+
+    def test_the_watch_set_is_derived_not_hard_coded(self):
+        self.assertEqual(self.watched(), {"/build_until_verified", "/verdict",
+                                          "/publish_verified", "/publish_needs_attention"})
+        self.assertNotIn("/emit_items", self.watched(),
+                         "the fan-out branch is not downstream of the failing reviewer")
+
+    def test_a_condition_default_skip_on_a_verdict_target_FAILS(self):
+        for key in ("/verdict", "/publish_verified", "/publish_needs_attention"):
+            v = m.c10_skip_verdicts([{"key": key, "reason": "condition_default"}],
+                                    doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
+            self.assertFalse(one(v, "rejected reply could"), key)
+
+    def test_the_seeded_fanout_skip_does_NOT_fail_the_verdict(self):
+        """live4/C10.out:76 — /emit_items skipped with condition_default while the run
+        posted fanout=false: the graph's own `when`, not a routing change."""
+        v = m.c10_skip_verdicts([{"key": "/emit_items", "reason": "condition_default"},
+                                 {"key": "/fan_out", "reason": "dependency_skipped"}],
+                                doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
+        self.assertTrue(one(v, "rejected reply could"), str(v))
+        self.assertTrue(one(v, "own inputs"), str(v))
+
+    def test_the_exclusion_is_the_input_value_never_the_node_name(self):
+        """The SAME /emit_items skip on a run that POSTED fanout=true is unexplained —
+        a gate that excused `/emit_items` by name would pass right here."""
+        v = m.c10_skip_verdicts([{"key": "/emit_items", "reason": "condition_default"}],
+                                doc=SEEDED_GRAPH, inputs={"fanout": True})
+        self.assertFalse(one(v, "own inputs"), str(v))
+        self.assertIn("should have RUN", detail(v, "own inputs"))
+
+    def test_run_inputs_rows_are_read_as_validated_values(self):
+        rows = [{"name": "fanout", "origin": "default", "value": "false"},
+                {"name": "goal", "origin": "user", "value": '"g"'}]
+        v = m.c10_skip_verdicts([{"key": "/emit_items", "reason": "condition_default"}],
+                                doc=SEEDED_GRAPH, inputs=rows)
+        self.assertTrue(one(v, "own inputs"), str(v))
+        self.assertTrue(m.c10_inputs_map(rows)["fanout"] is False)
+        self.assertEqual(m.c10_inputs_map(rows)["goal"], "g")
+
+    def test_a_skip_no_input_can_explain_is_unattributable_not_passed(self):
+        v = m.c10_skip_verdicts([{"key": "/publish_verified", "reason": "dependency_skipped"},
+                                 {"key": "/?", "reason": "condition_default"}],
+                                doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
+        self.assertIsNone(one(v, "own inputs"), str(v))
+        self.assertTrue(one(v, "rejected reply could"), str(v))
+
+    def test_a_scope_sampled_after_it_closed_is_a_gap_not_the_bug(self):
+        """live4/C10.out:54's other half: the arm may only be graded on a row read
+        WHILE the scope was waiting. A post-mortem row GAPs; it never becomes the
+        routing FAIL."""
+        for waiting in ({"status": "running", "outcome": None},
+                        {"status": "waiting_human", "outcome": "-"},
+                        {"status": "leased", "outcome": ""}):
+            self.assertEqual(m.c10_live_scope(waiting), waiting, str(waiting))
+        for late in ({"status": "succeeded", "outcome": "approved"},
+                     {"status": "failed", "outcome": None, "failed_cause": "child_failed"},
+                     {"status": "running", "outcome": "approved"}, {}, None):
+            self.assertIsNone(m.c10_live_scope(late), str(late))
+
+    def test_unreadable_skips_or_document_gap_never_pass(self):
+        self.assertTrue(all(ok is None for _l, ok, _d in
+                            m.c10_skip_verdicts(None, doc=SEEDED_GRAPH,
+                                                inputs=SEEDED_INPUTS)))
+        no_doc = m.c10_skip_verdicts([{"key": "/emit_items", "reason": "condition_default"}],
+                                     doc=None, inputs=SEEDED_INPUTS)
+        self.assertTrue(all(ok is None for _l, ok, _d in no_doc), str(no_doc))
+        no_inputs = m.c10_skip_verdicts([{"key": "/emit_items", "reason": "condition_default"}],
+                                        doc=SEEDED_GRAPH, inputs=None)
+        self.assertTrue(any(ok is None for _l, ok, _d in no_inputs), str(no_inputs))
+
+    def test_no_skips_at_all_is_a_clean_pass(self):
+        v = m.c10_skip_verdicts([], doc=SEEDED_GRAPH, inputs=SEEDED_INPUTS)
+        self.assertTrue(all(ok is True for _l, ok, _d in v), str(v))
+
+    def test_a_document_with_nothing_to_walk_never_invents_a_watch_list(self):
+        self.assertEqual(m.c10_routing_watch(None)[0], {})
+        self.assertEqual(m.c10_routing_watch({"spec": {"nodes": []}})[0], {})
+        self.assertEqual(m.c10_downstream_ids(SEEDED_GRAPH, "approve"),
+                         ["build_until_verified", "emit_items", "fan_out",
+                          "publish_needs_attention", "publish_verified", "verdict"])
 
 
 class Retry(unittest.TestCase):
