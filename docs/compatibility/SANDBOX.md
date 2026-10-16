@@ -425,3 +425,105 @@ no such turn has ever run under an allowlist); and the turn's
 `sandbox.verified` showing `network: "allowlisted:…"`. Only then may D-021 move
 off **Provisional**, and only then does the `preapproved_within_sandbox`
 recommendation's condition (b) have evidence.
+
+## Egress allowlist lab evaluation (rows 8a/8b)
+
+Rerun of the 2026-10-16 evaluation's egress half under the ADR-0035 profile. The
+lab was rebuilt from HEAD first (`lab_reset.sh`, head `465a15c`;
+`communication-worker:dev` built `2026-10-16T09:31:40-04:00`, i.e. after
+`1e1a93f`, which the previous image at 07:48 predated), so the worker image
+carries both the allowlist and the audit read. `nono 0.80.0`, `sandbox_policy:
+landlock`, `COMMUNICATION_SANDBOX_ENFORCEMENT=required`.
+
+### Setup
+
+| Item | Value |
+| --- | --- |
+| Evaluation profile row | `m4-planner-preapproved` = SQL copy of the seeded `m4-planner` with `permission_mode='preapproved_within_sandbox'` (`01a144ea-012a-7404-9b35-927d3d7dd65f`, launcher `claude`, `workspace_mode=worktree`, `sandbox_enforcement=required`, `commit_granted=f`); seeded profiles untouched |
+| Conversation / turn | `01a144ea-0bc7-79f5-b946-36c29a5fee00` in project "M4 Exit" via `POST /api/v1/projects/{id}/conversations` (201); turn `01a144ea-0bc8-73ff-b923-59202f443cbc` → `completed` / `end_turn` |
+| Worker / workspace / audit session | `worker-b` `01a144e9-970e-734f-b258-3e95fe7f4bfa`, workspace `01a144ea-0be3-76c0-8eb7-6ca559ead941`, nono session `fc1a252514b940d9` (found with `nono audit list --json` by the `COMMUNICATION_WORKSPACE_ID=…` entry in its recorded argv) |
+| Policy the turn launched under | `sha256:362d8c1ac0ec5b9b9b198726ec79c385122d6aab2a73c8e3b6488acd578ed87f`, `profileVersion 3.4.0`, `/sandbox-policy/communication-agent.json` carrying `"network": {"allow_domain": ["api.anthropic.com"]}`; `COMMUNICATION_AGENT_EGRESS_ALLOW` unset → shipped default |
+| Binaries | `python3`/`curl` still absent, so every check is `node -e` (as briefed) |
+
+### Matrix
+
+Tool rows are literal `conversation.tool.update` payloads for that turn
+(global_seq in column 1); network rows are literal `network_events` entries from
+`HOME=/sandbox-home nono audit show fc1a252514b940d9 --json` inside
+`communication-m4-worker-b-1`.
+
+| # | Operation (as the agent ran it) | Permission decision in the journal | Sandbox outcome (literal) | Verdict |
+| --- | --- | --- | --- | --- |
+| 8a | `node -e "fetch('https://api.anthropic.com/v1/messages').then(r=>console.log('api',r.status))…"` | none — `conversation.permission.*` count for the turn is `0`, `permission_requests` count `0` | seq 77 `"output_preview": "\`\`\`console\n(node:225) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental…\napi 405\n\`\`\`"`; audit: 22 × `{"mode":"connect","decision":"allow","target":"api.anthropic.com","port":443,"method":"CONNECT"}` | **PASS** — the allowed host reaches the real API (405 = the live endpoint answering a GET) |
+| 8b | `node -e "fetch('https://example.com').then(r=>console.log('ex',r.status)).catch(e=>console.log('ex ERR',e.message))"` | none (same 0 rows) | seq 88 `"output_preview": "\`\`\`console\n(node:245) [UNDICI-EHPA] Warning…\nex ERR fetch failed\n\`\`\`"`; audit: `{"timestamp_unix_ms":1792157582293,"mode":"connect","decision":"deny","denial_category":"host_denied","target":"example.com","port":443,"method":null,"path":null,"status":null,"reason":"host example.com:443 is not in the allowlist"}` | **PASS** — the proxy denied it, and the denial is journalled |
+| — | `node -e "try{require('fs').readFileSync('/etc/shadow')…}"` | none | seq 90 `"shadow EACCES"` — reached the syscall (no auto-mode pre-empt this time) and the kernel refused it | **PASS** — row 6 holds unchanged |
+| — | `node -e "try{require('fs').writeFileSync('/tmp/outside.txt','x')…}"` | none | seq 92 `"write EACCES"`; after the turn `docker compose exec worker-b ls -l /tmp/outside.txt` → `ls: cannot access '/tmp/outside.txt': No such file or directory` | **PASS** — row 3 holds unchanged |
+| 8-sufficiency | the turn itself, end to end | n/a | `conversation_turns`: `completed\|end_turn`; the agent's model traffic is the 22 allowed CONNECTs above | **PASS** — first real `claude-agent-acp` turn ever run under an allowlist, and it completed: `api.anthropic.com` alone is a *sufficient* set for one turn |
+| 8-label | `sandbox.verified` (global_seq 49) for this turn | n/a | `… "network": "open", … "policy_digest": "sha256:362d8c1a…", "network_enforced": false, "af_unix_mediation": "pathname"` | **GAP** — correct by construction (design A: `EgressReport` at verify time has no denials yet), but see the next row |
+| 8-label | `sandbox.egress_observed` for this turn | n/a | **absent** — `SELECT global_seq FROM domain_events WHERE type='sandbox.egress_observed'` returns `42, 68, 110`, none of them this conversation | **FAIL** (coverage, not enforcement) — `journalEgressAudit` is called only from `AgentTurn.executeAttempt` (`internal/worker/agentturn.go:711`); the interactive `TurnLoop` path journals `sandbox.verified` (`turnloop_units.go`) and never reads the audit. The conversation launch's argv also carries only `COMMUNICATION_WORKSPACE_ID=…`, no `COMMUNICATION_ATTEMPT_ID=…`, so its audit would be unattributable to that seam even if it were wired |
+| 8-label | the three `sandbox.egress_observed` rows that do exist (same digest, concurrent pipeline agent-turn attempts on `worker-a`, global_seq 42/68/110) | n/a | seq 110: `{"denied": 7, "status": "observed", "allowed": 20, "network": "allowlisted:api.anthropic.com", "denied_hosts": ["http-intake.logs.us5.datadoghq.com", "mcp-proxy.anthropic.com"], "policy_digest": "sha256:362d8c1a…", "sandbox_session": "3c3a16217166cde4", "network_enforced": true}` | **PASS** — the earned label exists in production journals now, on the path that reads the audit |
+| — | hosts Claude Code asked for and did not get, in this turn's audit | n/a | `deny` × 6 `mcp-proxy.anthropic.com`, `deny` × 1 `http-intake.logs.us5.datadoghq.com`, `deny` × 1 `unix:/workspaces/conversation/01a144ea-…/work/scratch/tmp/cc-socks/106.sock` — the turn still completed | **note** — no *required* host is missing; these are MCP-proxy/telemetry/AF_UNIX sockets the turn survived without. Nothing here forces an edit to the shipped default |
+
+### The label, as the journal actually spells it
+
+| Source | Literal |
+| --- | --- |
+| `sandbox.verified`, this turn (seq 49; seq 123 identical for turn 2) | `"network": "open", "network_enforced": false` with `"policy_digest": "sha256:362d8c1a…"` — written at verify time, before any connection existed, so `EgressReport` had no denial to earn the label from (ADR-0035 § 3). Unchanged from the 2026-10-16 row in *value*, different in *reason*: the profile behind the digest is now allowlisted. |
+| `sandbox.egress_observed`, this turn | none — see the 8-label FAIL row above |
+| `sandbox.egress_observed`, concurrent pipeline agent-turn attempts on the same digest (`worker-a`, seq 42/68/110) | `"network": "allowlisted:api.anthropic.com", "network_enforced": true, "allowed": 20, "denied": 7, "denied_hosts": ["http-intake.logs.us5.datadoghq.com", "mcp-proxy.anthropic.com"]` |
+| nono's own audit, this conversation (session `fc1a252514b940d9`, turn 1; `da355959c17315ad`, turn 2) | turn 1: 22 × allow `api.anthropic.com:443 CONNECT`, deny `example.com`, deny `mcp-proxy.anthropic.com` ×6, deny `http-intake.logs.us5.datadoghq.com`, deny `unix:…/cc-socks/106.sock`, `exit 0`. turn 2: 21 × allow `api.anthropic.com`, same three non-essential denials, no `example.com` attempt, `exit 0`. |
+
+### Verdict
+
+* **Rows 8a and 8b both PASS as observed** — the first time this table can say
+  "allowlisted" with an observed denial in the same run: the allowed host
+  returned `405` from the live API while `example.com` was refused by the proxy
+  and journalled as `host_denied`, in one turn, on one digest.
+* **The host set is sufficient for a real turn.** Two `claude-agent-acp` turns
+  (`completed` / `end_turn`) ran with only `api.anthropic.com` allowed; the
+  denials they accrued (`mcp-proxy.anthropic.com`, `http-intake.logs.us5.datadoghq.com`,
+  one Claude-owned AF_UNIX socket) are MCP-proxy/telemetry noise the turn
+  survived. **No required host is missing**, so the shipped default needs no
+  edit; whether the telemetry hosts *should* be allowed is a D-025 product call,
+  not a lab finding.
+* Filesystem rows hold unchanged under the 3.4.0 profile: in-grant compute
+  (`42`), in-grant write (`inside`), `/etc/shadow` → `EACCES`, `/tmp/outside.txt`
+  never created, world-readable `/tmp/eg2-marker.txt` → `Permission denied`.
+* **Coverage gap:** the earned label reaches only the pipeline `agent.acp` path.
+  An interactive conversation enforces the same boundary and audits it in nono's
+  journal, but its own `domain_events` still read `open` / `false` forever,
+  because `TurnLoop` never calls `journalEgressAudit` and its launch argv carries
+  no `COMMUNICATION_ATTEMPT_ID` marker for that seam to attribute with.
+
+### Recommendation
+
+**Row 8 may be retired and D-021's lab evidence now exists** — 8a, 8b, a
+completing real turn and an `allowlisted:api.anthropic.com` /
+`network_enforced: true` row on the same digest are all observed. Moving D-021
+from **Provisional** is the orchestrator's call, and the label is only honest on
+`agent.acp` attempts until the conversation path reads its audit.
+
+**Still no `preapproved_within_sandbox` for the lab's `m4-planner` /
+`m4-implementer` rows — but the refusal is now one condition narrower.**
+Condition (b) of the 2026-10-16 recommendation ("per-launcher network
+enforcement is proven in the same lab") is met for the `claude` launcher:
+egress is enforced, denied hosts are auditable per run, and a turn completes on
+the default list. Condition (a) is untouched and reproduced here — `0`
+`conversation.permission.*` rows and `0` `permission_requests` across 2 turns /
+7 tool calls, so the journal still cannot answer who approved a tool call. The
+credential axis also stays unproven: the run still carries an rw
+`harness_credentials` grant, and an allowed host is allowed for *content* too —
+anything readable inside the grants can leave over the one permitted CONNECT
+(ADR-0035 Security). Until (a) is closed, `ask` for conversations and
+`process.exec` for unattended nodes remain the honest lab settings.
+
+### Limitations of this run
+
+One launcher, one conversation, two turns, `worker-b` (the earlier evaluation ran
+on `worker-a`; the boundary is identical because the digest is). Row 4
+(`/home/worker/x`) and row 9 (missing binaries) were not re-run — `/etc/shadow`
+and `/tmp/outside.txt` now settle rows 5/6 and 3 in one pass. The evaluation
+profile is again an SQL insert, so it has no `agent.profile.created` event. The
+concurrent `sandbox.egress_observed` rows quoted above belong to other runs
+(`worker-a`, same digest); they are cited as the mechanic working where it is
+wired, not as this conversation's evidence.
