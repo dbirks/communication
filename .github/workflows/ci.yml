@@ -366,6 +366,31 @@ jobs:
         if: always()
         run: docker compose -p communication-e2e -f compose.yml -f e2e/compose.e2e.yml down -v
 
+  m4-gate-logic:
+    name: m4-gate-logic
+    runs-on: ubuntu-latest
+    # e2e/m4/test_c*_logic.py check the *verdict logic* of the M4 exit gates
+    # (docs/m4-contract.md § 7) offline: given recorded Postgres/API evidence,
+    # does the gate decide pass/fail the way § 7 specifies? They are stdlib
+    # unittest only — no stack, no agent, no network — so they run in seconds
+    # and catch a gate that would report the wrong verdict.
+    # They NEVER substitute for the live § 7 run: a green job here proves no
+    # more than the reducer is self-consistent, and § 7's gates still have to be
+    # observed against the real stack before M4 is called done
+    # (12-test-strategy.md: a mocked green test is never evidence).
+    # No actions/setup-python: nothing in this repository pins one, and the
+    # runner's system python3 is enough for stdlib unittest, so this job adds no
+    # new dependency.
+    steps:
+      - uses: actions/checkout@v7
+      # Syntax-check the driver first (the tests import it), then run every
+      # gate logic test; the first failure fails the job.
+      - name: gate logic tests
+        run: |
+          set -euo pipefail
+          python3 -m py_compile e2e/m4/e2e_m4_exit.py
+          for t in e2e/m4/test_c*_logic.py; do python3 "$t" || exit 1; done
+
   image-main:
     name: image (main)
     runs-on: ubuntu-latest
