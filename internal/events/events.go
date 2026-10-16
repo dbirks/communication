@@ -219,6 +219,17 @@ const (
 	TypeRepositoryMirrorUpdated = "repository.mirror_updated"
 )
 
+// Agent profile writes (ADR-0030): the two rows behind POST/PATCH
+// /api/v1/agent-profiles. The names are `agent.profile.*` rather than the
+// `agent_profile.*` a reader might expect because the envelope schema's own
+// pattern is ^[a-z]+(\.[a-z_]+)+$ — an underscore is legal only *after* the
+// first dotted segment, so `agent_profile.created` is a name the journal's
+// schema would reject.
+const (
+	TypeAgentProfileCreated = "agent.profile.created"
+	TypeAgentProfileUpdated = "agent.profile.updated"
+)
+
 // Controller kinds for conversation_control.controller_kind and the transfer
 // payload. Run attempts do not exist in M2, but the kind is reserved now so
 // M4 does not rename the wire (01: controller = factory_run | human | none).
@@ -892,6 +903,36 @@ type RepositoryMirrorUpdatedPayload struct {
 	FromCommit      string `json:"from_commit,omitempty"`
 	ToCommit        string `json:"to_commit"`
 	FetchDurationMS int64  `json:"fetch_duration_ms"`
+}
+
+// ------------------------------------------------- ADR-0030: profiles ----
+
+// AgentProfileCreatedPayload is agent.profile.created, appended in the same
+// transaction as the profile row. Profiles are organization-scoped and have no
+// project, so the row carries organization_id alone and the journal's
+// project_id stays NULL (as it does for the org-scoped pipeline library rows).
+// An APM ref is a coordinate in public source control, not a secret — the
+// absolute-path and secret-value rules still apply verbatim.
+type AgentProfileCreatedPayload struct {
+	ProfileID  string `json:"profile_id"`
+	Name       string `json:"name"`
+	LauncherID string `json:"launcher_id"`
+	// PermissionMode is always "ask": the route cannot set it, because
+	// preapproved_within_sandbox requires a verified enforced sandbox for the
+	// launcher first (04-agent-runtime.md "Permission policy", ADR-0009).
+	PermissionMode string `json:"permission_mode"`
+}
+
+// AgentProfileUpdatedPayload is agent.profile.updated. It records the whole APM
+// triple as it stands after the write — not a diff — because the question the
+// row exists to answer is "what was this profile pinned to when it changed?",
+// and a reader must not have to replay history to know.
+type AgentProfileUpdatedPayload struct {
+	ProfileID     string `json:"profile_id"`
+	APMPackageRef string `json:"apm_package_ref,omitempty"`
+	APMTarget     string `json:"apm_target,omitempty"`
+	APMLockDigest string `json:"apm_lock_digest,omitempty"`
+	APMPinCleared bool   `json:"apm_pin_cleared"`
 }
 
 // -------------------------------------------------------- M3 enum values ---

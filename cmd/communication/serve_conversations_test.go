@@ -47,6 +47,9 @@ func cnvM2Routes(t *testing.T) [][2]string {
 		"{conversationId}": conv, "{projectId}": project,
 		"{permissionRequestId}": request, "{requestId}": request,
 		"{turnId}": conv, "{userId}": user, "{workerId}": workerID,
+		// ADR-0030 added PATCH /api/v1/agent-profiles/{profileId}; an unfilled
+		// placeholder here is this test doing its job, so the fix is to fill it.
+		"{profileId}": user,
 	}
 
 	var out [][2]string

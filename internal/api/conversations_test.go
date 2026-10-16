@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,9 @@ const (
 type cnvFakeStore struct {
 	chat     ConversationView
 	profiles []AgentProfileView
+
+	profileCreated []AgentProfileCreateInput
+	profilePatched []cnvProfilePatchCall
 
 	myRole     string
 	controller string
@@ -369,7 +373,13 @@ func strptrTime() *time.Time {
 	return &t
 }
 
-var _ ConversationStore = (*cnvFakeStore)(nil)
+var (
+	_ ConversationStore = (*cnvFakeStore)(nil)
+	_ ProfileStore      = (*cnvFakeStore)(nil)
+)
+
+// cnvFakeDigestPattern is the store's apm_lock_digest CHECK, restated in the fake.
+var cnvFakeDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // --- mounting -----------------------------------------------------------
 
@@ -913,4 +923,91 @@ func TestConversationRouteValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- profile writes (ADR-0030) ------------------------------------------
+
+// cnvProfilePatchCall records what a PATCH asked for, so a test can assert the
+// handler forwarded the triple verbatim rather than a normalised guess.
+type cnvProfilePatchCall struct {
+	profileID     string
+	packageRef    *string
+	target        *string
+	lockDigest    *string
+	askedOrgAdmin bool
+}
+
+func (f *cnvFakeStore) createdProfile(name, launcher string) AgentProfileView {
+	return AgentProfileView{
+		ID: "p-" + name, Name: name, LauncherID: launcher,
+		PermissionMode: "ask", CreatedAt: prjFixedTime,
+	}
+}
+
+func (f *cnvFakeStore) findProfile(id string) *AgentProfileView {
+	for i := range f.profiles {
+		if f.profiles[i].ID == id {
+			return &f.profiles[i]
+		}
+	}
+	return nil
+}
+
+// CreateAgentProfile answers the way the store answers: the library role is the
+// gate, and a duplicate name in the organization is a conflict, not a second row.
+func (f *cnvFakeStore) CreateAgentProfile(_ context.Context, c Caller, in AgentProfileCreateInput) (AgentProfileView, error) {
+	if !c.IsOrgAdmin {
+		return AgentProfileView{}, ErrProfileForbidden
+	}
+	for _, p := range f.profiles {
+		if p.Name == in.Name {
+			return AgentProfileView{}, ErrProfileConflict
+		}
+	}
+	view := f.createdProfile(in.Name, in.LauncherID)
+	f.profiles = append(f.profiles, view)
+	f.profileCreated = append(f.profileCreated, in)
+	return view, nil
+}
+
+// PatchAgentProfileAPM answers with the store's own refusals, including the named
+// 422 codes, so a handler that stopped validating still gets the store's answer
+// and the two can never drift silently.
+func (f *cnvFakeStore) PatchAgentProfileAPM(_ context.Context, c Caller, profileID string, in AgentProfileAPMPatch) (AgentProfileView, error) {
+	if !apmPinComplete(in) {
+		return AgentProfileView{}, &AgentProfileProblemError{Code: ProfileCodeAPMIncomplete,
+			Detail: "the three apm members must be set or cleared together"}
+	}
+	p := f.findProfile(profileID)
+	if p == nil {
+		return AgentProfileView{}, ErrProfileNotFound
+	}
+	if !c.IsOrgAdmin {
+		return AgentProfileView{}, ErrProfileForbidden
+	}
+	// The store's adapter answers "" or absent with an explicit null, because
+	// "stages nothing" must not be readable as a target named "".
+	set := func(dst **string, v *string) {
+		if v == nil || *v == "" {
+			*dst = nil
+			return
+		}
+		*dst = v
+	}
+	digest := ""
+	if in.APMLockDigest != nil {
+		digest = *in.APMLockDigest
+	}
+	if digest != "" && !cnvFakeDigestPattern.MatchString(digest) {
+		return AgentProfileView{}, &AgentProfileProblemError{Code: "apm_lock_digest_invalid",
+			Detail: "apm_lock_digest must be sha256:<64 lowercase hex>"}
+	}
+	set(&p.APMPackageRef, in.APMPackageRef)
+	set(&p.APMTarget, in.APMTarget)
+	set(&p.APMLockDigest, in.APMLockDigest)
+	f.profilePatched = append(f.profilePatched, cnvProfilePatchCall{
+		profileID: profileID, packageRef: in.APMPackageRef, target: in.APMTarget,
+		lockDigest: in.APMLockDigest, askedOrgAdmin: c.IsOrgAdmin,
+	})
+	return *p, nil
 }

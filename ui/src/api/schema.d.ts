@@ -451,15 +451,44 @@ export interface paths {
     };
     /**
      * List the agent profiles this organization may launch
-     * @description Agent profiles in `display_name`/`name` order. M2 seeds exactly two in the `default` organization — "Claude Code" (launcher `claude`) and "Codex" (launcher `codex`) — both with `permission_mode: ask`, because no launcher has a verified enforced sandbox yet (`04-agent-runtime.md`: auto-approving ACP prompts is not a substitute for sandbox isolation). A profile is a launch descriptor, not a capability claim: whether a launcher actually works here is answered by `docs/compatibility/ACP.md` and `communication doctor --acp`, never by this route returning a row. Profiles are read-only in M2; creating and publishing them (with APM refs and pinned revisions) is a later milestone, which is why `version`/`updated_at` are not exposed yet.
+     * @description Agent profiles in `name` order (there is no `display_name` column — `name` is the display text, unique per organization). M2 seeds exactly two in the `default` organization — "Claude Code" (launcher `claude`) and "Codex" (launcher `codex`) — both with `permission_mode: ask`, because no launcher has a verified enforced sandbox yet (`04-agent-runtime.md`: auto-approving ACP prompts is not a substitute for sandbox isolation). A profile is a launch descriptor, not a capability claim: whether a launcher actually works here is answered by `docs/compatibility/ACP.md` and `communication doctor --acp`, never by this route returning a row. Profiles carry no `version`/`updated_at` optimistic token (ADR-0030): the only writable fields are the three APM columns, they are written as one triple, and a lost race between two writers is therefore unobservable in the row. Creating and patching a profile are `POST`/`PATCH` below; the listing stays available to every member of the organization.
      */
     get: operations["listAgentProfiles"];
+    put?: never;
+    /**
+     * Create an agent profile
+     * @description A launch descriptor: a name unique in the organization plus the launcher it drives. `permission_mode` is **not** a field here — `ask` is the column default and the only mode an unverified launcher may have, because auto-approving ACP permission prompts is not a substitute for sandbox isolation (`04-agent-runtime.md` "Permission policy", ADR-0009); `preapproved_within_sandbox` needs sandbox evidence for that launcher in `docs/compatibility/`, not a request body.
+     *     A new profile stages **no** APM package: the triple is NULL until an operator records a digest with `PATCH` below, so a profile can never be created in the unverifiable state probe A5b describes.
+     *     Organization library role — the same fail-closed predicate that governs publishing the shared pipeline library (ADR-0030). A member without it gets `403` (the organization's profiles are list-visible, so role is not existence information here); a duplicate name is `409`.
+     */
+    post: operations["createAgentProfile"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-profiles/{profileId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    patch?: never;
+    /**
+     * Set or clear a profile's APM package pin
+     * @description The **only** writable fields are `apm_package_ref`, `apm_target` and `apm_lock_digest`, and they move as one triple: either all three carry a value or all three are absent/empty (clearing the pin). Any partial triple is `422` with code `apm_pin_incomplete`.
+     *     Why the triple is atomic: `internal/agent/apm` stages a launch with `apm install --frozen --target <t>` and then refuses when `sha256(apm.lock.yaml)` differs from `apm_lock_digest`. Probe A5 showed `--frozen` proves the lockfile's *presence*, not its bytes — a mutated upstream still installed cleanly — and A5b showed the digest moves exactly when content moves. A ref recorded **without** a digest would therefore stage whatever the ref points at today, unverified; the worker refuses that state outright, so writing it through the API would turn an immediate, named refusal into a launch failure for somebody else's conversation. `docs/compatibility/APM.md` ("Git-tag sources") proves the pin holds: the lock records `resolved_commit`, and `--frozen` replays that commit offline, so a moved tag cannot change staged content under a recorded digest.
+     *     **APM staging is not isolation** (`04-agent-runtime.md`): the staged trees are excluded from checkpoints because the worker wrote them before the grant set existed, not because a package was audited. Recording a digest makes the content *identifiable*; it asserts nothing about what the content does.
+     *     Library role (ADR-0030). A profile of another organization is `404`.
+     */
+    patch: operations["patchAgentProfile"];
     trace?: never;
   };
   "/api/v1/projects/{projectId}/conversations": {
@@ -1990,7 +2019,10 @@ export interface components {
      *       "name": "Claude Code",
      *       "launcher_id": "claude",
      *       "permission_mode": "ask",
-     *       "created_at": "2026-10-14T18:00:00Z"
+     *       "created_at": "2026-10-14T18:00:00Z",
+     *       "apm_package_ref": "mattpocock/skills#v1.3.1",
+     *       "apm_target": "claude",
+     *       "apm_lock_digest": "sha256:127ccf2b000000000000000000000000000000000000000000000000000000ab"
      *     }
      */
     AgentProfile: {
@@ -2007,6 +2039,59 @@ export interface components {
       permission_mode: "ask" | "preapproved_within_sandbox" | "deny";
       /** Format: date-time */
       created_at: string;
+      /** @description An apm git dependency string, pinned: `<owner>/<repo>[/<skill subdirectory>][#<tag|branch|commit>]` — e.g. `mattpocock/skills#v1.3.1`, or `mattpocock/skills/skills/engineering/ask-matt#v1.3.1` for one skill out of a multi-skill repo (`docs/compatibility/APM.md`, T-tag-5). The `#<ref>` is required: without it apm resolves the default branch, which is not a pin anything downstream can check. Null when this profile stages no packaged context. */
+      apm_package_ref?: string | null;
+      /**
+       * @description The APM install target the digest below was recorded for. apm keeps one `apm.lock.yaml` per checkout and *moving* to a second target changes that digest (APM.md probe A3), so a digest is meaningful only per target — and per launch that means one launcher, one harness.
+       * @enum {string|null}
+       */
+      apm_target?: "claude" | "codex" | null;
+      /** @description `sha256` of the `apm.lock.yaml` the operator recorded after a real `apm install`. `internal/agent/apm` re-computes it before every launch and **refuses the launch** on a mismatch — the control that probe A5 proved `--frozen` is not. Set with the other two members or not at all: a ref with no digest is refused at the API (`apm_pin_incomplete`) and again at the worker. Null means "stages nothing", not "unknown". */
+      apm_lock_digest?: string | null;
+    };
+    /**
+     * AgentProfileCreate
+     * @description POST /api/v1/agent-profiles. Two fields, and deliberately no `permission_mode`, no `apm_*`, no sandbox/workspace/commit axis: a new profile is a launch descriptor whose APM pin is recorded later, by whoever holds the lockfile digest (ADR-0030).
+     * @example {
+     *       "name": "Claude Code (pinned skills)",
+     *       "launcher_id": "claude"
+     *     }
+     */
+    AgentProfileCreate: {
+      /** @description Unique within the organization; a clash is `409`. */
+      name: string;
+      /** @description A launcher registry id. Never a command line: argv only, no shell expansion, and no claim that the harness works on this host. */
+      launcher_id: string;
+    };
+    /**
+     * AgentProfileAPMPatch
+     * @description PATCH /api/v1/agent-profiles/{profileId}. All three members present, or all three absent/empty; any partial triple is `422` `apm_pin_incomplete` (see the route description for why). Unknown fields are refused.
+     * @example {
+     *       "apm_package_ref": "mattpocock/skills#v1.3.1",
+     *       "apm_target": "claude",
+     *       "apm_lock_digest": "sha256:127ccf2b000000000000000000000000000000000000000000000000000000ab"
+     *     }
+     */
+    AgentProfileAPMPatch: {
+      /** @description See AgentProfile.apm_package_ref. */
+      apm_package_ref?: string | null;
+      /** @enum {string|null} */
+      apm_target?: "claude" | "codex" | null;
+      apm_lock_digest?: string | null;
+    };
+    /**
+     * AgentProfileProblem
+     * @description A profile-write `422`: the Problem document plus the stable `code` member and a `type` URI ending in that same code. Clients switch on `code`.
+     */
+    AgentProfileProblem: {
+      /** Format: uri-reference */
+      type: string;
+      title: string;
+      /** @constant */
+      status: 422;
+      detail?: string;
+      /** @description One of the AgentProfileAPMProblem codes. An unknown code must be tolerated. */
+      code: string;
     };
     /** AgentProfileList */
     AgentProfileList: {
@@ -3865,6 +3950,25 @@ export interface components {
         "application/problem+json": components["schemas"]["Problem"];
       };
     };
+    /** @description `422` on an agent-profile write: a well-formed body the contract or the columns refuse. The `code` member is the machine-readable half and is stable; the `detail` prose beside it is not. Codes (ADR-0030): `apm_pin_incomplete` (the three APM members were not set or cleared together), `apm_package_ref_invalid` (not an apm git dependency string with a `#<ref>`), `apm_target_invalid` (not `claude`/`codex`), `apm_lock_digest_invalid` (not `sha256:<64 lowercase hex>`), `profile_name_invalid`, `launcher_id_invalid`. Adding a code is additive; renaming one is not. */
+    AgentProfileAPMProblem: {
+      headers: {
+        "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+        [name: string]: unknown;
+      };
+      content: {
+        /**
+         * @example {
+         *       "type": "https://communication.dev/errors/apm_pin_incomplete",
+         *       "title": "Incomplete APM Pin",
+         *       "status": 422,
+         *       "detail": "apm_package_ref, apm_target and apm_lock_digest must be set together, or all three cleared to remove the pin.",
+         *       "code": "apm_pin_incomplete"
+         *     }
+         */
+        "application/problem+json": components["schemas"]["AgentProfileProblem"];
+      };
+    };
     /** @description The replica cannot serve the request: Postgres is unreachable, or its schema version is older than the binary expects. Retrying a different replica may succeed. */
     ServiceUnavailable: {
       headers: {
@@ -4023,6 +4127,8 @@ export interface components {
     TurnId: string;
     /** @description An `artifacts` id. Sensitivity gates the bytes, not just the row: see `ADR-0020` D3's table. */
     ArtifactId: string;
+    /** @description An `agent_profiles` id. Profiles are organization-scoped, so a profile of another organization is `404` — never a peek (ADR-0014 §3). A member of the *same* organization who lacks the library role gets `403`, because the row is already list-visible to them and role is not existence information. */
+    ProfileId: string;
     /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
     PipelineId: string;
     /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
@@ -4499,6 +4605,67 @@ export interface operations {
         };
       };
       401: components["responses"]["Unauthorized"];
+    };
+  };
+  createAgentProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentProfileCreate"];
+      };
+    };
+    responses: {
+      /** @description The created profile, with no APM pin. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfile"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["AgentProfileAPMProblem"];
+    };
+  };
+  patchAgentProfile: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `agent_profiles` id. Profiles are organization-scoped, so a profile of another organization is `404` — never a peek (ADR-0014 §3). A member of the *same* organization who lacks the library role gets `403`, because the row is already list-visible to them and role is not existence information. */
+        profileId: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentProfileAPMPatch"];
+      };
+    };
+    responses: {
+      /** @description The profile as it now stands. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfile"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      422: components["responses"]["AgentProfileAPMProblem"];
     };
   };
   listConversations: {

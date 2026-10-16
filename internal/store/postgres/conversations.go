@@ -89,6 +89,13 @@ type CnvProfile struct {
 	LauncherID     string
 	PermissionMode string
 	CreatedAt      time.Time
+	// The APM triple (ADR-0030). "" means the column is NULL, i.e. this profile
+	// stages no packaged context — the honest state, not a missing read. A ref
+	// with no digest is refused at the write path and again by the worker
+	// (workspaces.go's unverifiable-pin rule), so it cannot reach a reader.
+	APMPackageRef string
+	APMTarget     string
+	APMLockDigest string
 }
 
 // CnvControl is the one-row-per-conversation controller lock. UserID is "" for
@@ -227,7 +234,7 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 		return nil, err
 	}
 	rows, err := s.Pool.Query(ctx, `
-		SELECT id::text, organization_id::text, name, launcher_id, permission_mode, created_at
+		SELECT `+cnvProfileColumns+`
 		FROM agent_profiles
 		WHERE organization_id = $1::uuid
 		ORDER BY name, id`, c.OrganizationID)
@@ -240,7 +247,8 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 	for rows.Next() {
 		var p CnvProfile
 		if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt); err != nil {
+			&p.PermissionMode, &p.CreatedAt,
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest); err != nil {
 			return nil, fmt.Errorf("postgres: scan agent profile: %w", err)
 		}
 		p.CreatedAt = p.CreatedAt.UTC()
@@ -1743,13 +1751,7 @@ func (a APIConversationStore) ListAgentProfiles(ctx context.Context, c api.Calle
 	}
 	out := make([]api.AgentProfileView, 0, len(profiles))
 	for _, p := range profiles {
-		out = append(out, api.AgentProfileView{
-			ID:             p.ID,
-			Name:           p.Name,
-			LauncherID:     p.LauncherID,
-			PermissionMode: p.PermissionMode,
-			CreatedAt:      p.CreatedAt,
-		})
+		out = append(out, cnvProfileView(p))
 	}
 	return out, nil
 }
@@ -2086,4 +2088,81 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		AgentSession:       cnvAPIBinding(cv.Binding),
 		PendingPermissions: pending,
 	}
+}
+
+// --- agent profile writes (ADR-0030) ------------------------------------
+
+// cnvProfileView turns a row into the AgentProfile schema. The three apm columns
+// are NULL-or-value in the database and ""-or-value in the row type, so the
+// nulls are restored here rather than leaking "" as if it were a target.
+func cnvProfileView(p CnvProfile) api.AgentProfileView {
+	null := func(v string) *string {
+		if v == "" {
+			return nil
+		}
+		return &v
+	}
+	return api.AgentProfileView{
+		ID:             p.ID,
+		Name:           p.Name,
+		LauncherID:     p.LauncherID,
+		PermissionMode: p.PermissionMode,
+		CreatedAt:      p.CreatedAt,
+		APMPackageRef:  null(p.APMPackageRef),
+		APMTarget:      null(p.APMTarget),
+		APMLockDigest:  null(p.APMLockDigest),
+	}
+}
+
+// cnvProfileAPIErr translates the profile store's errors into the api sentinels
+// the handler maps. A coded refusal keeps its code: it is the part of the answer
+// a client switches on, and dropping it here would leave the prose as the only
+// machine-readable signal.
+func cnvProfileAPIErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var problem *AgentProfileProblem
+	if errors.As(err, &problem) {
+		return &api.AgentProfileProblemError{Code: problem.Code, Detail: problem.Detail}
+	}
+	switch {
+	case errors.Is(err, ErrProfileNotFound):
+		return fmt.Errorf("%w: %w", api.ErrProfileNotFound, err)
+	case errors.Is(err, ErrProfileForbidden):
+		return fmt.Errorf("%w: %w", api.ErrProfileForbidden, err)
+	case errors.Is(err, ErrProfileConflict):
+		return fmt.Errorf("%w: %w", api.ErrProfileConflict, err)
+	case errors.Is(err, ErrProfileValidation):
+		return fmt.Errorf("%w: %w", api.ErrProfileValidation, err)
+	default:
+		return err
+	}
+}
+
+// CreateAgentProfile implements api.ProfileStore.
+func (a APIConversationStore) CreateAgentProfile(ctx context.Context, c api.Caller, in api.AgentProfileCreateInput) (api.AgentProfileView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.AgentProfileView{}, err
+	}
+	profile, err := s.CreateAgentProfile(ctx, prjAPICaller(c), in.Name, in.LauncherID)
+	if err != nil {
+		return api.AgentProfileView{}, cnvProfileAPIErr(err)
+	}
+	return cnvProfileView(profile), nil
+}
+
+// PatchAgentProfileAPM implements api.ProfileStore.
+func (a APIConversationStore) PatchAgentProfileAPM(ctx context.Context, c api.Caller, profileID string, in api.AgentProfileAPMPatch) (api.AgentProfileView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.AgentProfileView{}, err
+	}
+	profile, err := s.PatchAgentProfileAPM(ctx, prjAPICaller(c), profileID,
+		in.APMPackageRef, in.APMTarget, in.APMLockDigest)
+	if err != nil {
+		return api.AgentProfileView{}, cnvProfileAPIErr(err)
+	}
+	return cnvProfileView(profile), nil
 }

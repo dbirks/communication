@@ -81,6 +81,13 @@ type AgentProfileView struct {
 	LauncherID     string    `json:"launcher_id"`
 	PermissionMode string    `json:"permission_mode"`
 	CreatedAt      time.Time `json:"created_at"`
+	// The APM triple (ADR-0030). Explicit nulls, because "this profile stages no
+	// packaged context" is an answer the UI has to be able to tell apart from a
+	// field it never read. A ref with no digest is impossible by construction: the
+	// store refuses a partial triple and the worker refuses an unverifiable pin.
+	APMPackageRef *string `json:"apm_package_ref"`
+	APMTarget     *string `json:"apm_target"`
+	APMLockDigest *string `json:"apm_lock_digest"`
 }
 
 // ConversationControlView is the ConversationControl schema. Version is the CAS
@@ -248,9 +255,14 @@ type ConversationEventStream interface {
 	Watch(ctx context.Context) (<-chan struct{}, func(), error)
 }
 
-// ProfileStore reads the agent profiles the caller's organization may launch.
+// ProfileStore reads the agent profiles the caller's organization may launch,
+// and (ADR-0030) writes their identity and their APM pin. Writes are the
+// organization's library role — the same predicate api/pipelines.go applies to
+// the shared pipeline library — and the store re-checks it in its own SQL.
 type ProfileStore interface {
 	ListAgentProfiles(ctx context.Context, c Caller) ([]AgentProfileView, error)
+	CreateAgentProfile(ctx context.Context, c Caller, in AgentProfileCreateInput) (AgentProfileView, error)
+	PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, in AgentProfileAPMPatch) (AgentProfileView, error)
 }
 
 // Validation limits, the tighter of api/openapi.yaml and the schema CHECKs.
@@ -268,6 +280,9 @@ func RegisterConversations(s *Server, store ConversationStore, profiles ProfileS
 	h := &cnvHandlers{store: store, profiles: profiles, srv: s}
 	if profiles != nil {
 		s.HandleAuthed("GET /api/v1/agent-profiles", http.HandlerFunc(h.listProfiles))
+		// ADR-0030: profiles are writable by the organization's library role.
+		s.HandleAuthed("POST /api/v1/agent-profiles", http.HandlerFunc(h.createProfile))
+		s.HandleAuthed("PATCH /api/v1/agent-profiles/{profileId}", http.HandlerFunc(h.patchProfile))
 	}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.listConversations))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.createConversation))
