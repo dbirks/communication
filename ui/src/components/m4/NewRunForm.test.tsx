@@ -311,6 +311,12 @@ describe("NewRunForm — start from a GitHub issue", () => {
     expect(within(list).getByTestId("issue-row-12").textContent).toContain(
       "add() swallows negative inputs",
     );
+    // The narrow runs column used to squeeze the title out of the row; it now
+    // gets line 1 to itself, ellipsized, with the full text as a tooltip.
+    const title = within(list).getByTestId("issue-title-12");
+    expect(title.textContent).toBe("add() swallows negative inputs");
+    expect(title.getAttribute("title")).toBe("add() swallows negative inputs");
+    expect(within(list).getByTestId("issue-row-12").textContent).toContain("#12");
     expect(within(list).getByTestId("issue-labels-12").textContent).toContain("help wanted");
     expect(within(list).getByTestId("issue-age-12").textContent).toContain("3h ago");
     const link = within(list).getByTestId("issue-link-12") as HTMLAnchorElement;

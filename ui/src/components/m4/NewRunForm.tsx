@@ -766,58 +766,75 @@ interface IssueRowProps {
   onFill: () => void;
 }
 
-/** One tracker row: number, title, labels, how stale, GitHub's own link, and
- * the button that writes the issue into the declared inputs. */
+/**
+ * One tracker row, two lines: the number and the title share line 1 with the
+ * button that writes the issue into the declared inputs, and the metadata —
+ * labels, how stale, GitHub's own link, whether the body was clipped — sits on
+ * line 2. The runs column is narrow, so a single row squeezed the title out
+ * entirely; the title gets the flexible width here and ellipsizes instead of
+ * vanishing (the full text stays in the `title` attribute).
+ */
 function IssueRow({ issue, onFill }: IssueRowProps) {
   return (
     <li
-      className="flex items-center gap-2 rounded-[3px] border border-line bg-paper px-[8px] py-[4px]"
+      className="space-y-[2px] rounded-[3px] border border-line bg-paper px-[8px] py-[4px]"
       data-testid={`issue-row-${issue.number}`}
     >
-      <span className="font-mono text-[11px] text-ink-2">#{issue.number}</span>
-      <span
-        className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink"
-        title={issue.title}
-      >
-        {issue.title}
-      </span>
-      {issue.labels.length > 0 ? (
+      <div className="flex items-center gap-[6px]">
+        <span className="shrink-0 font-mono text-[11px] text-ink-2">#{issue.number}</span>
         <span
-          className="font-mono text-[10px] text-muted"
-          data-testid={`issue-labels-${issue.number}`}
+          className="min-w-0 flex-1 truncate text-[12px] leading-[17px] text-ink"
+          title={issue.title}
+          data-testid={`issue-title-${issue.number}`}
         >
-          {issue.labels.join(", ")}
+          {issue.title}
         </span>
-      ) : null}
-      <span className="font-mono text-[10px] text-faint" data-testid={`issue-age-${issue.number}`}>
-        {formatAge(issue.updated_at)} ago
-      </span>
-      {issue.body_truncated ? (
-        <span
-          className="font-mono text-[10px] text-faint"
-          title="GitHub's body was clipped to 4000 bytes"
+        <Button
+          type="button"
+          variant="ghost"
+          compact
+          className="ml-auto shrink-0"
+          onClick={onFill}
+          data-testid={`issue-use-${issue.number}`}
         >
-          body clipped
+          Use this issue
+        </Button>
+      </div>
+      <div className="flex items-center gap-[6px] font-mono text-[10px] text-muted">
+        {issue.labels.length > 0 ? (
+          <>
+            <span data-testid={`issue-labels-${issue.number}`}>{issue.labels.join(", ")}</span>
+            <span aria-hidden="true" className="text-faint">
+              ·
+            </span>
+          </>
+        ) : null}
+        <span data-testid={`issue-age-${issue.number}`} className="text-faint">
+          {formatAge(issue.updated_at)} ago
         </span>
-      ) : null}
-      <a
-        href={issue.html_url}
-        target="_blank"
-        rel="noreferrer"
-        className="font-mono text-[10.5px] text-accent-text hover:text-ink"
-        data-testid={`issue-link-${issue.number}`}
-      >
-        on GitHub
-      </a>
-      <Button
-        type="button"
-        variant="ghost"
-        compact
-        onClick={onFill}
-        data-testid={`issue-use-${issue.number}`}
-      >
-        Use this issue
-      </Button>
+        {issue.body_truncated ? (
+          <>
+            <span aria-hidden="true" className="text-faint">
+              ·
+            </span>
+            <span className="text-faint" title="GitHub's body was clipped to 4000 bytes">
+              body clipped
+            </span>
+          </>
+        ) : null}
+        <span aria-hidden="true" className="text-faint">
+          ·
+        </span>
+        <a
+          href={issue.html_url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-accent-text hover:text-ink"
+          data-testid={`issue-link-${issue.number}`}
+        >
+          on GitHub
+        </a>
+      </div>
     </li>
   );
 }

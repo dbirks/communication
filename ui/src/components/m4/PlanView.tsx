@@ -123,11 +123,32 @@ function actionsOf(step: unknown): string[] {
   return [];
 }
 
-/** Fields on a step this view does not render, kept for the collapsed block. */
+/** Fields on a step this view does not render, kept for the collapsed block.
+ * A scalar `id` is known too — the ordered list already numbers the step — so it
+ * never fills the block on its own; a non-scalar `id` stays there so nothing is
+ * dropped. */
 function stepOther(step: unknown): Record<string, unknown> {
   if (!isPlainObject(step)) return {};
   const known = new Set(["title", "actions", "done_when"]);
-  return Object.fromEntries(Object.entries(step).filter(([key]) => !known.has(key)));
+  return Object.fromEntries(
+    Object.entries(step).filter(([key, value]) => {
+      if (known.has(key)) return false;
+      if (key === "id" && isStepId(value)) return false;
+      return true;
+    }),
+  );
+}
+
+function isStepId(value: unknown): value is number | string {
+  return (typeof value === "number" && Number.isFinite(value)) || typeof value === "string";
+}
+
+/** The step's own `id` when it disagrees with its position in the list — the
+ * number printed for `1.`/`2.` already covers the ordinary case. */
+function stepIdNote(step: unknown, index: number): string | null {
+  if (!isPlainObject(step) || !isStepId(step.id)) return null;
+  const id = String(step.id);
+  return id === String(index + 1) ? null : `id ${id}`;
 }
 
 function doneWhenOf(step: unknown): string | null {
@@ -220,6 +241,7 @@ function PlanSteps({ steps }: { steps: unknown[] }) {
           const doneWhen = doneWhenOf(step);
           const other = stepOther(step);
           const otherCount = Object.keys(other).length;
+          const idNote = stepIdNote(step, index);
           return (
             <li key={index} className="flex gap-[6px]" data-testid={`plan-step-${index + 1}`}>
               <span
@@ -229,7 +251,17 @@ function PlanSteps({ steps }: { steps: unknown[] }) {
                 {index + 1}.
               </span>
               <div className="min-w-0 space-y-[3px]">
-                <p className="text-[12.5px] leading-[18px] font-semibold">{stepTitle(step)}</p>
+                <p className="text-[12.5px] leading-[18px] font-semibold">
+                  {stepTitle(step)}
+                  {idNote ? (
+                    <span
+                      className="ml-[6px] font-mono text-[10px] font-normal text-faint"
+                      data-testid={`plan-step-id-${index + 1}`}
+                    >
+                      {idNote}
+                    </span>
+                  ) : null}
+                </p>
                 {actions.length > 0 ? (
                   <ul className="space-y-[2px]" data-testid={`plan-step-actions-${index + 1}`}>
                     {actions.map((action, actionIndex) => (

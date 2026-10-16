@@ -55,6 +55,10 @@ describe("a plan served as JSON", () => {
     expect(screen.getByTestId("plan-step-done-when-1").textContent).toContain(
       "done when The paths to hello.py",
     );
+    // Each step carries only title/actions/done_when/id, so no step shows an
+    // other-fields block for its own id.
+    expect(screen.queryByTestId("plan-step-other-1")).toBeNull();
+    expect(screen.queryByTestId("plan-step-other-2")).toBeNull();
   });
 
   it("shows the risks and the acceptance criteria as lists, and the context as prose", () => {
@@ -73,6 +77,51 @@ describe("a plan served as JSON", () => {
     expect(screen.getByTestId("plan-other-json").hidden).toBe(false);
     expect(screen.getByTestId("plan-other-json").textContent).toContain('"owner": "team-a"');
     expect(screen.getByTestId("plan-goal").textContent).toBe("Ship");
+  });
+
+  it("does not treat a step's id as an unknown field", () => {
+    render(
+      <PlanView
+        text={JSON.stringify({
+          steps: [
+            {
+              title: "Find the file",
+              actions: ["List the repo"],
+              done_when: "the path is known",
+              id: 1,
+            },
+          ],
+        })}
+      />,
+    );
+    // The ordered list already numbers this step, so `id` renders nothing extra.
+    expect(screen.queryByTestId("plan-step-other-1")).toBeNull();
+    expect(screen.queryByTestId("plan-step-id-1")).toBeNull();
+    expect(screen.getByTestId("plan-step-1").textContent).toContain("Find the file");
+  });
+
+  it("shows a step id that disagrees with its list position", () => {
+    render(<PlanView text={JSON.stringify({ steps: [{ title: "Find the file", id: 7 }] })} />);
+    expect(screen.getByTestId("plan-step-id-1").textContent).toBe("id 7");
+    expect(screen.queryByTestId("plan-step-other-1")).toBeNull();
+  });
+
+  it("keeps an id the view cannot read as a number in the other-fields block", () => {
+    render(
+      <PlanView text={JSON.stringify({ steps: [{ title: "Find the file", id: { ref: 7 } }] })} />,
+    );
+    expect(screen.getByTestId("plan-step-other-1").textContent).toContain("other fields (1)");
+    expect(screen.getByTestId("plan-step-other-1-json").textContent).toContain('"ref": 7');
+  });
+
+  it("leaves other unknown step fields in the step's other-fields block", () => {
+    render(
+      <PlanView
+        text={JSON.stringify({ steps: [{ title: "Find the file", id: 1, owner: "team-a" }] })}
+      />,
+    );
+    expect(screen.getByTestId("plan-step-other-1").textContent).toContain("other fields (1)");
+    expect(screen.getByTestId("plan-step-other-1-json").textContent).toContain('"owner": "team-a"');
   });
 });
 
