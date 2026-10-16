@@ -174,3 +174,197 @@ of a per-resource refusal, and an actor outside the caller's readable membership
 - Updates: Flux image automation elects the `main` tag and rewrites the pinned `@sha256:` digest in
   `communication.yaml` as a git commit, so a green push to main is a real rollout (`kubectl -n flux-system
   get imagepolicy,imageupdateautomation` to watch it; `communication-worker` is a separate policy).
+
+## 5. Verify the run (read-only evidence)
+
+Everything below is a read. Nothing here writes, restarts or deletes anything, and nothing here can
+print a credential: the commands name resources and **env variable names** only, never Secret
+objects, Secret values, `.env` files or kubeconfig contents. Never run `kubectl get secret`,
+`describe secret`, `-o yaml` on a Secret, or `logs | grep` for anything that could match a value —
+the session cookie (`communication_session`, `internal/api/auth/config.go:25`) is a credential too,
+so copy URLs, never headers.
+
+**Namespace: `default`, not `communication`.** Every object in
+`~/dev/home-k8s/apps/communication/communication.yaml` names `namespace: default` (the worker
+Deployment is `communication.yaml:349-353`, serve `:116-119`, Postgres `:45-48`), so
+`-n communication` finds nothing. Labels are
+`app: communication`, `app: communication-worker`, `app: communication-postgres` (lines 53, 123, 358).
+
+### a. The pod is up and the image is the one Flux pinned
+
+```bash
+kubectl -n default get pods,deploy \
+  -l 'app in (communication,communication-worker,communication-postgres)' -o wide
+# the worker container's pinned image digest, no Secret material in this read
+kubectl -n default get deploy communication-worker \
+  -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}'
+# env NAMES only (never .value), to confirm the worker's own configuration
+kubectl -n default get deploy communication-worker \
+  -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\n"}{range .env[*]}{"  "}{.name}{"\n"}{end}{end}'
+# what Flux elected, to compare against the digest above
+kubectl -n flux-system get imagepolicy communication-worker -o jsonpath='{.status.latestImage}{"\n"}'
+```
+
+What "passing" looks like: `deploy/communication-worker` `READY 1/1` and its pod `1/1 Running`
+(`worker` is the pod's only regular container — `keyring` and `claude-config` are init
+containers and do not count toward `READY`; the serve pod reads `1/1` the same way, its init
+containers being `migrate` and `keyring`); the worker image is
+`ghcr.io/dbirks/communication-worker:main@sha256:<digest>` — the `communication-worker` image is
+the only one that carries the binary + Node ACP adapters + nono + APM, and a worker pod pointing
+at the plain `:main` image cannot run agent turns (§ 1). The env-name list must include
+`COMMUNICATION_SANDBOX_ENFORCEMENT` (set `required`, manifest line 457), `COMMUNICATION_WORKER_NAME`
+(taken from `metadata.name`, i.e. the pod name — line 447), `COMMUNICATION_MODEL_CHAT_BASE_URL` and
+`COMMUNICATION_MODEL_CHAT_MODELS` (lines 466-467), `CLAUDE_CONFIG_DIR` (line 470) — and it must NOT
+include `COMMUNICATION_AGENT_EGRESS_ALLOW`, which the manifest does not set, so the agent-turn
+allowlist is the shipped default `api.anthropic.com` (`internal/sandbox/nono/egress.go:68`, read by
+`internal/worker/agentturn.go:263-279`).
+
+The init container that decides whether `agent.acp` is live at all prints its own verdict (a shell
+`echo` in the manifest, not a Go log string — `communication.yaml:425,427`):
+
+```bash
+kubectl -n default logs deploy/communication-worker -c claude-config
+# either:  claude-config: seeded harness credentials from secret communication-worker-claude
+#  or:     claude-config: secret communication-worker-claude absent; agent.acp stays disabled
+```
+
+### b. The worker claimed the run's attempts — the strings that are really logged
+
+Worker logs are JSON (`slog.NewJSONHandler` on stderr, `cmd/communication/worker.go:382`), so grep
+the `msg` field, not loose prose:
+
+```bash
+kubectl -n default logs deploy/communication-worker --since=1h \
+  | grep -E '"msg":"(worker registered|attempt loop starting|sandbox enforcement observed before serving turns|run workspace prepared|model\.chat egress is configured)"'
+```
+
+| observed `msg` | what it proves | source |
+| --- | --- | --- |
+| `worker registered` | the row `GET /api/v1/workers` answers; carries `worker`, `worker_id`, `hostname`, `version` | `internal/worker/worker.go:203-206` |
+| `attempt loop starting` | the claim loop is running; carries `worker_id` and `capacity` (2 here) | `internal/worker/attemptloop.go:224-227` |
+| `sandbox enforcement observed before serving turns` | nono passed the startup probe + self-test: `backend` (`nono`, `internal/sandbox/nono/launcher.go:36-37`; `internal/sandbox/nono/selftest.go:62`), `backend_version`, `filesystem_live: true` | `cmd/communication/worker.go:1009-1012` |
+| `run workspace prepared` | **the per-attempt claim evidence** (§ 4 step 3): `run_id`, `workspace_id`, `worker_id`, `volume_id`, `repos` | `cmd/communication/worker.go:829-831` |
+| `model.chat egress is configured against this endpoint (…)` | the `model.chat` endpoint is wired; names only the host, path, allowlist and `api_key_set: true|false` — never a key | `cmd/communication/worker.go:1158-1162` |
+
+`run workspace prepared` is the line that ties *this* pod to *that* run: every wired kind runs
+behind the run-workspace preparer (`internal/worker/runworkspace.go:71-89`, wired for
+`process.exec`, `agent.acp` and `artifact.publish` at `cmd/communication/worker.go:518,523,542`
+and for `model.chat` at `:563-567`), so an
+attempt of the run that reached the node body logged it. Its counterpart on a refusal is
+`run workspace preparation refused the attempt` (`internal/worker/runworkspace.go:83-86`).
+
+Then grep for the failures that mean the run did **not** execute as claimed — each must be empty for
+a clean run:
+
+```bash
+kubectl -n default logs deploy/communication-worker --since=1h \
+  | grep -E '"msg":"(attempt claim failed|begin attempt failed|attempt lease lost.*|attempt terminal write (failed|rejected.*)|run workspace preparation refused the attempt|egress audit unavailable.*|UNSANDBOXED.*|unsandboxed execution.*)"'
+```
+
+`attempt claim failed` — `internal/worker/attemptloop.go:240`; `begin attempt failed` —
+`internal/worker/attemptloop.go:399`; lease-loss lines — `internal/worker/attemptloop.go:426,568`;
+workspace refusal — `internal/worker/runworkspace.go:83`; the egress-audit read failing (which
+downgrades the run's own network claim to unenforced) — `internal/worker/egressaudit.go:133-135`;
+and the two permissive-dev lines that this `required` worker must never print —
+`internal/sandbox/nono/launcher.go:314` and `:376`.
+
+**One honest limit:** there is no per-attempt log line naming nono. Sandbox enforcement per
+attempt is journalled, not logged — `sandbox.verified` is appended for `process.exec` at
+`internal/worker/procexec.go:611` and for `agent.acp` at `internal/worker/agentturn.go:992`, and
+`sandbox.egress_observed` only on the attempt path at `internal/worker/egressaudit.go:143-153`. The
+startup line above is the only place the word reaches the logs. So read (c) — the per-attempt
+`sandbox.verified` row is the evidence, and a `sandbox.enforcement_failed` row names the stage that
+refused (`internal/worker/procexec.go:599-610`).
+
+### c. The API reads that pin the attempts to this worker
+
+The id that ties everything together is the worker's: `GET /api/v1/workers` returns
+`{id, name, hostname, version, status, started_at, last_heartbeat_at}`
+(`internal/api/workers.go:16-23`, route mounted at `:38`), and `name` is the **pod name**
+(`COMMUNICATION_WORKER_NAME` comes from `fieldRef metadata.name`, `communication.yaml:447`) — so the
+`kubectl` line in (a) and the `worker_id` in every journal row are the same object. Every read
+below is a plain `GET` (CSRF passes GET/HEAD untouched, `internal/api/middleware.go:216-220`), so
+either open the URL in the signed-in browser tab or read the same payloads off the UI. Do not print
+or paste the `communication_session` cookie value.
+
+```
+GET /api/v1/workers                             # the worker's id, and status=online
+GET /api/v1/system/sandbox                      # per worker: backend nono, verified, enforcement
+GET /api/v1/runs/{runId}                        # the run's terminal status
+GET /api/v1/runs/{runId}/nodes                  # every node: kind, status, attempt_count
+GET /api/v1/runs/{runId}/nodes/{nodeExecutionId}# attempts[] + the boundary checkpoint
+GET /api/v1/runs/{runId}/checkpoints            # attempt_id ↔ worker_id, per boundary
+```
+
+- `GET /api/v1/system/sandbox` (`internal/api/sandbox.go:95`, view types `:71-90`) is the fleet
+  answer to "was nono real here": `workers[].backend`, `backend_version`, `enforcement`,
+  `verified`, plus `pinned_backend_version` and `policy_digest`. It is the `/ops` page's sandbox
+  panel (`ui/src/components/Sandbox.tsx:123-158`).
+- The **attempt** read deliberately carries **no** worker id: `AttemptView` has no
+  `worker_id`/`fencing_token`/`lease_expires_at` field at all ("leak is unrepresentable, not merely
+  filtered" — `internal/api/runs.go:246-274`, comment at `:247-250`; route `:568`, handler `:1034`).
+  The worker's identity per attempt therefore comes from two places that *do* carry it:
+  `GET /api/v1/runs/{runId}/checkpoints` (`internal/api/runs.go:563`, view
+  `RunCheckpointView.WorkerID` at `:291`, store read `internal/store/postgres/attempts.go:788-791`)
+  and the journal — `node.attempt.started` / `.completed` / `.failed` are appended with
+  `Actor.Kind = "worker"` and `Actor.ID = <worker id>`
+  (`internal/store/postgres/attempt_worker.go:489,598,682,706,734,760`; envelope `Actor` at
+  `internal/events/events.go:60-80`). So "the cluster worker ran this attempt" is proven by the
+  checkpoint row's `worker_id` equal to (a)'s worker id, plus the attempt's `status`/`finished_at`
+  and the `node.attempt.*` actor.
+- Terminal statuses to expect per attempt: `succeeded` (with `node.attempt.completed`), or
+  `failed` with a named `error_class` and a bounded (≤512 B, redaction-scanned) `detail`
+  (`internal/api/runs.go:251-274`); `interrupted` means the worker died mid-node and the outcome is
+  unknown, and the run page says exactly that (`ui/src/components/m4/AttemptDetail.tsx:119-126`).
+- `sandbox.verified` is the per-attempt enforcement row (there is no log line for it — see (b)):
+  payload members `project_id, turn_id, workspace_id, worker_id, policy_digest, backend,
+  backend_version, af_unix_mediation, network_enforced, network, grants, commit_granted, verified`
+  (`internal/events/events.go:732-749`). It is appended for `process.exec` at
+  `internal/worker/procexec.go:611` (payload builder `:615-631`) and for `agent.acp` at
+  `internal/worker/agentturn.go:992`. The run's event stream is
+  `GET /api/v1/runs/{runId}/events` (`internal/api/runs.go:569`, handler `:1063`); for an `agent.acp`
+  turn there is also `GET /api/v1/turns/{turnId}/sandbox` (`internal/api/sandbox.go:94`).
+  Read the two egress fields exactly as they are: for a `process.exec` node `network` is `"denied"`
+  with `network_enforced: true` (the command profile launches with `--block-net`,
+  `internal/worker/procexec.go:584`, reported at `internal/sandbox/nono/egress.go:305-307`); for an
+  `agent.acp` node an allowlist that was never *exercised* reports `network: "open"` +
+  `network_enforced: false` by construction, and `allowlisted:<hosts>` only once that run's own
+  `nono audit show` saw a refusal (`internal/sandbox/nono/egress.go:285-316`, § 3 above). A green
+  run with `open / false` on the agent node is the honest expected shape, not a failure.
+
+**What the run page shows** (`/projects/<id>/runs/<runId>`, `ui/src/App.tsx:120`): the run header
+with its status chip, the per-scope stage strip, the node panes with one `ATTEMPT <n>` panel each —
+status chip, `error class` chip and the bounded `detail` text
+(`ui/src/components/m4/AttemptDetail.tsx:101-113`) — and under the newest attempt the checkpoint
+card: `inputs`/`outputs` digests, `volume` (the same `volume_id` as the row), per-repo
+`base → head` commits and `saved` time (`ui/src/components/m4/AttemptDetail.tsx:513-569`), under
+which it says plainly that "a retry inherits this boundary, not the interrupted process". A run the
+worker cannot take shows the chip `waiting for its worker`
+(`ui/src/pages/RunInspector.tsx:343-346`); an `agent.acp` attempt also gets a live work pane under
+its card (`ui/src/pages/RunInspector.tsx:1171-1175`).
+
+### d. "End to end with Claude agent steps" vs "model.chat only"
+
+| | no `communication-worker-claude` Secret (today) | Secret created |
+| --- | --- | --- |
+| `process.exec` (`survey`, `scan`) | cluster worker, inside nono, `--block-net`, `sandbox.verified` says `denied`/`true` | same |
+| `model.chat` (`plan`, `summarize`) | cluster worker, one HTTPS completion to `llm-collective.e-gineering.com` (the kind is only registered when the base URL is set, `cmd/communication/worker.go:563-567,1137-1139`) | same |
+| `artifact.publish` (`publish_plan`, `publish_report`) | cluster worker, bytes into `/artifacts` (the `communication-artifacts` PVC), read back by serve | same |
+| `human.approval` (`approve`) and `condition`/`until`/`for_each`/`pipeline.invoke` | **control plane**, no worker lease at all — the run parks `waiting_human` and the decision happens on `/inbox` | same |
+| `agent.acp` | **runs on the cluster worker and fails closed**: the kind is wired (`cmd/communication/worker.go:523-526`), so the attempt is claimed and refused inside `credentialAuth`, whose `detail` names the launcher's credential directory as unusable (`internal/worker/agentturn.go:1323-1330`) with `error_class: infra`; the `claude-config` init line says `agent.acp stays disabled` | **runs on the cluster worker as your Claude account**: one prompt turn per attempt (`internal/worker/agentturn.go:597-620`) under the allowlisted agent-turn profile (`internal/worker/agentturn.go:263-279`, default host `internal/sandbox/nono/egress.go:68`), journalling `agent.session.connected`, `sandbox.verified` and — after the child exits — `sandbox.egress_observed` (`internal/worker/egressaudit.go:143-152`) |
+
+So the click-through in § 2 is end to end **with** the cluster worker today (claim → workspace →
+sandboxed command → model call → gate → artifact), but it is *not* an agent turn: with no Secret no
+`agent.acp` node runs any Claude work, and both `docs/samples/home/` pipelines deliberately contain
+no `agent.acp` node at all (`docs/samples/home/README.md`). The Claude-shaped run adds three things
+to the same checks: the `run workspace prepared` line plus a `node.attempt.*` actor for the
+`agent.acp` node, a `sandbox.verified` row whose `network` reads `open` (`false`) or
+`allowlisted:<hosts>` (`true`) as explained above, and `sandbox.egress_observed` with
+`denied_hosts` naming only hostnames. The transcript itself is the `agent.acp` attempt's work pane
+and conversation (`ui/src/pages/RunInspector.tsx:1171-1175`), not a log.
+
+Two standing cautions while reading: an unattended `permission_mode: ask` prompt is cancelled, not
+answered, so an agent step that needs a write fails its run (§ 3), and every `agent.acp` run on this
+worker executes as the single mounted Claude login with `/harness/claude` as shared mutable state
+(ADR-0019 D4, § 1) — it is not credential isolation. And nothing in this section prints a Secret:
+if a command you typed starts echoing values, stop and re-read the manifest by name instead.
