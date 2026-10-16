@@ -1,6 +1,8 @@
 package compiler_test
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -467,6 +469,117 @@ func TestUntilWithoutPassWhenIsRefused(t *testing.T) {
 		t.Errorf("message %q does not name the missing key", got.Message)
 	}
 	if string(got.InstanceLocation) != "/spec/nodes/0/config" {
+		t.Errorf("location = %s", got.InstanceLocation)
+	}
+}
+
+// TestSelfInvokeIsRefusedAtValidate is contract § 7 C8f's first arm: a pipeline
+// whose invoke names its own metadata.name cannot terminate — every pass arms
+// another run of itself — so validate says child_depth_exceeded rather than
+// publishing an unschedulable graph and letting the run die on
+// runs_depth_check. The refusal is document-local (validate carries only the
+// bytes), so it must not wait for InvokeDepthCheck or the assignment ceilings,
+// which the validate route does not have.
+func TestSelfInvokeIsRefusedAtValidate(t *testing.T) {
+	// Control: the SAME legal graph, whose name is `fan`, invoking a different
+	// published pipeline. A rule that fired on any invoke would break this.
+	if _, d := compileValid(t, forEchoDoc, compiler.Options{}); !d.Valid() {
+		t.Fatalf("an invoke of another pipeline must stay valid: %v", codes(d))
+	}
+
+	self := strings.Replace(forEchoDoc, "  name: fan\n", "  name: issue-implementation\n", 1)
+	_, d := compileValid(t, self, compiler.Options{})
+	if d.Valid() {
+		t.Fatal("validate accepted a pipeline that invokes itself")
+	}
+	got := firstCode(t, d, diag.CodeChildDepthExceeded)
+	if got == nil {
+		t.Fatalf("want child_depth_exceeded, got %v", codes(d))
+	}
+	if got.Source != diag.SourceCompiler {
+		t.Errorf("source = %s, want compiler", got.Source)
+	}
+	if string(got.InstanceLocation) != "/spec/nodes/1/config/body/nodes/0/config/pipeline" {
+		t.Errorf("location = %s, want the invoke's own pipeline field", got.InstanceLocation)
+	}
+	if !strings.Contains(got.Message, "issue-implementation") {
+		t.Errorf("message %q does not name the target it refused", got.Message)
+	}
+
+	// An expression target is unresolvable at publish (§ 5.5), so the rule
+	// stays quiet rather than inventing a self-reference.
+	exprTarget := strings.Replace(
+		strings.Replace(forEchoDoc, "  name: fan\n", "  name: issue-implementation\n", 1),
+		"pipeline: issue-implementation", "pipeline: '${{ inputs.goal }}'", 1)
+	if _, d := compileValid(t, exprTarget, compiler.Options{}); firstCode(t, d, diag.CodeChildDepthExceeded) != nil {
+		t.Errorf("an expression target was called a self-invoke: %v", codes(d))
+	}
+}
+
+// selfInvokeNode is C8f's probe body: a for_each whose only body node invokes
+// the document's own pipeline name — the same splice the e2e driver performs on
+// the § 7.0 seed header.
+const selfInvokeNode = `  - id: fan
+    kind: for_each
+    config:
+      items: '${{ inputs.goal }}'
+      maxConcurrency: 1
+      onChildFailure: collect_and_continue
+      body:
+        nodes:
+        - id: invoke
+          kind: pipeline.invoke
+          timeoutSeconds: 60
+          config:
+            pipeline: 'issue-implementation'
+            inputs:
+              number: '1'
+`
+
+const seedPipelineYAML = "../../../docs/compatibility/probes/m4/pipeline.yaml"
+
+// TestSeedHeaderSelfInvokeProbeIsRefused runs C8f's probe over the REAL seed
+// document: take document 1's published header, rename it to the fan-out
+// child's name, and splice the self-invoke body. The published set itself must
+// stay valid; the self-invoke must not be. This is the offline half of the live
+// gate — the lab only ever sees the POSTed bytes.
+func TestSeedHeaderSelfInvokeProbeIsRefused(t *testing.T) {
+	raw, err := os.ReadFile(seedPipelineYAML)
+	if err != nil {
+		t.Skipf("seed pipeline set unreadable: %v", err)
+	}
+	doc1 := strings.Split(string(raw), "\n---\n")[0]
+	if !strings.Contains(doc1, "\n  nodes:") {
+		t.Skip("document 1 has no nodes block")
+	}
+	const policies = "\n  policies:\n    maxConcurrentNodes: 1\n    maxDurationSeconds: 3600\n" +
+		"    maxNodeExecutions: 50\n    maxChildDepth: 0\n    workspaceMode: worktree\n" +
+		"    cancelPolicy: cascade\n"
+	// build is c13_doc: the published header, only name/policies/nodes swapped.
+	build := func(name, nodes string) string {
+		head := doc1[:strings.Index(doc1, "\n  nodes:")]
+		if j := strings.Index(head, "\n  policies:"); j >= 0 {
+			head = head[:j]
+		}
+		head = regexp.MustCompile(`(?m)^  name: .*$`).ReplaceAllString(head, "  name: "+name)
+		return head + policies + "  nodes:\n" + nodes
+	}
+	// Control: the untouched published document 1 compiles clean.
+	if _, d := compileValid(t, doc1, compiler.Options{}); !d.Valid() {
+		for _, x := range d {
+			t.Logf("%s %s %s", x.Code, x.InstanceLocation, x.Message)
+		}
+		t.Fatalf("the published seed document must stay valid: %d diagnostics", len(d))
+	}
+	_, d := compileValid(t, build("issue-implementation", selfInvokeNode), compiler.Options{})
+	if d.Valid() {
+		t.Fatal("validate accepted a pipeline named issue-implementation that invokes issue-implementation")
+	}
+	got := firstCode(t, d, diag.CodeChildDepthExceeded)
+	if got == nil {
+		t.Fatalf("want child_depth_exceeded, got %v", codes(d))
+	}
+	if got.InstanceLocation.String() != "/spec/nodes/0/config/body/nodes/0/config/pipeline" {
 		t.Errorf("location = %s", got.InstanceLocation)
 	}
 }

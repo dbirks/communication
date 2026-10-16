@@ -300,6 +300,18 @@ func (w *walk) approvalPolicy(s *scope, id string, cfg map[string]canonValue, at
 // degenerate case (ADR-0023 § 10).
 func (w *walk) invokePolicy(s *scope, id string, cfg map[string]canonValue, at ptr.Pointer, pn *Node) {
 	target, _ := cfg["pipeline"].(string)
+	// Contract § 7 C8f: a pipeline that invokes itself is refused at validate
+	// with child_depth_exceeded. Nothing about the document bounds its own
+	// recursion — every pass would arm another run of itself — so the refusal
+	// does not wait for policies.maxChildDepth or InvokeDepthCheck: the target
+	// that names this document's own metadata.name IS this document. (A target
+	// written as a pipeline uuid is invisible here: validate carries only the
+	// document, so that spelling is caught at run time by runs_depth_check.)
+	if self := w.plan.Document.Name; target != "" && self != "" &&
+		!strings.Contains(target, "${{") && target == self {
+		w.err(at.Child("pipeline"), diag.CodeChildDepthExceeded,
+			"pipeline.invoke %q targets %q, which is the pipeline being published: a self-invoking definition exceeds the engine depth ceiling (ADR-0023 § 7; contract § 7 C8f)", id, target)
+	}
 	if w.opts.InvokeDepthCheck {
 		depth := len(s.path) + 1
 		if w.plan.Policies.MaxChildDepth < depth {
