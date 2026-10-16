@@ -104,8 +104,8 @@ type profileGroups struct {
 }
 
 type profileFS struct {
-	// ReadFile is the read-only *single file* list. It exists for one entry
-	// and one reason: probe C-GITCFG.
+	// ReadFile is the read-only *single file* list: system files that exist
+	// but must not be writable inside the sandbox (probes C-GITCFG, C-BASHRC).
 	ReadFile  []string `json:"read_file"`
 	WriteFile []string `json:"write_file"`
 	Allow     []string `json:"allow"`
@@ -129,7 +129,7 @@ const policyExternal = "external"
 // file therefore carries the static shape — mediation, policy, temp-group
 // exclusion and the device re-grants that exclusion requires — and every
 // per-workspace path is a flag.
-const GrantModelNote = "static policy in the profile file (mediation, the Landlock pin, the /tmp and host-conditional group exclusions, the device re-grants and the read-only system git config file); per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
+const GrantModelNote = "static policy in the profile file (mediation, the Landlock pin, the /tmp and host-conditional group exclusions, the device re-grants and the read-only system config and shell startup files); per-run grants as CLI flags, asserted by their [user] tag in the verbose dry-run"
 
 // profileVersion is bumped when the body below changes, so a recorded
 // policy_digest identifies a policy revision and not just a filename.
@@ -137,7 +137,9 @@ const GrantModelNote = "static policy in the profile file (mediation, the Landlo
 // necessary (probe C-HOSTGRP).
 // 3.2.0 adds the read-only system git config file CI run 38759216292 proved
 // git needs wherever that file exists (probe C-GITCFG).
-const profileVersion = "3.2.0"
+// 3.3.0 adds the read-only shell startup files that made every shell step of
+// a sandboxed pipeline agent fail (probe C-BASHRC, ADR-0033).
+const profileVersion = "3.3.0"
 
 // systemConfigReads are single system-scoped files the toolchain must be able
 // to *read*, granted read-only by the profile file rather than as per-run flags
@@ -159,9 +161,27 @@ const profileVersion = "3.2.0"
 // `system_read_linux_core` group names a fixed list of /etc files and
 // /etc/gitconfig is not on it.
 //
+// The same class of failure has a second member, measured on 2026-10-16 in
+// the worker image (probe C-BASHRC, ADR-0033): a pipeline agent attempt whose
+// every Bash step reported failure, because the agent harness starts bash
+// with its system startup files and Debian's bash treats a present-but-
+// unreadable one as an error it prints on every invocation:
+//
+//	/bin/bash: /etc/bash.bashrc: Permission denied   (interactive shells)
+//	/bin/bash: /etc/profile: Permission denied       (login shells)
+//
+// /etc/bash.bashrc and /etc/profile are world-readable startup files; the
+// `system_read_linux_core` group names a fixed /etc list that contains
+// neither (observed: `nono profile groups system_read_linux_core` lists
+// passwd/group/nsswitch.conf/hosts/…, not the shell's files — the other
+// candidates bash reads, nsswitch.conf and passwd, are already in that
+// group, and /etc/inputrc does not exist in the pinned worker image, where
+// a missing file is skipped silently). Granting them changed nothing else:
+// /etc/shadow stayed denied and /etc stayed unlistable-by-grant.
+//
 // The grant is the exact file, never the directory: `--read /etc` would hand
 // the agent every system configuration file to read.
-var systemConfigReads = []string{"/etc/gitconfig"}
+var systemConfigReads = []string{"/etc/gitconfig", "/etc/bash.bashrc", "/etc/profile"}
 
 // SystemConfigReads returns the profile's read-only single-file grants, so a
 // test can assert the resolved rule against the contract instead of restating
@@ -384,7 +404,7 @@ func (p *Profile) AssertOwnBytes() error {
 	}
 	for _, f := range systemConfigReads {
 		if !containsString(body.FS.ReadFile, f) {
-			return fmt.Errorf("sandbox: profile %s does not grant read access to %s: git treats a system config file that exists but is unreadable as fatal (`fatal: unknown error occurred while reading the configuration files`, exit 128) rather than skipping it the way it skips an absent one, so a host that ships that file fails every sandboxed git command (probe C-GITCFG, CI run 38759216292)", p.Path, f)
+			return fmt.Errorf("sandbox: profile %s does not grant read access to %s: system tools treat a file that exists but cannot be read as an error, not as an absent file — git exits 128 on an unreadable /etc/gitconfig (probe C-GITCFG, CI run 38759216292) and bash prints `/etc/bash.bashrc: Permission denied` on every shell it starts when its system startup file is unreadable, which failed every shell step of a sandboxed pipeline agent (probe C-BASHRC, ADR-0033). A host that ships the file fails every sandboxed command that reads it", p.Path, f)
 		}
 	}
 	for _, f := range body.FS.ReadFile {

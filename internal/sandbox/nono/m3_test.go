@@ -762,7 +762,7 @@ func TestSandboxDeniesTheSystemGitConfigWithoutTheGrant(t *testing.T) {
 	if err := newLabNonoWorks(t, l); err != nil {
 		t.Skipf("nono cannot enforce here: %v", err)
 	}
-	for _, path := range nono.SystemConfigReads() {
+	for i, path := range nono.SystemConfigReads() {
 		if _, err := os.Stat(path); err != nil {
 			t.Logf("%s does not exist on this host (%v): the control has nothing to deny", path, err)
 			continue
@@ -784,7 +784,10 @@ func TestSandboxDeniesTheSystemGitConfigWithoutTheGrant(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		path0 := filepath.Join(l.root, "no-system-config-read.json")
+		// One stripped policy per path: the read list carries several files
+		// since ADR-0033, and a reused name would hit the sealed 0444 bytes of
+		// the previous iteration.
+		path0 := filepath.Join(l.root, fmt.Sprintf("no-system-config-read-%d.json", i))
 		if err := os.WriteFile(path0, append(stripped, '\n'), 0o444); err != nil {
 			t.Fatal(err)
 		}
@@ -1060,4 +1063,101 @@ func TestVerifyRefusesAPathNonoDrops(t *testing.T) {
 		t.Fatal("Verify accepted a grant set containing a path nono drops with a WARN; N-d is not asserting the resolved set")
 	}
 	t.Logf("correctly refused: %v", err)
+}
+
+// TestShellStartupFilesAreReadableInsideTheSandbox is probe C-BASHRC's
+// regression (ADR-0033). A sandboxed pipeline agent attempt reported every
+// Bash step as failed because the agent harness starts bash through its
+// system startup files and Debian's bash prints
+//
+//	/bin/bash: /etc/bash.bashrc: Permission denied   (interactive shells)
+//	/bin/bash: /etc/profile: Permission denied       (login shells)
+//
+// on every invocation when they exist but the ruleset cannot read them. The
+// shipped policy must let an interactive and a login bash start with no
+// startup-file error in the output; the stripped control policy must still
+// produce the error, so the passing case measures the grant and not a host
+// where bash never looks. Unlike C-GITCFG there is no absent-file excuse
+// path: both files exist in the pinned worker image, and a lab host without
+// /etc/bash.bashrc says so instead of passing vacuously.
+func TestShellStartupFilesAreReadableInsideTheSandbox(t *testing.T) {
+	l := newLab(t)
+	if err := newLabNonoWorks(t, l); err != nil {
+		t.Skipf("nono cannot enforce here: %v", err)
+	}
+	for _, f := range []string{"/etc/bash.bashrc", "/etc/profile"} {
+		if _, err := os.Stat(f); err != nil {
+			t.Logf("%s does not exist on this host (%v): bash skips an absent startup file silently, so there is nothing to grant here — the worker image (debian trixie) ships both files, which is where the failure was observed", f, err)
+			return
+		}
+	}
+	prof, err := nono.WriteProfile(l.profileDir(), nono.ProfileAgentTurn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prof.AssertOwnBytes(); err != nil {
+		t.Fatalf("the shipped profile does not carry the shell startup reads: %v", err)
+	}
+	launch := &nono.Launcher{Binary: nonobin(), Home: l.launcher}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"interactive", []string{"-i", "-c", "echo SANDBOXED"}},
+		{"login", []string{"-l", "-c", "echo SANDBOXED"}},
+	} {
+		spec := nono.LaunchSpec{
+			Profile: prof, Plan: l.plan(t), LauncherHome: l.launcher,
+			AdapterPath: "/bin/bash", AdapterArgs: tc.args,
+			AdapterEnv: []string{"PATH=/usr/local/bin:/usr/bin:/bin"},
+		}
+		h, _, err := launch.LaunchPlan(context.Background(), spec)
+		if err != nil {
+			t.Fatalf("%s launch: %v", tc.name, err)
+		}
+		_ = h.Wait()
+		got := captured(h)
+		if !strings.Contains(got, "SANDBOXED") {
+			t.Errorf("%s bash did not run the command under the shipped profile: %s", tc.name, got)
+		}
+		if strings.Contains(got, "Permission denied") {
+			t.Errorf("%s bash hit a startup-file denial under the shipped profile (probe C-BASHRC: every shell step of an agent turn looked failed): %s", tc.name, got)
+		}
+		t.Logf("%s bash under the shipped profile: %s", tc.name, strings.Join(strings.Fields(got), " "))
+	}
+
+	// The control: the same interactive bash under the same policy with
+	// read_file stripped (launched past AssertOwnBytes by exec'ing nono
+	// directly, exactly as TestSandboxDeniesTheSystemGitConfigWithoutTheGrant
+	// does) must still print the denial. If it does not, this host's bash
+	// never reads the startup file and the assertion above proves nothing.
+	data, err := os.ReadFile(prof.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatal(err)
+	}
+	body["filesystem"].(map[string]any)["read_file"] = []any{}
+	stripped, err := json.MarshalIndent(body, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path0 := filepath.Join(l.root, "no-shell-startup-read.json")
+	if err := os.WriteFile(path0, append(stripped, '\n'), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	args := append([]string{"run", "-s", "-p", path0}, nono.GrantFlags(l.plan(t))...)
+	args = append(args, "--", "env", "HOME="+l.prep.Layout.Home, "/bin/bash", "-i", "-c", "echo SANDBOXED")
+	cmd := exec.Command(nonobin(), args...) //nolint:gosec // test argv
+	cmd.Dir = l.prep.Repos[0].CheckoutPath
+	cmd.Env = append(os.Environ(), "HOME="+l.launcher)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+	if !strings.Contains(got, "/etc/bash.bashrc: Permission denied") {
+		t.Errorf("negative control is vacuous: an interactive bash under a read_file-stripped policy did not report the startup denial (observed: %s)", strings.Join(strings.Fields(got), " "))
+	} else {
+		t.Logf("negative control confirms the denial without the grant: %s", strings.Join(strings.Fields(got), " "))
+	}
 }

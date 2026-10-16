@@ -125,6 +125,75 @@ spike may not use. Untested, not assumed.
 * `bwrap` (bubblewrap) is present on this host and is the ADR-0003 alternative B
   for a later comparison run. **It was not tested in this spike.**
 
+## C-BASHRC addendum (2026-10-16): shell startup files under the agent profile
+
+A pipeline agent attempt reported every Bash step failed
+(`/bin/bash: /etc/bash.bashrc: Permission denied`). Reproduced in
+`communication-worker:dev` (`nono 0.80.0`) with the exact profile bytes
+`WriteProfile` builds for `communication-agent`, one `--allow` workspace HOME,
+launcher HOME outside every grant. ADR-0033 is the decision; the grants are
+`filesystem.read_file` entries, never `--read` (nono refuses a single file on
+`--read`: "CLI path '/etc/bash.bashrc' is not a directory. Use --allow-file
+for single files.").
+
+| Environment | before (profile 3.2.0) | after (profile 3.3.0) |
+| --- | --- | --- |
+| worker image, `/bin/bash -i` via stdin | `bash: /etc/bash.bashrc: Permission denied` | no denial; prompt + `hi` |
+| worker image, `/bin/bash -lc 'echo hi'` | `bash: /etc/profile: Permission denied` → `hi` | `hi` |
+| worker image, `BASH_ENV=/etc/bash.bashrc /bin/bash -c 'echo hi'` | `/bin/bash: /etc/bash.bashrc: Permission denied` → `hi` | `hi` |
+| worker image, `cat /etc/shadow` | denied, exit 1 | denied, exit 1 (unchanged) |
+| worker image, `tee -a /etc/bash.bashrc` | denied, exit 1 | denied, exit 1 (read-only holds) |
+
+Before (interactive; the two job-control lines are pty artifacts, reproduced
+unsandboxed in the same image):
+
+```
+$ printf "echo hi\n" | HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home /bin/bash -i
+bash: cannot set terminal process group (1): Inappropriate ioctl for device
+bash: no job control in this shell
+bash: /etc/bash.bashrc: Permission denied
+bash-5.2$ echo hi
+hi
+bash-5.2$ exit
+exit=0
+$ HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home /bin/bash -lc "echo hi"
+/bin/bash: /etc/profile: Permission denied
+hi
+exit=0
+```
+
+After (same argv, regenerated profile):
+
+```
+$ printf "echo hi\n" | HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home /bin/bash -i
+bash: cannot set terminal process group (1): Inappropriate ioctl for device
+bash: no job control in this shell
+worker@a3e1efde9688:/$ echo hi
+hi
+worker@a3e1efde9688:/$ exit
+exit=0
+$ HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home /bin/bash -lc "echo hi"
+hi
+exit=0
+$ HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home cat /etc/shadow
+cat: /etc/shadow: Permission denied
+exit=1
+$ HOME=/tmp/lhome nono run -s -p communication-agent.json --allow /tmp/work/home -- env HOME=/tmp/work/home tee -a /etc/bash.bashrc </dev/null
+tee: /etc/bash.bashrc: Permission denied
+exit=1
+```
+
+Minimal-set evidence (`nono profile groups system_read_linux_core` in the
+image): `passwd`, `group`, `nsswitch.conf`, `hosts` and the loader/TLS set
+were already granted, so only `bash.bashrc` and `profile` were missing;
+`/etc/inputrc` does not exist in the pinned image (absent startup files are
+skipped silently, so it is not granted — new evidence adds new files).
+Honest limitation: no shell-invocation shape reproduced the transcript's
+`Exit code 1` in the image (every repro shape exited 0 on success); what this
+proves is the denial and its stderr noise on every shell step, which the
+lab transcript shows on steps whose command output succeeded. Also re-observed
+live as the negative control of `TestShellStartupFilesAreReadableInsideTheSandbox`.
+
 ## Implications for `required` mode
 
 * `required` must be a **verify-then-run** sequence, not a flag: probe
