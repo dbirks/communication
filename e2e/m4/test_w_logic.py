@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Offline unit tests for the W-leg browser helpers' PURE halves (§ 7.2 W1/W3/W4/W7/W8/W9).
+"""Offline unit tests for the W-leg browser helpers' PURE halves (§ 7.2 W1/W2/W3/W4/W7/W8/W9/W10/W11).
 
 Nothing here touches the stack: the snapshot-YAML ref parser, the spec.inputs
 -> form-field expectation builder, the W7 counter verdicts, the W3 approval
-verdicts, the W4 pinned-digest/notice verdicts, the W8 Validate-panel verdicts
-and the W9 not-found/leakage/SSE/console verdicts are pure functions over canned
-text. Run: python3 e2e/m4/test_w_logic.py
+verdicts, the W4 pinned-digest/notice verdicts, the W8 Validate-panel verdicts,
+the W9 not-found/leakage/SSE/console verdicts, the W2 live-render/order/gap and
+iteration verdicts, the W10 resume-cursor/continuity/foreign-event verdicts and
+the W11 child-tree/attempt-list/internals-leakage verdicts are pure functions
+over canned text. Run: python3 e2e/m4/test_w_logic.py
 """
 import os
 import sys
@@ -31,6 +33,29 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w9_outsider_verdict,
     w9_sse_verdict,
     w9_state_verdicts,
+    w10_continuity_verdicts,
+    w10_event_requests,
+    w10_foreign_verdict,
+    w10_new_type_verdicts,
+    w10_resume_verdicts,
+    w11_attempt_verdicts,
+    w11_extra_frames_verdict,
+    w11_internals_verdict,
+    w11_rendered_children,
+    w11_short_id,
+    w11_tree_verdicts,
+    c11_report_evidence,
+    c11_report_honesty_verdicts,
+    C11_REPORT_FILES,
+    w2_chain_verdicts,
+    w2_iteration_verdicts,
+    w2_live_verdicts,
+    w2_no_gap_verdict,
+    w2_timeline_total,
+    w2_turn_arm_verdict,
+    w2_visible_types,
+    w_frame_surfaces,
+    w_type_matches,
     w3_decide_verdict,
     w3_gate_detail_verdict,
     w_counter_verdicts,
@@ -468,11 +493,464 @@ def test_http_connection_blip_retry():
         m.HTTP_CONNECT_RETRY_WAIT_S = keep
 
 
+# --- W2 (row § 7.2 W2) -------------------------------------------------------
+
+# A run page opened on `?tab=timeline`: the stage strip's ONE cell for the loop, the
+# panel's own `{visible} of {rows} events` tally, and the journal rows the tab draws.
+CANNED_TIMELINE = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs/r1?tab=timeline
+- Page Title: Communication
+### Snapshot
+```yaml
+- generic:
+  - tab "Timeline" [selected] [ref=e40]
+  - button "build_until_verified, 2 done, 1 running" [ref=e50]
+  - paragraph: one cell per definition node; segments inside a cell are its iterations
+  - paragraph: 9 of 9 events
+  - list:
+    - listitem:
+      - button "13:01:11 run.created system" [ref=e60]
+    - listitem:
+      - button "13:01:12 run.started system" [ref=e61]
+    - listitem:
+      - button "13:01:13 approval.requested system" [ref=e62]
+    - listitem:
+      - button "13:01:13 run.waiting_human system" [ref=e63]
+    - listitem:
+      - button "13:01:20 approval.decided alice" [ref=e64]
+    - listitem:
+      - button "13:01:21 node.attempt.started /plan att 1 worker" [ref=e65]
+    - listitem:
+      - button "13:01:30 run.checkpoint_saved /build_until_verified[1]/implement att 1 worker" [ref=e66]
+    - listitem:
+      - button "13:01:31 node.attempt.started /build_until_verified[2]/implement att 2 worker" [ref=e67]
+    - listitem:
+      - button "13:01:40 node.scope.iteration /build_until_verified[2] system" [ref=e68]
+```
+"""
+
+JOURNAL_W2 = [(1, "run.created"), (2, "run.started"), (3, "approval.requested"),
+              (4, "run.waiting_human"), (5, "approval.decided"),
+              (6, "node.attempt.started"), (7, "run.checkpoint_saved"),
+              (8, "node.scope.iteration"), (9, "node.attempt.started")]
+
+
+def test_w2_live_and_order_verdicts():
+    """Row W2: "`run.created` → `node.attempt.started` → `conversation.turn.*` (the
+    transcript of the agent node, inline, from M2's stream) → `run.checkpoint_saved`
+    render live, in order, with no gap". "Live" is measured across DOM samples of ONE
+    document (its own timeOrigin is the no-reload witness) whose type set GREW; one
+    sample, a flat set or a replaced document are respectively GAP, FAIL, FAIL."""
+    vis = w2_visible_types(CANNED_TIMELINE, [t for _s, t in JOURNAL_W2])
+    assert w2_timeline_total(CANNED_TIMELINE) == (9, 9), w2_timeline_total(CANNED_TIMELINE)
+    assert w2_timeline_total("- text: nothing here") is None, "no tally line = unreadable"
+    assert set(vis) <= {t for _s, t in JOURNAL_W2}, vis
+    assert vis["node.attempt.started"]["count"] == 2, vis["node.attempt.started"]
+    one_row = {"tag": "a", "types": vis, "total": (9, 9), "marker": "1760000000000"}
+    grew_row = {"tag": "b", "total": (10, 10), "marker": "1760000000000",
+                "types": dict(vis, **{"run.completed": {"first": 4000, "count": 1}})}
+    assert one(w2_live_verdicts([one_row]), "renders the journal live") is None
+    assert one(w2_live_verdicts([one_row, grew_row]), "renders the journal live") is True
+    assert one(w2_live_verdicts([one_row, dict(one_row, tag="b")]),
+               "renders the journal live") is False, "nothing ever arrived"
+    assert one(w2_live_verdicts([one_row, dict(grew_row, marker="1760000099999")]),
+               "renders the journal live") is False, "the document was replaced = a reload"
+    assert one(w2_live_verdicts([one_row, dict(grew_row, marker="")]),
+               "renders the journal live") is None, "an unreadable witness proves nothing"
+    chain = w2_chain_verdicts(vis, JOURNAL_W2)
+    assert one(chain, "renders run.created") is True, chain
+    assert one(chain, "renders node.attempt.started") is True
+    assert one(chain, "renders run.checkpoint_saved") is True
+    assert one(chain, "renders conversation.turn.*") is None, "no turn rows on a twin run"
+    assert one(chain, "renders in order") is True, chain
+    back = [(1, "run.checkpoint_saved"), (2, "node.attempt.started"), (3, "run.created")]
+    assert one(w2_chain_verdicts(vis, back), "renders in order") is False, "the page drew them backwards"
+    lone = w2_chain_verdicts(w2_visible_types(CANNED_TIMELINE, ["run.created"]),
+                             [(1, "run.created")])
+    assert one(lone, "renders in order") is None, "one type is not an order"
+    assert one(lone, "renders node.attempt.started") is None, "never journalled -> GAP"
+
+
+def test_w2_turn_gap_and_no_gap():
+    """The transcript arm may never be credited to a deterministic run, and "no gap"
+    is only measured over the vocabulary the panel has words for (M4_RUN_EVENT_TYPES:
+    `toRunEvent` drops the rest, ADR-0014 § 8)."""
+    why = w2_turn_arm_verdict(JOURNAL_W2)
+    assert why[1] is None, why
+    assert "process.exec" in why[2] and "toRunEvent" in why[2], why[2]
+    with_turns = w2_turn_arm_verdict(JOURNAL_W2 + [(10, "conversation.turn.started")])
+    assert with_turns[1] is None and "outside" in with_turns[2], with_turns
+    vis = w2_visible_types(CANNED_TIMELINE, [t for _s, t in JOURNAL_W2])
+    ng = w2_no_gap_verdict(vis, JOURNAL_W2, CANNED_TIMELINE)
+    assert ng[1] is True, ng
+    assert "9 of 9 events" in ng[2], ng[2]
+    assert w2_no_gap_verdict(vis, JOURNAL_W2 + [(10, "node.attempt.retry_scheduled")],
+                             CANNED_TIMELINE)[1] is False, "a journalled row never drawn"
+    assert w2_no_gap_verdict(vis, [(1, "pipeline.revision.published")],
+                             CANNED_TIMELINE)[1] is None, "no vocabulary rows = no baseline"
+    extra = w11_extra_frames_verdict(vis, JOURNAL_W2, tag="W2")
+    assert extra[1] is True, extra
+    crowded = dict(vis, **{"node.attempt.started": {"first": 1, "count": 5}})
+    assert w11_extra_frames_verdict(crowded, JOURNAL_W2, tag="W2")[1] is False, \
+        "more rows drawn than journalled is the foreign-frame signature"
+
+
+def test_w2_iteration_verdicts():
+    """The row's second half: `/build_until_verified[1]` and `[2]` as ITERATIONS, not
+    as duplicated definition nodes — both places named, ONE stage-strip cell."""
+    nodes = pw_snapshot_nodes(CANNED_TIMELINE)
+    keys = {"/build_until_verified", "/build_until_verified[1]/implement",
+            "/build_until_verified[2]/implement"}
+    v = w2_iteration_verdicts(nodes, CANNED_TIMELINE, keys)
+    assert one(v, "really ran /build_until_verified[1]") is True, v
+    assert one(v, "really ran /build_until_verified[2]") is True
+    assert one(v, "shows /build_until_verified[1]") is True
+    assert one(v, "shows /build_until_verified[2]") is True
+    assert one(v, "ONE cell for build_until_verified") is True, v
+    two = CANNED_TIMELINE + '\n  - button "build_until_verified, 1 running" [ref=e51]\n'
+    assert one(w2_iteration_verdicts(pw_snapshot_nodes(two), two, keys),
+               "ONE cell for build_until_verified") is False, "two cells is the duplication"
+    nokeys = w2_iteration_verdicts(nodes, CANNED_TIMELINE, None)
+    assert one(nokeys, "really ran /build_until_verified[1]") is None, "unreadable ledger"
+    assert one(nokeys, "shows /build_until_verified[2]") is True, \
+        "the page still shows the place — only the ledger half GAPs"
+    bare = w2_iteration_verdicts([], "- text: nothing", keys)
+    assert one(bare, "ONE cell for build_until_verified") is None, "no strip = unmeasured"
+    oneshot = w2_iteration_verdicts(nodes, CANNED_TIMELINE, {"/build_until_verified[1]/test"})
+    assert one(oneshot, "really ran /build_until_verified[2]") is False, "the run never iterated twice"
+    assert one(oneshot, "shows /build_until_verified[2]") is None
+
+
+# --- W10 (row § 7.2 W10) -----------------------------------------------------
+
+CANNED_REQUESTS = """
+Total 6 requests
+  1. [GET] http://localhost:18091/api/v1/me => 200
+  2. [GET] http://localhost:18091/api/v1/runs/r1 => 200
+  3. [GET] http://localhost:18091/api/v1/runs/r1/nodes => 200
+  4. [GET] http://localhost:18091/api/v1/runs/r1/events => 200
+  5. [GET] http://localhost:18091/api/v1/runs/other/events => 200
+  6. [GET] http://localhost:18091/api/v1/runs/r1/events => 200
+"""
+
+HDRS_CURSOR = "GET http://localhost:18091/api/v1/runs/r1/events\nlast-event-id: 4711\n"
+HDRS_FRESH = "GET http://localhost:18091/api/v1/runs/r1/events\naccept: text/event-stream\n"
+
+
+def test_w10_resume_cursor_is_read_from_the_browser_log():
+    """Row W10: "reload the app mid-run and reconnect the stream with `Last-Event-ID`,
+    then roll an API replica (C14a)". The cursor is the BROWSER's request header, so
+    the only witness is the page's own request log — and a reloaded page opens a fresh
+    EventSource with no cursor at all, which is why the reload is judged on the render
+    and the cursor on the roll."""
+    lines = w10_event_requests(CANNED_REQUESTS, "r1")
+    assert [i for i, _u in lines] == [4, 6], f"another run's stream must not count: {lines}"
+    assert all(u.endswith("/runs/r1/events") for _i, u in lines), lines
+    assert w10_event_requests("Total 0 requests", "r1") == []
+    roll = one(w10_resume_verdicts([{"tag": "roll", "url": "http://x/events",
+                                     "headers": HDRS_CURSOR}], roll_done=True),
+               "reconnects with Last-Event-ID")
+    assert roll is True, roll
+    assert one(w10_resume_verdicts([{"tag": "roll", "url": "http://x/events?after=4711",
+                                     "headers": HDRS_FRESH}], roll_done=True),
+               "reconnects with Last-Event-ID") is True, "?after= is a resume cursor too"
+    fresh = w10_resume_verdicts([{"tag": "roll", "url": "http://x/events",
+                                  "headers": HDRS_FRESH}], roll_done=True)
+    assert one(fresh, "reconnects with Last-Event-ID") is False, \
+        "a reconnect that restarts at the head of the journal is not a resume"
+    assert "journal head" in one(fresh, "reconnects with Last-Event-ID", detail=True)
+    blind = w10_resume_verdicts([{"tag": "roll", "url": "http://x/events", "headers": None}],
+                                roll_done=True)
+    assert one(blind, "reconnects with Last-Event-ID") is None, "unreadable headers prove nothing"
+    no_roll = w10_resume_verdicts([], roll_done=False)
+    assert one(no_roll, "reconnects with Last-Event-ID") is None
+    assert "never exercised" in one(no_roll, "reconnects with Last-Event-ID", detail=True)
+    assert one(w10_resume_verdicts([{"tag": "reload", "url": "http://x/events",
+                                     "headers": HDRS_FRESH}]),
+               "reloads mid-run") is True, "the client re-opened the feed"
+    assert one(w10_resume_verdicts([], roll_done=True), "reloads mid-run") is None
+
+
+def test_w10_continuity_across_the_roll():
+    """The rendered timeline may never shorten, and after the roll the frames have to
+    keep arriving on the SAME document — a page that got navigated in between says
+    nothing about the stream."""
+    s = [{"tag": "before reload", "total": (6, 6), "marker": "1760000000000"},
+         {"tag": "after reload", "total": (6, 6), "marker": "1760000000000"},
+         {"tag": "after the roll", "total": (7, 7), "marker": "1760000000000"},
+         {"tag": "delivered", "total": (12, 12), "marker": "1760000000000"}]
+    v = w10_continuity_verdicts(s, False)
+    assert one(v, "never shortens") is True, v
+    assert one(v, "keep arriving on the same document") is True, v
+    shrunk = [dict(r) for r in s]
+    shrunk[1]["total"] = (2, 2)
+    assert one(w10_continuity_verdicts(shrunk, False), "never shortens") is False, \
+        "a frame the page had drawn is gone"
+    navigated = [dict(r) for r in s]
+    navigated[3]["marker"] = "1760000099999"
+    assert one(w10_continuity_verdicts(navigated, False),
+               "keep arriving on the same document") is False, "that is a reload, not a stream"
+    stalled = [dict(r) for r in s]
+    stalled[3]["total"] = (7, 7)
+    assert one(w10_continuity_verdicts(stalled, False),
+               "keep arriving on the same document") is False
+    assert one(w10_continuity_verdicts(s, True), "keep arriving on the same document") is None, \
+        "a terminal run delivers nothing — that GAPs, it never PASSes"
+    assert one(w10_continuity_verdicts(s[:2], False),
+               "keep arriving on the same document") is None, "no post-roll sample was taken"
+    assert one(w10_continuity_verdicts([dict(r, total=None) for r in s], False),
+               "never shortens") is None, "an unreadable tally is not a zero"
+
+
+def test_w10_new_types_and_foreign_events():
+    """"continuity across the new event types with no gap and no cross-project
+    event" — the new types are the ones the ADVANCER writes (it is the writer M1-M3
+    never had), and a foreign event is searched for in the only words the DOM can
+    show it in."""
+    vis = w2_visible_types(CANNED_TIMELINE, [t for _s, t in JOURNAL_W2])
+    v = w10_new_type_verdicts(vis, JOURNAL_W2)
+    assert one(v, "survive the reconnect") is True, v
+    no_scope_dom = "\n".join(ln for ln in CANNED_TIMELINE.splitlines()
+                             if "node.scope" not in ln)
+    journalled = [(s, t) for s, t in JOURNAL_W2 if t != "run.created"]
+    assert one(w10_new_type_verdicts(w2_visible_types(no_scope_dom, [t for _s, t in JOURNAL_W2]),
+                                     journalled),
+               "survive the reconnect") is False, \
+        "the journal wrote node.scope.* and the re-rendered page does not name it"
+    assert one(w10_new_type_verdicts({}, JOURNAL_W2), "survive the reconnect") is None
+    bare = w10_new_type_verdicts({"run.created": {"first": 0, "count": 1}},
+                                 [(1, "run.created")])
+    assert one(bare, "survive the reconnect") is None, "no advancer-written type at all"
+    f = w10_foreign_verdict(CANNED_TIMELINE, [("other project's name or slug",
+                                               ["m4-project-b", "M4 Project B"]),
+                                              ("another run's attempt id", ["att 9f3a"])])
+    assert one(f, "other project's name") is True, f
+    assert one(f, "another run's attempt id") is True
+    assert one(w10_foreign_verdict(CANNED_TIMELINE,
+                                   [("other project's name", ["  "])]),
+               "other project's name") is None, "nothing to search is vacuous"
+    assert one(w10_foreign_verdict("", [("other project's name", ["m4-project-b"])]),
+               "other project's name") is None, "no DOM = unmeasured, not clean"
+    assert one(w10_foreign_verdict("… m4-project-b …", [("other project's name",
+                                                        ["m4-project-b"])]),
+               "other project's name") is False, "leaked"
+
+
+# --- W11 (row § 7.2 W11) -----------------------------------------------------
+
+CANNED_TREE = """
+### Page
+- Page URL: http://localhost:18091/projects/01a1/runs/r1?tab=execution
+### Snapshot
+```yaml
+- tree:
+  - treeitem "fan_out" [ref=e70]
+  - button "expand /fan_out" [ref=e71]
+  - treeitem "issue-implementation completed child run 3f5a9c1d · depth 1 · waits for completion" [ref=e80]
+  - treeitem "issue-implementation running child run 7b2e1140 · depth 1 · waits for completion" [ref=e81]
+  - treeitem "invoke 25 executions" [ref=e82]
+  - text: 15 more
+- generic:
+  - paragraph: ATTEMPT 2
+  - paragraph: implement · iter 1 · attempt 2
+  - paragraph: what the next attempt inherits (continue_workspace)
+"""
+
+TREE_CHILDREN = [{"child_run_id": "01a144d1-0000-7000-8000-00003f5a9c1d", "status": "completed",
+                  "depth": 1, "wait_policy": "completion", "node_instance_key": "/fan_out[1]/invoke"},
+                 {"child_run_id": "01a144d1-0000-7000-8000-00007b2e1140", "status": "running",
+                  "depth": 1, "wait_policy": "completion", "node_instance_key": "/fan_out[2]/invoke"}]
+
+
+def test_w11_short_id_is_the_uuid_tail_the_tree_prints():
+    """`ui/src/lib/format.ts` shortId → `api/names.ts`: the UUIDv7 TAIL. Search the
+    DOM for the head and every child row "misses" while sitting on screen."""
+    assert w11_short_id("01a144d1-0000-7000-8000-00003f5a9c1d") == "3f5a9c1d"
+    assert w11_short_id("/build_until_verified[1]") == "/build_until_verified[1]", "not a uuid"
+    assert w11_short_id("") == ""
+    rows = w11_rendered_children(CANNED_TREE)
+    assert sorted(rows) == ["3f5a9c1d", "7b2e1140"], rows
+    assert rows["3f5a9c1d"]["depth"] == 1 and rows["3f5a9c1d"]["wait_policy"] == "completion"
+
+
+def test_w11_tree_verdicts():
+    """"the tree renders depth 1 children with their own statuses" — and the fan-out
+    the row names (C8's 25 children) has to be REACHABLE, not stranded behind a pager
+    the UI cannot expand."""
+    v = w11_tree_verdicts(TREE_CHILDREN, CANNED_TREE)
+    assert one(v, "depth-1 children with their own statuses") is True, v
+    assert one(v, "reachable in the DOM") is True, v
+    twentyfive = TREE_CHILDREN + [{"child_run_id": f"01a144d1-0000-7000-8000-0000000000{i:02d}",
+                                   "status": "queued", "depth": 1, "wait_policy": "completion"}
+                                  for i in range(3, 26)]
+    stranded = w11_tree_verdicts(twentyfive, CANNED_TREE)
+    assert one(stranded, "depth-1 children with their own statuses") is True, \
+        "what DOES render is still honest"
+    assert one(stranded, "reachable in the DOM") is False, "23 children cannot be opened"
+    assert "pageSize 10" in one(stranded, "reachable in the DOM", detail=True)
+    invented = w11_tree_verdicts(TREE_CHILDREN, CANNED_TREE
+                                 + '\n  - treeitem "issue-implementation completed child run '
+                                   'deadbeef · depth 1 · waits for completion" [ref=e83]')
+    assert one(invented, "depth-1 children with their own statuses") is False, \
+        "a row naming no child of this run is not honest"
+    statusless = w11_tree_verdicts([dict(TREE_CHILDREN[0], status="failed")], CANNED_TREE)
+    assert one(statusless, "depth-1 children with their own statuses") is False, \
+        "the route says failed, the chip says completed"
+    wrong_depth = w11_tree_verdicts([dict(TREE_CHILDREN[0], depth=2)], CANNED_TREE)
+    assert one(wrong_depth, "depth-1 children with their own statuses") is False
+    assert one(w11_tree_verdicts([], CANNED_TREE), "depth-1 children") is None, "no children at all"
+    assert one(w11_tree_verdicts(TREE_CHILDREN, "- text: the tree never rendered"),
+               "depth-1 children") is False, "children in the route, none on screen"
+
+
+def test_w11_attempt_list_verdicts():
+    """"the attempt list shows attempt 1 `interrupted` with `retry_context` and attempt
+    2 `succeeded`" — the pair is C5's product (a worker killed mid-node) and this leg
+    kills nothing, so no pair is an honest GAP, never a PASS."""
+    pair = [{"attempt_number": 1, "status": "interrupted",
+             "retry_context": {"mode": "continue_workspace"}},
+            {"attempt_number": 2, "status": "succeeded", "retry_context": None}]
+    pair_dom = ("- paragraph: ATTEMPT 1\n"
+                "  - paragraph: implement \u00b7 iter 1 \u00b7 attempt 1\n"
+                "  - text: interrupted \u2014 the worker disappeared mid-node\n"
+                "  - paragraph: what the next attempt inherits (continue_workspace)\n"
+                "- paragraph: ATTEMPT 2\n"
+                "  - paragraph: implement \u00b7 iter 1 \u00b7 attempt 2\n"
+                "  - text: succeeded\n")
+    v = w11_attempt_verdicts(pair, pair_dom, "/build_until_verified[1]/implement")
+    assert one(v, "attempt 1 interrupted with retry_context") is True, v
+    assert one(v, "says which attempt it is showing") is True, v
+    # what the shipped pane really draws: ONE attempt, the newest (attempts.at(-1)).
+    pane = "- paragraph: ATTEMPT 2\n  - paragraph: implement \u00b7 iter 1 \u00b7 attempt 2\n"
+    hidden = w11_attempt_verdicts(pair, pane, "/build_until_verified[1]/implement")
+    assert one(hidden, "attempt 1 interrupted with retry_context") is False, \
+        "the pane opens on attempts.at(-1), so attempt 1 is nowhere on screen"
+    assert "attempts.at(-1)" in one(hidden, "attempt 1 interrupted with retry_context",
+                                    detail=True)
+    assert one(hidden, "says which attempt it is showing") is True, hidden
+    failed = [{"attempt_number": 1, "status": "failed", "retry_context": None},
+              {"attempt_number": 2, "status": "succeeded", "retry_context": None}]
+    gap = w11_attempt_verdicts(failed, CANNED_TREE, "/plan")
+    assert one(gap, "attempt 1 interrupted with retry_context") is None
+    assert "C5" in one(gap, "attempt 1 interrupted with retry_context", detail=True)
+    assert one(w11_attempt_verdicts([], CANNED_TREE, "/plan"),
+               "attempt 1 interrupted with retry_context") is None, "unreadable attempts"
+    assert one(w11_attempt_verdicts(pair, "", "/x"), "says which attempt it is showing") is False
+
+
+def test_w11_internals_stay_out_of_the_dom():
+    """`fencing_token`/`lease_expires_at`/`worker_id` appear NOWHERE in the DOM
+    (ADR-0016 § 8, re-asserted against the new routes) — both spellings, field NAME
+    and the ledger's own VALUE."""
+    observed = [("fencing token", ["fencing_token", "fencingToken"], ["1266193754800000001"]),
+                ("lease expiry", ["lease_expires_at"], ["2026-10-16T13:45:12Z"]),
+                ("worker id", ["worker_id"], ["01a144d1-64b9-7f8c-b32e-e4836f7101dc"])]
+    assert one(w11_internals_verdict(CANNED_TREE, observed), "no fencing token") is True
+    assert one(w11_internals_verdict(CANNED_TREE + "\n  - text: token 1266193754800000001",
+                                     observed), "no fencing token") is False, "the value leaked"
+    assert one(w11_internals_verdict(CANNED_TREE + "\n  - text: fencingToken",
+                                     observed), "no fencing token") is False, "the name leaked"
+    assert one(w11_internals_verdict("", observed), "no lease expiry") is None, "no DOM"
+    assert one(w11_internals_verdict(CANNED_TREE, [("worker id", [], [])]),
+               "no worker id") is None, "nothing to search is vacuous"
+
+
+# The run page AS `playwright-cli snapshot` writes it (.playwright-cli/
+# page-2026-10-16T13-44-41-301Z.yml, verbatim): each timeline row is a button whose
+# ACCESSIBLE NAME repeats its child `generic` text nodes, and `w8_dom_text` then appends
+# the whole raw tree again. One drawn event therefore appears FOUR times in the text the
+# driver joins — which is the whole of live6/W2.out's "every type drawn ~4x" FAIL.
+REAL_TIMELINE_ROWS = """
+- generic:
+  - button "build_until_verified, 2 done, 1 running" [ref=f1e130]
+  - button "build_until_verified" [ref=f1e131]
+  - paragraph [ref=f1e152]: 2 of 2 events
+  - list [ref=f1e153]:
+    - listitem [ref=f1e154]:
+      - button "13:44:36 run.created alice" [ref=f1e155]:
+        - generic [ref=f1e156]: 13:44:36
+        - generic [ref=f1e157]: run.created
+        - generic [ref=f1e158]: alice
+    - listitem [ref=f1e159]:
+      - button "13:44:37 node.attempt.started /plan att 1 a worker (fe7f4bfa)" [ref=f1e160]:
+        - generic [ref=f1e161]: 13:44:37
+        - generic [ref=f1e162]: node.attempt.started
+        - code [ref=f1e163]: /plan
+        - generic [ref=f1e164]: att 1
+        - generic [ref=f1e165]: a worker (fe7f4bfa)
+"""
+
+
+def test_frames_are_rows_not_string_occurrences():
+    """The classification live6/W2.out left open ('drawn MORE often than the journal
+    holds them', every type ~4x, 8 journalled rows read as 32 frames): the surplus came
+    from counting the SAME row's type string in several surfaces — its accessible name,
+    its child text nodes, both again in the appended raw tree — not from a panel painting
+    extra frames. On the real snapshot shape the row count is 1 per event while the
+    joined text holds 4 occurrences, and the extras verdict is clean."""
+    journal = [(1, "run.created"), (2, "node.attempt.started")]
+    nodes = pw_snapshot_nodes(REAL_TIMELINE_ROWS)
+    dom = w8_dom_text(nodes, REAL_TIMELINE_ROWS)
+    vis = w2_visible_types(nodes, [t for _s, t in journal])
+    assert {t: v["count"] for t, v in vis.items()} == {"run.created": 1,
+                                                       "node.attempt.started": 1}, vis
+    assert w2_timeline_total(dom) == (2, 2), w2_timeline_total(dom)
+    surfaces = w_frame_surfaces(nodes, REAL_TIMELINE_ROWS, sorted(vis), dom_text=dom)
+    assert surfaces["run.created"] == {"rows": 1, "row_name": 1, "row_child": 1,
+                                       "raw": 2, "dom": 4}, surfaces["run.created"]
+    assert w11_extra_frames_verdict(vis, journal, tag="W2")[1] is True, \
+        "one row per journalled row is not a foreign frame"
+    crowded = dict(vis, **{"run.created": {"first": 1, "count": 2}})
+    label, ok, detail = w11_extra_frames_verdict(crowded, journal, tag="W2", tally=(3, 3))
+    assert ok is False, detail
+    assert "timeline ROWS on the Timeline panel only" in detail, detail
+    assert "the panel's own tally reads 3 of 3 events" in detail, detail
+    assert "a real extra" in detail, detail
+    assert w11_extra_frames_verdict(vis, [], tag="W2")[1] is None, "no baseline = no claim"
+
+
+def test_c11_report_honesty_tolerates_a_labelled_true_row():
+    """ADR-0035/0036 put BOTH labels in the same report: false for the profile the
+    contract names, true on the allowlisted path whose denials the audit read. The arm
+    exists for the dishonesty — claiming enforcement BLANKETLY while never spelling the
+    false label — so a labelled true row must not FAIL it, and the repo's own current
+    reports must satisfy it (the failure live W2's offline suite inherited)."""
+    honest = ("agent-turn profile: network_enforced=false (reported, ADR-0019 D3)\n"
+              'the allowlisted path: "network_enforced": true\n')
+    rows = c11_report_honesty_verdicts(honest)
+    assert one(rows, "SANDBOX.md") is True, rows
+    blanket = c11_report_honesty_verdicts("network_enforced=true for all profiles")
+    assert one(blanket, "SANDBOX.md") is False, blanket
+    assert one(c11_report_honesty_verdicts(""), "SANDBOX.md") is None
+    root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", ".."))
+    reads = []
+    for rel in C11_REPORT_FILES:
+        try:
+            with open(os.path.join(root, *rel.split("/")), encoding="utf-8") as f:
+                reads.append((rel, f.read()))
+        except OSError:
+            reads.append((rel, ""))
+    report, missing = c11_report_evidence(reads)
+    assert [] == missing, missing
+    rows = c11_report_honesty_verdicts(report, sources=[r for r, t in reads if t],
+                                       missing=missing)
+    assert one(rows, "SANDBOX.md") is True, rows[0][2]
+
+
 if __name__ == "__main__":
     for fn in (test_snapshot_nodes, test_input_expectations, test_counter_verdicts,
                test_approval_verdicts, test_w3_gate_detail_verdict, test_w3_decide_verdict,
                test_snapshot_spill_guard, test_w4_pinned_and_notice, test_w8_panel_verdicts,
                test_w9_outsider_verdicts, test_w9_outsider_observer_arm,
+               test_w2_live_and_order_verdicts, test_w2_turn_gap_and_no_gap,
+               test_w2_iteration_verdicts, test_w10_resume_cursor_is_read_from_the_browser_log,
+               test_w10_continuity_across_the_roll, test_w10_new_types_and_foreign_events,
+               test_w11_short_id_is_the_uuid_tail_the_tree_prints, test_w11_tree_verdicts,
+               test_w11_attempt_list_verdicts, test_w11_internals_stay_out_of_the_dom,
+               test_frames_are_rows_not_string_occurrences,
+               test_c11_report_honesty_tolerates_a_labelled_true_row,
                test_http_connection_blip_retry):
         print(f"\n{fn.__name__}")
         fn()

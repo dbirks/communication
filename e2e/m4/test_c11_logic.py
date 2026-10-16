@@ -166,6 +166,33 @@ class ReportAndSink(unittest.TestCase):
             "SANDBOX.md"))
         self.assertIsNone(one(m.c11_report_honesty_verdicts(""), "SANDBOX.md"))
 
+    def test_earned_true_claim_passes_next_to_its_evidence(self):
+        """ADR-0035 § 3's honest shape (the live SANDBOX.md 8-label row): false stays
+        on the unproven agent-turn path, true sits in the same table row as its
+        allowlisted:<host> label and its non-empty denied_hosts."""
+        earned = ("agent-turn profile: network_enforced=false (reported, ADR-0019 D3)\n"
+                  "| 8-label | `sandbox.egress_observed` | `{\"network\": "
+                  '"allowlisted:api.anthropic.com", "denied": 7, "denied_hosts": '
+                  '["mcp-proxy.anthropic.com"], "network_enforced": true}` | **PASS** |\n')
+        self.assertTrue(one(m.c11_report_honesty_verdicts(earned), "SANDBOX.md"))
+
+    def test_unearned_true_claim_fails_even_when_false_is_spelled_elsewhere(self):
+        """The tri-state rule is per-claim, not coexistence: a true row without its
+        observed denial FAILs even when the report spells false elsewhere — and
+        `denied: 0` is not evidence (ADR-0035: allowlisted with no observed denial
+        reports open/false)."""
+        no_evidence = ('agent-turn: network_enforced=false\n'
+                       '{"network": "allowlisted:api.anthropic.com", "network_enforced": true}\n')
+        self.assertFalse(one(m.c11_report_honesty_verdicts(no_evidence), "SANDBOX.md"))
+        zero_denials = ('agent-turn: network_enforced=false\n'
+                        '| x | `{"network": "allowlisted:api.anthropic.com", '
+                        '"denied": 0, "network_enforced": true}` |\n')
+        self.assertFalse(one(m.c11_report_honesty_verdicts(zero_denials), "SANDBOX.md"))
+        # a prose claim must still name the allowlisted path it quotes
+        self.assertFalse(one(m.c11_report_honesty_verdicts(
+            "network_enforced=false on the unproven path; enforcement "
+            "network_enforced=true on the pipeline path"), "SANDBOX.md"))
+
     def test_sink_liveness(self):
         self.assertTrue(one(m.c11_sink_liveness_verdicts(200, True), "18099"))
         self.assertFalse(one(m.c11_sink_liveness_verdicts(200, False), "18099"))

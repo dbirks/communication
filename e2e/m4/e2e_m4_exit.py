@@ -6853,6 +6853,27 @@ C11_REPORT_FILES = ("docs/compatibility/SANDBOX.md", "docs/compatibility/M3-PROB
 # live sandbox surface (`"network_enforced": false`), so the quote is optional.
 C11_SPELLS_FALSE_RE = re.compile(r"""network_enforced["']?\s*(?:=|:)\s*false""", re.I)
 C11_SPELLS_TRUE_RE = re.compile(r"""network_enforced["']?\s*(?:=|:)\s*true""", re.I)
+# ADR-0035/0036 moved the PIPELINE agent-turn profile onto an egress allowlist, so a
+# current report legitimately carries BOTH labels: `network_enforced: false` for the
+# unproven paths (the agent-turn `sandbox.verified` row, M3-PROBES.md's C-EG rows) and
+# `network_enforced: true` on the allowlisted path whose denials the audit actually read
+# (SANDBOX.md's `sandbox.egress_observed` rows). Per ADR-0035 § 3 a run may claim
+# allowlisted/enforced only on its own observed denial, so C11b tri-states every true
+# claim BY THE SURFACE THAT SPEAKS IT: on a data surface — a markdown table row or a
+# JSON object, the shapes the task's "same table row / JSON object" names — the claim is
+# EARNED only when the same unit carries BOTH an `allowlisted:<host>` label AND non-empty
+# denied-host evidence (a named denied host or a positive denial count; `denied: 0`
+# proves nothing); in prose the claim must at least sit in the paragraph naming the
+# allowlisted path it quotes. A `true` without its evidence — bare
+# `{"network_enforced": true}` included, even when false is spelled elsewhere — is the
+# dishonesty this arm exists for (live W2.out read the pre-ADR-0035 version as FAIL for
+# exactly the honest, earned shape).
+C11_ALLOWLISTED_LABEL_RE = re.compile(r"""allowlisted["']?\s*(?:=|:)\s*["'`]?[\w.\-]+""", re.I)
+C11_ALLOWLISTED_MENTION_RE = re.compile(r"""\ballowlisted\b""", re.I)
+C11_DENIED_HOST_EVIDENCE_RE = re.compile(
+    r"""denied[ _]hosts["']?\s*(?:=|:)\s*\[?\s*["'`]?[a-z]"""
+    r"""|denied["']?\s*(?:=|:)\s*[1-9]\d*"""
+    r"""|\bhost_denied\b""", re.I)
 
 
 def c11_emit(verdicts):
@@ -7063,14 +7084,52 @@ def c11_report_evidence(reads):
     return "\n".join(parts), missing
 
 
+def c11_true_claim_units(report_text):
+    """[(surface, unit)] for every `network_enforced true` claim: surface 'row' when a
+    markdown table row or a JSON object speaks it (the data surfaces ADR-0035 § 3 pins
+    the evidence to), 'prose' otherwise, with the claim's paragraph as the unit. Pure."""
+    units = []
+    for hit in C11_SPELLS_TRUE_RE.finditer(report_text):
+        lo = report_text.rfind("\n", 0, hit.start()) + 1
+        hi = report_text.find("\n", hit.end())
+        hi = len(report_text) if hi == -1 else hi
+        line = report_text[lo:hi]
+        if line.lstrip().startswith("|"):
+            units.append(("row", line))
+            continue
+        j_lo, j_hi = report_text.rfind("{", 0, hit.start()), report_text.find("}", hit.end())
+        if (j_lo != -1 and j_hi > j_lo
+                and hit.start() - j_lo < 400 and j_hi - hit.end() < 400
+                and "\n\n" not in report_text[j_lo:j_hi]):
+            units.append(("row", report_text[j_lo:j_hi + 1]))
+            continue
+        p_lo = report_text.rfind("\n\n", 0, hit.start()) + 1
+        p_hi = report_text.find("\n\n", hit.end())
+        units.append(("prose", report_text[p_lo:len(report_text) if p_hi == -1 else p_hi]))
+    return units
+
+
+def c11_true_claim_earned(surface, unit, is_data_row):
+    """ADR-0035 § 3 as a predicate: a claim on a data surface is earned only when the
+    SAME table row / JSON object carries the `allowlisted:<host>` label and non-empty
+    denied-host evidence; a prose claim only when its own paragraph names the
+    allowlisted path. Pure."""
+    if is_data_row:
+        return bool(C11_ALLOWLISTED_LABEL_RE.search(unit)
+                    and C11_DENIED_HOST_EVIDENCE_RE.search(unit))
+    return bool(C11_ALLOWLISTED_MENTION_RE.search(unit))
+
+
 def c11_report_honesty_verdicts(report_text, tag="C11b", sources=None, missing=None):
     """C11b (honesty half) — the agent-turn profile's network_enforced=false is
     REPORTED, not hidden: the ops/sandbox report — D3: BOTH docs/compatibility/
     SANDBOX.md AND M3-PROBES.md, because the label is spelled in M3-PROBES.md:142,395 —
-    spells it false for the agent-turn profile and the egress-denied command profile
-    separately. PASS requires the literal false labelling; a report claiming agent-turn
-    egress is ENFORCED is the dishonesty this asserts against; None (GAP) when no
-    report file could be read at all."""
+    spells it false for the unproven agent-turn and egress-denied command paths.
+    Tri-state per ADR-0035 § 3: PASS when the false labelling is spelled AND EVERY
+    `network_enforced: true` claim is earned on its surface (see c11_true_claim_earned
+    — a true on one allowlisted row beside the false label is ADR-0035's honest report,
+    a true without that evidence — bare `{"network_enforced": true}` included — is the
+    dishonesty this asserts against); None (GAP) when no report file could be read."""
     where = (" | sources read: " + ", ".join(s for s in sources if s)) if sources else ""
     unread = (" | unreadable: " + ", ".join(m for m in missing if m)) if missing else ""
     if not report_text:
@@ -7079,12 +7138,22 @@ def c11_report_honesty_verdicts(report_text, tag="C11b", sources=None, missing=N
                  None, "the sandbox report could not be read — the label is unverifiable"
                        f"{where}{unread}")]
     spells_false = bool(C11_SPELLS_FALSE_RE.search(report_text))
-    claims_true = bool(C11_SPELLS_TRUE_RE.search(report_text))
+    units = c11_true_claim_units(report_text)
+    unearned = [" ".join(unit.split())[:90]
+                for surface, unit in units
+                if not c11_true_claim_earned(surface, unit, surface == "row")]
+    earned = len(units) - len(unearned)
     return [(f"{tag} the ops/sandbox report spells network_enforced=false on the "
              "agent-turn profile (reported honestly, M3's SANDBOX.md row stands "
-             "— never claimed enforced)", spells_false and not claims_true,
+             "— never claimed enforced)", spells_false and not unearned,
              f"'network_enforced=false' spelled in the report: {spells_false}; "
-             f"'network_enforced=true' claim present: {claims_true}{where}{unread}")]
+             f"{len(units)} true-labelled claim(s): {earned} earned next to an "
+             f"allowlisted:<host> label + denied-host evidence, {len(unearned)} "
+             f"unproven" + (": " + " || ".join(unearned[:2])
+                            + (f" (+{len(unearned) - 2} more)" if len(unearned) > 2 else "")
+                            + " — a true claim without its observed denial is the "
+                              "dishonesty this arm exists for"
+                            if unearned else "") + f"{where}{unread}")]
 
 
 def c11_sandbox_label_verdicts(payloads, ran_agent_turn, tag="C11b"):
@@ -10573,6 +10642,760 @@ def w9_outsider_verdict(role, is_org_admin, outsider="erin", outsider_m4_role=No
             f"membership) - named in every label, never called carol")
 
 
+# --- W2 / W10 / W11 pure helpers (e2e/m4/test_w_logic.py) --------------------
+#
+# The run-stream vocabulary the timeline RENDERS, mirrored from
+# ui/src/lib/pipeline/runEvents.ts (M4_RUN_EVENT_TYPES). A frame outside it is
+# dropped by `toRunEvent` — "a type this screen has no words for (ADR-0014 § 8)"
+# (RunInspector.tsx:720) — so "no gap" on the run page is only ever measurable
+# over these types, and every verdict below says so rather than silently
+# comparing the page against the whole journal.
+M4_RUN_EVENT_TYPES = (
+    "run.created", "run.started", "run.paused", "run.resumed", "run.waiting_human",
+    "run.retried", "run.checkpoint_saved", "run.checkpoint_restored", "run.completed",
+    "run.failed", "run.cancel_requested", "run.cancelled", "run.interrupted",
+    "node.execution_skipped", "node.execution_cancelled", "node.scope.started",
+    "node.scope.iteration", "node.scope.completed", "node.scope.failed",
+    "node.attempt.started", "node.attempt.completed", "node.attempt.failed",
+    "node.attempt.interrupted", "node.attempt.cancelled", "node.attempt.retry_scheduled",
+    "approval.requested", "approval.decided", "approval.expired", "approval.denied",
+    "approval.cancelled",
+)
+
+# Row W2's own chain, spelled as § 7.2 writes it.
+W2_ROW_CHAIN = ("run.created", "node.attempt.started", "conversation.turn.*",
+                "run.checkpoint_saved")
+
+
+def w_type_matches(candidate, pattern):
+    """Row-chain matching: a trailing `.*` is a type PREFIX (C1h's reading of
+    `node.attempt.*`), anything else is the verbatim type. Pure."""
+    if pattern.endswith(".*"):
+        return str(candidate).startswith(pattern[:-2])
+    return str(candidate) == pattern
+
+
+def c1_attempt_count(run_id):
+    """How many attempts the ledger holds for a run — the witness that work HAPPENED
+    even when no 2s poll ever caught it mid-lease. '0' on a psql error, which the
+    caller's verdict then reports as nothing-was-executed rather than swallowing."""
+    try:
+        return psql(f"SELECT count(*) FROM attempts WHERE run_id = '{run_id}'")
+    except RuntimeError as e:
+        show("attempt count (psql)", str(e)[:200])
+        return "0"
+
+
+def w_journal_types(run_id):
+    """The run's own journal in commit order — [(global_seq, type)]. The answer key
+    W2 and W10 compare the rendered page against; None when the ledger is unreadable
+    (a GAP, never a silent empty list)."""
+    try:
+        rows = psql_rows(psql(f"SELECT global_seq::text || '|' || type FROM domain_events "
+                              f"WHERE run_id = '{run_id}' ORDER BY global_seq"), 2)
+    except RuntimeError as e:
+        show("run journal (psql)", str(e)[:240])
+        return None
+    return [(int(r[0]), r[1]) for r in rows if r[0].isdigit()]
+
+
+# One timeline row, as the panel prints it: `HH:MM:SS <type> [node key] [att n]
+# <actor>` (RunInspector.tsx's run-timeline-item-<seq> button). Anchoring on the
+# clock is what separates a DRAWN EVENT from a mention: the accessible name of a
+# row, the sr-only copy beside it and the panel's own header all repeat the same
+# type string, so counting the snapshot's text would report every event two or
+# four times and call the page crowded with frames nobody sent (live6/W2.out:
+# `run.checkpoint_saved: (32, 8)` on a run that drew exactly eight).
+_TIMELINE_ROW = re.compile(r"^\s*\d{1,2}:\d{2}:\d{2}\s+([a-z][\w.]*(?:\.[\w.]+)+)\b")
+
+
+def w2_visible_types(nodes, candidates=None, raw_text=""):
+    """{type: {first, count}} over the timeline's own ROWS: `count` is how many rows
+    draw the type and `first` is the row's ordinal, so the ordering claim is read off
+    the list the user reads. `nodes` may be the parsed snapshot or its raw text (the
+    quoted accessible names are the same rows either way); `candidates` — the run's
+    journal types — is kept for the caller's evidence line and bounds nothing, since a
+    row nobody journalled is exactly the foreign frame the extras verdict reports."""
+    if isinstance(nodes, str):
+        nodes, raw_text = None, nodes
+    names = ([pw_text(n) for n in nodes if n.get("role") == "button"] if nodes
+             else re.findall(r'"([^"]*)"', raw_text or ""))
+    out, rows = {}, 0
+    for name in names:
+        m = _TIMELINE_ROW.match(name or "")
+        if not m:
+            continue
+        rows += 1
+        t = m.group(1)
+        got = out.get(t) or {"first": rows, "count": 0}
+        got["count"] += 1
+        out[t] = got
+    return out
+
+
+def w2_timeline_total(dom_text):
+    """The timeline's own tally, `"{visible} of {rows} events"` (RunInspector.tsx's
+    run-timeline-count line) -> (visible, rows); None when the panel never rendered
+    it, which GAPs the completeness arm rather than passing it."""
+    m = re.search(r"(\d+)\s+of\s+(\d+)\s+events", dom_text or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def w_frame_surfaces(nodes, raw_text, types, dom_text=None):
+    """Where each event TYPE's string is written on the page, so a `drawn > journalled`
+    reading can be classified instead of argued about:
+    `{type: {"rows": n, "row_name": n, "row_child": n, "raw": n}}`.
+
+    `rows` is what a user actually sees as a frame (one timeline row); the other three
+    count the STRINGS. The accessibility snapshot writes one row twice over — the
+    button's accessible name AND its child `generic` text node (the real page at
+    .playwright-cli/page-2026-10-16T13-44-41-301Z.yml:163-165) — and `w8_dom_text`
+    appends the raw tree behind the joined nodes, so a single drawn event surfaces as
+    FOUR string occurrences. live6/live W2.out read those four as four frames
+    (`run.checkpoint_saved: (32, 8)` on the run whose own tally says `38 of 38`
+    against 38 journalled rows): the surplus is one panel's snapshot repetition, never
+    a second panel and never a repainted frame. Pure."""
+    if isinstance(nodes, str):
+        nodes, raw_text = pw_snapshot_nodes(nodes), nodes
+    out = {}
+    for t in types or []:
+        names = [pw_text(n) for n in nodes or [] if n.get("role") == "button"]
+        children = [pw_text(n) for n in nodes or [] if n.get("role") != "button"]
+        out[t] = {"rows": (w2_visible_types(nodes) or {}).get(t, {}).get("count", 0),
+                  "row_name": sum(1 for nm in names if _TIMELINE_ROW.match(nm or "")
+                                  and t in nm),
+                  "row_child": sum(1 for tx in children if tx.strip() == t),
+                  "raw": (raw_text or "").count(t),
+                  "dom": (dom_text or "").count(t)}
+    return out
+
+
+def w_gate_release_verdict(live, status, attempts, tag="W2"):
+    """What a leg that only WATCHES owes from the shared wait_live_past_gate call: the
+    gate RELEASED the run into real work.
+
+    A leased attempt caught mid-flight is the strongest evidence and is named when the
+    poll saw one. When the run is already terminal with attempts in the ledger, the
+    deterministic twin's process.exec attempts each finished inside the poll's 2s
+    window — that says nothing about the page and everything about the fixture, so the
+    arm GAPs the 'the driver sampled a lease' claim instead of FAILing the UI for it
+    (W2/W10 kill no worker; C5 is the gate that holds a lease still)."""
+    label = f"{tag} the gate released the run into real work"
+    if live:
+        return (label, True, f"the poll caught attempt {live.get('id')} "
+                             f"({live.get('key')}) leased to {live.get('worker')}")
+    counted = _int(attempts)
+    if status == "waiting_human":
+        return (label, False, f"the run is still waiting_human with {counted} attempt(s) "
+                              "in the ledger — POST /approvals/{id}/decide never released "
+                              "it, so nothing was ever executed to watch")
+    if counted >= 1:
+        return (label, None, f"no attempt was sampled MID-LEASE (status now {status!r}, "
+                             f"{counted} attempt(s) in the ledger): the twin's process.exec "
+                             "attempts finish faster than the poll's 2s interval, so the "
+                             "leg makes no claim about a live lease — rows 1-3 below are "
+                             "what the page drew while that work ran")
+    return (label, False, f"the run left the gate (status {status!r}) but the ledger holds "
+                          "no attempt rows at all — there was never any work to render")
+
+
+def w_run_sample(run_id, candidates, session, tag):
+    """One DOM reading of an open run page: the event types drawn, the panel's own
+    `{visible} of {rows} events` tally, and the document's birth time
+    (`performance.timeOrigin`) — the witness that the rows which appeared between two
+    samples arrived over the stream rather than from a re-navigated page. Never
+    raises: an eval that does not come back leaves `marker` empty, which the
+    no-reload verdict reads as a GAP instead of a guess."""
+    rc, raw = pw_snapshot(session=session)
+    nodes = pw_snapshot_nodes(raw)
+    dom = w8_dom_text(nodes, raw)
+    _rc, marker = pw("eval", "() => String(performance.timeOrigin)", session=session,
+                     timeout=60)
+    born = re.search(r"\d{10,}", marker or "")
+    types = w2_visible_types(nodes, candidates, raw)
+    out = {"tag": tag, "dom": dom, "raw": raw, "nodes": nodes, "types": types,
+           "rc": rc, "total": w2_timeline_total(dom),
+           "marker": born.group(0) if born else ""}
+    show(f"{tag} sample (run {run_status(run_id)})",
+         f"tally={out['total']} document={out['marker'] or 'unreadable'} types rendered "
+         f"={sorted(types)}")
+    return out
+
+
+def w2_live_verdicts(samples):
+    """"render live, with no gap" read the only way a browser can prove it: several
+    DOM samples of ONE document taken while the run advanced. `marker` is the
+    document's own `performance.timeOrigin` — identical across samples only if no
+    reload or navigation replaced the page — and the rendered type set has to have
+    GROWN between samples, which is what an arriving frame looks like from outside.
+    One sample proves nothing and returns a GAP."""
+    label = "W2 the run page renders the journal live, with no page reload"
+    samples = [s for s in (samples or []) if s]
+    if len(samples) < 2:
+        return [(label, None, f"{len(samples)} DOM sample(s) taken while the run advanced — "
+                              "'live' is measured across samples; one sample cannot show it")]
+    markers = [str(s.get("marker") or "") for s in samples]
+    if any(not m for m in markers):
+        return [(label, None, "the no-reload witness (the document's own timeOrigin) did not "
+                              f"read back on every sample: {markers} — the samples could "
+                              "therefore have come from re-navigated pages")]
+    if len(set(markers)) != 1:
+        return [(label, False, f"the document changed under the sampler (timeOrigin went "
+                               f"{markers[0]!r} -> {markers[-1]!r}) — the later rows arrived "
+                               "after a reload, which is the thing this arm forbids")]
+    grown = [len(s.get("types") or {}) for s in samples]
+    totals = [s.get("total") for s in samples]
+    detail = (f"{len(samples)} samples of one document (timeOrigin {markers[0]!r} held), "
+              f"distinct journal types rendered per sample {grown}, timeline tallies "
+              f"{[t if t is not None else 'unreadable' for t in totals]}")
+    if not any(b > a for a, b in zip(grown, grown[1:])):
+        return [(label, False, detail + " — no sample ever gained an event type the "
+                                       "previous one lacked, so the stream's arrival was "
+                                       "never observed")]
+    return [(label, True, detail)]
+
+
+def w2_chain_verdicts(visible, journal_types):
+    """The row's literal chain, `run.created` -> `node.attempt.started` ->
+    `conversation.turn.*` -> `run.checkpoint_saved`: one verdict per type (does the
+    page draw it at all), plus the ordered-subsequence claim over the types the run
+    really produced. The journal decides which types were ever available; C1h's
+    reading (an ORDERED SUBSEQUENCE, not an exact set) is reused here for the DOM."""
+    out, order = [], []
+    seen = set()
+    for _seq, t in journal_types or []:
+        if t not in seen:
+            seen.add(t)
+            order.append(t)
+    rendered = [t for t, _v in sorted((visible or {}).items(), key=lambda kv: kv[1]["first"])]
+    measured = []
+    for pattern in W2_ROW_CHAIN:
+        journalled = [t for t in order if w_type_matches(t, pattern)]
+        drawn = [t for t in rendered if w_type_matches(t, pattern)]
+        label = f"W2 the run page renders {pattern}"
+        if not journalled:
+            out.append((label, None, f"the run's journal holds no {pattern} row at all "
+                                     f"(it wrote {len(order)} distinct type(s)) — there is "
+                                     "nothing for the page to draw"))
+        elif not drawn:
+            out.append((label, False, f"the journal wrote {len(journalled)} {pattern} row(s) "
+                                      "and the rendered page names none of them"))
+        else:
+            out.append((label, True, f"{len(journalled)} journalled row(s), first drawn at "
+                                     f"timeline position "
+                                     f"{min(visible[t]['first'] for t in drawn)}"))
+            measured.append(pattern)
+    label = ("W2 the chain renders in order (run.created -> node.attempt.started -> "
+             "conversation.turn.* -> run.checkpoint_saved)")
+    if len(measured) < 2:
+        out.append((label, None, f"only {len(measured)} of the four types is both journalled "
+                                 "and drawn — an order needs two landmarks, this run gave "
+                                 f"{measured or 'none'}"))
+        return out
+    dom_rank = {p: min(visible[t]["first"] for t in rendered
+                       if w_type_matches(t, p)) for p in measured}
+    jr_rank = {p: next(i for i, t in enumerate(order) if w_type_matches(t, p)) for p in measured}
+    want = [p for p, _ in sorted(jr_rank.items(), key=lambda kv: kv[1])]
+    got = [p for p, _ in sorted(dom_rank.items(), key=lambda kv: kv[1])]
+    out.append((label, want == got,
+                f"journal order {want}, rendered order {got} "
+                + ("" if want == got else " — the page drew them the other way round")))
+    return out
+
+
+def w2_turn_arm_verdict(journal_types):
+    """The row's third link — `conversation.turn.*`, "the transcript of the agent
+    node, inline, from M2's stream". The run W2 watches is the DETERMINISTIC TWIN
+    the task fixes, whose attempts are process.exec (C4 measured the same thing: a
+    process.exec node owns no ACP turn), and even an agent run's transcript does not
+    reach THIS panel: `toRunEvent` returns null for every type outside
+    M4_RUN_EVENT_TYPES, so the Timeline tab cannot draw a conversation frame by
+    construction. The arm is therefore unmeasurable here and says so — never a PASS
+    by absence, and never a FAIL blamed on the fixture."""
+    label = "W2 conversation.turn.* renders inline (the transcript arm)"
+    turns = [t for _s, t in journal_types or []
+             if w_type_matches(t, "conversation.turn.*")]
+    if not journal_types:
+        return (label, None, "the run's journal is unreadable — whether a turn ever existed "
+                             "to render is unknown")
+    if not turns:
+        return (label, None, "this run journalled no conversation.turn.* row: its attempts are "
+                             "process.exec (the deterministic twin), which owns no ACP turn — "
+                             "C4a's identical finding, restated for the browser. The arm also "
+                             "cannot be satisfied by the Timeline tab for an agent run: "
+                             "conversation.* is outside M4_RUN_EVENT_TYPES, so toRunEvent "
+                             "drops it (RunInspector.tsx:720, ADR-0014 § 8) and the "
+                             "transcript is drawn by the attempt pane instead")
+    return (label, None, f"the journal wrote {len(turns)} conversation.turn.* row(s); the "
+                         "Timeline tab cannot show them by construction (outside "
+                         "M4_RUN_EVENT_TYPES, toRunEvent -> null) and the inline transcript "
+                         "arm belongs to the attempt pane, not this row's panel")
+
+
+def w2_no_gap_verdict(visible, journal_types, dom_text, tag="W2"):
+    """"no gap": every journal row the panel has words for is on the page. The
+    comparison is over M4_RUN_EVENT_TYPES only (the types `toRunEvent` keeps), and
+    the page's own `{visible} of {rows} events` tally is quoted next to it — if the
+    tally disagrees with the journal the page is short of frames whatever the type
+    counts look like."""
+    label = (f"{tag} no gap: every journalled run event of the timeline's vocabulary "
+             f"is drawn")
+    vocab = [t for _s, t in journal_types or [] if t in M4_RUN_EVENT_TYPES]
+    if not vocab:
+        return (label, None, "no run-vocabulary journal rows were readable for the run — the "
+                             "rendered list has nothing to be complete against")
+    want, seen = {}, set(vocab)
+    for t in seen:
+        want[t] = vocab.count(t)
+    short = {t: (n, (visible or {}).get(t, {}).get("count", 0)) for t, n in want.items()
+             if (visible or {}).get(t, {}).get("count", 0) < n}
+    tally = w2_timeline_total(dom_text)
+    tail = (f"; the panel's own tally reads {tally[0]} of {tally[1]} events against "
+            f"{len(vocab)} journalled run-vocabulary rows"
+            if tally else "; the panel's '{visible} of {rows} events' tally line never "
+                          "rendered, so the count could not be cross-read")
+    if tally and tally[1] < len(vocab) and not short:
+        # The rows the panel counts are fewer than the journal holds even though every
+        # type appears: something was drawn once where the ledger has it twice.
+        short = {f"(panel's own row count)": (len(vocab), tally[1])}
+    if short:
+        return (label, False, f"{len(short)} type(s) drawn fewer times than the journal "
+                              f"holds them: {short}{tail}")
+    return (label, True, f"{len(want)} types, {len(vocab)} journalled rows, every one "
+                         f"drawn at least once{tail}")
+
+
+def w2_iteration_verdicts(nodes, dom_text, keys, tag="W2"):
+    """The row's second sentence: "the node timeline shows `/build_until_verified[1]/…`
+    and `[2]` as **iterations**, not as duplicated definition nodes". Measured as
+    (a) the ledger really wrote [1] and [2], (b) the page names both places, and
+    (c) the stage strip holds exactly ONE cell for the loop node — two cells would be
+    the duplication the row forbids. `nodes` is the parsed snapshot, `keys` the run's
+    node_instance_key set."""
+    out = []
+    iters = {n for k in (keys or set())
+             if (m := re.match(r"^/build_until_verified\[(\d+)\]", str(k)))
+             and (n := int(m.group(1)))}
+    for n in (1, 2):
+        label = (f"{tag} the run really ran /build_until_verified[{n}] "
+                 "(so the page has an iteration to show)")
+        if not keys:
+            out.append((label, None, "the node_execution key set did not read back"))
+        else:
+            out.append((label, n in iters, f"iterations observed in the ledger: "
+                                           f"{sorted(iters) or 'none'}"))
+    body = " ".join((dom_text or "").split())
+    for n in (1, 2):
+        label = f"{tag} the page shows /build_until_verified[{n}] as a place in the loop"
+        shown = bool(re.search(rf"build_until_verified\[{n}\]", body))
+        out.append((label, shown, f"[{n}] named in the rendered copy={shown}"
+                    if keys is None or n in iters else
+                    f"[{n}] named in the rendered copy={shown}, but the ledger never wrote "
+                    f"an iteration {n} row — the arm is unmeasured for this run"))
+        if keys is not None and n not in iters:
+            out[-1] = (label, None, f"the ledger wrote no /build_until_verified[{n}] row, so "
+                                    "there was nothing for the page to show")
+    # A strip cell's accessible name is `"<node id>, <n> <word>, …"` (the sr-only
+    # counts line RunStageStrip.tsx writes); the Timeline tab's stage chip for the
+    # same node is named `build_until_verified` and NOTHING else, and counting that
+    # chip as a second cell is how live6/W2 reported "2 cells" on a strip with one.
+    cells = [n for n in nodes or [] if n["role"] == "button"
+             and re.match(r"^build_until_verified\b[^,]*,\s*\d+\s", pw_text(n).strip())]
+    label = (f"{tag} the stage strip holds ONE cell for build_until_verified, not one "
+             "per iteration (10 J7: iterations are repeat counts on one stage)")
+    note = "loop is not duplicated as stages" in body.lower()
+    if not cells:
+        out.append((label, None, "no stage-strip cell for build_until_verified appeared in "
+                                 "the snapshot (strip note visible=" + str(note) + ") — the "
+                                 "duplication claim has nothing to count"))
+    else:
+        out.append((label, len(cells) == 1,
+                    f"{len(cells)} cell(s) named build_until_verified: "
+                    f"{[pw_text(c)[:60] for c in cells][:3]}; strip note present={note}"))
+    return out
+
+
+def w10_event_requests(requests_text, run_id):
+    """The page's own request log (`playwright-cli requests`) cut down to the run's
+    SSE route: [(index, url)]. The index is the CLI's own numbering, which is what
+    `request-headers <n>` is read back with — the row's `Last-Event-ID` is a REQUEST
+    header set by the browser, never by this driver, so the log is the only witness.
+    [] when the log names no such line (the caller GAPs rather than guessing)."""
+    needle = f"/api/v1/runs/{run_id}/events"
+    out = []
+    for line in (requests_text or "").splitlines():
+        if needle not in line:
+            continue
+        idx = re.match(r"\s*(\d+)[.)]?\s", line + " ")
+        url = re.search(r"https?://\S+", line)
+        if idx and url:
+            out.append((int(idx.group(1)), url.group(0)))
+    return out
+
+
+def w10_resume_verdicts(attempts, roll_done=True, rolled=()):
+    """Row W10: "reload the app mid-run and reconnect the stream with
+    `Last-Event-ID`" + "then roll an API replica (C14a)".
+
+    `attempts` = [{"tag": "reload"|"roll", "url":…, "headers":…}] — every run-stream
+    request the browser logged, each with its request headers read back from the CLI.
+    `Last-Event-ID` is what `EventSource` sets on ITS OWN reconnect; a reloaded page
+    opens a fresh stream with no cursor and replays from the head of the journal, so
+    the two phases are judged apart: the reload on the render (the arms below), the
+    roll on the cursor. A `headers` blob that never came back is a GAP — an
+    unreadable header is not an absent one."""
+    by_tag = {}
+    for a in attempts or []:
+        by_tag.setdefault(str(a.get("tag") or "?"), []).append(a)
+    out = []
+    for tag, label in (("reload", "W10 the app reloads mid-run and re-opens the run stream"),
+                       ("roll", "W10 the stream reconnects with Last-Event-ID (the roll "
+                               "interrupted it)")):
+        rows = by_tag.get(tag) or []
+        if not rows:
+            if tag == "roll" and not roll_done:
+                out.append((label, None, "no replica was rolled — the stream never dropped, "
+                                         "so a Last-Event-ID resume was never exercised"))
+            elif tag == "roll" and rolled:
+                # The replica died and the client never asked again: that is the UI's
+                # reconnect failing, not a measurement hole — C14a's own GAP is only
+                # fair when NOTHING was rolled.
+                out.append((label, False, f"the page's log shows no run-stream request after "
+                                          f"rolling {'/'.join(rolled)} — the client never "
+                                          "re-opened the feed, so nothing resumed it"))
+            else:
+                out.append((label, None, f"the page's request log names no run-stream request "
+                                         f"for the {tag} phase — what the client opened is "
+                                         "unmeasured"))
+            continue
+        cursors = []
+        for a in rows:
+            hdrs = a.get("headers")
+            head = None if hdrs is None else bool(re.search(r"(?im)^\s*last-event-id\s*:", hdrs))
+            cursors.append((head, "after=" in str(a.get("url") or "")))
+        detail = (f"{len(rows)} stream request(s) in the {tag} phase; per request "
+                  "[Last-Event-ID header, ?after= in url]: "
+                  + ", ".join("[h={0},q={1}]".format("unreadable" if h is None else h, t)
+                              for h, t in cursors))
+        if all(h is None for h, _t in cursors):
+            out.append((label, None, detail + " — request-headers never came back, so the "
+                                              "resume cursor is unmeasured"))
+            continue
+        if tag == "reload":
+            out.append((label, True, detail + " — the browser re-opened the run stream"))
+            continue
+        resumed = any(h or t for h, t in cursors)
+        out.append((label, resumed, detail + ("" if resumed else " — no reconnect carried "
+                                              "a resume cursor: the client restarted the "
+                                              "stream from the journal head")))
+    return out
+
+
+def w10_continuity_verdicts(samples, run_terminal_before_roll):
+    """"continuity … with no gap" read across the phases: `samples` = [{"tag",
+    "total", "marker"}] in the order taken (before reload, after reload, after the
+    roll). The rendered tally must never shrink, and frames must keep arriving on the
+    SAME document after the roll (the `timeOrigin` witness again — a page that was
+    navigated in between says nothing about a stream)."""
+    out = []
+    samples = [s for s in (samples or []) if s]
+    totals = [s.get("total") for s in samples]
+    tags = [s.get("tag") for s in samples]
+    label = "W10 the rendered timeline never shortens across the reload or the replica roll"
+    if not samples or any(t is None for t in totals):
+        out.append((label, None, f"the panel's event tally did not read back on every phase "
+                                 f"{dict(zip(tags, totals))} — continuity cannot be measured"))
+    elif len(samples) < 2:
+        out.append((label, None, "only one phase was sampled"))
+    else:
+        shrank = [f"{a}->{b} at {t}" for a, b, t in zip(totals, totals[1:], tags[1:])
+                  if b < a]
+        out.append((label, not shrank, f"event tally per phase {dict(zip(tags, totals))}"
+                    + ("" if not shrank else f"; it went DOWN: {'; '.join(shrank)} — a frame "
+                                             "the page had already drawn is gone")))
+    label = ("W10 frames keep arriving on the same document after the api replica rolls "
+             "(no reload, no lost tail)")
+    if run_terminal_before_roll:
+        out.append((label, None, "the run was already terminal when the replica rolled — the "
+                                 "stream had nothing left to deliver, so post-roll "
+                                 "continuity is unmeasured for this leg"))
+    elif len(samples) < 3:
+        out.append((label, None, f"{len(samples)} phase(s) sampled — the post-roll sample "
+                                 "that would answer this never came back"))
+    else:
+        # The reload REPLACES the document by design, so the no-navigation witness can
+        # only run from the reloaded page onward: live6/W10 FAILed this arm for the
+        # pre-reload sample's timeOrigin, which is the driver misreading its own row.
+        post = samples[1:]
+        markers = {str(x.get("marker") or "") for x in post}
+        grew = bool(totals[-1]) and totals[-1] > totals[-2]
+        out.append((label, bool(all(markers)) and len(markers) == 1 and grew,
+                    f"tally {totals[-2]} -> {totals[-1]} after the roll, document "
+                    f"{'unchanged' if len(markers) == 1 else 'replaced mid-stream'} "
+                    f"({sorted(markers)[:1]} across {len(post)} post-reload sample(s))"
+                    + ("" if grew else " — nothing new arrived once the surviving replica "
+                                       "was serving again")))
+    return out
+
+
+def w10_new_type_verdicts(visible, journal_types):
+    """"continuity across the new event types" — the M4 vocabulary the ADVANCER now
+    writes (`node.scope.*` and `run.checkpoint_saved` rows that own no attempt,
+    `approval.*`), which is what M1/M2/M3's mechanism never had as a writer. Judged
+    on what is still drawn after the reconnect."""
+    label = ("W10 the new (advancer-written) event types survive the reconnect — "
+             "node.scope.*, run.checkpoint_saved and approval.* are all still drawn")
+    drawn = set(visible or {})
+    if not drawn:
+        return [(label, None, "nothing readable was drawn on the final phase — the reconnect "
+                              "re-rendered an empty or absent panel")]
+    families = ("node.scope.*", "run.checkpoint_saved", "approval.*")
+    got = {f: [t for t in drawn if w_type_matches(t, f)] for f in families}
+    journalled = {f: any(w_type_matches(t, f) for _s, t in journal_types or [])
+                  for f in families}
+    missing = [f for f in families if not got[f]]
+    detail = ("drawn " + ", ".join(f"{f}={len(got[f])}" for f in families)
+              + (f"; never journalled by this run: {[f for f in missing if not journalled[f]]}"
+                 if missing else ""))
+    if any(missing) and any(journalled[f] for f in missing):
+        return [(label, False, detail + "; the journal wrote "
+                + str([f for f in missing if journalled[f]])
+                + " and the re-rendered page does not name them")]
+    if all(not got[f] for f in families):
+        return [(label, None, detail + " — this run wrote none of the three families, so the "
+                                       "arm has nothing to measure")]
+    return [(label, True, detail)]
+
+
+def w10_foreign_verdict(dom_text, forbidden):
+    """"no cross-project event" on the only surface the row names: the rendered run
+    page. `forbidden` = [(category, [needles])] gathered from the API as a member —
+    another project's name/slug, and the attempt tails (`att ab12`) another run
+    really wrote while this page was open, which is the sharp half: two runs of the
+    SAME pipeline share every node instance key, so only the attempt tail tells them
+    apart. An empty category is a GAP — with nothing to look for the verdict is
+    vacuous, and a vacuous clean has never protected anybody's tenancy."""
+    body = " ".join((dom_text or "").split()).lower()
+    out = []
+    for category, needles in forbidden or []:
+        label = f"W10 no {category} reaches the run page"
+        want = sorted({str(n).strip().lower() for n in needles or [] if str(n).strip()})
+        if not want:
+            out.append((label, None, "the leg collected no values for this category — there "
+                                     "was nothing to search for, which proves nothing"))
+            continue
+        if not body:
+            out.append((label, None, "no rendered DOM came back — the leakage arm is "
+                                     "unmeasured rather than clean"))
+            continue
+        hits = [n for n in want if n in body]
+        out.append((label, not hits,
+                    f"searched {len(want)} value(s) in the rendered page"
+                    + ("; leaked: " + ", ".join(hits)[:180] if hits else "")))
+    return out
+
+
+# Row W11's internals (ADR-0016 § 8): the words AND the values, because a DOM that
+# renamed `fencing_token` to `token` while printing the number would still be a leak.
+W11_INTERNAL_FIELDS = (("fencing token", ("fencing_token", "fencingToken")),
+                       ("lease expiry", ("lease_expires_at", "leaseExpiresAt")),
+                       ("worker id", ("worker_id", "workerId")))
+
+
+def w11_extra_frames_verdict(visible, journal_types, tag="W11", tally=None):
+    """The other half of "no gap and no cross-project event": the page draws no
+    run-vocabulary event MORE often than this run journalled it. A frame from another
+    project (or a second replay of one) can only show up here as an extra row, since
+    two runs of one pipeline share every node instance key — so drawn > journalled is
+    the foreign-frame signature.
+
+    Measurable only while the page mounts no node pane (the attempt detail repeats its
+    own event types); the legs that use it stay on `?tab=timeline` with no `?node=`.
+    Types outside the timeline's vocabulary are ignored — `toRunEvent` drops them, so
+    they can never be drawn here (ADR-0014 § 8)."""
+    label = (f"{tag} no foreign frame is painted — nothing is drawn more often than this "
+             "run journalled it")
+    vocab = [t for _s, t in (journal_types or []) if t in M4_RUN_EVENT_TYPES]
+    if not vocab:
+        return (label, None, "no run-vocabulary journal rows read back — 'extra' has no "
+                             "baseline to be measured against")
+    drawn = {t: (visible or {}).get(t, {}).get("count", 0) for t in set(vocab)}
+    over = {t: (n, vocab.count(t)) for t, n in drawn.items() if n > vocab.count(t)}
+    # 'How many frames were drawn' is read as ROWS, never as string occurrences: the
+    # snapshot writes one row's type four times over (w_frame_surfaces), and live6/W2
+    # turned that into a FAIL that blamed the page for the driver's own text join.
+    cross = (f"; the panel's own tally reads {tally[0]} of {tally[1]} events against the "
+             f"{len(vocab)} journalled run-vocabulary rows"
+             if tally else "")
+    return (label, not over,
+            f"{len(vocab)} journalled run-vocabulary rows across {len(drawn)} types, "
+            f"counted as timeline ROWS on the Timeline panel only{cross}"
+            + (f"; MORE ROWS drawn than the journal holds them: {over} — a real extra "
+               "frame (a replay or another run's row), since each row's type string is "
+               "counted once here and four times in the raw snapshot"
+               if over else " — every type drawn at most as often as it was written"))
+
+
+def w11_short_id(run_id):
+    """`ui/src/lib/format.ts`'s shortId → `api/names.ts`: the UUIDv7 TAIL, not the
+    head (the head is a timestamp). This is the only spelling of a child run's id a
+    tree row can be searched for."""
+    v = str(run_id or "").strip()
+    return v[-8:] if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-", v, re.I) else v
+
+
+def w11_rendered_children(dom_text):
+    """The tree's child rows as the page wrote them: `child run {shortId} · depth {n}
+    · waits for {policy}` (RunTree.tsx:478) -> {shortId: {"depth", "wait_policy",
+    "line"}}. Matching on the sentence the component itself emits, never on a
+    guessed label."""
+    out = {}
+    for line in (dom_text or "").splitlines():
+        m = re.search(r"child run\s+(\S+)\s+·\s+depth\s+(\d+)\s+·\s+waits\s+for\s+(\w+)",
+                      " ".join(line.split()))
+        if m:
+            out[m.group(1)] = {"depth": int(m.group(2)), "wait_policy": m.group(3),
+                               "line": line.strip()[:200]}
+    return out
+
+
+def w11_tree_verdicts(children, dom_text):
+    """Row W11's first half: "the tree renders depth 1 children with their own
+    statuses". `children` is what `GET /runs/{id}/tree` reports (the answer key —
+    its ids, depths and statuses, never invented here); the DOM is searched for the
+    sentence the component emits, row by row.
+
+    Two verdicts, because they fail for different reasons: the rows that DO render
+    must be honest (depth 1, the child's own status word, no invented one), and the
+    fan-out the row names (C8's 25 children) must be reachable — RunTree pages a
+    branch at `pageSize` 10 and its `N more` row is not expandable, so a child past
+    the page cannot be opened from the tree at all."""
+    out = []
+    rows = [c for c in (children or []) if isinstance(c, dict)]
+    rendered = w11_rendered_children(dom_text)
+    label = "W11 the tree renders depth-1 children with their own statuses"
+    if not rows:
+        return [(label, None, "the /tree route reported no children — there is no fan-out "
+                              "tree to render (the run never fanned out, or the route did "
+                              "not answer)"),
+                ("W11 every child the tree reports is reachable in the DOM", None,
+                 "no children to reach")]
+    if not rendered:
+        return [(label, False, f"the /tree route holds {len(rows)} child run(s) "
+                               f"({sorted({str(c.get('status')) for c in rows})}) and the "
+                               "rendered page names none of them — no `child run … · depth …` "
+                               "row appeared"),
+                ("W11 every child the tree reports is reachable in the DOM", False,
+                 f"0 of {len(rows)} child rows in the DOM")]
+    keyed = {w11_short_id(c.get("child_run_id")): c for c in rows}
+    wrong = [(s, rendered[s]["depth"], keyed[s]["depth"]) for s in rendered
+             if s in keyed and rendered[s]["depth"] != (keyed[s].get("depth") or 0)]
+    unknown = sorted(s for s in rendered if s not in keyed)
+    statusless = [s for s in rendered
+                  if s in keyed and str(keyed[s].get("status") or "") not in rendered[s]["line"]]
+    detail = (f"{len(rendered)} of {len(rows)} child rows rendered; depth wrong for "
+              f"{wrong or 'none'}; rows naming no child of this run: {unknown or 'none'}; "
+              f"rows carrying no status word: {statusless or 'none'}")
+    out.append((label, not wrong and not unknown and not statusless,
+                detail + "; child statuses the route reports: "
+                + str(sorted({str(c.get("status")) for c in rows}))))
+    label = "W11 every child the tree reports is reachable in the DOM (nothing stranded)"
+    stranded = sorted(set(keyed) - set(rendered))
+    more = re.findall(r"(\d+) more", dom_text or "")
+    out.append((label, not stranded,
+                f"{len(rendered)}/{len(rows)} child rows on screen"
+                + (f"; {len(stranded)} stranded behind a pager the UI cannot expand "
+                   f"(`N more` rows visible: {more or 'none'}) — RunTree pages a branch at "
+                   "pageSize 10 and the more-row is not expandable" if stranded else
+                   " — the whole fan-out is on screen")))
+    return out
+
+
+def w11_attempt_verdicts(attempts, dom_text, node_key=""):
+    """Row W11's second half: "the attempt list shows attempt 1 `interrupted` with
+    `retry_context` and attempt 2 `succeeded`".
+
+    `attempts` is the ledger/API's own rows for the node execution opened (the answer
+    key); the pair only exists if a worker really died holding attempt 1, which is
+    C5's product and this leg kills nothing — so no pair is a GAP naming that, never
+    a PASS. With a real pair the DOM is held to the row: attempt 1's number, its
+    `interrupted` word and its retry_context copy ("what the next attempt inherits
+    (<mode>)", AttemptDetail.tsx) must all be on screen."""
+    out = []
+    rows = [a for a in (attempts or []) if isinstance(a, dict)]
+    body = " ".join((dom_text or "").split())
+    lowered = body.lower()
+    interrupted = [a for a in rows if str(a.get("status")) == "interrupted"]
+    succeeded = [a for a in rows if str(a.get("status")) == "succeeded"]
+    pair = [a for a in interrupted
+            if any(int(s.get("attempt_number") or 0) > int(a.get("attempt_number") or 0)
+                   for s in succeeded)]
+    label = ("W11 the attempt list shows attempt 1 interrupted with retry_context and "
+             "attempt 2 succeeded")
+    if not rows:
+        out.append((label, None, f"the attempt rows for {node_key or 'the node'} did not "
+                                 "read back — there is nothing to compare the pane against"))
+    elif not pair:
+        out.append((label, None,
+                    f"{node_key or 'the node'} holds "
+                    + str([f"#{a.get('attempt_number')} {a.get('status')}" for a in rows])
+                    + "; the row's pair needs an attempt INTERRUPTED mid-node, which is what "
+                      "C5's `compose kill worker-a` produces — this leg performs no kill "
+                      "(§ 7.2 makes W-legs read-mostly), so the pair was never available"))
+    else:
+        first = int(pair[0].get("attempt_number") or 1)
+        mode = ""
+        rc = pair[0].get("retry_context")
+        if isinstance(rc, dict):
+            mode = str(rc.get("mode") or "")
+        shown = (f"attempt {first}" in lowered and "interrupted" in lowered
+                 and "what the next attempt inherits" in lowered)
+        out.append((label, shown,
+                    f"ledger: #{first} interrupted (retry_context.mode={mode or 'unset'!r}), "
+                    + str([f"#{a.get('attempt_number')} {a.get('status')}" for a in rows])
+                    + f"; DOM names attempt {first}={f'attempt {first}' in lowered}, "
+                      "says 'interrupted'=" + str("interrupted" in lowered)
+                      + ", shows the retry_context copy="
+                      + str("what the next attempt inherits" in lowered)
+                      + " — the pane opens on ONE attempt (RunInspector.tsx takes "
+                        "attempts.at(-1)), so an earlier attempt's row is not on screen "
+                        "at all unless the newest attempt carries it"))
+    newest = max((int(a.get("attempt_number") or 0) for a in rows), default=0)
+    if rows:
+        label = "W11 the node pane says which attempt it is showing"
+        out.append((label, f"attempt {newest}" in lowered,
+                    f"newest attempt in the ledger = #{newest}; crumb 'attempt {newest}' "
+                    f"rendered={f'attempt {newest}' in lowered}"))
+    return out
+
+
+def w11_internals_verdict(dom_text, observed):
+    """"`fencing_token`/`lease_expires_at`/`worker_id` appear NOWHERE in the DOM
+    (ADR-0016 § 8, re-asserted against the new routes)" — the new routes being
+    `/runs/{id}/tree`, `/runs/{id}/nodes` and `/runs/{id}/nodes/{id}`. Both spellings
+    are searched for every category: the field NAME, and the VALUE the ledger holds
+    for this run (a token echoed under another name is still the token)."""
+    body = " ".join((dom_text or "").split()).lower()
+    out = []
+    for category, field_words, values in observed or []:
+        label = f"W11 no {category} (name or value) anywhere in the DOM"
+        needles = {str(w).lower() for w in field_words or [] if str(w).strip()} \
+            | {str(v).lower() for v in values or [] if str(v).strip()}
+        if not needles:
+            out.append((label, None, "no field words and no ledger value were collected for "
+                                     "this category — there was nothing to search for"))
+            continue
+        if not body:
+            out.append((label, None, "no rendered DOM came back — the claim is unmeasured, "
+                                     "not clean"))
+            continue
+        hits = sorted(n for n in needles if n in body)
+        out.append((label, not hits,
+                    f"searched {len(needles)} spelling(s) across every page this leg "
+                    f"rendered" + (f"; found: {hits[:4]}" if hits else "")))
+    return out
+
+
 def w1():
     """W1 — the New-run form renders from spec.inputs (goal textarea, repository
     select, acceptance-criteria with default); the POST carries the Idempotency-Key
@@ -10693,10 +11516,126 @@ def w1():
 
 
 def w2():
-    """W2 — live run page: run.created -> node.attempt.started ->
-    conversation.turn.* -> run.checkpoint_saved render in order, no gap;
-    /build_until_verified[1] and [2] show as ITERATIONS, not duplicate nodes."""
-    _playwright_stub("W2", "event stream renders live, iterations not duplicated nodes")
+    """W2 — row § 7.2: "watch the run page while it executes" → "`run.created` →
+    `node.attempt.started` → `conversation.turn.*` (the transcript of the agent node,
+    inline, from M2's stream) → `run.checkpoint_saved` render live, in order, with no
+    gap; the node timeline shows `/build_until_verified[1]/…` and `[2]` as
+    **iterations**, not as duplicated definition nodes".
+
+    The run is the DETERMINISTIC TWIN (feature-development-deterministic) — the only
+    variant that reaches `/build_until_verified[2]` unattended, because the agent
+    variant's `/plan` dies on a permission prompt with nobody to answer it (C8's seed
+    note, docs/design/attempt-permissions.md). Its gate is decided with the shared
+    wait_live_past_gate/gate_then_live_action sequencing C4/C5/C6 all use, so the poll
+    never stares at `waiting_human` for its whole window.
+
+    The page is opened straight on `?tab=timeline` (RunInspector reads the tab from the
+    URL, so no click is needed and the tab switch is not a reload), and it is SAMPLED,
+    never reloaded: the document's own `performance.timeOrigin` is the witness that the
+    rows that appeared between samples arrived over the stream."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W2 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no twin "
+                           "revision to run and no page to watch")
+        return
+    twin = (facts or {}).get("twin") or {}
+    project_id, rev = mf(twin, "project_id"), mf(twin, "revision_id")
+    client = CTX.get("alice") or Client("alice")
+    if login(client) is None:
+        gap("W2 all arms", "alice could not sign in — the run the row watches cannot be "
+                           "posted, so there is no page to watch")
+        return
+    CTX["alice"] = client
+    r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
+                    {"pipeline_revision_id": rev,
+                     "inputs": mf(twin, "inputs", default={}),
+                     "idempotency": f"m4-exit-w2-{int(time.time())}"})
+    run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
+    if not check("W2 the deterministic twin run the row watches is started",
+                 r.status in (200, 201) and bool(run_id), f"{r.status} {r.text[:160]}"):
+        gap("W2 all arms", "no run exists — there is nothing to watch")
+        return
+    CTX["w2_run_id"] = run_id
+    candidates = list(M4_RUN_EVENT_TYPES) + [t for t in W2_ROW_CHAIN if not t.endswith(".*")]
+
+    def sample(tag):
+        """One DOM reading of this run's page (see w_run_sample)."""
+        return w_run_sample(run_id, candidates, "m4w2", f"W2 {tag}")
+
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}?tab=timeline",
+                    session="m4w2"):
+        gap("W2 browser arms", "the mock IdP did not sign alice in, so the run page was "
+                               "never rendered and nothing about the DOM can be claimed")
+        return
+    try:
+        pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=timeline", session="m4w2")
+        landed, _n = pw_poll(lambda ns: "of" in w8_dom_text(ns) and "events" in w8_dom_text(ns),
+                             session="m4w2", tries=12, delay=2)
+        first = sample("open")
+        shot = pw_shot("w2-open", session="m4w2")
+        if not check("W2 the run page renders its journal panel",
+                     landed or bool(first["types"]),
+                     f"tally={first['total']} types={sorted(first['types'])[:4]} [{shot}]"):
+            gap("W2 all arms", "the timeline panel never rendered — live ordering, gaps and "
+                               "iterations are all unmeasurable without it")
+            return
+        # The gate is decided FIRST — the twin parks at /approve ahead of the loop the
+        # row needs to see iterate (wait_live_past_gate; the same driver bug C4/C5/C6
+        # reported as "no attempt was ever held by a worker").
+        live = wait_live_past_gate(client, project_id, run_id, 300, "W2")
+        c5_emit([w_gate_release_verdict(live, run_status(run_id),
+                                        c1_attempt_count(run_id), tag="W2")])
+        samples = [first]
+        deadline = time.time() + 240
+        while time.time() < deadline and run_status(run_id) not in C14_TERMINAL:
+            s = sample(f"live{len(samples)}")
+            samples.append(s)
+            time.sleep(2)
+        # One more reading AFTER the terminal frames have had a moment to paint: a
+        # timeline sampled while the last node was still running is short of
+        # `run.completed` for the driver's own reason, not the product's.
+        time.sleep(5)
+        samples.append(sample(f"final{len(samples)}"))
+        final = samples[-1]
+        shot_mid = pw_shot("w2-live", session="m4w2")
+        journal = w_journal_types(run_id)
+        show(f"W2 the run's journal ({len(journal or [])} rows, run {run_id})",
+             ", ".join(f"{s}:{t}" for s, t in (journal or [])[:40])[:600] or "(unreadable)")
+        if journal is None:
+            gap("W2 every arm that compares the page to the ledger",
+                f"the domain_events slice for run {run_id} did not read back — the rendered "
+                "list has no answer key to be judged against")
+            return
+        c5_emit(w2_live_verdicts(samples))
+        c5_emit(w2_chain_verdicts(final["types"], journal))
+        c5_emit([w2_turn_arm_verdict(journal)])
+        c5_emit([w2_no_gap_verdict(final["types"], journal, final["dom"])])
+        c5_emit([w11_extra_frames_verdict(final["types"], journal, tag="W2",
+                                          tally=final["total"])])
+        # The classification live6/W2.out left open: 'every type drawn ~4x' is the
+        # snapshot writing ONE row's type four times (accessible name + child text
+        # node, twice over once the raw tree is appended), not a second panel and not a
+        # repainted frame. Printed as evidence next to the verdict, not argued about.
+        show("W2 where each type's string is written (rows vs string occurrences)",
+             str(w_frame_surfaces(final["nodes"], final["raw"], sorted(final["types"]),
+                                  dom_text=final["dom"]))[:700]
+             or "(no timeline rows in the final sample)")
+        # The iteration half of the row is read on the same tab: the timeline names each
+        # row's node_instance_key (`<code>`), so /build_until_verified[1]/… and [2] are
+        # on screen, and the stage strip — which the page renders above the tabs, in
+        # EVERY tab — says whether the loop became one cell or two.
+        c5_emit(w2_iteration_verdicts(final["nodes"], final["dom"], c12_node_keys(run_id)))
+        show("W2 the strip as the page drew it",
+             str([pw_text(n)[:70] for n in final["nodes"]
+                  if n["role"] == "button" and "build_until_verified" in pw_text(n)][:3])
+             + f" [{shot_mid}]")
+    finally:
+        if run_status(run_id) not in C14_TERMINAL:
+            try:
+                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception:  # noqa: BLE001 — housekeeping only, never a verdict
+                pass
+        pw("close", session="m4w2")
 
 
 def w3():
@@ -11476,19 +12415,479 @@ def w9():
         pw("close", session="m4w9")
 
 
+def w10_sibling_attempt_tails(run_id, tries=6, delay=4):
+    """The tail (`att ab12` — the last four of the attempt uuid) of every attempt a
+    SIBLING run wrote while the watched page was open: the one spelling in the DOM
+    that tells two runs of the SAME pipeline apart, since they share every node
+    instance key. None when the ledger never answered — the leakage arm then GAPs
+    rather than calling an empty search clean; [] (answered, nothing yet) is a real
+    empty needle list and the verdict says so."""
+    for _ in range(tries):
+        try:
+            rows = psql_rows(psql(f"SELECT substring(a.id::text from (length(a.id::text)-3)) "
+                                  f"FROM attempts a WHERE a.run_id = '{run_id}'"), 1)
+        except RuntimeError as e:
+            show("W10 sibling attempt tails (psql)", str(e)[:200])
+            return None
+        if rows:
+            return [r[0].lower() for r in rows]
+        time.sleep(delay)
+    return []
+
+
 def w10():
-    """W10 — reload mid-run, reconnect with Last-Event-ID, roll an API
-    replica (C14a): continuity across the new event types, no gap, no
-    cross-project event."""
-    _playwright_stub("W10", "stream continuity across a replica roll")
+    """W10 — row § 7.2: "reload the app mid-run and reconnect the stream with
+    `Last-Event-ID`, then roll an API replica (C14a)" → "continuity across the new
+    event types with no gap and no cross-project event (M1/M2/M3's mechanism re-proven
+    with the advancer as a writer)".
+
+    The run is parked at its `/approve` gate while the reload and the roll happen — the
+    state a real roll actually meets, with the stream open and idle — and the gate is
+    decided with the shared wait_live_past_gate only AFTERWARDS, which is what makes the
+    post-roll verdicts measure frames arriving on a RECONNECTED stream rather than an
+    empty one. `Last-Event-ID` is read where it lives: the browser's own request log
+    (`requests`, then `request-headers <n>`), the only witness that the reloaded page
+    re-opened the feed at all. A reloaded page opens a FRESH EventSource with no cursor
+    and replays the journal from its head, so the reload is judged on the RENDER and the
+    cursor on the ROLL — neither is credited to the other. Only `api-a` is rolled, only
+    inside compose project communication-m4.
+
+    A SECOND run of the same pipeline runs alongside it: that is the stimulated half of
+    "no cross-project event", because two runs of one pipeline share every node
+    instance key — a leaked frame can only show up as an extra row of a type this run
+    never journalled that often, or as the other run's attempt tail."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W10 all arms", "no seed manifest (§ 7.0 seed has not run) — no twin revision to "
+                           "run, no second run to make a leak observable and no page to "
+                           "reload")
+        return
+    twin = (facts or {}).get("twin") or {}
+    project_id, rev = mf(twin, "project_id"), mf(twin, "revision_id")
+    client = CTX.get("alice") or Client("alice")
+    if login(client) is None:
+        gap("W10 all arms", "alice could not sign in — neither run the leg needs can be "
+                           "posted, so there is nothing to reload over")
+        return
+    CTX["alice"] = client
+    stamp = int(time.time())
+    body = {"pipeline_revision_id": rev, "inputs": mf(twin, "inputs", default={})}
+    r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
+                    dict(body, idempotency=f"m4-exit-w10-{stamp}"))
+    run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
+    if not check("W10 the run whose stream is reloaded exists",
+                 r.status in (200, 201) and bool(run_id), f"{r.status} {r.text[:160]}"):
+        gap("W10 all arms", "no run — nothing to reload over")
+        return
+    CTX["w10_run_id"] = run_id
+    sib = client.post(LB, f"/api/v1/projects/{project_id}/runs",
+                      dict(body, idempotency=f"m4-exit-w10-sibling-{stamp}"))
+    sibling_id = (sib.json() or {}).get("run_id") if sib.text[:1] == "{" else None
+    show(f"W10 sibling run (so a leak would be observable) -> {sib.status}",
+         f"run={sibling_id!r} status={run_status(sibling_id) if sibling_id else '(none)'!r}")
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None:
+        admin = client
+    obj = c9_manifest_json() or {}
+    project_b = obj.get("project_b") if isinstance(obj.get("project_b"), dict) else {}
+    b_needles = []
+    if project_b.get("id"):
+        pr = admin.get(LB, f"/api/v1/projects/{project_b['id']}")
+        if pr.status == 200:
+            b_needles.append(str((pr.json() or {}).get("name") or ""))
+        b_needles.append(str(project_b.get("slug") or ""))
+    candidates = list(M4_RUN_EVENT_TYPES) + [t for t in W2_ROW_CHAIN if not t.endswith(".*")]
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}?tab=timeline",
+                    session="m4w10"):
+        gap("W10 browser arms", "the mock IdP did not sign alice in — the reload, the request "
+                               "log and the rendered timeline all need a page")
+        return
+    try:
+        pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=timeline", session="m4w10")
+        landed, _n = pw_poll(lambda ns: "events" in w8_dom_text(ns), session="m4w10",
+                            tries=12, delay=2)
+        before = w_run_sample(run_id, candidates, "m4w10", "W10 before reload")
+        check("W10 the run page renders its journal panel before the reload",
+              landed or bool(before["types"]),
+              f"tally={before['total']} types={sorted(before['types'])[:4]}")
+        # "reload the app mid-run" — the same tab on the same URL, exactly as the row
+        # words it (the tab is a URL parameter here, so the reload cannot change it).
+        pw("reload", session="m4w10")
+        time.sleep(4)
+        after = w_run_sample(run_id, candidates, "m4w10", "W10 after reload")
+        # `--static`: the CLI hides "static" requests by default and an EventSource
+        # is exactly the kind of request its heuristic may not call an API one. The
+        # row's whole claim is about what THIS client opened, so nothing may be hidden.
+        rc_q, reqs_a = pw("requests", "--static", session="m4w10")
+        reload_lines = w10_event_requests(reqs_a, run_id) if rc_q == 0 else []
+        attempts = []
+        for idx, url in reload_lines[-3:]:
+            rc_h, hdrs = pw("request-headers", idx, session="m4w10", timeout=60)
+            attempts.append({"tag": "reload", "url": url, "headers": hdrs if rc_h == 0 else None})
+        show(f"W10 the page's own stream requests after the reload ({len(reload_lines)})",
+             "\n".join(f"{i} {u[:120]}" for i, u in reload_lines) or "(none in the log)")
+        # "then roll an API replica (C14a)" — ONE service, and only ever this project's.
+        parked = run_status(run_id)
+        terminal_before_roll = parked in C14_TERMINAL
+        rc_roll, roll_out = run(COMPOSE + ["restart", "api-a"])
+        show(f"docker compose -p communication-m4 restart api-a (rc={rc_roll})",
+             roll_out[-240:])
+        back = wait_ready(timeout=120, hard=False)
+        check("W10 both api replicas answer again after the roll", back,
+              f"/system/readiness on {A} and {B} after `restart api-a`")
+        time.sleep(3)
+        rolled = w_run_sample(run_id, candidates, "m4w10", "W10 after the roll")
+        seen = {i for i, _u in reload_lines}
+        # The client only notices a dead replica when a heartbeat is missed (15 s, ADR-0014
+        # § 5) or the socket errors, so the reconnect is POLLED for, not assumed: waiting
+        # on one fixed sleep is how a leg ends up reporting "never dropped" about a roll
+        # that did drop it two seconds after the sample.
+        all_lines, waited = [], 0.0
+        while waited < 60:
+            rc_q2, reqs_b = pw("requests", "--static", session="m4w10")
+            all_lines = w10_event_requests(reqs_b, run_id) if rc_q2 == 0 else []
+            if [(i, u) for i, u in all_lines if i not in seen]:
+                break
+            time.sleep(4)
+            waited += 4
+        new_lines = [(i, u) for i, u in all_lines if i not in seen] or all_lines[-1:]
+        for idx, url in new_lines[-3:]:
+            rc_h, hdrs = pw("request-headers", idx, session="m4w10", timeout=60)
+            attempts.append({"tag": "roll", "url": url, "headers": hdrs if rc_h == 0 else None})
+        show(f"W10 the stream requests the roll forced ({len(new_lines)})",
+             "\n".join(f"{i} {u[:120]}" for i, u in new_lines) or "(none in the log)")
+        # Only now is the gate decided: parked at /approve the stream had nothing left to
+        # deliver, and "continuity" is a claim about FRAMES. Deciding the run's own gate
+        # is this leg's one mutation (§ 7.2's read-mostly rule).
+        live = wait_live_past_gate(client, project_id, run_id, 300, "W10")
+        c5_emit([w_gate_release_verdict(live, run_status(run_id),
+                                        c1_attempt_count(run_id), tag="W10")])
+        deadline, settled = time.time() + 240, rolled
+        while time.time() < deadline and run_status(run_id) not in C14_TERMINAL:
+            settled = w_run_sample(run_id, candidates, "m4w10", "W10 delivered")
+            time.sleep(3)
+        # ... and one LAST reading after the terminal frames have had time to paint, so a
+        # tail the page never had a chance to draw is not reported as a lost frame.
+        time.sleep(5)
+        settled = w_run_sample(run_id, candidates, "m4w10", "W10 delivered (settled)")
+        shot = pw_shot("w10-final", session="m4w10")
+        journal = w_journal_types(run_id)
+        show(f"W10 the run's journal ({len(journal or [])} rows)",
+             ", ".join(f"{s}:{t}" for s, t in (journal or [])[:40])[:600] or "(unreadable)")
+        tails = w10_sibling_attempt_tails(sibling_id) if sibling_id else None
+        show("W10 the sibling run's attempt tails (the only DOM spelling that tells two "
+             "runs of one pipeline apart)", str(tails))
+        forbidden = [("other project's name or slug", b_needles),
+                     ("other run's attempt id", [f"att {t}" for t in (tails or [])])]
+        c5_emit(w10_resume_verdicts(attempts, roll_done=rc_roll == 0))
+        c5_emit(w10_continuity_verdicts([before, after, rolled, settled],
+                                        terminal_before_roll))
+        c5_emit(w10_new_type_verdicts(settled["types"], journal))
+        if journal is None:
+            gap("W10 the no-gap and no-extra-frame arms",
+                f"the domain_events slice for run {run_id} did not read back — the rendered "
+                "list has no answer key to be judged against")
+        else:
+            c5_emit([w2_no_gap_verdict(settled["types"], journal, settled["dom"], tag="W10")])
+            c5_emit([w11_extra_frames_verdict(settled["types"], journal, tag="W10",
+                                              tally=settled["total"])])
+        c5_emit(w10_foreign_verdict(settled["dom"], forbidden))
+        show("W10 the tallies each phase left behind",
+             str([(s["tag"], s["total"], s["marker"]) for s in (before, after, rolled,
+                                                                settled)]) + f" [{shot}]")
+    finally:
+        for rid in (run_id, sibling_id):
+            if rid and run_status(rid) not in C14_TERMINAL:
+                try:
+                    client.post(LB, f"/api/v1/runs/{rid}/cancel", {})
+                except Exception:  # noqa: BLE001 — housekeeping, never a verdict
+                    pass
+        pw("close", session="m4w10")
+
+
+def w11_attempts_ledger(node_execution_id):
+    """One node execution's attempt rows read from the LEDGER — the fallback when
+    `GET /runs/{id}/nodes/{id}` answers without carrying them (live6/W11: the pane drew
+    attempt copy while the arm GAPed on an empty READ, which is the driver's hole, not
+    the product's). Same fields `w11_attempt_verdicts` consumes. None = psql unreadable
+    (a GAP), [] = the node genuinely owns no attempt rows.
+
+    `retry_context` is jsonb and can hold `|`, so the split is bounded, not psql_rows'
+    ragged-line drop — a row whose context is unreadable is a worse lie than a row.
+    The context text is kept verbatim: the verdict reads `mode` out of it, and a row
+    the leg could not parse is still a row that existed."""
+    try:
+        text = psql("SELECT a.attempt_number::text || '|' || a.status || '|' || "
+                    "coalesce(a.retry_context::text, '-') FROM attempts a "
+                    f"WHERE a.node_execution_id = '{node_execution_id}' "
+                    "ORDER BY a.attempt_number")
+    except RuntimeError as e:
+        show("W11 attempt rows (psql)", str(e)[:220])
+        return None
+    out = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split("|", 2)]
+        if len(parts) != 3:
+            continue
+        ctx = parts[2]
+        try:
+            ctx = json.loads(ctx) if ctx.startswith("{") else ctx
+        except ValueError:
+            pass
+        out.append({"attempt_number": parts[0], "status": parts[1], "retry_context": ctx})
+    return out
+
+
+def w11_internals_facts(run_id):
+    """Everything row W11 says must appear NOWHERE in the DOM, read from the LEDGER so
+    the needles are this run's real values and not invented words:
+    [(category, [field spellings], [values])].
+
+    A value is only used as a needle when it is long enough to be distinctive: a
+    fencing token of `3` also occurs in every "2 of 3 events" tally on the page, and
+    calling that a leak would be the driver's lie, not the product's. The field NAMES
+    are always searched — the UI's own `formatTime` would render a lease as `13:45:12`,
+    so the spellings below are the RFC 3339 form the API answers with plus Postgres'
+    own text form."""
+    out = []
+    queries = (("fencing token", ("fencing_token", "fencingToken"),
+                "SELECT DISTINCT fencing_token::text FROM attempts WHERE run_id = '%s'"),
+               ("lease expiry", ("lease_expires_at", "leaseExpiresAt"),
+                "SELECT DISTINCT to_char(lease_expires_at AT TIME ZONE 'UTC', "
+                "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') || '|' || lease_expires_at::text "
+                "FROM attempts WHERE run_id = '%s' AND lease_expires_at IS NOT NULL"),
+               ("worker id", ("worker_id", "workerId"),
+                "SELECT DISTINCT worker_id::text FROM attempts WHERE run_id = '%s' "
+                "AND worker_id IS NOT NULL"))
+    for category, words, sql in queries:
+        values = []
+        try:
+            for row in psql_rows(psql(sql % run_id), 2 if "|" in sql.split("WHERE")[0] else 1):
+                for part in row:
+                    part = str(part).strip()
+                    if len(part) >= 6:
+                        values.append(part)
+        except RuntimeError as e:
+            show(f"W11 internals read — {category} (psql)", str(e)[:220])
+        out.append((category, list(words), values))
+    return out
+
+
+def w11_expand(session, already, cap=24, delay=1):
+    """Click the execution tree's own `+` controls (aria-label `expand <row>`) until
+    the fan-out's children are on screen.
+
+    Two things the component forces on the driver: a ref is only valid for the
+    snapshot it came from (the tree re-renders on every toggle), so ONE click is
+    taken per snapshot — the same rule `pw_login` learned about the IdP button — and
+    the rows come in document order, which means the `until` loop above `/fan_out`
+    would otherwise soak up every click. Priority is therefore the fan-out's own
+    branch rows: scope, then `branch n`, then its `invoke`, then anything else.
+
+    Returns (clicked_labels, snapshots_taken); the labels are what the evidence
+    line names, so a reader can see exactly how deep the leg got."""
+    clicked, snaps = [], 0
+
+    def rank(label):
+        low = label.lower()
+        if "fan_out" in low:
+            return 0
+        if low.startswith("branch") or low.startswith("iteration"):
+            return 1
+        if "invoke" in low:
+            return 2
+        return 3
+
+    while len(clicked) < cap:
+        rc, raw = pw_snapshot(session=session)
+        snaps += 1
+        if rc != 0:
+            break
+        found = []
+        for n in pw_snapshot_nodes(raw):
+            text = pw_text(n).strip()
+            if n["role"] != "button" or not text.lower().startswith("expand") or not n["ref"]:
+                continue
+            label = text[len("expand"):].strip()
+            if label in already:
+                continue
+            found.append((rank(label), label, n["ref"]))
+        if not found:
+            break
+        _rank, label, ref = sorted(found)[0]
+        rc2, _out = pw("click", ref, session=session, timeout=60)
+        if rc2 != 0:
+            break
+        already.add(label)
+        clicked.append(label)
+        time.sleep(delay)
+    return clicked, snaps
 
 
 def w11():
-    """W11 — the C8 child-run tree renders depth-1 children with statuses;
-    one node execution's attempt list shows attempt 1 interrupted with
-    retry_context and attempt 2 succeeded; fencing_token / lease_expires_at /
-    worker_id appear NOWHERE in the DOM (ADR-0016 § 8 re-asserted)."""
-    _playwright_stub("W11", "tree + attempt list, internals absent from the DOM")
+    """W11 — row § 7.2: "open a child-run tree (C8's 25 children) and one node
+    execution's attempt list" → "the tree renders depth 1 children with their own
+    statuses; the attempt list shows attempt 1 `interrupted` with `retry_context` and
+    attempt 2 `succeeded`; `fencing_token`/`lease_expires_at`/`worker_id` appear
+    NOWHERE in the DOM (ADR-0016 § 8, re-asserted against the new routes)".
+
+    The fan-out is C8's twin path — `fanout=true, fanout_count=25` on the
+    feature-development-deterministic assignment — which only became reachable with
+    21656f6 (pipeline.invoke resolves its target by name and writes the one invocation
+    row); live4/C8.out measured `/fan_out` CANCELLED with 0 invoke rows, and C8 itself
+    says why the agent variant cannot be used unattended. The gate is decided with the
+    shared wait_live_past_gate/gate_then_live_action helpers like every other leg.
+
+    The tree rows are opened by clicking the component's own `+` controls (the tree
+    collapses every branch by default), and the attempt pane is reached by the URL the
+    page itself documents — `?node=<nodeExecutionId>`."""
+    facts = CTX.get("manifest") or load_manifest_facts()
+    seed = c8_seed_facts()
+    if not facts or not seed:
+        gap("W11 all arms", "no seed manifest / no C8 twin assignment (§ 7.0 seed has not "
+                           "run) — there is no fan-out run to open a tree of")
+        return
+    project_id = mf(seed, "project_id")
+    client = CTX.get("alice") or Client("alice")
+    if login(client) is None:
+        gap("W11 all arms", "alice could not sign in — the fan-out run cannot be posted")
+        return
+    CTX["alice"] = client
+    run_id = c8_post_run(client, seed, C8_ITEMS,
+                         f"m4-exit-w11-{int(time.time())}", "W11 child tree")
+    if not run_id:
+        gap("W11 all arms", "the 25-item fan-out run was not accepted — there is no tree to "
+                           "open (the POST verdict is above)")
+        return
+    CTX["w11_run_id"] = run_id
+    live = wait_live_past_gate(client, project_id, run_id, 300, "W11")
+    check("W11 the fan-out run is released past its gate", live is not None,
+          f"live claim row={live if live else '(none within 300s)'} "
+          f"status={run_status(run_id)!r}")
+    # --- the fan-out really happened: GET /runs/{id}/tree is the answer key ----
+    children, deadline = [], time.time() + 300
+    while time.time() < deadline:
+        doc = c8_tree_doc(client, run_id) or {}
+        children = [c for c in (doc.get("children") or []) if isinstance(c, dict)]
+        if len(children) >= 3:
+            break
+        time.sleep(5)
+    show(f"W11 GET /runs/{run_id}/tree",
+         f"{len(children)} child row(s); depths={sorted({c.get('depth') for c in children})}; "
+         f"statuses={sorted({str(c.get('status')) for c in children})} "
+         f"(run status={run_status(run_id)!r})")
+    if not children:
+        gap("W11 the child-run tree arms",
+            f"the /tree route holds no children for run {run_id} — either the fan-out never "
+            "created a child run (the 21656f6 path: pipeline.invoke resolving its target by "
+            "name and writing the invocation row) or the route did not answer; with no child "
+            "there is no tree row to render")
+        return
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}?tab=execution",
+                    session="m4w11"):
+        gap("W11 browser arms", "the mock IdP did not sign alice in — the tree, the attempt "
+                               "pane and the DOM the internals claim is read from were never "
+                               "rendered")
+        return
+    dom_all = []
+    try:
+        pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution", session="m4w11")
+        landed, _n = pw_poll(lambda ns: "fan_out" in w8_dom_text(ns), session="m4w11",
+                             tries=10, delay=2)
+        check("W11 the execution tab renders the run's tree with its /fan_out scope", landed,
+              f"run {run_id} status={run_status(run_id)!r} tree visible={landed}")
+        clicked, snaps = w11_expand("m4w11", set(), cap=24)
+        rc, raw = pw_snapshot(session="m4w11")
+        tree_nodes = pw_snapshot_nodes(raw)
+        tree_dom = w8_dom_text(tree_nodes, raw)
+        dom_all.append(tree_dom)
+        shot = pw_shot("w11-tree", session="m4w11")
+        show(f"W11 the tree after {len(clicked)} expand click(s) over {snaps} snapshot(s)",
+             "rows named: " + str(clicked)[:260] + f" [{shot}]")
+        c5_emit(w11_tree_verdicts(children, tree_dom))
+
+        # --- one node execution's attempt list, on the page's own ?node= route ----
+        nodes_r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
+        api_nodes = [n for n in ((nodes_r.json() or {}).get("node_executions") or [])
+                     if isinstance(n, dict)] if nodes_r.status == 200 else []
+        # The row names a PAIR (attempt 1 interrupted with retry_context, attempt 2
+        # succeeded), so an execution that was actually interrupted is opened first when
+        # this run has one; with none, the fan-out's own invoke row is the honest choice
+        # and the pair's absence is reported as the GAP it is.
+        interrupted_ne = ""
+        try:
+            interrupted_ne = psql(f"SELECT node_execution_id::text FROM attempts WHERE "
+                                  f"run_id = '{run_id}' AND status = 'interrupted' "
+                                  "ORDER BY attempt_number LIMIT 1").strip()
+        except RuntimeError as e:  # the choice below GAPs on its own if this is unreadable
+            show("W11 interrupted-attempt read (psql)", str(e)[:200])
+        want = (next((n for n in api_nodes if str(n.get("id")) == interrupted_ne), None)
+                or next((n for n in api_nodes if (n.get("attempt_count") or 0) > 1), None)
+                or next((n for n in api_nodes if n.get("kind") == "pipeline.invoke"), None)
+                or next((n for n in api_nodes if n.get("node_instance_key") == "/plan"), None)
+                or (api_nodes[0] if api_nodes else None))
+        show(f"W11 GET /runs/{run_id}/nodes -> {nodes_r.status}",
+             f"{len(api_nodes)} row(s); the attempt list is opened for "
+             f"{(want or {}).get('node_instance_key')!r} "
+             f"(attempt_count={(want or {}).get('attempt_count')})")
+        if not want or not want.get("id"):
+            gap("W11 the attempt-list arms",
+                f"no node execution of run {run_id} can be opened (GET /runs/{run_id}/nodes "
+                f"-> {nodes_r.status}) — the row's 'one node execution's attempt list' has "
+                "nothing to name")
+        else:
+            key, node_id = str(want.get("node_instance_key") or ""), str(want["id"])
+            det = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{node_id}")
+            api_attempts = [a for a in ((det.json() or {}).get("attempts") or [])
+                            if isinstance(a, dict)] if det.status == 200 else []
+            show(f"W11 GET /runs/{run_id}/nodes/{node_id} -> {det.status}",
+                 str([f"#{a.get('attempt_number')} {a.get('status')} "
+                      f"retry_context={a.get('retry_context')}" for a in api_attempts])[:400])
+            if not api_attempts:
+                # The route came back without the rows the pane is supposed to render:
+                # read them where they are authoritative so the arm judges the PAGE
+                # against the ledger instead of GAPing on an empty body.
+                ledger = w11_attempts_ledger(node_id)
+                show("W11 the attempt rows the route did not carry (ledger read)",
+                     str([(a["attempt_number"], a["status"],
+                           str(a["retry_context"])[:40]) for a in (ledger or [])])[:400]
+                     + ("" if ledger is not None else " | ledger unreadable"))
+                if ledger:
+                    api_attempts = ledger
+            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution&node={node_id}",
+                    session="m4w11")
+            shown, n_nodes = pw_poll(lambda ns: "attempt" in w8_dom_text(ns).lower(),
+                                    session="m4w11", tries=10, delay=2)
+            n_raw = pw_snapshot(session="m4w11")[1]
+            node_dom = w8_dom_text(n_nodes, n_raw)
+            dom_all.append(node_dom)
+            shot2 = pw_shot("w11-attempt-pane", session="m4w11")
+            check("W11 the node pane opens on the node execution asked for", shown,
+                  f"?node={node_id} ({key}) rendered attempt copy={shown} [{shot2}]")
+            c5_emit(w11_attempt_verdicts(api_attempts, node_dom, key))
+            # ADR-0016 § 8 re-asserted against the NEW routes: the row's claim is about
+            # the DOM, and the route bodies are shown next to it so a reader can see the
+            # values that were searched for are the ones the ledger really holds.
+            internals = w11_internals_facts(run_id)
+            route_bodies = nodes_r.text + (det.text or "")
+            leaked_fields = [f for f in ("fencing_token", "lease_expires_at", "worker_id")
+                             if f in route_bodies]
+            show("W11 what the routes were asked to keep out of the DOM (ledger values)",
+                 str([(c, len(v)) for c, _w, v in internals])
+                 + "; route bodies carry the field names: "
+                 + (str(leaked_fields) if leaked_fields else "none"))
+            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=timeline", session="m4w11")
+            time.sleep(2)
+            t_raw = pw_snapshot(session="m4w11")[1]
+            dom_all.append(w8_dom_text(pw_snapshot_nodes(t_raw), t_raw))
+            c5_emit(w11_internals_verdict("\n".join(dom_all), internals))
+    finally:
+        if run_status(run_id) not in C14_TERMINAL:
+            try:
+                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception:  # noqa: BLE001 — housekeeping, never a verdict
+                pass
+        pw("close", session="m4w11")
 
 
 GATES = [("C1", c1), ("C2", c2), ("C3", c3), ("C4", c4), ("C5", c5),
