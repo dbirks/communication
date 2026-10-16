@@ -8,8 +8,8 @@
  * tallies, so a row shows the pipeline slug from the library (never an
  * invented title), the pinned revision digest the server reports, and the
  * elapsed wall clock it can derive from `started_at`/`finished_at`. "New run"
- * stays disabled until a run-input form exists — creating a run with empty
- * inputs would be a guess about the pinned revision's `spec.inputs`.
+ * opens `NewRunForm`, whose fields are read off the pinned revision's
+ * `spec.inputs` — the page never invents an input shape of its own.
  */
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
@@ -18,6 +18,7 @@ import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
 import { SubNav } from "../components/ds/SubNav";
 import { RUN_STATE, type StateName } from "../components/ds/states";
+import { NewRunForm } from "../components/m4/NewRunForm";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { usePipelines } from "../api/pipelines";
 import { useProjectRuns } from "../api/runs";
@@ -45,6 +46,7 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
   const runs = useProjectRuns(projectId);
   const pipelines = usePipelines();
   const [filter, setFilter] = useState<RunsFilter>("active");
+  const [composing, setComposing] = useState(false);
 
   const slugs = useMemo(
     () =>
@@ -84,17 +86,27 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
         <h1 className="text-[15px] font-bold" id="runs-column-heading">
           Runs
         </h1>
-        {/* Wire to `useCreateRun` when a run-input form exists; a run created
-            with no inputs is a claim about the pinned revision's inputs. */}
         <Button
           variant="secondary"
-          disabled
-          title="New run needs the run-input form, which is not built yet — no inputs are invented here"
-          data-testid="runs-new-disabled"
+          onClick={() => setComposing((current) => !current)}
+          aria-expanded={composing}
+          aria-controls="new-run-panel"
+          data-testid="runs-new"
         >
           New run
         </Button>
       </div>
+      {composing ? (
+        <Panel title="NEW RUN" headingId="new-run-panel-heading" className="shrink-0">
+          <div id="new-run-panel" className="p-[10px]">
+            <NewRunForm
+              projectId={projectId}
+              onCancel={() => setComposing(false)}
+              onCreated={() => setComposing(false)}
+            />
+          </div>
+        </Panel>
+      ) : null}
       <div className="flex flex-wrap gap-[6px]" role="group" aria-label="Filter runs">
         {(["active", "waiting", "all"] as const).map((name) => (
           <button
