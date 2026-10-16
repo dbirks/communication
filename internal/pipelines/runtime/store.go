@@ -366,6 +366,15 @@ func (ms *MemStore) Fail(runID, attemptID, workerID string, token int64, class, 
 // invalid_output arm reuses it).
 func (ms *MemStore) failLocked(st *State, runID string, a *Attempt, n *NodeExecution,
 	workerID string, token int64, class, detail string, outputErrors []any) error {
+	// A terminal closes an attempt exactly once (append-only ledger, § 5). The
+	// same-status no-op in Move would otherwise let a repeat fail from the
+	// still-valid owner double the node.attempt.failed event and reopen the
+	// failed node through failLocked's ready-step without route 31's
+	// run.retried journal row (exposed by runtimetest's pass-3 subtest).
+	if a.Status == AttemptFailed {
+		return IllegalTransition{What: "attempt " + a.ID, From: a.Status, To: AttemptFailed,
+			Why: "attempt_already_failed: a terminal attempt closes exactly once (contract § 5)"}
+	}
 	if err := a.Fail(workerID, token, ms.now(), class, detail, outputErrors); err != nil {
 		return err
 	}

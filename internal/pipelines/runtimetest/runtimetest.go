@@ -247,6 +247,13 @@ func ConformanceTests(t *testing.T, f Factory) {
 	// workspace vanished before a worker held it.
 	t.Run("ReconcilerRunDuration_CascadesAndNamesCause", func(t *testing.T) { testRunDurationBudget(t, f) })
 	t.Run("ReconcilerWorkspaceLost_InterruptsWithNoAutoRetry", func(t *testing.T) { testWorkspaceLostInterrupt(t, f) })
+	// Reconciler pass 3 (contract § 5.4): the attempt deadline with a fresh
+	// heartbeat is request-only — the worker's own terminal write closes it —
+	// and the stale-heartbeat contrast proves pass 1 owns that arm.
+	t.Run("ReconcilerDeadline_SetsCancelRequestedOnly", func(t *testing.T) {
+		t.Run("fresh-heartbeat", func(t *testing.T) { testDeadlineFreshHeartbeat(t, f) })
+		t.Run("stale-heartbeat-is-lease-pass", func(t *testing.T) { testDeadlineStaleHeartbeatIsLeasePass(t, f) })
+	})
 	// The dual-instance arm is parameterized on the factory: a store whose
 	// run-state lives only in one process cannot implement DualFactory's
 	// OpenPair honestly, and the in-memory reference simply skips.

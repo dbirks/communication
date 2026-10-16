@@ -20,6 +20,10 @@ spec:
   nodes:
   - id: work
     kind: process.exec
+    # Short authored timeout so the reconciler's pass-3 arm (contract § 5.4:
+    # attempt deadline with a fresh heartbeat) is reachable in conformance:
+    # Start stamps attempts.deadline_at launch-relative (§ 1).
+    timeoutSeconds: 60
     outputs:
       type: object
       required: [note]
