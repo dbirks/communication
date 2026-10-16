@@ -115,6 +115,13 @@ func TestServeStackRoutesAreWired(t *testing.T) {
 		"/api/v1/projects/01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80/repos",
 		"/api/v1/projects/01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80/events",
 		"/api/v1/workers",
+		// M4 (docs/m4-contract.md § 2): registered behind the same
+		// session gate — a 404 here would mean the route is missing.
+		"/api/v1/pipelines",
+		"/api/v1/schemas/pipeline-v1alpha1",
+		"/api/v1/projects/01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80/runs",
+		"/api/v1/projects/01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80/approvals",
+		"/api/v1/system/scheduler",
 	} {
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {

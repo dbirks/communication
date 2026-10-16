@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/api/auth"
 	"github.com/dbirks/communication/internal/artifacts"
+	"github.com/dbirks/communication/internal/pipelines/runtime"
 	"github.com/dbirks/communication/internal/secrets"
 	"github.com/dbirks/communication/internal/store/postgres"
 	"github.com/dbirks/communication/ui"
@@ -421,6 +422,16 @@ func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
 //	                          cancel, permission decisions and
 //	                          GET /api/v1/conversations/{id}/events (SSE)
 //	api.RegisterWorkers       GET /api/v1/workers
+//	api.RegisterPipelines     pipelines, drafts, revisions, publish,
+//	                          validate, schemas (docs/m4-contract.md § 2)
+//	api.RegisterRuns          runs, node executions, attempts, assignments,
+//	                          run events (SSE)
+//	api.RegisterApprovals     approval lists, get, decide
+//	api.RegisterScheduler     GET /api/v1/system/scheduler
+//	postgres.M4Driver         in-process advancer: api.M4Trigger nudges one
+//	                          run, the 2 s tick catches dropped triggers,
+//	                          one replica at a time under its own advisory
+//	                          lock (docs/m4-contract.md § 5)
 //	postgres.Reconciler       turn-lease reconciliation, one replica at a time
 //	                          under a Postgres advisory lock (ADR-0016 §4)
 //
@@ -491,6 +502,34 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	api.RegisterWorkspaces(handler, postgres.APIWorkspaceStore{
 		S: &postgres.WorkspaceStore{Pool: d.Pool},
 	})
+
+	// M4 surfaces (docs/m4-contract.md § 2, § 5's control-plane duties).
+	// The runtime adapter owns every run mutation the routes make (§ 5.1);
+	// the driver is the same advance on the other side of each trigger AND
+	// the polling reconciler for dropped nudges.
+	pipelineStore := &postgres.PipelineStore{Pool: d.Pool}
+	definitionService, err := postgres.NewPipelineDefinitions()
+	if err != nil {
+		return nil, nil, err
+	}
+	runStore := &postgres.RunStore{Pool: d.Pool}
+	m4Children := &postgres.M4Children{Runs: runStore}
+	m4Runtime := postgres.NewRuntimeStore(d.Pool, &runtime.Advancer{
+		Deps: runtime.AdvancerDeps{Children: m4Children},
+	})
+	m4Children.Runtime = m4Runtime // the advancer needs the children; the children, the runtime store
+	m4Driver := postgres.NewM4Driver(d.Pool, m4Runtime,
+		log.With(slog.String("component", "m4-driver")))
+	api.RegisterPipelines(handler, postgres.APIPipelineStore{S: pipelineStore}, definitionService)
+	api.RegisterRuns(handler,
+		postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+		postgres.APIAssignmentStore{S: pipelineStore},
+		apiProjects,
+		postgres.APIRunEventStream{Journal: projectStore, Wakes: wakes},
+		m4Driver.Trigger)
+	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
+		apiProjects, m4Driver.Trigger)
+	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool})
 	api.RegisterSandbox(handler,
 		postgres.APITurnSandboxStore{Pool: d.Pool},
 		postgres.APISystemSandboxStore{
@@ -528,10 +567,22 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		log.Info("turn-lease reconciler stopped", slog.Int("passes", ran))
 	}()
 
+	// The M4 driver ticks on every replica and advances on one: the same
+	// advisory-lock pattern as the reconciler below, its own lock name.
+	driverCtx, stopDriver := context.WithCancel(context.Background())
+	go func() {
+		if err := m4Driver.Run(driverCtx, 2*time.Second); err != nil {
+			log.Error("m4 driver stopped", slog.String("error", err.Error()))
+			return
+		}
+		log.Info("m4 driver stopped")
+	}()
+
 	var closeOnce sync.Once
 	closeStack := func() {
 		closeOnce.Do(func() {
 			stopReconciler()
+			stopDriver()
 			wakes.Close()
 		})
 	}
