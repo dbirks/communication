@@ -21,6 +21,7 @@ import { Panel } from "../ds/Panel";
 import { Row, StatusChip } from "../ds/Row";
 import { Button } from "../ds/Button";
 import { CHANNEL_STATE, DRAFT_STATE, REVISION_STATE, stateOf } from "../ds/states";
+import { shortId } from "../../api/names";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 
 export interface PipelineLibraryRow {
@@ -39,6 +40,15 @@ export interface PipelineLibraryProps {
   onNew?: () => void;
   /** Copy for why the list is empty — the reason differs per surface. */
   emptyCopy?: string;
+  /** Which surface this list sits on. Channels are a *project* concept
+   * (`01`: assignments pin revisions per project); at org level there is no
+   * project to have channels, so the cell is omitted rather than claiming
+   * "no channel set for this project" about nothing. */
+  scope?: "project" | "org";
+  /** Words for a draft's `edited_by` user id — the page passes its actor
+   * lookup (same rule as `api/names`: a bare uuid is never a label). The
+   * fallback is `shortId`, not the raw id. */
+  nameOf?: (userId: string) => string;
   /** A pipeline cannot be created, published or edited from here without a
    * permission the server holds; this line is the honest reason, shown once. */
   canCreate?: boolean;
@@ -51,6 +61,8 @@ export function PipelineLibrary({
   onOpen,
   onNew,
   emptyCopy = "No pipelines in this organization yet. A pipeline exists once a draft validates and publishes; a draft cannot be published from this screen.",
+  scope = "project",
+  nameOf = shortId,
   canCreate = true,
   headingId = "pipeline-library-heading",
   className = "",
@@ -140,28 +152,30 @@ export function PipelineLibrary({
                     </span>
                   </span>
 
-                  <span
-                    className="flex flex-wrap items-center gap-[6px]"
-                    data-testid={`pipeline-channels-${pipeline.slug}`}
-                  >
-                    {channels.length === 0 ? (
-                      // No channel is not "latest" — it is nothing pinned, said plainly.
-                      <span
-                        className="font-mono text-[10.5px] text-faint"
-                        data-testid={`pipeline-no-channel-${pipeline.slug}`}
-                      >
-                        no channel set for this project
-                      </span>
-                    ) : (
-                      channels.map((channel) => (
-                        <StatusChip
-                          key={channel.channel}
-                          state={stateOf(CHANNEL_STATE[channel.channel])}
-                          label={`${channel.channel} ${channel.version_label} ${shortDigest(channel.revision_digest)}`}
-                        />
-                      ))
-                    )}
-                  </span>
+                  {scope === "org" ? null : (
+                    <span
+                      className="flex flex-wrap items-center gap-[6px]"
+                      data-testid={`pipeline-channels-${pipeline.slug}`}
+                    >
+                      {channels.length === 0 ? (
+                        // No channel is not "latest" — it is nothing pinned, said plainly.
+                        <span
+                          className="font-mono text-[10.5px] text-faint"
+                          data-testid={`pipeline-no-channel-${pipeline.slug}`}
+                        >
+                          no channel set for this project
+                        </span>
+                      ) : (
+                        channels.map((channel) => (
+                          <StatusChip
+                            key={channel.channel}
+                            state={stateOf(CHANNEL_STATE[channel.channel])}
+                            label={`${channel.channel} ${channel.version_label} ${shortDigest(channel.revision_digest)}`}
+                          />
+                        ))
+                      )}
+                    </span>
+                  )}
 
                   {draft ? (
                     <span
@@ -173,7 +187,7 @@ export function PipelineLibrary({
                         label={validationWord(draft)}
                       />
                       <span className="font-mono text-[10.5px] text-faint">
-                        draft v{draft.version} · {draft.edited_by}
+                        draft v{draft.version} · {nameOf(draft.edited_by)}
                       </span>
                     </span>
                   ) : null}

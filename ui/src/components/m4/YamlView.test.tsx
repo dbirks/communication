@@ -126,7 +126,10 @@ describe("YamlView", () => {
   it("is not an editor: no textbox, and the read-only reason is on the screen", () => {
     const { container } = render(<YamlView text={samplePipelineYaml} />);
     expect(container.querySelector("textarea, [contenteditable], [role='textbox']")).toBeNull();
-    expect(screen.getByTestId("yaml-view-readonly-note").textContent).toContain("read-only");
+    const note = screen.getByTestId("yaml-view-readonly-note").textContent ?? "";
+    expect(note).toContain("read-only");
+    expect(note).toContain("immutable");
+    expect(note).toContain("draft");
   });
 
   it("paginates a long document instead of rendering all of it", () => {

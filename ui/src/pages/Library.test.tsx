@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
-import type { Draft, Me, ValidateResponse } from "../api/types";
+import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
 import { meFixture, mockFetch, requestsTo, type RouteStub } from "../test/fakes";
 import {
   WIRE_DRAFT_ID,
@@ -103,6 +103,19 @@ describe("/library", () => {
     );
   });
 
+  it("is an org surface: no project channel claims, and the draft line names the editor", async () => {
+    mount("/library");
+    const list = await screen.findByTestId("pipeline-library");
+    // No project owns these rows, so "no channel set for this project" would
+    // be a lie — the channel cell is absent entirely.
+    expect(within(list).queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);
+    expect(within(list).queryAllByTestId(/pipeline-channels-/)).toHaveLength(0);
+    // The draft line resolves `edited_by` (the signed-in user's id) to a name.
+    const draftLine = within(list).getByTestId("pipeline-validation-feature-development");
+    expect(draftLine.textContent).toContain("Ada Lovelace");
+    expect(draftLine.textContent).not.toContain(wireUserId);
+  });
+
   it("posts a new pipeline slug for an org admin", async () => {
     const { requests } = mount("/library", [
       { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
@@ -175,6 +188,32 @@ describe("/library/:pipelineId", () => {
       "apiVersion: communication.dev/v1alpha1",
     );
     expect(await screen.findByTestId("draft-editor-input")).toBeTruthy();
+  });
+
+  it("collapses a flooded drafts list to the newest five, with age and editor name", async () => {
+    const flood: DraftSummary[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `${WIRE_DRAFT_ID.slice(0, 18)}${String(i).padStart(4, "0")}`,
+      status: "invalid",
+      version: 1,
+      updated_at: `2026-07-${String(28 - i).padStart(2, "0")}T08:00:00Z`,
+      edited_by: wireUserId,
+    }));
+    mount(detail, [{ path: draftsPath, body: { drafts: flood } }]);
+    // Wait for the served rows — the list scaffold renders while loading.
+    await screen.findByTestId(`draft-row-${flood[0].id}`);
+    const list = await screen.findByTestId("draft-list");
+    // Newest first, newest five only: the row from the newest minute is in,
+    // the oldest is behind the toggle.
+    expect(within(list).getAllByTestId(/^draft-row-/)).toHaveLength(5);
+    expect(within(list).queryByTestId(`draft-row-${flood[0].id}`)).toBeTruthy();
+    expect(within(list).queryByTestId(`draft-row-${flood[7].id}`)).toBeNull();
+    // Each row carries its age and the editor's name, not the raw id.
+    expect(within(list).getByTestId(`draft-edited-by-${flood[0].id}`).textContent).toContain(
+      "Ada Lovelace",
+    );
+    expect(within(list).getByTestId(`draft-age-${flood[0].id}`)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("draft-list-more"));
+    expect(within(list).getAllByTestId(/^draft-row-/)).toHaveLength(8);
   });
 
   it("renders the server's findings when Validate runs", async () => {

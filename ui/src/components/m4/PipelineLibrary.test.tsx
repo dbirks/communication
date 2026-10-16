@@ -71,6 +71,44 @@ describe("PipelineLibrary", () => {
     expect(moduleChannels.textContent).not.toContain("beta");
   });
 
+  it("names the draft's editor through the page's lookup, never a bare id", () => {
+    render(
+      <PipelineLibrary
+        rows={rows}
+        nameOf={(userId) => (userId === "usr_david" ? "David Chen" : userId)}
+      />,
+    );
+    expect(screen.getByTestId("pipeline-validation-feature-development").textContent).toContain(
+      "draft v12 · David Chen",
+    );
+  });
+
+  it("falls back to a short id when the page supplies no lookup", () => {
+    render(<PipelineLibrary rows={rows} />);
+    // `usr_david` is not uuid-shaped, so shortId keeps it whole — but a uuid
+    // is never echoed raw (see api/names.test.ts for the uuid case).
+    expect(screen.getByTestId("pipeline-validation-feature-development").textContent).toContain(
+      "draft v12 · usr_david",
+    );
+  });
+
+  it("omits the channel cell entirely at org scope", () => {
+    render(<PipelineLibrary rows={rows} scope="org" />);
+    // No project owns these pipelines, so there is no channel to speak of —
+    // not even an honest-looking "no channel set".
+    expect(screen.queryAllByTestId(/pipeline-channels-/)).toHaveLength(0);
+    expect(screen.queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);
+    // The rest of the row is untouched.
+    expect(screen.getByTestId("pipeline-row-feature-development").textContent).toContain(
+      "latest published r7",
+    );
+  });
+
+  it("shows channels by default (project scope)", () => {
+    render(<PipelineLibrary rows={rows} />);
+    expect(screen.getByTestId("pipeline-channels-feature-development")).toBeTruthy();
+  });
+
   it("carries a draft's validation state as the server's status, with its count in words", () => {
     render(<PipelineLibrary rows={rows} />);
     expect(screen.getByTestId("pipeline-validation-feature-development").textContent).toContain(

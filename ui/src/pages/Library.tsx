@@ -8,14 +8,15 @@
  *   list route carries neither revisions nor drafts, so nothing here can be
  *   invented from it.
  * - `channels` is M6 rollout vocabulary; the wire serves none, so rows carry
- *   `channels: []` and read "no channel set".
+ *   `channels: []`. At org scope the channel cell is omitted entirely — there
+ *   is no project here for a channel to belong to.
  * - A draft's state is the server's `status` column, never a client-side guess
  *   — which is why Publish is gated in `DraftEditor`, not here.
  * - Authoring controls (new pipeline, new draft, the editor) appear only for
  *   the library role: `01` gives definition-reading to every org member and
  *   publishing to org admins alone.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Panel } from "../components/ds/Panel";
@@ -29,7 +30,9 @@ import { DraftEditor } from "../components/m4/DraftEditor";
 import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
 import { problemOf } from "../api/client";
+import { useActorNames } from "../api/actors";
 import { useMe } from "../api/queries";
+import { formatAge } from "../lib/format";
 import {
   pipelineDraftsQueryOptions,
   pipelineQueryOptions,
@@ -56,6 +59,7 @@ import { shortDigest } from "../lib/pipeline/yamlPointer";
 export function LibraryPage() {
   const navigate = useNavigate();
   const me = useMe();
+  const actors = useActorNames();
   const pipelines = usePipelines();
   const canAuthor = me.data?.is_org_admin === true;
   const ids = useMemo(
@@ -96,6 +100,8 @@ export function LibraryPage() {
       {rows.length > 0 || pipelines.data ? (
         <PipelineLibrary
           rows={rows}
+          scope="org"
+          nameOf={actors.nameOf}
           canCreate={canAuthor}
           onNew={() => document.getElementById("library-new-slug")?.focus()}
           headingId="library-rows-heading"
@@ -199,6 +205,35 @@ function NewPipelineForm() {
 export function PipelinePage() {
   const { pipelineId = "" } = useParams();
   const me = useMe();
+  const actors = useActorNames();
+  // Same bleed as `pages/RunInspector.tsx`: the shell's centred reading
+  // column is ~64rem, and a YAML viewer plus a graph squeezed into what is
+  // left of a 20rem sidebar clips every line at ~20 characters. This page
+  // measures the column it was handed and bleeds out of it.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [bleed, setBleed] = useState<{ left: number; width: number } | null>(null);
+  const measureBleed = useCallback(() => {
+    const el = rootRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    const style = window.getComputedStyle(parent);
+    const left = parent.getBoundingClientRect().left + parseFloat(style.paddingLeft || "0");
+    const width = document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
+    setBleed((current) =>
+      current && current.left === left && current.width === width ? current : { left, width },
+    );
+  }, []);
+  const attachRoot = useCallback(
+    (node: HTMLDivElement | null) => {
+      rootRef.current = node;
+      if (node) measureBleed();
+    },
+    [measureBleed],
+  );
+  useEffect(() => {
+    window.addEventListener("resize", measureBleed);
+    return () => window.removeEventListener("resize", measureBleed);
+  }, [measureBleed]);
   const pipeline = usePipeline(pipelineId);
   const revisions = usePipelineRevisions(pipelineId);
   const drafts = usePipelineDrafts(pipelineId);
@@ -217,6 +252,16 @@ export function PipelinePage() {
     [revisions.data],
   );
   const draftRows = useMemo(() => (drafts.data?.drafts ?? []).map(viewDraftSummary), [drafts.data]);
+  // Newest first by the server's own `updated_at`, and the list collapses to
+  // the newest five: test runs leave dozens of same-named rows behind, and a
+  // flood of identical rows shows nothing.
+  const DRAFT_WINDOW = 5;
+  const sortedDrafts = useMemo(
+    () => [...draftRows].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+    [draftRows],
+  );
+  const [draftsExpanded, setDraftsExpanded] = useState(false);
+  const visibleDrafts = draftsExpanded ? sortedDrafts : sortedDrafts.slice(0, DRAFT_WINDOW);
   const selectedRevisionKey = revisionKey ?? revisionRows[0]?.id ?? null;
 
   const revision = useRevision(selectedRevisionKey ?? "");
@@ -243,10 +288,17 @@ export function PipelinePage() {
 
   return (
     <div
-      className="grid min-h-full grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]"
+      ref={attachRoot}
       data-testid="pipeline-page"
+      data-full-width={bleed ? bleed.width : "unmeasured"}
+      className="grid min-h-full grid-cols-1 border-y border-line bg-paper xl:grid-cols-[300px_minmax(0,1fr)]"
+      style={
+        bleed
+          ? { width: bleed.width || undefined, marginLeft: -bleed.left, maxWidth: "none" }
+          : { maxWidth: "none" }
+      }
     >
-      <aside className="min-w-0 space-y-4 border-r border-line px-3 py-3">
+      <aside className="min-w-0 space-y-4 border-b border-line px-3 py-3 xl:border-b-0 xl:border-r">
         <div>
           <h1 className="text-[17px] font-bold" id="pipeline-heading">
             {summary?.display_name ?? "Pipeline"}
@@ -339,7 +391,7 @@ export function PipelinePage() {
             </p>
           ) : null}
           <ul className="divide-y divide-line" data-testid="draft-list">
-            {draftRows.map((row) => (
+            {visibleDrafts.map((row) => (
               <li key={row.id}>
                 <Row
                   selected={draftId === row.id}
@@ -357,11 +409,35 @@ export function PipelinePage() {
                       labelProps={{ "data-testid": `draft-status-${row.id}` }}
                     />
                     <span className="font-mono text-[10px] text-faint">{row.status}</span>
+                    <span
+                      className="font-mono text-[10px] text-faint"
+                      data-testid={`draft-age-${row.id}`}
+                    >
+                      {formatAge(row.updated_at)}
+                    </span>
+                    <span
+                      className="font-mono text-[10px] text-faint"
+                      data-testid={`draft-edited-by-${row.id}`}
+                    >
+                      {actors.nameOf(row.edited_by)}
+                    </span>
                   </button>
                 </Row>
               </li>
             ))}
           </ul>
+          {sortedDrafts.length > DRAFT_WINDOW ? (
+            <button
+              type="button"
+              onClick={() => setDraftsExpanded((current) => !current)}
+              className="block w-full px-[10px] py-[6px] text-left font-mono text-[11px] text-accent-text hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              data-testid="draft-list-more"
+            >
+              {draftsExpanded
+                ? `show fewer — ${sortedDrafts.length - DRAFT_WINDOW} hidden`
+                : `show ${sortedDrafts.length - DRAFT_WINDOW} more of ${sortedDrafts.length} drafts`}
+            </button>
+          ) : null}
         </Panel>
       </aside>
       <div className="min-w-0 space-y-4 px-4 py-4">

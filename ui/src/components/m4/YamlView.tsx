@@ -1,9 +1,10 @@
 /**
- * The YAML view — read-only by decision. `03` "Authoring surface" and `10` J9
- * say the first release has no in-browser YAML editing, and the M4 brief
- * keeps it that way: this shows text and lands findings on it, it does not
- * accept keystrokes. The W8 case pastes into a *validate panel*, which is a
- * different component with a button on it, not this one.
+ * The YAML view — read-only by decision. This shows text and lands findings
+ * on it; it does not accept keystrokes. Authoring happens in `DraftEditor`
+ * (a textarea on a draft): a published revision is immutable, so the only
+ * edit path is draft → validate → publish as a new revision. The W8 case
+ * pastes into a *validate panel*, which is a different component with a
+ * button on it, not this one.
  *
  * Validation findings carry a JSON pointer (`instance_location`);
  * `lib/pipeline/yamlPointer` resolves it to a line, and where the pointer sits
@@ -155,8 +156,8 @@ export function YamlView({
             className="mt-[6px] font-mono text-[10.5px] text-faint"
             data-testid="yaml-view-readonly-note"
           >
-            read-only: the first release has no in-browser YAML editing; publish accepts only the
-            draft this document was validated as.
+            read-only: a published revision is immutable — edits go through a draft, which publishes
+            as a new revision.
           </p>
         </div>
         <ValidationFindings validation={validation} findings={findings} />
