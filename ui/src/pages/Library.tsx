@@ -55,6 +55,7 @@ import {
 } from "../api/m4view";
 import type { AssignmentList } from "../api/types";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
+import { hasLibraryRole, LIBRARY_AUTHORING_HINT } from "../lib/pipeline/authoring";
 import {
   PIPELINE_TEMPLATES,
   templateById,
@@ -70,7 +71,7 @@ export function LibraryPage() {
   const me = useMe();
   const actors = useActorNames();
   const pipelines = usePipelines();
-  const canAuthor = me.data?.is_org_admin === true;
+  const canAuthor = hasLibraryRole(me.data);
   const ids = useMemo(
     () => (pipelines.data?.pipelines ?? []).map((pipeline) => pipeline.id),
     [pipelines.data],
@@ -345,7 +346,10 @@ export function PipelinePage() {
   const revisions = usePipelineRevisions(pipelineId);
   const drafts = usePipelineDrafts(pipelineId);
   const createDraft = useCreateDraft(pipelineId);
-  const canAuthor = me.data?.is_org_admin === true;
+  // The one role rule, in the one place the UI states it — the draft editor
+  // takes the same answer rather than forming its own opinion about what a
+  // member may type into a shared definition.
+  const canAuthor = hasLibraryRole(me.data);
 
   const [revisionKey, setRevisionKey] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(draftParams.get("draft"));
@@ -481,9 +485,7 @@ export function PipelinePage() {
                 {createDraft.isPending ? "Creating…" : "New draft"}
               </Button>
             ) : (
-              <span className="font-mono text-[10px] font-normal">
-                authoring needs the library role
-              </span>
+              <span className="font-mono text-[10px] font-normal">{LIBRARY_AUTHORING_HINT}</span>
             )
           }
         >
@@ -561,6 +563,7 @@ export function PipelinePage() {
           <DraftEditor
             pipelineId={pipelineId}
             draftId={draftId}
+            canAuthor={canAuthor}
             headingId="pipeline-draft-editor-heading"
           />
         ) : null}

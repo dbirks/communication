@@ -214,3 +214,29 @@ describe("PipelineLibrary", () => {
     expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ slug: "module-verification" }));
   });
 });
+
+/**
+ * The slug is a second fact, not a second copy of the first. A pipeline created
+ * from a template often carries its slug as its display name, and rendering
+ * both read as the name twice with the accessible name run together
+ * ("feature-developmentfeature-development").
+ */
+describe("PipelineLibrary slug", () => {
+  it("shows the slug only when it differs from the display name", () => {
+    const same = rows.map((row) => ({
+      ...row,
+      pipeline: { ...row.pipeline, display_name: row.pipeline.slug },
+    }));
+    render(<PipelineLibrary rows={same} />);
+    const named = screen.getByTestId("pipeline-name-feature-development");
+    expect(named.textContent).toBe("feature-development");
+    expect((named.textContent ?? "").match(/feature-development/g)).toHaveLength(1);
+  });
+
+  it("keeps the slug beside a display name that differs from it", () => {
+    render(<PipelineLibrary rows={rows} />);
+    const named = screen.getByTestId("pipeline-name-feature-development");
+    expect(named.textContent).toContain("Feature development");
+    expect(named.textContent).toContain("feature-development");
+  });
+});

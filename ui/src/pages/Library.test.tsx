@@ -588,3 +588,48 @@ describe("/library/:pipelineId", () => {
     });
   });
 });
+
+/**
+ * The permission rule the rail states is the rule the pane enforces. Both read
+ * `lib/pipeline/authoring.hasLibraryRole`, which mirrors the server's
+ * `requireLibraryRole` (`internal/api/pipelines.go`: `IsOrgAdmin` and nothing
+ * else) — a page that says "authoring needs the library role" while handing out
+ * an enabled Save is the bug, whichever way the rule falls.
+ */
+describe("/library/:pipelineId without the library role", () => {
+  const detail = `/library/${WIRE_PIPELINE_ID}`;
+  const member: Me = { ...meFixture, is_org_admin: false };
+
+  it("states the reason in the rail and holds the draft editor read-only", async () => {
+    const { requests } = mount(`${detail}?draft=${WIRE_DRAFT_ID}`, [
+      { path: "/api/v1/me", body: member },
+    ]);
+    // The rail: no New draft button, and the reason in its place.
+    expect(await screen.findByTestId("draft-list")).toBeTruthy();
+    expect(screen.queryByTestId("pipeline-new-draft")).toBeNull();
+    expect(screen.getByText("authoring needs the library role")).toBeTruthy();
+    // The pane: the same answer, in the same words.
+    const box = await screen.findByTestId("draft-editor-input");
+    expect((box as HTMLTextAreaElement).hasAttribute("readonly")).toBe(true);
+    expect((await screen.findByTestId("draft-editor-save")).hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByTestId("draft-editor-publish")).hasAttribute("disabled")).toBe(true);
+    expect((await screen.findByTestId("draft-editor-read-only")).textContent).toContain(
+      "library role",
+    );
+    // Every node field is disabled too, so the form cannot write into a document
+    // this caller may not edit.
+    const field = await screen.findByTestId("draft-editor-field-profile");
+    expect(field.hasAttribute("disabled")).toBe(true);
+    // And no draft write left the browser.
+    expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(0);
+  });
+
+  it("keeps reading the draft, its verdict and its revisions for a member", async () => {
+    mount(`${detail}?draft=${WIRE_DRAFT_ID}`, [{ path: "/api/v1/me", body: member }]);
+    const box = (await screen.findByTestId("draft-editor-input")) as HTMLTextAreaElement;
+    expect(box.value).toContain("apiVersion: communication.dev/v1alpha1");
+    expect((await screen.findByTestId("draft-editor-verdict")).textContent).toContain("findings");
+    fireEvent.click(await screen.findByTestId("draft-editor-validate"));
+    expect((await screen.findAllByTestId(/^draft-editor-problem-/)).length).toBeGreaterThan(0);
+  });
+});

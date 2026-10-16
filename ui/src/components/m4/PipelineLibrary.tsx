@@ -143,9 +143,15 @@ export function PipelineLibrary({
                     data-testid={`pipeline-name-${pipeline.slug}`}
                   >
                     {pipeline.display_name}
-                    <span className="ml-[6px] font-mono text-[10.5px] font-normal text-muted">
-                      {pipeline.slug}
-                    </span>
+                    {/* A slug equal to the display name says the name twice and
+                        runs the accessible name together
+                        ("feature-developmentfeature-development"); the slug is
+                        only worth its own cell when it differs. */}
+                    {pipeline.slug === pipeline.display_name ? null : (
+                      <span className="ml-[6px] font-mono text-[10.5px] font-normal text-muted">
+                        {pipeline.slug}
+                      </span>
+                    )}
                   </button>
 
                   <span className="flex flex-wrap items-center gap-[6px]">

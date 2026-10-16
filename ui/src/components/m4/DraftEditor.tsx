@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
-import { Field, Input, Textarea } from "../ds/Field";
+import { Field, Input, Select, Textarea } from "../ds/Field";
 import { KindChip } from "./KindChip";
 import { StatusChip } from "../ds/Row";
 import { DRAFT_STATE, stateOf } from "../ds/states";
@@ -36,20 +36,27 @@ import {
 } from "../../api/pipelines";
 import type { PipelineRevision } from "../../api/types";
 import type { ValidateBody } from "../../lib/pipeline/contract";
+import { LIBRARY_READ_ONLY_NOTE } from "../../lib/pipeline/authoring";
 import {
   editableFields,
   listNodes,
   NO_EDITABLE_FIELDS,
   readScalar,
   writeScalar,
+  yamlOnlyKeys,
   type NodeField,
 } from "../../lib/pipeline/nodeFields";
+import { useUnsavedGuard } from "../../lib/pipeline/unsavedGuard";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 
 export interface DraftEditorProps {
   /** The pipeline the draft belongs to — only used to refresh its draft list. */
   pipelineId: string;
   draftId: string;
+  /** Whether the caller holds the library role (`authoring.hasLibraryRole`).
+   * `false` renders the draft as what the page's own headline already says it
+   * is for that caller: something to read, not to edit. */
+  canAuthor: boolean;
   headingId?: string;
   className?: string;
 }
@@ -57,6 +64,7 @@ export interface DraftEditorProps {
 export function DraftEditor({
   pipelineId,
   draftId,
+  canAuthor,
   headingId = "draft-editor-heading",
   className = "",
 }: DraftEditorProps) {
@@ -73,6 +81,9 @@ export function DraftEditor({
   const [published, setPublished] = useState<PipelineRevision | null>(null);
   /** The body the last `POST /validate` returned, before the re-read lands. */
   const [fresh, setFresh] = useState<ValidateBody | null>(null);
+  // Asking before throwing the edit away is part of the state, not a nicety:
+  // the chip below said "unsaved" while the nav silently discarded the text.
+  const guard = useUnsavedGuard(dirty);
 
   // Seed from the served document whenever the local text is not ahead of it;
   // a save/validate that returns the same bytes is a no-op for the textarea.
@@ -83,8 +94,9 @@ export function DraftEditor({
 
   const busy = put.isPending || validate.isPending || publish.isPending;
   const status = draft.data?.status ?? "";
-  // Server verdict only — `valid` is the sole state publish accepts (§ 2.2).
-  const canPublish = status === "valid";
+  // Server verdict only — `valid` is the sole state publish accepts (§ 2.2),
+  // and the library role is the sole state *any* write accepts.
+  const canPublish = canAuthor && status === "valid";
   const verdict = fresh ?? viewValidate(draft.data?.validation ?? null);
 
   /** A form edit is a keystroke elsewhere in the document: same rules. */
@@ -175,17 +187,62 @@ export function DraftEditor({
               // The verdict describes the bytes it ran against, not this edit.
               setFresh(null);
             }}
+            readOnly={!canAuthor}
             spellCheck={false}
             aria-label="Pipeline draft YAML"
             rows={16}
-            className="w-full resize-y rounded-[3px] border border-line bg-surface p-[8px] font-mono text-[11.5px] leading-[17px]"
+            className="w-full resize-y rounded-[3px] border border-line bg-surface p-[8px] font-mono text-[11.5px] leading-[17px] read-only:bg-paper-2 read-only:text-muted"
             data-testid="draft-editor-input"
           />
+          {canAuthor ? null : (
+            <p
+              className="font-mono text-[11px] leading-[16px] text-muted"
+              data-testid="draft-editor-read-only"
+            >
+              {LIBRARY_READ_ONLY_NOTE}
+            </p>
+          )}
+          {guard.pending !== null ? (
+            // The guard's question, in the editor's own words: the browser's
+            // `beforeunload` prompt only appears for reload/close/tab-kill, and
+            // a `<Link>` clicked inside the app never triggers one.
+            <div
+              role="alertdialog"
+              aria-labelledby="draft-editor-leave-heading"
+              className="flex flex-wrap items-center gap-[8px] rounded-[3px] border border-line bg-paper-2 p-[8px]"
+              data-testid="draft-editor-leave-guard"
+            >
+              <p id="draft-editor-leave-heading" className="text-[12px] text-ink">
+                Leave this draft with unsaved changes? The click was going to{" "}
+                <span className="font-mono text-[11px]">{guard.pending}</span> — your edits would be
+                discarded.
+              </p>
+              <Button
+                variant="primary"
+                compact
+                onClick={() => {
+                  setDirty(false);
+                  guard.proceed();
+                }}
+                data-testid="draft-editor-leave-discard"
+              >
+                Discard and leave
+              </Button>
+              <Button compact onClick={guard.cancel} data-testid="draft-editor-leave-stay">
+                Keep editing
+              </Button>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-[8px]">
             <Button
               variant="primary"
               onClick={save}
-              disabled={busy || !dirty}
+              disabled={busy || !dirty || !canAuthor}
+              title={
+                canAuthor
+                  ? undefined
+                  : "the library role edits a shared draft — this is a read-only view"
+              }
               data-testid="draft-editor-save"
             >
               {put.isPending ? "Saving…" : "Save"}
@@ -197,12 +254,14 @@ export function DraftEditor({
               variant="secondary"
               onClick={runPublish}
               disabled={busy || !canPublish}
-              data-testid="draft-editor-publish"
               title={
-                canPublish
-                  ? "publish this draft as a new immutable revision"
-                  : `the server reports this draft as “${status}” — publish needs a valid draft`
+                !canAuthor
+                  ? "the library role publishes a shared draft — this is a read-only view"
+                  : canPublish
+                    ? "publish this draft as a new immutable revision"
+                    : `the server reports this draft as “${status}” — publish needs a valid draft`
               }
+              data-testid="draft-editor-publish"
             >
               {publish.isPending ? "Publishing…" : "Publish"}
             </Button>
@@ -251,7 +310,7 @@ export function DraftEditor({
             </p>
           )}
         </div>
-        <NodeForm text={text} onApply={applyText} />
+        <NodeForm text={text} canEdit={canAuthor} onApply={applyText} />
       </div>
     </Panel>
   );
@@ -281,17 +340,22 @@ function Verdict({ verdict }: { verdict: ValidateBody }) {
 
 /**
  * The per-step form (W4): pick a node, edit the fields its `kind` has. The
- * table of fields is fixed (`nodeFields.editableFields`) and every edit is a
- * one-line rewrite of the textarea's own text, so the form never holds a
- * version of the document Save would not send — and a kind with no fields says
- * so instead of pretending to edit YAML it cannot parse.
+ * table of fields is fixed (`nodeFields.editableFields`, read off the canonical
+ * schema) and every edit is a rewrite of the textarea's own text, so the form
+ * never holds a version of the document Save would not send — and a kind with no
+ * fields says so instead of pretending to edit YAML it cannot parse. Keys the
+ * schema nests (`config.body`, `config.cases`, `config.from`) stay in the
+ * textarea, and the pane names them rather than implying full coverage.
  */
 function NodeForm({
   text,
+  canEdit,
   onApply,
 }: {
   /** The textarea's current text — the only copy of the document. */
   text: string;
+  /** Library role: `false` disables every input in the form. */
+  canEdit: boolean;
   onApply: (next: string) => void;
 }) {
   const nodes = listNodes(text);
@@ -299,7 +363,9 @@ function NodeForm({
   // The picker follows the text: delete `/spec/nodes/2` in the textarea and the
   // pane moves to a node that is still there rather than showing a ghost.
   const current = nodes.find((node) => node.index === picked) ?? nodes[0] ?? null;
-  const fields = editableFields(current === null ? null : current.kind);
+  const kind = current === null ? null : current.kind;
+  const fields = editableFields(kind);
+  const yamlOnly = yamlOnlyKeys(kind);
 
   return (
     <div
@@ -344,21 +410,33 @@ function NodeForm({
             )}
           </div>
           {fields.length === 0 ? (
-            // The honest answer for the seven kinds this form does not know:
-            // the textarea is the editor, and saying so beats an empty form.
+            // The honest answer for the kinds this form does not know (parallel,
+            // pipeline.invoke, git.publish, integration, gate): the textarea is
+            // the editor, and saying so beats an empty form.
             <p className="font-mono text-[11px] text-faint" data-testid="draft-editor-no-fields">
               {NO_EDITABLE_FIELDS}
             </p>
           ) : (
-            fields.map((field) => (
-              <NodeFieldRow
-                key={field.key}
-                field={field}
-                nodeIndex={current.index}
-                text={text}
-                onApply={onApply}
-              />
-            ))
+            <>
+              {fields.map((field) => (
+                <NodeFieldRow
+                  key={field.key}
+                  field={field}
+                  nodeIndex={current.index}
+                  text={text}
+                  disabled={!canEdit}
+                  onApply={onApply}
+                />
+              ))}
+              {yamlOnly.length === 0 ? null : (
+                <p
+                  className="font-mono text-[10.5px] leading-[15px] text-faint"
+                  data-testid="draft-editor-yaml-only"
+                >
+                  still YAML-only for this kind: {yamlOnly.join(", ")}
+                </p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -371,19 +449,28 @@ function NodeFieldRow({
   field,
   nodeIndex,
   text,
+  disabled,
   onApply,
 }: {
   field: NodeField;
   nodeIndex: number;
   text: string;
+  /** Library role: a read-only view disables the input, not the label. */
+  disabled: boolean;
   onApply: (next: string) => void;
 }) {
   const pointer = field.pointer(nodeIndex);
-  const value = readScalar(text, pointer);
+  const value = readScalar(text, pointer, field.type);
   // Null is not an empty field: the key is absent (or holds structure), and the
   // answer is to say where to add it rather than invent a line.
   const missing = value === null;
   const id = `draft-node-${nodeIndex}-${field.key}`;
+  // A value outside the schema's enum is kept as an option: the form must not
+  // silently rewrite what the server has not been asked about.
+  const choices =
+    field.options === undefined || value === null || field.options.includes(value)
+      ? (field.options ?? [])
+      : [value, ...field.options];
 
   function edit(next: string) {
     const result = writeScalar(text, pointer, next, field.type);
@@ -401,7 +488,10 @@ function NodeFieldRow({
             <span className="text-ink-2">{pointer}</span>
           </p>
         ) : (
-          <p className="font-mono text-[10px] text-faint">{pointer}</p>
+          <p className="font-mono text-[10px] text-faint">
+            {pointer}
+            {field.type === "list" ? " · comma-separated" : ""}
+          </p>
         )
       }
     >
@@ -410,16 +500,32 @@ function NodeFieldRow({
           id={id}
           rows={6}
           value={value ?? ""}
-          disabled={missing}
+          disabled={missing || disabled}
           onChange={(event) => edit(event.target.value)}
           data-testid={`draft-editor-field-${field.key}`}
         />
+      ) : choices.length > 0 && field.type !== "list" ? (
+        <Select
+          id={id}
+          value={value ?? ""}
+          disabled={missing || disabled}
+          onChange={(event) => edit(event.target.value)}
+          data-testid={`draft-editor-field-${field.key}`}
+        >
+          {choices.map((choice) => (
+            // The empty option is what an unset-but-present key (`onTimeout:`)
+            // looks like; writing to it would need a value the schema demands.
+            <option key={choice} value={choice}>
+              {choice === "" ? "(not set)" : choice}
+            </option>
+          ))}
+        </Select>
       ) : (
         <Input
           id={id}
           type={field.type === "number" ? "number" : "text"}
           value={value ?? ""}
-          disabled={missing}
+          disabled={missing || disabled}
           onChange={(event) => edit(event.target.value)}
           data-testid={`draft-editor-field-${field.key}`}
         />
