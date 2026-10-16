@@ -243,9 +243,65 @@ class C6cFinal(unittest.TestCase):
         self.assertIs(False, one(v, "workspace_policies"))
         self.assertIs(False, one(v, "key set equals C1"))
 
-    def test_missing_c1_set_is_a_fail_not_an_invention(self):
-        v = m.c6_final_verdicts("completed", {"policies": {}}, set(), {"/plan"})
-        self.assertIs(False, one(v, "key set equals C1"))
+    def test_missing_c1_set_is_a_gap_not_an_invention(self):
+        """The equality needs TWO measured sets — an empty C1 side (C1 did not run
+        in this pass) GAPs instead of failing the product for a lab gap."""
+        v = m.c6_final_verdicts("completed", {"policies": {m.C6_KILL_KEY: m.C6_RESTORE_POLICY}},
+                                set(), {"/plan"})
+        self.assertIsNone(one(v, "key set equals C1"))
+
+    def test_missing_run_retried_row_is_a_gap_not_an_empty_map(self):
+        """run.retried is written by the MANUAL RetryRun (runtime/retry.go); when
+        the engine's budget armed attempt 2 itself (§ 7.1 C5b 'running (retry
+        armed)') and the POST was refused, NO row exists — that absence must GAP
+        with the reason, never read as policies={} (live11/C6.out FAILed on {} for
+        exactly this non-event)."""
+        v = m.c6_final_verdicts("completed", {"policies": None}, {"/plan"}, {"/plan"})
+        self.assertIsNone(one(v, "workspace_policies"))
+        d = [d for l, _o, d in v if "workspace_policies" in l][0]
+        self.assertIn("run.retried", d)
+        self.assertIn("RetryRun", d)
+
+
+class C6dTwoDoorsTest(unittest.TestCase):
+    """Two 409 doors answer POST /retry: the run-status door (run-not-retriable,
+    fires while the ENGINE's auto-retry keeps the run 'running (retry armed)') and
+    the checkpoint door (checkpoint_unavailable). live11/C6.out hit the first and
+    was graded against the second. The checkpoint-door arms GAP with the
+    sequencing reason; 'no new attempt' compares BEFORE to AFTER so the engine's
+    own attempt 2 is never charged to a refusal that predates it."""
+
+    PROBLEM = ('{"detail":"a running run is not retriable; retry a failed, '
+               'interrupted or cancelled one","status":409,"title":"Run Not '
+               'Retriable","type":"https://communication.dev/errors/'
+               'run-not-retriable"}')
+
+    def test_run_status_door_gaps_the_checkpoint_arms(self):
+        v = m.c6_unavailable_verdicts(409, "application/problem+json", "", BOUNDARY,
+                                      BOUNDARY, "3", "3", "0", 2, body=self.PROBLEM,
+                                      attempts_before=2)
+        self.assertIs(True, one(v, "-> 409"), "it IS a 409 — the door just is not that one")
+        self.assertIsNone(one(v, "checkpoint_unavailable"))
+        self.assertIsNone(one(v, "no new attempt"))
+        d = [d for l, _o, d in v if "no new attempt" in l][0]
+        self.assertIn("predates it", d)
+        self.assertIsNot(False, one(v, "NOTHING was reset"))
+        self.assertTrue(one(v, "NOTHING was reset"))
+        self.assertTrue(one(v, "zero run.checkpoint_restored"))
+
+    def test_checkpoint_door_still_verdicts_normally(self):
+        v = m.c6_unavailable_verdicts(409, "application/problem+json",
+                                      "checkpoint_unavailable", BOUNDARY, BOUNDARY,
+                                      "3", "3", "0", 1, body="{}", attempts_before=1)
+        self.assertNotIn(False, [ok for _l, ok, _d in v], f"{v}")
+        self.assertTrue(one(v, "problem+json"))
+        self.assertTrue(one(v, "no new attempt"))
+
+    def test_checkpoint_door_that_appended_fails_against_the_before_count(self):
+        v = m.c6_unavailable_verdicts(409, "application/problem+json",
+                                      "checkpoint_unavailable", BOUNDARY, BOUNDARY,
+                                      "3", "3", "0", 2, body="{}", attempts_before=1)
+        self.assertIs(False, one(v, "no new attempt"))
 
 
 def calls_and_args(fn_name, path=DRIVER):

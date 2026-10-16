@@ -3006,31 +3006,112 @@ def c5_retry_row_verdicts(rows, head_before=None, dirty_before=None):
                     str(rcx.get("head_commit")) == str(head_before).strip(),
                     f"retry_context={str(rcx.get('head_commit'))[:12]!r} "
                     f"before={str(head_before)[:12]!r}"))
+    # The engine carries modified_path_count ONLY when the recorded boundary had
+    # modified paths (runtime/retry.go + advancer.lastCheckpointContext: the key is
+    # omitted for a zero count), and its number comes from the LAST CHECKPOINT's
+    # repo_states, never from a live worktree read. Compare against DIRTY_BEFORE
+    # (the § 7.1 C5a reading) and report which of the four states was observed.
     dirty = count_or_none(rcx.get("modified_path_count"))
-    out.append(("C5e retry_context.modified_path_count is carried (the worktree the interrupted "
-                "attempt left behind is described, not discarded)", dirty is not None,
-                f"retry_context.modified_path_count={dirty} "
-                f"(dirty lines before the kill={count_or_none(dirty_before)})"))
+    want = count_or_none(dirty_before)
+    label = ("C5e retry_context.modified_path_count is carried (the worktree the "
+             "interrupted attempt left behind is described, not discarded)")
+    if dirty is not None:
+        if want is None:
+            out.append((label, None,
+                        f"retry_context.modified_path_count={dirty} but the worktree was "
+                        f"unreadable before the kill (dirty lines={dirty_before!r}) — the "
+                        "number carried cannot be checked against a reading that never landed"))
+        else:
+            out.append((label, dirty == want,
+                        f"retry_context.modified_path_count={dirty} vs "
+                        f"dirty lines before the kill={want}"))
+    elif want == 0:
+        out.append((label, None,
+                    "retry_context carries no modified_path_count and the worktree read "
+                    "CLEAN before the kill (dirty=0): the engine omits the key for a zero "
+                    "count (runtime/retry.go only sets it when > 0), and the shipped twin "
+                    "holds its sleep BEFORE the edit, so the killed node had written "
+                    "nothing yet — § 7.1 C5 names a '~40s pytest + sleep 30' twin that "
+                    "'has already written into the worktree'; the carry arm needs that")
+                   )
+    elif want is None:
+        out.append((label, None,
+                    f"retry_context carries no modified_path_count and the worktree was "
+                    f"unreadable before the kill (dirty lines={dirty_before!r}) — with no "
+                    "reading there is nothing to check the carried facts against"))
+    else:
+        out.append((label, False,
+                    f"retry_context.modified_path_count is ABSENT while the worktree "
+                    f"carried {want} dirty line(s) before the kill — the boundary's "
+                    f"repo_states row (head_commit={str(rcx.get('head_commit'))[:12]!r}) "
+                    "never recorded them, so the retry was not TOLD what was left behind"))
     return out
+
+
+# The API refuses a retry of a still-running run with problem+json whose members
+# read "title":"Run Not Retriable" / "type":".../errors/run-not-retriable" — the
+# snake_case code lives in internal/api/runs.go (RunConflictNotRetriable), the
+# WIRE form is dashed/spaced. live11/C5.out matched only "run_not_retriable", so
+# the budget-already-armed 409 fell through to the FAIL branch. Match every form.
+C5_NOT_RETRIABLE_MARKS = ("not retriable", "not_retriable", "not-retriable")
+
+
+def c5_run_not_retriable(status, body):
+    """True when a POST /retry answer is the run-status door's 409 (a running /
+    completed / failed-otherwise run is not retriable) — any wire spelling."""
+    low = str(body or "").lower()
+    return int(_int(status) or 0) == 409 and any(mk in low for mk in C5_NOT_RETRIABLE_MARKS)
+
+
+def c5_auto_retry_verdicts(sched, rows, manual_status):
+    """C5e — WHO armed the retry the gate measures. § 7.1 C5b's own words say the
+    'run row is still running (retry armed)' after the interruption: with the
+    shipped twin's attempt_limit 2 the ENGINE owns this retry
+    (node.attempt.retry_scheduled -> attempt 2), so C5e measures THAT retry — the
+    scheduled event here plus attempt 2's retry_context in c5_retry_row_verdicts.
+    The manual POST /retry ("the UI's button") belongs to a run the budget refused
+    (C5h's maxAttempts=1 arm); while the engine is mid-retry the API answers 409
+    run-not-retriable, and § 7.1 C5e's '-> 200' line and its C5b sentence cannot
+    both hold — the gate reports the contradiction, never forces it."""
+    attempt2 = any(_int(r.get("attempt_number")) > 1 for r in rows)
+    seen = [r.get("attempt_number") for r in rows]
+    if _int(manual_status) == 200:
+        return [("C5e the retry was posted through the UI's route (POST /retry -> 200) "
+                 "and re-queued the killed node", attempt2,
+                 f"attempt rows={seen}")]
+    n = _int(sched)
+    if not attempt2 and not n:
+        return [("C5e a retry exists — armed by the engine's budget "
+                 "(node.attempt.retry_scheduled) or the manual POST", None,
+                 f"no attempt 2 and no retry_scheduled row (attempts={seen}) — the arm "
+                 "has nothing to measure")]
+    return [("C5e the engine armed the retry itself (node.attempt.retry_scheduled "
+             "actor=system -> attempt 2) — § 7.1 C5b's 'run row is still running "
+             "(retry armed)': this is the retry C5e measures on the shipped twin", n > 0
+             and attempt2, f"retry_scheduled rows={n} attempts={seen}")]
 
 
 def c5_retry_api_verdicts(status, body, live_rows):
     """C5e's POST /runs/{id}/retry arm. Either the explicit retry is accepted, or the
-    budget had ALREADY armed attempt 2 (409 run_not_retriable on a still-running run) —
-    the gate reports WHICH path it observed instead of hiding the difference."""
+    budget had ALREADY armed attempt 2 (409 run-not-retriable on a still-running run)
+    — the gate reports WHICH path it observed instead of hiding the difference."""
     retry_armed = any(_int(r.get("attempt_number")) > 1 for r in live_rows)
     if status == 200:
         return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
                  True, f"{status} {str(body)[:120]} — retried rows: "
                  f"{[(r.get('attempt_number'), r.get('status')) for r in live_rows]}")]
-    if status == 409 and "run_not_retriable" in str(body):
+    if c5_run_not_retriable(status, body):
         if retry_armed:
             return [("C5e POST /runs/{id}/retry -> 200 (the UI's button)", None,
-                     f"observed 409 run_not_retriable: the run was still 'running' because the "
-                     f"retry budget had already armed attempt 2 on its own ({str(body)[:120]}) — "
-                     "the explicit route only applies to a run the budget refused (C5h's arm)")]
+                     f"observed 409 run-not-retriable ({str(body)[:120]}): § 7.1 C5b's own "
+                     "sentence keeps the run 'running (retry armed)' when the budget "
+                     "survives the interruption, and a running run is not retriable — with "
+                     "attempt_limit 2 the ENGINE owns this retry and c5_auto_retry_verdicts "
+                     "grades it. § 7.1 C5e's 'POST -> 200' line contradicts its C5b "
+                     "sentence on the shipped twin; the route only applies to a run the "
+                     "budget refused (C5h's arm). The contradiction is reported, not forced")]
         return [("C5e POST /runs/{id}/retry re-queued the killed node", False,
-                 f"observed 409 run_not_retriable AND no attempt 2 exists — the run neither "
+                 f"observed 409 run-not-retriable AND no attempt 2 exists — the run neither "
                  f"accepted the retry nor armed one ({str(body)[:160]})")]
     return [("C5e POST /runs/{id}/retry -> 200 (§ 7.1: the UI's button posts exactly this)",
              False, f"observed {status} {str(body)[:160]}")]
@@ -3724,8 +3805,23 @@ def c5():
                            f"FROM workspaces WHERE run_id = '{run_id}'"), 2)
         return dict(zip(("state", "volume_id"), r[0])) if r else {}
 
+    def ws_agent_root():
+        """§ 7.1 writes the worktree as /workspaces/run/$RUN/repos/app, but the
+        corrected layout (ADR-0017 D1 / probe C-META, internal/workspace/git/
+        layout.go) grants <root>/work: the repos live at agent_root/repos/<name>.
+        workspaces.agent_root is a GENERATED column, so the read follows the
+        ledger, never the shorthand — the live11 '(unreadable)' HEAD_BEFORE/DIRTY_
+        BEFORE readings were this driver asking git for a directory that does not
+        exist. '' when the row is not there (yet)."""
+        try:
+            return (psql(f"SELECT coalesce(agent_root,'') FROM workspaces WHERE run_id = "
+                        f"'{run_id}' ORDER BY created_at DESC LIMIT 1") or "").strip()
+        except RuntimeError:
+            return ""
+
     def gitout(sh):
-        rc, out = wexec(f"git -C /workspaces/run/{run_id}/repos/app {sh}", worker=svc)
+        root = ws_agent_root() or f"/workspaces/run/{run_id}/work"
+        rc, out = wexec(f"git -C {root}/repos/app {sh}", worker=svc)
         if rc != 0 or "fatal:" in out:
             return ""
         return out.strip()
@@ -3923,8 +4019,8 @@ def c5():
             f"ORDER BY a.attempt_number"), 5, sep="\t")]
     r = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "crash"})
     show(f"C5e POST /api/v1/runs/{run_id}/retry -> {r.status}", r.text[:300])
+    manual_status = r.status
     rows = attempts_of_key()
-    c5_emit(c5_retry_api_verdicts(r.status, r.text[:200], rows))
     deadline = time.time() + hold_window(180)
     while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1 for x in rows):
         time.sleep(5)
@@ -3932,6 +4028,14 @@ def c5():
     show(f"C5e every attempt of the killed node {key}",
          "\n".join(f"{x['attempt_number']}: {x['status']} {x['error_class']} "
                    f"retry_context={x['retry_context']}" for x in rows) or "(none)")
+    # The refusal is graded AFTER the poll: only a run the ledger shows as neither
+    # explicitly accepted NOR budget-armed is a real 'neither path retried' FAIL.
+    c5_emit(c5_retry_api_verdicts(manual_status, r.text[:200], rows))
+    # WHO armed the retry: the engine's budget (node.attempt.retry_scheduled, the
+    # case § 7.1 C5b's 'running (retry armed)' describes) or the manual POST above.
+    sched = psql(f"SELECT count(*)::text FROM domain_events WHERE run_id = '{run_id}' "
+                 f"AND type = 'node.attempt.retry_scheduled' AND attempt_id = '{att}'")
+    c5_emit(c5_auto_retry_verdicts(count_or_none(sched), rows, manual_status))
     r = alice.get(LB, f"/api/v1/runs/{run_id}")
     show("C5e GET /api/v1/runs/{id} (the run state the UI would show)", f"{r.status} "
          f"{str(r.text)[:300]}")
@@ -4374,19 +4478,38 @@ def c6_avail_verdicts(cks):
 
 
 def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_before,
-                            dirty_after, restored_after, attempts_after):
+                            dirty_after, restored_after, attempts_after,
+                            body="", attempts_before=None):
     """C6d — the refusal must be 409 problem+json code=checkpoint_unavailable AND
     nothing may move: same HEAD, same dirty count, zero restore events, no new
     attempt. A refusal that reset first would be a data-loss bug wearing a
-    feature badge."""
+    feature badge. TWO 409 doors answer a POST /retry: the run-status door
+    (run-not-retriable, fires FIRST — live11/C6.out: the engine's auto-retry kept
+    the run 'running (retry armed)' per § 7.1 C5b, so the per-node checkpoint plan
+    — the only thing that can answer checkpoint_unavailable — was never evaluated)
+    and the checkpoint door. Hitting the run-status door GAPs the checkpoint-door
+    arms instead of FAILing them: the arm needs a retriable run (a budget the
+    engine exhausted, or C5h's maxAttempts=1) standing on an uncommitted boundary.
+    'no new attempt' compares BEFORE against AFTER: an attempt the engine armed
+    on its own predates the refusal and cannot be attributed to it."""
     if status in (None, "", 0):
         return [("C6d the uncommitted-boundary retry refuses 409 checkpoint_unavailable",
                  None, "no retry request was issued (see the precondition GAP above)")]
     v = [("C6d the uncommitted-boundary retry -> 409",
           status == 409, f"observed {status} code={code!r} ctype={ctype!r}")]
-    v.append(("C6d the refusal is problem+json code=checkpoint_unavailable",
-              ("problem+json" in (ctype or "")) and code == "checkpoint_unavailable",
-              f"code={code!r} ctype={ctype!r}"))
+    hit_status_door = code != "checkpoint_unavailable" and c5_run_not_retriable(status, body)
+    if hit_status_door:
+        v.append(("C6d the refusal is problem+json code=checkpoint_unavailable", None,
+                  f"observed 409 run-not-retriable ({str(body)[:120]}): the run-status door "
+                  "fired before the per-node checkpoint plan was validated — the run was "
+                  "still 'running' because the ENGINE owns the auto-retry (§ 7.1 C5b/C6b "
+                  "'running (retry armed)'). The contract's C6d refusal arm needs a FAILED "
+                  "run (an exhausted/maxAttempts=1 budget) with an uncommitted recorded "
+                  "boundary (see the precondition line above); reported, not forced"))
+    else:
+        v.append(("C6d the refusal is problem+json code=checkpoint_unavailable",
+                  ("problem+json" in (ctype or "")) and code == "checkpoint_unavailable",
+                  f"code={code!r} ctype={ctype!r}"))
     moved = bool(head_before) and bool(head_after) and head_before != head_after
     dirtied = "" not in (dirty_before, dirty_after) and dirty_before != dirty_after
     v.append(("C6d NOTHING was reset on the refusal path — HEAD and the dirty set "
@@ -4395,8 +4518,18 @@ def c6_unavailable_verdicts(status, ctype, code, head_before, head_after, dirty_
               f"dirty {dirty_before!r}->{dirty_after!r}"))
     v.append(("C6d zero run.checkpoint_restored events after the refusal",
               count_or_none(restored_after) == 0, f"count={restored_after!r}"))
-    v.append(("C6d the refusal appended no new attempt", (attempts_after or 0) <= 1,
-              f"attempts={attempts_after!r}"))
+    label = "C6d the refusal appended no new attempt"
+    if hit_status_door:
+        v.append((label, None,
+                  f"attempts before={attempts_before!r} after={attempts_after!r} — the POST "
+                  "was refused at the run-status door, so any attempt the ledger shows "
+                  "(e.g. the engine's own retry) predates it and is not this refusal's "
+                  "append; the checkpoint-door arm needs the run to reach a retriable "
+                  "state first"))
+        return v
+    want = 1 if attempts_before is None else attempts_before
+    v.append((label, (attempts_after or 0) <= want,
+              f"attempts before={attempts_before!r} after={attempts_after!r}"))
     return v
 
 
@@ -4440,11 +4573,13 @@ def c6_restored_verdicts(ev, cks, head_boundary, head_after, dirty_after, attemp
 def c6_loss_verdicts(recovery, run_st, err_class, attempts, retried_sched, detail,
                      same_volume, base=1):
     """C6e — the honest loss case: workspace.recovery_lost with the enum reason the
-    measured facts support, error_class='workspace_lost', NO automatic retry (no
-    attempt numbered above `base`, the attempt that carried the loss, and no
-    node.attempt.retry_scheduled row), the words 'prior edits lost, rerun
-    required', and NEVER 'resumed'. A run that quietly continued on its own
-    volume GAPs the arm — no loss happened."""
+    measured facts support, error_class='workspace_lost', NO automatic retry after
+    the loss (no attempt numbered above `base` — the attempt that CARRIED the loss
+    — and `retried_sched` counts ONLY the retry_scheduled rows whose payload
+    error_class is workspace_lost: the engine's pre-loss attempt-1→2 scheduling is
+    § 7.1 C5b's expected auto-retry, not a violation of pass 5), the words 'prior
+    edits lost, rerun required', and NEVER 'resumed'. A run that quietly continued
+    on its own volume GAPs the arm — no loss happened."""
     if not recovery and same_volume:
         return [("C6e workspace.recovery_lost was journalled", None,
                  "the run was reclaimed by its OWN worker on the SAME volume — nothing was "
@@ -4471,19 +4606,40 @@ def c6_loss_verdicts(recovery, run_st, err_class, attempts, retried_sched, detai
 
 def c6_final_verdicts(status, retried, c1_keys, c6_keys):
     """C6c — the restore arm completes with C1's key set (retry appends, never
-    rewrites), and run.retried's workspace_policies names WHICH mode ran."""
-    pol = (retried or {}).get("policies") if isinstance((retried or {}).get("policies"),
-                                                        dict) else {}
+    rewrites), and run.retried's workspace_policies names WHICH mode ran. A mode
+    claim needs the run.retried row the MANUAL retry posts: when the engine's
+    budget armed attempt 2 itself (§ 7.1 C5b 'running (retry armed)') the explicit
+    POST was refused, no run.retried exists, and the mode arm GAPs with that
+    reason — an absent journal row is never read as an empty map (the C5e
+    sequencing class again). Key-set equality likewise needs TWO measured sets."""
+    pol = (retried or {}).get("policies") if isinstance(retried, dict) else None
     v = [("C6c the restored run reached 'completed'", status == "completed",
-          f"status={status!r}"),
-         (f"C6c run.retried's workspace_policies names {C6_RESTORE_POLICY} for the "
-          f"{C6_KILL_KEY} node", any(v == C6_RESTORE_POLICY for k, v in pol.items()
-                                     if "implement" in k),
-          f"workspace_policies={pol!r}")]
-    ident, only_a, only_b = compare_key_sets(set(c6_keys), set(c1_keys))
+          f"status={status!r}")]
+    mode_label = (f"C6c run.retried's workspace_policies names {C6_RESTORE_POLICY} for the "
+                  f"{C6_KILL_KEY} node")
+    if pol is None:
+        v.append((mode_label, None,
+                  "no run.retried row for the run — run.retried is the journal row the "
+                  "MANUAL POST /runs/{id}/retry writes (runtime/retry.go's RetryRun); "
+                  "this pass the engine's own budget armed attempt 2 (§ 7.1 C5b's 'run "
+                  "row is still running (retry armed)') and the explicit POST was "
+                  "refused 409, so the journal never got a workspace_policies map to "
+                  "name the mode from"))
+    else:
+        v.append((mode_label, any(p == C6_RESTORE_POLICY for k, p in pol.items()
+                                  if "implement" in k),
+                  f"workspace_policies={pol!r}"))
+    k1, k6 = set(c1_keys or []), set(c6_keys or [])
+    ident, only_c6, only_c1 = compare_key_sets(k6, k1)
+    if not k1 or not k6:
+        v.append(("C6c the key set equals C1's (a restore-retry appends, it never rewrites "
+                  "history)", None,
+                  f"c1_keys={len(k1)} c6_keys={len(k6)} — the equality needs TWO measured "
+                  "sets; inventing the missing one would prove nothing"))
+        return v
     v.append(("C6c the key set equals C1's (a restore-retry appends, it never rewrites "
-              "history)", bool(c1_keys) and bool(c6_keys) and ident,
-              f"only_c1={sorted(only_a)[:4]} only_c6={sorted(only_b)[:4]}"))
+              "history)", ident,
+              f"only_c1={only_c1[:4]} only_c6={only_c6[:4]}"))
     return v
 
 
@@ -4546,7 +4702,10 @@ def c6_recovery_event(project_id, run_id):
         f"SELECT coalesce(payload->>'reason','-') || '@@' || "
         f"coalesce(payload->>'expected_volume_id','-') || '@@' || "
         f"coalesce(payload->>'found_volume_id','-') || '@@' || "
-        f"coalesce((SELECT name FROM workers WHERE id = e.actor_id),'-') "
+        # workers.id is uuid and actor_id is text: live11/C6.out showed this read
+        # die with `operator does not exist: uuid = text`, so every 'event=None'
+        # loss verdict was the QUERY, not the ledger. Compare on the text side.
+        f"coalesce((SELECT name FROM workers WHERE id::text = e.actor_id),'-') "
         f"FROM domain_events e WHERE e.project_id = '{project_id}' "
         f"AND type = 'workspace.recovery_lost' AND (run_id = '{run_id}' OR run_id IS NULL) "
         f"ORDER BY global_seq DESC LIMIT 1", "recovery_lost"), 4, sep="@@")
@@ -4555,13 +4714,19 @@ def c6_recovery_event(project_id, run_id):
 
 def c6_retry_policies(run_id):
     """run.retried's workspace_policies map — the journal's answer to 'which mode "
-    "ran?' (§ 3 row 6). {} when no run.retried row exists."""
+    "ran?' (§ 3 row 6). {} when a run.retried row EXISTS but names no policies; "
+    "None when no run.retried row exists at all — run.retried is written by the "
+    "MANUAL POST /retry's RetryRun path (internal/pipelines/runtime/retry.go); "
+    "the engine's automatic budget retry never emits it, and C6c must not read "
+    "that absence as an empty map."""
     rows = psql_rows(c6_row(f"SELECT coalesce(payload->>'workspace_policies','{{}}') "
                             f"FROM domain_events WHERE run_id = '{run_id}' AND "
                             f"type = 'run.retried' ORDER BY global_seq DESC LIMIT 1",
                             "run.retried"), 1)
+    if not rows:
+        return None
     try:
-        return json.loads(rows[0][0]) if rows else {}
+        return json.loads(rows[0][0])
     except ValueError:
         return {}
 
@@ -4695,7 +4860,15 @@ def c6():
              f"lands on {key}. The restore verdicts read the event's own node_instance_key, " 
              "so a different node is reported, not renamed.")
     def gitout(sh):
-        rc, out = wexec(f"git -C /workspaces/run/{run_id}/repos/app {sh}", worker=svc)
+        # Same layout fact as C5: the worktree lives at workspaces.agent_root
+        # (= root_path || '/work') /repos/app, not at § 7.1's shorthand
+        # /workspaces/run/$RUN/repos/app — the live11 '(unreadable)' reads were
+        # the driver's path, not the product's.
+        root = (c6_row(f"SELECT coalesce(agent_root,'') FROM workspaces WHERE run_id = "
+                      f"'{run_id}' ORDER BY created_at DESC LIMIT 1", "agent_root") or "").strip()
+        if not root:
+            root = f"/workspaces/run/{run_id}/work"
+        rc, out = wexec(f"git -C {root}/repos/app {sh}", worker=svc)
         return out.strip() if rc == 0 and "fatal:" not in out else ""
     ck_rows = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints before"))
     ck_before = [f"{c['node']}:{c['volume_id']}:{str(c['head'])[:12]}" for c in ck_rows]
@@ -4711,7 +4884,6 @@ def c6():
          f"dirty={dirty_before or '(unreadable)'} | /plan boundary head="
          f"{head_bnd[:12] or '(none)'} volume={head_boundary.get('volume_id')!r}")
     ws_before = c6_workspaces(run_id)
-    loss_arm_owner = owner   # the worker that owns the tree C6e will lose
 
     # C6b — SIGKILL the owning worker mid-node, then restore FROM the boundary.
     # The worker is always started again on every exit path (host safety).
@@ -4751,6 +4923,7 @@ def c6():
         # C6d — the refusal path, attempted with the ledger's ACTUAL boundary states.
         # A committed boundary is C6a's own premise, so the refusal may be honestly
         # unmeasurable here; the verdicts say which arm was exercised.
+        n_before = len(c6_attempts_of_key(run_id, key))
         r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
                        {"reason": "c6 uncommitted-boundary arm",
                         "node_instance_keys": [C6_KILL_KEY]})
@@ -4759,13 +4932,17 @@ def c6():
             code = str((r.json() or {}).get("code") or "")
         except ValueError:
             code = ""
+        if not code and "checkpoint" in str(r.text).lower():
+            code = "checkpoint_unavailable"    # some wires spell it in type/detail
         show(f"C6d POST /api/v1/runs/{{id}}/retry -> {r.status}",
              f"ctype={r.headers.get('Content-Type','')} code={code!r} {r.text[:260]}")
         n_restored = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
                             f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'", "restored count")
-        c6_emit(c6_unavailable_verdicts(r.status, r.headers.get("Content-Type", ""), code,
-                                        head_killed, head_ref, dirty_killed, dirty_ref,
-                                        n_restored, len(c6_attempts_of_key(run_id, key))))
+        c6_emit(c6_unavailable_verdicts(
+            r.status, r.headers.get("Content-Type", ""), code,
+            head_killed, head_ref, dirty_killed, dirty_ref, n_restored,
+            len(c6_attempts_of_key(run_id, key)), body=r.text[:300],
+            attempts_before=n_before))
 
         # C6b/C6c — the real retry: the one the contract posts (a 409 above left the
         # run untouched and retryable, so it is posted again WITHOUT the arm note).
@@ -4774,12 +4951,19 @@ def c6():
             r2 = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "restore"})
             show(f"C6b POST /api/v1/runs/{{id}}/retry (restore) -> {r2.status}", r2.text[:260])
         rows = c6_attempts_of_key(run_id, key)
-        c5_emit(c5_retry_api_verdicts(r2.status, r2.text[:200], rows))
         deadline = time.time() + hold_window(180)
         while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1
                                                  for x in rows):
             time.sleep(5)
             rows = c6_attempts_of_key(run_id, key)
+        # Graded AFTER the poll (same rule as C5e): a 409 while the ENGINE has
+        # already armed attempt 2 is § 7.1 C5b's 'running (retry armed)', not a
+        # product refusal to retry — and WHO armed it is its own honest line.
+        c5_emit(c5_retry_api_verdicts(r2.status, r2.text[:200], rows))
+        sched6 = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                        f"'{run_id}' AND type = 'node.attempt.retry_scheduled' "
+                        f"AND attempt_id = '{att}'", "retry_scheduled")
+        c5_emit(c5_auto_retry_verdicts(count_or_none(sched6), rows, r2.status))
 
         # C6b — read the worktree DURING the retry's own window, before the exec'd
         # node can move HEAD: the reset must already be a fact (ADR-0023 § 6).
@@ -4815,74 +4999,64 @@ def c6():
         gap("C6c key-set equality against C1", "C1's twin key set is not in CTX (C1 did not "
                                                "run in this pass) — the comparison needs two "
                                                "measured sets, not an invented one")
-    # C6e — cross-worker honesty (12 case 20's second arm). worker-c is a
-    # THROWAWAY with its own named repos volume, started by start_throwaway (this
-    # project's helper — compose has no worker-c service, and the driver never
-    # stops a container it did not create). The affinity flip is a lab-side
-    # precondition with no contract route (the M3 D10 exception § 7.1 C9 already
-    # uses): "point the run at it (drain a, run affinity forced)".
-    show("C6e cross-volume arm against the restore run",
-         f"owner={loss_arm_owner} volume={(ws_before or [{}])[0].get('volume_id')!r} "
-         f"status={run_status(run_id)!r}")
-    loss_verdicts, loss_ctx = [], {"worker": C6_LOSS_WORKER}
-    stopped = True
-    rc, out = run(COMPOSE + ["stop", loss_arm_owner])
-    if rc != 0:
-        stopped = False
-        loss_verdicts.append(("C6e the owning worker is stopped (drained)", False,
-                              f"compose stop {loss_arm_owner} -> rc={rc} {out[-180:]}"))
-    else:
-        time.sleep(40)                             # lease 30s + margin: the row goes stale
-        rc, out = run(COMPOSE + ["start", loss_arm_owner])
-        show(f"compose start {loss_arm_owner} (back for the finally; rc={rc})", out[-160:])
-        wait_worker_row(loss_arm_owner, 120)
-    if stopped:
-        loss_ctx["c_started"] = bool(start_throwaway(C6_LOSS_WORKER, "required", repos_volume=True))
-        cw = wait_worker_row(C6_LOSS_WORKER, 120)
-        loss_ctx["c_worker_id"] = cw[0] if cw and cw[0] else ""
-        if not loss_ctx["c_worker_id"]:
-            loss_verdicts.append(("C6e worker-c registered on its own named volume", False,
-                                  f"row={cw!r} — without a second worker there is no "
-                                  "different-worker arm"))
-        else:
-            show("C6e worker-c's row", f"{cw[0]} enforcement={cw[1]} capacity={cw[2]}")
-            flip = c9_lab_write(
-                f"UPDATE runs SET worker_affinity = (SELECT id FROM workers WHERE name = "
-                f"'{C6_LOSS_WORKER}'), worker_volume_id = (SELECT coalesce(max(volume_id), '') "
-                f"FROM worker_volumes WHERE worker_id = (SELECT id FROM workers WHERE name = "
-                f"'{C6_LOSS_WORKER}')) WHERE id = '{run_id}' "
-                f"AND worker_affinity = (SELECT id FROM workers WHERE name = "
-                f"'{loss_arm_owner}')", "point the run at worker-c (contract § 7.1 C6e: "
-                "'drain a, run affinity forced' — no public route writes affinity)")
-            show("C6e runs row after the affinity flip", c6_row(
-                f"SELECT worker_affinity || ' volume=' || coalesce(worker_volume_id,'-') "
-                f"FROM runs WHERE id = '{run_id}'", "affinity"))
-            rr = alice.post(LB, f"/api/v1/runs/{run_id}/retry", {"reason": "cross-worker arm"})
-            show(f"C6e POST /api/v1/runs/{{id}}/retry -> {rr.status}", rr.text[:240])
-            time.sleep(45)                             # c claims, prepares, refuses
-            ev_c = c6_recovery_event(mf(facts, "project_id"), run_id)
-            latest = [x for x in c6_attempts_of_key(run_id, key) if x.get("error_class") != "-"]
-            err_c = latest[-1].get("error_class") if latest else ""
-            det_c = (latest[-1].get("detail") if latest else "") or ""
-            base_c = _int(latest[-1].get("attempt_number")) if latest else 1
-            show("C6e workspace.recovery_lost + the refused attempt",
-                 f"event={json.dumps(ev_c) if ev_c else '(none)'} | attempt="
-                 f"{json.dumps(latest[-1]) if latest else '(none)'}")
-            c8_watch(alice, twin, run_id, hold_window(180), "cross-worker arm")
-            run_st, cause = (psql_rows(c6_row(f"SELECT status || '|' || "
-                                              f"coalesce(failed_cause,'-') FROM runs WHERE "
-                                              f"id = '{run_id}'", "run row"), 2) or [[""]])[0]
-            sched = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
-                           f"'{run_id}' AND type = 'node.attempt.retry_scheduled'",
-                           "retry_scheduled")
-            c6_emit(c6_loss_verdicts(ev_c, run_st, err_c, c6_attempts_of_key(run_id, key),
-                                     sched, det_c, same_volume=False, base=base_c))
-            loss_verdicts.append(("C6e worker-c registered on its own named volume", True,
-                                  f"{loss_ctx['c_worker_id']}"))
-            loss_ctx.update({"event": ev_c, "error_class": err_c, "detail": det_c,
-                             "affinity_flipped": bool(flip)})
-        c6_emit(loss_verdicts)
+    # C6e — cross-volume honesty (12 case 20's second arm), PRODUCED rather than
+    # inferred. § 7.1's words: "start a run on worker-a, then bring up worker-c on
+    # a DIFFERENT named volume and point the run at it (drain a, run affinity
+    # forced)". The restore run above can NOT be the subject: its killed node has
+    # attempt_limit 2, so the engine armed attempt 2 itself and — with worker-a
+    # restarted on its own volume — attempt 2 landed WHERE THE WORKSPACE SURVIVED
+    # (live11: retry_scheduled='1', run 'completed', no workspace.recovery_lost:
+    # no loss happened), and a completed run is not retriable, so the old
+    # post-completion affinity flip only ever measured the run-status door's 409.
+    # The W6 leg's w6_produce_loss is the sequence that follows the contract's
+    # ORDERING: kill the owning worker with its start-back handed over
+    # (restart=False), drain it so the worker that owns the volume can never claim
+    # attempt 2, start the throwaway worker-c on its OWN named repos volume, and
+    # flip the run's affinity BEFORE attempt 2 is claimed — then read the refusal
+    # the workspace cannot avoid writing. worker-c comes and goes only through
+    # start_throwaway/stop_throwaway (compose has no worker-c service).
+    show("C6e cross-volume arm — producing a fresh different-volume loss",
+         f"the restore run above is not the subject: its auto-retry landed on "
+         f"{(ws_before or [{}])[0].get('volume_id')!r} — the SAME volume — and the "
+         "run completed; a loss story must be produced, never asserted")
+    loss_ctx = {"worker": C6_LOSS_WORKER}
+    lost = None
+    try:
+        lost = w6_produce_loss(alice, twin, tag="C6e")
+    finally:
         stop_throwaway(C6_LOSS_WORKER, repos_volume=True)
+    if not lost or not lost.get("run_id"):
+        gap("C6e cross-volume loss arm (produced)",
+            "the different-volume loss case could not be produced — the reason is "
+            "printed above by the produce leg; without a workspace really left "
+            "behind on another worker's volume there is no loss story to grade, "
+            "and this gate does not read a same-volume reclaim as one")
+    else:
+        loss_run, loss_key = lost["run_id"], lost.get("key") or ""
+        c8_watch(alice, twin, loss_run, hold_window(300), "C6e loss run")
+        run_row = psql_rows(c6_row(f"SELECT status || '|' || coalesce(failed_cause,"
+                                   f"'-') FROM runs WHERE id = '{loss_run}'",
+                                   "loss run row"), 2)
+        ev_c = c6_recovery_event(mf(twin, "project_id"), loss_run)
+        # ADR-0023 § 11 pass 5's arm, read precisely: the engine's pre-loss
+        # retry_scheduled (attempt 1 -> 2) is the auto-retry § 7.1 C5b EXPECTS;
+        # what must NOT exist is a retry_scheduled for the workspace_lost failure.
+        sched_c = w6_auto_retried(loss_run)
+        detail_c = lost.get("detail") or ""
+        base_c = _int(lost.get("attempt_number")) or 1
+        lost_view = json.dumps({k: lost.get(k) for k in
+                                ("attempt_number", "error_class", "worker", "service")})
+        show("C6e workspace.recovery_lost + the produced loss attempt",
+             f"event={json.dumps(ev_c) if ev_c else '(none)'} | attempt={lost_view} | "
+             f"workspace_lost retry_scheduled rows={sched_c!r} | "
+             f"run row={run_row[0] if run_row else '(unreadable)'}")
+        c6_emit(c6_loss_verdicts(ev_c, run_row[0][0] if run_row else "",
+                                 lost.get("error_class", ""),
+                                 c6_attempts_of_key(loss_run, loss_key), sched_c,
+                                 detail_c, same_volume=False, base=base_c))
+        loss_ctx.update({"run_id": loss_run, "key": loss_key, "event": ev_c,
+                         "error_class": lost.get("error_class", ""),
+                         "detail": detail_c, "produced": True})
     CTX["c6_loss"] = loss_ctx
     CTX["c6"] = {"run_id": run_id, "revision_id": rev, "attempt_id": att, "owner": owner,
                  "key": key, "head_boundary": head_bnd, "events": ev,
@@ -13565,9 +13739,11 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
                  f"the leg never leaves a stopped worker behind (rc={rc})",
                  out[-160:] or frozen)
         if killed and facts["service"] and not restart:
-            show(f"{tag} {facts['service']} stays DOWN — the caller owns the start-back "
-                 "(W6 keeps the owning worker drained so only the other volume's worker "
-                 "can take the retry)")
+            show(f"{tag} {facts['service']} stays DOWN — the caller owns the start-back",
+                 "the drain keeps the owning worker off its own volume so only the "
+                 "other volume's worker can take the retry (live11/W6.out: this call "
+                 "carried ONE argument — show(label, out) raised TypeError inside the "
+                 "finally, crashing the leg after a perfectly landed kill)")
         elif killed and facts["service"]:
             rc, out = run(COMPOSE + ["start", facts["service"]])
             show(f"docker compose -p communication-m4 start {facts['service']} — the killed "

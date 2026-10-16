@@ -234,7 +234,9 @@ class RetryApiVerdictsTest(unittest.TestCase):
         v = m.c5_retry_api_verdicts(409, '{"error":"run_not_retriable"}',
                                     [attempt(), attempt(2, "running", "-", ctx_json())])
         self.assertIsNone(ok_of(v, "the UI's button"))
-        self.assertIn("already armed attempt 2", detail_of(v, "the UI's button"))
+        self.assertIn("running (retry armed)", detail_of(v, "the UI's button"),
+                      "the GAP must quote § 7.1 C5b's own sentence — the engine owns "
+                      "this retry, the contract's POST->200 line is the contradiction")
 
     def test_refused_and_nothing_armed_is_a_fail(self):
         v = m.c5_retry_api_verdicts(409, '{"error":"run_not_retriable"}', [attempt()])
@@ -648,6 +650,202 @@ class TargetCallSiteTest(unittest.TestCase):
                   if isinstance(n, ast.FunctionDef) and n.name == "w_kill_worker_mid_node")
         self.assertEqual([ast.unparse(d) for d in fn.args.defaults][-1], "C_LIVE_TARGET_KEY",
                          "W5/W6 inherit the kill's target node from the shared sequence")
+
+
+
+# --- live11 sequencing fixes: the contract's C5e POST->200 vs C5b "running        #
+# (retry armed)" contradiction, the modified_path_count carry states, and the      #
+# W6-killer: a one-argument show() inside w_kill_worker_mid_node's finally.        #
+
+C5E_PROBLEM_JSON = ('{"detail":"a running run is not retriable; retry a failed, '
+                    'interrupted or cancelled one","run_id":"01a1","run_status":'
+                    '"running","status":409,"title":"Run Not Retriable","type":'
+                    '"https://communication.dev/errors/run-not-retriable"}')
+
+
+class RetryApiProblemJsonFormTest(unittest.TestCase):
+    """live11/C5.out graded the budget-already-armed 409 as FAIL because the wire
+    form is dashed/spaced ("Run Not Retriable", ".../run-not-retriable") and the
+    matcher only knew run_not_retriable. The refusal of a run the ENGINE is already
+    retrying is a GAP with the contract contradiction stated — never a FAIL of the
+    product, and never a forced 200."""
+
+    def test_real_problem_json_body_with_a_budget_armed_retry_is_a_gap(self):
+        v = m.c5_retry_api_verdicts(409, C5E_PROBLEM_JSON,
+                                    [attempt(), attempt(2, "running", "-", ctx_json())])
+        self.assertIsNone(ok_of(v, "the UI's button"))
+        d = detail_of(v, "the UI's button")
+        self.assertIn("contradicts", d, "the GAP reason must name the contract conflict")
+        self.assertIn("running (retry armed)", d)
+
+    def test_run_not_retriable_without_any_retry_is_still_a_fail(self):
+        v = m.c5_retry_api_verdicts(409, C5E_PROBLEM_JSON, [attempt()])
+        self.assertIs(False, ok_of(v, "re-queued the killed node"))
+
+    def test_detection_covers_every_wire_spelling(self):
+        for body in ('{"code":"run_not_retriable"}', C5E_PROBLEM_JSON,
+                     '{"type":"https://communication.dev/errors/run-not-retriable"}',
+                     '{"title":"Run Not Retriable"}'):
+            self.assertTrue(m.c5_run_not_retriable(409, body), body[:60])
+        self.assertFalse(m.c5_run_not_retriable(200, C5E_PROBLEM_JSON))
+        self.assertFalse(m.c5_run_not_retriable(409, "forbidden"))
+
+
+class AutoRetryOwnershipTest(unittest.TestCase):
+    """C5e on the shipped twin measures the ENGINE's retry (§ 7.1 C5b keeps the
+    run 'running (retry armed)' with attempt_limit 2)."""
+
+    def test_engine_armed_retry_passes_the_measured_arm(self):
+        v = m.c5_auto_retry_verdicts(1, [attempt(), attempt(2, "queued", "-", ctx_json())],
+                                     409)
+        self.assertTrue(ok_of(v, "the engine armed the retry"))
+
+    def test_manual_post_200_is_graded_on_the_ui_route(self):
+        v = m.c5_auto_retry_verdicts(0, [attempt(), attempt(2, "queued", "-", ctx_json())],
+                                     200)
+        self.assertTrue(ok_of(v, "the UI's route"))
+
+    def test_scheduled_event_without_an_attempt_two_fails(self):
+        v = m.c5_auto_retry_verdicts(1, [attempt()], 409)
+        self.assertIs(False, ok_of(v, "the engine armed the retry"))
+
+    def test_no_event_and_no_attempt_is_a_gap(self):
+        v = m.c5_auto_retry_verdicts(0, [attempt()], 409)
+        self.assertIsNone(ok_of(v, "a retry exists"))
+
+
+class ModifiedPathCarryStatesTest(unittest.TestCase):
+    """The engine carries modified_path_count only from the recorded boundary
+    (runtime/retry.go omits a zero count); the verdict must report WHICH of the
+    four states was observed instead of reading every absence as one FAIL."""
+
+    def rows(self, ctx, dirty_before):
+        return m.c5_retry_row_verdicts([attempt(), attempt(2, "running", "-", ctx)],
+                                       HEAD, dirty_before)
+
+    def test_carried_and_equal_passes(self):
+        self.assertTrue(ok_of(self.rows(ctx_json(paths=3), "3"), "modified_path_count"))
+
+    def test_carried_but_wrong_fails(self):
+        self.assertIs(False, ok_of(self.rows(ctx_json(paths=5), "3"), "modified_path_count"))
+
+    def test_absent_with_a_dirty_worktree_fails(self):
+        no_mpc = '{"attempt": 1, "error_class": "interrupted"}'
+        self.assertIs(False, ok_of(self.rows(no_mpc, "3"), "modified_path_count"))
+
+    def test_absent_with_a_clean_worktree_is_a_gap_with_the_reason(self):
+        no_mpc = '{"attempt": 1, "error_class": "interrupted"}'
+        v = self.rows(no_mpc, "0")
+        self.assertIsNone(ok_of(v, "modified_path_count"))
+        self.assertIn("already written", detail_of(v, "modified_path_count"),
+                      "the GAP must name the twin-shape reason (§ 7.1's ~40s node)")
+
+    def test_absent_with_an_unreadable_worktree_is_a_gap(self):
+        no_mpc = '{"attempt": 1, "error_class": "interrupted"}'
+        for unreadable in ("", None, "-"):
+            v = self.rows(no_mpc, unreadable)
+            self.assertIsNone(ok_of(v, "modified_path_count"), repr(unreadable))
+
+    def test_carried_but_unreadable_worktree_is_a_gap(self):
+        v = self.rows(ctx_json(paths=2), "")
+        self.assertIsNone(ok_of(v, "modified_path_count"),
+                          "a carried number cannot be CHECKED against a reading that "
+                          "never landed — but it must not silently PASS either")
+
+
+class ShowAritySweepTest(unittest.TestCase):
+    """live11/W6.out died inside w_kill_worker_mid_node's finally: `show(label)` —
+    show(label, out) raised TypeError and bricked the whole leg after a perfectly
+    landed kill. This sweep fails OFFLINE for every such call in the driver."""
+
+    def test_every_show_call_in_the_driver_takes_an_out(self):
+        import ast
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_m4_exit.py")
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        offenders = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "show"):
+                kwout = any(k.arg in ("out", "label") for k in node.keywords)
+                if len(node.args) < 2 and not kwout:
+                    offenders.append(node.lineno)
+        self.assertEqual(offenders, [],
+                         f"show() call(s) at line(s) {offenders} miss the out argument")
+
+
+class WKillWorkerMidNodeOfflineTest(unittest.TestCase):
+    """Exercise the shared kill sequence with docker/psql MOCKED (unit-test layer
+    only — it never substitutes for the live kill) so call-shape regressions like
+    the live11/W6.out TypeError fail offline. restart=False must hand the drained
+    worker back WITHOUT composing a start."""
+
+    def drive(self, restart):
+        import contextlib
+        import io
+        import time as time_mod
+        seq = ["running|-", "running|-", "interrupted|interrupted"]
+        docker, orig = {}, {}
+
+        def fake_psql(sql):
+            if "status || '|' || coalesce(error_class" in sql:
+                return seq.pop(0) if seq else "interrupted|interrupted"
+            if "node_execution_id" in sql:
+                return "ne-1"
+            raise AssertionError("unexpected psql: " + sql[:120])
+
+        def fake_run(cmd, *a, **kw):
+            docker.setdefault("cmds", []).append(list(cmd))
+            return 0, ""
+
+        patches = {
+            "psql": fake_psql,
+            "run": fake_run,
+            "wait_worker_row": lambda name, timeout=120: ("w-c", name),
+            "wait_live_past_gate": lambda client, project_id, run_id, timeout, tag,
+                                        target=None: {"id": "att-1", "worker": "worker-a",
+                                                      "key": m.C_LIVE_TARGET_KEY,
+                                                      "attempt_number": "1"},
+            "c4_worker_service": lambda name: "worker-a",
+            "w5_container_of": lambda service: "communication-m4-worker-a-1",
+            "w_deliver_signal": lambda sig, service, container, tag: (
+                0, container, f"docker kill{' -s ' + sig if sig != 'KILL' else ''} "
+                              f"{container}"),
+            "hold_window": lambda cap, **kw: cap,
+        }
+        for name, fn in patches.items():
+            orig[name] = getattr(m, name)
+            setattr(m, name, fn)
+        buf = io.StringIO()
+        orig_sleep = time_mod.sleep
+        time_mod.sleep = lambda s: None
+        try:
+            with contextlib.redirect_stdout(buf):
+                facts = m.w_kill_worker_mid_node(object(), "p-1", "r-1", "TST",
+                                                 restart=restart)
+        finally:
+            time_mod.sleep = orig_sleep
+            for name, fn in orig.items():
+                setattr(m, name, fn)
+        return facts, docker.get("cmds", []), buf.getvalue()
+
+    def test_restart_false_hands_the_drained_worker_back(self):
+        facts, cmds, out = self.drive(restart=False)
+        self.assertIsNotNone(facts, "the mocked kill must complete, not raise — "
+                                    "live11/W6.out raised TypeError here")
+        self.assertEqual(facts["state"], "interrupted")
+        self.assertEqual(facts["owner"], "worker-a")
+        self.assertTrue(any("stays DOWN" in ln for ln in out.splitlines()),
+                        "the drain hand-off line must be reported (the live11 crash "
+                        "site ran show(label) and died)")
+        for cmd in cmds:
+            self.assertNotIn("start", cmd, f"restart=False must never compose-start: {cmd}")
+
+    def test_restart_true_brings_the_worker_back(self):
+        facts, cmds, _out = self.drive(restart=True)
+        self.assertEqual(facts["state"], "interrupted")
+        self.assertTrue(any(cmd[-2:] == ["start", "worker-a"] or
+                            "start" in cmd and "worker-a" in cmd for cmd in cmds),
+                        f"restart=True must restore the killed worker: {cmds}")
 
 
 if __name__ == "__main__":
