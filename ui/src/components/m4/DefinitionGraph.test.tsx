@@ -12,6 +12,8 @@ import {
   MIN_READABLE_SCALE,
   SMALLEST_CANVAS_FONT_PX,
 } from "./DefinitionGraph";
+import { NODE_MAX_WIDTH } from "../../lib/pipeline/layout";
+import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import {
   fanOutPipelineDocument,
   samplePipelineDocument,
@@ -19,6 +21,45 @@ import {
 
 // Vitest globals are off, so testing-library cannot register its own cleanup.
 afterEach(cleanup);
+
+/** A definition whose node names are wider than the fixed box the canvas used
+ * to draw, and a scope whose bar is wider than the single child it holds — the
+ * two shapes the live `feature-development` revision showed clipped. */
+const wideNodesDocument = {
+  apiVersion: "communication.dev/v1alpha1",
+  version: "v1alpha1",
+  kind: "pipeline",
+  metadata: { name: "wide-nodes" },
+  spec: {
+    nodes: [
+      { id: "plan", kind: "process.exec", config: { executable: "ls" } },
+      {
+        id: "fan_out",
+        kind: "for_each",
+        dependsOn: ["plan"],
+        config: {
+          maxConcurrency: 3,
+          items: "inputs.things",
+          body: {
+            nodes: [
+              {
+                id: "invoke_reviewer",
+                kind: "pipeline.invoke",
+                config: { pipeline: "reviewer" },
+              },
+            ],
+          },
+        },
+      },
+      {
+        id: "review_and_record_the_decision",
+        kind: "artifact.publish",
+        dependsOn: ["fan_out"],
+        config: { path: "out/review.md" },
+      },
+    ],
+  },
+} as unknown as DefinitionDocument;
 
 describe("DefinitionGraph", () => {
   it("renders one box per concrete node and one group per scope", () => {
@@ -90,15 +131,99 @@ describe("DefinitionGraph", () => {
   it("labels every node with its kind in words, and keeps the name readable", () => {
     render(<DefinitionGraph document={samplePipelineDocument} />);
     const node = screen.getByTestId("definition-graph-node-plan");
-    // A 168px box carries the few words the design uses (`agent`); the catalogue
-    // name — what the API and an expression say — is in the aria-label, the
-    // title and the list below the canvas.
+    // A box sized to its content carries the few words the design uses (`agent`);
+    // the catalogue name — what the API and an expression say — is in the
+    // aria-label, the title and the list below the canvas.
     expect(node.textContent).toContain("agent");
     expect(node.getAttribute("aria-label")).toContain("kind agent.acp");
     expect(screen.getByTestId("definition-graph-node-kind-plan").getAttribute("title")).toBe(
       "agent.acp",
     );
     expect(screen.getByTestId("definition-graph-list-plan").textContent).toContain("agent.acp");
+  });
+
+  it("names only the kind in a definition-only graph, never a run state", () => {
+    const { container } = render(
+      <DefinitionGraph
+        document={samplePipelineDocument}
+        label={"r1 \u00b7 definition only, no run states"}
+      />,
+    );
+    // The bug this pins: a box reading `command pendi` on a screen whose own
+    // header says "definition only, no run states". With no `statuses` from the
+    // caller there is no run to be pending in, so the kind word stands alone —
+    // on the canvas and in the list, which is the same graph in words.
+    expect(container.textContent).not.toContain("pending");
+    const plan = screen.getByTestId("definition-graph-node-plan");
+    expect(plan.textContent).toContain("agent");
+    expect(screen.queryByTestId("definition-graph-node-state-plan")).toBeNull();
+    expect(screen.queryByTestId("definition-graph-list-unscheduled-plan")).toBeNull();
+    expect(screen.getByTestId("definition-graph-node-kind-plan").textContent).toBe("agent");
+  });
+
+  it("keeps kind and state together when the caller supplies run states", () => {
+    // The other mode, unchanged: a caller that has a run keeps today's text, and
+    // a node that run never scheduled says so rather than showing nothing.
+    render(
+      <DefinitionGraph document={samplePipelineDocument} statuses={{ "/plan": "succeeded" }} />,
+    );
+    const plan = screen.getByTestId("definition-graph-node-plan");
+    expect(plan.textContent).toContain("agent");
+    expect(plan.textContent).toContain("done");
+    expect(screen.getByTestId("definition-graph-node-verdict").textContent).toContain("pending");
+    expect(screen.getByTestId("definition-graph-list-unscheduled-verdict")).toBeTruthy();
+  });
+
+  it("sizes a node box to its id and wraps a long one rather than clipping it", () => {
+    render(<DefinitionGraph document={wideNodesDocument} />);
+    const slug = "review_and_record_the_decision";
+    const box = screen.getByTestId(`definition-graph-node-${slug}`);
+    const width = Number(box.style.width.replace("px", ""));
+    const height = Number(box.style.height.replace("px", ""));
+    // `review_and_record_the_decision` does not fit the old fixed 108px box, and
+    // that is what produced "emit_ite…": width now follows content up to the ceiling,
+    // and past the ceiling the id takes a second row.
+    expect(width).toBeGreaterThan(108);
+    expect(width).toBeLessThanOrEqual(NODE_MAX_WIDTH);
+    expect(height).toBeGreaterThan(60);
+    const id = screen.getByTestId(`definition-graph-node-id-${slug}`);
+    expect(id.textContent).toBe("review_and_record_the_decision");
+    expect(id.className).toContain("break-words");
+    expect(id.className).not.toContain("truncate");
+    // A short id is not padded to the same width, and the second line — the kind,
+    // which the caller can abbreviate — is the only one that may ellipsize.
+    expect(
+      Number(screen.getByTestId("definition-graph-node-plan").style.width.replace("px", "")),
+    ).toBe(108);
+    expect(screen.getByTestId("definition-graph-node-kind-plan").className).toContain("shrink-0");
+    // The edges are laid out against these same boxes, so a wider node cannot
+    // leave its arrow short: the polyline starts on the box it leaves from.
+    const plan = screen.getByTestId("definition-graph-node-plan");
+    const edge = screen.getByTestId("definition-graph-edge-plan-to-invoke_reviewer");
+    const [first] = edge.getAttribute("points")!.trim().split(/\s+/);
+    const [startX] = first.split(",").map(Number);
+    expect(startX).toBe(
+      Number(plan.style.left.replace("px", "")) + Number(plan.style.width.replace("px", "")),
+    );
+    expect(box.getAttribute("data-node-key")).toBe(`/${slug}`);
+  });
+
+  it("gives a scope bar its own rows above the children it contains", () => {
+    render(<DefinitionGraph document={wideNodesDocument} />);
+    const group = screen.getByTestId("definition-graph-scope-fan_out");
+    const label = screen.getByTestId("definition-graph-scope-label-fan_out");
+    const child = screen.getByTestId("definition-graph-node-fan_out-invoke_reviewer");
+    expect(label.textContent).toBe("for each \u00b7 fan_out \u00b7 \u22643 parallel");
+    // The `for each · fan_out · ≤3` line is wider than the one 108px child under it,
+    // so it wraps — and the box grew a row for it instead of the second row
+    // landing on the child's title, as it did live.
+    const reserved =
+      Number(child.style.top.replace("px", "")) - Number(group.style.top.replace("px", ""));
+    expect(reserved).toBeGreaterThanOrEqual(48);
+    // The label wraps inside the box it belongs to, never over its edge.
+    expect(Number(label.style.width.replace("px", ""))).toBeLessThan(
+      Number(group.style.width.replace("px", "")),
+    );
   });
 
   it("draws a human.approval node as a gate, and an unscheduled node dashed", () => {

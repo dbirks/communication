@@ -16,6 +16,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  GROUP_LABEL_INSET,
+  GROUP_LABEL_LINE,
   layoutDefinition,
   type DefinitionGraphLayout,
   type GraphNodeView,
@@ -122,6 +124,11 @@ export function DefinitionGraph({
   }
 
   const selected = shown.nodes.find((node) => node.key === selectedKey) ?? null;
+  // A graph with no `statuses` at all is a definition view: the header already
+  // says "definition only, no run states", and a box that adds "pending" to
+  // that would be claiming a run state the caller never supplied (ADR-0025
+  // rule 3 — run state joins by identity, and no identity means no state).
+  const definitionOnly = statuses === undefined;
   // Fit the pane by default — down to the readable floor and no further. Width
   // is the scarce axis, so the old width-only fit landed at ~68% and put every
   // label under 9px; the floor makes a wide graph pan horizontally and a tall
@@ -227,16 +234,26 @@ export function DefinitionGraph({
                   >
                     <span
                       className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
-                      style={{ left: 8, top: 5 }}
+                      data-testid={`definition-graph-scope-label-${group.ownerId}`}
+                      style={{
+                        left: GROUP_LABEL_INSET,
+                        top: 5,
+                        width: group.headerWidth,
+                        lineHeight: `${GROUP_LABEL_LINE}px`,
+                      }}
                     >
-                      {group.word} · {group.ownerId}
-                      {group.boundLabel ? ` · ${group.boundLabel}` : ""}
+                      {group.headerText}
                     </span>
                     {group.loopNote ? (
                       <span
                         className="absolute font-mono text-[11px] text-muted"
                         data-testid={`definition-graph-scope-note-${group.ownerId}`}
-                        style={{ left: 8, bottom: 4 }}
+                        style={{
+                          left: GROUP_LABEL_INSET,
+                          bottom: 4,
+                          width: group.noteWidth,
+                          lineHeight: `${GROUP_LABEL_LINE}px`,
+                        }}
                       >
                         {group.loopNote}
                       </span>
@@ -249,6 +266,7 @@ export function DefinitionGraph({
                     node={node}
                     selected={node.key === selectedKey}
                     status={statuses?.[node.key]}
+                    definitionOnly={definitionOnly}
                     onSelect={onSelectKey}
                     onHover={onHoverKey}
                   />
@@ -259,6 +277,7 @@ export function DefinitionGraph({
           <NodeList
             layout={shown}
             statuses={statuses}
+            definitionOnly={definitionOnly}
             selectedKey={selectedKey}
             onSelect={onSelectKey}
           />
@@ -300,12 +319,15 @@ function GraphNode({
   node,
   selected,
   status,
+  definitionOnly,
   onSelect,
   onHover,
 }: {
   node: GraphNodeView;
   selected: boolean;
   status?: NodeExecutionStatus;
+  /** No `statuses` from the caller: draw the kind in words and no state at all. */
+  definitionOnly: boolean;
   onSelect?: (key: string) => void;
   onHover?: (key: string | null) => void;
 }) {
@@ -352,9 +374,14 @@ function GraphNode({
         />
       ) : null}
       {/* Row 1 is the node's name — the one string an expression may use — so it
-          never shares its line with a chip. */}
-      <span className="flex min-w-0 items-center gap-[4px] text-[12.5px] font-semibold text-ink">
-        <span className="truncate">{node.id}</span>
+          never shares its line with a chip, and it is the one line in the box
+          that is never clipped: the box is sized to it (`nodeBoxFor`), and an id
+          too long for the widest box wraps onto a second row rather than ending
+          in an ellipsis. */}
+      <span className="flex min-w-0 items-start gap-[4px] text-[12.5px] leading-[16px] font-semibold text-ink">
+        <span className="min-w-0 break-words" data-testid={`definition-graph-node-id-${slug}`}>
+          {node.id}
+        </span>
         {/* <n> is the design's binding marker, and n is the real count. A node
             with no bindings shows nothing rather than an empty box. */}
         {node.bindings.length > 0 ? (
@@ -365,8 +392,10 @@ function GraphNode({
       </span>
       {/* Row 2: the kind in the few words a box can carry, then the state in
           glyph + word. The catalogue name — what the API and an expression use —
-          travels in the `title`, the `aria-label` and the node list below. */}
-      <span className="flex min-w-0 items-center gap-[4px] font-mono text-[11px] text-muted">
+          travels in the `title`, the `aria-label` and the node list below. This
+          is the line allowed to ellipsize, and in a definition-only render there
+          is no state to name at all: the kind word stands alone. */}
+      <span className="flex min-w-0 items-center gap-[4px] font-mono text-[11px] leading-[14px] text-muted">
         <span aria-hidden className="shrink-0 text-[11px] text-ink-2">
           {kindGlyph(node.kind)}
         </span>
@@ -383,7 +412,7 @@ function GraphNode({
           </span>
         ) : node.deferredTo ? (
           <span className="shrink-0 text-faint">{`not until ${node.deferredTo}`}</span>
-        ) : (
+        ) : definitionOnly ? null : (
           <span className="shrink-0 text-faint">pending</span>
         )}
       </span>
@@ -475,11 +504,14 @@ function EdgeLayer({
 function NodeList({
   layout,
   statuses,
+  definitionOnly,
   selectedKey,
   onSelect,
 }: {
   layout: DefinitionGraphLayout;
   statuses?: Record<string, NodeExecutionStatus>;
+  /** Same rule as the canvas: with no run states supplied, nothing says "pending". */
+  definitionOnly: boolean;
   selectedKey: string | null;
   onSelect?: (key: string) => void;
 }) {
@@ -515,7 +547,9 @@ function NodeList({
               >
                 {state ? (
                   <StatusChip state={state} label={wire ?? ""} />
-                ) : (
+                ) : definitionOnly ? null : (
+                  /* A run that never scheduled this node. A definition-only list
+                      has no run to be unscheduled in, so it says nothing. */
                   <span
                     aria-hidden
                     className="shrink-0 font-mono text-[10px] text-faint"

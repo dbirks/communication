@@ -76,6 +76,13 @@ export interface GraphGroupView {
   word: string;
   /** The `↻ / ⊕ / ∥` line under the children — what repeats. */
   loopNote: string;
+  /** The bar's whole string, and the width it may use before it wraps. The
+   * bar's height was reserved from exactly this text, so the renderer draws
+   * what the geometry measured rather than a second copy of the rule. */
+  headerText: string;
+  headerWidth: number;
+  /** The foot's available width (same box, bottom-anchored). */
+  noteWidth: number;
 }
 
 export interface GraphEdgeView {
@@ -94,10 +101,15 @@ export interface DefinitionGraphLayout {
   edges: GraphEdgeView[];
 }
 
-/** Narrower and taller than the first cut: the graph is drawn into a pane that
- * is far wider than it is tall, so width is the scarce axis and the one the
- * fit-to-pane scale is divided by. */
+/** A node box's floor: narrower than the first cut because the graph is drawn
+ * into a pane far wider than it is tall (width is the scarce axis the fit-to-pane
+ * scale divides by), and the size every box gets when its id is short. Not a
+ * constant any more — see `nodeBoxFor`. */
 export const NODE_SIZE = { width: 108, height: 60 };
+/** Ceiling for a node box. Past it the id wraps onto a second row (and the box
+ * grows) instead of clipping mid-word: the id is the only name an expression
+ * may use, so a graph that shows `emit_ite…` shows a name that does not exist. */
+export const NODE_MAX_WIDTH = 220;
 export const GROUP_BAR = 20;
 export const GROUP_PAD = 14;
 /** Least clear space two sibling scope boxes may keep between them. dagre only
@@ -108,6 +120,161 @@ export const GROUP_GAP = 12;
 /** Room under the children for the `↻ …` line, so the annotation never sits
  * behind a node. */
 export const GROUP_FOOT = 18;
+/** Row height the scope bar and foot are measured in (`text-[11px]` at the
+ * line-height the renderer sets on those spans). */
+export const GROUP_LABEL_PX = 11;
+export const GROUP_LABEL_LINE = 14;
+/** The bar's and foot's inset from the box edge. The renderer positions the text
+ * with it and the layout measures wrapping against it, so a wider inset can
+ * never leave the label sitting on a child again. */
+export const GROUP_LABEL_INSET = 8;
+
+/* ------------------------------------------------------- text measurement */
+
+/** The two faces the canvas draws in: the humanist sans of `--font-ui` for a
+ * node's id, monospace for kind/state and the scope bars. */
+export type CanvasFace = "ui" | "mono";
+
+const NARROW = "ijl.,:;'`|!()[]{}";
+const LIGHT = 'frstz_-"';
+const WIDE = "mMWw";
+
+/**
+ * Character advances as a ratio of font size, measured from the design's own
+ * faces with `canvas.measureText` against the loaded fonts (Red Hat Text 600 for
+ * `--font-ui`, Red Hat Mono for `--font-mono`, whose `600 11px` cell is 0.64em
+ * plus the scope bar's `tracking-[0.04em]`). Each bucket is rounded *up*.
+ *
+ * Measured rather than guessed because the spread is 4x — `m`/`w` are 0.96em and
+ * `i`/`l` 0.24em — and one flat ratio gets the wide names wrong, which are
+ * exactly the long ones that used to clip. An over-estimate costs a few px of
+ * box; an under-estimate is a clipped node id.
+ */
+const ADV_SPACE = 0.3;
+const ADV_NARROW = 0.32;
+const ADV_LIGHT = 0.55;
+const ADV_DEFAULT = 0.7;
+const ADV_CAP = 0.8;
+const ADV_DIGIT = 0.78;
+const ADV_WIDE = 1.05;
+const ADV_MONO = 0.72;
+/** Anything outside ASCII: the `↻ ⊕ ∥ ⇒ · ≤` the canvas draws. */
+const ADV_GLYPH = 0.85;
+
+function uiAdvance(ch: string): number {
+  if (ch === " ") return ADV_SPACE;
+  if ((ch.codePointAt(0) ?? 0) > 0x7f) return ADV_GLYPH;
+  if (NARROW.includes(ch)) return ADV_NARROW;
+  if (LIGHT.includes(ch)) return ADV_LIGHT;
+  if (WIDE.includes(ch)) return ADV_WIDE;
+  if (ch >= "0" && ch <= "9") return ADV_DIGIT;
+  if (ch >= "A" && ch <= "Z") return ADV_CAP;
+  return ADV_DEFAULT;
+}
+
+function monoAdvance(ch: string): number {
+  return (ch.codePointAt(0) ?? 0) > 0x7f ? ADV_GLYPH : ADV_MONO;
+}
+
+/**
+ * Estimate the width `text` occupies at `px` in one of the two faces the canvas
+ * draws in. Layout stays a pure function (ADR-0025 rule 5) — measuring with the
+ * DOM would make it depend on a mount — so these are the measured font metrics
+ * applied by hand, biased to over-report: a box a few px wider than its words
+ * costs nothing, while an under-report is the clipped label this stops. Verified
+ * against `canvas.measureText` on the loaded fonts: every id measured (26→323px)
+ * came in at or under the estimate, and no box was ever given fewer rows than
+ * the browser used.
+ */
+export function measureText(text: string, px: number, face: CanvasFace = "ui"): number {
+  let units = 0;
+  for (const ch of text) units += face === "mono" ? monoAdvance(ch) : uiAdvance(ch);
+  return Math.ceil(units * px);
+}
+
+/** How many rows `text` needs in a box `availablePx` wide. Greedy word wrapping
+ * can cost a row over a uniform measure when one token alone is too wide to
+ * split onto the previous line, so that case rounds up. */
+export function wrappedLineCount(
+  text: string,
+  availablePx: number,
+  px: number,
+  face: CanvasFace = "mono",
+): number {
+  if (text.length === 0) return 0;
+  if (availablePx <= 0) return 1;
+  let lines = Math.ceil(measureText(text, px, face) / availablePx);
+  const widest = text
+    .split(/\s+/)
+    .reduce((max, word) => Math.max(max, measureText(word, px, face)), 0);
+  if (widest > availablePx) lines += 1;
+  return Math.max(1, lines);
+}
+
+/* ------------------------------------------------------------ node sizing */
+
+/** Line metrics inside a node box — the numbers `GraphNode` renders with
+ * (`text-[12.5px]` id line, `text-[11px]` kind line, the gap between). */
+const NODE_ID_PX = 12.5;
+const NODE_ID_LINE = 16;
+const NODE_KIND_LINE = 14;
+const NODE_LINE_GAP = 3;
+/** The box's own `pl-[11px] pr-[7px]` plus two 1px borders. */
+const NODE_PAD_X = 20;
+const NODE_PAD_Y = 20;
+/** `<n>` and the gap before it, drawn in mono at 11px. */
+const NODE_BINDING_CHIP = 26;
+
+/**
+ * The box a node needs: wide enough for its id on one line up to
+ * `NODE_MAX_WIDTH`, then one row taller per wrapped id line. Only the id drives
+ * width — the kind/state line below is allowed to ellipsize, a name is not.
+ * The result is still a pure function of the document, which is what ADR-0025
+ * rule 5's determinism needs: same document, same pixels, same edges.
+ */
+export function nodeBoxFor(id: string, bindings: number): { width: number; height: number } {
+  const chip = bindings > 0 ? NODE_BINDING_CHIP : 0;
+  const text = measureText(id, NODE_ID_PX, "ui");
+  const width = Math.round(
+    Math.min(NODE_MAX_WIDTH, Math.max(NODE_SIZE.width, text + chip + NODE_PAD_X)),
+  );
+  const room = Math.max(48, width - chip - NODE_PAD_X);
+  const lines = Math.max(1, Math.ceil(text / room));
+  const height = Math.max(
+    NODE_SIZE.height,
+    NODE_PAD_Y + lines * (NODE_ID_LINE + NODE_LINE_GAP) - NODE_LINE_GAP + NODE_KIND_LINE,
+  );
+  return { width, height };
+}
+
+/* ---------------------------------------------------------- scope geometry */
+
+/** The one string a scope bar draws. Built here so the geometry that reserves
+ * room for it is measured from the same text the renderer puts in the DOM. */
+export function scopeHeaderLabel(group: {
+  word: string;
+  ownerId: string;
+  boundLabel: string;
+}): string {
+  return `${group.word} \u00b7 ${group.ownerId}${
+    group.boundLabel ? ` \u00b7 ${group.boundLabel}` : ""
+  }`;
+}
+
+/** Title-bar height: its own row per wrapped label line, so a narrow scope with
+ * a long label ("for each · fan_out · ≤3") pushes its children down instead of
+ * writing over them. */
+export function scopeHeaderHeight(label: string, innerWidth: number): number {
+  const rows = wrappedLineCount(label, innerWidth, GROUP_LABEL_PX, "mono");
+  return GROUP_BAR + Math.max(0, rows - 1) * GROUP_LABEL_LINE;
+}
+
+/** Foot height under the children for the "↻ …" line, on the same rule. */
+export function scopeFootHeight(note: string, innerWidth: number): number {
+  if (note.length === 0) return 0;
+  const rows = wrappedLineCount(note, innerWidth, GROUP_LABEL_PX, "mono");
+  return GROUP_FOOT + Math.max(0, rows - 1) * GROUP_LABEL_LINE;
+}
 
 interface Placement {
   node: DefinitionNode;
@@ -178,6 +345,10 @@ export function layoutDefinition(
       });
   const tree = place(roots, null, 0, "/spec/nodes");
 
+  /** Every concrete node's box, keyed by node key — the one source of box size
+   * for dagre, for the group boxes, and for the DOM. */
+  const sizes = new Map<string, { width: number; height: number }>();
+
   const flatten = (list: Placement[]): Placement[] =>
     list.flatMap((item) => [item, ...flatten(item.children)]);
   const all = flatten(tree);
@@ -204,7 +375,12 @@ export function layoutDefinition(
       if (placement.groupKey) graph.setParent(placement.clusterKey, placement.groupKey);
       continue;
     }
-    graph.setNode(placement.key, { ...NODE_SIZE });
+    // A box sized to its own id: dagre spaces ranks by the width it is given,
+    // so edges, group boxes and the canvas total all follow the same number the
+    // renderer draws with.
+    const size = nodeBoxFor(placement.node.id, nodeBindings(placement.node).length);
+    sizes.set(placement.key, size);
+    graph.setNode(placement.key, size);
     if (placement.groupKey) graph.setParent(placement.key, placement.groupKey);
   }
 
@@ -287,27 +463,65 @@ export function layoutDefinition(
     .sort((a, b) => b.depth - a.depth);
 
   for (const placement of deepestFirst) {
-    const box = childBox(graph, placement, boxes);
+    const box = childBox(graph, placement, boxes, sizes);
+    const word = kindWord(placement.node.kind);
+    const boundLabel = scopeBoundLabel(placement.node);
+    const loopNote = scopeLoopNote(placement.node);
+    const width = box.width + GROUP_PAD * 2;
+    // The label and the foot wrap inside the box, so the rows they need are the
+    // box's own width less the bar's left/right inset.
+    const inner = width - GROUP_LABEL_INSET * 2;
+    const headerText = scopeHeaderLabel({ word, ownerId: placement.node.id, boundLabel });
+    const header = scopeHeaderHeight(headerText, inner);
+    const foot = scopeFootHeight(loopNote, inner);
     const view: GraphGroupView = {
       key: placement.clusterKey as string,
       ownerId: placement.node.id,
       pointer: placement.pointer,
       kind: placement.node.kind,
-      boundLabel: scopeBoundLabel(placement.node),
+      boundLabel,
       x: box.x - GROUP_PAD,
-      y: box.y - GROUP_PAD - GROUP_BAR,
-      width: box.width + GROUP_PAD * 2,
-      height: box.height + GROUP_PAD * 2 + GROUP_BAR + GROUP_FOOT,
+      y: box.y - GROUP_PAD - header,
+      width,
+      height: box.height + GROUP_PAD * 2 + header + foot,
       depth: placement.depth,
-      word: kindWord(placement.node.kind),
-      loopNote: scopeLoopNote(placement.node),
+      word,
+      loopNote,
+      headerText,
+      headerWidth: inner,
+      noteWidth: inner,
     };
     boxes.set(view.key, { x: view.x, y: view.y, width: view.width, height: view.height });
     groupViews.set(view.key, view);
   }
 
   const groups = [...groupViews.values()].sort((a, b) => a.depth - b.depth);
-  const nodes = layoutNodes(graph, all);
+  const nodes = layoutNodes(graph, all, sizes);
+
+  // A group's padding and (now) its multi-row bar reach outside where dagre put
+  // its children, so a first-rank scope can spill past the canvas's top/left
+  // edge — the one place a scroll container cannot reach. Slide the whole graph
+  // back inside its margins instead of clipping the box.
+  const marginX = graph.graph().marginx ?? 12;
+  const marginY = graph.graph().marginy ?? 12;
+  const shiftX = Math.max(
+    0,
+    marginX - Math.min(...nodes.map((node) => node.x), ...groups.map((group) => group.x)),
+  );
+  const shiftY = Math.max(
+    0,
+    marginY - Math.min(...nodes.map((node) => node.y), ...groups.map((group) => group.y)),
+  );
+  if (shiftX > 0 || shiftY > 0) {
+    for (const node of nodes) {
+      node.x += shiftX;
+      node.y += shiftY;
+    }
+    for (const group of groups) {
+      group.x += shiftX;
+      group.y += shiftY;
+    }
+  }
   // 4. dagre spaced the children; the bar and foot belong to the group. Two
   // sibling scopes whose children fall in different ranks can end up with one
   // box's foot over the next box's label (`for each` over `until` in the
@@ -330,10 +544,14 @@ export function layoutDefinition(
       kind: label?.kind === "error" ? "error" : "depends",
       // Once a box has been pushed down the dagre polyline no longer touches
       // its endpoints, so every edge is re-run through the same elbow router —
-      // one routing rule for both cases beats a mix of two.
+      // one routing rule for both cases beats a mix of two. An unrouted
+      // polyline only needs the graph-wide slide the group padding forced.
       points: moved
         ? routePoints(nodeByKey, edge.v, edge.w)
-        : (label?.points ?? []).map((point) => ({ x: point.x ?? 0, y: point.y ?? 0 })),
+        : (label?.points ?? []).map((point) => ({
+            x: (point.x ?? 0) + shiftX,
+            y: (point.y ?? 0) + shiftY,
+          })),
     };
   });
 
@@ -358,21 +576,26 @@ export function layoutDefinition(
 }
 
 /** Placed boxes for every concrete node, in declaration order. */
-function layoutNodes(graph: Graph, all: Placement[]): GraphNodeView[] {
+function layoutNodes(
+  graph: Graph,
+  all: Placement[],
+  sizes: Map<string, { width: number; height: number }>,
+): GraphNodeView[] {
   return all
     .filter((placement) => !placement.clusterKey)
     .map((placement) => {
       const box = graph.node(placement.key);
+      const size = sizes.get(placement.key) ?? NODE_SIZE;
       return {
         key: placement.key,
         id: placement.node.id,
         pointer: placement.pointer,
         kind: placement.node.kind,
         groupKey: placement.groupKey,
-        x: (box?.x ?? 0) - NODE_SIZE.width / 2,
-        y: (box?.y ?? 0) - NODE_SIZE.height / 2,
-        width: box?.width ?? NODE_SIZE.width,
-        height: box?.height ?? NODE_SIZE.height,
+        x: (box?.x ?? 0) - size.width / 2,
+        y: (box?.y ?? 0) - size.height / 2,
+        width: size.width,
+        height: size.height,
         bindings: nodeBindings(placement.node),
         deferredTo:
           (DEFERRED_KINDS as Record<string, string | undefined>)[placement.node.kind] ?? null,
@@ -391,6 +614,7 @@ function childBox(
   graph: Graph,
   placement: Placement,
   boxes: Map<string, { x: number; y: number; width: number; height: number }>,
+  sizes: Map<string, { width: number; height: number }>,
 ): { x: number; y: number; width: number; height: number } {
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
@@ -410,8 +634,9 @@ function childBox(
       continue;
     }
     const node = graph.node(child.key);
-    const width = node?.width ?? NODE_SIZE.width;
-    const height = node?.height ?? NODE_SIZE.height;
+    const size = sizes.get(child.key) ?? NODE_SIZE;
+    const width = size.width;
+    const height = size.height;
     grow((node?.x ?? 0) - width / 2, (node?.y ?? 0) - height / 2, width, height);
   }
 
