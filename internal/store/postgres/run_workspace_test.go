@@ -170,8 +170,15 @@ func TestRunWorkspacePrepareAndResolve(t *testing.T) {
 	// A different worker is refused, and the refusal is case 20's honest arm.
 	w2 := m4Worker(t, ctx, f.pool, "rws-b", 2)
 	vol2 := runWorkspaceVolume(t, ctx, f.pool, w2, "rws-b")
-	if _, err := store.Prepare(ctx, runID, w2, vol2, nil); !errors.Is(err, ErrRunWorkspaceDifferentWorker) {
-		t.Fatalf("Prepare by a different worker err = %v, want ErrRunWorkspaceDifferentWorker", err)
+	_, refused := store.Prepare(ctx, runID, w2, vol2, nil)
+	if !errors.Is(refused, ErrRunWorkspaceDifferentWorker) {
+		t.Fatalf("Prepare by a different worker err = %v, want ErrRunWorkspaceDifferentWorker", refused)
+	}
+	// The refusal arrives in the worker's typed vocabulary, which is what maps
+	// the attempt terminal to workspace_lost rather than infra (contract § 7.1
+	// C6e, ADR-0023 § 7).
+	if reason, lost := worker.RunWorkspaceLostReason(refused); !lost || reason != "different_worker" {
+		t.Fatalf("RunWorkspaceLostReason(%v) = (%q, %v), want (different_worker, true)", refused, reason, lost)
 	}
 	n, reason := runWorkspaceEvents(t, ctx, f.pool, runID)
 	if n != 1 || reason != "different_worker" {
@@ -419,5 +426,73 @@ func TestRunWorkspaceRepoStateNoRepos(t *testing.T) {
 	}
 	if state, n, readyAt := runWorkspaceRowState(t, ctx, f.pool, ref.WorkspaceID); state != "ready" || n != 0 || !readyAt {
 		t.Fatalf("repo-less workspace: state=%q rows=%d ready_at_set=%v, want ready/0/true", state, n, readyAt)
+	}
+}
+
+// TestRunWorkspaceVolumeChangedRefusal is contract § 7.1 C6e's arm read from
+// the database: the SAME worker meets a volume identity that is no longer the
+// one the run's rows recorded. The answer is a typed refusal — never the
+// generic error that the worker's § 4 step 3 decorator used to class `infra`
+// (an infra attempt is retryable; a lost tree is not, ADR-0023 § 7) — plus the
+// `workspace.recovery_lost` row naming the enum reason, committed with it.
+func TestRunWorkspaceVolumeChangedRefusal(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	store := &RunWorkspaces{Pool: f.pool}
+	runID := m4RunsReadSeedRun(t, ctx, f)
+	w1 := m4Worker(t, ctx, f.pool, "rws-v", 2)
+	vol1 := runWorkspaceVolume(t, ctx, f.pool, w1, "rws-v")
+	repoID := runWorkspaceRepo(t, ctx, f.pool, f)
+	if _, err := store.Prepare(ctx, runID, w1, vol1,
+		[]worker.CheckpointRepoState{{RepositoryID: repoID, BaseCommit: "a1"}}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	// The workspaces root under this worker is replaced: same worker id, new
+	// measured identity (ADR-0017 D2 — the tree the rows describe is gone).
+	vol2 := m4Digest("volume/rws-v-replaced")
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE worker_volumes SET volume_id = $2
+		WHERE worker_id = $1::uuid AND root_kind = 'workspaces'`, w1, vol2); err != nil {
+		t.Fatalf("replace the worker's measured volume: %v", err)
+	}
+
+	_, err := store.Prepare(ctx, runID, w1, vol2, nil)
+	if !errors.Is(err, ErrRunWorkspaceVolumeChanged) {
+		t.Fatalf("Prepare after the volume moved = %v, want ErrRunWorkspaceVolumeChanged", err)
+	}
+	if reason, lost := worker.RunWorkspaceLostReason(err); !lost || reason != "volume_changed" {
+		t.Fatalf("RunWorkspaceLostReason(%v) = (%q, %v), want (volume_changed, true) — the mapping the worker classes the attempt workspace_lost from",
+			err, reason, lost)
+	}
+	if n, reason := runWorkspaceEvents(t, ctx, f.pool, runID); n != 1 || reason != "volume_changed" {
+		t.Fatalf("workspace.recovery_lost rows = %d reason %q, want 1 volume_changed", n, reason)
+	}
+
+	// The refusal changed nothing: one workspace row, still naming the volume
+	// it was prepared on, still `preparing` — the reconciler's pass-5 candidate.
+	var state, volume, affVolume string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT w.state, w.volume_id, COALESCE(r.worker_volume_id, '')
+		FROM workspaces w JOIN runs r ON r.id = w.run_id
+		WHERE w.scope_kind = 'run' AND w.run_id = $1::uuid`, runID).
+		Scan(&state, &volume, &affVolume); err != nil {
+		t.Fatalf("read the refused run's workspace: %v", err)
+	}
+	if volume != vol1 || affVolume != vol1 {
+		t.Fatalf("volumes after the refusal = workspace %s affinity %s, want both %s (a refusal never rewrites the ledger)",
+			volume, affVolume, vol1)
+	}
+	if state != "lost" && state != "preparing" {
+		t.Fatalf("workspace state after the refusal = %q, want the lost/preparing arm", state)
+	}
+
+	// A second refusal (the scheduler retrying every tick) neither clones a
+	// workspace nor buries the journal.
+	if _, err := store.Prepare(ctx, runID, w1, vol2, nil); !errors.Is(err, ErrRunWorkspaceVolumeChanged) {
+		t.Fatalf("second volume refusal = %v, want ErrRunWorkspaceVolumeChanged", err)
+	}
+	if n, _ := runWorkspaceEvents(t, ctx, f.pool, runID); n != 1 {
+		t.Fatalf("workspace.recovery_lost rows = %d after a retry, want still 1", n)
 	}
 }

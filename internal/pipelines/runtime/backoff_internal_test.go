@@ -59,10 +59,18 @@ func TestBackoffJitterIsBoundedAndDeterministic(t *testing.T) {
 func TestRetriableSetRespectsADR0023(t *testing.T) {
 	r := compiler.Retry{RetriableErrors: []string{ErrInfra, ErrInterrupted, ErrTimeout, ErrWorkspaceLost}}
 	for _, class := range r.RetriableErrors {
-		// NOTE: workspace_lost is retriable ONLY if the plan says so — and
-		// ADR-0023 § 7 says it never is. The retriable() function is
-		// plan-driven: a plan that lists it is a plan the compiler must
-		// refuse (§ 9.3 sample fixed exactly that authored bug).
+		// workspace_lost is the exception, and the exception is the rule:
+		// ADR-0023 § 7 makes it non-retriable BY DEFINITION, so a hand-built
+		// (or old pinned) plan that lists it still gets no retry. The compiler
+		// refuses it in retriableErrors (§ 9.3's sample fixed exactly that
+		// authored bug); this function refuses it too, because the run's plan
+		// snapshot is immutable and predates that guard if it predates the guard.
+		if class == ErrWorkspaceLost {
+			if retriable(r, class) {
+				t.Errorf("plan-listed %s retried: a lost workspace is never retried automatically (contract § 7.1 C6e)", class)
+			}
+			continue
+		}
 		if !retriable(r, class) {
 			t.Errorf("plan-listed class %s must retry", class)
 		}

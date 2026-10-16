@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/dbirks/communication/internal/events"
 )
 
 // Unit layer for the § 4 step 3 decorator: ordering, the refusal arm, and
@@ -100,8 +102,8 @@ func TestRunWorkspaceExecutorDifferentWorkerRefusal(t *testing.T) {
 			if inner.calls != 0 {
 				t.Fatalf("inner calls = %d after a refusal, want 0 (call order %v)", inner.calls, order.calls)
 			}
-			if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
-				t.Fatalf("result = %+v, want failed/infra", res)
+			if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassWorkspaceLost {
+				t.Fatalf("result = %+v, want failed/workspace_lost (ADR-0023 § 7: a lost workspace is never infra, because infra is retryable)", res)
 			}
 			if !strings.Contains(res.Detail, "workspace.recovery_lost/different_worker") {
 				t.Fatalf("detail = %q, want it to name workspace.recovery_lost/different_worker", res.Detail)
@@ -168,5 +170,84 @@ func TestRunWorkspaceExecutorMissingInnerIsReported(t *testing.T) {
 	if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra ||
 		!strings.Contains(res.Detail, "model.chat") {
 		t.Fatalf("result = %+v, want failed/infra naming the kind", res)
+	}
+}
+
+// TestRunWorkspaceExecutorVolumeChangedRefusal is contract § 7.1 C6e's arm that
+// the lab kept missing: the run's OWN worker meets a volume it no longer
+// measures, the store refuses with the typed loss (reason volume_changed), and
+// the attempt's terminal must be workspace_lost so the advancer refuses to arm
+// another attempt (ADR-0023 § 7 keeps workspace_lost out of every
+// retriableErrors list) instead of burning the budget on "infra".
+func TestRunWorkspaceExecutorVolumeChangedRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"typed", &RunWorkspaceLost{Reason: "volume_changed", Detail: "run r lives on volume A, worker W is now on B"}, "volume_changed"},
+		{"wrapped", fmt.Errorf("prepare step 3: %w", &RunWorkspaceLost{Reason: "volume_changed", Detail: "volume moved"}), "volume_changed"},
+		{"joined", errors.Join(errors.New("affinity disagrees"), &RunWorkspaceLost{Reason: "path_missing", Detail: "tree gone"}), "path_missing"},
+		{"bare sentinel", fmt.Errorf("somewhere: %w", ErrRunWorkspaceLost), "volume_changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			order := &rwOrder{}
+			inner := &rwInnerFake{order: order, result: AttemptResult{Status: AttemptStatusSucceeded}}
+			ex := &RunWorkspaceExecutor{Inner: inner, Prepare: func(context.Context, AttemptClaim) error { return tc.err }}
+			res, err := ex.Execute(context.Background(), AttemptClaim{AttemptID: "a3", RunID: "r3", Kind: NodeKindProcessExec}, nil)
+			if err != nil {
+				t.Fatalf("Execute: %v — the loss is an honest terminal, not a loop error", err)
+			}
+			if inner.calls != 0 {
+				t.Fatalf("inner calls = %d, want 0 — nothing launches on a tree this worker does not have", inner.calls)
+			}
+			if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassWorkspaceLost {
+				t.Fatalf("result = %+v, want failed/workspace_lost", res)
+			}
+			want := "workspace.recovery_lost/" + tc.reason
+			if !strings.Contains(res.Detail, want) {
+				t.Fatalf("detail = %q, want it to name %s", res.Detail, want)
+			}
+			if !strings.Contains(res.Detail, "rerun required") {
+				t.Fatalf("detail = %q, want the honest 'prior edits lost, rerun required' wording (10 J7)", res.Detail)
+			}
+			if len(res.Detail) > 512 {
+				t.Fatalf("detail length = %d, want <= 512 (attempts.detail bound)", len(res.Detail))
+			}
+		})
+	}
+}
+
+// TestRunWorkspaceLostReasonIsClosedEnum pins the mapping against the reason
+// enum the event schema declares (api/openapi.yaml workspace.recovery_lost.reason:
+// volume_changed | path_missing | different_worker). A reason outside it — or a
+// plain infra failure — is not a lost workspace and must not be classified as
+// one: the loss must be *detected*, never assumed.
+func TestRunWorkspaceLostReasonIsClosedEnum(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		reason string
+		lost   bool
+	}{
+		{"nil", nil, "", false},
+		{"infra-ish", errors.New("measure storage roots: no such device"), "", false},
+		{"different owner sentinel", ErrDifferentRunWorkspaceOwner, "different_worker", true},
+		{"loss sentinel", ErrRunWorkspaceLost, "volume_changed", true},
+		{"typed reason wins over the owner sentinel",
+			fmt.Errorf("%w: %w", ErrDifferentRunWorkspaceOwner, &RunWorkspaceLost{Reason: "path_missing", Detail: "x"}),
+			"path_missing", true},
+		{"typed but unreportable reason still lost",
+			&RunWorkspaceLost{Reason: "cross_host_rehydrated", Detail: "not in the enum"}, "volume_changed", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, lost := RunWorkspaceLostReason(tc.err)
+			if lost != tc.lost || reason != tc.reason {
+				t.Fatalf("RunWorkspaceLostReason(%v) = (%q, %v), want (%q, %v)", tc.err, reason, lost, tc.reason, tc.lost)
+			}
+			if lost && !events.ValidRecoveryLostReason(reason) {
+				t.Fatalf("reason %q is not in the workspace.recovery_lost enum", reason)
+			}
+		})
 	}
 }

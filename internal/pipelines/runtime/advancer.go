@@ -692,7 +692,17 @@ func (ac *advanceCtx) queueAttempt(pn *compiler.Node, row *NodeExecution, schedu
 // admitted AND the attempt budget must have room. Non-retriable classes are
 // the absence from retriableErrors, and workspace_lost can never be in the
 // list (the compiler refuses it there).
+//
+// The one class is refused HERE too rather than left to omission, because a
+// run's plan_snapshot is immutable and pinned for the run's whole life: a
+// revision authored before the compiler carried that guard would otherwise buy
+// an infinite respawn loop onto a volume that no longer holds the tree, which
+// is the exact promise contract § 7.1 C6e forbids. A lost workspace is
+// non-retriable by definition (ADR-0023 § 7), not by configuration.
 func retriable(r compiler.Retry, class string) bool {
+	if class == ErrWorkspaceLost {
+		return false
+	}
 	for _, c := range r.RetriableErrors {
 		if c == class {
 			return true

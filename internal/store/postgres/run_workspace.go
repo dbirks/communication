@@ -16,9 +16,11 @@ package postgres
 //     no tree, and a workspace without affinity would let a second worker
 //     clone a second copy of the same run (contract § 4 step 3's refusal).
 //   - A different worker is refused, never accommodated. The answer is the
-//     typed ErrRunWorkspaceDifferentWorker plus a `workspace.recovery_lost`
-//     row with reason 'different_worker' written in that same transaction —
-//     the honest arm case 20 requires, not a silent re-clone.
+//     typed ErrRunWorkspaceDifferentWorker (same worker, another volume: the
+//     typed ErrRunWorkspaceVolumeChanged) plus a `workspace.recovery_lost` row
+//     naming that arm's enum reason, written in that same transaction — the
+//     honest arm case 20 requires, not a silent re-clone and not a generic
+//     error the worker would class `infra` (which is retryable; this is not).
 
 import (
 	"context"
@@ -46,6 +48,23 @@ var _ worker.RunWorkspaceResolver = (*RunWorkspaces)(nil)
 // already belongs to another worker's workspace, so this worker must fail the
 // attempt rather than clone a second copy.
 var ErrRunWorkspaceDifferentWorker = errors.New("postgres: run workspace belongs to a different worker")
+
+// ErrRunWorkspaceVolumeChanged is the other arm of the same honest case (12
+// case 20, contract § 7.1 C6e): the run is THIS worker's, but the volume the
+// run's workspace was recorded on is not the volume this worker measures now —
+// the tree behind those rows is gone. Like the different-worker arm it is a
+// refusal, never a re-clone, and it is the worker's `workspace_lost` class, not
+// `infra`: an infra attempt is retryable and a lost tree is not (ADR-0023 § 7).
+var ErrRunWorkspaceVolumeChanged = errors.New("postgres: run workspace volume is not the volume this worker measures")
+
+// lostWorkspaceRefusal builds one of the two case-20 refusals so that BOTH
+// ends of the call read it as a lost workspace: the postgres sentinel a store
+// test matches, and the worker's typed loss carrying the enum reason that was
+// just journalled on `workspace.recovery_lost`. It is returned as the
+// transaction's *answer*, not its error, so the event commits with it.
+func lostWorkspaceRefusal(sentinel error, reason, detail string) error {
+	return fmt.Errorf("%w: %w", sentinel, &worker.RunWorkspaceLost{Reason: reason, Detail: detail})
+}
 
 // Prepare creates the run's workspace row and claims affinity in the same
 // transaction, and is idempotent for the worker that already owns the run.
@@ -105,38 +124,44 @@ func (s *RunWorkspaces) Prepare(ctx context.Context, runID, workerID, volumeID s
 					events.RecoveryDifferentWorker); err != nil {
 					return err
 				}
-				refusal = fmt.Errorf("%w: run %s is pinned to worker %s on volume %s, %s asked for it",
-					ErrRunWorkspaceDifferentWorker, runID, affinity, affVolumeID, workerID)
+				refusal = lostWorkspaceRefusal(ErrRunWorkspaceDifferentWorker, events.RecoveryDifferentWorker,
+					fmt.Sprintf("run %s is pinned to worker %s on volume %s, %s asked for it",
+						runID, affinity, affVolumeID, workerID))
 				return nil
 			}
-			if affVolumeID != volumeID {
+			// Same worker. The workspace is only recoverable if BOTH volume
+			// identities that describe it — the run's affinity door and the
+			// `workspaces` row's own volume — name the volume this worker
+			// measured. Reading only the door would call a run whose workspace row
+			// sits on a reclaimed volume recoverable; reading only the row would
+			// accept a run whose door records no volume at all, which is a ledger
+			// nobody can prove a tree against. Both facts must agree (ADR-0017 D2,
+			// ADR-0023 § 11 pass 5) — refuse otherwise rather than promise a resume.
+			lostID, lostVolume, lookupErr := s.liveWorkspaceTx(ctx, tx, runID)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if lostVolume != volumeID || affVolumeID != volumeID {
 				// Same worker, different disk: the tree it prepared the run on
 				// is gone. The row stays `lost`-candidate for the reconciler;
 				// the answer to this caller is still a refusal.
-				lostID, lostVolume, lookupErr := s.liveWorkspaceTx(ctx, tx, runID)
-				if lookupErr != nil {
-					return lookupErr
-				}
 				if err := s.recoveryLostTx(ctx, tx, runID, lostID, workerID, projectID, lostVolume, volumeID,
 					events.RecoveryVolumeChanged); err != nil {
 					return err
 				}
-				refusal = fmt.Errorf("postgres: run %s workspace lives on volume %s, worker %s is now on %s",
-					runID, lostVolume, workerID, volumeID)
+				refusal = lostWorkspaceRefusal(ErrRunWorkspaceVolumeChanged, events.RecoveryVolumeChanged,
+					fmt.Sprintf("run %s workspace lives on volume %s (affinity %s), worker %s is now on %s",
+						runID, lostVolume, affVolumeID, workerID, volumeID))
 				return nil
 			}
-			id, _, err := s.liveWorkspaceTx(ctx, tx, runID)
-			if err != nil {
-				return err
-			}
-			if id == "" {
+			if lostID == "" {
 				return fmt.Errorf("postgres: run %s has affinity but no live workspace row", runID)
 			}
-			states, err := runWorkspaceRepoStates(ctx, tx, id)
+			states, err := runWorkspaceRepoStates(ctx, tx, lostID)
 			if err != nil {
 				return err
 			}
-			out = worker.RunWorkspaceRef{WorkspaceID: id, VolumeID: volumeID, RepoStates: states}
+			out = worker.RunWorkspaceRef{WorkspaceID: lostID, VolumeID: volumeID, RepoStates: states}
 			return nil
 		}
 
