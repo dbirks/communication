@@ -174,6 +174,10 @@ tags:
     description: >
       Project-to-pipeline assignments: the pinned revision plus the run
       ceilings a project executes under (ADR-0023 § 5).
+  - name: schedules
+    description: >
+      "When to run": cron schedules owned by a project assignment, firing its
+      pinned revision with fixed inputs (ADR-0032).
   - name: runs
     description: >
       Runs, node executions, attempts, run trees and checkpoints — the M4
@@ -2847,6 +2851,133 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+  # ------------------------------------------------- M6: schedules ----------
+  /api/v1/projects/{projectId}/schedules:
+    get:
+      operationId: listProjectSchedules
+      tags: [schedules]
+      summary: List a project's schedules
+      description: >
+        Every schedule of the project, oldest first (the UI's assignment-row
+        grouping order). Carries the derived clock (`next_run_at`) and the
+        record of the last fire (`last_run_at`, `last_run_id`) so a viewer can
+        answer "when does it run next, and did it run last time?" without a
+        second request. Viewer+ (ADR-0032).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Schedules.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createProjectSchedule
+      tags: [schedules]
+      summary: Schedule an assignment's pinned revision on a cron cadence
+      description: >
+        `{assignment_id, cron_expr, inputs, enabled}`. The schedule fires the
+        assignment's *pinned* revision with the fixed `inputs` — it is an
+        assignment property, never a second execution engine, and a fire goes
+        through the same create path as a manual run (ADR-0032). `cron_expr`
+        is a 5-field cron expression evaluated in UTC; an expression the
+        parser refuses is `422` `invalid_cron` (field `cron_expr`). An
+        assignment that can never fire (disabled, or pinned to an
+        unpublished revision) is `409` `assignment_not_fireable` — the
+        schedule says no out loud rather than silently never running.
+        `inputs` are validated against the pinned revision's input schema
+        (`422` with the same validation-error body as run creation).
+        Maintainer+.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleCreate"
+      responses:
+        "201":
+          description: Schedule created; `next_run_at` is its first slot.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/schedules/{scheduleId}:
+    patch:
+      operationId: patchSchedule
+      tags: [schedules]
+      summary: Change a schedule's cadence, inputs or enabled flag
+      description: >
+        `{version, cron_expr?, inputs?, enabled?}` — optimistic concurrency:
+        `version` is required and must equal the row's current version, or the
+        edit is `409` `schedule_version_stale` (re-read and replay). A fire
+        never bumps `version`, so this only ever means "somebody else edited
+        the schedule". Re-enabling re-derives `next_run_at` from *now*: a
+        schedule that was off does not backfill the missed slots. Editing
+        `cron_expr` re-derives the clock too. Maintainer+ on the owning
+        project.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ScheduleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulePatch"
+      responses:
+        "200":
+          description: Updated schedule; `version` is incremented.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   # ---------------------------------------------------- M4: runs ------------
   /api/v1/projects/{projectId}/runs:
     get:
@@ -3881,6 +4012,17 @@ components:
       description: >
         An `assignments` id. Authorization runs through the assignment's own
         `project_id` (maintainer+); an assignment of another project is `404`.
+      schema:
+        type: string
+        format: uuid
+    ScheduleId:
+      name: scheduleId
+      in: path
+      required: true
+      description: >
+        A `schedules` id. Authorization runs through the schedule's owning
+        project (read viewer+, edit maintainer+); a schedule of another
+        project is `404` (ADR-0032).
       schema:
         type: string
         format: uuid
@@ -6705,6 +6847,112 @@ components:
           minimum: 1
           maximum: 8
         budget_overrides:
+          type: object
+          additionalProperties: true
+        enabled:
+          type: boolean
+    # ---------------------------------------------- M6: schedules -----------
+    Schedule:
+      title: Schedule
+      description: >
+        A recurring intent attached to a project assignment: it fires that
+        assignment's *pinned* revision with the fixed `inputs` (ADR-0032).
+        `cron_expr` is a 5-field expression evaluated in UTC — `next_run_at`
+        is the derived clock (always set; the row's CHECK guarantees it),
+        `last_run_at`/`last_run_id` the record of the most recent fire (null
+        until then). Missed fires collapse into ONE late run; they are never
+        backfilled. `version` counts config edits only — a fire never bumps
+        it — and is the PATCH route's optimistic-concurrency token.
+      type: object
+      required:
+        [id, project_id, assignment_id, cron_expr, inputs, enabled,
+         next_run_at, version, created_by, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        assignment_id:
+          type: string
+          format: uuid
+        cron_expr:
+          type: string
+          description: >
+            Normalized to single spaces (what the parser reports back).
+            Refused at the door: seconds/year fields, month/weekday names,
+            `?`, `L`, `W`, `#`, `H`, wrapped ranges.
+        inputs:
+          type: object
+          additionalProperties: true
+          description: >
+            Fixed run inputs, validated against the pinned revision's input
+            schema at create and edit — never at fire time re-derivation.
+        enabled:
+          type: boolean
+        next_run_at:
+          type: string
+          format: date-time
+        last_run_at:
+          type: ["string", "null"]
+          format: date-time
+        last_run_id:
+          type: ["string", "null"]
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ScheduleList:
+      title: ScheduleList
+      type: object
+      required: [schedules]
+      properties:
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/Schedule"
+    ScheduleCreate:
+      title: ScheduleCreate
+      description: Request body for `createProjectSchedule`.
+      type: object
+      required: [assignment_id, cron_expr]
+      properties:
+        assignment_id:
+          type: string
+          format: uuid
+        cron_expr:
+          type: string
+        inputs:
+          type: object
+          additionalProperties: true
+        enabled:
+          type: boolean
+          default: true
+    SchedulePatch:
+      title: SchedulePatch
+      description: >
+        Request body for `patchSchedule`. `version` is required (the value the
+        caller read); at least one editable member must be present.
+      type: object
+      required: [version]
+      minProperties: 2
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        cron_expr:
+          type: string
+        inputs:
           type: object
           additionalProperties: true
         enabled:

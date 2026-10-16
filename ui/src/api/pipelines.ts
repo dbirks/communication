@@ -326,3 +326,68 @@ export function draftConflictOf(error: unknown): DraftConflictProblem | null {
   if (typeof body.draft_id !== "string") return null;
   return body as DraftConflictProblem;
 }
+
+/* ---------------------------------------------------------------- schedules */
+
+/**
+ * ADR-0032 "when to run" types. Aliased straight off the generated schema
+ * (types.ts is another surface's file): the aliases below are the only place
+ * a schedule type enters this module.
+ */
+import type { components } from "./schema";
+
+export type Schedule = components["schemas"]["Schedule"];
+export type ScheduleList = components["schemas"]["ScheduleList"];
+export type ScheduleCreate = components["schemas"]["ScheduleCreate"];
+export type SchedulePatch = components["schemas"]["SchedulePatch"];
+
+/**
+ * `GET /api/v1/projects/{projectId}/schedules` — Viewer+. Keyed under the
+ * project subtree like assignments; the schedules of every assignment arrive
+ * in one read and the screen groups them client-side.
+ */
+export function useSchedules(projectId: string) {
+  return useQuery({
+    queryKey: schedulesKey(projectId),
+    queryFn: () => apiFetch<ScheduleList>(`/api/v1/projects/${projectId}/schedules`),
+    enabled: projectId.length > 0,
+  });
+}
+
+function schedulesKey(projectId: string) {
+  // Same prefix discipline as queryKeys.assignments — ["project", id]
+  // invalidation covers this subtree — spelled inline because queries.ts is
+  // outside this module's edit surface.
+  return ["project", projectId, "schedules"] as const;
+}
+
+/** `POST /api/v1/projects/{projectId}/schedules` — Maintainer+. */
+export function useCreateSchedule(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ScheduleCreate) =>
+      apiFetch<Schedule>(`/api/v1/projects/${projectId}/schedules`, {
+        method: "POST",
+        json: body,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: schedulesKey(projectId) });
+    },
+  });
+}
+
+/**
+ * `PATCH /api/v1/schedules/{scheduleId}` — Maintainer+, optimistic on
+ * `version`: a `409 schedule_version_stale` surfaces as the mutation's error
+ * (ApiError with the parsed body) and the screen re-reads via invalidation.
+ */
+export function usePatchSchedule(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scheduleId, body }: { scheduleId: string; body: SchedulePatch }) =>
+      apiFetch<Schedule>(`/api/v1/schedules/${scheduleId}`, { method: "PATCH", json: body }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: schedulesKey(projectId) });
+    },
+  });
+}

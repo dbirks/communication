@@ -11,7 +11,9 @@ import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/f
 import { renderApp } from "../test/render";
 import { shortId } from "../api/names";
 import type { Pipeline, PipelineRevision } from "../api/types";
+import type { Schedule } from "../api/pipelines";
 import {
+  WIRE_ASSIGNMENT_ID,
   WIRE_CHILD_PIPELINE_ID,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
@@ -27,6 +29,28 @@ import {
 
 const ASSIGNMENTS_PATH = `/api/v1/projects/${wireProjectId}/assignments`;
 const ASSIGN_POST_PATH = ASSIGNMENTS_PATH;
+const SCHEDULES_PATH = `/api/v1/projects/${wireProjectId}/schedules`;
+const SCHEDULE_ID = "01987b22-0003-7000-8000-abcdef012345";
+const SCHEDULE_LAST_RUN_ID = "01987b22-0004-7000-8000-abcdef012345";
+
+function wireSchedule(overrides: Partial<Schedule> = {}): Schedule {
+  return {
+    id: SCHEDULE_ID,
+    project_id: wireProjectId,
+    assignment_id: WIRE_ASSIGNMENT_ID,
+    cron_expr: "0 9 * * *",
+    inputs: { goal: "nightly sweep", repository: "app" },
+    enabled: true,
+    next_run_at: "2099-01-02T09:00:00Z",
+    last_run_at: "2026-06-18T09:00:00Z",
+    last_run_id: SCHEDULE_LAST_RUN_ID,
+    version: 4,
+    created_by: "01987b22-0005-7000-8000-abcdef012345",
+    created_at: "2026-06-01T09:00:00Z",
+    updated_at: "2026-06-18T09:00:00Z",
+    ...overrides,
+  };
+}
 const CHILD_REVISION_ID = "01987b21-0001-7000-8000-abcdef012345";
 const CHILD_REVISION_DIGEST = `sha256:${"1a2b".repeat(32)}`;
 const CHILD_PREV_REVISION_DIGEST = `sha256:${"2b3c".repeat(32)}`;
@@ -76,6 +100,22 @@ function routes(role: "maintainer" | "viewer", extra: RouteStub[] = []): RouteSt
     { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}`, body: childPipeline },
     { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}/drafts`, body: { drafts: [] } },
     { path: ASSIGNMENTS_PATH, body: wireAssignmentList },
+    { path: SCHEDULES_PATH, body: { schedules: [] } },
+    {
+      path: `/api/v1/projects/${wireProjectId}/repos`,
+      body: {
+        items: [
+          {
+            id: "01987b22-0002-7000-8000-abcdef012345",
+            project_id: wireProjectId,
+            name: "app",
+            git_url: "https://example.invalid/app.git",
+            default_branch: "main",
+            created_at: "2026-07-30T09:00:00Z",
+          },
+        ],
+      },
+    },
     { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: wireRevision },
     { path: `/api/v1/revisions/${CHILD_REVISION_DIGEST}`, body: childRevision },
     { path: `/api/v1/projects/${wireProjectId}/runs`, body: wireRunList },
@@ -216,5 +256,127 @@ describe("/projects/:projectId/pipelines — assigning a library pipeline", () =
     // The form stays open on a refusal — the maintainer sees what the server said.
     expect(screen.getByTestId("assign-form-module-check")).toBeTruthy();
     expect(requestsTo(requests, ASSIGN_POST_PATH, "POST")).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------ ADR-0032 "when to run" */
+
+describe("/projects/:projectId/pipelines — when to run", () => {
+  it("shows a viewer the cadence and the countdown, with no controls", async () => {
+    mount("viewer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
+
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    expect(block.textContent).toContain("0 9 * * *");
+    // The next fire reads as a countdown, not a raw timestamp.
+    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toMatch(
+      /next \d+[a-z]+ left/,
+    );
+    expect(
+      within(block).getByTestId("schedule-last-run-feature-development").textContent,
+    ).toContain("last run");
+    expect(within(block).queryByTestId("schedule-enabled-feature-development")).toBeNull();
+    expect(within(block).queryByTestId("schedule-open-feature-development")).toBeNull();
+  });
+
+  it("toggles enabled through PATCH with the row's version", async () => {
+    const { requests } = mount("maintainer", [
+      { path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } },
+      {
+        path: `/api/v1/schedules/${SCHEDULE_ID}`,
+        method: "PATCH",
+        status: 200,
+        body: wireSchedule({ enabled: false, version: 5 }),
+      },
+    ]);
+
+    const toggle = await screen.findByTestId("schedule-enabled-feature-development");
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")).toHaveLength(1),
+    );
+    const body = JSON.parse(
+      requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")[0].body ?? "{}",
+    );
+    expect(body).toEqual({ version: 4, enabled: false });
+  });
+
+  it("a maintainer with no schedules sees the honest absence and the Add control", async () => {
+    mount("maintainer");
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    expect(within(block).getByTestId("schedules-none-feature-development").textContent).toContain(
+      "Never scheduled",
+    );
+    expect(within(block).getByTestId("schedule-open-feature-development")).toBeTruthy();
+  });
+
+  it("adds a schedule with a preset cron and the revision's declared inputs", async () => {
+    const { requests } = mount("maintainer", [
+      { path: SCHEDULES_PATH, method: "POST", status: 201, body: wireSchedule() },
+    ]);
+
+    fireEvent.click(await screen.findByTestId("schedule-open-feature-development"));
+    // Presets: the three cadences ADR-0032 names; picking weekly Monday rewrites
+    // the text field — the cron stays plain text, editable either way.
+    fireEvent.click(screen.getByTestId("schedule-preset-0-9-star-star-1"));
+    expect(
+      (screen.getByTestId("schedule-cron-feature-development") as HTMLInputElement).value,
+    ).toBe("0 9 * * 1");
+    // The input fields are the ones NewRunForm builds from spec.inputs.
+    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
+      target: { value: "nightly sweep" },
+    });
+    fireEvent.change(screen.getByTestId("new-run-input-repository"), {
+      target: { value: "app" },
+    });
+    fireEvent.click(screen.getByTestId("schedule-confirm-feature-development"));
+
+    await waitFor(() => expect(requestsTo(requests, SCHEDULES_PATH, "POST")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, SCHEDULES_PATH, "POST")[0].body ?? "{}");
+    expect(body).toEqual({
+      assignment_id: WIRE_ASSIGNMENT_ID,
+      cron_expr: "0 9 * * 1",
+      inputs: {
+        goal: "nightly sweep",
+        repository: "app",
+        // Declared defaults are seeded into the form (same as NewRunForm) and
+        // ride as fixed inputs — the fire submits exactly what the form showed.
+        acceptance_criteria: "Tests pass, the plan is followed, and the reviewer approves.",
+      },
+      enabled: true,
+    });
+    await waitFor(() => expect(requestsTo(requests, SCHEDULES_PATH)).toHaveLength(2));
+  });
+
+  it("renders the server's invalid_cron 422 inline and keeps the form open", async () => {
+    mount("maintainer", [
+      {
+        path: SCHEDULES_PATH,
+        method: "POST",
+        status: 422,
+        body: {
+          type: "https://communication.dev/errors/invalid_cron",
+          title: "Validation Failed",
+          status: 422,
+          detail: "cron_expr must be a 5-field cron expression, UTC",
+          field: "cron_expr",
+        },
+      },
+    ]);
+
+    fireEvent.click(await screen.findByTestId("schedule-open-feature-development"));
+    fireEvent.change(await screen.findByTestId("schedule-cron-feature-development"), {
+      target: { value: "@daily" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
+      target: { value: "sweep" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
+      target: { value: "app" },
+    });
+    fireEvent.click(screen.getByTestId("schedule-confirm-feature-development"));
+
+    const alert = await screen.findByTestId("schedule-error-feature-development");
+    expect(alert.textContent).toContain("5-field cron");
+    expect(screen.getByTestId("schedule-form-feature-development")).toBeTruthy();
   });
 });

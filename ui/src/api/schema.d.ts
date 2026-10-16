@@ -1339,6 +1339,50 @@ export interface paths {
     patch: operations["patchAssignment"];
     trace?: never;
   };
+  "/api/v1/projects/{projectId}/schedules": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a project's schedules
+     * @description Every schedule of the project, oldest first (the UI's assignment-row grouping order). Carries the derived clock (`next_run_at`) and the record of the last fire (`last_run_at`, `last_run_id`) so a viewer can answer "when does it run next, and did it run last time?" without a second request. Viewer+ (ADR-0032).
+     */
+    get: operations["listProjectSchedules"];
+    put?: never;
+    /**
+     * Schedule an assignment's pinned revision on a cron cadence
+     * @description `{assignment_id, cron_expr, inputs, enabled}`. The schedule fires the assignment's *pinned* revision with the fixed `inputs` — it is an assignment property, never a second execution engine, and a fire goes through the same create path as a manual run (ADR-0032). `cron_expr` is a 5-field cron expression evaluated in UTC; an expression the parser refuses is `422` `invalid_cron` (field `cron_expr`). An assignment that can never fire (disabled, or pinned to an unpublished revision) is `409` `assignment_not_fireable` — the schedule says no out loud rather than silently never running. `inputs` are validated against the pinned revision's input schema (`422` with the same validation-error body as run creation). Maintainer+.
+     */
+    post: operations["createProjectSchedule"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/schedules/{scheduleId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Change a schedule's cadence, inputs or enabled flag
+     * @description `{version, cron_expr?, inputs?, enabled?}` — optimistic concurrency: `version` is required and must equal the row's current version, or the edit is `409` `schedule_version_stale` (re-read and replay). A fire never bumps `version`, so this only ever means "somebody else edited the schedule". Re-enabling re-derives `next_run_at` from *now*: a schedule that was off does not backfill the missed slots. Editing `cron_expr` re-derives the clock too. Maintainer+ on the owning project.
+     */
+    patch: operations["patchSchedule"];
+    trace?: never;
+  };
   "/api/v1/projects/{projectId}/runs": {
     parameters: {
       query?: never;
@@ -3228,6 +3272,68 @@ export interface components {
       enabled?: boolean;
     };
     /**
+     * Schedule
+     * @description A recurring intent attached to a project assignment: it fires that assignment's *pinned* revision with the fixed `inputs` (ADR-0032). `cron_expr` is a 5-field expression evaluated in UTC — `next_run_at` is the derived clock (always set; the row's CHECK guarantees it), `last_run_at`/`last_run_id` the record of the most recent fire (null until then). Missed fires collapse into ONE late run; they are never backfilled. `version` counts config edits only — a fire never bumps it — and is the PATCH route's optimistic-concurrency token.
+     */
+    Schedule: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      project_id: string;
+      /** Format: uuid */
+      assignment_id: string;
+      /** @description Normalized to single spaces (what the parser reports back). Refused at the door: seconds/year fields, month/weekday names, `?`, `L`, `W`, `#`, `H`, wrapped ranges. */
+      cron_expr: string;
+      /** @description Fixed run inputs, validated against the pinned revision's input schema at create and edit — never at fire time re-derivation. */
+      inputs: {
+        [key: string]: unknown;
+      };
+      enabled: boolean;
+      /** Format: date-time */
+      next_run_at: string;
+      /** Format: date-time */
+      last_run_at?: string | null;
+      /** Format: uuid */
+      last_run_id?: string | null;
+      version: number;
+      /** Format: uuid */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /** ScheduleList */
+    ScheduleList: {
+      schedules: components["schemas"]["Schedule"][];
+    };
+    /**
+     * ScheduleCreate
+     * @description Request body for `createProjectSchedule`.
+     */
+    ScheduleCreate: {
+      /** Format: uuid */
+      assignment_id: string;
+      cron_expr: string;
+      inputs?: {
+        [key: string]: unknown;
+      };
+      /** @default true */
+      enabled: boolean;
+    };
+    /**
+     * SchedulePatch
+     * @description Request body for `patchSchedule`. `version` is required (the value the caller read); at least one editable member must be present.
+     */
+    SchedulePatch: {
+      version: number;
+      cron_expr?: string;
+      inputs?: {
+        [key: string]: unknown;
+      };
+      enabled?: boolean;
+    };
+    /**
      * RunStatus
      * @description `01`'s run machine. `waiting_human` means a gate holds a *scope* (the run's other branches keep running); `interrupted` is reconciler-written only (lease/deadline/volume-loss arms — never the dead process itself), always with a `failed_cause`, and with `workspace_lost` never auto-retried (case 20's honest arm).
      * @enum {string}
@@ -4199,6 +4305,8 @@ export interface components {
     RevisionId: string;
     /** @description An `assignments` id. Authorization runs through the assignment's own `project_id` (maintainer+); an assignment of another project is `404`. */
     AssignmentId: string;
+    /** @description A `schedules` id. Authorization runs through the schedule's owning project (read viewer+, edit maintainer+); a schedule of another project is `404` (ADR-0032). */
+    ScheduleId: string;
     /** @description A `runs` id, root or child. Authorized through the run's own `project_id` — a child run's project always equals its parent's, so one predicate covers the whole tree. `404` from outside it. */
     RunId: string;
     /** @description A `node_executions` id. The run id in the path is checked to own this node execution (`node_executions_run_matches`), so a cross-run pairing is `404`, never a leak. */
@@ -6148,6 +6256,100 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  listProjectSchedules: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Schedules. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ScheduleList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createProjectSchedule: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
+        projectId: components["parameters"]["ProjectId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ScheduleCreate"];
+      };
+    };
+    responses: {
+      /** @description Schedule created; `next_run_at` is its first slot. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Schedule"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  patchSchedule: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `schedules` id. Authorization runs through the schedule's owning project (read viewer+, edit maintainer+); a schedule of another project is `404` (ADR-0032). */
+        scheduleId: components["parameters"]["ScheduleId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SchedulePatch"];
+      };
+    };
+    responses: {
+      /** @description Updated schedule; `version` is incremented. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Schedule"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
       422: components["responses"]["UnprocessableEntity"];
     };
   };

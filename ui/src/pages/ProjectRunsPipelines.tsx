@@ -13,8 +13,8 @@
  * pasted YAML into the server's verdict, for org admins (the library role)
  * only, and no editor.
  */
-import { useMemo, useState } from "react";
-import { useParams } from "react-router";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Link, useParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Button } from "../components/ds/Button";
 import { Field, Input } from "../components/ds/Field";
@@ -34,12 +34,24 @@ import {
   pipelineQueryOptions,
   useAssignments,
   useCreateAssignment,
+  useCreateSchedule,
+  usePatchSchedule,
   usePipelines,
   useRevision,
+  useSchedules,
 } from "../api/pipelines";
-import { useMe, useProject } from "../api/queries";
+import { useMe, useProject, useRepositories } from "../api/queries";
 import { viewDraftSummary, viewPipeline, viewPipelineSummary } from "../api/m4view";
 import { shortId } from "../api/names";
+import {
+  InputFieldControl,
+  defaultValuesOf,
+  inputProblemsOf,
+  runInputFieldsOf,
+  wireInputsOf,
+  type InputValue,
+} from "../components/m4/NewRunForm";
+import { formatRemaining } from "../lib/format";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
 import type { PipelineRevisionSummary, PipelineSummary } from "../lib/pipeline/contract";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
@@ -169,6 +181,22 @@ export default function ProjectPipelines() {
                 assignmentFor={assignmentFor}
               />
             ) : null}
+            {/* ADR-0032 "when to run": one block per ASSIGNED pipeline row —
+                the schedule belongs to the assignment, so the block sits with
+                the assignment, not in a separate panel a viewer has to visit. */}
+            {(assignments.data?.assignments ?? []).map((assignment) => (
+              <WhenToRun
+                key={assignment.id}
+                projectId={projectId}
+                assignmentId={assignment.id}
+                pinnedRevisionId={assignment.pinned_revision_id}
+                slug={
+                  rows.find((row) => row.pipeline.id === assignment.pipeline_id)?.pipeline.slug ??
+                  shortId(assignment.pipeline_id)
+                }
+                canManage={canAssign}
+              />
+            ))}
             {assignable.length > 0 && canAssign ? (
               <div className="space-y-[6px]" data-testid="pipeline-assign-list">
                 {assignable.map(({ pipeline, newest }) => (
@@ -364,6 +392,251 @@ function AssignPipelineRow({
       {create.isError ? (
         <FormError error={create.error} testid={`assign-error-${pipeline.slug}`} />
       ) : null}
+    </form>
+  );
+}
+
+/**
+ * ADR-0032's "When to run" block for one assignment: its schedules with the
+ * derived clock (`formatRemaining` reads `next_run_at` — "in 3h 20m" is the
+ * whole question a schedule screen exists to answer), the enabled toggle,
+ * and the link to the run the last fire created. The Add form is maintainer
+ * only; a viewer sees the calendar, never its controls.
+ */
+function WhenToRun({
+  projectId,
+  assignmentId,
+  pinnedRevisionId,
+  slug,
+  canManage,
+}: {
+  projectId: string;
+  assignmentId: string;
+  pinnedRevisionId: string;
+  slug: string;
+  canManage: boolean;
+}) {
+  const schedules = useSchedules(projectId);
+  const mine = (schedules.data?.schedules ?? []).filter(
+    (schedule) => schedule.assignment_id === assignmentId,
+  );
+  const patch = usePatchSchedule(projectId);
+  const [adding, setAdding] = useState(false);
+  if (mine.length === 0 && !canManage) return null;
+  return (
+    <div
+      className="space-y-[6px] border-t border-line pt-2"
+      data-testid={`schedules-block-${slug}`}
+    >
+      <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+        when to run · {slug}
+      </span>
+      {schedules.isPending ? <Spinner label="Loading schedules" /> : null}
+      {schedules.isError ? (
+        <ProblemBanner error={schedules.error} fallback="The schedules could not be read." />
+      ) : null}
+      {mine.length === 0 && !schedules.isPending && !schedules.isError ? (
+        <p className="text-[12.5px] text-muted" data-testid={`schedules-none-${slug}`}>
+          Never scheduled — every run of this pipeline was started by a person.
+        </p>
+      ) : null}
+      <ul className="space-y-[6px]">
+        {mine.map((schedule) => (
+          <li
+            key={schedule.id}
+            className="flex flex-wrap items-center gap-[10px]"
+            data-testid={`schedule-row-${slug}`}
+          >
+            <code className="rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[11.5px] text-ink">
+              {schedule.cron_expr}
+            </code>
+            <span
+              className="font-mono text-[11px] text-faint"
+              data-testid={`schedule-next-${slug}`}
+            >
+              next {formatRemaining(schedule.next_run_at)}
+            </span>
+            {schedule.last_run_id ? (
+              <Link
+                to={`/projects/${projectId}/runs/${schedule.last_run_id}`}
+                className="font-mono text-[11px] text-accent"
+                data-testid={`schedule-last-run-${slug}`}
+              >
+                last run {shortId(schedule.last_run_id)}
+              </Link>
+            ) : (
+              <span className="font-mono text-[11px] text-faint">never run</span>
+            )}
+            {canManage ? (
+              <label className="flex items-center gap-[6px] font-mono text-[11px] text-ink">
+                <input
+                  type="checkbox"
+                  className="size-3 accent-accent"
+                  checked={schedule.enabled}
+                  data-testid={`schedule-enabled-${slug}`}
+                  onChange={(event) =>
+                    patch.mutate({
+                      scheduleId: schedule.id,
+                      body: { version: schedule.version, enabled: event.target.checked },
+                    })
+                  }
+                />
+                {schedule.enabled ? "enabled" : "paused"}
+              </label>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {patch.isError ? (
+        <FormError error={patch.error} testid={`schedule-edit-error-${slug}`} />
+      ) : null}
+      {canManage ? (
+        adding ? (
+          <AddScheduleForm
+            projectId={projectId}
+            assignmentId={assignmentId}
+            pinnedRevisionId={pinnedRevisionId}
+            slug={slug}
+            onDone={() => setAdding(false)}
+          />
+        ) : (
+          <Button
+            compact
+            variant="secondary"
+            data-testid={`schedule-open-${slug}`}
+            onClick={() => setAdding(true)}
+          >
+            Add schedule
+          </Button>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+/** The three cadences the wishlist named, spelled once here so the form
+ * offers the truth rather than a blank text box: hourly, daily 09:00 UTC,
+ * weekly Monday 09:00 UTC (ADR-0032 — cron is always UTC wall clock). */
+const CRON_PRESETS: [string, string][] = [
+  ["hourly", "0 * * * *"],
+  ["daily 09:00 UTC", "0 9 * * *"],
+  ["weekly Monday", "0 9 * * 1"],
+];
+
+/**
+ * The Add-schedule form. The input fields are the ones `NewRunForm` builds
+ * from the assignment's pinned revision (`runInputFieldsOf` +
+ * `InputFieldControl`, shared deliberately so "what a run needs" has one
+ * rendering); the server stays the authority — its `422` (invalid_cron or a
+ * validate-style input refusal) surfaces inline through `FormError`.
+ */
+function AddScheduleForm({
+  projectId,
+  assignmentId,
+  pinnedRevisionId,
+  slug,
+  onDone,
+}: {
+  projectId: string;
+  assignmentId: string;
+  pinnedRevisionId: string;
+  slug: string;
+  onDone: () => void;
+}) {
+  const [cron, setCron] = useState(CRON_PRESETS[0][1]);
+  const [values, setValues] = useState<Record<string, InputValue>>({});
+  const [showProblems, setShowProblems] = useState(false);
+  const create = useCreateSchedule(projectId);
+  const revision = useRevision(pinnedRevisionId);
+  const repositories = useRepositories(projectId);
+  const fields = useMemo(
+    () => (revision.data ? runInputFieldsOf(revision.data.canonical_document) : null),
+    [revision.data],
+  );
+  // Seed declared defaults once, like NewRunForm does — the schedule fires
+  // what the form showed, so a hidden default is a lie about the cadence's
+  // payload either way.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!fields || seeded.current) return;
+    seeded.current = true;
+    setValues((current) => (Object.keys(current).length ? current : defaultValuesOf(fields)));
+  }, [fields]);
+  const problems = fields ? inputProblemsOf(fields, values) : {};
+  const blocked = Object.keys(problems).length > 0 || create.isPending || !revision.data;
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    setShowProblems(true);
+    if (blocked) return;
+    create.mutate(
+      {
+        assignment_id: assignmentId,
+        cron_expr: cron.trim(),
+        inputs: fields ? wireInputsOf(fields, values) : {},
+        enabled: true,
+      },
+      { onSuccess: () => onDone() },
+    );
+  }
+
+  return (
+    <form
+      className="space-y-[6px]"
+      data-testid={`schedule-form-${slug}`}
+      onSubmit={(event) => void submit(event)}
+    >
+      <Field id={`schedule-cron-${slug}`} label="cron (minute hour dom month dow, UTC)">
+        <Input
+          id={`schedule-cron-${slug}`}
+          value={cron}
+          onChange={(event) => setCron(event.target.value)}
+          data-testid={`schedule-cron-${slug}`}
+        />
+      </Field>
+      <div className="flex flex-wrap items-center gap-[6px]" role="group" aria-label="cron presets">
+        {CRON_PRESETS.map(([label, expr]) => (
+          <Button
+            key={expr}
+            compact
+            variant={cron === expr ? "primary" : "ghost"}
+            data-testid={`schedule-preset-${expr.replace(/\*/g, "star").replace(/\s/g, "-")}`}
+            onClick={() => setCron(expr)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      {revision.isPending ? <Spinner label="Loading the pinned revision" /> : null}
+      {revision.isError ? (
+        <ProblemBanner error={revision.error} fallback="The pinned revision could not be read." />
+      ) : null}
+      {fields?.map((field) => (
+        <InputFieldControl
+          key={field.name}
+          field={field}
+          value={values[field.name]}
+          repositories={(repositories.data?.items ?? []).map((repo) => repo.name)}
+          repositoriesLoading={repositories.isPending}
+          error={showProblems ? problems[field.name] : undefined}
+          onChange={(value) => setValues((current) => ({ ...current, [field.name]: value }))}
+        />
+      ))}
+      <div className="flex items-center gap-[6px]">
+        <Button
+          type="submit"
+          variant="primary"
+          compact
+          disabled={blocked}
+          data-testid={`schedule-confirm-${slug}`}
+        >
+          Add
+        </Button>
+        <Button compact variant="ghost" data-testid={`schedule-cancel-${slug}`} onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+      {create.isError ? <FormError error={create.error} testid={`schedule-error-${slug}`} /> : null}
     </form>
   );
 }

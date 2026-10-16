@@ -58,6 +58,14 @@ environment:
                                         no replica advances it into claimable
                                         attempts, not because claims were
                                         disabled. Case-insensitive.
+  COMMUNICATION_SCHEDULE_TICK           schedule-tick interval (default "30s",
+                                        ADR-0032). How often this replica
+                                        checks the schedules table for rows
+                                        that are due; the tick starts only
+                                        when the pipeline engine starts, so
+                                        COMMUNICATION_PIPELINE_SCHEDULER=off
+                                        also stops it. Must parse as a Go
+                                        duration and be positive.
   COMMUNICATION_OIDC_ISSUER             required, issuer used for discovery/tokens
   COMMUNICATION_OIDC_BROWSER_ISSUER     issuer prefix browsers are redirected to
   COMMUNICATION_OIDC_CLIENT_ID          required, OAuth2 client id
@@ -160,6 +168,13 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	scheduleTick, err := serveScheduleTick(os.Getenv)
+	if err != nil {
+		// A tick cadence the process cannot parse must be a startup refusal,
+		// not a silent fallback to the default: the operator chose it.
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	listenAddr := os.Getenv("COMMUNICATION_LISTEN_ADDR")
 	if listenAddr == "" {
 		listenAddr = ":8080"
@@ -215,6 +230,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		Auth:                 authCfg,
 		WorkerHeartbeat:      workerHeartbeat,
 		PipelineSchedulerOff: pipelineSchedulerOff,
+		ScheduleTick:         scheduleTick,
 		API: api.Config{
 			ReplicaName: replica,
 			Version:     version,
@@ -426,6 +442,17 @@ type serveStackDeps struct {
 	// driver.Run at the 2 s tick. It exists so a test can observe whether the
 	// stack started the advancer at all without a database to advance against.
 	m4DriverRunner func(ctx context.Context) error
+
+	// ScheduleTick is COMMUNICATION_SCHEDULE_TICK resolved
+	// (serveScheduleTick): how often the ADR-0032 schedule ticker checks for
+	// due rows. Zero means the 30 s default.
+	ScheduleTick time.Duration
+
+	// scheduleTickRunner overrides the schedule ticker loop; nil means
+	// production's runScheduleTicker over a postgres.ScheduleStore. Like
+	// m4DriverRunner, it exists so a test can observe whether the stack
+	// started the ticker at all without a database to tick against.
+	scheduleTickRunner func(ctx context.Context) error
 }
 
 // serveWorkerHeartbeat reads the same environment variable worker mode uses,
@@ -476,6 +503,75 @@ func servePipelineScheduler(getenv func(string) string) (off bool, err error) {
 // are assertable without a database.
 func startPipelineDriver(schedulerOff bool) bool { return !schedulerOff }
 
+// envScheduleTick and serveScheduleTick are ADR-0032's tick cadence: a
+// duration, defaulted, and refused when unparseable or non-positive for the
+// same reason COMMUNICATION_WORKER_HEARTBEAT is — a scheduler whose operator
+// typo silently changed its cadence is discovered from missed (or doubled)
+// fires, which is the worst place to learn it.
+const envScheduleTick = "COMMUNICATION_SCHEDULE_TICK"
+
+// defaultScheduleTick is ADR-0032's cadence: minute-granular cron firing a
+// 30 s late is invisible; a 30 s tick keeps at most two replicas' claims
+// from racing on the same due row for long.
+const defaultScheduleTick = 30 * time.Second
+
+func serveScheduleTick(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envScheduleTick))
+	if raw == "" {
+		return defaultScheduleTick, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration: %w", envScheduleTick, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be positive, got %s", envScheduleTick, d)
+	}
+	return d, nil
+}
+
+// scheduleTicker is the slice of the schedule store the ticker loop needs —
+// one method, so the loop's logging and cancellation are unit-testable
+// against a recorder instead of a database.
+type scheduleTicker interface {
+	TickSchedules(ctx context.Context, now time.Time) (int, error)
+}
+
+// runScheduleTicker is ADR-0032's serve-side tick: every `every`, fire what
+// is due. A failed tick is logged and retried next beat (the due-row claim
+// is idempotent, so a retry cannot double-fire); fired runs are logged at
+// INFO only when there were runs, so a healthy idle replica stays quiet.
+func runScheduleTicker(ctx context.Context, st scheduleTicker, every time.Duration, log *slog.Logger) error {
+	if st == nil {
+		return errors.New("serve: schedule ticker has no store")
+	}
+	if every <= 0 {
+		every = defaultScheduleTick
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			n, err := st.TickSchedules(ctx, time.Now())
+			if err != nil {
+				log.ErrorContext(ctx, "schedule tick failed; retrying next tick",
+					slog.String("error", err.Error()))
+				continue
+			}
+			if n > 0 {
+				log.InfoContext(ctx, "schedules fired",
+					slog.Int("runs_created", n), slog.String("every", every.String()))
+			}
+		}
+	}
+}
+
 // m4RunTrigger returns the advancer trigger the run and approval routes fire
 // after a state write, or nil on a replica where the engine is off. A nil
 // trigger is legal by api.M4Trigger's own contract (the write is complete
@@ -509,6 +605,8 @@ func m4RunTrigger(drv *postgres.M4Driver, schedulerOff bool) api.M4Trigger {
 //	                          validate, schemas (docs/m4-contract.md § 2)
 //	api.RegisterRuns          runs, node executions, attempts, assignments,
 //	                          run events (SSE)
+//	api.RegisterSchedules     GET/POST /api/v1/projects/{projectId}/schedules,
+//	                          PATCH /api/v1/schedules/{scheduleId} (ADR-0032)
 //	api.RegisterApprovals     approval lists, get, decide
 //	api.RegisterScheduler     GET /api/v1/system/scheduler
 //	postgres.M4Driver         in-process advancer: api.M4Trigger nudges one
@@ -622,6 +720,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		apiProjects,
 		postgres.APIRunEventStream{Journal: projectStore, Wakes: wakes},
 		m4Trigger)
+	api.RegisterSchedules(handler,
+		postgres.APIScheduleStore{S: &postgres.ScheduleStore{Pool: d.Pool}},
+		apiProjects)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
 	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool})
@@ -681,11 +782,40 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		}()
 	}
 
+	// The ADR-0032 schedule tick: the SAME decision as the driver above — a
+	// replica that does not run the pipeline engine does not fire schedules
+	// either, so COMMUNICATION_PIPELINE_SCHEDULER=off skips this goroutine
+	// too. Two replicas may tick together; TickSchedules' FOR UPDATE SKIP
+	// LOCKED claim is the mutex (ADR-0032 § 4), so no advisory lock here.
+	tickCtx, stopTick := context.WithCancel(context.Background())
+	if startDriver {
+		runTick := d.scheduleTickRunner
+		if runTick == nil {
+			scheduleStore := &postgres.ScheduleStore{
+				Pool: d.Pool,
+				Log:  log.With(slog.String("component", "schedule-tick")),
+			}
+			every := d.ScheduleTick
+			runTick = func(ctx context.Context) error {
+				return runScheduleTicker(ctx, scheduleStore, every,
+					log.With(slog.String("component", "schedule-tick")))
+			}
+		}
+		go func() {
+			if err := runTick(tickCtx); err != nil {
+				log.Error("schedule ticker stopped", slog.String("error", err.Error()))
+				return
+			}
+			log.Info("schedule ticker stopped")
+		}()
+	}
+
 	var closeOnce sync.Once
 	closeStack := func() {
 		closeOnce.Do(func() {
 			stopReconciler()
 			stopDriver()
+			stopTick()
 			wakes.Close()
 		})
 	}
