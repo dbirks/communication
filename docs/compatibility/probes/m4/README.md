@@ -356,6 +356,27 @@ four deliberate, provenance-headed adjustments:
    `node_instance_key` SETS (and per-pipeline `plan_digest`), never output
    shapes — and the twin's node ids, key set and leading comment block are
    byte-unchanged.
+8. **Document 1's `/review` prompt judges the goal, not a plan it cannot see.**
+   With deviations 6–7 in place the live run reached `/review` and the real
+   `m4-reviewer` answered `approved: false` every iteration until the loop hit
+   `until_exhausted` — the workspace was never the problem (the node read the
+   checkout `/implement` had edited, and `m4-exit.sh test` reports green once the
+   fixture's docstring/assertion are fixed). The prompt asked for "the plan" at
+   a node whose scope cannot name one: ADR-0022 § 2 resolves `nodes.<id>` only
+   inside its own DAG, so `nodes.plan.outputs.plan.summary` is refused in the
+   body with `unknown_dependency` (proven both ways by
+   `internal/pipelines/compiler/body_scope_test.go`), and at runtime
+   `runtime.envelopeAt` activates only that scope's nodes — no plan document is
+   ever written into the workspace either. The prompt now interpolates what that scope
+   CAN resolve — `inputs.goal`, `inputs.acceptance_criteria`, the same
+   iteration's `nodes.implement.outputs.summary` / `files_changed` and
+   `nodes.test.outputs.result` (`implement`/`test` are earlier in the same body
+   scope; the `bindingText` stringify of an array/object loses nothing an agent
+   reads) — and states the rule outright: `approved: true` when the test result
+   reports `successful=true` and the change serves the goal and every criterion,
+   never a refusal for a missing plan document, only an observed defect. The
+   declared outputs schema, the twin (document 2) and the 12-key node set are
+   untouched.
 
 ### Offline validation (no server needed)
 
@@ -414,6 +435,7 @@ workers — same-path bind trick, see `e2e/m4/README.md`).
 | --- | --- |
 | Attempt fails with `exit 126` | The attempt's tool read grant is missing — the script (`m4-exit.sh` under `/opt/m4/bin`) is mounted but not readable/executable by the unit's sandbox policy. Fix the grant, not the script. |
 | Agent attempt fails `invalid_output … at /evidence: got array, want string` (or the same at `/plan`) | The run pinned a revision authored before deviations 6–7, whose outputs schema still declares § 9.3's strings while the agent answers an array. Republish from the current `pipeline.yaml` and re-run; the pinned snapshot, not the agent, is what changed. |
+| Run ends `failed_cause: until_exhausted` with `test` green and every `/review` `succeeded` but `approved: false` | A revision authored before deviation 8: its `/review` prompt judges "the plan", which no until body can interpolate (ADR-0022 § 2) and which is not in the workspace, so the reviewer honestly refuses. Republish from the current `pipeline.yaml` and re-run — the prompt, not the change, was wrong. |
 | Agent turn dies with the adapter's `Authentication required` | Harness credentials never reached the worker: `${HOME}/.claude` not bind-mounted at `/harness/claude`, or `CLAUDE_CONFIG_DIR` unset, or the stack came up without `HOST_UID`/`HOST_GID` so uid 10001 cannot read your `0600` config. |
 | Run sits in `waiting_human` after the gate was decided | Pre-52685c1 build: nothing resumed the run once its last approval gate was decided. Rebuild the image from ≥ 52685c1. |
 | Attempts queue forever, never claimed | The **run** is not in `running` — the scheduler only hands out attempts for a running run. Read the run row and its gate state before blaming the worker. |

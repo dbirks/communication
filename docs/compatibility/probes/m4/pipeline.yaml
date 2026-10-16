@@ -214,9 +214,22 @@ spec:
               mode: read_only
               repositories: ['${{ inputs.repository }}']
             prompt: |
-              Decide whether the acceptance criteria are met.
-              Criteria: ${{ inputs.acceptance_criteria }}
+              Decide whether this iteration's change is verified and may be approved.
+              Goal: ${{ inputs.goal }}
+              Acceptance criteria: ${{ inputs.acceptance_criteria }}
+              Implementer's summary for this iteration: ${{ nodes.implement.outputs.summary }}
+              Files the implementer reports changing: ${{ nodes.implement.outputs.files_changed }}
               Test result: ${{ nodes.test.outputs.result }}
+              The plan was written and approved BEFORE this loop ran and its text is not repeated
+              here: judge the change against the goal and the acceptance criteria above plus what
+              you can read in the workspace. There is no plan document in the workspace, so never
+              return approved=false because a plan document, plan file, or plan section is missing,
+              and never compare the change to a plan you cannot see. The goal and the acceptance
+              criteria are the whole contract.
+              Approval rule: return approved=true when the test result above reports
+              successful=true AND the change in the workspace serves the goal and satisfies every
+              acceptance criterion. Return approved=false only for a concrete defect you observed —
+              a failing test, a criterion the code misses, or a regression — named in evidence.
               Reply with JSON of exactly this shape:
               {"approved": true,
                "evidence": ["<one observed fact per element>"],
