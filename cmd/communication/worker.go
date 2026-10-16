@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -75,6 +76,18 @@ environment:
                                  the artifact byte backend the worker publishes
                                  to (this process is the single rw writer of
                                  the volume, ADR-0020 D2); same names as serve
+  COMMUNICATION_MODEL_CHAT_BASE_URL  OpenAI-compatible server root for model.chat
+                                 nodes (e.g. https://api.example.com/v1). THIS IS
+                                 AN EGRESS PATH (ADR-0024 Security): node content
+                                 leaves the host. Unset means model.chat is not
+                                 registered at all and such nodes fail honestly;
+                                 the ops page must name the endpoint host when set
+  COMMUNICATION_MODEL_CHAT_API_KEY   bearer token for that endpoint. Never from
+                                 the pipeline document, never logged
+  COMMUNICATION_MODEL_CHAT_MODELS    comma-separated allowlist of model names this
+                                 worker will call. An endpoint with no allowlist
+                                 forwards arbitrary selectors, so with the base URL
+                                 set and no models listed every node is refused
   COMMUNICATION_APM_BINARY       override for the packaged-context binary
                                  (default: apm on PATH, else /opt/apm/apm —
                                  the vendored 0.33.0, ADR-0008 D1). Absent
@@ -132,7 +145,59 @@ type workerOptions struct {
 	// the refusal is a configuration message, not a constraint violation at
 	// the first heartbeat.
 	attemptCapacity int
-	cfg             worker.Config
+
+	// modelChat is § 4 step 8's egress configuration. Endpoint, allowlist and
+	// credential are operator-level by ADR-0024's Security section — the
+	// pipeline document chooses a model *name*, never where the content goes,
+	// because a pipeline that could name its own endpoint is a pipeline that
+	// can exfiltrate a project's content to an attacker's host.
+	modelChat modelChatOptions
+
+	cfg worker.Config
+}
+
+// modelChatOptions is the parsed COMMUNICATION_MODEL_CHAT_* triple.
+type modelChatOptions struct {
+	baseURL string
+	apiKey  string
+	models  []string
+}
+
+// parseModelChatOptions reads and validates the model.chat environment. A bad
+// base URL is a startup refusal rather than a per-attempt surprise: an
+// operator who typed `api.openai.com/v1` without a scheme meant to configure
+// egress, and silently leaving the kind unregistered would hide that.
+func parseModelChatOptions(getenv func(string) string) (modelChatOptions, error) {
+	var o modelChatOptions
+	o.baseURL = strings.TrimRight(strings.TrimSpace(getenv("COMMUNICATION_MODEL_CHAT_BASE_URL")), "/")
+	o.apiKey = strings.TrimSpace(getenv("COMMUNICATION_MODEL_CHAT_API_KEY"))
+	if raw := strings.TrimSpace(getenv("COMMUNICATION_MODEL_CHAT_MODELS")); raw != "" {
+		for _, m := range strings.Split(raw, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				o.models = append(o.models, m)
+			}
+		}
+	}
+	if o.baseURL == "" {
+		return o, nil
+	}
+	u, err := url.Parse(o.baseURL)
+	if err != nil {
+		return o, fmt.Errorf("COMMUNICATION_MODEL_CHAT_BASE_URL %q is not a URL: %w", o.baseURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return o, fmt.Errorf("COMMUNICATION_MODEL_CHAT_BASE_URL %q must be an http(s) URL", o.baseURL)
+	}
+	if u.Host == "" {
+		return o, fmt.Errorf("COMMUNICATION_MODEL_CHAT_BASE_URL %q names no host", o.baseURL)
+	}
+	if u.User != nil {
+		return o, errors.New("COMMUNICATION_MODEL_CHAT_BASE_URL must not carry credentials in the URL; use COMMUNICATION_MODEL_CHAT_API_KEY")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return o, fmt.Errorf("COMMUNICATION_MODEL_CHAT_BASE_URL %q must be a server root (no query or fragment)", o.baseURL)
+	}
+	return o, nil
 }
 
 // workerOptionsFromEnv reads and validates the worker environment. getenv is
@@ -243,6 +308,12 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 		}
 		o.attemptCapacity = n
 	}
+
+	mcOpts, mcErr := parseModelChatOptions(getenv)
+	if mcErr != nil {
+		return o, mcErr
+	}
+	o.modelChat = mcOpts
 
 	o.cfg = worker.Config{
 		Name:         name,
@@ -424,54 +495,69 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid artifact byte backend", slog.String("error", err.Error()))
 		return 2
 	}
+	attemptExecs := worker.AttemptExecutors{
+		// Every wired kind is wrapped: the first attempt of a run prepares
+		// its workspace on this worker's volume and closes ADR-0023 § 4's
+		// one-way affinity door, and an attempt that reaches this worker
+		// while the run belongs to another worker is refused with
+		// workspace.recovery_lost / different_worker rather than cloning a
+		// second copy (contract § 4 step 3).
+		worker.NodeKindProcessExec: &worker.RunWorkspaceExecutor{
+			Inner:   procExec,
+			Prepare: prepareRunWorkspace,
+			Logger:  log,
+		},
+		worker.NodeKindAgentACP: &worker.RunWorkspaceExecutor{
+			Inner:   agentTurn,
+			Prepare: prepareRunWorkspace,
+			Logger:  log,
+		},
+		// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
+		// others: a workspace_path publish reads the run tree, so that tree
+		// has to exist first even when this worker only publishes.
+		//
+		// The scan is no longer M3's unit-scoped one. Materialized.Redact
+		// knows only what THIS unit materialized, and a publishing attempt
+		// materializes nothing — so an attempt whose upstream echoed a
+		// node_attempt `env` value into its outputs would have published it
+		// verbatim with redaction_count 0 (17ffa32's honest nil). Now the
+		// scanner reads secret_materializations for every attempt of the run
+		// and re-resolves those versions through the same keyring path the
+		// materializer used: what the run ever held is what the artifact is
+		// scanned for, and a value that cannot be resolved fails the attempt
+		// (sandbox_enforcement_failed) instead of publishing unscanned.
+		worker.NodeKindArtifactPublish: &worker.RunWorkspaceExecutor{
+			Inner: &postgres.ArtifactPublishSecretScan{
+				Publish: &worker.ArtifactPublish{
+					Bytes:      attemptArtifactBytes,
+					Rows:       &postgres.AttemptArtifacts{Pool: pool},
+					Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
+					Logger:     log,
+				},
+				Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
+			},
+			Prepare: prepareRunWorkspace,
+			Logger:  log,
+		},
+	}
+	// § 4 step 8's model.chat is registered ONLY when an endpoint is configured.
+	// With no base URL the kind stays unregistered, so refusalExecutor's honest
+	// "no executor for node kind model.chat on this worker" remains the answer —
+	// a worker that never promised egress must not quietly start sending content
+	// somewhere. When it IS configured the endpoint host is logged once at
+	// startup (never the key): this is a new egress path and the operator has to
+	// be able to see where it points (ADR-0024 Security).
+	if mc := opts.newModelChat(log, pool, unitsSecrets); mc != nil {
+		attemptExecs[worker.NodeKindModelChat] = &worker.RunWorkspaceExecutor{
+			Inner:   mc,
+			Prepare: prepareRunWorkspace,
+			Logger:  log,
+		}
+	}
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
-		worker.AttemptExecutors{
-			// Every wired kind is wrapped: the first attempt of a run prepares
-			// its workspace on this worker's volume and closes ADR-0023 § 4's
-			// one-way affinity door, and an attempt that reaches this worker
-			// while the run belongs to another worker is refused with
-			// workspace.recovery_lost / different_worker rather than cloning a
-			// second copy (contract § 4 step 3).
-			worker.NodeKindProcessExec: &worker.RunWorkspaceExecutor{
-				Inner:   procExec,
-				Prepare: prepareRunWorkspace,
-				Logger:  log,
-			},
-			worker.NodeKindAgentACP: &worker.RunWorkspaceExecutor{
-				Inner:   agentTurn,
-				Prepare: prepareRunWorkspace,
-				Logger:  log,
-			},
-			// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
-			// others: a workspace_path publish reads the run tree, so that tree
-			// has to exist first even when this worker only publishes.
-			//
-			// The scan is no longer M3's unit-scoped one. Materialized.Redact
-			// knows only what THIS unit materialized, and a publishing attempt
-			// materializes nothing — so an attempt whose upstream echoed a
-			// node_attempt `env` value into its outputs would have published it
-			// verbatim with redaction_count 0 (17ffa32's honest nil). Now the
-			// scanner reads secret_materializations for every attempt of the run
-			// and re-resolves those versions through the same keyring path the
-			// materializer used: what the run ever held is what the artifact is
-			// scanned for, and a value that cannot be resolved fails the attempt
-			// (sandbox_enforcement_failed) instead of publishing unscanned.
-			worker.NodeKindArtifactPublish: &worker.RunWorkspaceExecutor{
-				Inner: &postgres.ArtifactPublishSecretScan{
-					Publish: &worker.ArtifactPublish{
-						Bytes:      attemptArtifactBytes,
-						Rows:       &postgres.AttemptArtifacts{Pool: pool},
-						Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
-						Logger:     log,
-					},
-					Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
-				},
-				Prepare: prepareRunWorkspace,
-				Logger:  log,
-			},
-		},
+		attemptExecs,
 		w.ID,
 		worker.WithAttemptLogger(log),
 	)
@@ -953,4 +1039,106 @@ func pathIsUnderRoot(root, candidate string) bool {
 	}
 	root, candidate = filepath.Clean(root), filepath.Clean(candidate)
 	return strings.HasPrefix(candidate, root+string(filepath.Separator))
+}
+
+// newModelChat builds § 4 step 8's model.chat executor, or nil when this
+// worker has no endpoint: unregistered means refusalExecutor stays honest
+// about there being no executor here, which is the truth an operator who
+// configured no egress wants to read in an attempt detail.
+//
+// The credential and the allowlist come from the environment only (see
+// modelChatOptions): the pipeline document contributes a model *name*, and a
+// node that could name its own endpoint would be a node that can exfiltrate a
+// project's content anywhere. The API key is never logged — only whether one
+// is set — and only the endpoint host is named at startup.
+func (o workerOptions) newModelChat(log *slog.Logger, pool *pgxpool.Pool, unitsSecrets *postgres.UnitSecrets) worker.AttemptExecutor {
+	if o.modelChat.baseURL == "" {
+		log.Info("model.chat is not configured on this worker: no COMMUNICATION_MODEL_CHAT_BASE_URL, so the kind is not registered and its nodes fail with the worker's honest refusal (contract § 4 step 8)")
+		return nil
+	}
+	chat := &worker.ModelChat{
+		BaseURL: o.modelChat.baseURL,
+		APIKey:  o.modelChat.apiKey,
+		Models:  o.modelChat.models,
+		Logger:  log,
+	}
+	log.Info("model.chat egress is configured against this endpoint (new egress path, ADR-0024 Security)",
+		slog.String("endpoint", chat.EndpointHost()),
+		slog.String("base_url_path", mustURLPath(o.modelChat.baseURL)),
+		slog.String("allowed_models", strings.Join(o.modelChat.models, ",")),
+		slog.Bool("api_key_set", o.modelChat.apiKey != ""))
+	if len(o.modelChat.models) == 0 {
+		log.Warn("model.chat has an endpoint but no COMMUNICATION_MODEL_CHAT_MODELS allowlist: every node will be refused by name, which is the fail-closed default",
+			slog.String("endpoint", chat.EndpointHost()))
+	}
+	if unitsSecrets == nil {
+		// No secret store on this worker means no run can have materialized a
+		// value, so the scan has nothing to look for (artifact.publish reaches
+		// the same conclusion through the same seam).
+		return chat
+	}
+	return &modelChatSecretScan{
+		Chat:   chat,
+		Values: &postgres.RunSecretValues{Pool: pool, Secrets: unitsSecrets.Secrets},
+	}
+}
+
+func mustURLPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Path
+}
+
+// modelChatSecretScan is § 4 step 8's redaction gate: the same run-scoped
+// scanner artifact.publish uses (postgres.RunSecretValues reads
+// secret_materializations for every attempt of the run), applied to the request
+// body instead of artifact bytes. It wraps rather than configures for
+// ArtifactPublishSecretScan's reason — the Redact seam takes no context and no
+// claim, and a scan that cannot be built must fail the attempt rather than
+// report zero. ADR-0018's rule is stricter here than for an artifact: a flagged
+// body is refused before a single byte leaves the process, not redacted and
+// sent.
+type modelChatSecretScan struct {
+	Chat   *worker.ModelChat
+	Values *postgres.RunSecretValues
+}
+
+var _ worker.AttemptExecutor = (*modelChatSecretScan)(nil)
+
+func (s *modelChatSecretScan) Execute(ctx context.Context, c worker.AttemptClaim, sink worker.AttemptSink) (worker.AttemptResult, error) {
+	if s == nil || s.Chat == nil {
+		return worker.AttemptResult{Status: worker.AttemptStatusFailed,
+			ErrorClass: worker.ErrorClassInfra,
+			Detail:     modelChatDetail("model.chat: the executor is not wired (contract § 4 step 8)")}, nil
+	}
+	if s.Values == nil {
+		return worker.AttemptResult{Status: worker.AttemptStatusFailed,
+			ErrorClass: worker.ErrorClassSandboxEnforcementFail,
+			Detail: modelChatDetail("model.chat: no run secret scanner is wired on this worker, so the request " +
+				"body would leave the host unscanned; refusing to send anything (ADR-0024 Security)")}, nil
+	}
+	redact, wipe, err := s.Values.Redactor(ctx, c.RunID)
+	if err != nil {
+		return worker.AttemptResult{Status: worker.AttemptStatusFailed,
+			ErrorClass: worker.ErrorClassSandboxEnforcementFail,
+			Detail: modelChatDetail("model.chat: the run's secret scan could not be built from the " +
+				"materialization ledger, so no request was sent (contract § 4 step 8): " + err.Error())}, nil
+	}
+	defer wipe()
+
+	chat := *s.Chat
+	chat.Redact = redact
+	return chat.Execute(ctx, c, sink)
+}
+
+// modelChatDetail keeps an attempt detail inside attempts.detail's 512-byte
+// CHECK (00005) without importing worker's unexported helper.
+func modelChatDetail(s string) string {
+	const max = 512
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
 }
