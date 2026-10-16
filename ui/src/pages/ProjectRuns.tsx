@@ -299,7 +299,7 @@ export default function ProjectRuns() {
 
   return (
     <div
-      className="grid min-h-full grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]"
+      className="grid min-h-full grid-cols-1 sm:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]"
       data-testid="project-runs"
     >
       <RunsListColumn projectId={projectId} />

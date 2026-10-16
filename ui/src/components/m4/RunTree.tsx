@@ -17,7 +17,12 @@
  */
 import { useMemo } from "react";
 import { iterationOf, parentKeyOf } from "../../lib/pipeline/runView";
-import type { NodeExecutionSummary, RunTreeChild, RunTreeRoot } from "../../lib/pipeline/contract";
+import type {
+  NodeExecutionSummary,
+  RunStatus,
+  RunTreeChild,
+  RunTreeRoot,
+} from "../../lib/pipeline/contract";
 import { DEFERRED_KINDS, isNodeKind } from "../../lib/pipeline/definition";
 import { shortId } from "../../lib/format";
 import { Panel } from "../ds/Panel";
@@ -529,8 +534,16 @@ function expandPlace(
 /**
  * One child run the `/tree` route reported, and its own children when expanded.
  * The sentence this row writes is the run's own identity: `child run <short id>
- * · depth <n> · waits for <policy>` — id, depth and wait policy are all the
- * route's facts, never a guess — followed by the invocation that made it.
+ * · depth <n> · waits for <policy> · status <status>` — id, depth, wait policy
+ * and status are all the route's facts, never a guess — followed by the
+ * invocation that made it.
+ *
+ * The status rides inside that sentence and not only on the chip, because the
+ * chip is a separate box: whatever reads the row's identity line — a screen
+ * reader, `find` in a browser, W11's DOM assertion — otherwise meets `child run
+ * 4f15171c · depth 1 · waits for completion` with no word saying how that run
+ * ended. A row whose route named no status says `status no status reported`
+ * rather than printing a hole (`10`'s honesty rule).
  */
 function childRunRows(
   args: BuildArgs,
@@ -545,10 +558,11 @@ function childRunRows(
     key,
     level,
     label: child.pipeline_slug,
-    status: { state: stateOf(RUN_STATE[child.status]), word: child.status },
+    status: { state: stateOf(RUN_STATE[child.status]), word: runStatusWord(child.status) },
     kind: null,
     detail: [
       `child run ${shortId(child.child_run_id)} · depth ${child.depth} · waits for ${child.wait_policy}`,
+      `status ${childRunStatusWord(child.status)}`,
       child.node_instance_key ? `invoked by ${child.node_instance_key}` : null,
     ]
       .filter(Boolean)
@@ -664,9 +678,34 @@ export function instanceLabel(key: string): string {
   return iteration === null ? leaf : `${leaf}[${iteration}]`;
 }
 
+/**
+ * A run status as a word a person reads: the wire's own status with its
+ * underscore for a space (`waiting_human` → `waiting human`), which is the
+ * spelling `RunStatusChip` on the runs list uses — so a child run's chip on the
+ * tree never reads differently from the same run's chip in a list.
+ */
+export function runStatusWord(status: RunStatus | null | undefined): string {
+  const word = String(status ?? "")
+    .replaceAll("_", " ")
+    .trim();
+  return word || "no status reported";
+}
+
+/**
+ * The status word inside a child row's identity sentence: the wire's raw token
+ * (`waiting_human`), mono like the instance key beside it. The chip carries the
+ * human spelling; this line carries what `GET /runs/{id}/tree` actually said,
+ * so a reader can compare the row to the route without a synonym in between.
+ */
+function childRunStatusWord(status: RunStatus | null | undefined): string {
+  const word = String(status ?? "").trim();
+  return word || "no status reported";
+}
+
 /** `outcome` is a column separate from `status` (`03`'s result envelope), so a
- * node that ran fine and failed its check shows both words, never a merged one. */
-export function statusWord(node: NodeExecutionSummary): string {
+ * node that ran fine and failed its check shows both words, never a merged one. */ export function statusWord(
+  node: NodeExecutionSummary,
+): string {
   if (node.status === "succeeded" && node.outcome && node.outcome !== "passed") {
     return `ran fine · ${node.outcome}`;
   }

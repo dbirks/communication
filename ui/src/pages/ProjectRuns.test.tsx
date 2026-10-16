@@ -100,6 +100,20 @@ describe("/projects/:projectId/runs", () => {
     expect((await screen.findByTestId("runs-empty")).textContent).toContain("No runs yet");
   });
 
+  it("stacks the list over the detail instead of starving it below sm", async () => {
+    // m5-layout live: at 390x844 the fixed 15–20rem rail took 320 of the 358px
+    // the page had, the detail column collapsed to 38px (less than its own
+    // `px-6`), and its "Pipelines" link hung past the viewport at right 423px.
+    // The two-column track is a `sm:` promise now; below it the list stacks over
+    // the detail, so neither column can be squeezed past the screen. Vitest
+    // cannot measure layout — the live spec is the proof; this is the class name
+    // that produced it.
+    mountRuns({ runs: [] });
+    const shell = await screen.findByTestId("project-runs");
+    expect(shell.className).toContain("grid-cols-1");
+    expect(shell.className).toContain("sm:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)]");
+  });
+
   it("renders a 404 as a 404 rather than an empty list", async () => {
     mountRuns(undefined, [
       {

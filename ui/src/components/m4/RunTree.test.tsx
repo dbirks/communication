@@ -7,7 +7,8 @@
 import { afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { RunTree, buildRows, instanceLabel, parentKeyOf } from "./RunTree";
+import { RunTree, buildRows, instanceLabel, parentKeyOf, runStatusWord } from "./RunTree";
+import type { RunStatus, RunTreeChild, RunTreeRoot } from "../../lib/pipeline/contract";
 import {
   fanOutNodes,
   fanOutTree,
@@ -384,5 +385,112 @@ describe("RunTree", () => {
     );
     const text = container.textContent ?? "";
     expect(text).not.toMatch(/worker_id|worker-a|fencing|lease_expires|lease expires/i);
+  });
+});
+
+/**
+ * W11's answer key: 25 fan-out children whose statuses the `/tree` route
+ * reported, mixing the four the ledger actually holds. `cancelled` and `queued`
+ * are in here on purpose — they are the statuses a mapping forgets, and they
+ * are the reason a row can render with no word at all.
+ */
+const CHILD_STATUSES: RunStatus[] = ["completed", "failed", "cancelled", "queued", "waiting_human"];
+
+function mixedChildRuns(): RunTreeChild[] {
+  return Array.from({ length: 25 }, (_unused, index) => {
+    const status = CHILD_STATUSES[index % CHILD_STATUSES.length];
+    const terminal = status === "completed" || status === "failed" || status === "cancelled";
+    return {
+      invocation_id: `01J8MIXED${String(index).padStart(4, "0")}`,
+      node_instance_key: `/fan_out[${index + 1}]/invoke`,
+      child_run_id: `01987c00-0000-7000-8000-${String(index).padStart(12, "0")}`,
+      pipeline_slug: "module-check",
+      revision_digest: `sha256:mixed${String(index).padStart(3, "0")}f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2f3f4`,
+      depth: 1,
+      wait_policy: "completion",
+      status,
+      expression_evaluations: 2,
+      created_at: "2026-07-31T12:01:00Z",
+      started_at: status === "queued" ? null : "2026-07-31T12:01:30Z",
+      finished_at: terminal ? "2026-07-31T12:09:00Z" : null,
+      children: [],
+    };
+  });
+}
+
+function mixedTree(): RunTreeRoot {
+  return {
+    run_id: "01987c00-0000-7000-8000-root000000",
+    status: "completed",
+    depth: 0,
+    children: mixedChildRuns(),
+  };
+}
+
+describe("every child run row carries its status word (W11)", () => {
+  it("writes the route's status into the row's own identity sentence", () => {
+    const tree = mixedTree();
+    const rows = buildRows({ nodes: [], tree, expanded: new Set(), pageSize: 10 });
+    const shown = rows.filter((row) => row.key.startsWith("run:"));
+    expect(shown).toHaveLength(25);
+    for (const child of tree.children) {
+      const row = rows.find((item) => item.key === `run:${child.child_run_id}`)!;
+      // The chip's word and the sentence's word are both the wire's status.
+      expect(row.status?.word).toBe(runStatusWord(child.status));
+      expect(row.detail).toContain(`status ${child.status}`);
+      // The sentence keeps the shape the exit leg parses out of the DOM.
+      expect(row.detail).toMatch(
+        new RegExp(
+          `child run \\S+ · depth ${child.depth} · waits for ${child.wait_policy} · status \\S`,
+        ),
+      );
+    }
+  });
+
+  it("prints a cancelled child as cancelled and a queued child as queued", () => {
+    const tree = mixedTree();
+    const rows = buildRows({ nodes: [], tree, expanded: new Set(), pageSize: 10 });
+    const wordOf = (index: number) =>
+      rows.find((row) => row.key === `run:${tree.children[index].child_run_id}`)!.status?.word;
+    expect(wordOf(0)).toBe("completed");
+    expect(wordOf(1)).toBe("failed");
+    expect(wordOf(2)).toBe("cancelled");
+    expect(wordOf(3)).toBe("queued");
+    expect(wordOf(4)).toBe("waiting human");
+    // `cancelled` is the interrupted set (stopped, outcome the run's own), never
+    // a failure the pipeline did not have.
+    const states = rows.filter((row) => row.key.startsWith("run:")).map((row) => row.status?.state);
+    expect(new Set(states)).toEqual(
+      new Set(["done", "failed", "interrupted", "queued", "waiting"]),
+    );
+  });
+
+  it("keeps the status word on the DOM line that names the child run", () => {
+    const tree = mixedTree();
+    const { container } = render(
+      <RunTree nodes={[]} tree={tree} pageSize={10} runPath={(id) => `/runs/${id}`} />,
+    );
+    // W11 reads the row's identity LINE — the box that prints `child run …`.
+    // A chip in a sibling box is not on that line, which is how 25 of 25 rows
+    // passed the eye and failed the assertion.
+    const identity = Array.from(container.querySelectorAll("span")).filter((span) =>
+      (span.textContent ?? "").startsWith("child run "),
+    );
+    expect(identity).toHaveLength(25);
+    for (const child of tree.children) {
+      const line = identity.find((span) =>
+        (span.textContent ?? "").includes(`invoked by ${child.node_instance_key}`),
+      );
+      expect(line?.textContent).toContain(`status ${child.status}`);
+    }
+  });
+
+  it("says so in words when a child carries no status at all", () => {
+    const tree = mixedTree();
+    tree.children[0] = { ...tree.children[0], status: undefined as unknown as RunStatus };
+    const rows = buildRows({ nodes: [], tree, expanded: new Set(), pageSize: 10 });
+    const row = rows.find((item) => item.key === `run:${tree.children[0].child_run_id}`)!;
+    expect(row.detail).toContain("status no status reported");
+    expect(row.detail).not.toContain("undefined");
   });
 });

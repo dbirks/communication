@@ -181,6 +181,14 @@ const secondGate = {
   summary: "Approve spec: claims export v2",
 } as unknown as typeof wireApproval;
 
+/** A gate whose summary holds one token no line break can take — the shape
+ * that pushed `/` past a phone viewport once (m5-layout live). */
+const gateWithLongToken = {
+  ...wireApproval,
+  summary:
+    "Approve the pinned revision sha256:fef2dabd990533ccebed8c824d1274353febd08e34814fdcaa6785a70d483b59",
+} as unknown as typeof wireApproval;
+
 interface AttentionStub {
   approvals?: unknown;
   runs?: unknown;
@@ -269,6 +277,25 @@ describe("/ projects board", () => {
     expect(title.className).toContain("line-clamp-2");
     expect(title.getAttribute("title")).toBe(planGate.summary);
     expect(title.textContent).toBe("Plan for Document and fix add() in hello.py");
+  });
+
+  it("sizes the board's track to the viewport, not to a card's longest word", async () => {
+    // m5-layout live: `/` at 390x844 measured scrollWidth 403 — the card's own
+    // `<li>` 387px wide. With no base `grid-cols-*` the board's single column is
+    // an implicit `auto` track, sized to its widest item's min-content, so one
+    // unbreakable token in a gate summary (`sha256:…`, a URL) moves the whole
+    // page sideways. `grid-cols-1` is `repeat(1,minmax(0,1fr))`: the track stops
+    // listening to the content. Vitest cannot measure layout — the live spec is
+    // the proof; this guards the class name that produced it.
+    boardStub([projectFixture], {
+      [projectFixture.id]: { approvals: { approvals: [gateWithLongToken] } },
+    });
+    const list = await screen.findByTestId("project-list");
+    expect(list.className).toContain("grid-cols-1");
+    expect(screen.getByTestId("project-card-widgets").className).toContain("min-w-0");
+    const title = screen.getByTestId(`item-title-decision-${wireApproval.id}`);
+    // And the token wraps inside the card instead of being clipped by it.
+    expect(title.className).toContain("break-words");
   });
 
   it("orders needs-me first by default and alphabetically on a–z", async () => {

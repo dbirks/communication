@@ -105,7 +105,7 @@ export default function Projects() {
           </p>
         ) : (
           <ul
-            className="grid items-start gap-3 sm:grid-cols-2 xl:grid-cols-3"
+            className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3"
             data-testid="project-list"
           >
             {ordered.map((project) => (
@@ -181,7 +181,7 @@ function ProjectCard({
     view.conversations.length === 0 &&
     view.running.length === 0;
   return (
-    <li data-testid={`project-card-${project.slug}`} className="h-full">
+    <li data-testid={`project-card-${project.slug}`} className="h-full min-w-0">
       <article className="flex h-full flex-col overflow-hidden rounded-[3px] border border-line-strong bg-surface">
         <Link
           to={`/projects/${project.id}`}
@@ -360,7 +360,7 @@ function AttentionItem({ item }: { item: CardItem }) {
     >
       <StatusChip state={item.state} label={item.tag} />
       <span
-        className={`mt-[3px] block text-[12.5px] font-semibold leading-[17px] ${ATTENTION_TITLE_CLAMP}`}
+        className={`mt-[3px] block break-words text-[12.5px] font-semibold leading-[17px] ${ATTENTION_TITLE_CLAMP}`}
         data-testid={`item-title-${item.key}`}
         title={item.full}
       >
