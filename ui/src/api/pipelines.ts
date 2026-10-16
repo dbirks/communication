@@ -10,7 +10,7 @@
  * surfaces the parsed `ApiError.body` for the caller to render — the draft
  * equivalent of `adoptConflict`.
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
 import { queryKeys } from "./queries";
 import type {
@@ -168,6 +168,16 @@ export function useCreateDraft(pipelineId: string) {
  * than guessing (the `DraftConflictProblem` body member below), never retries
  * over the top of it.
  */
+/**
+ * The pipeline a draft belongs to, recovered from the `Draft` body already
+ * cached under its own key. `GET /drafts/{id}`, the `PUT` response and
+ * `createDraft` all land there, so anything that can validate a draft has one
+ * cached — and the validate response itself carries no `pipeline_id`.
+ */
+function cachedDraftPipelineId(queryClient: QueryClient, draftId: string): string {
+  return queryClient.getQueryData<Draft>(queryKeys.draft(draftId))?.pipeline_id ?? "";
+}
+
 export function usePutDraft(draftId: string) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -175,6 +185,11 @@ export function usePutDraft(draftId: string) {
       apiFetch<Draft>(`/api/v1/drafts/${draftId}`, { method: "PUT", json: body }),
     onSuccess: async (draft) => {
       queryClient.setQueryData(queryKeys.draft(draft.id), draft);
+      // The saved `version` is what the library's drafts column prints, so a
+      // successful save has to roll that list too, not just the draft itself.
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.pipelineDrafts(draft.pipeline_id),
+      });
     },
   });
 }
@@ -196,13 +211,20 @@ export function useDeleteDraft(pipelineId: string) {
  * and becomes the draft's stored `validation`; on `valid` the digests are the
  * ones `publish` will demand unchanged (`draft_changed_since_validation`).
  */
-export function useValidateDraft(draftId: string) {
+export function useValidateDraft(draftId: string, pipelineId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
       apiFetch<ValidateResponse>(`/api/v1/drafts/${draftId}/validate`, { method: "POST" }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.draft(draftId) });
+      // `valid`/`invalid` is the drafts list's status chip as much as the
+      // editor's verdict line; the response has no pipeline id, so take the
+      // one the caller passed, else the one the cached draft carries.
+      const owner = pipelineId ?? cachedDraftPipelineId(queryClient, draftId);
+      if (owner.length > 0) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.pipelineDrafts(owner) });
+      }
     },
   });
 }

@@ -139,8 +139,8 @@
     },
     {
       "path": "schemas/pipeline-v1alpha1.schema.json",
-      "sha256": "7436769592c6be847c325cb1a609972e6e83002c97103ea96aeedbca118190ec",
-      "bytes": 26449
+      "sha256": "a890296b73897bbc72992624e549cdeec1ff14c5d793f4eb907dffdd87e3fa41",
+      "bytes": 26926
     },
     {
       "path": "schemas/pipeline.schema.json",

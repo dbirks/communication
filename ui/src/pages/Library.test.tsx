@@ -235,4 +235,50 @@ describe("/library/:pipelineId", () => {
     expect(problems[0].textContent).toContain("duplicate_key");
     await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
   });
+
+  // The left column reads `GET /pipelines/{id}/drafts`; if a write does not
+  // invalidate that key it keeps printing the version and status the editor has
+  // already moved past ("draft v1 / draft" beside an editor saying v2 / valid).
+  it("refetches the drafts list after the editor saves", async () => {
+    const { requests } = mount(detail, [
+      { path: draftPath, method: "PUT", body: wireDraft("draft") },
+    ]);
+    fireEvent.click(
+      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
+    );
+    const box = (await screen.findByTestId("draft-editor-input")) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: `${box.value}\n` } });
+    fireEvent.click(await screen.findByTestId("draft-editor-save"));
+    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
+    // Once on mount, once more because the save invalidated the list.
+    await waitFor(() =>
+      expect(requestsTo(requests, draftsPath, "GET").length).toBeGreaterThanOrEqual(2),
+    );
+    const putIndex = requests.findIndex(
+      (request) => request.method === "PUT" && request.url === draftPath,
+    );
+    expect(
+      requests.some(
+        (request, index) =>
+          index > putIndex && request.method === "GET" && request.url === draftsPath,
+      ),
+    ).toBe(true);
+  });
+
+  it("refetches the drafts list after the editor validates", async () => {
+    const { requests } = mount(detail, [
+      { path: draftPath, body: wireDraft("valid", validValidation as ValidateResponse) },
+    ]);
+    fireEvent.click(
+      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
+    );
+    await screen.findByTestId("draft-editor-input");
+    fireEvent.click(await screen.findByTestId("draft-editor-validate"));
+    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
+    // The validate response carries no pipeline id: the hook recovers it from
+    // the cached draft, and the list still rolls.
+    await waitFor(() =>
+      expect(requestsTo(requests, draftsPath, "GET").length).toBeGreaterThanOrEqual(2),
+    );
+  });
 });

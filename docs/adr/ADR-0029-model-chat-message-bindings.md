@@ -1,6 +1,6 @@
 # ADR-0029 — model.chat messages are typed: content is a binding position
 
-- **Date:** 2026-10-17
+- **Date:** 2026-10-16
 - **Status:** Accepted
 - **Owners:** pipeline schema maintainers; model.chat executor owner
 - **Related decisions / contracts:** ADR-0021 (canonical asset, digests), ADR-0022 § 1 (`bindingText` is the
