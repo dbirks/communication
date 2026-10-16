@@ -173,6 +173,7 @@ available to you in .claude/skills, one per line, nothing else." → poll
 `GET /api/v1/conversations/<id>` → read `domain_events`.
 
 **Verdict: FAIL (end to end) — staging refuses before the agent launches.**
+(superseded by the re-run below)
 Turn `01a143bc-f8d5-7848-92b3-60e4a4926d67` → `failed` in 0.8s; no
 `conversation.message.agent`, no permission prompt, nothing in `.claude/`.
 
@@ -218,3 +219,28 @@ generated with `apm lock`" note already says.
 Next: implement F1+F2 (materialize apm.yml + `apm lock`, or track a lock) and
 re-run this probe; PASS requires the reply to name `grill-me` and the checkout
 to contain `.claude/skills/grill-me/SKILL.md`.
+
+### Re-run after ADR-0030 Amendment 1 — PASS
+
+Lab rebuilt from fbf4fd5 (staging materializes the manifest + `apm lock`).
+
+```
+profile skills-demo: apm_package_ref=mattpocock/skills#v1.3.1 apm_target=claude
+  apm_lock_digest=sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33 (created via POST /agent-profiles + PATCH, 201/200)
+turn rows: 01a143c8-6fc7-7510-a933-48d2a2e7915b|completed|end_turn|2026-10-16 08:16:11Z|08:16:22Z
+prompt: "List the names of the skills available to you in .claude/skills, one per line, nothing else."
+agent reply (27 lines): ask-matt code-review codebase-design diagnosing-bugs domain-modeling grill-me grill-with-docs grilling handoff implement implement-spec improve-codebase-architecture pr prototype research retro setup-matt-pocock-skills tdd teach to-questionnaire to-spec to-tickets triage wait-what wayfinder wizard writing-for-agents
+```
+
+**Control.** The host's `~/.claude` (mounted into the lab worker as
+`CLAUDE_CONFIG_DIR`) contains NO `grill-me` / Matt Pocock skills
+(`ls ~/.claude/skills` → playwright-cli, synced; `grep -r grill-me
+~/.claude/plugins` → nothing), so the 27 names can only come from the staged
+package; 27 equals the spike's "27 skill(s) integrated".
+
+**Not observed live.** The conversation workspace's `repos/` dir was already
+empty when inspected after the turn, so the git-excluded/clean-status property
+is covered by `internal/agent/apm/stage_test.go` only, not by live evidence.
+
+**Result: agent sees the pinned package's skills: PASS (claude target); codex
+target NOT RUN.**
