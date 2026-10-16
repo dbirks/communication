@@ -14,17 +14,22 @@
  * so a keyboard or screen-reader user reads the same graph, and selecting a
  * node opens the binding inspector — the hover affordance is never load-bearing.
  */
-import { useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   layoutDefinition,
   type DefinitionGraphLayout,
   type GraphNodeView,
 } from "../../lib/pipeline/layout";
-import { bindingText, rootWords, type DefinitionDocument } from "../../lib/pipeline/definition";
+import {
+  bindingText,
+  kindGlyph,
+  rootWords,
+  type DefinitionDocument,
+} from "../../lib/pipeline/definition";
 import type { NodeExecutionStatus } from "../../lib/pipeline/contract";
 import { Panel } from "../ds/Panel";
 import { StatusChip } from "../ds/Row";
-import { NODE_EXECUTION_STATE, SHORT_WORD, stateOf } from "../ds/states";
+import { NODE_EXECUTION_STATE, SEGMENT_COLOR, SHORT_WORD, STATES, stateOf } from "../ds/states";
 import { KindChip } from "./KindChip";
 
 /** A node key as a selector-safe suffix: `/build_until_verified/implement` →
@@ -73,6 +78,25 @@ export function DefinitionGraph({
   // A new document means a new layout; nothing is cached across documents.
   const shown = useMemo(() => safeLayout(document), [document]);
   const canvasRef = useRef<HTMLDivElement>(null);
+  /** Measured pane width — the graph scales to it (see `useFitScale`). */
+  const [pane, setPane] = useState(0);
+  const observe = useCallback((node: HTMLDivElement | null) => {
+    canvasRef.current = node;
+    if (node) setPane(node.clientWidth);
+  }, []);
+  useEffect(() => {
+    const node = canvasRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const watcher = new ResizeObserver((entries) => {
+      for (const entry of entries) setPane(entry.contentRect.width);
+    });
+    watcher.observe(node);
+    return () => watcher.disconnect();
+  }, []);
+  // 1 = "fit the pane": the whole graph is visible by default, and a wide
+  // definition never looks like a three-node one. Anything above 1 zooms in
+  // and the frame keeps its scrollbars, so panning stays available.
+  const [zoom, setZoom] = useState(1);
 
   if (!shown) {
     return (
@@ -86,6 +110,13 @@ export function DefinitionGraph({
   }
 
   const selected = shown.nodes.find((node) => node.key === selectedKey) ?? null;
+  // Fit by default: the pane's width over the graph's width, clamped at the
+  // bottom — below ~40% a node's kind line is smaller than the hairline around
+  // it, and an unreadable whole is worse than a readable pane with a scrollbar.
+  // The graph never upscales past 100%.
+  const fitScale = pane > 0 && shown.width > 0 ? Math.min(1, pane / shown.width) : 1;
+  const scale = Math.min(2, Math.max(0.4, fitScale) * zoom);
+  const frameHeight = Math.round(Math.min(560, Math.max(200, shown.height * scale + 14)));
 
   return (
     <Panel
@@ -95,60 +126,115 @@ export function DefinitionGraph({
       meta={label ? <span className="font-mono text-[10.5px] text-muted">{label}</span> : undefined}
       className={className}
     >
-      <div className="grid items-start gap-[10px] p-[10px] xl:grid-cols-[minmax(40rem,1fr)_22rem]">
-        <div className="min-w-0 space-y-[10px]">
-          {/* A wide graph looks like a short one: 200px nodes on a long chain
-              overflow the frame, and a reader who cannot see the overflow may
-              conclude the definition ends where the visible box does. So the size
-              is stated, and the list under the canvas is the same graph in
-              dependency order — the accessible route, and the honest total. */}
+      <div className="grid items-start gap-[10px] p-[10px] 2xl:grid-cols-[minmax(0,1fr)_21rem]">
+        <div className="min-w-0 space-y-[8px]">
+          {/* A wide graph looks like a short one: the size is stated in the bar,
+              the scale is stated next to the zoom controls, and the list under
+              the canvas is the same graph in dependency order — the accessible
+              route, and the honest total. */}
           <p
-            className="mb-[6px] font-mono text-[10.5px] text-faint"
+            className="flex flex-wrap items-center gap-x-[8px] font-mono text-[10.5px] text-faint"
             data-testid="definition-graph-hint"
           >
             {`${shown.nodes.length} nodes · ${shown.edges.length} edges · ${shown.width}×${shown.height}px · arrow keys move, the list is all of it`}
+            <span className="ml-auto flex items-center gap-[3px]">
+              <ZoomButton
+                label="Zoom out"
+                testid="definition-graph-zoom-out"
+                onClick={() => setZoom((z) => Math.max(0.4, z / 1.25))}
+              >
+                {"\u2212"}
+              </ZoomButton>
+              <span
+                className="w-[3.2rem] text-center tabular-nums"
+                data-testid="definition-graph-scale"
+              >
+                {`${Math.round(scale * 100)}%`}
+              </span>
+              <ZoomButton
+                label="Zoom in"
+                testid="definition-graph-zoom-in"
+                onClick={() => setZoom((z) => Math.min(2.5, z * 1.25))}
+              >
+                {"+"}
+              </ZoomButton>
+              <ZoomButton
+                label="Fit the graph to the pane"
+                testid="definition-graph-zoom-fit"
+                onClick={() => setZoom(1)}
+              >
+                fit
+              </ZoomButton>
+            </span>
           </p>
           <div
-            ref={canvasRef}
+            ref={observe}
             data-testid="definition-graph"
             role="group"
             aria-label={`Definition graph: ${shown.nodes.length} nodes${shown.groups.length === 1 ? " in 1 scope group" : shown.groups.length > 1 ? ` in ${shown.groups.length} scope groups` : ""}. Arrow keys move between nodes.`}
-            className="max-h-[520px] w-full overflow-auto rounded-[3px] border border-line bg-canvas-bg"
+            className="w-full overflow-auto rounded-[3px] border border-line bg-canvas-bg"
+            style={{ height: frameHeight }}
             onKeyDown={(event) => moveFocus(event, shown, canvasRef, onSelectKey)}
           >
-            <div className="relative" style={{ width: shown.width, height: shown.height }}>
-              <EdgeLayer layout={shown} selectedKey={selectedKey} />
-              {shown.groups.map((group) => (
-                <div
-                  key={group.key}
-                  data-testid={`definition-graph-scope-${group.ownerId}`}
-                  className="absolute rounded-[3px] border border-node-border bg-node-scope-fill"
-                  style={{
-                    left: group.x,
-                    top: group.y,
-                    width: group.width,
-                    height: group.height,
-                  }}
-                >
-                  <span
-                    className="absolute font-mono text-[10px] font-semibold tracking-[0.04em] text-ink-2 uppercase"
-                    style={{ left: 12, top: 4 }}
+            {/* The sized box is what the scrollbars measure; the box inside it is
+                the graph at its natural size, scaled in place. */}
+            <div
+              className="relative"
+              style={{ width: shown.width * scale, height: shown.height * scale }}
+            >
+              <div
+                data-testid="definition-graph-canvas"
+                data-scale={scale.toFixed(3)}
+                className="absolute origin-top-left"
+                style={{
+                  width: shown.width,
+                  height: shown.height,
+                  transform: `scale(${scale})`,
+                }}
+              >
+                <EdgeLayer layout={shown} selectedKey={selectedKey} />
+                {shown.groups.map((group) => (
+                  <div
+                    key={group.key}
+                    data-testid={`definition-graph-scope-${group.ownerId}`}
+                    data-scope-kind={group.kind}
+                    className="absolute rounded-[4px] border border-dashed border-node-border bg-node-scope-fill"
+                    style={{
+                      left: group.x,
+                      top: group.y,
+                      width: group.width,
+                      height: group.height,
+                    }}
                   >
-                    {group.kind} · {group.ownerId}
-                    {group.boundLabel ? ` · ${group.boundLabel}` : ""}
-                  </span>
-                </div>
-              ))}
-              {shown.nodes.map((node) => (
-                <GraphNode
-                  key={node.key}
-                  node={node}
-                  selected={node.key === selectedKey}
-                  status={statuses?.[node.key]}
-                  onSelect={onSelectKey}
-                  onHover={onHoverKey}
-                />
-              ))}
+                    <span
+                      className="absolute font-mono text-[10px] font-semibold tracking-[0.04em] text-ink-2"
+                      style={{ left: 8, top: 5 }}
+                    >
+                      {group.word} · {group.ownerId}
+                      {group.boundLabel ? ` · ${group.boundLabel}` : ""}
+                    </span>
+                    {group.loopNote ? (
+                      <span
+                        className="absolute font-mono text-[10px] text-muted"
+                        data-testid={`definition-graph-scope-note-${group.ownerId}`}
+                        style={{ left: 8, bottom: 4 }}
+                      >
+                        {group.loopNote}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+                {shown.nodes.map((node) => (
+                  <GraphNode
+                    key={node.key}
+                    node={node}
+                    selected={node.key === selectedKey}
+                    status={statuses?.[node.key]}
+                    onSelect={onSelectKey}
+                    onHover={onHoverKey}
+                  />
+                ))}
+              </div>
             </div>
           </div>
           <NodeList
@@ -166,6 +252,31 @@ export function DefinitionGraph({
 
 /* ------------------------------------------------------------- fragments */
 
+/** The canvas's own zoom control: `−`, the scale in words, `+`, `fit`. */
+function ZoomButton({
+  label,
+  testid,
+  onClick,
+  children,
+}: {
+  label: string;
+  testid: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      data-testid={testid}
+      onClick={onClick}
+      className="grid h-[18px] min-w-[22px] place-items-center rounded-[2px] border border-line bg-surface px-[4px] font-mono text-[10.5px] leading-none text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+    >
+      {children}
+    </button>
+  );
+}
+
 function GraphNode({
   node,
   selected,
@@ -179,50 +290,83 @@ function GraphNode({
   onSelect?: (key: string) => void;
   onHover?: (key: string | null) => void;
 }) {
+  // No rollup at all, or one that was never scheduled: the run view draws the
+  // node dashed and muted ("Draft PR · pending"), which is also the honest
+  // answer — a node nobody has run must not look like a node that ran.
+  const state = status ? stateOf(NODE_EXECUTION_STATE[status]) : null;
+  const idle = state === null || state === "queued";
+  const slug = keySlug(node.key);
   return (
     <button
       type="button"
-      data-testid={`definition-graph-node-${keySlug(node.key)}`}
+      data-testid={`definition-graph-node-${slug}`}
       data-node-key={node.key}
+      data-gate={node.gate ? "true" : undefined}
+      data-state={state ?? "unscheduled"}
       aria-pressed={selected}
       aria-label={`Definition node ${node.id}${scopeOf(node) ? ` in scope ${scopeOf(node)}` : ""}, kind ${node.kind}${node.deferredTo ? `, not implemented until ${node.deferredTo}` : ""}${node.bindings.length === 1 ? ", 1 binding" : `, ${node.bindings.length} bindings`}`}
       onClick={() => onSelect?.(node.key)}
       onMouseEnter={() => onHover?.(node.key)}
       onMouseLeave={() => onHover?.(null)}
       onFocus={() => onHover?.(node.key)}
-      className={`absolute flex flex-col justify-center gap-[3px] rounded-[3px] border bg-surface px-[8px] text-left transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-        selected
-          ? "border-node-border-selected shadow-raised"
-          : node.deferredTo
-            ? "border-dashed border-node-border"
-            : "border-node-border"
+      onKeyDown={(event) => {
+        // Enter/Space select as always (a button does this); a focused node is
+        // the canvas's selection, so the pane shows it without a second click.
+        if (event.key === "Enter" || event.key === " ") onSelect?.(node.key);
+      }}
+      className={`absolute flex flex-col justify-center gap-[2px] overflow-hidden rounded-[3px] border pl-[11px] pr-[7px] text-left transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+        node.gate
+          ? "border-st-waiting-strong bg-st-waiting-pale-body"
+          : "border-node-border bg-surface"
+      } ${selected ? "border-node-border-selected shadow-raised ring-[1.5px] ring-ink" : ""} ${
+        idle && !node.gate ? "border-dashed" : ""
       }`}
       style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
     >
+      {/* The state's colour as a 3px rule down the left edge — and the state's
+          glyph and word on the line below, never the colour alone (rule 06). */}
+      {state ? (
+        <span
+          aria-hidden
+          data-testid={`definition-graph-node-bar-${slug}`}
+          className={`absolute inset-y-0 left-0 w-[3px] ${SEGMENT_COLOR[state] ?? "bg-seg-open"}`}
+        />
+      ) : null}
       {/* Row 1 is the node's name — the one string an expression may use — so it
           never shares its line with a chip. */}
-      <span className="flex min-w-0 items-center gap-[5px] text-[12.5px] font-semibold text-ink">
-        {/* ⟨n⟩ is the design's binding marker, and n is the real count. A node
-            with no bindings shows nothing rather than an empty box, which would
-            read as "unknown kind" — the box *is* the unknown-kind glyph. */}
+      <span className="flex min-w-0 items-center gap-[4px] text-[12.5px] font-semibold text-ink">
+        <span className="truncate">{node.id}</span>
+        {/* <n> is the design's binding marker, and n is the real count. A node
+            with no bindings shows nothing rather than an empty box. */}
         {node.bindings.length > 0 ? (
-          <span aria-hidden className="shrink-0 font-mono text-[11px] text-ink-2">
-            {`\u27e8${node.bindings.length}\u27e9`}
+          <span aria-hidden className="shrink-0 font-mono text-[10px] text-ink-2">
+            {`<${node.bindings.length}>`}
           </span>
         ) : null}
-        <span className="truncate">{node.id}</span>
       </span>
-      {/* Row 2 carries identity and state. The chip says the state's *word*, not
-          the wire value: "done" fits a 200px box where "succeeded" does not, and
-          the node list below spells every state out in full. */}
-      <span className="flex min-w-0 items-center gap-[4px]">
-        {status ? (
-          <StatusChip
-            state={stateOf(NODE_EXECUTION_STATE[status])}
-            label={SHORT_WORD[stateOf(NODE_EXECUTION_STATE[status])]}
-          />
-        ) : null}
-        <KindChip kind={node.kind} deferredTo={node.deferredTo} className="min-w-0" />
+      {/* Row 2: the kind in the few words a box can carry, then the state in
+          glyph + word. The catalogue name — what the API and an expression use —
+          travels in the `title`, the `aria-label` and the node list below. */}
+      <span className="flex min-w-0 items-center gap-[4px] font-mono text-[10.5px] text-muted">
+        <span aria-hidden className="shrink-0 text-[10px] text-ink-2">
+          {kindGlyph(node.kind)}
+        </span>
+        <span
+          className="shrink-0"
+          title={node.kind}
+          data-testid={`definition-graph-node-kind-${slug}`}
+        >
+          {node.word}
+        </span>
+        {state ? (
+          <span className="truncate" data-testid={`definition-graph-node-state-${slug}`}>
+            {`${STATES[state].glyph} ${SHORT_WORD[state]}`}
+          </span>
+        ) : node.deferredTo ? (
+          <span className="shrink-0 text-faint">{`not until ${node.deferredTo}`}</span>
+        ) : (
+          <span className="shrink-0 text-faint">pending</span>
+        )}
       </span>
     </button>
   );
@@ -327,28 +471,58 @@ function NodeList({
       </p>
       <ol className="space-y-[4px]">
         {layout.nodes.map((node) => {
-          const state = statuses?.[node.key];
+          const wire = statuses?.[node.key];
+          const state = wire ? stateOf(NODE_EXECUTION_STATE[wire]) : null;
+          const scope = scopeOf(node);
+          const idle = state === null || state === "queued";
           return (
-            <li key={node.key}>
+            <li key={node.id + node.key}>
               <button
                 type="button"
                 data-testid={`definition-graph-list-${keySlug(node.key)}`}
+                data-gate={node.gate ? "true" : undefined}
                 onClick={() => onSelect?.(node.key)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onSelect?.(node.key);
+                }}
                 aria-current={node.key === selectedKey ? "true" : undefined}
-                className="flex h-[28px] w-full items-center gap-[8px] rounded-[3px] border border-line bg-surface px-[10px] text-left hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                className={`flex h-[28px] w-full items-center gap-[8px] rounded-[3px] border px-[10px] text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                  node.key === selectedKey
+                    ? "border-node-border-selected bg-tree-active"
+                    : node.gate
+                      ? "border-st-waiting-strong bg-st-waiting-pale-body hover:border-st-waiting-strong"
+                      : "border-line bg-surface hover:border-line-strong"
+                } ${idle && !node.gate ? "border-dashed" : ""}`}
               >
                 {state ? (
-                  <StatusChip state={stateOf(NODE_EXECUTION_STATE[state])} label={state} />
-                ) : null}
-                <span className="text-[12.5px] font-semibold">{node.id}</span>
-                <KindChip kind={node.kind} deferredTo={node.deferredTo} compact />
+                  <StatusChip state={state} label={wire ?? ""} />
+                ) : (
+                  <span
+                    aria-hidden
+                    className="shrink-0 font-mono text-[10px] text-faint"
+                    data-testid={`definition-graph-list-unscheduled-${keySlug(node.key)}`}
+                  >
+                    pending
+                  </span>
+                )}
+                <span className="shrink-0 truncate text-[12.5px] font-semibold">{node.id}</span>
+                <KindChip
+                  kind={node.kind}
+                  deferredTo={node.deferredTo}
+                  className="min-w-0 shrink-0"
+                />
                 <span className="truncate font-mono text-[10.5px] text-muted">
+                  {/* A body node's `dependsOn` names its siblings, so "no
+                      dependencies" alone would hide the thing that makes a box a
+                      box: which scope the node sits in. */}
                   {node.dependsOn.length > 0
                     ? `after ${node.dependsOn.join(", ")}`
-                    : "no dependencies"}
-                  {node.groupKey ? " · in scope" : ""}
+                    : scope
+                      ? `starts ${scope}`
+                      : "no dependencies"}
+                  {scope ? ` \u00b7 in ${scope}` : ""}
                 </span>
-                <span className="ml-auto font-mono text-[10.5px] text-faint">
+                <span className="ml-auto shrink-0 truncate font-mono text-[10.5px] text-faint">
                   {node.bindings.length === 1 ? "1 binding" : `${node.bindings.length} bindings`}
                 </span>
               </button>

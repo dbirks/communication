@@ -82,11 +82,89 @@ describe("DefinitionGraph", () => {
     expect(second.textContent).not.toContain("running");
   });
 
-  it("labels every node with its kind name, not a glyph alone (rule 06)", () => {
+  it("labels every node with its kind in words, and keeps the name readable", () => {
     render(<DefinitionGraph document={samplePipelineDocument} />);
     const node = screen.getByTestId("definition-graph-node-plan");
-    expect(node.textContent).toContain("agent.acp");
+    // A 168px box carries the few words the design uses (`agent`); the catalogue
+    // name — what the API and an expression say — is in the aria-label, the
+    // title and the list below the canvas.
+    expect(node.textContent).toContain("agent");
     expect(node.getAttribute("aria-label")).toContain("kind agent.acp");
+    expect(screen.getByTestId("definition-graph-node-kind-plan").getAttribute("title")).toBe(
+      "agent.acp",
+    );
+    expect(screen.getByTestId("definition-graph-list-plan").textContent).toContain("agent.acp");
+  });
+
+  it("draws a human.approval node as a gate, and an unscheduled node dashed", () => {
+    render(<DefinitionGraph document={samplePipelineDocument} statuses={{ "/plan": "pending" }} />);
+    const gate = screen.getByTestId("definition-graph-node-approve");
+    expect(gate.getAttribute("data-gate")).toBe("true");
+    expect(gate.className).toContain("bg-st-waiting-pale-body");
+    expect(gate.textContent).toContain("gate");
+    // A node the run never scheduled is dashed and muted, like "Draft PR".
+    const plan = screen.getByTestId("definition-graph-node-plan");
+    expect(plan.className).toContain("border-dashed");
+    expect(plan.getAttribute("data-state")).toBe("queued");
+    expect(screen.getByTestId("definition-graph-list-approve").getAttribute("data-gate")).toBe(
+      "true",
+    );
+  });
+
+  it("draws each scope box around its children, with its bound and its loop line", () => {
+    render(<DefinitionGraph document={samplePipelineDocument} />);
+    const group = screen.getByTestId("definition-graph-scope-build_until_verified");
+    expect(group.getAttribute("data-scope-kind")).toBe("until");
+    expect(group.textContent).toContain("until \u00b7 build_until_verified \u00b7 max 4");
+    expect(
+      screen.getByTestId("definition-graph-scope-note-build_until_verified").textContent,
+    ).toContain("\u21bb");
+    // The children sit inside the box in the laid-out geometry, not beside it.
+    const child = screen.getByTestId("definition-graph-node-build_until_verified-implement");
+    expect(Number(child.style.left.replace("px", ""))).toBeGreaterThan(
+      Number(group.style.left.replace("px", "")),
+    );
+    expect(
+      screen.getByTestId("definition-graph-list-build_until_verified-implement").textContent,
+    ).toContain("in build_until_verified");
+  });
+
+  it("fits the whole graph to the pane by default, and zooms past it on request", () => {
+    // Unmeasured (jsdom reports no layout at all), the graph keeps its natural
+    // scale rather than scaling to nothing.
+    render(<DefinitionGraph document={samplePipelineDocument} />);
+    expect(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")).toBe("1.000");
+    cleanup();
+    // A pane narrower than the graph scales it down to fit; zooming goes past it.
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      value: 640,
+    });
+    render(<DefinitionGraph document={samplePipelineDocument} />);
+    const fitted = Number(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale"));
+    expect(fitted).toBeGreaterThan(0.3);
+    expect(fitted).toBeLessThanOrEqual(1);
+    expect(screen.getByTestId("definition-graph-scale").textContent).toContain("%");
+    fireEvent.click(screen.getByTestId("definition-graph-zoom-in"));
+    expect(
+      Number(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")),
+    ).toBeGreaterThan(fitted);
+    fireEvent.click(screen.getByTestId("definition-graph-zoom-fit"));
+    expect(screen.getByTestId("definition-graph-canvas").getAttribute("data-scale")).toBe(
+      fitted.toFixed(3),
+    );
+    delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth;
+  });
+
+  it("selects a node from the canvas and from the list with the same handle", () => {
+    const onSelectKey = vi.fn();
+    render(<DefinitionGraph document={samplePipelineDocument} onSelectKey={onSelectKey} />);
+    fireEvent.click(screen.getByTestId("definition-graph-node-plan"));
+    expect(onSelectKey).toHaveBeenLastCalledWith("/plan");
+    fireEvent.click(screen.getByTestId("definition-graph-list-build_until_verified-test"));
+    expect(onSelectKey).toHaveBeenLastCalledWith("/build_until_verified/test");
+    fireEvent.keyDown(screen.getByTestId("definition-graph-node-approve"), { key: "Enter" });
+    expect(onSelectKey).toHaveBeenLastCalledWith("/approve");
   });
 
   it("draws condition routes and keeps the condition node's cases readable", () => {

@@ -101,6 +101,20 @@ describe("layoutDefinition", () => {
     expect(publish.deferredTo).toBeNull();
   });
 
+  it("says what a scope repeats, and which box is a gate", () => {
+    const group = layout.groups[0];
+    // The bar reads in the few words the design uses, and the annotation under
+    // the children says what repeats — never a shape alone.
+    expect(group.word).toBe("until");
+    expect(group.boundLabel).toBe("max 4");
+    expect(group.loopNote).toContain("until passWhen holds");
+    const byKey = new Map(layout.nodes.map((node) => [node.key, node]));
+    expect(byKey.get("/approve")?.gate).toBe(true);
+    expect(byKey.get("/approve")?.word).toBe("gate");
+    expect(byKey.get("/plan")?.word).toBe("agent");
+    expect(byKey.get("/verdict")?.gate).toBe(false);
+  });
+
   it("keeps an empty-bodied scope visible as a node instead of an empty box", () => {
     const fanOut = layoutDefinition(fanOutPipelineDocument)!;
     expect(fanOut.groups).toHaveLength(0);
@@ -109,7 +123,7 @@ describe("layoutDefinition", () => {
       "/inventory→/verify_each",
       "/verify_each→/collect",
     ]);
-    expect(fanOut.nodes[1].boundLabel).toBe("≤3 in flight");
+    expect(fanOut.nodes[1].boundLabel).toBe("≤3 parallel");
   });
 
   it("refuses a document with no readable nodes", () => {

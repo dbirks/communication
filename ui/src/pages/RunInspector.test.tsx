@@ -74,17 +74,58 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
   });
 
-  it("starts on Execution: the stage strip and the tree, with an empty right pane", async () => {
-    mountRun();
+  it("opens on Definition: the graph the run is pinned to, with an empty right pane", async () => {
+    const { requests } = mountRun();
     await screen.findByTestId("run-title");
 
-    expect(screen.getByTestId("run-stage-strip")).toBeTruthy();
-    expect(screen.getByTestId("run-tree")).toBeTruthy();
+    expect(await screen.findByTestId("definition-graph")).toBeTruthy();
+    expect(requestsTo(requests, `/api/v1/revisions/${wireRun.revision_digest}`)).toHaveLength(1);
     expect(screen.getByTestId("run-detail-none").textContent).toContain("Select a node");
+    // Execution is one tab away, not the first thing a reader meets.
+    fireEvent.click(screen.getByTestId("run-tab-execution"));
+    expect(await screen.findByTestId("run-stage-strip")).toBeTruthy();
+    expect(screen.getByTestId("run-tree")).toBeTruthy();
+  });
+
+  it("uses the whole viewport, with the panes at the run view's widths", async () => {
+    mountRun();
+    await screen.findByTestId("run-title");
+    const inspector = screen.getByTestId("run-inspector");
+    // The shell's centred column is ~64rem; the inspector reports the viewport it
+    // bled out to instead, and the wide grid template is on the element itself.
+    expect(inspector.getAttribute("data-full-width")).toBe(
+      String(document.documentElement.clientWidth || window.innerWidth),
+    );
+    expect(inspector.className).toContain("xl:grid-cols-[minmax(13rem,15rem)_minmax(0,1fr)");
+    expect(screen.getByTestId("run-inspector-detail")).toBeTruthy();
+    // The runs column collapses to make room for the graph and stays restorable.
+    fireEvent.click(screen.getByTestId("run-nav-collapse"));
+    expect(screen.getByTestId("run-inspector").className).toContain(
+      "xl:grid-cols-[2.25rem_minmax(0,1fr)",
+    );
+    fireEvent.click(screen.getByTestId("run-nav-expand"));
+    expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+  });
+
+  it("selects a node from the definition graph into the URL and the right pane", async () => {
+    const { requests } = mountRun();
+    await screen.findByTestId("definition-graph");
+
+    fireEvent.click(screen.getByTestId("definition-graph-node-plan"));
+
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`)).toHaveLength(1),
+    );
+    expect(await screen.findByTestId("attempt-status")).toBeTruthy();
+    // The graph box carries the pressed state, so the selection is visible on the
+    // canvas and not only in the URL.
+    expect(screen.getByTestId("definition-graph-node-plan").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
   });
 
   it("selects a node from the stage strip into the right pane and the URL", async () => {
-    const { requests } = mountRun();
+    const { requests } = mountRun("?tab=execution");
     await screen.findByTestId("run-stage-strip");
 
     fireEvent.click(screen.getByTestId("run-stage-cell-plan"));
@@ -112,6 +153,24 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     fireEvent.click(screen.getByTestId("run-tab-definition"));
     expect(await screen.findByTestId("definition-graph")).toBeTruthy();
     expect(requestsTo(requests, `/api/v1/revisions/${wireRun.revision_digest}`)).toHaveLength(1);
+  });
+
+  it("lists the stage cells in definition order, not the API's alphabetical one", async () => {
+    mountRun("?tab=execution");
+    await screen.findByTestId("run-stage-strip");
+    const cells = screen
+      .getAllByTestId(/^run-stage-cell-/)
+      .map((cell) => cell.getAttribute("data-testid")!.replace("run-stage-cell-", ""));
+    // The wire fixture's three rows, in the order the pinned document declares
+    // them. The API answers in instance-key order, which would read
+    // `build_until_verified`, `implement`, `plan` — the loop before the node that
+    // leads to it.
+    expect(cells).toEqual(["plan", "build_until_verified", "implement"]);
+    // The failed row says its own name, and a terminal row says nothing is in
+    // flight.
+    const planRow = await screen.findByTestId("run-tree-row-/plan");
+    expect(planRow.textContent).toContain("plan");
+    expect(planRow.textContent).not.toContain("in flight");
   });
 
   it("lists the stream's frames in Timeline, oldest first", async () => {

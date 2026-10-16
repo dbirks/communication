@@ -54,6 +54,10 @@ export interface RunTreeProps {
   onSelect?: (key: string) => void;
   /** Direct children shown per branch before a `+N more` row. */
   pageSize?: number;
+  /** The pinned revision's node ids in definition order, when the caller has
+   * them — the tree then lists a run's work in the order the pipeline declares
+   * it instead of the order the API sorted them into. */
+  definitionOrder?: string[];
   /** Href builder for a child run's own inspector; omitted = not navigable. */
   runPath?: (runId: string) => string;
   headingId?: string;
@@ -69,13 +73,14 @@ export function RunTree({
   onSelect,
   pageSize = 10,
   runPath,
+  definitionOrder,
   headingId = "run-tree-heading",
   className = "",
 }: RunTreeProps) {
   const expanded = useMemo(() => new Set(expandedKeys), [expandedKeys]);
   const rows = useMemo(
-    () => buildRows({ nodes, tree, expanded, pageSize, runPath }),
-    [nodes, tree, expanded, pageSize, runPath],
+    () => buildRows({ nodes, tree, expanded, pageSize, runPath, definitionOrder }),
+    [nodes, tree, expanded, pageSize, runPath, definitionOrder],
   );
 
   return (
@@ -199,7 +204,10 @@ function RunTreeRowView({
 function RowLabel({ row, muted }: { row: RunTreeRow; muted: boolean }) {
   return (
     <>
-      <span className={`truncate text-[12.5px] font-semibold ${muted ? "text-ink-2" : "text-ink"}`}>
+      <span
+        className={`min-w-[3rem] shrink-0 truncate text-[12.5px] font-semibold ${muted ? "text-ink-2" : "text-ink"}`}
+        data-testid={`run-tree-label-${row.key}`}
+      >
         {row.label}
       </span>
       {row.status ? <StatusChip state={row.status.state} label={row.status.word} /> : null}
@@ -231,6 +239,9 @@ interface BuildArgs {
   expanded: Set<string>;
   pageSize: number;
   runPath?: (runId: string) => string;
+  /** The pinned revision's node ids in definition order, when the caller has
+   * them: the tree lists a run's work in the order the pipeline declares it. */
+  definitionOrder?: string[];
 }
 
 /** The `[n]` on a key's own last segment, or null when it is not an iteration. */
@@ -269,6 +280,7 @@ function childrenOf(
         // `placeRows`, so it is not also a "repeat of a node" under it.
         !(parentIsScope && ownIteration(node.node_instance_key) !== null),
     ),
+    args.definitionOrder,
   );
   return groups.map(([nodeId, instances], index) =>
     instances.length === 1
@@ -488,8 +500,9 @@ function childRunRows(
 
 type Group = [nodeId: string, instances: NodeExecutionSummary[]];
 
-/** Executions grouped by `node_id`, in the order the caller listed them. */
-function groupByDefinitionNode(nodes: NodeExecutionSummary[]): Group[] {
+/** Executions grouped by `node_id`: definition order when the caller named it,
+ * the caller's own order otherwise. */
+function groupByDefinitionNode(nodes: NodeExecutionSummary[], definitionOrder?: string[]): Group[] {
   const groups: Group[] = [];
   const index = new Map<string, number>();
   for (const node of nodes) {
@@ -500,6 +513,16 @@ function groupByDefinitionNode(nodes: NodeExecutionSummary[]): Group[] {
     } else {
       groups[at][1].push(node);
     }
+  }
+  if (definitionOrder) {
+    // The API lists executions by instance key, which reads alphabetically; the
+    // tree is read against the graph the run is pinned to, so the revision's own
+    // order wins. A node the revision does not name keeps its place at the end.
+    const rank = (nodeId: string) => {
+      const at = definitionOrder.indexOf(nodeId);
+      return at < 0 ? definitionOrder.length : at;
+    };
+    groups.sort((a, b) => rank(a[0]) - rank(b[0]));
   }
   return groups.map(([nodeId, instances]) => [
     nodeId,
@@ -585,7 +608,11 @@ function summaryCounts(node: NodeExecutionSummary): string | null {
   if (node.attempt_count > 1) parts.push(`${node.attempt_count} attempts`);
   if (node.iterations != null) parts.push(`${node.iterations} iterations`);
   if (node.items != null) parts.push(`${node.items} items`);
-  if (node.in_flight > 0) parts.push(`${node.in_flight} in flight`);
+  // `in_flight` is a live count: attempts a worker still holds. A row that has
+  // reached a terminal state cannot hold work, so repeating the last number the
+  // server happened to send would claim a failure is still running.
+  const live = ["ready", "leased", "running", "waiting", "pending"].includes(node.status);
+  if (node.in_flight > 0 && live) parts.push(`${node.in_flight} in flight`);
   if (node.artifact_refs.length > 0) parts.push(`${node.artifact_refs.length} artifacts`);
   return parts.length > 0 ? parts.join(" · ") : null;
 }

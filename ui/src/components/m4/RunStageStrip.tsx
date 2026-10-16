@@ -100,7 +100,7 @@ function segmentsOf(
 /** Kinds that repeat, so their `[n]` rows are places and not separate executions. */
 const SCOPE_STRIP_KINDS = new Set(["until", "for_each"]);
 
-export function stageCells(nodes: NodeExecutionSummary[]): StageCell[] {
+export function stageCells(nodes: NodeExecutionSummary[], definitionOrder?: string[]): StageCell[] {
   const byKey = new Map(nodes.map((node) => [node.node_instance_key, node]));
   const byNode = new Map<string, NodeExecutionSummary[]>();
   const firstSeen = new Map<string, number>();
@@ -110,6 +110,18 @@ export function stageCells(nodes: NodeExecutionSummary[]): StageCell[] {
     list.push(node);
     byNode.set(node.node_id, list);
   });
+  /**
+   * Definition position. The caller who has the pinned revision passes its node
+   * ids in document order, and a node the revision does not name (it should not
+   * exist, but a draft run may) keeps its position at the end rather than
+   * jumping to the front. Without the revision the caller's own order stands —
+   * never the API's, which sorts by key and so reads alphabetically.
+   */
+  const position = (nodeId: string, fallback: number) => {
+    if (!definitionOrder) return fallback;
+    const at = definitionOrder.indexOf(nodeId);
+    return at < 0 ? definitionOrder.length + fallback : at;
+  };
   const cells: StageCell[] = [];
   for (const [nodeId, instances] of byNode) {
     // A numbered place (`/scope[3]`) is one execution of its scope, not of the
@@ -132,7 +144,7 @@ export function stageCells(nodes: NodeExecutionSummary[]): StageCell[] {
         .sort((a, b) => PRECEDENCE.indexOf(a[0]) - PRECEDENCE.indexOf(b[0]))
         .map(([key, count]) => ({ state: key, word: wordFor(key, instances), count })),
       instances: segments.map((segment) => ({ key: segment.key, state: segment.state })),
-      order: firstSeen.get(nodeId) ?? 0,
+      order: position(nodeId, firstSeen.get(nodeId) ?? 0),
     });
   }
   // Definition order, not completion order: a stage strip is read against the
@@ -142,6 +154,10 @@ export function stageCells(nodes: NodeExecutionSummary[]): StageCell[] {
 
 export interface RunStageStripProps {
   nodes: NodeExecutionSummary[];
+  /** The pinned revision's node ids in definition order, when the caller has
+   * them — the strip is read against the graph, not against an alphabetical
+   * listing. */
+  definitionOrder?: string[];
   selectedNodeId?: string | null;
   /** A cell click filters or jumps — the caller decides which; the cell is a
    * real button either way, so the strip is never canvas-only. */
@@ -152,12 +168,13 @@ export interface RunStageStripProps {
 
 export function RunStageStrip({
   nodes,
+  definitionOrder,
   selectedNodeId = null,
   onSelectNode,
   headingId = "run-stage-strip-heading",
   className = "",
 }: RunStageStripProps) {
-  const cells = stageCells(nodes);
+  const cells = stageCells(nodes, definitionOrder);
 
   return (
     <Panel title="STAGES" headingId={headingId} headingLevel={2} className={className}>

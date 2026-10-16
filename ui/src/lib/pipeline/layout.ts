@@ -19,11 +19,14 @@
 import { Graph, layout as dagreLayout } from "@dagrejs/dagre";
 import {
   DEFERRED_KINDS,
+  isGateKind,
   isScopeKind,
+  kindWord,
   nodeBindings,
   scopeBody,
   scopeBoundLabel,
   scopeEntryNodes,
+  scopeLoopNote,
   scopeExitNodes,
   type DefinitionDocument,
   type DefinitionNode,
@@ -50,6 +53,10 @@ export interface GraphNodeView {
   dependsOn: string[];
   errorRoute: string | null;
   boundLabel: string;
+  /** The few words the box can carry for this kind (`agent`, `gate`, …). */
+  word: string;
+  /** A `human.approval` / `gate` box is drawn as a gate. */
+  gate: boolean;
 }
 
 export interface GraphGroupView {
@@ -65,6 +72,10 @@ export interface GraphGroupView {
   width: number;
   height: number;
   depth: number;
+  /** The few words for the scope kind (`until`, `for each`, `parallel`). */
+  word: string;
+  /** The `↻ / ⊕ / ∥` line under the children — what repeats. */
+  loopNote: string;
 }
 
 export interface GraphEdgeView {
@@ -83,9 +94,12 @@ export interface DefinitionGraphLayout {
   edges: GraphEdgeView[];
 }
 
-export const NODE_SIZE = { width: 200, height: 60 };
-export const GROUP_BAR = 22;
-export const GROUP_PAD = 12;
+export const NODE_SIZE = { width: 128, height: 52 };
+export const GROUP_BAR = 20;
+export const GROUP_PAD = 14;
+/** Room under the children for the `↻ …` line, so the annotation never sits
+ * behind a node. */
+export const GROUP_FOOT = 18;
 
 interface Placement {
   node: DefinitionNode;
@@ -165,10 +179,10 @@ export function layoutDefinition(
   const graph = new Graph({ compound: true });
   graph.setGraph({
     rankdir: options.rankdir ?? "LR",
-    nodesep: 20,
-    ranksep: 56,
-    marginx: 16,
-    marginy: 16,
+    nodesep: 14,
+    ranksep: 30,
+    marginx: 12,
+    marginy: 12,
     acyclicer: "greedy",
     ranker: "network-simplex",
   });
@@ -275,8 +289,10 @@ export function layoutDefinition(
       x: box.x - GROUP_PAD,
       y: box.y - GROUP_PAD - GROUP_BAR,
       width: box.width + GROUP_PAD * 2,
-      height: box.height + GROUP_PAD * 2 + GROUP_BAR,
+      height: box.height + GROUP_PAD * 2 + GROUP_BAR + GROUP_FOOT,
       depth: placement.depth,
+      word: kindWord(placement.node.kind),
+      loopNote: scopeLoopNote(placement.node),
     };
     boxes.set(view.key, { x: view.x, y: view.y, width: view.width, height: view.height });
     groupViews.set(view.key, view);
@@ -303,6 +319,8 @@ export function layoutDefinition(
         dependsOn: placement.node.dependsOn ?? [],
         errorRoute: placement.node.onFailure?.errorRoute ?? null,
         boundLabel: isScopeKind(placement.node.kind) ? scopeBoundLabel(placement.node) : "",
+        word: kindWord(placement.node.kind),
+        gate: isGateKind(placement.node.kind),
       };
     });
 

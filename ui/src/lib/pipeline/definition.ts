@@ -77,6 +77,53 @@ export const KIND_GLYPH: Record<NodeKind, string> = {
 
 export const SCOPE_KINDS: readonly NodeKind[] = ["until", "for_each", "parallel"];
 
+/**
+ * The few words a graph box can carry for a kind. `kind` stays the catalogue
+ * name verbatim (it is what an expression and the API say, and it is what the
+ * `aria-label`, the `title` and the node list carry); this is only the label
+ * inside a 168px box, where `artifact.publish` does not fit next to a state
+ * chip. A kind with no entry shows its catalogue name unchanged.
+ */
+export const KIND_WORD: Partial<Record<NodeKind, string>> = {
+  "agent.acp": "agent",
+  "model.chat": "model",
+  "process.exec": "command",
+  "human.approval": "gate",
+  gate: "gate",
+  "pipeline.invoke": "invoke",
+  "artifact.publish": "publish",
+  "git.commit": "commit",
+  "git.publish": "push",
+  "integration.query": "query",
+  "integration.action": "action",
+  for_each: "for each",
+};
+
+export function kindWord(kind: string): string {
+  return (KIND_WORD as Record<string, string | undefined>)[kind as NodeKind] ?? kind;
+}
+
+/** A `human.approval` / `gate` node is a GATE: the canvas draws it amber and
+ * the words say `gate`, per the run-view reference. */
+export function isGateKind(kind: string): boolean {
+  return kind === "human.approval" || kind === "gate";
+}
+
+/**
+ * The annotation a scope box carries under its children: what repeats, in the
+ * document's own terms (`03` § 3), never a guessed branch name.
+ */
+export function scopeLoopNote(node: DefinitionNode): string {
+  if (node.kind === "until") {
+    return typeof node.config?.passWhen === "string"
+      ? "\u21bb until passWhen holds"
+      : "\u21bb repeats until its bound";
+  }
+  if (node.kind === "for_each") return "\u2295 one place per item";
+  if (node.kind === "parallel") return "\u2225 branches run together";
+  return "";
+}
+
 export function isScopeKind(kind: string): boolean {
   return (SCOPE_KINDS as readonly string[]).includes(kind);
 }
@@ -195,7 +242,7 @@ export function scopeBoundLabel(node: DefinitionNode): string {
   const maxIterations = config.maxIterations;
   if (typeof maxIterations === "number") return `max ${maxIterations}`;
   const maxConcurrency = config.maxConcurrency;
-  if (typeof maxConcurrency === "number") return `≤${maxConcurrency} in flight`;
+  if (typeof maxConcurrency === "number") return `≤${maxConcurrency} parallel`;
   const items = config.items;
   if (Array.isArray(items)) return `${items.length} items`;
   return "";

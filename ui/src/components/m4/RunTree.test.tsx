@@ -161,6 +161,74 @@ describe("RunTree", () => {
     ).toBe("true");
   });
 
+  it("names every row, and stops counting in-flight work once the node is terminal", () => {
+    // The route answers in instance-key order, so `/plan` is last alphabetically
+    // — and a row whose identity is squeezed out of a narrow pane reads as a
+    // nameless failure. The label keeps its own width; the detail gives way.
+    const failed = featureNodes.map((node) =>
+      node.node_instance_key === "/plan"
+        ? { ...node, status: "failed" as const, error_class: "infra" as const, in_flight: 2 }
+        : node,
+    );
+    render(<RunTree nodes={failed} expandedKeys={expandedAll} />);
+    const planRow = screen.getByTestId("run-tree-row-/plan");
+    expect(within(planRow).getByTestId("run-tree-label-/plan").textContent).toBe("plan");
+    // `in_flight` is a live count: attempts a worker still holds. A failed row
+    // cannot hold work, so it must not claim two in flight beside the ×.
+    expect(planRow.textContent).toContain("failed");
+    expect(planRow.textContent).not.toContain("in flight");
+    // A running node still says it: the count is the point there.
+    const running = featureNodes.map((node) =>
+      node.node_instance_key === "/plan"
+        ? { ...node, status: "running" as const, outcome: null, error_class: null, in_flight: 2 }
+        : node,
+    );
+    cleanup();
+    render(<RunTree nodes={running} expandedKeys={expandedAll} />);
+    expect(screen.getByTestId("run-tree-row-/plan").textContent).toContain("2 in flight");
+  });
+
+  it("lists the run's nodes in the definition's order when the caller knows it", () => {
+    const order = [
+      "plan",
+      "approve",
+      "build_until_verified",
+      "implement",
+      "test",
+      "review",
+      "verdict",
+      "publish_verified",
+      "publish_needs_attention",
+    ];
+    const rows = buildRows({
+      nodes: [...featureNodes].sort((a, b) =>
+        a.node_instance_key.localeCompare(b.node_instance_key),
+      ),
+      tree: null,
+      expanded: new Set<string>([...expandedAll, `${LOOP}[1]/test`, `${LOOP}[2]/test`]),
+      pageSize: 20,
+      definitionOrder: order,
+    });
+    expect(rows.slice(0, 3).map((row) => row.label)).toEqual([
+      "plan",
+      "approve",
+      "build_until_verified",
+    ]);
+    // Without the revision's order the same rows come back as the API sent them:
+    // the loop first, and the node that leads into it last.
+    const plain = buildRows({
+      nodes: [...featureNodes].sort((a, b) =>
+        a.node_instance_key.localeCompare(b.node_instance_key),
+      ),
+      tree: null,
+      expanded: new Set<string>(),
+      pageSize: 20,
+    });
+    const plainLabels = plain.map((row) => row.label);
+    expect(plainLabels.indexOf("approve")).toBeLessThan(plainLabels.indexOf("plan"));
+    expect(plainLabels.indexOf("build_until_verified")).toBeLessThan(plainLabels.indexOf("plan"));
+  });
+
   it("tells the truth about a node that ran fine and failed its check", () => {
     render(<RunTree nodes={featureNodes} expandedKeys={expandedAll} />);
     const testRow = screen.getByTestId(`run-tree-row-${LOOP}[1]/test`);

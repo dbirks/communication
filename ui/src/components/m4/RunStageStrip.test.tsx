@@ -46,6 +46,28 @@ describe("stageCells", () => {
     expect(byId.publish_verified.counts[0].word).toBe("pending");
   });
 
+  it("follows the definition's order, not the order the API listed the rows in", () => {
+    // The real route answers `?sort=node_instance_key`, which reads
+    // alphabetically: the loop before the node that leads to it.
+    asApiListsIt(featureNodes);
+    const alphabetical = stageCells(asApiListsIt(featureNodes)).map((cell) => cell.nodeId);
+    expect(alphabetical.slice(0, 3)).toEqual(["approve", "build_until_verified", "implement"]);
+    // Given the pinned revision's node order, the strip reads left-to-right like
+    // the graph it belongs to.
+    const order = [
+      "plan",
+      "approve",
+      "build_until_verified",
+      "implement",
+      "test",
+      "review",
+      "verdict",
+      "publish_verified",
+      "publish_needs_attention",
+    ];
+    expect(stageCells(asApiListsIt(featureNodes), order).map((cell) => cell.nodeId)).toEqual(order);
+  });
+
   it("calls a node interrupted only when its execution actually is", () => {
     const byId = Object.fromEntries(
       stageCells(interruptedNodes).map((cell) => [cell.nodeId, cell]),
@@ -129,3 +151,7 @@ describe("RunStageStrip", () => {
     expect(screen.getByTestId("run-stage-note")).toBeTruthy();
   });
 });
+/** The rows as the route returns them: sorted by instance key, not by the plan. */
+function asApiListsIt(nodes: typeof featureNodes): typeof featureNodes {
+  return [...nodes].sort((a, b) => a.node_instance_key.localeCompare(b.node_instance_key));
+}
