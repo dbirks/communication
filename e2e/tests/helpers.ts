@@ -2,6 +2,7 @@
 // handed to the mock OIDC provider's interactive login form (ADR-0012) — they
 // are not credentials and nothing secret crosses this code.
 import { execFileSync } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Locator, type Page } from "@playwright/test";
@@ -197,6 +198,56 @@ export async function takeControl(page: Page, timeout = 120_000): Promise<void> 
       { timeout, intervals: [1_000] },
     )
     .toBe(true);
+}
+
+/**
+ * A screenshot of the current screen into the repo's gitignored browser
+ * output directory (`.playwright-cli/`) — never into the working tree, and
+ * never a build artifact a human has to clean up afterwards.
+ */
+export async function shot(page: Page, name: string): Promise<string> {
+  const dir = path.join(repoRoot, ".playwright-cli");
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${name}.png`);
+  await page.screenshot({ path: file, fullPage: true });
+  return file;
+}
+
+/**
+ * The `data-testid` suffix the app itself computes for an id
+ * (`ui/src/lib/format.ts`'s `testidOf`: first 13 alphanumeric characters, so
+ * UUIDs that differ only in their fourth group cannot collide). A journey that
+ * must name one row out of a list has to spell the id the same way the page
+ * does.
+ */
+export function testidOf(id: string): string {
+  return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+}
+
+/** The tail an id is *shown* by (`shortId` in the same file): last 8 characters. */
+export function shortRefOf(id: string): string {
+  return id.slice(-8);
+}
+
+/**
+ * Open a project from the project list by its slug; resolves to its app path
+ * (`/projects/<uuid>`), which every section link is built from.
+ */
+export async function openProjectBySlug(page: Page, slug: string): Promise<string> {
+  await gotoApp(page, "/");
+  await page.getByTestId(`project-link-${slug}`).click();
+  await expect(page.getByTestId("project-name")).toBeVisible();
+  return new URL(page.url()).pathname;
+}
+
+/**
+ * Wait for the run inspector's own statement of the run's status. The chip is
+ * the page's single description of it (`RunStatusChip`), and a real run is
+ * measured in worker polls, not milliseconds — so the wait is bounded here and
+ * nowhere else.
+ */
+export async function expectRunStatus(page: Page, status: RegExp, timeout: number): Promise<void> {
+  await expect(page.getByTestId("run-header-status")).toContainText(status, { timeout });
 }
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
