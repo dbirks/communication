@@ -9,10 +9,15 @@
 # (inputs.fanout=false keeps C1's key set clean; =true arms C8a-e against fanout_count items);
 # (d) maxChildDepth is 1 because fan_out invokes document 3. Every other line is verbatim § 9.3
 # except (e) document 1's /plan output: § 9.3 declares plan as a string, but every real
-# m4-planner reply captured live in the lab answers {"plan":{"goal","findings":[],"steps":[]}}
-# (an object), which the outputs validator rejects (invalid_output: got object, want string).
-# The agent variant therefore declares the observed object shape; the twin's /plan keeps its
-# string plan because C1 compares node_instance_key SETS across variants, not output shapes.
+# m4-planner reply captured live in the lab answers an OBJECT
+# {"plan":{"goal","summary","findings":[],"steps":[]}}, which against § 9.3 the outputs validator
+# rejects (invalid_output: got object, want string). The agent variant therefore declares the
+# observed object shape; the twin's /plan keeps its string plan because C1 compares
+# node_instance_key SETS across variants, not output shapes. `summary` is required because the
+# expression language has no join/format function (ADR-0022 § 5): interpolating plan.findings or
+# plan.steps into the /approve gate's summary renders a raw JSON array the Inbox card truncates
+# mid-array, so the gate shows plan.goal plus plan.summary (a <=600-char human-readable plan) and
+# nothing else; findings/steps stay in the node outputs.
 # Validated offline against internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json —
 # see README.md "Offline validation" for the exact commands. seed.sh posts one document per
 # `---`-delimited slice; do not re-indent or reflow (source_sha256 rides the bytes).
@@ -73,19 +78,26 @@ spec:
         Goal: ${{ inputs.goal }}
         Acceptance criteria: ${{ inputs.acceptance_criteria }}
         Reply with JSON {"plan": ...} only, where plan is an OBJECT of exactly this shape:
-        {"goal": "<one-sentence objective>", "findings": ["<one observed fact each>"],
+        {"goal": "<one-sentence objective>",
+         "summary": "<the plan as a human reads it>",
+         "findings": ["<one observed fact each>"],
          "steps": [{"id": 1, "file": "<repo path, omit if none>", "action": "<the change to make>"}]}
-        goal is a non-empty string, findings is an array of strings, steps holds at least one
-        step and every step's action is a non-empty string. Never wrap plan in a string.
+        goal is a non-empty string. summary is REQUIRED and is the ONLY plan text a human sees at
+        the approval gate: at most 600 characters, 2-6 short lines, plain text or simple "- "
+        bullets, one planned change per line in order, no JSON, no braces or quotes, nothing that
+        only makes sense next to the full findings/steps arrays. findings is an array of strings,
+        steps holds at least one step and every step's action is a non-empty string. Never wrap
+        plan in a string.
     outputs:
       type: object
       required: [plan]
       properties:
         plan:
           type: object
-          required: [goal, findings, steps]
+          required: [goal, summary, findings, steps]
           properties:
             goal: {type: string, minLength: 1}
+            summary: {type: string, minLength: 1, maxLength: 600}
             findings: {type: array, items: {type: string}}
             steps:
               type: array
@@ -106,8 +118,7 @@ spec:
       summary: |
         Plan for ${{ inputs.goal }}
         Objective: ${{ nodes.plan.outputs.plan.goal }}
-        Findings: ${{ nodes.plan.outputs.plan.findings }}
-        Steps: ${{ nodes.plan.outputs.plan.steps }}
+        ${{ nodes.plan.outputs.plan.summary }}
       approverRoles: [maintainer]
       deadlineSeconds: 86400
       onTimeout: fail

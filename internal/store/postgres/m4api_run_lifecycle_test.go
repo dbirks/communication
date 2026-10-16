@@ -48,11 +48,15 @@ func m4LifecyclePlan(t *testing.T) (*compiler.Plan, json.RawMessage) {
 
 // m4LifecyclePlanOutputs is the fake worker's validated /plan envelope. Probe
 // document 1 declares plan as the OBJECT the real m4-planner answers
-// ({goal, findings[], steps[{id, action}]}), so a bare string is refused as
-// invalid_output and the /approve gate never opens.
+// ({goal, summary, findings[], steps[{id, action}]}), so a bare string is refused as
+// invalid_output and the /approve gate never opens. summary is required too: the gate
+// renders goal + summary as plain text (the expression language has no join/format).
 func m4LifecyclePlanOutputs() map[string]any {
 	return map[string]any{"plan": map[string]any{
-		"goal":     "add a docstring and fix the assertion",
+		"goal": "add a docstring and fix the assertion",
+		"summary": "- document the helper in app/hello.py\n" +
+			"- fix the assertion in app/tests/test_hello.py to expect 3\n" +
+			"- run pytest from app/ and confirm both tests pass",
 		"findings": []any{"the spec documents the helper"},
 		"steps":    []any{map[string]any{"id": 1, "action": "read the spec"}},
 	}}
