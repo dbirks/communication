@@ -6,6 +6,7 @@ import Login from "./pages/Login";
 import ArtifactPage from "./pages/Artifact";
 import Artifacts from "./pages/Artifacts";
 import ConversationPage from "./pages/Conversation";
+import Inbox from "./pages/Inbox";
 import NotFound from "./pages/NotFound";
 import Operations from "./pages/Operations";
 import Project from "./pages/Project";
@@ -54,6 +55,14 @@ export default function App() {
           element={
             <RequireAuth>
               <Projects />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/inbox"
+          element={
+            <RequireAuth>
+              <Inbox />
             </RequireAuth>
           }
         />
