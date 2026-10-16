@@ -5429,15 +5429,598 @@ def c9():
                  "reject_run_id": run_e, "reject_approval_id": aid_e}
 
 
+# --- C10 pure logic — unit-tested offline by e2e/m4/test_c10_logic.py ---------
+# 03's edge case + ADR-0022 § 4 invariant 2: produced output is JSON-Schema-
+# validated BEFORE it is visible. A reviewer reply that is not valid against its
+# declared outputs schema is an EXECUTION error — attempt failed with
+# error_class=invalid_output, output_errors carrying the JSON-Schema locations,
+# retried per the node's policy — and must NEVER be read as the business outcome
+# (`approved == true` comparing to a silent false, which the spike observed) that
+# routes the until loop onward. The algebra below runs over canned ledger rows;
+# only c10() hands it real ones. `ok is None` is an honest GAP (no row to
+# measure), never a PASS — a malformed reply the lab never produced proves
+# nothing.
+C10_UNTIL_KEY = "/build_until_verified"
+C10_REVIEW_ITER1 = C10_UNTIL_KEY + "[1]"
+C10_REVIEW_KEY = C10_REVIEW_ITER1 + "/review"
+C10_MALFORMED_FIELD = "evidence"        # the reply's string the re-authored schema declares boolean
+C10_CHAT_KIND = "model.chat"
+C10_MAX_ATTEMPTS = 2                    # the seed twin reviewer's retry.maxAttempts
+
+
+def c10_emit(verdicts):
+    """Print (label, ok, detail) verdicts; ok=None is an honest GAP, never a PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c10_output_errors(raw):
+    """attempts.output_errors (psql jsonb text or an API list) -> a list of entries,
+    or None when it cannot be read (an unreadable evidence column is a GAP, never an
+    empty list — an empty list is a real 'nothing recorded' and FAILS C10a)."""
+    if raw is None:
+        return None
+    if isinstance(raw, (list, dict)):
+        return raw if isinstance(raw, list) else [raw]
+    text = str(raw).strip()
+    if text in ("", "<none>", "NULL", "null"):
+        return None
+    try:
+        val = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(val, list):
+        return val
+    return [val] if isinstance(val, dict) else None
+
+
+def c10_schema_locations(errors):
+    """JSON-Schema locations inside output_errors entries: '#', '#/properties/x',
+    '/properties/x', '#required'. Returns (locations, entry_count) — locations is
+    None when the entries themselves are unreadable."""
+    if errors is None:
+        return None, 0
+    found = []
+    for ent in errors:
+        blob = ent if isinstance(ent, str) else json.dumps(ent, sort_keys=True)
+        for m in re.finditer(r"#(?:/[^\"',)\s]*)?|\"location\"\s*:\s*\"[^\"]*\"|"
+                             r"/properties/[A-Za-z0-9_]", blob or ""):
+            found.append(m.group(0).strip('"'))
+    return found, len(errors)
+
+
+def c10_attempt_verdicts(att, completed_seen=None, tag="C10a"):
+    """C10a — the malformed attempt row -> verdicts.
+    att: {status, error_class, output_errors} or None/{} when the ledger has none;
+    completed_seen: True when a node.attempt.completed exists FOR that attempt,
+    False when the events were read and none matched, None when unreadable.
+    The whole gate turns on this: invalid_output is an EXECUTION close, so a
+    'succeeded' (with any outcome) is the reply having been read as a business
+    verdict — a FAIL, not a softer result."""
+    if not att:
+        return [("C10a the malformed reviewer attempt closed failed|invalid_output", None,
+                 "no attempt row for the reviewer was read — the lab produced no malformed "
+                 "reply to measure")]
+    status = str(att.get("status") or "")
+    eclass = str(att.get("error_class") or "")
+    v = [(f"{tag} the malformed reviewer attempt closed status='failed' (NOT succeeded — a "
+          "succeeded review is the engine having read the reply as a business verdict)",
+          status == "failed" if status else None, f"status={status!r} error_class={eclass!r}")]
+    v.append((f"{tag} its error_class is invalid_output — an EXECUTION error, not "
+              "'not approved'", eclass == "invalid_output" if status else None,
+              f"error_class={eclass!r}"))
+    errs = c10_output_errors(att.get("output_errors"))
+    locs, count = c10_schema_locations(errs)
+    v.append((f"{tag} attempts.output_errors is populated with the JSON-Schema locations "
+              "(the invalid_output evidence, not just prose)",
+              (count > 0 and bool(locs)) if errs is not None else None,
+              f"entries={count} locations={(locs or [])[:3]}"))
+    v.append((f"{tag} NO node.attempt.completed for the malformed attempt (a completion would "
+              "mean the reply reached the routing layer)",
+              (completed_seen is False) if completed_seen is not None else None,
+              "" if completed_seen is not None else "the attempt's completion events could not "
+              "be read — the absence is unmeasurable"))
+    return v
+
+
+def c10_visibility_verdicts(att, review_row):
+    """C10b (the invariant half) — outputs are not VISIBLE before validation: the
+    failed attempt carries no outputs/outputs_digest and the reviewer's
+    node_execution row keeps outputs NULL, so no expression could have read
+    `approved` at all. att/review_row: {outputs, ...} dicts ({} / None => GAP)."""
+    v = []
+    if not att or att.get("outputs") is None:
+        v.append(("C10b the rejected attempt carries NO outputs (nothing was published before "
+                  "validation)", None, "no attempt row / outputs column to inspect"))
+    else:
+        raw = str(att.get("outputs") or "").strip()
+        v.append(("C10b the rejected attempt carries NO outputs (nothing was published before "
+                  "validation)", raw in ("", "-", "<none>", "NULL", "null"),
+                  f"attempt.outputs={raw[:60]!r}"))
+    if not review_row or review_row.get("outputs") is None:
+        v.append(("C10b the reviewer node_execution keeps outputs NULL while its reply was "
+                  "rejected", None, "no node_execution row / outputs column for the reviewer"))
+    else:
+        raw = str(review_row.get("outputs") or "").strip()
+        st = str(review_row.get("status") or "")
+        v.append(("C10b the reviewer node_execution keeps outputs NULL while its reply was "
+                  "rejected (the silent `approved:'yes' == true` -> false coercion was never "
+                  "reachable, because validation runs first)",
+                  raw in ("", "-", "<none>", "NULL", "null"),
+                  f"key outputs={raw[:80]!r} status={st!r}"))
+    return v
+
+
+C10_WAITING = ("queued", "leased", "running", "waiting", "waiting_attempt",
+               "waiting_human", "in_progress")
+C10_BUSINESS_CAUSES = ("until_exhausted", "not_approved", "unapproved", "rejected",
+                       "condition_default")
+
+
+def c10_routing_verdicts(live=None, final=None, run_status="", skipped_cond=None,
+                         iter_rows=None):
+    """C10b — the run's ROUTING never changed over a rejected reply.
+    live: the until scope's row as read WHILE the malformed attempt was being
+    retried; final: the same row after the run terminated; run_status: the run's
+    terminal status; skipped_cond: count of
+    node.execution_skipped{reason:'condition_default'} events (C9e's business-reject
+    signature — it must NOT be how this run ends); iter_rows: [{key,status}].
+    A leak past validation would be LOUD here: the seed reviewer's `approved` is
+    itself a valid boolean, so an unvalidated reply makes passWhen true, the loop
+    passes, and the run completes."""
+    def nullish(v):
+        return str(v or "").strip().lower() in ("", "-", "none", "null", "<none>")
+
+    v = []
+    if not live:
+        v.append(("C10b while the reply was being rejected the until scope was STILL WAITING on "
+                  "the attempt (no route was taken)", None,
+                  "the scope row could not be sampled mid-failure — routing-while-failing is "
+                  "unmeasurable"))
+    else:
+        st = str(live.get("status") or "")
+        v.append(("C10b while the reply was being rejected the until scope was STILL WAITING on "
+                  "the attempt (no route was taken)",
+                  st in C10_WAITING and nullish(live.get("outcome")),
+                  f"live scope status={st!r} outcome={live.get('outcome')!r}"))
+    if not final:
+        v.append(("C10b the until scope never SUCCEEDED over a rejected reply", None,
+                  "no terminal scope row to read"))
+    else:
+        cause = str(final.get("failed_cause") or "")
+        v.append(("C10b the until scope never SUCCEEDED over a rejected reply",
+                  final.get("status") != "succeeded",
+                  f"final scope status={final.get('status')!r} outcome={final.get('outcome')!r} "
+                  f"failed_cause={cause!r}"))
+        v.append(("C10b the scope's own close is NOT a business termination "
+                  "(until_exhausted / not_approved / rejected) — it is the execution error",
+                  (cause not in C10_BUSINESS_CAUSES) if cause else None,
+                  f"failed_cause={cause!r}" if cause else
+                  "the scope row carries no failed_cause to classify"))
+    v.append(("C10b the run NEVER completed — an unvalidated reply would have made "
+              "passWhen true (approved:true is itself valid) and routed the loop onward",
+              run_status != "completed" if run_status else None, f"run status={run_status!r}"))
+    if skipped_cond is None:
+        v.append(("C10b nothing was skipped as a business reject "
+                  "(node.execution_skipped{reason:'condition_default'} is C9e's NOT-approved "
+                  "signature and must not appear here)", None,
+                  "the skip events could not be read"))
+    else:
+        v.append(("C10b nothing was skipped as a business reject "
+                  "(node.execution_skipped{reason:'condition_default'} is C9e's NOT-approved "
+                  "signature and must not appear here)", skipped_cond == 0,
+                  f"condition_default skips={skipped_cond}"))
+    rows = [r for r in (iter_rows or []) if str(r.get("key", "")).startswith(C10_UNTIL_KEY)]
+    if rows:
+        bad = [r for r in rows if r.get("status") == "succeeded"
+               and "/review" in str(r.get("key"))]
+        v.append(("C10b no iteration's review row reports 'succeeded' on a rejected reply",
+                  not bad, f"succeeded review rows={[r.get('key') for r in bad]}"))
+    else:
+        v.append(("C10b no iteration's review row reports 'succeeded' on a rejected reply", None,
+                  "no until-body rows were readable"))
+    return v
+
+
+def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None):
+    """C10a/C10b retry arm. rows: [{attempt_number,status,error_class}] for the
+    reviewer key, oldest first; retry_events: the journal's
+    node.attempt.retry_scheduled payloads (None when unreadable).
+    invalid_output is in the seed reviewer's retriableErrors, so the FIRST attempt
+    must be followed by a second. 'the retry gets it right' is a GAP unless the lab
+    actually shows a later attempt succeeding — the shipped fixture helper answers
+    byte-identically on every attempt, and editing it is forbidden."""
+    rows = rows or []
+    v = [("C10b the rejected reply was RETRIED per policy "
+          f"(retry.maxAttempts {max_attempts}): the reviewer spent more than one attempt",
+          len(rows) >= 2 if rows else None,
+          f"attempts={[r.get('attempt_number') for r in rows]}")]
+    v.append((f"C10b the retry budget was respected (<= {max_attempts} attempts — an "
+              "invalid_output that is not retriable is not retried either)",
+              len(rows) <= max_attempts if rows else None, f"{len(rows)} attempt rows"))
+    failed = [r for r in rows if str(r.get("status")) == "failed"]
+    v.append(("C10a EVERY failed reviewer attempt carries error_class=invalid_output "
+              "(never agent_error / infra / a business close)",
+              all(str(r.get("error_class")) == "invalid_output" for r in failed)
+              if failed else None,
+              f"error classes={[r.get('error_class') for r in rows]}"))
+    if retry_events is None:
+        v.append(("C10b node.attempt.retry_scheduled names the invalid_output retry (the "
+                  "schedule is policy-driven, not an accident)", None,
+                  "the run's retry_scheduled journal rows could not be read"))
+    else:
+        hit = [e for e in retry_events if "invalid_output" in json.dumps(e, sort_keys=True)]
+        v.append(("C10b node.attempt.retry_scheduled names the invalid_output retry (the "
+                  "schedule is policy-driven, not an accident)", bool(hit),
+                  f"{len(retry_events)} retry_scheduled row(s), {len(hit)} naming "
+                  "invalid_output"))
+    won = [r for r in rows if str(r.get("status")) == "succeeded"]
+    if won:
+        v.append(("C10b the retry gets it RIGHT: a later attempt's valid reply succeeded",
+                  True, f"attempt(s) {[r.get('attempt_number') for r in won]} succeeded"))
+    else:
+        v.append(("C10b the retry gets it right and the loop CONTINUES on a valid reply", None,
+                  f"every one of the {len(rows) or 0} attempt(s) answered identically: the "
+                  "shipped fixture helper has no mode that returns a VALID reviewer reply on "
+                  "one attempt and a malformed one on another, and make_fixture_repo.sh must "
+                  "not be edited — the retry happened, its success is unproducible here"))
+    return v
+
+
+def c10_chat_verdicts(chat_att, endpoint_configured=None):
+    """C10c — the SAME malformed reply through the model.chat variant fails
+    identically: the guarantee is the boundary's, not the adapter's.
+    chat_att: a model.chat reviewer attempt row {status,error_class,output_errors},
+    or None when the lab ran no model.chat node at all."""
+    if not chat_att:
+        why = ("no model.chat node executed in this lab "
+               f"(COMMUNICATION_MODEL_PROVIDER_BASE_URL configured={endpoint_configured}): "
+               "the § 7.1 C10c leg needs a model.chat reviewer variant, and ADR-0024 declares "
+               "model.chat M4's first sacrifice — the boundary-vs-adapter claim is therefore "
+               "UNPROVEN here, not satisfied by the process.exec arm")
+        if endpoint_configured is False:
+            why += " (a lab with no provider endpoint cannot produce the reply at all)"
+        return [("C10c the same malformed reply via model.chat fails identically "
+                 "(the boundary owns the guarantee, not the adapter)", None, why)]
+    return c10_attempt_verdicts(chat_att, tag="C10c")
+
+
+# --- C10 authored document — re-use the fixture, re-author only the SCHEMA ------
+
+
+def c10_malformed_doc(doc, name, field=C10_MALFORMED_FIELD):
+    """Re-author the seed twin so the reviewer's OWN reply is invalid against its
+    declared outputs schema, WITHOUT editing the fixture (README: publish extra
+    revisions, don't widen the seed one): inside the until body's `review` node
+    only, `<field>: {type: string}` becomes `{type: boolean}`. The shipped helper's
+    review step answers {"approved":true,"evidence":"…","findings":[]} — a STRING
+    where the schema now says boolean, i.e. § 7.1 C10a's malformed reply with the
+    violating field renamed (no existing mode prints `approved:"yes"` and
+    make_fixture_repo.sh is not editable). `approved` stays boolean and args stay
+    [review], so an engine that skipped validation would see a perfectly good
+    `approved == true` and PASS the loop: the FAIL this arm can produce is loud.
+    Returns {doc, applied, missing}."""
+    out = {"doc": None, "applied": [], "missing": []}
+    if "apiVersion:" not in (doc or "")[:600] or "kind: Pipeline" not in (doc or "")[:600]:
+        out["missing"].append("source document (GET /revisions/{id}/document?format=yaml is "
+                              "not a kind: Pipeline document)")
+        return out
+    text, applied, missing = doc, [], []
+    new, k = re.subn(r"(?m)^(  name: ).*$", rf"\g<1>{name}", text, count=1)
+    (applied if k else missing).append("metadata.name")
+    text = new
+    if text.count("- id: review") != 1:
+        missing.append(f"exactly one `review` node in the twin document (found "
+                       f"{text.count('- id: review')} — the splice refuses to guess which "
+                       "one is the until body's reviewer)")
+        out["applied"], out["missing"] = applied, missing
+        out["doc"] = None
+        return out
+    blk = c7_node_block(text, "review")
+    if not blk:
+        missing.append("the until body's review node block")
+    else:
+        s, e, _ind = blk
+        src = text.splitlines(keepends=True)
+        head, body, tail = "".join(src[:s]), "".join(src[s:e]), "".join(src[e:])
+        new, k = re.subn(rf"(?m)^(\s*){field}: ?\{{type: string\}}\s*$",
+                         rf"\g<1>{field}: {{type: boolean}}", body, count=1)
+        (applied if k else missing).append(
+            f"review outputs.{field}: string -> boolean (the reviewer's own reply is now "
+            "schema-INVALID: a string where the declared type is boolean)")
+        text = head + new + tail
+    out["applied"], out["missing"] = applied, missing
+    out["doc"] = None if missing else text
+    return out
+
+
+def c10_doc_verdicts(splices, field=C10_MALFORMED_FIELD):
+    """Honesty gate on the authored document: the gate may only claim C10 if the
+    ONE thing it changed is the declared type of the field the reply carries — and
+    the reviewer step it still runs is the fixture's real review step."""
+    sp = splices or {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    nothing = not applied and not missing and not isinstance(doc, str)
+    v = [("C10 authored twin: the reviewer's declared output type was switched "
+          "(string -> boolean) and nothing else was touched",
+          None if nothing else any("schema-INVALID" in a for a in applied),
+          "no splice report at all — nothing was authored, so nothing is proven" if nothing
+          else f"applied={applied}")]
+    if missing:
+        v.append(("C10 authored twin: every required splice applied", False,
+                  f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append((f"C10 authored twin declares `{field}: {{type: boolean}}",
+                  f"{field}: {{type: boolean}}" in doc, "the reply's field is a boolean slot"))
+        v.append(("C10 authored twin still runs the fixture's REAL review step (the reply is "
+                  "the shipped bytes, not an invented one)",
+                  "args: [review]" in doc and "args: [plan]" not in doc, "args: [review] kept"))
+        v.append(("C10 authored twin keeps `approved` a boolean, so an UNvalidated reply would "
+                  "still satisfy passWhen (a leak routes the loop onward — a FAIL, not a "
+                  "silently different run)", "approved: {type: boolean}" in doc,
+                  "approved: {type: boolean} kept"))
+    return v
+
+
+# --- C10 live helpers — the stack-facing half ----------------------------------
+
+
+# --- C10 live helpers — the stack-facing half ---------------------------------
+
+
+def c10_sql(sql, what):
+    """C10's psql reader: text, or None (an honest GAP upstream) with the failure
+    printed — a ledger that will not answer is never read as a zero."""
+    try:
+        return psql(sql)
+    except RuntimeError as e:
+        show(f"C10 {what} (psql)", str(e)[:240])
+        return None
+
+
+def c10_twin_doc(admin, revision_id):
+    """The seed twin's exported YAML bytes — the document C10 splices its ONE schema
+    change into. None unless it is a Pipeline document: the gate refuses to author a
+    reviewer from an invented document."""
+    if not revision_id:
+        return None
+    r = admin.get(LB, f"/api/v1/revisions/{revision_id}/document?format=yaml")
+    show(f"C10 GET /revisions/{revision_id}/document -> {r.status}", (r.text or "")[:110])
+    return r.text if r.status == 200 and "apiVersion:" in (r.text or "")[:400] else None
+
+
+def c10_post_run(client, facts, revision_id, idem, label):
+    """Start the run ONLY through the public API: POST /projects/{p}/runs pinned to the
+    gate's own published revision (the same § 3 body C1/C7 use)."""
+    body = {"pipeline_revision_id": revision_id, "inputs": mf(facts, "inputs") or {},
+            "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs", body)
+    if not check(f"C10 {label}: POST runs (revision {revision_id}) -> 201",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
+def c10_run_to_terminal(client, facts, run_id, cap, label):
+    """Poll to a terminal state (landing alice's gate on the way). This run EXPECTS
+    `failed` — a `completed` run is C10's leak, not its success."""
+    return c8_watch(client, facts, run_id, cap, f"C10 {label}")
+
+
+def c10_node_row(run_id, key):
+    """One node_execution row (id@@status@@outcome@@failed_cause@@outputs@@
+    attempt_count@@attempt_limit@@kind) as a dict; {} when unreadable. '@@'-separated
+    because a jsonb body may itself carry '|'."""
+    rows = psql_rows(c10_sql(
+        f"SELECT id || '@@' || status || '@@' || COALESCE(outcome,'-') || '@@' || "
+        f"COALESCE(failed_cause,'-') || '@@' || COALESCE(outputs::text,'-') || '@@' || "
+        f"attempt_count::text || '@@' || attempt_limit::text || '@@' || kind "
+        f"FROM node_executions WHERE run_id = '{run_id}' AND node_instance_key = '{key}'",
+        f"node row {key}"), 8, sep="@@")
+    if not rows:
+        return {}
+    nid, st, oc, fc, ou, ac, al, kind = rows[0]
+    return {"id": nid, "status": st, "outcome": oc, "failed_cause": fc, "outputs": ou,
+            "attempt_count": _int(ac), "attempt_limit": _int(al), "kind": kind}
+
+
+def c10_attempts(run_id, key=C10_REVIEW_KEY):
+    """Every attempt of one node key, oldest first: {attempt_number,status,error_class,
+    output_errors,outputs,id}. [] when the ledger really has none; an unreadable ledger
+    reads as [] too, which the verdicts turn into a GAP rather than a zero."""
+    text = c10_sql("SELECT a.attempt_number::text || '@@' || a.status || '@@' || "
+                   "COALESCE(a.error_class,'-') || '@@' || "
+                   "COALESCE(a.output_errors::text,'[]') || '@@' || "
+                   "COALESCE(a.outputs::text,'-') || '@@' || a.id FROM attempts a "
+                   "JOIN node_executions ne ON ne.id = a.node_execution_id "
+                   f"WHERE a.run_id = '{run_id}' AND ne.node_instance_key = '{key}' "
+                   "ORDER BY a.attempt_number", "attempt rows")
+    out = []
+    for line in (text or "").splitlines():
+        parts = [p.strip() for p in line.split("@@")]
+        if len(parts) != 6 or not all(parts):
+            continue
+        out.append({"attempt_number": _int(parts[0]), "status": parts[1],
+                    "error_class": parts[2], "output_errors": parts[3],
+                    "outputs": parts[4], "id": parts[5]})
+    return out
+
+
+def c10_event_payloads(run_id, etype):
+    """Journal payloads for one type in global_seq order; None when unreadable."""
+    text = c10_sql("SELECT COALESCE(payload::text,'{}') FROM domain_events WHERE run_id = "
+                   f"'{run_id}' AND type = '{etype}' ORDER BY global_seq", f"{etype} rows")
+    if text is None:
+        return None
+    out = []
+    for line in text.splitlines():
+        try:
+            pay = json.loads(line)
+        except ValueError:
+            pay = {}
+        out.append(pay if isinstance(pay, dict) else {})
+    return out
+
+
+def c10_completed_for(run_id, attempt_id):
+    """True when a node.attempt.completed names the attempt, False when the events are
+    readable and none does, None when they cannot be read."""
+    if not attempt_id:
+        return None
+    n = count_or_none(c10_sql("SELECT count(*)::text FROM domain_events WHERE run_id = "
+                              f"'{run_id}' AND type = 'node.attempt.completed' AND "
+                              f"payload::text LIKE '%{attempt_id}%'", "attempt.completed"))
+    return None if n is None else n > 0
+
+
+def c10_condition_skips(run_id):
+    """count of node.execution_skipped{reason:'condition_default'} — C9e's business
+    NOT-approved signature, the thing a malformed reply must never be read as.
+    None when unreadable."""
+    return count_or_none(c10_sql("SELECT count(*)::text FROM domain_events WHERE run_id = "
+                                 f"'{run_id}' AND type = 'node.execution_skipped' AND "
+                                 "payload::text LIKE '%condition_default%'",
+                                 "execution_skipped rows"))
+
+
+def c10_sample_failing_scope(run_id, timeout=420, every=4):
+    """C10b is only measurable LIVE: poll until the reviewer's first attempt has closed
+    as an execution error and return the until scope's row AS READ IN THAT MOMENT (a
+    post-mortem row shows the terminal close, never a scope waiting on its attempt).
+    Returns (scope_row_or_None, attempts_seen)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        atts = c10_attempts(run_id)
+        if any(a["status"] == "failed" for a in atts):
+            return c10_node_row(run_id, C10_UNTIL_KEY), atts
+        time.sleep(every)
+    return None, c10_attempts(run_id)
+
+
+def c10_chat_precondition(run_id=None):
+    """C10c's precondition, read honestly: did ANY model.chat node execute in this lab,
+    and does the worker carry a provider endpoint? Only the set/unset spelling is
+    printed — never a URL, never a key. Returns (attempt_row, endpoint_configured)."""
+    rows = psql_rows(c10_sql("SELECT kind || '@@' || status || '@@' || "
+                             "COALESCE(error_class,'-') FROM node_executions "
+                             "WHERE kind = 'model.chat' LIMIT 1", "model.chat kind probe"),
+                     3, sep="@@")
+    found = bool(rows)
+    rc, out = run(COMPOSE + ["exec", "-T", "worker-a", "sh", "-c",
+                             "if [ -n \"${COMMUNICATION_MODEL_PROVIDER_BASE_URL:-}\" ]; "
+                             "then echo set; else echo unset; fi"])
+    spell = out.strip().splitlines()[-1].strip() if rc == 0 and out.strip() else ""
+    endpoint = (spell == "set") if spell in ("set", "unset") else None
+    show("C10c model.chat precondition probe",
+         f"model.chat rows in the ledger={found} worker provider "
+         f"endpoint={spell or 'unreadable'}")
+    if not found:
+        return None, endpoint
+    att = c10_attempts(run_id or "", C10_REVIEW_KEY)
+    return (att[0] if att else None), endpoint
+
+
 def c10():
     """C10 — a malformed reviewer reply does not read as 'not approved' (ADR-0022 § 4).
-    Acceptance: {approved:'yes'} against a boolean schema => failed|invalid_output
-    with JSON-Schema locations in output_errors and no node.attempt.completed;
-    during the failure the scope's routing never changed (the silent false-coercion
-    was never reached — outputs are schema-validated first); retry gets it right;
-    the same reply via model.chat fails identically — the boundary owns the guarantee."""
-    skip("C10", "schema validation precedes every expression; coercion is unrepresentable")
+    Acceptance: a reply that is not valid against the node's declared outputs schema
+    closes its attempt failed|invalid_output with the JSON-Schema locations in
+    output_errors and NO node.attempt.completed for it; outputs stay invisible; the
+    until scope is still waiting on the attempt, so `approved == true` was never
+    reached; the reply is retried per policy; the same reply delivered through the
+    model.chat variant fails identically — the guarantee is the boundary's."""
+    if not CTX.get("stack_up"):
+        skip("C10", "schema validation precedes every expression: the malformed reply closes "
+                    "failed|invalid_output and the loop never routes on it")
+        return
+    facts = load_manifest_facts() or CTX.get("manifest")
+    twin = (facts or {}).get("twin") or {}
+    if not facts:
+        gap("C10", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                   "there is no twin revision to re-author into a schema-invalid reviewer "
+                   "(C10 publishes its OWN revision rather than editing the fixture), no "
+                   "pipeline to hold a draft and no run whose attempts could be read")
+        return
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C10", "no admin (library-role) session — the schema-invalid reviewer is an extra "
+                   "PUBLISHED revision and only the library role may draft it")
+        return
+    CTX["admin"] = admin
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        check("C10: alice signed in", False, "no session — the run cannot be posted")
+        return
+    CTX["alice"] = alice
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
+    src = c10_twin_doc(admin, twin.get("revision_id"))
+    if src is None:
+        gap("C10", f"GET /revisions/{twin.get('revision_id')!r}/document?format=yaml gave no "
+                   "Pipeline document — the gate will not invent a reviewer schema the engine "
+                   "never compiled, because a reply rejected against a schema nobody authored "
+                   "proves nothing")
+        return
+    mal = c10_malformed_doc(src, f"m4x-c10-invalid-{suffix[-8:]}")
+    c10_emit(c10_doc_verdicts(mal))
+    show("C10 splices applied to the seed twin document", " | ".join(mal["applied"]) or "(none)")
+    if mal["doc"] is None:
+        gap("C10 malformed-reviewer run", f"the twin document is not the shape C10 splices "
+                                          f"({mal['missing']}) — a reviewer whose one declared "
+                                          "output type the gate cannot switch would make every "
+                                          "invalid_output verdict a coincidence")
+        return
+    pub = c7_publish(admin, twin.get("pipeline_id"), "C10 malformed-reviewer twin", mal["doc"])
+    if pub is None:
+        gap("C10 malformed-reviewer run", "no draft could be created on the twin's pipeline — "
+                                          "nothing to publish and no malformed reply to feed")
+        return
+    if pub.get("validate_status") != 200 or (pub.get("vresp") or {}).get("valid") is False:
+        gap("C10 malformed-reviewer run", f"the authored document did not validate "
+                                          f"(validate -> {pub.get('validate_status')}): "
+                                          f"{(pub.get('raw') or '')[:300]} — a reviewer schema "
+                                          "the compiler refuses cannot be run against a reply")
+        return
+    rev = pub.get("revision_id") or ""
+    if not rev:
+        gap("C10 malformed-reviewer run", f"publish -> {pub.get('publish_status')} with no "
+                                          f"revision id ({(pub.get('raw') or '')[:200]})")
+        return
+    check("C10 the schema-invalid reviewer published as its own immutable revision", True,
+          f"revision {rev} (the seed's {twin.get('revision_id')} untouched)")
+
+    run_id = c10_post_run(alice, twin, rev, f"m4x-c10-invalid-{suffix}", "malformed reviewer")
+    if not run_id:
+        gap("C10a/C10b", "the run could not be posted through POST /projects/{p}/runs — the "
+                         "ledger has no attempt to measure")
+        return
+    live, seen = c10_sample_failing_scope(run_id)
+    show("C10b the until scope AS READ while the reply was being rejected",
+         json.dumps(live or {"note": "no mid-failure sample (the reviewer had no failed "
+                                     "attempt inside the sampling window)"})[:300])
+    st = c10_run_to_terminal(alice, twin, run_id, 1200, "malformed reviewer") or ""
+    final = c10_node_row(run_id, C10_UNTIL_KEY)
+    review = c10_node_row(run_id, C10_REVIEW_KEY)
+    rows = c10_attempts(run_id) or seen
+    first = rows[0] if rows else None
+    show("C10a the reviewer's attempts (attempt|status/error_class)",
+         " ".join(f"a{a['attempt_number']}={a['status']}/{a['error_class']}" for a in rows)
+         or "(no attempt rows)")
+    show("C10a attempts.output_errors verbatim", str((first or {}).get("output_errors"))[:400])
+    c10_emit(c10_attempt_verdicts(first, c10_completed_for(run_id, (first or {}).get("id"))))
+    c10_emit(c10_visibility_verdicts(first, review))
+    body = c7_body_rows(c7_sql(c7_body_sql(run_id), "until body rows") or "")
+    c10_emit(c10_routing_verdicts(live=live, final=final, run_status=st,
+                                  skipped_cond=c10_condition_skips(run_id), iter_rows=body))
+    c10_emit(c10_retry_verdicts(
+        rows, max_attempts=_int(review.get("attempt_limit")) or C10_MAX_ATTEMPTS,
+        retry_events=c10_event_payloads(run_id, "node.attempt.retry_scheduled")))
+    c10_emit(c10_chat_verdicts(*c10_chat_precondition(run_id)))
+    dump_run_evidence(alice, run_id)
+    CTX["c10"] = {"revision_id": rev, "run_id": run_id, "terminal": st,
+                  "attempts": rows, "live_scope": live}
 
 def c11():
     """C11 — prompt-injection egress probe (this contract creates the vector; this contract tests it).
