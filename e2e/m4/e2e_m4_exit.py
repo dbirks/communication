@@ -2719,6 +2719,189 @@ def c3_token_verdicts(max_token, seq_last):
              f"max(fencing_token)={mx} last_value={last}")]
 
 
+# --- C3a: the deep queue the leg builds for itself ---------------------------
+#
+# § 7.1 C3a creates contention "where the queue is deep": "start the C8 fan-out
+# run (25 queued attempts at once) and watch the hand-out". C3 used to WAIT on
+# C8's run, which no code ever stored for it to consume — live6/C3.out:29 GAPped
+# "C8 prints SKIP" while C8's own children had been real since 21656f6. The leg
+# now POSTS its own fan-out (fanout=true, fanout_count=25 — the same twin
+# assignment C8/W11 use) with a SMALL hold_seconds: 15 rather than the fault
+# legs' 45, so the parent's ~8 held steps plus the 25-child drain close inside
+# the leg window while every /build_until_verified[*]/implement attempt is still
+# worker-held long enough for C3c to count claims over real leased rows.
+C3_FANOUT_HOLD_SECONDS = 15
+C3_FANOUT_WINDOW_S = 1200   # held parent steps (~8 x 15s) + the 25-child drain
+
+
+def c3_post_fanout_run(client, facts, count, hold_seconds, label):
+    """POST /projects/{p}/runs with the twin's ASSIGNMENT (never a re-pin),
+    fanout=true, fanout_count=count AND hold_seconds — c8_post_run's body plus
+    the hold. C3 owns the call: c8_post_run must keep C8's exact posted body,
+    and C8's own run is not shareable (C8 cancels one mid-fan-out and SKIPs its
+    whole leg when the stack is down — a leg that waits on it measures nothing)."""
+    body = {"assignment_id": mf(facts, "assignment_id"),
+            "inputs": with_hold(c8_inputs(mf(facts, "inputs"), count), hold_seconds),
+            "idempotency": idem_key("m4x-c3-queue")}
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
+    if not check(f"C3a {label}: POST runs (assignment + fanout_count={count} + "
+                 f"hold_seconds={hold_seconds}) -> 201",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None
+    return (r.json() or {}).get("run_id")
+
+
+def c3_child_run_ids(run_id):
+    """The fan-out's child run ids AS THE LEDGER RECORDS them (never invented)."""
+    text = c3_psql(f"SELECT id::text FROM runs WHERE parent_run_id = '{run_id}' ORDER BY id",
+                   "child runs of the fan-out")
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+
+
+def c3_parent_handout_sql(run_id):
+    """§ 7.1 C3a's literal group-by, verbatim in shape (`a.run_id='$RUN8' group by
+    1,2 order by 3 desc`): the fan-out PARENT run's attempts by worker and status."""
+    return (f"SELECT coalesce(a.worker_id::text, '(unclaimed)') || ' ' || a.status || ' ' || "
+            f"count(*)::text FROM attempts a JOIN node_executions ne "
+            f"ON ne.id = a.node_execution_id WHERE a.run_id = '{run_id}' "
+            f"GROUP BY a.worker_id, a.status ORDER BY 3 DESC")
+
+
+def c3_child_handout_sql(run_id):
+    """The same hand-out read over EVERY CHILD run of the fan-out: child attempts
+    grouped by the claiming worker's NAME (the uuid the contract's row prints is
+    the same fact; names make the two-worker verdict readable)."""
+    return (f"SELECT coalesce(w.name, '(unclaimed)') || '|' || count(*)::text "
+            f"FROM attempts a JOIN runs c ON c.id = a.run_id "
+            f"LEFT JOIN workers w ON w.id = a.worker_id "
+            f"WHERE c.parent_run_id = '{run_id}' GROUP BY 1 ORDER BY 2 DESC")
+
+
+def c3_child_groups_sql(run_id):
+    """C3b's per-group read over the child runs: (child-run, node key, attempt_number)
+    -> held|workers, the same four fields c3_handout_verdicts consumes. Grouping is
+    run-scoped (each child is its own run), so one child's attempt 1 is never merged
+    with another's."""
+    return (f"SELECT 'child ' || left(c.id::text, 8) || ' ' || ne.node_instance_key || '|' || "
+            f"a.attempt_number::text || '|' || "
+            f"count(*) FILTER (WHERE a.status IN ('leased','running'))::text || '|' || "
+            f"count(DISTINCT a.worker_id)::text FROM attempts a "
+            f"JOIN node_executions ne ON ne.id = a.node_execution_id "
+            f"JOIN runs c ON c.id = a.run_id WHERE c.parent_run_id = '{run_id}' "
+            f"GROUP BY c.id, ne.node_instance_key, a.attempt_number "
+            f"ORDER BY c.id, a.attempt_number")
+
+
+def c3_claim_overlap_sql(run_id):
+    """The concurrency read the task requires from attempts (C8c's sweep is the
+    template — b2bfe62/04f53fd — ported from pipeline.invoke rows to CLAIMS):
+    +1 at every child attempt's started_at, -1 at its finished_at, running sum =
+    how many attempts the two workers hold AT ONCE. Ties break -1 before +1, so
+    a sibling finishing at the instant another starts never fakes an overlap."""
+    where = (f"FROM attempts a JOIN runs c ON c.id = a.run_id "
+             f"WHERE c.parent_run_id = '{run_id}' ")
+    return ("WITH ev AS (SELECT a.started_at AS ts, 1 AS d, a.id " + where +
+            "AND a.started_at IS NOT NULL UNION ALL "
+            "SELECT a.finished_at AS ts, -1 AS d, a.id " + where +
+            "AND a.finished_at IS NOT NULL) "
+            "SELECT rn::text || '|' || running::text FROM (SELECT row_number() OVER "
+            "(ORDER BY ts, d, id) AS rn, sum(d) OVER (ORDER BY ts, d, id "
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running "
+            "FROM ev) q ORDER BY rn")
+
+
+def c3_handout_groups(text):
+    """'workername|count' rows -> [{'worker','n'}]. Ragged/blank lines are dropped
+    (psql_rows), never verdicted."""
+    return [{"worker": w, "n": c} for w, c in psql_rows(text, 2)]
+
+
+def c3_fanout_handout_verdicts(groups, workers_online, samples):
+    """§ 7.1 C3a measured over the fan-out's CHILD attempts — the hand-out itself,
+    not a ledger echo. groups: [{'worker','n'}]; workers_online: rows of `workers`
+    in status 'online'; samples: [(point, running)] from c3_claim_overlap_sql.
+    [(label, ok|None, detail)]; ok=None is a GAP — an arm the queue never let the
+    driver watch cannot PASS. Pure."""
+    claimed = {}
+    for g in groups or []:
+        w, n = str(g.get("worker", "")).strip(), count_or_none(g.get("n"))
+        if w and w != "(unclaimed)" and n:
+            claimed[w] = claimed.get(w, 0) + n
+    total, seen = sum(claimed.values()), sum(count_or_none(g.get("n")) or 0
+                                             for g in (groups or []))
+    out = []
+    if not groups:
+        out.append(("C3a fan-out queue handed child attempts out", None,
+                    "no worker|count rows read — the fan-out opened no child attempts "
+                    "(or the ledger was unreadable), so the hand-out is unmeasurable"))
+    elif seen == 0:
+        out.append(("C3a fan-out queue handed child attempts out", None,
+                    "rows were read but every count is unreadable/zero — nothing to measure"))
+    elif total == 0:
+        out.append(("C3a fan-out queue handed child attempts out", False,
+                    f"{seen} child attempt rows and NOT one carries a worker_id — with "
+                    "two workers online the claim scan never ran"))
+    else:
+        out.append(("C3a fan-out queue handed child attempts out", True,
+                    f"{total} of {seen} child attempts carry a worker_id"))
+        if workers_online < 2:
+            out.append(("C3a hand-out crossed BOTH online workers (contention)", None,
+                        f"only {workers_online} worker row(s) online — no second claimant "
+                        "exists to contend the queue"))
+        else:
+            out.append(("C3a hand-out crossed BOTH online workers (contention)",
+                        len(claimed) >= 2,
+                        "claims per worker: " + ", ".join(f"{w}={n}"
+                                                          for w, n in sorted(claimed.items()))))
+    peaks = [c for _s, c in samples or [] if isinstance(c, int)]
+    if not peaks:
+        out.append(("C3a claims overlapped (queue contended, not serialised)", None,
+                    "no started_at/finished_at commit points — the in-flight curve is unreadable"))
+    else:
+        out.append(("C3a claims overlapped (>=2 child attempts in flight at once)",
+                    max(peaks) >= 2, f"peak in-flight={max(peaks)} over {len(peaks)} commit points"))
+    return out
+
+
+def c3_rollup_verdicts(rows):
+    """C3b's two rules over the fan-out's N child attempt-groups collapsed into one
+    verdict PER RULE: any violating group fails the rule and its label+detail are
+    quoted (first 3). rows: [{key, held, workers}] — pure."""
+    per = c3_handout_verdicts(rows)
+    out = []
+    for needle, rule in (("leased<=1", "at most one live claim per attempt"),
+                         ("distinct workers", "never two distinct workers on one attempt")):
+        hits = [(l, ok, d) for l, ok, d in per if needle in l]
+        if not hits:
+            continue
+        bad = [f"{l} [{d}]" for l, ok, d in hits if not ok]
+        out.append((f"C3b {len(rows)} fan-out attempt groups: {rule}", not bad,
+                    (f"{len(bad)} violating group(s): " + " | ".join(bad[:3])) if bad
+                    else f"0 violations over {len(hits)} groups"))
+    return out
+
+
+def c3_emit3(verdicts):
+    """Emit (label, ok, detail) verdicts where ok=None is an honest GAP — the
+    c8_emit rule, for the fan-out arms that a queue that never opened leaves
+    unmeasurable. A None never prints PASS."""
+    for label, ok, detail in verdicts:
+        if ok is None:
+            gap(label, detail or "no row to measure")
+        else:
+            check(label, ok, detail)
+
+
+def c3_psql(sql, what):
+    """psql that never crashes the gate: a failed read is shown and returned as ''
+    — the verdicts downstream then GAP on 'no rows' instead of losing the leg."""
+    try:
+        return psql(sql)
+    except RuntimeError as e:
+        show(f"C3 {what}", f"psql failed: {str(e)[:240]}")
+        return ""
+
+
 def c4_live_attempt(text):
     """Parse the C4a poll row: key|node_instance_key|worker_name|token|
     attempt_number|turn_id-or-dash. None when nothing is live (pure)."""
@@ -2859,13 +3042,93 @@ def c4_worker_service(name):
     return {"worker-a": WORKER_A, "worker-b": WORKER_B}.get(name)
 
 
+def c3_wait_terminal(client, facts, run_id, cap, tag):
+    """Poll to terminal, landing the /approve decision on the way (the shape § 7.1
+    assumes: the twin parks at /approve before anything leases). c8_watch's loop
+    under C3's OWN verdict label — the queue belongs to this leg. Returns the
+    terminal status, or the last observed status past the cap."""
+    status, approved, deadline = "", False, time.time() + cap
+    while time.time() < deadline:
+        status = run_status(run_id)
+        if status in ("completed", "failed", "cancelled", "interrupted"):
+            return status
+        if status == "waiting_human" and not approved:
+            approved = approve_gate(client, mf(facts, "project_id"), run_id)
+            if approved:
+                check(f"{tag} the approval gate was decided (C1b's route) so the "
+                      "queue can drain", True, f"run {run_id} released from waiting_human")
+        time.sleep(4)
+    dump_run_evidence(client, run_id)
+    return status
+
+
+def c3_build_queue(online):
+    """Post and drive the leg's OWN 25-item fan-out, then emit every C3a/C3b read it
+    can make. Returns the run id (its attempt rows stay readable after the run —
+    worker_id and fencing_token survive the claim), or None after an honest GAP.
+    require_fault_hold is owed because this leg POSTS hold_seconds: a stale
+    fixture drains the whole queue in <1s and the C3c claim never exists."""
+    seed = c8_seed_facts()
+    if not seed:
+        gap("C3a deep-queue hand-out (25 queued attempts at once)",
+            "the § 7.0 seed manifest carries no twin assignment — the leg cannot POST its "
+            "own fan-out run, so no 25-attempt queue exists to watch (C8's own run is not "
+            "shareable: it SKIPs with the stack down and C8g cancels one mid-fan-out)")
+        return None
+    if not require_fault_hold("C3a", expected=C3_FANOUT_HOLD_SECONDS):
+        return None
+    alice = CTX.get("alice") or Client("alice")
+    if login(alice) is None and "communication_session" not in alice.cookies:
+        gap("C3a deep-queue hand-out", "alice has no session — the fan-out run cannot be "
+            "posted, so the contention § 7.1 C3a is built on does not exist")
+        return None
+    CTX["alice"] = alice
+    fan_id = c3_post_fanout_run(alice, seed, C8_ITEMS, C3_FANOUT_HOLD_SECONDS, "queue")
+    if not fan_id:
+        return None                      # the POST line above is the verdict
+    CTX["c3_fanout_run"] = fan_id
+    status = c3_wait_terminal(alice, seed, fan_id, C3_FANOUT_WINDOW_S, "C3a")
+    if status not in ("completed", "failed", "cancelled", "interrupted"):
+        gap("C3a fan-out run reaches a terminal state",
+            f"run {fan_id} was {status!r} when the {C3_FANOUT_WINDOW_S}s window closed — "
+            "the reads below measure whatever the ledger had by then, verdicted as usual")
+    show(f"C3a § 7.1's literal hand-out over the fan-out run {fan_id} "
+         f"(status={status})", c3_psql(c3_parent_handout_sql(fan_id), "parent hand-out"))
+    kids = c3_child_run_ids(fan_id)
+    show(f"C3a child runs the fan-out queued ({len(kids)} of {C8_ITEMS})",
+         "\n".join(kids[:5]) + (f"\n  ... {len(kids) - 5} more" if len(kids) > 5 else "")
+         or "(none)")
+    groups = c3_handout_groups(c3_psql(c3_child_handout_sql(fan_id), "child hand-out"))
+    samples = c8_running_samples(c3_psql(c3_claim_overlap_sql(fan_id), "claim overlap sweep"))
+    show("C3a in-flight claim sweep over the children (point:in_flight)",
+         " ".join(f"{s}:{c}" for s, c in c8_sample_series(samples, 25))[:400]
+         or "(no commit points)")
+    c3_emit3(c3_fanout_handout_verdicts(groups, online, samples))
+    if not groups:
+        fault_hold_evidence(alice, fan_id, "C3a", expected=C3_FANOUT_HOLD_SECONDS)
+    grows = [dict(zip(("key", "attempt_number", "held", "workers"), r))
+             for r in psql_rows(c3_psql(c3_child_groups_sql(fan_id),
+                                        "child attempt groups"), 4)]
+    if grows:
+        c3_emit3(c3_rollup_verdicts(grows))
+    else:
+        gap("C3b over the fan-out children",
+            f"0 child attempt groups under parent {fan_id} — the queue never handed "
+            "anything out, so the no-double-claim rule has no rows to hold (see the "
+            "C3a arms and the run status above)")
+    return fan_id
+
+
 def c3():
     """C3 — two workers claim one ready attempt; only one fencing token commits (12 case 2).
-    Acceptance: with worker-a capacity 3 / worker-b capacity 1 and the C8 fan-out
-    queue deep, every attempt_number has leased<=1 and never two distinct workers;
-    one /implement attempt claimed exactly once (count(distinct worker_id)=1),
-    fencing_token>0, max(fencing_token) = claim count; record the negative-control
-    sentence: the claim is not exactly-once execution — the fence is (C4 proves it)."""
+    Acceptance: both lab workers online; the leg POSTS its OWN fan-out run (§ 7.1
+    C3a's contention: fanout=true, fanout_count=25, hold_seconds=15) so 25 child
+    attempts queue at once, and the hand-out is watched across BOTH workers with
+    the claims overlapping; every attempt group has leased<=1 and never two
+    distinct workers; one /implement attempt — the parent's, held open by the
+    post — is claimed exactly once (count(distinct worker_id)=1), fencing_token>0,
+    max(fencing_token) = claim count; record the negative-control sentence: the
+    claim is not exactly-once execution — the fence is (C4 proves it)."""
     if not CTX.get("stack_up"):
         skip("C3", "contended claims hand out once; the sequence draws per claim")
         return
@@ -2873,29 +3136,27 @@ def c3():
     if facts is not None:
         CTX["manifest"] = facts
     run_ids, source = c3_run_ids(facts)
+    show("workers (the capacity split contention rests on)",
+         c3_psql("SELECT name || ' ' || status || ' cap=' || capacity::text || ' active=' || "
+                 "active_attempts::text FROM workers ORDER BY name", "workers read"))
+    online = _int(c3_psql("SELECT count(*) FROM workers WHERE status = 'online'",
+                          "online worker count"))
+    check("C3a both lab workers online — two claimers must exist to contend", online >= 2,
+          c3_psql("SELECT string_agg(name || '=' || status, ' ' ORDER BY name) FROM workers",
+                  "worker statuses") or "the workers table was unreadable (see above)")
+    fan_id = c3_build_queue(online)
+    if fan_id:
+        # The parent run joins the ledger reads below: its /implement attempts are
+        # the worker-held CLAIMS C3c counts (the old leg could only GAP — the seed
+        # twin's steps close in <1s without a hold, live6/C3.out:38).
+        run_ids, source = [fan_id] + run_ids, f"the leg's fan-out run {fan_id} + {source}"
     if not run_ids:
-        gap("C3", f"no attempts to read: the stack answered, but neither C1 produced a run "
-                  f"nor does a § 7.0 seed manifest exist at {MANIFEST_PATH}, so there is no "
-                  "run_id to group claim rows by (attempt rows ARE the evidence)")
+        gap("C3", f"no attempts to read: the stack answered, but the fan-out queue above "
+                  f"produced no run, C1 produced none, and no § 7.0 seed manifest exists at "
+                  f"{MANIFEST_PATH} — there is no run_id to group claim rows by (attempt "
+                  "rows ARE the evidence)")
         return
-    show(f"C3 runs under inspection ({source})", " ".join(run_ids))
-    show("workers (the capacity split contention rests on)", psql(
-        "SELECT name || ' ' || status || ' cap=' || capacity::text || ' active=' || "
-        "active_attempts::text FROM workers ORDER BY name"))
-    check("C3a both lab workers online — two claimers must exist to contend",
-          int(psql("SELECT count(*) FROM workers WHERE status = 'online'") or 0) >= 2,
-          psql("SELECT string_agg(name || '=' || status, ' ' ORDER BY name) FROM workers"))
-    fan = CTX.get("c8_run")
-    if fan:
-        show(f"C3a hand-out over the C8 fan-out run {fan}", psql(
-            f"SELECT a.worker_id || ' ' || a.status || ' ' || count(*)::text FROM attempts a "
-            f"WHERE a.run_id = '{fan}' GROUP BY a.worker_id, a.status ORDER BY 3 DESC"))
-    else:
-        gap("C3a deep-queue hand-out (25 queued attempts at once)",
-            "§ 7.1 creates the contention on the C8 fan-out run, which this driver has not "
-            "implemented yet (C8 prints SKIP), so no 25-attempt queue exists to watch; every "
-            "assertion below is measured over the seed/C1 runs, where worker-a (cap 3) and "
-            "worker-b (cap 1) still both draw claims")
+    show(f"C3 runs under inspection ({source})", " ".join(run_ids)[:400])
     claims = []
     for rid in run_ids:
         show(f"C3b § 7.1's literal per-attempt_number query, run {rid}", psql(
@@ -2935,9 +3196,12 @@ def c3():
             check(label, ok, detail)
     if not claims:
         gap("C3c one /implement attempt claimed exactly once",
-            "no /implement attempt row with a worker_id exists in any inspected run — the "
-            "runs above never reached a worker-held attempt, so there is no claimed row to "
-            "count workers over (see the C3b lines / run statuses)")
+            "no /implement attempt row with a worker_id exists in any inspected run"
+            + (f" — not even the fan-out run {fan_id} the leg posted reached a "
+               "worker-held /implement (see its hold evidence and status above)" if fan_id
+               else " — the runs above never reached a worker-held attempt, so there is "
+                    "no claimed row to count workers over (see the C3b lines / run statuses)")
+            + " (a queued row is not a claim; GAP, never PASS)")
     try:
         for label, ok, detail in c3_token_verdicts(
                 psql("SELECT coalesce(max(fencing_token), 0)::text FROM attempts"),
@@ -7771,6 +8035,317 @@ def c9_deadline_verdicts(snap, on_timeout, seconds_left, re_requested):
          f"on_timeout={on_timeout!r} seconds_until_deadline={left} "
          f"attempts={snap.get('attempts')!r} re_requested={re_requested!r}"),
     ]
+
+
+# --- C9f/C9g pure logic — unit-tested offline by e2e/m4/test_c9_logic.py -------
+#
+# docs/m4-contract.md § 7.1 C9f, verbatim:
+#   C9f  deadline arms: on_timeout=fail → approval.expired then
+#        run.failed{error_class:'approval_expired'};
+#        on_timeout=expire re-requests EXACTLY ONCE
+#        (approval_requests.re_requested=t) and then fails;
+#        on_timeout=cancel_run cancels the run and cascades (C8g's path). Nothing
+#        is claimed while waiting, and the run's other branches keep running: the
+#        sample's /plan artifact is still readable and a sibling node in the C8
+#        pipeline progresses while an unrelated gate waits.
+# § 7.1 C9g, verbatim:
+#   C9g  human takeover of a run conversation (01's controller model, ADR-0016's
+#        machinery): POST /conversations/$CID/take-control with version → 200; the
+#        live turn is cancel-requested; attempts.status='interrupted'
+#        error_class='interrupted' and
+#        node.attempt.interrupted{reason:'human_takeover'};
+#        runs.status='paused' paused_reason='human_takeover'; then return-control →
+#        run resumes and the next attempt's retry_context names the intervention.
+#        GET /conversations/$CID still replays the full transcript from M1/M2's
+#        mechanism — the run adds rows, never a second cursor.
+# The algebra below runs over canned ledger rows; only c9f_deadline_arms() /
+# c9g_takeover() hand it real ones. `ok is None` is an honest GAP, never a PASS.
+
+# The schema's own enum (internal/pipelines/schema/assets/
+# pipeline-v1alpha1.schema.json configHumanApproval.onTimeout) and its own floor
+# (deadlineSeconds.minimum: 60). The brief suggested 20s; 20 is BELOW the floor, so
+# a 20-second scratch revision would be refused at validate and never run at all —
+# the shortest deadline the lab may legitimately arm is the schema's 60.
+C9F_TIMEOUT_ARMS = ("fail", "expire", "cancel_run")
+C9F_SCHEMA_FLOOR_S = 60
+C9F_DEADLINE_S = C9F_SCHEMA_FLOOR_S
+C9F_SUB_FLOOR_S = 20           # the value the brief asked for: the probe, not the arm
+# serve.go's m4Driver.Run(ctx, 2*time.Second): the deadline pass is at most one tick
+# (plus one advance) behind the wall clock, so a wait of deadline + tick + slack is
+# long enough to see expiry and short enough to say GAP when it does not come.
+C9F_TICK_S = 2
+C9F_ARM_WAIT_S = 90            # arm + tick + slack for the ONE-deadline arms
+C9F_EXPIRE_WAIT_S = 180        # 'expire' re-requests with the SAME window, so 2x
+
+
+def c9f_deadline_doc(canonical, name, on_timeout, deadline_seconds=C9F_DEADLINE_S):
+    """C9f's own revision: a copy of the seed twin's canonical document with
+    EXACTLY two edits — metadata.name and the /approve gate's config (deadlineSeconds
+    + onTimeout). The seed authors deadlineSeconds: 86400 / onTimeout: fail and
+    published revisions are immutable (§ 7.0), so the expire/cancel_run arms have no
+    row to expire until the gate publishes this copy; pulling deadline_at forward by
+    SQL would fake the clock, which § 7.0 forbids (SQL is evidence only). The
+    c8e_policy_doc honesty rule applies: if the splice cannot be shown to be the seed
+    PLUS those two lines, measure nothing. {doc: yaml|None, applied, missing, arm,
+    deadline_seconds, edited} — doc None = refuse."""
+    out = {"doc": None, "applied": [], "missing": [], "arm": on_timeout,
+           "deadline_seconds": deadline_seconds, "edited": None}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (no canonical kind: Pipeline document — "
+                              "GET /revisions/{id} must serve canonical_document)")
+        return out
+    if on_timeout not in C9F_TIMEOUT_ARMS:
+        out["missing"].append(f"on_timeout {on_timeout!r} is not a schema arm "
+                              f"{C9F_TIMEOUT_ARMS} — the leg will not invent one")
+        return out
+    doc = json.loads(json.dumps(canonical))            # deep copy; the seed stays untouched
+    if not isinstance(doc.get("metadata"), dict):
+        out["missing"].append("metadata.name (no metadata block to rename)")
+    else:
+        doc["metadata"]["name"] = name
+        out["applied"].append("metadata.name")
+    nodes = (doc.get("spec") or {}).get("nodes") or []
+    gates = [n for n in nodes if isinstance(n, dict) and n.get("kind") == "human.approval"
+             and isinstance(n.get("config"), dict)]
+    if len(gates) != 1:
+        out["missing"].append(f"the one top-level human.approval gate (found {len(gates)})")
+    else:
+        cfg = gates[0]["config"]
+        had_dl, had_ot = cfg.get("deadlineSeconds"), cfg.get("onTimeout")
+        try:
+            want = int(deadline_seconds)
+        except (TypeError, ValueError):
+            want = None
+        if want is None or want < C9F_SCHEMA_FLOOR_S:
+            out["missing"].append(f"deadlineSeconds {deadline_seconds!r} is under the schema's "
+                                  f"floor ({C9F_SCHEMA_FLOOR_S}) — validate would refuse it")
+        elif had_dl == want and had_ot == on_timeout:
+            out["missing"].append(f"the source already authors deadlineSeconds: {want} / "
+                                  f"onTimeout: {on_timeout} — this arm would measure the seed, "
+                                  "not the gate's copy")
+        else:
+            cfg["deadlineSeconds"] = want
+            cfg["onTimeout"] = on_timeout
+            out["applied"].append(f"/approve deadlineSeconds: {had_dl} -> {want}")
+            out["applied"].append(f"/approve onTimeout: {had_ot} -> {on_timeout}")
+            out["edited"] = doc
+    out["doc"] = None if out["missing"] else doc_yaml_emit(doc)
+    return out
+
+
+# --- C9 live helpers — the stack-facing half -----------------------------------
+
+
+def c9f_doc_verdicts(splices, arm):
+    """Honesty gate on the re-authored document: the gate may only claim a C9f arm if
+    the ONE thing it changed is the /approve gate's deadline pair (plus the rename).
+    A refused splice is reported on the arm it belongs to — the leg then has no
+    revision to run and must say so, never verdict an unauthored deadline."""
+    sp = splices or {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    want = sp.get("deadline_seconds", C9F_DEADLINE_S)
+    nothing = not applied and not missing and not isinstance(doc, str)
+    v = [(f"C9f {arm}: own revision authored — only the /approve deadline pair moved",
+          None if nothing else any("deadlineSeconds" in a for a in applied)
+          and any("onTimeout" in a for a in applied),
+          "no splice report at all" if nothing else f"applied={applied}")]
+    if missing:
+        v.append((f"C9f {arm}: the scratch revision is the seed PLUS the deadline pair",
+                  False, f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append((f"C9f {arm}: the authored bytes carry deadlineSeconds: {want} and "
+                  f"onTimeout: {arm}",
+                  f"deadlineSeconds: {want}" in doc and f"onTimeout: {arm}" in doc
+                  and "deadlineSeconds: 86400" not in doc,
+                  f"{len(doc)} bytes"))
+    return v
+
+
+def c9f_sub_floor_verdict(vresp, sub_floor=C9F_SUB_FLOOR_S, floor=C9F_SCHEMA_FLOOR_S):
+    """The 20-second probe: the brief's suggested short deadline is BELOW the schema's
+    declared floor (configHumanApproval.deadlineSeconds.minimum), so it must be
+    REFUSED at validate rather than run. Recorded so the row states why the arms use
+    60 and not 20 — the schema is the authority, not this file."""
+    label = (f"C9f the sub-floor deadline ({sub_floor}s < minimum {floor}) is refused at "
+             "validate (the schema's floor, not the driver's)")
+    if not c13_validate_ok(vresp):
+        return [(label, None, "no § 2.2 ValidateResponse body to read")]
+    hits = [e for e in (vresp.get("errors") or [])
+            if "deadlineSeconds" in str(e.get("instance_location"))]
+    codes = sorted({str(e.get("code")) for e in hits})
+    return [(label, vresp.get("valid") is False and bool(hits),
+             c13_brief(vresp.get("errors")) if not hits else
+             f"{len(hits)} error(s) codes={codes} at "
+             f"{[str(e.get('instance_location')) for e in hits][:2]}")]
+
+
+def c9f_waited_verdicts(snap, expired):
+    """The half of C9f that is true WHILE the short deadline waits (read before
+    expiry): nothing is claimed behind the gate and the reconciler has not expired
+    anything yet. `expired` None = the journal read failed (GAP)."""
+    if not snap:
+        return [("C9f nothing is claimed while the short deadline waits", None,
+                 "no gate row to read attempts from")]
+    return [
+        ("C9f nothing is claimed while the short deadline waits (ZERO attempts behind "
+         f"{C9_GATE_KEY}, the run is waiting_human)",
+         count_or_none(snap.get("attempts")) == 0
+         and str(snap.get("run_status")) == "waiting_human",
+         f"attempts={snap.get('attempts')!r} run_status={snap.get('run_status')!r}"),
+        ("C9f the deadline has NOT expired yet while the gate waits",
+         None if expired is None else len(expired) == 0,
+         "no approval.expired read" if expired is None else f"{len(expired)} row(s)"),
+    ]
+
+
+def c9f_branch_verdicts(plan_row, artifacts, reads, run_status_during=""):
+    """§ 7.1 C9f's last sentence, measurable half: 'the run's other branches keep
+    running: the sample's /plan artifact is still readable'. `plan_row` is the /plan
+    node's ledger row {status, outputs_present}; `artifacts` are the run's artifact
+    rows (C1f's shape) and `reads` the {artifact_id: status} answers of
+    GET /artifacts/{id}. A missing read is a GAP, never a pass."""
+    out = [("C9f the gated run's upstream work survives the wait: /plan is succeeded "
+            "and its outputs are still readable",
+            None if not isinstance(plan_row, dict) or not plan_row else
+            (str(plan_row.get("status")) == "succeeded"
+             and truthy(plan_row.get("outputs_present"))),
+            f"{plan_row}" if isinstance(plan_row, dict) else "no /plan row read")]
+    if artifacts is None:
+        out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                    "waits", None, "the artifacts read failed"))
+        return out
+    if not artifacts:
+        out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                    "waits", None,
+                    "this run has ZERO artifact rows: the deterministic twin publishes "
+                    "its only artifact (review-evidence.md) AFTER the gate and its "
+                    "/plan is process.exec with outputs, not artifact.publish "
+                    "(pipeline.yaml doc 2). The /plan outputs row above is the "
+                    "readable evidence; nothing behind a waiting gate has published "
+                    "bytes yet — GAP, never PASS"))
+        return out
+    bad = [a for a in artifacts if reads.get(str(a.get("id"))) not in (200, 201, 206)]
+    out.append(("C9f the sample's /plan artifact is still readable while the gate "
+                f"waits ({len(artifacts)} row(s), GET /artifacts/{{id}})",
+                not bad, f"un-readable={[a.get('id') for a in bad][:3]} "
+                         f"run_status_while_waiting={run_status_during!r}"))
+    return out
+
+
+def c9f_sibling_verdicts(ran, our_gate_held, our_status):
+    """'a sibling node in the C8 pipeline progresses while an unrelated gate waits':
+    the sibling is ANOTHER run the leg started and released from its own gate; `ran`
+    counts its node rows that reached a terminal status while OUR gate kept waiting.
+    None (or 0 because the sibling never started) is a GAP — an unrelated run that
+    never ran says nothing about the waiting gate."""
+    if not ran:
+        return [("C9f a sibling node in the C8 pipeline progresses while an unrelated "
+                 "gate waits", None,
+                 "no sibling run progressed while our gate waited (sibling terminal "
+                 f"node rows={ran!r}) — nothing to measure, GAP not PASS")]
+    return [("C9f a sibling node in the C8 pipeline progresses while an unrelated "
+             f"gate waits ({ran} sibling node row(s) terminal while our gate sat "
+             f"{our_status!r})",
+             bool(our_gate_held),
+             f"sibling_terminal={ran} our_gate_still_waiting={our_gate_held!r} "
+             f"our_run_status={our_status!r}")]
+
+
+def _c9f_run_detail(run_row, ev):
+    if run_row is None:
+        return "the runs row could not be read"
+    return (f"runs.status={run_row.get('status')!r} failed_cause="
+            f"{run_row.get('failed_cause')!r} run.failed={str(ev)[:120]}")
+
+
+def c9f_expiry_verdicts(arm, snap, expired, run_row, failed_ev, cancel_ev):
+    """C9f's terminal algebra, one shape per on_timeout arm. Inputs (None anywhere is
+    a GAP, never a PASS):
+      snap      the gate's joined ledger row AFTER the window (c9_gate_row columns)
+      expired   [{on_timeout, re_requested}] approval.expired rows for THIS gate
+      run_row   {status, failed_cause} from runs
+      failed_ev the run.failed payload (error_class) or None
+      cancel_ev the run.cancel_requested payload (cascade) or None"""
+    label = f"C9f on_timeout={arm}"
+    if not snap:
+        return [(f"{label}: the gate's row is readable after the window", None,
+                 "no gate row to read")]
+    if expired is None:
+        return [(f"{label}: approval.expired is journalled for this gate", None,
+                 "the approval.expired read failed")]
+    out = [(f"{label}: approval.expired is journalled for this gate (reconciler "
+            "pass 2, § 3 row 28)",
+            len(expired) > 0,
+            f"{len(expired)} row(s): "
+            f"{[(e.get('on_timeout'), e.get('re_requested')) for e in expired][:3]}"),
+           (f"{label}: every approval.expired row names on_timeout={arm}",
+            bool(expired) and all(str(e.get("on_timeout")) == arm for e in expired),
+            f"observed={sorted({str(e.get('on_timeout')) for e in expired}) or 'none'}"),
+           (f"{label}: the gate row is terminal (never pending — an approval can "
+            "never hang forever, § 5.4 pass 2)",
+            str(snap.get("state")) in ("expired", "cancelled"),
+            f"state={snap.get('state')!r}")]
+    st = str((run_row or {}).get("status"))
+    rerequests = len([e for e in expired if truthy(e.get("re_requested"))])
+    if arm == "cancel_run":
+        return out + [
+            ("C9f on_timeout=cancel_run: the run ends cancelled (C8g's cascade path), "
+             f"never failed (observed {st or '(unreadable)'!r})",
+             None if run_row is None else st == "cancelled", _c9f_run_detail(run_row, failed_ev)),
+            ("C9f on_timeout=cancel_run: run.cancel_requested was journalled first",
+             None if run_row is None else cancel_ev is not None,
+             "no run.cancel_requested row for this run" if run_row is not None
+             and cancel_ev is None else str(cancel_ev)[:140]),
+            ("C9f on_timeout=cancel_run: the timeout never masquerades as a business "
+             "outcome or an execution failure (no run.failed here)",
+             None if run_row is None else failed_ev is None,
+             f"run.failed={str(failed_ev)[:120]}"),
+            ("C9f on_timeout=cancel_run: re_requested stays false (cancel is not a "
+             "re-request)", rerequests == 0, f"re_requested rows={rerequests}"),
+        ]
+    return out + [
+        (f"{label}: run.failed carries error_class='approval_expired' (§ 7.1 C9f's "
+         "literal) and so does the gate's own node row",
+         None if run_row is None or failed_ev is None else
+         (st == "failed" and str(failed_ev.get("error_class")) == "approval_expired"
+          and str(snap.get("node_error_class")) == "approval_expired"),
+         _c9f_run_detail(run_row, failed_ev)),
+    ]
+
+
+def c9f_rerequest_verdicts(snap_after_first, rerequested, rows_after_first,
+                           deadline_moved):
+    """§ 7.1 C9f's middle arm, verbatim: 'on_timeout=expire re-requests EXACTLY ONCE
+    (approval_requests.re_requested=t) and then fails'. These are the reads taken
+    between the two deadlines: ONE re-request, the same row reused (version bumped,
+    new deadline), nothing expired-yet-decided, and the gate still pending."""
+    if not snap_after_first:
+        return [("C9f on_timeout=expire: the gate re-requests EXACTLY ONCE "
+                 "(re_requested=t) and keeps waiting", None,
+                 "no gate row read between the two deadlines")]
+    out = [
+        ("C9f on_timeout=expire: approval_requests.re_requested = t on the SAME row "
+         "(D3: the re-request reuses the row, it does not open a second one)",
+         None if rerequested is None else truthy(rerequested),
+         f"re_requested={rerequested!r} state={snap_after_first.get('state')!r}"),
+        ("C9f on_timeout=expire: EXACTLY ONE approval.expired row carries "
+         "re_requested=true so far",
+         None if rows_after_first is None else
+         len([e for e in rows_after_first if truthy(e.get("re_requested"))]) == 1,
+         "no approval.expired read" if rows_after_first is None else
+         f"{len(rows_after_first)} expired row(s)"),
+        ("C9f on_timeout=expire: the re-request moved the deadline forward (the "
+         "approver is not failed for a second they were already granted)",
+         None if deadline_moved is None else bool(deadline_moved),
+         f"deadline_moved={deadline_moved!r}"),
+        ("C9f on_timeout=expire: the gate is still pending and holds no attempt while "
+         "re-requested",
+         str(snap_after_first.get("state")) == "pending"
+         and count_or_none(snap_after_first.get("attempts")) == 0,
+         f"state={snap_after_first.get('state')!r} "
+         f"attempts={snap_after_first.get('attempts')!r}"),
+    ]
+    return out
 
 
 # --- C9 live helpers — the stack-facing half -----------------------------------
@@ -14344,6 +14919,47 @@ W6_RETRY_WAIT_S = 240
 W6_ATTEMPT_TERMINAL = ("succeeded", "failed", "cancelled", "interrupted")
 W5_LAB_PROJECT = COMPOSE_PROJECT
 
+# --- who the row's "no auto-retry is offered" forbids, quoted from the rules ----
+# § 7.2 W6: "'prior edits lost, rerun required' and an error class chip
+#   `workspace_lost`; no auto-retry is offered (M3 W8's rule, unchanged wording)".
+# M3 § 9 W8 (docs/m3-contract.md:614), the rule it cites: "different-volume:
+#   `workspace.recovery_lost` with `reason="volume_changed"` and the UI saying 'prior
+#   edits lost, rerun required' — never 'resumed' (J7)" — a WORDING rule about the UI.
+# § 7.1 C6e: "the run fails with error_class='workspace_lost' and NO automatic retry
+#   (ADR-0023 § 11 pass 5), and the UI says 'prior edits lost, rerun required'".
+# ADR-0023 § 7: "Non-retriable classes (`workspace_lost`, `predicate_error`,
+#   `approval_expired`, `cancelled`, `sandbox_enforcement_failed` unless
+#   reconfigured) fail the node immediately." — about the ENGINE's retry policy.
+# Route 31 (docs/m4-contract.md § 5.2): "`POST /api/v1/runs/{runId}/retry` … Targets
+#   failed/interrupted/cancelled node executions … re-queues attempts with
+#   `retry_context`" — no workspace_lost exclusion, and the contract's own copy asks
+#   for a RERUN. So the prohibition is on the engine's AUTOMATIC retry (graded off the
+#   journal by w6_auto_retry_class_verdicts); an enabled control the page describes as
+#   the operator's own rerun is what § 7.1 C6d/C6e leave standing, and this arm FAILs
+#   only a control that offers an automatic retry. An engine auto-retry is never a
+#   button — it is a journalled scheduling decision — so the copy decides.
+W6_AUTO_RETRY_OFFER_RE = re.compile(
+    r"auto(?:\s+|_)?(?:matic(?:ally)?)?\s*retr\w*|scheduled\s+retr\w*|retr\w+\s+(?:is|are)\s+"
+    r"scheduled|next\s+attempt\s+scheduled|retry\s+scheduled|will\s+(?:be\s+)?retr\w+"
+    r"|retr\w+\s+itself", re.I)
+W6_NEGATED_AUTO_RETRY_RE = re.compile(r"\bno\s+auto(?:\s+|_)?(?:matic(?:ally)?)?\s*retr\w*", re.I)
+W6_MANUAL_RERUN_RE = re.compile(
+    r"re-?\s?runs?\b|re-?\s?queue[sd]?\b|rerun\b|start\s+a\s+new\s+run|route\s*31"
+    r"|has no target|not retriable", re.I)
+# Words a workspace_lost refusal may never use, whatever field they arrive in.
+W6_REFUSAL_FORBIDDEN = ("resumed", "no data lost")
+
+
+def w6_retry_offer_kind(desc):
+    """'auto' | 'manual' | '' from a control's OWN words. 'No automatic retry is
+    offered' is the honest refusal, not an offer, so the negated form is cut first."""
+    low = W6_NEGATED_AUTO_RETRY_RE.sub(" ", str(desc or ""))
+    if W6_AUTO_RETRY_OFFER_RE.search(low):
+        return "auto"
+    if W6_MANUAL_RERUN_RE.search(low):
+        return "manual"
+    return ""
+
 
 def w_norm(text):
     """Page text as the wording assertions read it: case-folded, whitespace collapsed,
@@ -14550,37 +15166,67 @@ def w_retry_controls(nodes):
 
 
 def w6_retry_control_verdict(controls, dom, auto_retried=None):
-    """"no auto-retry is offered" (M3 W8's rule) read as this row's brief words it: no
-    retry control at all is the clean answer, and a control the page does show must be
-    DISABLED or say 'not retriable'. The ledger's retry_scheduled count is quoted
-    alongside so the engine's half (no scheduled retry) stays readable apart from the
-    UI's half — an enabled manual 'Retry' is a rerun offer, not an engine auto-retry,
-    and the detail line says which of the two it found."""
+    """§ 7.2 W6's UI arm, read as the row words it: "no AUTO-retry is offered". The
+    rule it cites (M3 W8) is a wording rule and ADR-0023 § 7/§ 11 pass 5 put the
+    prohibition on the ENGINE's retry policy, while route 31 leaves the operator a
+    manual rerun of failed node executions — the copy itself says "rerun required".
+    So: no control at all, or a withheld one, is the clean PASS; an enabled control is
+    graded by ITS OWN description — a promise that the loss will be retried by itself
+    is the FAIL the row asks for, a control the page describes as the operator's rerun
+    is the offer route 31 reserves. The engine's half is quoted from the journal
+    (`auto_retried` = retry_scheduled rows carrying the loss class) so a reader can
+    never confuse the two, and a manual control above a scheduled loss retry is the
+    engine's violation, whoever drew the button. None (GAP) when the disabled state
+    did not read back, or when the manual controls sit above an unreadable journal."""
     label = "W6 no Retry/auto-retry control is offered for the lost workspace"
     auto = (f"; ledger node.attempt.retry_scheduled rows carrying "
             f"error_class={W6_ERROR_CLASS} for the run={auto_retried!r} (0 = the engine "
             "scheduled none)")
+    shown = [(c.get("text"), c.get("disabled"), str(c.get("title") or "")[:60])
+             for c in (controls or [])][:2]
+    if auto_retried:
+        return (label, False, f"the ENGINE scheduled {auto_retried} retry(ies) whose class "
+                              f"is the loss — an automatic retry IS offered whatever the "
+                              f"page draws{auto} (controls: {shown})")
     if not controls:
         return (label, True, f"the run page offers no retry control at all; retry-ish copy "
                              f"on screen: {w_quotes(dom, 'retry', limit=2)}{auto}")
-    excused = [c for c in controls if c.get("disabled") is True
-               or "not retriable" in f"{c.get('text')} {c.get('title')}".lower()]
-    if len(excused) == len(controls):
+    promised = [c for c in controls
+                if w6_retry_offer_kind(f"{c.get('text')} {c.get('title')}") == "auto"]
+    if promised:
+        return (label, False, f"{len(promised)} control(s) offer an AUTOMATIC retry: "
+                              f"{[(c['text'], c['title'][:60]) for c in promised][:2]}"
+                              f"{auto} — ADR-0023 § 7 makes workspace_lost non-retriable, "
+                              "so a page promising the loss will retry itself is the row's "
+                              "FAIL, whatever the ledger says")
+    withheld = [c for c in controls if c.get("disabled") is True
+                or "not retriable" in f"{c.get('text')} {c.get('title')}".lower()]
+    if len(withheld) == len(controls):
         return (label, True, f"{len(controls)} retry control(s) shown and every one is "
-                             f"disabled or says 'not retriable': "
-                             f"{[(c['text'], c['disabled'], c['title'][:60]) for c in controls][:2]}"
-                             f"{auto}")
-    offered = [c for c in controls if c not in excused]
-    if any(c.get("disabled") is None for c in offered):
+                             f"disabled or says 'not retriable': {shown}{auto}")
+    live = [c for c in controls if c not in withheld]
+    if any(c.get("disabled") is None for c in live):
         return (label, None, f"the retry control's own disabled state did not read back: "
-                             f"{[(c['text'], c['disabled'], c['title'][:60]) for c in offered][:2]}"
+                             f"{[(c['text'], c['disabled'], c['title'][:60]) for c in live][:2]}"
                              f"{auto} — an unreadable control has never proven that a page "
                              "offers (or withholds) an action")
-    return (label, False, f"{len(offered)} retry control(s) offered ENABLED: "
-                          f"{[(c['text'], c['disabled'], c['title'][:60]) for c in offered][:2]}"
-                          f"{auto} — the copy on screen says 'No automatic retry is offered' "
-                          "(engine half intact), but this row's UI arm asks for a disabled or "
-                          "'not retriable' control and the page hands out a live one")
+    if auto_retried is None:
+        return (label, None, f"{len(live)} enabled control(s) read as the operator's own "
+                             f"rerun, but the engine's retry_scheduled read did not land "
+                             f"{auto} — 'no auto-retry is offered' is only half measurable")
+    named = [c for c in live
+             if w6_retry_offer_kind(f"{c.get('text')} {c.get('title')}") == "manual"]
+    how = (f"{len(named)}/{len(live)} describe themselves as the operator's rerun (route 31 "
+           "re-queues the failed node executions)" if named else
+           f"no control carried its own description, so nothing on screen promises an "
+           "automatic retry")
+    return (label, True, f"{len(live)} enabled retry control(s) and NONE of them offers an "
+                         f"automatic retry: {shown}; {how}. § 7.2 W6 forbids the ENGINE's "
+                         "auto-retry (ADR-0023 § 7 — workspace_lost is non-retriable, "
+                         "w6_auto_retry_class_verdicts grades that off the journal), while "
+                         "route 31 and the row's own 'rerun required' leave the manual "
+                         f"rerun standing{auto} — the copy on screen "
+                         f"{w_quotes(dom, 'automatic retry', limit=1)}")
 
 
 # --- W6's sequencing: WHO armed the retry that loses the workspace ------------
@@ -14680,6 +15326,17 @@ def w6_loss_classification_verdicts(lost, ev, run_row, loss_copy=W6_LOSS_COPY,
                  "no refusal attempt was produced, so there is no classification to read")]
     cls, det = str(lost.get("error_class") or ""), str(lost.get("detail") or "")
     low = det.lower()
+    # `attempts.detail` is what the worker wrote for the JOURNAL (live17/W6.out:
+    # "workspace.recovery_lost/volume_changed: … its prior edits are lost, rerun
+    # required (ADR-0023 § 7 — never retried automatically): postgres: run workspace
+    # volume"). § 7.2 W6's exact sentence is owed to the operator by the UI, so this
+    # arm proves the refusal tells the SAME story (the edits are gone, a rerun is the
+    # only way back) and never implies the work carried on; the quoted words
+    # themselves are graded on the page by w6_loss_copy_verdict.
+    story = bool(re.search(r"\blost\b|\bloss\b|\bgone\b|unreachable|not present", low)) \
+        and bool(re.search(r"rerun|re-?\s?run\b|new run", low))
+    exact = all(c.lower() in low for c in loss_copy)
+    dirty = [w for w in W6_REFUSAL_FORBIDDEN if w in low]
     v = [("W6 the workspace the other worker could not see was classified as a loss "
           f"(error_class='{error_class}')", cls == error_class,
           f"attempt {lost.get('attempt_number')} on worker {lost.get('worker')!r} "
@@ -14691,11 +15348,17 @@ def w6_loss_classification_verdicts(lost, ev, run_row, loss_copy=W6_LOSS_COPY,
               "retry (workspace.recovery_lost is journalled)", bool(ev),
               f"event={json.dumps(ev) if ev else '(none)'} run_row={run_row!r} — the "
               "event is the fact the run page's loss story is supposed to describe"))
-    v.append((f"W6 the refusal tells the operator {list(loss_copy)!r} "
-              "(M3 W8's rule, unchanged wording)",
-              all(c.lower() in low for c in loss_copy),
-              f"detail={det[:220]!r} — the attempt's own text is what the operator "
-              "reads when the workspace is gone"))
+    v.append((f"W6 the refusal tells the operator {list(loss_copy)!r} in its own words "
+              "(M3 W8's rule: the loss and the rerun it requires, never a resume)",
+              story and not dirty,
+              f"detail={det[:220]!r} — the ENGINE's machine sentence, so this arm reads the "
+              f"story it tells (loss named + rerun asked for, no resume; the exact "
+              f"contract sentence appears verbatim={exact}). The WORDS § 7.2 W6 quotes "
+              "are the operator-facing sentence "
+              "ui/src/components/m4/AttemptDetail.tsx draws behind "
+              "attempt.error_class === 'workspace_lost', and w6_loss_copy_verdict grades "
+              "those on the page"
+              + (f" — the refusal claims {dirty}, which M3 W8/J7 forbid" if dirty else "")))
     return v
 
 

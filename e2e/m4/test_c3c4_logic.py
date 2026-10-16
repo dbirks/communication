@@ -135,6 +135,98 @@ def _k(pairs):  # tiny helper: labels out of a [(label, ok, detail)] list
     return [p[0] for p in pairs]
 
 
+class C3FanoutHandoutTest(unittest.TestCase):
+    """§ 7.1 C3a measured over the leg's OWN fan-out queue (c3_build_queue)."""
+
+    def groups(self, *pairs):
+        return [{"worker": w, "n": str(n)} for w, n in pairs]
+
+    def test_two_workers_with_overlap_passes_every_arm(self):
+        v = m.c3_fanout_handout_verdicts(
+            self.groups(("worker-a", 18), ("worker-b", 7)), 2, [(1, 1), (2, 4), (3, 0)])
+        self.assertTrue(all(ok is True for _l, ok, _d in v), v)
+
+    def test_single_worker_deep_queue_fails_the_handout_arm_not_gap(self):
+        v = m.c3_fanout_handout_verdicts(self.groups(("worker-a", 25)), 2, [(1, 3)])
+        arm = [ok for l, ok, _d in v if "BOTH online workers" in l][0]
+        self.assertFalse(arm)  # both online, 25 queued, one claimant = measured FAIL
+
+    def test_second_worker_offline_gaps_the_contention_arm(self):
+        v = m.c3_fanout_handout_verdicts(self.groups(("worker-a", 25)), 1, [(1, 3)])
+        arm = [ok for l, ok, _d in v if "BOTH online workers" in l][0]
+        self.assertIsNone(arm)  # nothing to contend — never a PASS, never a fake FAIL
+
+    def test_no_rows_at_all_is_a_gap_never_a_zero_pass(self):
+        v = m.c3_fanout_handout_verdicts([], 2, [])
+        self.assertTrue(all(ok is None for _l, ok, _d in v), v)
+
+    def test_unreadable_counts_never_read_as_a_clean_zero(self):
+        v = m.c3_fanout_handout_verdicts([{"worker": "worker-a", "n": "?"}], 2, [(1, 2)])
+        self.assertIsNone([ok for l, ok, _d in v if "handed child attempts out" in l][0])
+
+    def test_claimed_rows_without_any_worker_id_is_a_fail(self):
+        v = m.c3_fanout_handout_verdicts(self.groups(("(unclaimed)", 25)), 2, [])
+        self.assertFalse([ok for l, ok, _d in v if "handed child attempts out" in l][0])
+
+    def test_serialised_claims_fail_the_overlap_arm(self):
+        v = m.c3_fanout_handout_verdicts(self.groups(("worker-a", 9), ("worker-b", 3)),
+                                         2, [(1, 1), (2, 1)])
+        self.assertFalse([ok for l, ok, _d in v if "overlapped" in l][0])
+        self.assertTrue([ok for l, ok, _d in v if "BOTH online workers" in l][0])
+
+    def test_empty_samples_gap_the_overlap_arm(self):
+        v = m.c3_fanout_handout_verdicts(self.groups(("worker-a", 5), ("worker-b", 5)),
+                                         2, [])
+        self.assertIsNone([ok for l, ok, _d in v if "overlapped" in l][0])
+
+    def test_handout_groups_parses_rows_and_drops_ragged_lines(self):
+        self.assertEqual(
+            m.c3_handout_groups("worker-a|18\nworker-b|7\nNOTICE something\nbad\n\n"),
+            [{"worker": "worker-a", "n": "18"}, {"worker": "worker-b", "n": "7"}])
+
+
+class C3RollupTest(unittest.TestCase):
+    def rows(self, *specs):
+        return [dict(key=k, attempt_number=str(n), held=str(h), workers=str(w))
+                for k, n, h, w in specs]
+
+    def test_all_clean_groups_pass_both_rules(self):
+        v = m.c3_rollup_verdicts(self.rows(("/a", 1, 1, 1), ("/a", 2, 0, 1), ("/b", 1, 1, 1)))
+        self.assertEqual(len(v), 2)
+        self.assertTrue(all(ok for _l, ok, _d in v), v)
+
+    def test_one_violating_group_fails_the_rule_and_is_quoted(self):
+        v = m.c3_rollup_verdicts(self.rows(("/a", 1, 1, 1), ("/a", 2, 2, 1), ("/b", 1, 1, 2)))
+        leased = [p for p in v if "one live claim" in p[0]][0]
+        workers = [p for p in v if "distinct workers" in p[0]][0]
+        self.assertFalse(leased[1] or workers[1])
+        self.assertIn("1 violating group(s)", leased[2])
+        self.assertIn("1 violating group(s)", workers[2])
+        self.assertIn("/a", leased[2])
+
+    def test_no_groups_yield_no_rules_not_a_pass(self):
+        self.assertEqual(m.c3_rollup_verdicts([]), [])
+
+
+class C3Emit3Test(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: dict(v) for k, v in m.CTX.items()}
+        self._gaps, self._fails = list(m.GAPS), list(m.FAILURES)
+
+    def tearDown(self):
+        m.GAPS[:], m.FAILURES[:] = self._gaps, self._fails
+        m.CTX.clear()
+        m.CTX.update(self._saved)
+
+    def test_none_gap_true_false_check(self):
+        import io
+        import contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            m.c3_emit3([("g", None, "why"), ("p", True, ""), ("f", False, "d")])
+        self.assertTrue(any(x.startswith("g:") for x in m.GAPS))
+        self.assertIn("f", m.FAILURES)
+
+
 class C4LiveAttemptTest(unittest.TestCase):
     ROW = ("a-1|/build_until_verified[1]/implement|worker-a|7|1|"
            "0197-0000-0000-0000-000000000001")

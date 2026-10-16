@@ -69,6 +69,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     W5_INTERRUPTED_COPY,
     W6_ERROR_CLASS,
     W6_LOSS_COPY,
+    W6_REFUSAL_FORBIDDEN,
     w5_attempt2_verdict,
     w5_console_verdict,
     w5_countdown_verdict,
@@ -82,6 +83,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     w6_loss_copy_verdict,
     w6_loss_facts,
     w6_retry_control_verdict,
+    w6_retry_offer_kind,
     w6_retry_scheduled_total,
     w6_who_armed_the_retry,
     C6_LOSS_WORKER,
@@ -1186,18 +1188,43 @@ def test_w6_loss_copy_chip_and_retry_control():
     assert w6_chip_verdict(nodes, dom)[1] is True
     assert w6_chip_verdict([], "") [1] is False, "no chip is the honest FAIL the row asks for"
     assert one([w6_chip_verdict(nodes, dom)], "chip", detail=True).startswith("1 element")
-    # the retry control: none → PASS; disabled/'not retriable' → PASS; live → FAIL
+    # the retry control: § 7.2 W6's words are "no AUTO-retry is offered"; the rule it
+    # cites (M3 W8) is a WORDING rule about the UI, and route 31 keeps the operator's
+    # manual rerun of failed node executions (no workspace_lost exclusion). The engine's
+    # half is the journal's (w6_auto_retry_class_verdicts), so this arm fails an offered
+    # AUTOMATIC retry, not the manual rerun the row's own copy asks for.
     ctrls = w_retry_controls(nodes)
     assert [c["text"] for c in ctrls] == ["Retry"], ctrls
+    live17 = ('### Result\n"Re-runs 7 nodes: /build_until_verified, '
+              '/build_until_verified[1]/implement"')  # live17/W6.out's real route-31 title
     assert w6_retry_control_verdict([], dom, 0)[1] is True
     assert w6_retry_control_verdict([dict(c, disabled=True) for c in ctrls], dom, 0)[1] is True
     assert w6_retry_control_verdict([dict(c, disabled=None, title="not retriable")
                                      for c in ctrls], dom, 0)[1] is True
     gap = w6_retry_control_verdict([dict(c, disabled=None) for c in ctrls], dom, 0)
     assert gap[1] is None and "did not read back" in gap[2], gap
-    bad = w6_retry_control_verdict([dict(c, disabled=False) for c in ctrls], dom, 0)
-    assert bad[1] is False and "ENABLED" in bad[2] and "No automatic retry" in bad[2], bad
-    assert "run=0" in bad[2], "the engine's half is quoted so a reader can tell them apart"
+    manual = w6_retry_control_verdict([dict(c, disabled=False, title=live17)
+                                       for c in ctrls], dom, 0)
+    assert manual[1] is True and "manual rerun" in manual[2], manual
+    assert "run=0" in manual[2], "the engine's half is quoted so a reader can tell them apart"
+    unnamed = w6_retry_control_verdict([dict(c, disabled=False) for c in ctrls], dom, 0)
+    assert unnamed[1] is True and "NONE of them offers an automatic retry" in unnamed[2], unnamed
+    for promise in ("Retry — this failure will be retried automatically",
+                    "Retry · auto retry scheduled",
+                    "Retry — next attempt scheduled on backoff"):
+        bad = w6_retry_control_verdict([dict(c, disabled=False, title=promise)
+                                        for c in ctrls], dom, 0)
+        assert bad[1] is False and "AUTOMATIC" in bad[2], (promise, bad)
+    # an honest refusal that SAYS no auto-retry is offered is not an offer of one
+    assert w6_retry_control_verdict(
+        [dict(c, disabled=False, title="Retry — no automatic retry is offered; "
+                                        "start a new run") for c in ctrls], dom, 0)[1] is True
+    # the engine's half still rules: a scheduled loss retry is an auto-retry whoever
+    # drew the control, and an unreadable journal leaves the claim half-measured
+    assert w6_retry_control_verdict([dict(c, disabled=False, title=live17)
+                                     for c in ctrls], dom, 1)[1] is False
+    assert w6_retry_control_verdict([dict(c, disabled=False, title=live17)
+                                     for c in ctrls], dom, None)[1] is None
 
 
 def test_w_pick_container_only_this_projects_worker():
@@ -1326,6 +1353,48 @@ def test_w6_classification_failure_is_a_fail_that_names_the_ledger():
                                             {"reason": "different_worker"}, "")
     assert [v[1] for v in quiet] == [True, True, False], quiet
     assert W6_LOSS_COPY[0] in quiet[2][0], "the FAIL's label names the copy it looked for"
+
+
+# live17/W6.out's REAL refusal — the worker's journal prose, which inflects the
+# contract's sentence ("its prior edits ARE lost, rerun required") because it is
+# machine prose. The exact words § 7.2 W6 quotes are the OPERATOR's sentence, drawn
+# by AttemptDetail.tsx from error_class and graded on the page by w6_loss_copy_verdict;
+# this arm's job is that the refusal tells the same story and never a resume.
+LIVE17_DETAIL = ("workspace.recovery_lost/volume_changed: this run's workspace is not on a "
+                 "volume this worker can serve; its prior edits are lost, rerun required "
+                 "(ADR-0023 § 7 — never retried automatically): postgres: run workspace volume")
+
+
+def test_w6_refusal_wording_arms_separate_the_journal_from_the_operators_sentence():
+    """The ledger arm grades the STORY, the page arm grades the WORDS — and neither one
+    is allowed to quietly stand in for the other."""
+    v = w6_loss_classification_verdicts(dict(ROW_LOST, detail=LIVE17_DETAIL),
+                                       {"reason": "volume_changed"},
+                                       "failed|node_execution_failed:/build_until_verified")
+    assert [x[1] for x in v] == [True, True, True], v
+    assert "w6_loss_copy_verdict" in v[2][2], "the FAIL/GAP text says where the exact words live"
+    # a refusal that hides the loss or promises the work carried on is still a FAIL
+    hidden = w6_loss_classification_verdicts(dict(ROW_LOST, detail="attempt failed"),
+                                            {"reason": "volume_changed"}, "")[2]
+    assert hidden[1] is False and "machine sentence" in hidden[2], hidden
+    lied = w6_loss_classification_verdicts(
+        dict(ROW_LOST, detail="workspace resumed from the mirror, no data lost, rerun "
+                              "required"), {"reason": "volume_changed"}, "")[2]
+    assert lied[1] is False and any(w in lied[2] for w in W6_REFUSAL_FORBIDDEN), lied
+    # and the page arm still demands the contract's exact sentence: the paraphrase above
+    # is NOT enough to pass it.
+    page = w6_loss_copy_verdict(LIVE17_DETAIL)
+    assert page[1] is False and "missing" in page[2], page
+
+
+def test_w6_retry_offer_kind_reads_a_promise_not_the_word_retry():
+    assert w6_retry_offer_kind('Retry ### Result "Re-runs 7 nodes: /plan"') == "manual"
+    assert w6_retry_offer_kind("Retry — no automatic retry is offered") == "manual" or \
+        w6_retry_offer_kind("Retry — no automatic retry is offered") == "", \
+        "the honest refusal is never an offer"
+    assert w6_retry_offer_kind("Retry · this will retry itself") == "auto"
+    assert w6_retry_offer_kind("Retry · next attempt scheduled 2026-10-16 11:02:15") == "auto"
+    assert w6_retry_offer_kind("Pause") == ""
 
 
 def test_w6_loss_attempt_row_only_reads_a_refusal_as_a_refusal():
