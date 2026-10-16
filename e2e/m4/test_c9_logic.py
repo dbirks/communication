@@ -867,5 +867,239 @@ class GControlBadgeTest(unittest.TestCase):
             self.assertIsNone(m._c9g_control_moved(row, self.BOB), row)
 
 
+class ArmWindowTest(unittest.TestCase):
+    """The C9f/C9g arms are only wired in if they fit the gate's wall clock: the
+    harness cuts ONE gate at 1500 s and D7's finding is that over-budget caps are
+    TRUNCATED mid-poll without even a GAP. So the call site bounds the windows and
+    falls back to the old GAP when they cannot fit — never a half-measurement."""
+
+    def test_an_unstamped_budget_bounds_nothing(self):
+        self.assertIsNone(m.CTX.get("c9_started"), "the envelope must be per-gate")
+        self.assertIsNone(m.c9_budget_left(""))
+        self.assertEqual(m.c9f_arm_windows(None), (m.C9F_ARM_WAIT_S, m.C9F_EXPIRE_WAIT_S))
+        self.assertEqual(m.c9g_windows(None),
+                         (m.C9G_WINDOW_S, m.C9G_CLOSE_POLL_S, m.C9G_RESUME_POLL_S))
+
+    def test_a_fresh_budget_runs_the_arms_on_their_authored_windows(self):
+        self.assertEqual(m.c9f_arm_windows(m.C9_BUDGET_S),
+                         (m.C9F_ARM_WAIT_S, m.C9F_EXPIRE_WAIT_S))
+        live, close, resume = m.c9g_windows(m.C9_BUDGET_S)
+        self.assertEqual((close, resume), (m.C9G_CLOSE_POLL_S, 276))
+        self.assertLessEqual(live, m.C9G_WINDOW_S)
+        self.assertGreaterEqual(live, m.C9G_WINDOW_FLOOR_S)
+
+    def test_a_tight_budget_trims_toward_the_floors_and_never_below(self):
+        # 3 arms x (62 + 122) is the floor of the C9f leg; just above it the windows
+        # must BE the floors, and below it the leg must refuse rather than truncate.
+        fit = 3 * (m.C9F_ARM_FLOOR_S + m.C9F_EXPIRE_FLOOR_S)
+        self.assertEqual(m.c9f_arm_windows(fit), (m.C9F_ARM_FLOOR_S, m.C9F_EXPIRE_FLOOR_S))
+        self.assertIsNone(m.c9f_arm_windows(fit - 1))
+        self.assertLess(m.c9f_arm_windows(m.C9_BUDGET_S // 2),
+                        (m.C9F_ARM_WAIT_S, m.C9F_EXPIRE_WAIT_S))
+        self.assertIsNone(m.c9g_windows(600))
+        self.assertLess(m.c9g_windows(900)[0], m.C9G_WINDOW_S)
+        self.assertGreaterEqual(m.c9g_windows(900)[0], m.C9G_WINDOW_FLOOR_S)
+
+    def test_the_clamp_is_given_back(self):
+        before = (m.C9F_ARM_WAIT_S, m.C9F_EXPIRE_WAIT_S)
+        prev = m.c9_clamp_windows({"C9F_ARM_WAIT_S": 70, "C9F_EXPIRE_WAIT_S": None})
+        try:
+            self.assertEqual(m.C9F_ARM_WAIT_S, 70, "the arm reads it at CALL time")
+            self.assertEqual(m.C9F_EXPIRE_WAIT_S, before[1], "None bounds nothing")
+        finally:
+            m.c9_restore_windows(prev)
+        self.assertEqual((m.C9F_ARM_WAIT_S, m.C9F_EXPIRE_WAIT_S), before)
+
+
+class RunArmProbeTest(unittest.TestCase):
+    """c9_run_arm counts the verdict lines an arm printed — the call-site answer to
+    "did the arm measure anything, or bail before its first row?" That count is what
+    decides whether the OLD GAP is still owed, so it must count every printer the arms
+    use and must hand the printers back even when the arm raises."""
+
+    def test_every_printer_counts_and_the_return_is_the_arms(self):
+        def arm():
+            m.c5_emit([("a", True, ""), ("b", None, "")])
+            m.check("c", True, "")
+            m.gap("d", "no row")
+            return "the arm's value"
+        res, lines = m.c9_run_arm(arm)
+        self.assertEqual(res, "the arm's value")
+        self.assertGreaterEqual(lines, 4)
+
+    def test_a_silent_arm_counts_zero(self):
+        _res, lines = m.c9_run_arm(lambda: None)
+        self.assertEqual(lines, 0)
+
+    def test_the_printers_survive_a_crashing_arm(self):
+        before = {name: getattr(m, name) for name in m.C9_ARM_PRINTERS}
+        with self.assertRaises(RuntimeError):
+            m.c9_run_arm(self._boom)
+        self.assertEqual({name: getattr(m, name) for name in m.C9_ARM_PRINTERS}, before)
+
+    @staticmethod
+    def _boom():
+        raise RuntimeError("the arm died")
+
+
+class WiredArmsTest(unittest.TestCase):
+    """c9() must CALL both late arms. Until this wiring the live report still printed
+    the old "the deadline is ARMED only" and "the twin carries no conversation_id"
+    GAPs while c9f_deadline_arms() / c9g_takeover() sat uncalled. Everything the stack
+    would answer is mocked (unit layer: it proves the WIRING and the fallback, never
+    the measurement — 12-test-strategy.md), and the two arms are recorders."""
+
+    FACTS = {"project_id": "p-1", "pipeline_id": "pl-1", "revision_id": "rev-1",
+             "users": {"alice": "u-alice", "bob": "u-bob"}}
+
+    class Resp:
+        def __init__(self, status, payload=None, text=""):
+            self.status, self._payload = status, payload or {}
+            self.text = text or str(payload or "")
+            self.headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        """Enough of Client for c9()'s GETs — no sockets, no login flow."""
+
+        def __init__(self, who, routes):
+            self.who, self.routes = who, routes
+
+        def get(self, base, path, **kw):
+            for needle, resp in self.routes.items():
+                if needle in path:
+                    return resp
+            return WiredArmsTest.Resp(404, {"type": "no-route"}, "no-route")
+
+    def drive(self, spent=0.0, arm_verdicts=None):
+        """`spent` is the wall clock C9a-C9e burn before the arms are reached: the
+        fake clock jumps inside C9e's run-to-terminal wait, which is what the
+        envelope is measured against in the real pass."""
+        import contextlib
+        import io
+        import time as time_mod
+        calls, orig = [], {}
+        clock = {"now": time_mod.time()}
+        gate = {"state": "pending", "version": "1", "on_timeout": "fail",
+                "re_requested": False}
+        sched = {"waiting_approvals": 1, "workers": [{"name": "worker-a",
+                                                      "active_attempts": 0}]}
+        routes = {"/system/scheduler": self.Resp(200, sched),
+                  "/api/v1/approvals/": self.Resp(200, gate)}
+        clients = {who: self.Client(who, routes)
+                   for who in ("alice", "bob", "admin", "carol", "dan")}
+        gates = iter([("r-1", AID, "a mocked pending gate"),
+                      ("r-2", AID + "e", "a mocked second gate")])
+
+        def rec(name, tag):
+            def fn(*a, **kw):
+                calls.append((name, a, kw))
+                # An arm that GRADED something emits verdicts; one that bailed at its
+                # first precondition prints nothing — the call site tells them apart.
+                if arm_verdicts:
+                    m.c5_emit(arm_verdicts(tag))
+            return fn
+
+        def fake_psql(sql):
+            if "extract(epoch FROM (deadline_at - now()))" in sql:
+                return "86340"
+            if "max(global_seq)" in sql:
+                return "10"
+            if "count(a.turn_id)" in sql:
+                return "0|0"
+            return ""
+
+        patches = {
+            "login": lambda c: {"id": f"u-{c.who}"},
+            "psql": fake_psql,
+            "run": lambda cmd, **kw: (0, "Container m4-worker-a-1  Started"),
+            "wait_worker_row": lambda name, timeout=120: ("c-1", name),
+            "c9_manifest_json": lambda: {},
+            "c9_manifest_users": lambda obj: {},
+            "c9_acquire_gate": lambda alice, facts, used, label: next(gates),
+            "c9_gate_row": lambda aid: dict(zip(m.C9_SNAP_COLS, [
+                "pending", "1", "-", "-", "waiting", "-", "-", "0", "waiting_human"])),
+            "c9_live_attempts": lambda run_id=None: "0",
+            "c9_journal_seq": lambda: "10",
+            "c9_role_of": lambda pid, uid: "contributor" if uid == "u-bob" else "maintainer",
+            "c9_decide": lambda client, aid, decision, version, comments: {
+                "who": client.who, "status": 200 if decision == "rejected" else 403,
+                "ctype": "application/problem+json", "body": {"type": "x"}},
+            "c9_decide_race": lambda clients_, aid, decision, version: (
+                [{"who": c.who, "status": 200 if i == 0 else 409,
+                  "ctype": "application/json", "body": {}} for i, c in enumerate(clients_)],
+                []),
+            "c9_denied_reasons": lambda *a, **kw: ["not_a_designated_approver"],
+            "c9_lab_write": lambda sql, why: (0, ""),
+            "c9_restore_member": lambda *a, **kw: None,
+            "c9_run_to_terminal": lambda run_id, cap, client, label: (
+                clock.update(now=clock["now"] + spent) or "rejected"),
+            "dump_run_evidence": lambda client, run_id: None,
+            "c9f_deadline_arms": rec("c9f_deadline_arms", "C9f armed"),
+            "c9g_takeover": rec("c9g_takeover", "C9g paused"),
+        }
+        saved = dict(m.CTX)
+        for name, fn in patches.items():
+            orig[name] = getattr(m, name)
+            setattr(m, name, fn)
+        m.CTX.update({"stack_up": True, "manifest": self.FACTS,
+                      "alice": clients["alice"], "bob": clients["bob"],
+                      "admin": clients["admin"], "carol": clients["carol"],
+                      "dan": clients["dan"]})
+        buf, fails, gaps = io.StringIO(), list(m.FAILURES), list(m.GAPS)
+        sleep, real_time = time_mod.sleep, time_mod.time
+        time_mod.sleep = lambda s: None
+        time_mod.time = lambda: clock["now"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                m.c9()
+        finally:
+            time_mod.sleep, time_mod.time = sleep, real_time
+            m.FAILURES[:], m.GAPS[:] = fails, gaps
+            m.CTX.clear()
+            m.CTX.update(saved)
+            for name, fn in orig.items():
+                setattr(m, name, fn)
+        return calls, buf.getvalue()
+
+    def test_c9_invokes_both_arms_with_the_clients_and_facts_it_has(self):
+        calls, out = self.drive()
+        names = [c[0] for c in calls]
+        self.assertEqual(names.count("c9f_deadline_arms"), 1, out[-400:])
+        self.assertEqual(names.count("c9g_takeover"), 1, out[-400:])
+        f = [c for c in calls if c[0] == "c9f_deadline_arms"][0][1]
+        self.assertEqual([c.who for c in f[:2]], ["alice", "admin"])
+        self.assertIs(f[2], self.FACTS)
+        g = [c for c in calls if c[0] == "c9g_takeover"][0][1]
+        self.assertEqual(g[0].who, "alice")
+        self.assertIs(g[1], self.FACTS)
+        self.assertLess(names.index("c9f_deadline_arms"), names.index("c9g_takeover"),
+                        "C9f's arms run after C9e and before the takeover leg")
+
+    def test_the_old_gap_is_the_fallback_when_an_arm_emits_nothing(self):
+        # The recorder above emits no verdict at all, so BOTH old GAPs must print —
+        # and only because the arm measured nothing.
+        _calls, out = self.drive()
+        self.assertIn("GAP   C9f the three on_timeout arms", out)
+        self.assertIn("GAP   C9g human takeover of a run conversation", out)
+
+    def test_no_old_gap_when_the_arms_graded_something(self):
+        _calls, out = self.drive(arm_verdicts=lambda tag: [(tag, True, "measured")])
+        self.assertNotIn("GAP   C9f the three on_timeout arms", out)
+        self.assertNotIn("GAP   C9g human takeover of a run conversation", out)
+        self.assertIn("C9f armed", out)
+        self.assertIn("C9g paused", out)
+
+    def test_no_wall_clock_left_falls_back_without_truncating_the_arms(self):
+        calls, out = self.drive(spent=m.C9_BUDGET_S - 60)
+        self.assertEqual(calls, [],
+                         "an arm that cannot fit the envelope is not started at all")
+        self.assertIn("envelope is left", out)
+        self.assertIn("GAP   C9f the three on_timeout arms", out)
+        self.assertIn("GAP   C9g human takeover of a run conversation", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

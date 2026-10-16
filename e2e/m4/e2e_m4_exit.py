@@ -9280,6 +9280,156 @@ def c9_run_to_terminal(run_id, cap, client, label):
     return ""
 
 
+# --- C9's wall-clock envelope ------------------------------------------------
+#
+# The harness cuts ONE gate at 1500 s, and docs/m4-live-findings.md D7 is blunt about
+# what happens when a gate's caps add up past that: "a 4800 s gate under a 1500 s wall
+# clock can only be truncated" — the gate died mid-poll without even printing a GAP.
+# C9 spends most of that envelope BEFORE C9f/C9g (a gate to acquire, a worker restart,
+# four decide arms, a second run to reject), so the two late arms are called with the
+# time that is actually left: the windows they read are clamped to it, and an arm that
+# cannot fit even at its own floor is not truncated — the OLD GAP prints naming the
+# budget, which is exactly what those arms replaced.
+C9_BUDGET_S = 1500
+
+# The C9f windows' floors are measurements, not preferences: the deadline is the
+# schema's own minimum (C9F_DEADLINE_S) and serve's deadline pass ticks every
+# C9F_TICK_S, so a shorter wait expires nothing; 'expire' re-requests in the SAME
+# window, so it needs two of them (test_c9_logic's SchemaTruthTest is that rule).
+C9F_ARM_FLOOR_S = C9F_DEADLINE_S + C9F_TICK_S
+C9F_EXPIRE_FLOOR_S = 2 * C9F_DEADLINE_S + C9F_TICK_S
+# C9g: the live agent.acp turn has to exist before anyone can be taken over, the
+# close poll watches interrupted -> paused, the resume poll watches the retry. The
+# tail is everything the leg still reads afterwards (transcript, cursor inventory,
+# the cleanup cancel).
+C9G_WINDOW_FLOOR_S = 300
+C9G_CLOSE_MIN_S = 60
+C9G_RESUME_MIN_S = 120
+C9G_TAIL_S = 120
+
+# The GAPs the two arms REPLACE, kept as the fallback for an arm that never ran.
+# They are printed by c9_arm_fallback() and by nothing else, so a report that still
+# carries one says WHY the measurement is missing instead of pretending the claim
+# was never meant to be tested.
+C9_ARM_FALLBACKS = {
+    "C9f": ("C9f the three on_timeout arms",
+            "no short-deadline revision was armed in this pass, so the § 7.0 seed's "
+            "deadlineSeconds: 86400 is the only deadline row the lab holds and the ARMED "
+            "verdict above is all that is measurable"),
+    "C9g": ("C9g human takeover of a run conversation (take-control / return-control)",
+            "the takeover leg never ran, so POST /conversations/{cid}/take-control had no run "
+            "conversation to take (the deterministic twin's attempts carry conversation_id NULL "
+            "with turn_id — the leg needs the agent variant's live ACP turn)"),
+}
+
+
+def c9_budget_left(started=None):
+    """Whole seconds of C9's C9_BUDGET_S envelope still unspent; None when the
+    envelope was never stamped — an unmeasurable budget bounds nothing, so the caller
+    runs the arms on their authored windows."""
+    base = CTX.get("c9_started") if started is None else started
+    try:
+        base = float(base)
+    except (TypeError, ValueError):
+        return None
+    return max(0, int(round(C9_BUDGET_S - (time.time() - base))))
+
+
+def c9f_arm_windows(left):
+    """(arm_wait, expire_wait) for the three C9f arms under `left` seconds of
+    envelope, or None when they do not fit. The windows are TRIMMED toward their
+    floors as the budget tightens and never widened past what the leg was written
+    with; the 900 s gate-open wait inside the arm is the arm's own business."""
+    if left is None:
+        return C9F_ARM_WAIT_S, C9F_EXPIRE_WAIT_S
+    per = int(left) // max(1, len(C9F_TIMEOUT_ARMS))
+    if per < C9F_ARM_FLOOR_S + C9F_EXPIRE_FLOOR_S:
+        return None
+    arm = max(C9F_ARM_FLOOR_S, min(C9F_ARM_WAIT_S, per - C9F_EXPIRE_FLOOR_S))
+    return arm, max(C9F_EXPIRE_FLOOR_S, min(C9F_EXPIRE_WAIT_S, per - arm))
+
+
+def c9g_windows(left):
+    """(live-turn window, close poll, resume poll) for C9g under `left` seconds, or
+    None. A truncated takeover is worse than no takeover: a turn cut short reads as
+    'the run never paused', which is a product FAIL this gate did not earn."""
+    if left is None:
+        return C9G_WINDOW_S, C9G_CLOSE_POLL_S, C9G_RESUME_POLL_S
+    room = int(left) - C9G_TAIL_S
+    close = max(C9G_CLOSE_MIN_S, min(C9G_CLOSE_POLL_S, room // 6))
+    resume = max(C9G_RESUME_MIN_S, min(C9G_RESUME_POLL_S, room // 5))
+    live = room - close - resume
+    if live < C9G_WINDOW_FLOOR_S:
+        return None
+    return min(C9G_WINDOW_S, live), close, resume
+
+
+def c9_clamp_windows(values):
+    """Bound a leg by setting its wait constants for the duration of the call; returns
+    what to give back. The arms read these globals at CALL time, so the leg itself
+    needs no change to be run inside the envelope."""
+    prev = {}
+    for name, val in values.items():
+        if val is None:
+            continue
+        prev[name] = globals()[name]
+        globals()[name] = int(val)
+    return prev
+
+
+def c9_restore_windows(prev):
+    """Put the waits back — C9f's budget is not C10's budget."""
+    for name, val in prev.items():
+        globals()[name] = val
+
+
+def c9_arm_fallback(which, why):
+    """The old GAP, and the only place it is still printed: `why` names the reason the
+    arm could not run (no admin, no wall clock, no verdict emitted)."""
+    label, sentence = C9_ARM_FALLBACKS[which]
+    gap(label, f"{why} — {sentence}")
+
+
+C9_ARM_PRINTERS = ("c5_emit", "check", "gap")
+
+
+def c9_run_arm(fn, *args):
+    """Call one of C9's two late arms — thunked at the call site, so the line still
+    reads `c9f_deadline_arms(alice, admin, facts)` — and count the verdict LINES it
+    printed.
+
+    The arms route every verdict through the gate's existing helpers — c5_emit for the
+    (label, ok, detail) lists, check/gap for the single lines — so wrapping those three
+    is the only way to ask "did the arm measure anything?" from the call site without
+    rewriting the arm. A silent arm (0 lines) bailed before it read a row: that is the
+    ONE case c9() answers with the old GAP. The printers are module globals, which is
+    what the arms resolve at call time, and they go back in `finally` — an arm that
+    crashes leaves them exactly as it found them."""
+    seen = {"lines": 0}
+    orig = {name: globals()[name] for name in C9_ARM_PRINTERS}
+
+    def wrap(name):
+        real = orig[name]
+        if name == "c5_emit":
+            def inner(verdicts):
+                seen["lines"] += len(verdicts or [])
+                return real(verdicts)
+        else:
+            def inner(*a, **kw):
+                seen["lines"] += 1
+                return real(*a, **kw)
+        return inner
+
+    for name in C9_ARM_PRINTERS:
+        globals()[name] = wrap(name)
+    try:
+        res = fn(*args)
+    finally:
+        for name, real in orig.items():
+            globals()[name] = real
+    return res, seen["lines"]
+
+
 def c9():
     """C9 — durable gates, and the approver who lost access (12 case 9).
     Acceptance: while /approve waits there are ZERO attempts and no lease, run is
@@ -9301,6 +9451,9 @@ def c9():
     if not CTX.get("stack_up"):
         skip("C9", "gates hold no lease; authorization is checked at decision time")
         return
+    # Stamp the envelope BEFORE the first leg: C9f/C9g are called with the seconds of
+    # C9_BUDGET_S that everything above them has not spent (D7's truncation rule).
+    CTX["c9_started"] = time.time()
     facts = CTX.get("manifest") or load_manifest_facts()
     if facts is None:
         gap("C9", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
@@ -9554,13 +9707,35 @@ def c9():
     # deadline copies (C8e's draft -> validate -> publish route; the schema's floor is
     # 60s, so 60 is the shortest legal deadline and the brief's 20 is validated as a
     # refusal). SQL never touches deadline_at: § 7.0 keeps it evidence-only.
+    # c9f_deadline_arms() is the MEASUREMENT; the old "ARMED only" GAP is its
+    # fallback, printed only when the arm cannot run at all (no admin, no wall clock,
+    # or not one verdict emitted), and the 60s arms run inside whatever envelope is
+    # left so C9 still ends inside C9_BUDGET_S. What the envelope does NOT cover is
+    # the arm's own 900 s "did my gate open" cap — that literal is the arm's; the
+    # windows below are all a caller may bound without rewriting the leg.
+    left = c9_budget_left()
+    c9f_win = c9f_arm_windows(left)
     if admin is None:
-        gap("C9f the three on_timeout arms",
-            "admin never signed in — a scratch revision may only be published through the "
-            "library role, and without one the seed's 86400s deadline is the only row the "
-            "lab holds (the ARMED verdict above is all that is measurable)")
+        c9_arm_fallback("C9f", "admin never signed in — a scratch revision may only be "
+                               "published through the library role")
+    elif c9f_win is None:
+        c9_arm_fallback("C9f", f"only {left}s of C9's {C9_BUDGET_S}s envelope is left and the "
+                               f"three arms need {C9F_ARM_FLOOR_S + C9F_EXPIRE_FLOOR_S}s each at "
+                               f"the schema's floor — re-run the leg under --only C9 rather than "
+                               "truncate it mid-poll")
     else:
-        c9f_deadline_arms(alice, admin, facts)
+        show("C9f the wall clock this leg is bounded by",
+             f"budget_left={left}s -> windows arm={c9f_win[0]}s expire={c9f_win[1]}s "
+             f"(deadline {C9F_DEADLINE_S}s + tick {C9F_TICK_S}s; authored "
+             f"{C9F_ARM_WAIT_S}/{C9F_EXPIRE_WAIT_S})")
+        prev = c9_clamp_windows({"C9F_ARM_WAIT_S": c9f_win[0], "C9F_EXPIRE_WAIT_S": c9f_win[1]})
+        try:
+            _arms, c9f_lines = c9_run_arm(lambda: c9f_deadline_arms(alice, admin, facts))
+        finally:
+            c9_restore_windows(prev)
+        if not c9f_lines:
+            c9_arm_fallback("C9f", "c9f_deadline_arms() emitted no verdict — it read no "
+                                   "revision it could re-author with a short deadline")
     try:
         tree = psql(f"SELECT node_instance_key || ' ' || status || ' loc=' || "
                     f"execution_location || ' att=' || attempt_count::text FROM node_executions "
@@ -9584,7 +9759,28 @@ def c9():
     # The twin's attempts carry NONE (attempts_agent_turn_pair keeps conversation_id
     # NULL with turn_id), so the leg drives the AGENT variant, whose /implement owns a
     # live ACP turn, and takes THAT conversation (§ 7.1 C9g's controller model).
-    c9g_takeover(alice, facts)
+    # c9g_takeover() is the MEASUREMENT; the old "no conversation_id" GAP is its
+    # fallback only, and the leg's own waits are clamped to the seconds C9f spent.
+    left = c9_budget_left()
+    c9g_win = c9g_windows(left)
+    if c9g_win is None:
+        need = C9G_WINDOW_FLOOR_S + C9G_CLOSE_MIN_S + C9G_RESUME_MIN_S + C9G_TAIL_S
+        c9_arm_fallback("C9g", f"only {left}s of C9's {C9_BUDGET_S}s envelope is left, less "
+                               f"than the {need}s the takeover needs (live turn + close poll + "
+                               "resume poll + the transcript reads) — re-run under --only C9")
+    else:
+        show("C9g the wall clock this leg is bounded by",
+             f"budget_left={left}s -> live turn {c9g_win[0]}s close {c9g_win[1]}s resume "
+             f"{c9g_win[2]}s (authored {C9G_WINDOW_S}/{C9G_CLOSE_POLL_S}/{C9G_RESUME_POLL_S})")
+        prev = c9_clamp_windows({"C9G_WINDOW_S": c9g_win[0], "C9G_CLOSE_POLL_S": c9g_win[1],
+                                 "C9G_RESUME_POLL_S": c9g_win[2]})
+        try:
+            _take, c9g_lines = c9_run_arm(lambda: c9g_takeover(alice, facts))
+        finally:
+            c9_restore_windows(prev)
+        if not c9g_lines:
+            c9_arm_fallback("C9g", "c9g_takeover() emitted no verdict — it reached no live "
+                                   "agent.acp turn to take control of")
     CTX["c9"] = {"run_id": run_id, "approval_id": aid, "restarted": restarted,
                  "reject_run_id": run_e, "reject_approval_id": aid_e}
 
