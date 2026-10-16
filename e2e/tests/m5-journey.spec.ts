@@ -16,9 +16,14 @@
 // the M4 seed uses for its `agent.acp` nodes), so the approval gate is reached
 // with no model endpoint on the worker and no real Claude turn anywhere. The
 // template copy itself is proof of the authoring path, and the step form's
-// timeout edit is proof of customization. A `verify` node that always exits 1
-// gives the journey a run that genuinely fails, so the retry it must perform is
-// the product's own retry and not a fixture trick.
+// timeout edit is proof of customization. The run's own failure comes from the
+// `verify` node: its command exits 1 AND its declared outputs schema admits only
+// `exit_code: 0`, so the boundary closes the attempt `invalid_output`, the node
+// goes `failed` and the run fails for real. A bare `exit 1` would NOT: 1..125 is
+// the business-outcome band (`execution_status=success` / `business_outcome=fail`
+// — spec 03:49, `internal/worker/procexec.go`'s classify), which only an `until`
+// node's `passWhen` reads and which settles the run `completed`. Either way the
+// retry the journey must perform is the product's own retry, not a fixture trick.
 //
 // Skipped unless COMMUNICATION_E2E_M5=1, so CI (which has no M4 lab) is
 // unaffected — the same gate idiom as M2's harness flag. Every wait is bounded:
@@ -178,8 +183,13 @@ spec:
         mode: output_json
         value: \${{ nodes.plan.outputs }}
   # The run's own check, and it fails on purpose: the plan describes a test
-  # suite this fixture repository does not have. maxAttempts 1 means a second
-  # attempt of this node can only ever come from a human retry.
+  # suite this fixture repository does not have. The command's exit 1 alone is
+  # only a BUSINESS verdict (spec 03:49; procexec.go's classify maps 1..125 to
+  # succeeded/outcome 'failed', which completes the run), so the node also
+  # declares exit_code 0 as the only envelope it accepts: the boundary
+  # refuses a success its plan would not accept (docs/m4-contract.md § 4 step 8,
+  # the rule m4_c10 proves) and the attempt closes invalid_output. maxAttempts 1
+  # means a second attempt of this node can only ever come from a human retry.
   - id: verify
     kind: process.exec
     dependsOn: [publish_plan]
@@ -198,7 +208,7 @@ spec:
       type: object
       required: [exit_code]
       properties:
-        exit_code: {type: integer}
+        exit_code: {type: integer, const: 0}
   resultBindings:
     plan: \${{ nodes.plan.outputs.text }}
 `;
@@ -431,8 +441,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
    * Step 6 retries the run at its `verify` `process.exec` node — the ONE path
    * route 31 makes retriable here. `POST /runs/{runId}/retry` "targets
    * failed/interrupted/cancelled node executions" (`docs/m4-contract.md:536`),
-   * and `/verify` is `failed` (exit 1, `maxAttempts: 1`, so attempt 2 can only
-   * be a human retry). A **rejected gate is not a retriable thing**: the gate
+   * and `/verify` is `failed` (its `exit_code: 1` envelope is refused by its
+   * own outputs schema, `maxAttempts: 1`, so attempt 2 can only be a human
+   * retry). A **rejected gate is not a retriable thing**: the gate
    * row goes `succeeded` with `outcome: rejected` and dependants skip via
    * `when` (§ 5.3 `docs/m4-contract.md:810`, C9e `:1204`; the engine refuses a
    * named `succeeded` target in `internal/pipelines/runtime/retry.go` and the
@@ -457,8 +468,11 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
     await test.step("the run's own check fails it, and the Inbox calls that stalled", async () => {
       // `verify` exits 1 on purpose (the plan describes a test suite the
-      // fixture repository does not have), so the failure is a fact of the
-      // definition rather than a flake waiting to be retried.
+      // fixture repository does not have) and declares `exit_code: 0` as the
+      // only envelope that node accepts, so the boundary turns that business
+      // verdict into an `invalid_output` execution failure. The failure is a
+      // fact of the definition rather than a flake waiting to be retried: a
+      // bare exit 1 lands in the 1..125 business band and COMPLETES the run.
       await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
       await gotoApp(alice, "/inbox");
       const id = testidOf(runId);
@@ -567,8 +581,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
    * terminates per the graph's `when`, and Retry does NOT re-open the gate — it
    * answers `409 run_not_retriable` unless some other node genuinely failed. In
    * THIS twin `publish_plan`/`verify` carry no `when` guard, so a rejection
-   * still runs `verify`, which exits 1: the failed run is then legitimately
-   * retriable *at `/verify`*, never at `/approve`, and retrying it lands back at
+   * still runs `verify`, whose `exit_code: 1` envelope its own outputs schema
+   * refuses: the failed run is then legitimately retriable *at `/verify`*,
+   * never at `/approve`, and retrying it lands back at
    * `failed` because the node is deterministic. "Back to waiting_human with the
    * gate live again" is not what the spec asks for.
    */
@@ -577,8 +592,13 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     // links the claim to `01` invariant 10, but `closeGate`
     // (internal/pipelines/runtime/advancer.go) succeeds the node with outcome
     // `rejected` (docs/m4-contract.md § 5.3: “a rejection is a BUSINESS
-    // outcome, not an execution failure”) — observed in this lab: gate node
-    // `succeeded`, `publish_plan` published, run `completed` after a rejection.
+    // outcome, not an execution failure”) — observed in this lab: the gate node
+    // `succeeded` with outcome `rejected` and `publish_plan` published anyway.
+    // (The `run completed after a rejection` half of that evidence belongs to
+    // the pre-schema twin, where `verify`'s bare exit 1 was a business verdict;
+    // with `verify` now declaring `exit_code: 0`, this run ends `failed` at
+    // `/verify` for its own reason, so the card's claim must be judged by the
+    // gate row, not by the run status.)
     // One of the two sentences is wrong; the journey keeps the check so the
     // contradiction cannot be forgotten.
     test.fixme(
