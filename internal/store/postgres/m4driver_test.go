@@ -455,3 +455,118 @@ func TestM4DriverTriggerUnknownRun(t *testing.T) {
 		t.Errorf("run status after Trigger = %q, want running", got)
 	}
 }
+
+// TestM4DriverReleasesLock: the backstop's lock is session-scoped, so the
+// pass is only over when the session that took it has handed it back — on
+// that same connection, before pgxpool puts it back for someone else to
+// reuse. A release that silently fails (pg_advisory_unlock answers a bool;
+// scanning it into an int64 errors with "can't scan into dest[0]") leaves
+// the key owned by a pooled connection forever, and a second replica never
+// takes a tick again. Observed with the real protocol in both directions:
+// refused from inside the locked window, admitted after Tick returns.
+func TestM4DriverReleasesLock(t *testing.T) {
+	f, rs, runID, url := m4DriverRun(t)
+	ctx := testCtx(t)
+
+	// tryM4Lock reports whether a session can take the driver's key, and
+	// takes it when it can, so every yes must be paid back.
+	tryM4Lock := func(session *pgx.Conn) bool {
+		t.Helper()
+		var held bool
+		if err := session.QueryRow(ctx,
+			`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, m4DriverAdvisoryLockKey).Scan(&held); err != nil {
+			t.Fatalf("probe try lock: %v", err)
+		}
+		return held
+	}
+	giveBackM4Lock := func(session *pgx.Conn) {
+		t.Helper()
+		var freed bool
+		if err := session.QueryRow(ctx,
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, m4DriverAdvisoryLockKey).Scan(&freed); err != nil {
+			t.Fatalf("probe unlock: %v", err)
+		}
+		if !freed {
+			t.Errorf("probe unlock reported false: the probe session did not hold the lock")
+		}
+	}
+
+	// The key must be free to begin with — a lock surviving an earlier test
+	// through a reused pooled session would make everything below meaningless.
+	probe, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect probe session: %v", err)
+	}
+	defer probe.Close(ctx)
+	if !tryM4Lock(probe) {
+		t.Fatalf("driver lock already held before any Tick")
+	}
+	giveBackM4Lock(probe)
+
+	var logBuf bytes.Buffer
+	d := NewM4Driver(f.pool, rs, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	var (
+		probed     bool
+		heldDuring bool
+	)
+	d.advance = func(ctx context.Context, id string) error {
+		// Still inside the locked pass: a second session must be refused.
+		probed = true
+		if heldDuring = tryM4Lock(probe); heldDuring {
+			giveBackM4Lock(probe)
+		}
+		return rs.Advance(ctx, id)
+	}
+
+	touched, err := d.Tick(ctx)
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if !probed {
+		t.Fatalf("advance hook never ran: the pass touched nothing, so the lock window was never observed")
+	}
+	if heldDuring {
+		t.Errorf("second session took the driver lock during a live pass: the lock is not exclusive")
+	}
+	// The batch is instance-wide, not project-scoped: live runs seeded by
+	// earlier tests in this database ride along, so only a floor is
+	// meaningful here.
+	if touched < 1 {
+		t.Errorf("Tick touched %d runs, want at least 1", touched)
+	}
+	if got := m4DriverRunStatus(t, f.pool, runID); got != "running" {
+		t.Errorf("run status after Tick = %q, want running", got)
+	}
+
+	// The release must SUCCEED, not merely be attempted: pg_advisory_unlock
+	// answers a bool, so a release helper that scans an int64 fails with
+	// "can't scan into dest[0]" and spams this warning on every tick (the
+	// serve log this fix came out of). A clean pass logs no warning.
+	if line := logBuf.String(); strings.Contains(line, "level=WARN") {
+		t.Errorf("Tick warned while releasing the driver lock (a failed release leaves the key on a pooled connection):\n%s", line)
+	}
+
+	// The claim under test: Tick has returned, so no session — pooled or
+	// otherwise — holds the key any more. A brand-new connection is the only
+	// witness that distinguishes "released" from "held by a connection the
+	// pool has since parked"; a stuck release fails here.
+	takeAfter, err := pgx.Connect(ctx, url)
+	if err != nil {
+		t.Fatalf("connect post-Tick session: %v", err)
+	}
+	defer takeAfter.Close(ctx)
+	if !tryM4Lock(takeAfter) {
+		t.Fatalf("pg_try_advisory_lock after Tick = false: the driver never released its session lock")
+	}
+	giveBackM4Lock(takeAfter)
+
+	// And the release left the pool usable: the next pass on the same pool
+	// still acquires the lock and does its work.
+	second, err := d.Tick(ctx)
+	if err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+	if second < 1 {
+		t.Errorf("second Tick touched %d runs, want at least 1", second)
+	}
+}

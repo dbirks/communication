@@ -55,6 +55,10 @@ const m4DriverBatch = 200
 // mechanism is shared without sharing a key space.
 const m4DriverAdvisoryLockKey = "communication/m4-reconciler"
 
+// m4DriverUnlockTimeout bounds the release so a wedged server cannot hang
+// shutdown on a connection that is no longer answering.
+const m4DriverUnlockTimeout = 5 * time.Second
+
 // m4NonTerminalRunStatuses is runs.status's live half of the 00005 CHECK —
 // the arm runs_status_idx is partial over. Terminal means terminal: the
 // driver never re-opens one, and the batch is ordered by age so a backlog
@@ -141,10 +145,24 @@ func (d *M4Driver) Tick(ctx context.Context) (int, error) {
 	if !held {
 		return 0, nil
 	}
+	// The unlock must run on THIS connection (defer LIFO: it therefore runs
+	// before the conn.Release() deferred above) and it must run even when the
+	// caller's context is already cancelled — a shutdown that leaves a
+	// session-level advisory lock on a pooled connection means no other
+	// replica ever takes the backstop tick again. Hence WithoutCancel plus a
+	// bounded timeout rather than ctx itself.
 	defer func() {
-		if _, err := m4DriverUnlock(ctx, conn.Conn()); err != nil {
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m4DriverUnlockTimeout)
+		defer cancel()
+		freed, err := m4DriverUnlock(unlockCtx, conn.Conn())
+		if err != nil {
 			d.log.WarnContext(ctx, "could not release m4 driver lock",
 				slog.String("error", err.Error()))
+			return
+		}
+		if !freed {
+			d.log.WarnContext(ctx, "m4 driver unlock reported the lock was not held",
+				slog.String("error", "pg_advisory_unlock returned false"))
 		}
 	}()
 
@@ -243,11 +261,15 @@ func m4DriverTryLock(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	return held, nil
 }
 
-func m4DriverUnlock(ctx context.Context, conn *pgx.Conn) (int64, error) {
-	var freed int64
+// m4DriverUnlock releases the lock taken on conn. pg_advisory_unlock answers
+// a boolean — true means this session actually released it — so the scan
+// target is a bool: scanning it into an int64 fails with "can't scan into
+// dest[0]" and the lock is silently never released.
+func m4DriverUnlock(ctx context.Context, conn *pgx.Conn) (bool, error) {
+	var freed bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, m4DriverAdvisoryLockKey).Scan(&freed); err != nil {
-		return 0, fmt.Errorf("postgres: unlock m4 driver lock: %w", err)
+		return false, fmt.Errorf("postgres: unlock m4 driver lock: %w", err)
 	}
 	return freed, nil
 }
