@@ -318,5 +318,72 @@ class D6AdvisoryLockProbe(unittest.TestCase):
         self.assertEqual({"api-a": 0}, m.c14_lock_lines("", ("api-a",)))
 
 
+class OffReplicaTest(unittest.TestCase):
+    """§ 7.1 C14c: one replica's engine is off, so a run posted there stays 'queued'
+    and the OTHER replica advances it. The arm's evidence is the off replica's own
+    startup line, the ledger status, and who ever acquired the driver's lock."""
+
+    LOG = ("api-a  | 2026-10-16T03:00:00Z INF serving on :8080 replica=api-a\n"
+           "api-b  | 2026-10-16T03:00:00Z INF pipeline scheduler disabled on this replica "
+           "(COMMUNICATION_PIPELINE_SCHEDULER=off)\n"
+           "api-b  | 2026-10-16T03:00:01Z INF serving on :8080 replica=api-b\n")
+
+    def test_off_lines_parse_with_compose_padding(self):
+        self.assertEqual({"api-a": 0, "api-b": 1}, m.c14_scheduler_off_lines(self.LOG))
+        self.assertEqual({"api-a": 0}, m.c14_scheduler_off_lines("", ("api-a",)))
+
+    def test_states_map_zero_to_on(self):
+        self.assertEqual({"api-a": "on", "api-b": "off"},
+                         m.c14_engine_states(m.c14_scheduler_off_lines(self.LOG)))
+        self.assertIsNone(m.c14_engine_states(None))
+
+    def test_pair_needs_exactly_one_off(self):
+        self.assertEqual(("api-b", "api-a"),
+                         m.c14_off_pair({"api-a": "on", "api-b": "off"}))
+        self.assertIsNone(m.c14_off_pair({"api-a": "on", "api-b": "on"}))   # live4's lab
+        self.assertIsNone(m.c14_off_pair({"api-a": "off", "api-b": "off"}))  # rollback lab
+        self.assertIsNone(m.c14_off_pair(None))
+
+    def good(self, **kw):
+        args = dict(off="api-b", on="api-a",
+                    reads={"/api/v1/system/readiness": 200, "/api/v1/system/scheduler": 200},
+                    posted=(201, "r-1"), queued_seen=["queued", "queued"],
+                    picked_up="running", lock_marks={"api-a": 3, "api-b": 0})
+        args.update(kw)
+        return m.c14_off_replica_verdicts(**args)
+
+    def test_clean_off_replica_arm_passes_every_claim(self):
+        vs = self.good()
+        self.assertEqual([True] * 5, [ok for _l, ok, _d in vs], vs)
+        self.assertTrue(all("C14c" in l for l, _ok, _d in vs), vs)
+
+    def test_a_non_read_becomes_a_fail_not_a_pass(self):
+        vs = self.good(reads={"/api/v1/system/scheduler": 502})
+        self.assertIs(False, one(vs, "serves READS"))
+
+    def test_a_run_left_queued_after_the_restore_is_a_fail(self):
+        self.assertIs(False, one(self.good(picked_up="queued"), "picks the run up"))
+        self.assertIsNone(one(self.good(picked_up=None), "picks the run up"))
+
+    def test_a_run_that_moved_while_only_off_was_up_is_a_fail(self):
+        vs = self.good(queued_seen=["queued", "running"])
+        self.assertIs(False, one(vs, "stays 'queued'"))
+        self.assertIsNone(one(self.good(queued_seen=[]), "stays 'queued'"))
+
+    def test_zero_lock_marks_on_both_sides_is_blindness_not_a_pass(self):
+        # docs/m4-live-findings.md D6: an unreadable/never-marked log GAPs the arm.
+        self.assertIsNone(one(self.good(lock_marks={"api-a": 0, "api-b": 0}), "advisory lock"))
+        self.assertIsNone(one(self.good(lock_marks=None), "advisory lock"))
+        self.assertIs(False, one(self.good(lock_marks={"api-a": 2, "api-b": 1}),
+                                 "advisory lock"))
+
+    def test_missing_read_and_post_gap_their_own_arms(self):
+        vs = self.good(reads={}, posted=None)
+        self.assertIsNone(one(vs, "serves READS"))
+        self.assertIsNone(one(vs, "is accepted"))
+        self.assertIs(False, one(self.good(posted=(403, None)), "is accepted"))
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

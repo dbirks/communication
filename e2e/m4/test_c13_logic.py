@@ -46,6 +46,12 @@ def ok_of(vs, needle):
     return hits[0]
 
 
+def detail_of(vs, needle):
+    hits = [d for label, _ok, d in vs if needle in label]
+    assert hits, f"no verdict matching {needle!r} in {[l for l, _, _ in vs]}"
+    return hits[0]
+
+
 class BodyTest(unittest.TestCase):
     def test_only_a_real_validate_body_counts(self):
         self.assertTrue(m.c13_validate_ok(body([])))
@@ -327,6 +333,59 @@ class GateCompilerProbeSyncTest(unittest.TestCase):
             doc = doc[doc.index("apiVersion"):]
             self.assertEqual(body, doc, f"{name}: the gate's document moved away from the "
                                         "compiler testdata — regenerate the copy")
+
+
+class OpsPageRenderTest(unittest.TestCase):
+    """C13f's browser half: the ops page SAYS the absence and shows no limit column.
+    The honest sentence names cpu/memory/disk itself, so the limit-column verdict has
+    to ignore that one line — and only that line."""
+
+    HONEST = '  - paragraph: Resource limits: not implemented \u2014 runs have no cpu, '\
+             'memory or disk caps in this release.'
+    PANEL = ('- generic [ref=e1]:\n'
+             '  - heading "Operations" [level=1] [ref=e2]\n'
+             '  - term "attempts queued" [ref=e3]\n'
+             '  - columnheader "Worker" [ref=e4]\n'
+             '  - columnheader "Active attempts / capacity" [ref=e5]\n')
+
+    def snap(self, extra=""):
+        """snap() = the panel with the honest line; snap("no-honest") drops it; any
+        other string is an EXTRA rendered line added under the honest one."""
+        text = self.PANEL + ("" if extra == "no-honest" else self.HONEST + "\n")
+        if extra not in ("", "honest", "no-honest"):
+            text += extra + "\n"
+        return m.pw_snapshot_nodes(text)
+
+    def test_the_honest_line_passes_both_verdicts(self):
+        vs = m.c13_ops_page_verdicts(self.snap("honest"))
+        self.assertEqual([ok for _l, ok, _d in vs], [True, True], vs)
+
+    def test_no_honest_sentence_is_a_fail_not_a_gap(self):
+        vs = m.c13_ops_page_verdicts(self.snap("no-honest"))
+        self.assertIs(False, ok_of(vs, "says 'resource limits: not implemented'"), vs)
+        self.assertTrue(ok_of(vs, "renders NO cpu/memory/disk limit column"))
+
+    def test_a_limit_column_fails_even_next_to_the_honest_line(self):
+        vs = m.c13_ops_page_verdicts(self.snap('  - columnheader "Memory limit" [ref=e9]'))
+        self.assertTrue(ok_of(vs, "says 'resource limits: not implemented'"))
+        self.assertIs(False, ok_of(vs, "renders NO cpu/memory/disk limit column"))
+        self.assertIn("memory", detail_of(vs, "renders NO cpu/memory/disk limit column").lower())
+
+    def test_a_plain_prose_mention_counts_too(self):
+        # `implementation` must not trip the word list (word boundaries, not substrings).
+        vs = m.c13_ops_page_verdicts(self.snap('  - paragraph: the implementation has no caps'))
+        self.assertTrue(ok_of(vs, "renders NO cpu/memory/disk limit column"), vs)
+
+    def test_no_snapshot_gaps_instead_of_passing(self):
+        vs = m.c13_ops_page_verdicts([])
+        self.assertEqual([ok for _l, ok, _d in vs], [None, None], vs)
+        vs = m.c13_ops_page_verdicts([], "nothing rendered")
+        self.assertEqual([ok for _l, ok, _d in vs], [None, None], vs)
+
+    def test_raw_snapshot_text_can_carry_the_sentence(self):
+        nodes = m.pw_snapshot_nodes(self.PANEL)
+        vs = m.c13_ops_page_verdicts(nodes, self.HONEST)
+        self.assertTrue(ok_of(vs, "says 'resource limits: not implemented'"), vs)
 
 
 if __name__ == "__main__":

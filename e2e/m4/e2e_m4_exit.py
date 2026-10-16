@@ -12746,6 +12746,56 @@ def c13_limit_verdict(sched):
              (f"; leak={leak}" if leak else ""))]
 
 
+# § 7.1 C13f's other half is RENDERED copy: "the ops page says 'resource limits:
+# not implemented' (M3 D10's rule again)". The sentence shipped in ui/src/pages/
+# Operations.tsx (`ops-resource-limits`, 09411da); W7 reads the § 6.2 counters off
+# the same page but never asserted this line, so C13 drives its own browser arm.
+C13F_HONEST_WORDS = "resource limits: not implemented"
+C13F_LIMIT_WORDS = ("cpu", "vcpu", "memory", "mem", "ram", "disk", "gib", "mib")
+C13F_HEADER_ROLES = ("columnheader", "rowheader", "cell", "gridcell", "term",
+                     "definition", "heading", "listitem")
+
+
+def c13_limit_word_hits(line):
+    """Which cpu/memory/disk words a rendered line names (word-boundary, so a
+    worker called `memory-box` and the honest sentence are both caught, while
+    `implementation` is not). Pure."""
+    low = (line or "").lower()
+    return [w for w in C13F_LIMIT_WORDS if re.search(rf"\b{re.escape(w)}\b", low)]
+
+
+def c13_ops_page_verdicts(nodes, raw=""):
+    """C13f read off the RENDERED ops page: the page must SAY the absence in the
+    contract's words, and must not render a cpu/memory/disk limit column — the
+    honest sentence is the ONLY place those words may appear (M3 D10: absent, not
+    silently capped). `nodes` = parsed snapshot nodes, `raw` = snapshot text.
+    Empty nodes = the browser leg never rendered, which GAPs both arms."""
+    nodes = [n for n in (nodes or []) if isinstance(n, dict)]
+    lines = [(n, pw_text(n)) for n in nodes if pw_text(n).strip()]
+    if not lines:
+        return [("C13f the OPS PAGE says 'resource limits: not implemented' in those words",
+                 None, "no snapshot nodes — the browser never rendered /ops"),
+                ("C13f the OPS PAGE renders NO cpu/memory/disk limit column", None,
+                 "no snapshot nodes — the browser never rendered /ops")]
+    honest = [t for _n, t in lines if C13F_HONEST_WORDS in t.lower()]
+    said = bool(honest) or C13F_HONEST_WORDS in (raw or "").lower()
+    said_v = ("C13f the OPS PAGE says 'resource limits: not implemented' in those words",
+              said, (f"line rendered: {honest[0][:120]!r}" if honest else
+                     f"the words {C13F_HONEST_WORDS!r} appear nowhere in the snapshot "
+                     f"({len(lines)} text nodes read) — M3 D10's rule is broken in the UI"))
+    offenders = [(n["role"], t, c13_limit_word_hits(t)) for n, t in lines
+                 if C13F_HONEST_WORDS not in t.lower() and c13_limit_word_hits(t)]
+    cols = [f"{r}:{t[:60]}" for r, t, _w in offenders if r in C13F_HEADER_ROLES]
+    clean_v = ("C13f the OPS PAGE renders NO cpu/memory/disk limit column",
+               not offenders,
+               ("the only line naming a resource is the honest one — nothing implies a cap"
+                if not offenders else
+                f"lines naming a limit outside the honest sentence: "
+                f"{[f'{w}@{r}' for r, _t, w in offenders][:6]}"
+                + (f"; column/cell among them: {cols[:3]}" if cols else "")))
+    return [said_v, clean_v]
+
+
 def c13_deprecate_verdicts(snap_before, snap_after, runs_before, runs_after, revised_ok):
     """Route 15's own invariant: deprecate flips the revision's status and touches
     NO existing run (ADR-0002) — measured over every run row, not just one."""
@@ -13062,6 +13112,31 @@ def c13_revision_row(rev_id):
         return ""
 
 
+def c13f_ops_page(session="m4c13f"):
+    """C13f's browser arm (docs/m4-contract.md § 7.1 C13f): "the ops page says
+    'resource limits: not implemented' (M3 D10's rule again)". Open /ops as the lab's
+    org admin and read the RENDERED page — the copy shipped in ui/src/pages/
+    Operations.tsx with `09411da`, and no gate rendered it before this arm (W7 reads
+    § 6.2 counters off the same page but never asserted this line). A failed sign-in
+    GAPs (an unrendered page proves nothing); a rendered page without the sentence,
+    or with a cpu/memory/disk column, FAILs."""
+    if not pw_login("admin", "/ops", session=session):
+        gap("C13f the OPS PAGE says 'resource limits: not implemented' in words",
+            "admin could not sign in through the browser — the API half PASSed "
+            "(/system/scheduler carries no cpu/memory/disk field) but rendered copy "
+            "is only answerable by a browser")
+        return
+    pw_goto("/ops", session=session)
+    _landed, nodes = pw_poll(lambda ns: C13F_HONEST_WORDS in "\n".join(
+        pw_text(n) for n in ns).lower(), session=session, tries=8, delay=2)
+    raw = pw_snapshot(session=session)[1]
+    nodes = pw_snapshot_nodes(raw) or nodes
+    shot = pw_shot("c13f-ops", session=session)
+    c5_emit([(f"{l} [ops page, admin]", ok, f"{d} [{shot}]") for l, ok, d in
+             c13_ops_page_verdicts(nodes, raw)])
+    pw("close", session=session)
+
+
 def c13():
     """C13 — the refusals are real (12 case 13's genre: nothing silently half-works).
     Acceptance: parallel/join/gate/git.commit/git.publish/integration.query/
@@ -13255,9 +13330,7 @@ def c13():
     except ValueError:
         sched = None
     c5_emit(c13_limit_verdict(sched))
-    gap("C13f the OPS PAGE says 'resource limits: not implemented' in words",
-        "rendered UI text is W7's subject (a browser has to read it); C13 asserts the "
-        "API half — that no cpu/memory/disk field exists to imply a limit")
+    c13f_ops_page()
 
     # ---- C13g: revisions are immutable; deprecate is the only mutation ----
     rev = mf(facts, "revision_id", "twin")
@@ -13570,6 +13643,234 @@ def c14_lock_marks(services=("api-a", "api-b"), since=None):
     return c14_lock_lines(out, services)
 
 
+# § 7.1 C14c: "COMMUNICATION_PIPELINE_SCHEDULER=off on a fresh replica: that replica
+# serves reads and never claims or advances; a run started against it stays 'queued'
+# and the other replica picks it up." cmd/communication/serve.go is the only place the
+# flag is read; an off replica prints one startup line about itself, and the driver's
+# acquire mark (C14_LOCK_MARK) is the evidence it never advanced anything.
+C14_SCHED_OFF_MARK = "pipeline scheduler disabled on this replica"
+
+
+def c14_scheduler_off_lines(log_text, services=("api-a", "api-b")):
+    """{service: n} 'engine off' startup lines per service, parsed the same way as
+    c14_lock_lines (compose pads the service column). Pure."""
+    pats = {s: re.compile(rf"^{re.escape(s)}\s*(?:\||\s)") for s in services}
+    return {s: len([l for l in (log_text or "").splitlines()
+                    if pats[s].match(l) and C14_SCHED_OFF_MARK in l]) for s in services}
+
+
+def c14_engine_states(off_lines):
+    """{service: 'off'|'on'} from those counts. `off` is the only state the log says
+    out loud; a replica that never printed it kept its engine on (serve.go refuses
+    any other value at startup, so there is no third state)."""
+    if not isinstance(off_lines, dict):
+        return None
+    return {s: ("off" if n else "on") for s, n in off_lines.items()}
+
+
+def c14_off_pair(states):
+    """(off_service, on_service) when EXACTLY one replica is off and one is on — the
+    pair C14c compares. None (→ GAP) when both agree: with the flag on-for-both or
+    off-for-both there is nothing to compare against."""
+    if not isinstance(states, dict):
+        return None
+    off = sorted(s for s, v in states.items() if v == "off")
+    on = sorted(s for s, v in states.items() if v == "on")
+    return (off[0], on[0]) if len(off) == 1 and len(on) == 1 else None
+
+
+def c14_off_replica_verdicts(off, on, reads, posted, queued_seen, picked_up, lock_marks):
+    """C14c's claims from what the arm OBSERVED:
+      reads      {path: status} answered by the off replica ALONE (it must serve reads);
+      posted     (status, run_id|None) of the run POSTed to the off replica's own port;
+      queued_seen statuses read back off the off replica while `on` was stopped (every
+                 one must still be 'queued' — § 7.1 C14c's own words);
+      picked_up  the status seen after `on` came back ('queued' = it never moved;
+                 None = unobserved, which GAPs rather than PASSes);
+      lock_marks {service: acquire-count} over the arm's window (None = logs unreadable).
+    Pure: no HTTP, no compose."""
+    out = []
+    label = f"C14c {off} serves READS with its engine off"
+    if not reads:
+        out.append((label, None, "no read reached the off replica — the arm never started"))
+    else:
+        bad = {p: s for p, s in reads.items() if s != 200}
+        out.append((label, not bad,
+                    f"statuses={reads}" + (f" — non-200: {bad}" if bad else "")))
+    st, run_id = (list(posted) + [None, None])[:2] if posted else (None, None)
+    if st is None:
+        out.append((f"C14c a run POSTed to {off} is accepted", None,
+                    "no run was POSTed (the arm stopped before the write)"))
+    else:
+        out.append((f"C14c a run POSTed to {off} is accepted",
+                    st in (200, 201) and bool(run_id), f"status={st} run_id={run_id!r}"))
+    seen = [s for s in (queued_seen or []) if s]
+    label = f"C14c that run stays 'queued' while {off} is the only replica up"
+    if not seen:
+        out.append((label, None,
+                    f"no status was read back off {off} while {on} was stopped — the "
+                    "down-window produced no observation"))
+    else:
+        moved = [s for s in seen if s != "queued"]
+        out.append((label, not moved,
+                    f"observed={seen}"
+                    + (f" — left 'queued' as {moved[0]!r} while only the off replica was up"
+                       if moved else " (the off replica advanced nothing)")))
+    label = f"C14c {on} picks the run up once its engine is back"
+    if picked_up is None:
+        out.append((label, None, "no read after the restore — the hand-over is unobserved"))
+    else:
+        out.append((label, picked_up != "queued",
+                    f"status after {on} came back={picked_up!r}"))
+    label = f"C14c {off} never claims the driver's advisory lock"
+    if not isinstance(lock_marks, dict):
+        out.append((label, None,
+                    "compose logs unreadable over the window — the claim is unmeasured"))
+    elif lock_marks.get(on, 0) == 0:
+        # docs/m4-live-findings.md D6: with NO acquire mark on either replica the probe is
+        # blind (the mark is per-process and released every tick), which proves nothing
+        # about the off one — GAP, never a PASS by silence.
+        out.append((label, None,
+                    f"acquire marks in window={lock_marks}: {on} shows none either, so the "
+                    "log probe is blind — the zero says nothing about " + off))
+    else:
+        n = lock_marks.get(off, 0)
+        out.append((label, n == 0,
+                    f"acquire marks in window={lock_marks}"
+                    + (f" — {on} ticked, {off} did not" if n == 0 else
+                       " — a replica with the engine off ticked the driver")))
+    return out
+
+
+def c14_replica_engines(services=("api-a", "api-b")):
+    """{service: 'off'|'on'} read from the containers' OWN startup logs (the whole
+    container lifetime: the line prints once per process start and a restart reprints
+    the same environment). None when the logs are unreadable — an unobservable
+    configuration GAPs, it never PASSes."""
+    try:
+        rc, out = run(COMPOSE + ["logs", "--no-color"] + list(services))
+    except Exception:  # noqa: BLE001 — unreadable logs are a GAP, not a crash
+        return None
+    if rc != 0 or not out.strip():
+        return None
+    return c14_engine_states(c14_scheduler_off_lines(out, services))
+
+
+def c14_wait_replica_down(base, timeout=60):
+    """True once ONE replica's OWN readiness endpoint stops answering (the mirror of
+    c14_wait_replica — never the lb, which would answer for the peer)."""
+    probe, deadline = Client("probe"), time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if probe.get(base, "/api/v1/system/readiness", timeout=4).status != 200:
+                return True
+        except Exception:  # noqa: BLE001 — refused/reset IS 'down'
+            return True
+        time.sleep(2)
+    return False
+
+
+def c14_off_replica(client, facts, project_id, roll=C14_ROLL):
+    """§ 7.1 C14c live arm: one replica's engine is off (compose.m4.yml gives each
+    replica its own COMMUNICATION_PIPELINE_SCHEDULER_[AB], shipped in 9af17dc). With
+    the ON replica stopped (compose stop/start, the same project-scoped lever W7 uses
+    on the workers — a stop, never the `up -d` recreate § 7.0 keeps out of the gates)
+    a run POSTed to the off replica's OWN port must stay 'queued' in the ledger; when
+    the on replica comes back, it advances. Brought up all-on (or all-off) the arm
+    GAPs with the command that would make it measurable."""
+    services = tuple(s for s, _b in roll)
+    states = c14_replica_engines(services)
+    show("C14c replica engine flags (compose logs, per-service startup line)",
+         f"states={states if states is not None else '(logs unreadable)'}")
+    pair = c14_off_pair(states)
+    if pair is None:
+        gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica",
+            f"this lab came up with {states if states is not None else '(unreadable logs)'}. "
+            "C14c compares ONE off replica against one that keeps advancing; compose.m4.yml "
+            "already gives each replica its own variable "
+            "(api-a: ${COMMUNICATION_PIPELINE_SCHEDULER_A:-on}, api-b: "
+            "${COMMUNICATION_PIPELINE_SCHEDULER_B:-on}, split in 9af17dc), so a lab run sets "
+            "COMMUNICATION_PIPELINE_SCHEDULER_B=off at § 7.0's `up -d --build`. Flipping it "
+            "mid-gate needs `up -d` on that one container — a RECREATE (env change), which "
+            "§ 7.0 keeps out of the gates and which would fight C14a's roll; this gate's only "
+            "replica lever is stop/start, which cannot change an environment variable. The "
+            "'flag off EVERYWHERE, M2/M3 intact' "
+            "half needs a second bring-up with both variables off and stays a GAP.")
+        return
+    off_name, on_name = pair
+    off_base = dict(roll)[off_name]
+    on_base = dict(roll)[on_name]
+    reads, posted, queued_seen, picked_up, marks = {}, None, [], None, None
+    for path in ("/api/v1/system/readiness", "/api/v1/system/scheduler",
+                 f"/api/v1/projects/{project_id}/runs"):
+        try:
+            reads[path] = client.get(off_base, path).status
+        except Exception as e:  # noqa: BLE001 — a refused read is a status, not a crash
+            reads[path] = 0
+            show(f"C14c GET {path} on {off_name}", str(e)[:140])
+    show(f"C14c reads answered by {off_name} ALONE ({off_base})", json.dumps(reads))
+    run_id = None
+    try:
+        rc, out = run(COMPOSE + ["stop", on_name])
+        show(f"docker compose -p {COMPOSE_PROJECT} stop {on_name} (rc={rc})", out[-160:])
+        down = c14_wait_replica_down(on_base)
+        if not check(f"C14c {on_name} is stopped — {off_name} is the only replica up",
+                     down, f"readiness on {on_base} stopped answering={down} "
+                           f"(engine on {off_name}={states[off_name]})"):
+            c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, None, [], None, None))
+            return
+        # The window starts here: the lock-mark read below is bounded to it (D6).
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        rev = mf(facts, "revision_id", "twin") or mf(facts, "revision_id", "agent")
+        body = {"pipeline_revision_id": rev,
+                "inputs": mf(facts, "inputs", "twin", default={}) or {},
+                "idempotency": f"m4-exit-c14c-{int(time.time())}"}
+        r = client.post(off_base, f"/api/v1/projects/{project_id}/runs", body)
+        run_id = r.json().get("run_id") if r.status in (200, 201) else None
+        posted = (r.status, run_id)
+        show(f"C14c POST /projects/{{id}}/runs straight to {off_name} ({on_name} down)",
+             f"{r.status} replica={r.replica} run_id={run_id}")
+        if run_id:
+            try:                      # a read served while this replica stands alone
+                rb = client.get(off_base, f"/api/v1/runs/{run_id}")
+                reads[f"/api/v1/runs/{{id}} (alone on {off_name})"] = rb.status
+            except Exception as e:  # noqa: BLE001
+                reads[f"/api/v1/runs/{{id}} (alone on {off_name})"] = 0
+                show(f"C14c run read-back on {off_name} alone", str(e)[:140])
+            for _ in range(6):                       # ~20s with ONLY the off replica up
+                queued_seen.append(run_status(run_id))
+                time.sleep(4)
+            back = run(COMPOSE + ["start", on_name])
+            show(f"docker compose -p {COMPOSE_PROJECT} start {on_name} (rc={back[0]})",
+                 back[1][-160:])
+            ok = c14_wait_replica(on_base, 120)
+            check(f"C14c {on_name} is back on {on_base} (the stack is left as found)", ok,
+                  f"readiness={ok}")
+            deadline = time.time() + 240
+            while time.time() < deadline:
+                picked_up = run_status(run_id)
+                if picked_up != "queued":
+                    break
+                time.sleep(5)
+            show(f"C14c the run's ledger status after {on_name} returned",
+                 f"{picked_up!r} (was {queued_seen[0]!r} while it was down)")
+        marks = c14_lock_marks(services, since=since)
+        show(f"C14c driver lock marks in the window (compose logs --since {since})",
+             f"{marks if marks is not None else '(unreadable)'}")
+        c5_emit(c14_off_replica_verdicts(off_name, on_name, reads, posted, queued_seen,
+                                         picked_up, marks))
+    finally:
+        rc, out = run(COMPOSE + ["start", on_name])
+        if not c14_wait_replica(on_base, 120):
+            check(f"C14c restore: {on_name} answers readiness on {on_base}", False,
+                  f"compose start rc={rc} {out[-140:]}")
+        if run_id and run_status(run_id) not in C14_TERMINAL:
+            try:
+                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception:  # noqa: BLE001 — housekeeping, never a verdict
+                pass
+
+
 def c14_wait_replica(base, timeout=120):
     """Poll ONE replica's OWN readiness endpoint (never the lb — the lb would answer "
     "for the other replica and hide the roll)."""
@@ -13874,12 +14175,8 @@ def c14():
         "safety argument and the advisory lock is an optimization; the no-duplicate verdicts "
         "above are what actually re-prove the safety claim, and a forced simultaneous advance "
         "would need a store-level seam this lab does not have")
-    gap("C14c COMMUNICATION_PIPELINE_SCHEDULER=off on one replica", "compose.m4.yml reads the "
-        "flag from ONE shell variable shared by api-a and api-b "
-        "(${COMMUNICATION_PIPELINE_SCHEDULER:-on}), so a single off-replica needs a recreate of "
-        "that one container (compose up -d), which § 7.0 keeps out of the gates: with the flag "
-        "either on-for-both or off-for-both there is no replica pair to compare, and the "
-        "'stays queued for the other replica' arm is unmeasurable here")
+    # C14c runs last: it stops one replica on purpose, so nothing else may be mid-roll.
+    c14_off_replica(alice, facts, pid)
     CTX["c14"] = {"run_id": run_id, "approval_id": aid, "rolled": rolled,
                   "reconnects": stream.reconnects, "frames": len(stream.frames),
                   "terminal": status}

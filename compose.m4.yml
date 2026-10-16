@@ -87,6 +87,12 @@ services:
       COMMUNICATION_PREVIEW_BASE_URL: http://preview.localhost:18094
       # Per-replica engine flag; see api-a. COMMUNICATION_PIPELINE_SCHEDULER_B
       # =off leaves this replica serving reads and never advancing (C14c).
+      # The lab arm is a bring-up decision, not a mid-gate one:
+      #   COMMUNICATION_PIPELINE_SCHEDULER_B=off docker compose -p communication-m4 \
+      #     -f compose.yml -f compose.harness.yml -f compose.m4.yml up -d --build
+      # e2e/m4/e2e_m4_exit.py's C14c reads the flag back off this container's own
+      # startup log (`pipeline scheduler disabled on this replica`) and GAPs when
+      # both replicas agree — it never recreates a container to flip it.
       COMMUNICATION_PIPELINE_SCHEDULER: "${COMMUNICATION_PIPELINE_SCHEDULER_B:-on}"
     ports: !override
       - "127.0.0.1:18093:8080"
