@@ -72,6 +72,11 @@ SENTINEL = "SENTINEL-m4-7c1e9d42-exit-test-only"
 SEED_SH = os.path.join(REPO_DIR, "docs", "compatibility", "probes", "m4", "seed.sh")
 MANIFEST_PATH = os.environ.get("M4_SEED_MANIFEST") or os.path.join(
     SCRATCH, "seed-manifest.json")
+# The § 7.0 seed's OWN pipeline set: document 1 is the bytes that published and
+# validated, so C13's refusal probes are built from its header rather than one
+# authored here (a broken probe document proves nothing about the engine).
+SEED_PIPELINE_YAML = os.path.join(REPO_DIR, "docs", "compatibility", "probes",
+                                  "m4", "pipeline.yaml")
 
 WORKER_A = "communication-m4-worker-a"
 WORKER_B = "communication-m4-worker-b"
@@ -584,7 +589,56 @@ def validate_manifest(obj):
                 "run_id": run_id,
                 "inputs": (by_variant.get(variant) or {}).get("inputs") or {}}
 
-    return {"agent": facts(FD_SLUG, "agent"), "twin": facts(TW_SLUG, "twin")}
+    project = {"project_id": project_id, "project_slug": project.get("slug"),
+               "users": {k: str(v) for k, v in (obj.get("users") or {}).items()
+                         if isinstance(v, str) and str(v).strip()},
+               "pipelines": pipes, "profiles": obj.get("profiles") or {},
+               "repositories": obj.get("repositories") or {}, "secret": obj.get("secret") or {},
+               "runs": obj.get("runs") or [], "stack": obj.get("stack") or {},
+               "fixture": obj.get("fixture") or {}}
+    return {"agent": facts(FD_SLUG, "agent"), "twin": facts(TW_SLUG, "twin"),
+            "project": project}
+
+
+# --- the ONE door for manifest reads ------------------------------------------
+#
+# seed-manifest/1 nests its members (project.id, users{name:id}, pipelines{slug:{…}},
+# runs[{variant:…}], secret, stack) while each gate holds either the whole validated
+# facts, one variant's flat facts (post_c1_run, c8_seed_facts) or the raw json.load()
+# object. mf() resolves a member across all three shapes; mvariant() does the same
+# for a run variant. No gate indexes the manifest by hand — that is how C9 died on
+# mf(facts, "project_id") (the key lives one level down) and took C13 with it.
+
+
+def mf(facts, key, variant=None, default=None):
+    """Manifest member `key` from ANY of the shapes a gate holds: one variant's
+    flat facts, the validated facts (optionally preferring `variant`), the
+    validated facts' project block, or the raw manifest object. Empty string /
+    None never wins — the caller's `default` does, so a missing member reads as
+    the GAP it deserves instead of a KeyError."""
+    if not isinstance(facts, dict):
+        return default
+    project = facts.get("project") if isinstance(facts.get("project"), dict) else {}
+    order = [facts.get(variant) if variant else None, facts, project]
+    order += [mvariant(facts, "twin"), facts.get("agent")]
+    for src in order:
+        if isinstance(src, dict) and src.get(key) not in (None, ""):
+            return src[key]
+    return default
+
+
+def mvariant(facts, name):
+    """The facts for run variant `name` ('agent'|'twin') as a flat dict; {} when the
+    manifest has no such variant. A flat per-variant dict handed back is its own
+    variant (the shape post_c1_run/c8_seed_facts already take)."""
+    if not isinstance(facts, dict):
+        return {}
+    got = facts.get(name)
+    if isinstance(got, dict):
+        return got
+    if "revision_id" in facts or "run_id" in facts:
+        return facts
+    return {}
 
 
 # --- C1 live helpers — the stack-facing half -----------------------------------
@@ -604,7 +658,8 @@ def load_manifest_facts():
     show("seed manifest (ids C1 consumes verbatim)",
          json.dumps({v: {k: f[k] for k in ("revision_id", "revision_digest",
                                            "plan_digest", "run_id")}
-                     for v, f in facts.items()}, indent=1))
+                     for v, f in facts.items()
+                     if isinstance(f, dict) and f.get("revision_id")}, indent=1))
     return facts
 
 
@@ -769,7 +824,7 @@ def watch_run(client, facts, run_id, cap, label):
         if status in ("completed", "failed", "cancelled", "interrupted"):
             break
         if status == "waiting_human" and not approved:
-            approved = approve_gate(client, facts["project_id"], run_id)
+            approved = approve_gate(client, mf(facts, "project_id"), run_id)
             if approved:
                 check(f"C1b {label}: alice's gate decision -> 200", True, run_id)
         time.sleep(5)
@@ -791,9 +846,9 @@ def post_c1_run(client, facts, idem, label):
     """§ 7.1 C1a: POST /api/v1/projects/{p}/runs pinned straight to the
     manifest's revision (the frozen route and RunCreate body from
     api/openapi.yaml); 201/queued or nothing."""
-    body = {"pipeline_revision_id": facts["revision_id"],
-            "inputs": facts["inputs"], "idempotency": idem}
-    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    body = {"pipeline_revision_id": mf(facts, "revision_id"),
+            "inputs": mf(facts, "inputs", default={}), "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
     if not check(f"C1a {label}: POST runs ({idem}) -> 201 queued",
                  r.status in (200, 201), f"{r.status} {r.text[:200]}"):
         return None
@@ -848,9 +903,9 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
     dig = psql(f"SELECT revision_digest || '|' || plan_digest || '|' || digest_scope "
                f"FROM runs WHERE id = '{run_id}'").strip().split("|")
     ok_all &= check(f"C1e run digests match the manifest (which came from publish) verbatim",
-                    len(dig) == 3 and dig[0] == facts["revision_digest"]
-                    and dig[1] == facts["plan_digest"] and dig[2] != "",
-                    f"db={dig[:2]} manifest={[facts['revision_digest'][:18], facts['plan_digest'][:18]]}")
+                    len(dig) == 3 and dig[0] == mf(facts, "revision_digest")
+                    and dig[1] == mf(facts, "plan_digest") and dig[2] != "",
+                    f"db={dig[:2]} manifest={[mf(facts, "revision_digest")[:18], mf(facts, "plan_digest")[:18]]}")
     api_run = client.get(LB, f"/api/v1/runs/{run_id}")
     ok_all &= check("C1e GET /runs/{id} agrees with the ledger (API says X, Postgres says X)",
                     api_run.status == 200 and api_run.json().get("revision_digest") == dig[0]
@@ -985,7 +1040,7 @@ def c1():
     suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
     # ---- agent variant (C1a–C1h, cap 30 min) ----
-    agent = facts["agent"]
+    agent = mvariant(facts, "agent")
     run_a = post_c1_run(alice, agent, f"m4x-c1-agent-{suffix}", "agent")
     res_a = None
     if run_a:
@@ -994,7 +1049,7 @@ def c1():
             res_a = assert_c1_run(alice, agent, run_a, "agent", watch, "agent")
 
     # ---- deterministic twin: finish the seeded run, then RE-RUN the variant ----
-    tw = facts["twin"]
+    tw = mvariant(facts, "twin")
     res_tw_seed = None
     status, watch = watch_run(alice, tw, tw["run_id"], 600, "twin(seed)")
     if status:
@@ -1402,7 +1457,7 @@ def c2():
                   "below the moment a manifest exists)")
         return
     CTX["manifest"] = facts
-    tw = facts.get("twin")
+    tw = mvariant(facts, "twin")
     if not isinstance(tw, dict) or not tw.get("revision_id"):
         gap("C2", "the seed manifest carries no twin variant to run (the deterministic twin is "
                   "the only variant whose implement node is long enough to read a live /proc "
@@ -1814,7 +1869,7 @@ def c3_run_ids(facts):
     ids = [r for r in (CTX.get("c1") or {}).get("runs", []) if r]
     if ids:
         return ids, "C1's runs (this exit pass)"
-    ids = [f["run_id"] for f in (facts or {}).values() if isinstance(f, dict) and f.get("run_id")]
+    ids = [i for i in (mf(facts, "run_id", "agent"), mf(facts, "run_id", "twin")) if i]
     return ids, "the § 7.0 seed manifest runs"
 
 
@@ -1956,7 +2011,7 @@ def c4():
                   "revision id there is no run to freeze a lease on (C1 seeds on demand)")
         return
     CTX["manifest"] = facts
-    tw = facts.get("twin")
+    tw = mvariant(facts, "twin")
     if not isinstance(tw, dict) or not tw.get("revision_id"):
         gap("C4", "the seed manifest carries no twin variant (the deterministic pipeline "
                   "whose ~40s process.exec gives the freezer a live lease to expire)")
@@ -2414,7 +2469,7 @@ def c5():
                   "there is no ~40s process.exec to be killed mid-way through (C1 seeds on demand)")
         return
     CTX["manifest"] = facts
-    tw = facts.get("twin")
+    tw = mvariant(facts, "twin")
     if not isinstance(tw, dict) or not tw.get("revision_id"):
         gap("C5", "the seed manifest carries no twin variant (the deterministic pipeline whose "
                   "~40s process.exec is the only node long enough to kill a worker inside)")
@@ -3163,9 +3218,9 @@ def c7_evaluations_api(client, run_id):
 def c7_post_run(client, facts, revision_id, idem, label):
     """Start the run ONLY through the public API: POST /projects/{p}/runs pinned to the
     gate's own published revision (the same § 3 body C1 uses)."""
-    body = {"pipeline_revision_id": revision_id, "inputs": facts.get("inputs") or {},
+    body = {"pipeline_revision_id": revision_id, "inputs": mf(facts, "inputs") or {},
             "idempotency": idem}
-    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
     if not check(f"C7 {label}: POST runs (revision {revision_id}) -> 201", r.status in (200, 201),
                  f"{r.status} {r.text[:200]}"):
         return None
@@ -3599,13 +3654,13 @@ def c8_seed_facts():
     ASSIGNMENT (the for_each branch lives in that published revision, gated by
     inputs.fanout) and the published issue-implementation child. {} = no manifest."""
     obj = c9_manifest_json()
-    pipes = obj.get("pipelines") if isinstance(obj, dict) else None
+    pipes = mf(obj, "pipelines") or {}
     if not isinstance(pipes, dict):
         return {}
     fd = pipes.get(FD_SLUG) or {}
-    ii = pipes.get("issue-implementation") or {}
-    proj = (obj.get("project") or {}).get("id")
-    runs = [r for r in (obj.get("runs") or []) if isinstance(r, dict)]
+    ii = pipes.get(II_SLUG) or {}
+    proj = mf(obj, "project_id") or mf(mf(obj, "project") or {}, "id")
+    runs = [r for r in (mf(obj, "runs") or []) if isinstance(r, dict)]
     base = next((r.get("inputs") or {} for r in runs
                  if r.get("pipeline_slug") == FD_SLUG), {})
     if not (proj and fd.get("assignment_id") and fd.get("revision_id")):
@@ -3627,9 +3682,9 @@ def c8_inputs(base_inputs, count):
 def c8_post_run(client, facts, count, idem, label):
     """POST /projects/{p}/runs with the manifest's ASSIGNMENT (never a re-pin) and
     fanout=true; 201/queued or nothing."""
-    body = {"assignment_id": facts["assignment_id"],
-            "inputs": c8_inputs(facts.get("inputs"), count), "idempotency": idem}
-    r = client.post(LB, f"/api/v1/projects/{facts['project_id']}/runs", body)
+    body = {"assignment_id": mf(facts, "assignment_id"),
+            "inputs": c8_inputs(mf(facts, "inputs"), count), "idempotency": idem}
+    r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
     if not check(f"C8 {label}: POST runs (assignment + fanout_count={count}) -> 201",
                  r.status in (200, 201), f"{r.status} {r.text[:200]}"):
         return None
@@ -3750,7 +3805,7 @@ def c8_watch(client, facts, run_id, cap, label, hook=None):
         if status in ("completed", "failed", "cancelled", "interrupted"):
             break
         if status == "waiting_human" and not approved:
-            approved = approve_gate(client, facts["project_id"], run_id)
+            approved = approve_gate(client, mf(facts, "project_id"), run_id)
         if hook and not fired and status not in ("queued", ""):
             fired = hook(run_id)
         time.sleep(4)
@@ -3807,7 +3862,7 @@ def c8():
         return
     CTX["alice"] = alice
     suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    pid = facts["project_id"]
+    pid = mf(facts, "project_id")
 
     # ---- C8a — zero items complete the scope immediately, and honestly ----
     run0 = c8_post_run(alice, facts, 0, f"m4x-c8-zero-{suffix}", "zero items")
@@ -3841,7 +3896,7 @@ def c8():
             depths, proj_flags = c8_child_shape(run25, pid)
             inv = c8_invocation_count(run25)
             row25 = c8_scope_row(run25)
-            doc = alice.get(LB, f"/api/v1/revisions/{facts['revision_id']}/document?format=yaml")
+            doc = alice.get(LB, f"/api/v1/revisions/{mf(facts, "revision_id")}/document?format=yaml")
             authored = None
             if doc.status == 200:
                 mch = re.search(r"onChildFailure:\s*([a-z_]+)", doc.text)
@@ -3902,9 +3957,9 @@ def c8():
                                               "post a probe draft")
     else:
         CTX["admin"] = admin
-        host = facts["child_pipeline_id"] or facts["pipeline_id"]
-        src = admin.get(LB, f"/api/v1/revisions/{facts['child_revision_id']}"
-                            f"/document?format=yaml") if facts["child_revision_id"] else None
+        host = mf(facts, "child_pipeline_id") or mf(facts, "pipeline_id")
+        src = admin.get(LB, f"/api/v1/revisions/{mf(facts, 'child_revision_id')}"
+                            f"/document?format=yaml") if mf(facts, "child_revision_id") else None
         self_doc = None
         if src is not None and src.status == 200 and src.text.startswith("apiVersion"):
             self_doc = src.text.replace("  nodes:\n", "  nodes:\n" + C8_SELF_DOC_NODE.replace(
@@ -3971,7 +4026,7 @@ def c9_manifest_users(obj):
     """seed-manifest/1's `users` block -> {name: id}; non-empty strings only. The
     manifest is the seed's truth about who the lab identities are (README: lab
     users and their roles), and {} means the gate has to GAP its own arms."""
-    users = obj.get("users") if isinstance(obj, dict) else None
+    users = mf(obj, "users")
     if not isinstance(users, dict):
         return {}
     return {k: str(v).strip() for k, v in users.items() if isinstance(v, str) and str(v).strip()}
@@ -4306,12 +4361,12 @@ def c9_acquire_gate(alice, facts, used, label):
     """A gate to work on: reuse a pending one the lab already holds (the § 7.0 seed
     POSTs two runs that wait until someone decides), else start a fresh twin run
     and wait for ITS gate. (run_id, approval_id, source) — never invented ids."""
-    pid = facts["project_id"]
+    pid = mf(facts, "project_id")
     run_id, aid = c9_pending_gate(alice, pid, used)
     if aid:
         show(f"{label}: reusing the pending gate route 34 already lists", f"{aid} run={run_id}")
         return run_id, aid, "a pending seeded gate"
-    tw = facts.get("twin")
+    tw = mvariant(facts, "twin")
     if not isinstance(tw, dict) or not tw.get("revision_id"):
         return None, None, "the seed manifest carries no twin revision to start a run from"
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -4447,7 +4502,7 @@ def c9():
                   "race (C1 seeds on demand)")
         return
     CTX["manifest"] = facts
-    pid = facts["project_id"]
+    pid = mf(facts, "project_id")
     users = c9_manifest_users(c9_manifest_json())
     if not users:
         show("C9 note — the manifest's users block is unreadable",
@@ -4987,6 +5042,50 @@ def c13_override_verdict(status, event_types):
     return out
 
 
+def c13_out_of_scope_verdict(root, vresp, location):
+    """C13d's other accepted answer: a positional root used OUT of its scope must be
+    refused with `undeclared_root` naming the root (ADR-0022 § 2 makes root
+    availability positional, so this refusal is a contract fact, not a bug)."""
+    label = f"C13d out-of-scope root `{root}` refused by undeclared_root"
+    if not c13_validate_ok(vresp):
+        return (label, None, "no validate body — the out-of-scope refusal is unmeasured")
+    hits = c13_errors_at(vresp, location)
+    named = [e for e in hits if e.get("code") == "undeclared_root"
+             and root in f"{e.get('message') or ''} {e.get('hint') or ''}"]
+    if not hits:
+        return (label, False, f"`{root}` compiled outside the scope ADR-0022 § 2 "
+                             "declares it in — the positional root rule is not enforced")
+    if not named:
+        return (label, False, f"refused, but not as undeclared_root naming `{root}`: "
+                             f"{c13_brief(hits)}")
+    return (label, True, f"undeclared_root at {named[0].get('instance_location')} — "
+                         f"{(named[0].get('message') or '')[:120]}")
+
+
+def c13_parameters_root_verdict(vresp):
+    """The `parameters` root exists only in a NodeTemplate expansion (ADR-0022 § 2),
+    and M4 validates templates without publishing them (§ 9.1 row 12). The accept is
+    'the root resolved in template scope' and the milestone refusal must stand."""
+    label = "C13d declared CEL root `parameters` compiles in NodeTemplate scope"
+    if not c13_validate_ok(vresp):
+        return (label, None, "no NodeTemplate draft could be validated — ADR-0022 § 2 "
+                             "declares `parameters` unreachable in M4, so the root is "
+                             "unmeasured here rather than refused")
+    hits = c13_errors_at(vresp, "/spec/config")
+    refused = [e for e in hits if e.get("code") in
+               ("undeclared_root", "cel_compile_error", "cel_function_not_allowed",
+                "binding_syntax_error")]
+    deferred = [e for e in vresp["errors"] if isinstance(e, dict)
+                and e.get("code") == "template_publish_deferred"]
+    if refused:
+        return (label, False, f"the engine refused its own declared root: {c13_brief(refused)}")
+    if not deferred:
+        return (label, False, "the `parameters` root resolved but the template publish was "
+                             f"NOT refused: {c13_brief(hits) or '(no findings)'}")
+    return (label, True, "root resolved; publish refused as "
+                         f"{deferred[0].get('code')} (ADR-0024 § 2)")
+
+
 def c13_route_verdict(label, status, resolves_ok):
     """Immutable revisions: PUT/PATCH/DELETE under /api/v1/revisions must have no
     route. A 404 counts ONLY when the same id still GETs 200 — otherwise a missing
@@ -5033,22 +5132,21 @@ def c13_deprecate_verdicts(snap_before, snap_after, runs_before, runs_after, rev
 
 # --- C13 live helpers — documents the gate authors itself, refusals via API --
 
-C13_DOC = """apiVersion: communication.dev/v1alpha1
-kind: Pipeline
-metadata:
-  name: @@NAME@@
-  description: C13 refusal probe (docs/m4-contract.md § 7.1).
-spec:
-  inputs:
-    type: object
-    required: [goal]
-    properties:
-      goal: {type: string, minLength: 1}
-  policies:
-@@POLICIES@@
-  nodes:
-@@NODES@@
+# The base every C13 probe is mutated from: the HEADER (apiVersion / kind / metadata /
+# spec.inputs / spec.outputs / spec.policies) of document 1 of
+# docs/compatibility/probes/m4/pipeline.yaml — the exact bytes the § 7.0 seed published and
+# that validate clean — with only the name swapped, plus ONE known-valid node. A probe
+# authored from scratch can be invalid in a way that swallows the very error under test: the
+# schema's oneOf [PipelineDocument, NodeTemplateDocument] reports the LAST branch's noise
+# (/kind, /metadata, /spec) over the deep location the editor needs to highlight.
+C13_BASE_NODE = """  - id: probe
+    kind: process.exec
+    timeoutSeconds: 60
+    config:
+      executable: python3
 """
+
+_C13_HEADER = {}
 
 C13_POLICIES = """    maxConcurrentNodes: 1
     maxDurationSeconds: 3600
@@ -5057,17 +5155,18 @@ C13_POLICIES = """    maxConcurrentNodes: 1
     workspaceMode: worktree
     cancelPolicy: cascade"""
 
-C13_COND = {"when": 'inputs.goal == "x"'}
+C13_COND = {"cases": [{"when": 'inputs.goal == "x"', "route": "k01"}]}
+C13_BRANCH = "{id: b@@N@@, kind: process.exec, config: {executable: python3}}"
 C13_SEVENTH = """  - id: k01
     kind: parallel
     config:
       branches:
-      - nodes: [{id: b1, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+      - nodes: [{id: b1, kind: process.exec, config: {executable: python3}}]
   - id: k02
     kind: join
     config:
       branches:
-      - nodes: [{id: b2, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+      - nodes: [{id: b2, kind: process.exec, config: {executable: python3}}]
   - id: k03
     kind: gate
     config: {judge: human}
@@ -5084,32 +5183,186 @@ C13_SEVENTH = """  - id: k01
     kind: integration.action
     config: {provider: github, operation: add_comment}
 """
-C13_ROOT_NODE = """  - id: r{n}
-    kind: agent.acp
-    timeoutSeconds: 60
-    config:
-      profile: m4-planner
-      sessionMode: new
-      prompt: 'root {root} -> ${{{{ {root}.x }}}}'
-"""
+# ADR-0022 § 2 declares the eight roots POSITIONALLY: inputs/nodes/run exist at
+# pipeline scope, item/items only inside a for_each body, previous/iteration only
+# inside an until body, and parameters only inside a NodeTemplate expansion (which
+# M4 validates but never publishes — § 9.1 row 12). C13d therefore probes each root
+# IN THE SCOPE THAT DECLARES IT; the same roots are probed a second time outside
+# their scope, where undeclared_root is the required answer.
+BIND_OPEN, BIND_CLOSE = "${{ ", " }}"        # an expression's delimiters, by name
+C13_DYN_PROBE = "{root}.x"                 # § 7.1 C13d's `<root>.x` shape
+# `iteration` is the one non-dyn root (cel.IntType, ADR-0022 § 4), so `iteration.x`
+# is a type error on the engine's own root type rather than a root test: probe it as
+# an int expression that only compiles if the root resolves.
+C13_INT_PROBE = 'iteration > 1 ? "2+" : "1"'
+C13_PREV_PROBE = 'has(previous.review_note) ? previous.review_note : "first"'
+
+# (root, probe expression, node id, node kind) per scope, in document order.
+C13D_PIPELINE_SCOPE = (("inputs", "inputs.x", "r_inputs"),
+                       ("nodes", "nodes.r_inputs.outputs.x", "r_nodes"),
+                       ("run", "run.x", "r_run"))
+C13D_FOREACH_SCOPE = (("item", "item.x", "b_item"), ("items", "items.x", "b_items"))
+C13D_UNTIL_SCOPE = (("iteration", C13_INT_PROBE, "b_iter"),
+                    ("previous", C13_PREV_PROBE, "b_prev"))
+# Each of these is probed at pipeline scope, where it is NOT declared.
+C13D_OUT_OF_SCOPE = (("item", "item.x", "m_item"), ("items", "items.x", "m_items"),
+                     ("previous", "previous.x", "m_previous"),
+                     ("iteration", C13_INT_PROBE, "m_iteration"),
+                     ("parameters", "parameters.x", "m_parameters"))
+
+
+def _c13_agent_node(nid, expr, label, dep=None, pad=2):
+    """One agent.acp probe whose prompt carries a single `${{ ... }}` expression."""
+    p = " " * pad
+    out = [f"{p}- id: {nid}", f"{p}  kind: agent.acp"]
+    if dep:
+        out.append(f"{p}  dependsOn: [{dep}]")
+    out += [f"{p}  timeoutSeconds: 60", f"{p}  config:",
+            f"{p}    profile: m4-planner", f"{p}    sessionMode: new",
+            f"{p}    prompt: '{label} -> " + BIND_OPEN + expr + BIND_CLOSE + "'"]
+    return "\n".join(out) + "\n"
+
+
+def _c13_seed_node(dep, pad=2):
+    """The process.exec node that authors the for_each list (runtime/testdata shape)."""
+    p = " " * pad
+    return (f"{p}- id: seed\n{p}  kind: process.exec\n{p}  dependsOn: [{dep}]\n"
+            f"{p}  config:\n{p}    executable: seed\n"
+            f"{p}  outputs:\n{p}    type: object\n{p}    properties:\n"
+            f"{p}      worklist: {{type: array, items: {{type: object}}}}\n")
+
+
+def c13_base_header(path=SEED_PIPELINE_YAML):
+    """Document 1 of the § 7.0 seed pipeline set, up to (not including) its `  nodes:`
+    block — the published, validating header. '' when the sample is unreadable or
+    shapeless: the caller GAPs rather than probe on an invented document."""
+    if "header" not in _C13_HEADER:
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc1 = f.read().split("\n---\n")[0]
+            _C13_HEADER["header"] = doc1[:doc1.index("\n  nodes:")]
+        except (OSError, ValueError) as e:
+            show("C13 base document source", f"{path}: {type(e).__name__}: {e}"[:200])
+            _C13_HEADER["header"] = ""
+    return _C13_HEADER["header"]
 
 
 def c13_doc(name, nodes, policies=C13_POLICIES):
-    """A minimal Pipeline document with the probe nodes spliced in verbatim."""
-    return (C13_DOC.replace("@@NAME@@", name).replace("@@POLICIES@@", policies)
-            .replace("@@NODES@@", nodes))
+    """The seed-valid base document with only `name`, `policies` and `nodes` swapped —
+    every other byte identical to the published pipeline. '' = no base to build on."""
+    head = c13_base_header()
+    if not head:
+        return ""
+    head = re.sub(r"(?m)^  name: .*$", "  name: " + name, head, count=1)
+    try:
+        cut = head.index("\n  policies:")
+    except ValueError:
+        return ""
+    return head[:cut] + "\n  policies:\n" + policies + "\n  nodes:\n" + nodes
+
+
+def c13_root_probe_doc(name):
+    """C13d's accept document — each root probed where it is in scope (ADR-0022 § 2),
+    plus the reserved `loop` probe the same response must refuse. Returns
+    (document_yaml, {root: instance_location}) built from the SAME table, so a probe
+    and the pointer its verdict reads can never drift apart."""
+    nodes, at = [], {}
+
+    def root_node(i, nid, expr, label, dep=None):
+        at[nid] = f"/spec/nodes/{i}/config/prompt"
+        return _c13_agent_node(nid, expr, label, dep=dep)
+
+    chain = None
+    for k, (root, expr, nid) in enumerate(C13D_PIPELINE_SCOPE):
+        nodes.append(root_node(len(nodes), nid, expr, root, dep=chain))
+        chain = nid
+    nodes.append(root_node(len(nodes), "r_loop", f"{C13_RESERVED_ROOT}.x",
+                           "reserved", dep=chain))
+    loop_at = at.pop("r_loop")
+    nodes.append(_c13_seed_node("r_loop"))
+    fan_i = len(nodes)
+    body = "".join(_c13_agent_node(nid, expr, root, pad=8) for root, expr, nid in
+                   C13D_FOREACH_SCOPE)
+    for j, (_root, _expr, nid) in enumerate(C13D_FOREACH_SCOPE):
+        at[nid] = f"/spec/nodes/{fan_i}/config/body/nodes/{j}/config/prompt"
+    nodes.append(f"  - id: fan\n    kind: for_each\n    dependsOn: [seed]\n"
+                 f"    config:\n      items: '" + BIND_OPEN + "nodes.seed.outputs.worklist"
+                 + BIND_CLOSE + "'\n"
+                 f"      maxConcurrency: 2\n      body:\n        nodes:\n{body}")
+    until_i = len(nodes)
+    body = "".join(_c13_agent_node(nid, expr, root, pad=8) for root, expr, nid in
+                   C13D_UNTIL_SCOPE)
+    for j, (_root, _expr, nid) in enumerate(C13D_UNTIL_SCOPE):
+        at[nid] = f"/spec/nodes/{until_i}/config/body/nodes/{j}/config/prompt"
+    nodes.append(f"  - id: until1\n    kind: until\n    dependsOn: [fan]\n"
+                 f"    config:\n      maxIterations: 2\n"
+                 f"      passWhen: nodes.b_iter.status == 'succeeded'\n"
+                 f"      resultBindings:\n"
+                 f"        review_note: '" + BIND_OPEN + "nodes.b_prev.outputs.note"
+                 + BIND_CLOSE + "'\n"
+                 f"      body:\n        nodes:\n{body}")
+    pointers = {root: at[nid] for root, _e, nid in
+                C13D_PIPELINE_SCOPE + C13D_FOREACH_SCOPE + C13D_UNTIL_SCOPE}
+    return c13_doc(name, "".join(nodes)), pointers, loop_at
 
 
 def c13_root_doc(name):
-    """One node per declared root plus the reserved `loop`, in document order."""
-    ids = list(C13_ROOTS) + [C13_RESERVED_ROOT]
-    return c13_doc(name, "".join(C13_ROOT_NODE.format(n=i + 1, root=r) for i, r in enumerate(ids)))
+    """The accept document on its own (the offline test reads it as text)."""
+    return c13_root_probe_doc(name)[0]
+
+
+def c13_root_misuse_doc(name):
+    """C13d's refusal document: every positional root used at pipeline scope,
+    where ADR-0022 § 2 says it does not exist. Returns (yaml, {root: pointer})."""
+    nodes, at, chain = [], [], None
+    for i, (root, expr, nid) in enumerate(C13D_OUT_OF_SCOPE):
+        nodes.append(_c13_agent_node(nid, expr, root, dep=chain))
+        at.append((root, f"/spec/nodes/{i}/config/prompt"))
+        chain = nid
+    return c13_doc(name, "".join(nodes)), dict(at)
+
+
+C13D_TEMPLATE_DOC = """apiVersion: communication.dev/v1alpha1
+kind: NodeTemplate
+metadata:
+  name: @@NAME@@
+  version: 1.0.0
+  description: C13d parameters-root probe (ADR-0022 § 2, contract § 9.1 row 12).
+spec:
+  implements: agent.acp
+  parameters:
+    type: object
+    required: [profile]
+    properties:
+      profile: {type: string}
+      review_instructions: {type: string}
+  config:
+    profile: '${{ parameters.profile }}'
+    sessionMode: new
+    prompt: 'parameters -> ${{ parameters.review_instructions }}'
+  outputSchema:
+    type: object
+    required: [approved]
+    properties:
+      approved: {type: boolean}
+"""
+
+
+def c13_template_doc(name):
+    """The only document kind that declares the `parameters` root. M4 validates it
+    and refuses the publish (template_publish_deferred), which is exactly what makes
+    this probe honest: the root compiles, the template does not run."""
+    return C13D_TEMPLATE_DOC.replace("@@NAME@@", name)
 
 
 def c13_draft_probe(admin, pipeline_id, tag, doc, publish=False):
     """POST the draft as the library role, validate it, and hand back everything the
     verdicts read: draft id/version, the § 2.2 body, the raw text, the draft's own
     status, and (when asked) the publish response. None = no draft could be created."""
+    if not doc:
+        show(f"C13 {tag}: no draft posted", "the base document could not be built from "
+                                            f"{SEED_PIPELINE_YAML} — nothing to validate")
+        return None
     r = admin.post(LB, f"/api/v1/pipelines/{pipeline_id}/drafts", {"document_yaml": doc})
     show(f"C13 {tag}: POST /api/v1/pipelines/{{id}}/drafts -> {r.status}", r.text[:300])
     if r.status != 201:
@@ -5198,9 +5451,32 @@ def c13():
         return
     CTX["admin"] = admin
     users = c9_manifest_users(c9_manifest_json())
-    pid_pipe = facts["twin"]["pipeline_id"]
+    pid_pipe = mf(facts, "pipeline_id", "twin")
     show("C13 draft host", f"pipeline {pid_pipe} (§ 7.0 seed); org admin user id "
                            f"{users.get('admin') or '(from the session)'}")
+
+    # ---- control: the UNMUTATED base document. If the probe's own document is not
+    # valid, every refusal below is measured against noise the schema's oneOf reports
+    # from the wrong branch — the gate's fault, never the engine's. ----
+    b = c13_draft_probe(admin, pid_pipe, "base document (unmutated control)",
+                        c13_doc("m4x-c13-base", C13_BASE_NODE))
+    base_ok = bool(b and c13_validate_ok(b["vresp"]) and b["vresp"].get("valid") is True)
+    if b is None:
+        base_detail = f"no draft could be created/validated from {SEED_PIPELINE_YAML}"
+    elif base_ok:
+        base_detail = ("seed header + one valid node accepted — the probes below mutate exactly "
+                       "one thing each")
+    elif c13_validate_ok(b["vresp"]):
+        base_detail = "base document invalid: " + c13_brief(b["vresp"].get("errors") or [])
+    else:
+        base_detail = "base document invalid: validate returned no § 2.2 body"
+    check("C13 base document validates clean (the probes' own control)", base_ok, base_detail)
+    if not base_ok:
+        gap("C13a–C13g", "the gate's own base document is refused (see the FAIL above): a probe "
+                         "refused for its own shape cannot show the engine's refusal — the "
+                         "schema's oneOf reports the NodeTemplate branch's noise (/kind, "
+                         "/metadata, /spec) over the deep location every case tests")
+        return
 
     # ---- C13a: the seven deferred kinds, refused at validate ----
     a = c13_draft_probe(admin, pid_pipe, "C13a deferred kinds",
@@ -5223,7 +5499,7 @@ def c13():
       items: '${{ inputs.goal }}'
       maxConcurrency: '${{ inputs.goal }}'
       body:
-        nodes: [{id: t2b, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+        nodes: [{id: t2b, kind: process.exec, config: {executable: python3}}]
 """
     until = """  - id: t4
     kind: until
@@ -5232,7 +5508,7 @@ def c13():
       passWhen: 'inputs.goal == "x"'
       carryForward: yes
       body:
-        nodes: [{id: t4b, kind: condition, config: {when: 'inputs.goal == "x"'}}]
+        nodes: [{id: t4b, kind: process.exec, config: {executable: python3}}]
 """
     esc = """  - id: t5
     kind: agent.acp
@@ -5271,10 +5547,8 @@ def c13():
         c5_emit([c13_refusal_verdict(f"C13b {tag.split(' ', 1)[1]} refused at {loc}",
                                      res["vresp"] if res else None, loc, codes)])
     # policies.maxConcurrentNodes: -1 — the same rule on the spec-level block.
-    neg = c13_doc("m4x-c13b-negpol", """  - id: t3
-    kind: condition
-    config: {when: 'inputs.goal == "x"'}
-""", policies=C13_POLICIES.replace("maxConcurrentNodes: 1", "maxConcurrentNodes: -1"))
+    neg = c13_doc("m4x-c13b-negpol", C13_BASE_NODE,
+                  policies=C13_POLICIES.replace("maxConcurrentNodes: 1", "maxConcurrentNodes: -1"))
     res = c13_draft_probe(admin, pid_pipe, "C13b negative policy", neg)
     c5_emit([c13_refusal_verdict("C13b policies.maxConcurrentNodes: -1 refused at its own "
                                  "location", res["vresp"] if res else None,
@@ -5295,14 +5569,27 @@ def c13():
                                res["publish_status"] if res else None,
                                res["publish_body"] if res else None))
 
-    # ---- C13d: the CEL root table, executed as eight accepts + one refusal ----
-    res = c13_draft_probe(admin, pid_pipe, "C13d root table", c13_root_doc("m4x-c13d-roots"))
-    out = []
-    for i, root in enumerate(C13_ROOTS):
-        out.append(c13_root_verdict(root, res["vresp"] if res else None,
-                                    f"/spec/nodes/{i}/config/prompt"))
-    out.append(c13_reserved_root_verdict(res["vresp"] if res else None,
-                                         f"/spec/nodes/{len(C13_ROOTS)}/config/prompt"))
+    # ---- C13d: the CEL root table, executed where each root is IN SCOPE ------
+    # ADR-0022 § 2 declares root availability POSITIONALLY, so one flat document
+    # cannot test the table: inputs/nodes/run exist at pipeline scope, item/items
+    # only in a for_each body, previous/iteration only in an until body, and
+    # parameters only in a NodeTemplate expansion (which M4 validates but cannot
+    # publish — § 9.1 row 12). Seven accepts here, plus the `parameters` accept
+    # measured on a template, plus the refusals that are the same rule's other half:
+    # every positional root used OUT of scope, and the parser-reserved `loop`.
+    doc, ptr_in, loop_at = c13_root_probe_doc("m4x-c13d-roots")
+    res = c13_draft_probe(admin, pid_pipe, "C13d roots in scope", doc)
+    out = [c13_root_verdict(root, res["vresp"] if res else None, ptr_in[root])
+           for root, _e, _n in (C13D_PIPELINE_SCOPE + C13D_FOREACH_SCOPE
+                                + C13D_UNTIL_SCOPE)]
+    out.append(c13_reserved_root_verdict(res["vresp"] if res else None, loop_at))
+    doc, ptr_out = c13_root_misuse_doc("m4x-c13d-misuse")
+    res = c13_draft_probe(admin, pid_pipe, "C13d roots out of scope", doc)
+    out += [c13_out_of_scope_verdict(root, res["vresp"] if res else None, ptr_out[root])
+            for root, _e, _n in C13D_OUT_OF_SCOPE]
+    res = c13_draft_probe(admin, pid_pipe, "C13d parameters root (NodeTemplate)",
+                          c13_template_doc("m4x-c13d-template"))
+    out.append(c13_parameters_root_verdict(res["vresp"] if res else None))
     c5_emit(out)
 
     # ---- C13e: sessionMode continue_live, and the override route that is not ----
@@ -5319,7 +5606,7 @@ def c13():
                                  "unsupported_session_mode", res["vresp"] if res else None,
                                  "/spec/nodes/0/config/sessionMode",
                                  ("unsupported_session_mode",))])
-    run_id = facts["twin"]["run_id"]
+    run_id = mf(facts, "run_id", "twin")
     ov = admin.post(LB, f"/api/v1/runs/{run_id}/override", {"inputs": {}})
     show(f"C13e POST /api/v1/runs/{{id}}/override -> {ov.status}", ov.text[:200])
     c5_emit(c13_override_verdict(ov.status, c13_journal_types()))
@@ -5337,7 +5624,7 @@ def c13():
         "API half — that no cpu/memory/disk field exists to imply a limit")
 
     # ---- C13g: revisions are immutable; deprecate is the only mutation ----
-    rev = facts["twin"]["revision_id"]
+    rev = mf(facts, "revision_id", "twin")
     g = admin.get(LB, f"/api/v1/revisions/{rev}")
     show(f"C13g GET /api/v1/revisions/{{id}} -> {g.status}", g.text[:160])
     resolves = g.status == 200
@@ -5505,6 +5792,27 @@ GATES = [("C1", c1), ("C2", c2), ("C3", c3), ("C4", c4), ("C5", c5),
 # --- main --------------------------------------------------------------------
 
 
+def gate_crash_location(exc):
+    """The innermost frame that belongs to THIS file — the line a gate reader has
+    to open — as 'e2e_m4_exit.py:LINE in FUNC'. Falls back to the outermost
+    traceback frame when the throw came from a helper in another module."""
+    here = os.path.abspath(__file__)
+    chosen, frames = None, []
+    tb = getattr(exc, "__traceback__", None)
+    while tb is not None:
+        frames.append(tb)
+        tb = tb.tb_next
+    for f in frames:
+        if os.path.abspath(f.tb_frame.f_code.co_filename) == here:
+            chosen = f
+    if chosen is None and frames:
+        chosen = frames[-1]
+    if chosen is None:
+        return f"{os.path.relpath(here, REPO_DIR)}:? (no traceback)"
+    return (f"{os.path.relpath(here, REPO_DIR)}:{chosen.tb_lineno} "
+            f"in {chosen.tb_frame.f_code.co_name}")
+
+
 def finish():
     step("summary")
     print(f"  FAIL={len(FAILURES)}  GAP={len(GAPS)}  "
@@ -5580,7 +5888,20 @@ def main(argv=None):
         if sel and gid not in sel:
             continue
         step(f"{gid} — {fn.__doc__.strip().splitlines()[0]}")
-        fn()
+        try:
+            fn()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as e:  # noqa: BLE001 — one gate's crash must not end the run
+            where = gate_crash_location(e)
+            trace = "".join(__import__("traceback").format_exception(type(e), e, e.__traceback__))
+            EVIDENCE[gid] = trace
+            check(f"{gid} crashed: {type(e).__name__}: {str(e)[:180]}", False,
+                  f"{where} (full traceback below)")
+            for ln in trace.strip().splitlines()[-6:]:
+                print(f"  ....  {ln.strip()[:200]}", flush=True)
+            gap(f"{gid} remaining cases", "the gate aborted — the checks after the crash "
+                                          f"never ran ({where})")
 
     if args.down:
         step("teardown")

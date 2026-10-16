@@ -180,6 +180,36 @@ class RootTableTest(unittest.TestCase):
         self.assertEqual(len(m.C13_ROOTS), 8)
         self.assertNotIn(m.C13_RESERVED_ROOT, m.C13_ROOTS)
         self.assertEqual(len(m.C13_DEFERRED_KINDS), 7)
+        # ADR-0022 § 2 is positional: seven roots are probed in a pipeline scope,
+        # `parameters` only exists in the NodeTemplate probe.
+        in_scope = {r for r, _e, _n in (m.C13D_PIPELINE_SCOPE + m.C13D_FOREACH_SCOPE
+                                        + m.C13D_UNTIL_SCOPE)}
+        self.assertEqual(in_scope | {"parameters"}, set(m.C13_ROOTS))
+        self.assertEqual({r for r, _e, _n in m.C13D_OUT_OF_SCOPE},
+                         {"item", "items", "previous", "iteration", "parameters"})
+
+    def test_out_of_scope_refusal_passes_and_clean_compile_fails(self):
+        v = body([err("undeclared_root", "/spec/nodes/0/config/prompt",
+                      msg='root "item" is not declared for this position')])
+        label, ok, detail = m.c13_out_of_scope_verdict("item", v, "/spec/nodes/0/config/prompt")
+        self.assertTrue(ok, detail)
+        self.assertFalse(m.c13_out_of_scope_verdict("item", body([]),
+                                                    "/spec/nodes/0/config/prompt")[1])
+        other = body([err("unknown_field", "/spec/nodes/0/config/prompt")])
+        self.assertFalse(m.c13_out_of_scope_verdict("item", other,
+                                                    "/spec/nodes/0/config/prompt")[1])
+        self.assertIsNone(m.c13_out_of_scope_verdict("item", None,
+                                                     "/spec/nodes/0/config/prompt")[1])
+
+    def test_parameters_root_needs_template_scope_and_the_publish_block(self):
+        good = body([err("template_publish_deferred", "/kind", "compiler",
+                         msg="publishing templates is deferred to M5")])
+        self.assertTrue(m.c13_parameters_root_verdict(good)[1])
+        self.assertFalse(m.c13_parameters_root_verdict(body([]))[1])
+        refused = body([err("undeclared_root", "/spec/config/prompt",
+                            msg='root "parameters" is not declared')])
+        self.assertFalse(m.c13_parameters_root_verdict(refused)[1])
+        self.assertIsNone(m.c13_parameters_root_verdict(None)[1])
 
 
 class RouteAndOpsTest(unittest.TestCase):
@@ -227,14 +257,79 @@ class DeprecateVerdictTest(unittest.TestCase):
 class ProbeDocTest(unittest.TestCase):
     def test_probe_documents_are_yaml_the_api_can_read(self):
         doc = m.c13_doc("m4x-c13a", m.C13_SEVENTH)
-        self.assertTrue(doc.startswith("apiVersion: communication.dev/v1alpha1"))
+        # c13_doc builds on the seed document, whose provenance comment block rides
+        # ahead of the mapping — the claim is "YAML the API can read", not byte 0.
+        self.assertIn("apiVersion: communication.dev/v1alpha1", doc)
+        self.assertIn("kind: Pipeline", doc)
         self.assertEqual(doc.count("kind: parallel"), 1)
-        roots = m.c13_root_doc("m4x-c13d")
-        for r in m.C13_ROOTS:
-            self.assertIn("${{ %s.x }}" % r, roots)
+
+    def test_root_document_probes_each_root_where_it_is_in_scope(self):
+        """The gate may not ask for `item.x` at pipeline scope and call a refusal a
+        bug: ADR-0022 § 2 puts item/items in a for_each body and previous/iteration
+        in an until body. The pointers the verdicts read come from the same table
+        that writes the nodes, so probe and pointer cannot drift."""
+        roots, pointers, loop_at = m.c13_root_probe_doc("m4x-c13d")
+        self.assertIn("kind: for_each", roots)
+        self.assertIn("kind: until", roots)
+        self.assertIn("resultBindings", roots)
+        self.assertIn("${{ item.x }}", roots)
+        self.assertIn("${{ items.x }}", roots)
+        self.assertIn('iteration > 1 ? "2+" : "1"', roots)
+        self.assertIn('has(previous.review_note)', roots)
         self.assertIn("${{ loop.x }}", roots)
-        self.assertEqual(roots.count("kind: agent.acp"), 9)
+        self.assertNotIn("parameters", roots)
+        self.assertEqual(set(pointers), set(m.C13_ROOTS) - {"parameters"})
+        for root, at in pointers.items():
+            self.assertTrue(at.endswith("/config/prompt"), f"{root} @ {at}")
+            nested = root in ("item", "items", "previous", "iteration")
+            self.assertEqual("/config/body/nodes/" in at, nested, f"{root} @ {at}")
+            probe = {"iteration": 'iteration > 1', "previous": "previous.review_note"}
+            self.assertIn(probe.get(root, root), roots, f"{root} @ {at}")
+        self.assertTrue(loop_at.endswith("/config/prompt"))
+
+    def test_misuse_document_places_every_positional_root_out_of_scope(self):
+        doc, pointers = m.c13_root_misuse_doc("m4x-c13d-misuse")
+        self.assertEqual(set(pointers), {"item", "items", "previous", "iteration",
+                                        "parameters"})
+        for root, at in pointers.items():
+            self.assertTrue(at.startswith("/spec/nodes/"), f"{root} at {at}")
+            self.assertEqual(at.count("/config/"), 1, f"{root} must sit at pipeline scope")
+            self.assertIn(m.BIND_OPEN + root if root != "iteration"
+                          else "iteration > 1", doc)
+
+    def test_template_document_declares_the_parameters_root(self):
+        doc = m.c13_template_doc("m4x-c13d-template")
+        self.assertIn("kind: NodeTemplate", doc)
+        self.assertIn("${{ parameters.review_instructions }}", doc)
+
+
+class GateCompilerProbeSyncTest(unittest.TestCase):
+    """The compiler's own evidence (internal/pipelines/compiler/testdata/c13d-*.yaml)
+    is a byte-for-byte copy of these documents. If a builder moves and the copy does
+    not, the Go test proves something the gate no longer sends — so it fails here."""
+
+    COPIES = {"c13d-roots-in-scope.yaml": lambda n: m.c13_root_probe_doc(n)[0],
+              "c13d-roots-misuse.yaml": lambda n: m.c13_root_misuse_doc(n),
+              "c13d-parameters-template.yaml": lambda n: m.c13_template_doc(n)}
+
+    def test_compiler_testdata_matches_the_documents_the_gate_builds(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                            "internal", "pipelines", "compiler", "testdata")
+        for name, build in self.COPIES.items():
+            with open(os.path.join(root, name), encoding="utf-8") as f:
+                stored = f.read()
+            # Compare from the mapping's first key: the copy carries a regeneration
+            # note above it, the seed document carries a provenance block above that.
+            body, doc = stored[stored.index("apiVersion"):], build(
+                "m4x-c13d-roots" if "roots-in" in name else
+                ("m4x-c13d-misuse" if "misuse" in name else "m4x-c13d-template"))
+            doc = doc[0] if isinstance(doc, tuple) else doc
+            doc = doc[doc.index("apiVersion"):]
+            self.assertEqual(body, doc, f"{name}: the gate's document moved away from the "
+                                        "compiler testdata — regenerate the copy")
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
+
+
