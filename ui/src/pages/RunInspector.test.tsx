@@ -4,7 +4,7 @@
  * that lives in `?node=` so a pane is linkable. Served by the fake fetch and
  * the fake EventSource — the same doubles that prove `/__m4-preview?source=live`.
  */
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   FakeEventSource,
@@ -114,6 +114,10 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}`, body: wirePipeline },
     {
+      path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/revisions`,
+      body: { revisions: wirePipeline.revisions },
+    },
+    {
       path: `/api/v1/projects/${wireProjectId}/approvals`,
       body: { ...wireApprovalList, approvals: [] },
     },
@@ -148,6 +152,45 @@ describe(`/projects/:projectId/runs/:runId`, () => {
     expect(screen.getByTestId("run-tab-timeline")).toBeTruthy();
     // The design's left column is the run list, with the open run raised.
     expect(await screen.findByTestId(`run-row-${WIRE_RUN_ID}`)).toBeTruthy();
+  });
+
+  it("W4: shows the pinned-revision notice only when a newer revision is published", async () => {
+    // The run's pinned r7 is the newest published revision: 12 case 11 must
+    // stay invisible when nothing newer exists.
+    const quiet = mountRun();
+    await screen.findByTestId("run-title");
+    await waitFor(() =>
+      expect(
+        requestsTo(quiet.requests, `/api/v1/pipelines/${WIRE_PIPELINE_ID}/revisions`),
+      ).toHaveLength(1),
+    );
+    expect(screen.queryByTestId("run-new-revision-notice")).toBeNull();
+    cleanup();
+
+    // Another tab publishes r8 while this run is live; the reload says so —
+    // the exact § 7.2 wording — and still shows the pinned digest (§ 7 W4).
+    const newer = {
+      revisions: [
+        {
+          ...wirePipeline.revisions[0],
+          revision_number: 8,
+          version_label: "8.0.0",
+          revision_digest: `sha256:${"c".repeat(64)}`,
+        },
+        ...wirePipeline.revisions,
+      ],
+    };
+    mountRun("", [{ path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/revisions`, body: newer }]);
+
+    const notice = await screen.findByTestId("run-new-revision-notice");
+    expect(notice.textContent).toContain(
+      "revision 8 published since this run started — this run is pinned to 7",
+    );
+    expect(screen.getByTestId("run-new-revision-link").getAttribute("href")).toBe(
+      `/library/${WIRE_PIPELINE_ID}`,
+    );
+    // The pinned identity the run started with is unchanged on the page.
+    expect(screen.getByTestId("run-title").textContent).toMatch(/^Run #/);
   });
 
   it("opens on Definition with the graph, and pre-selects what the run waits on", async () => {

@@ -16,7 +16,7 @@
  * run the server last reported, not the one just asked for.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert } from "../components/ds/Alert";
 import { Button } from "../components/ds/Button";
@@ -29,7 +29,7 @@ import { useActorNames } from "../api/actors";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
 import { RunStageStrip } from "../components/m4/RunStageStrip";
 import { RunTree } from "../components/m4/RunTree";
-import { usePipelines, useRevision } from "../api/pipelines";
+import { usePipelineRevisions, usePipelines, useRevision } from "../api/pipelines";
 import {
   adoptApprovalConflict,
   approvalConflictOf,
@@ -67,10 +67,11 @@ import {
 import type {
   NodeExecutionStatus,
   NodeExecutionSummary,
+  RunDetail,
   RunEventType,
   RunTreeRoot,
 } from "../lib/pipeline/contract";
-import type { EventActor, EventEnvelope } from "../api/types";
+import type { EventActor, EventEnvelope, PipelineRevisionSummaryList } from "../api/types";
 import {
   ProjectSectionNav,
   RunStatusChip,
@@ -137,6 +138,15 @@ export default function RunInspector() {
   const stream = useRunEvents(runId, projectId);
 
   const baseRun = useMemo(() => (runQuery.data ? viewRun(runQuery.data) : null), [runQuery.data]);
+  // W4 (`docs/m4-contract.md` § 7.2): the revisions list is what turns "a new
+  // revision was published while this run lived" into a visible notice. The
+  // run itself carries only the pinned digest, so the pinned number is read
+  // off the same list; the reads are polled with the page, not just the stream.
+  const revisionsQuery = usePipelineRevisions(baseRun?.pipeline_id ?? "");
+  const revisionNotice = useMemo(
+    () => (baseRun ? newerRevisionNotice(baseRun, revisionsQuery.data) : null),
+    [baseRun, revisionsQuery.data],
+  );
   const baseNodes = useMemo(
     () => (nodesQuery.data?.node_executions ?? []).map(viewNodeExecution),
     [nodesQuery.data],
@@ -328,6 +338,31 @@ export default function RunInspector() {
           </div>
           <RunActions runId={runId} status={run.status} />
         </header>
+
+        {revisionNotice ? (
+          <div className="pt-3">
+            <Alert
+              state="info"
+              label="NEW REVISION PUBLISHED"
+              testid="run-new-revision-notice"
+              action={
+                <Link
+                  to={`/library/${run.pipeline_id}`}
+                  className="shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  data-testid="run-new-revision-link"
+                >
+                  {slug} in the library
+                </Link>
+              }
+            >
+              <span className="text-[12.5px]">
+                revision {revisionNotice.newest} published since this run started — this run is
+                pinned to {revisionNotice.pinned} ({shortDigest(run.revision_digest)}). The run
+                stays on the revision it started with.
+              </span>
+            </Alert>
+          </div>
+        ) : null}
 
         <div className="flex gap-1 py-3" role="tablist" aria-label="Run views">
           {TABS.map((item) => (
@@ -1046,4 +1081,22 @@ function definitionOrderOf(document: DefinitionDocument | null | undefined): str
   const walk = (nodes: DefinitionNode[]): string[] =>
     nodes.flatMap((node) => [node.id, ...walk(scopeBody(node))]);
   return walk(document.spec.nodes);
+}
+
+/**
+ * W4's notice arithmetic (§ 7.2 row W4, `12` case 11 made visible): compare
+ * the newest published revision of the run's pipeline against the revision
+ * this run is pinned to. The run carries only the pinned digest, so the
+ * pinned number is the summary whose digest matches; when the pin is absent
+ * from the list the page stays silent rather than invent a comparison.
+ */
+export function newerRevisionNotice(
+  run: Pick<RunDetail, "revision_digest">,
+  revisions: PipelineRevisionSummaryList | undefined,
+): { newest: number; pinned: number } | null {
+  const list = revisions?.revisions ?? [];
+  const pinned = list.find((revision) => revision.revision_digest === run.revision_digest);
+  if (!pinned) return null;
+  const newest = Math.max(...list.map((revision) => revision.revision_number));
+  return newest > pinned.revision_number ? { newest, pinned: pinned.revision_number } : null;
 }

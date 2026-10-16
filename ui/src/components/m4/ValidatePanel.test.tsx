@@ -62,7 +62,7 @@ function harness(text: string, validation: ValidateResponse = w8Validation as Va
 
 function renderPanel(props: Partial<Parameters<typeof ValidatePanel>[0]> = {}, text = w8DraftYaml) {
   const harnessValue = harness(text);
-  render(
+  const rendered = render(
     <ValidatePanel
       pipelines={[
         { id: WIRE_PIPELINE_ID, slug: "feature-development", displayName: "Feature development" },
@@ -73,7 +73,7 @@ function renderPanel(props: Partial<Parameters<typeof ValidatePanel>[0]> = {}, t
     />,
     { wrapper: harnessValue.wrapper },
   );
-  return harnessValue;
+  return { ...harnessValue, ...rendered };
 }
 
 /** The codes as rendered, in DOM order. */
@@ -197,6 +197,43 @@ describe("ValidatePanel (W8)", () => {
     expect(row.textContent).toContain("value redacted");
     expect(row.textContent).toContain("value never shown");
     expect(screen.getByTestId(`validate-panel-redacted-${secret}`)).toBeTruthy();
+  });
+
+  it("arms Validate when the library arrives — pasting YAML needs no touch of the select (W8)", async () => {
+    // The project screen's library list comes from a read, so on first paint
+    // there is nothing to select; the gap this closes is that the button
+    // stayed disabled past that paint until the reader touched the select.
+    const { requests, rerender } = renderPanel({ pipelines: [] });
+    const paste = w8DraftYaml;
+    fireEvent.change(screen.getByTestId("validate-panel-input"), { target: { value: paste } });
+    expect(screen.getByTestId("validate-panel-submit").hasAttribute("disabled")).toBe(true);
+
+    rerender(
+      <ValidatePanel
+        pipelines={[
+          { id: WIRE_PIPELINE_ID, slug: "feature-development", displayName: "Feature development" },
+        ]}
+        canValidate
+        initialText={paste}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("validate-panel-submit").hasAttribute("disabled")).toBe(false),
+    );
+    // The select defaulted to the first selectable pipeline on its own.
+    expect((screen.getByTestId("validate-panel-pipeline") as HTMLSelectElement).value).toBe(
+      WIRE_PIPELINE_ID,
+    );
+
+    fireEvent.click(screen.getByTestId("validate-panel-submit"));
+    await waitFor(() => expect(requestsTo(requests, draftPath, "POST")).toHaveLength(1));
+    expect(
+      JSON.parse(requestsTo(requests, draftPath, "POST")[0].body ?? "{}").document_yaml,
+    ).toContain("apiVersion: communication.dev/v1alpha1");
+    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("validate-panel-verdict").textContent).toContain("findings"),
+    );
   });
 
   it("shows a member without the library role the reason, not a button that would 403", () => {

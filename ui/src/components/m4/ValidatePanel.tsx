@@ -87,6 +87,17 @@ export function ValidatePanel({
   const [selected, setSelected] = useState<string | null>(null);
   const [failure, setFailure] = useState<unknown>(null);
 
+  // The caller's pipeline list usually arrives asynchronously (the project
+  // screens read it from `usePipelines`), so the mount-time default above is
+  // often empty and the Validate button would stay disabled until the reader
+  // touched the select. Default to the first selectable pipeline whenever the
+  // current id names none — pasting YAML and clicking Validate must work.
+  useEffect(() => {
+    setPipelineId((current) =>
+      pipelines.some((pipeline) => pipeline.id === current) ? current : (pipelines[0]?.id ?? ""),
+    );
+  }, [pipelines]);
+
   const create = useCreateDraft(pipelineId);
   const put = usePutDraft(draft?.id ?? "");
   const validate = useValidateDraft(draft?.id ?? "");
