@@ -2718,6 +2718,47 @@ C6_PAIR_SENTENCE = (
 # its probes must be different BYTES; see c12_name_indent/c12_rename.)
 
 
+# --- schema-legal names -------------------------------------------------------
+# metadata.name in the authoring schema is ^[a-z][a-z0-9.-]{0,127}$ (the same shape
+# as the API's pipeline slug in api/openapi.yaml) — NO uppercase. The driver's
+# %Y%m%dT%H%M%SZ stamps carry an uppercase T and Z, so every re-authored revision
+# whose name embedded one was refused: observed live, schema_shape "'m4x-c6-restore-
+# T083004Z' does not match pattern '^[a-z][a-z0-9.-]{0,127}$'" at /metadata/name
+# (C6, C7 and C10 all GAPed on it). Anything that goes INTO A DOCUMENT therefore
+# comes from schema_name(); idempotency keys and run labels posted to the API keep
+# the raw stamp (the Idempotency-Key pattern ^[A-Za-z0-9._-]{1,128}$ allows
+# uppercase). e2e/m4/test_names_logic.py checks this helper against the pattern it
+# READS from internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json, so the
+# rule cannot drift away from the schema silently.
+
+
+def _schema_slug(text):
+    """`text` lower-cased and squeezed into the schema's character class: a run of
+    characters outside [a-z0-9.-] collapses to one '-', separators at the ends are
+    dropped. Empty input yields 'x' so a name is never empty or separator-only."""
+    s = re.sub(r"[^a-z0-9.-]+", "-", str(text).lower()).strip("-.")
+    return s or "x"
+
+
+def schema_name(prefix, suffix=None, cap=128):
+    """A metadata.name (or pipeline slug) the v1alpha1 schema accepts.
+
+    suffix=None stamps the current UTC second (lowercase digits only, so it is
+    legal where %...T...Z was not); suffix='' means 'no stamp' and returns the
+    prefix sanitized. The stamp is kept whole and the PREFIX is what shrinks at the
+    cap — the stamp is what distinguishes one run's revision from another's."""
+    if suffix is None:
+        stamp = _schema_slug(time.strftime("%Y%m%d%H%M%S", time.gmtime()))
+    elif suffix == "":
+        stamp = ""
+    else:
+        stamp = _schema_slug(suffix)
+    head, sep = _schema_slug(prefix), ("-" if stamp else "")
+    room = cap - len(stamp) - len(sep)
+    name = (head[:room] + sep + stamp) if room >= 1 else stamp
+    return name if re.match(r"^[a-z]", name) else "n" + name[: cap - 1]
+
+
 def doc_scalar(v, flow=False):
     """One YAML scalar. Plain when a parser cannot misread it, else JSON-quoted
     (JSON string escapes are valid YAML flow scalars for go-yaml and PyYAML)."""
@@ -3235,7 +3276,7 @@ def c6():
                   "Pipeline document — the gate refuses to author a restore policy into a "
                   "document it cannot show the compiler actually read")
         return
-    res = c6_restore_doc(src, f"m4x-c6-restore-{suffix[-8:]}")
+    res = c6_restore_doc(src, schema_name("m4x-c6-restore"))
     c6_emit(c6_doc_verdicts(res))
     show("C6 splices applied to the seed twin document", " | ".join(res["applied"]) or "(none)")
     if res["doc"] is None:
@@ -4104,7 +4145,7 @@ def c7():
                   "proves nothing about exhaustion")
         return
 
-    exh = c7_exhaustion_doc(src, f"m4x-c7-exhaust-{suffix[-8:]}", C7_MAX_ITERATIONS)
+    exh = c7_exhaustion_doc(src, schema_name("m4x-c7-exhaust"), C7_MAX_ITERATIONS)
     c7_emit(c7_doc_verdicts(exh))
     show("C7 splices applied to the seed twin document",
          " | ".join(exh["applied"]) or "(none)")
@@ -4162,7 +4203,7 @@ def c7():
             CTX["c7_exhaustion_run"] = run_id
 
     # ---- C7c — indeterminate is NOT false: passWhen at an undeclared output ----
-    bad = c7_exhaustion_doc(src, f"m4x-c7-pred-{suffix[-8:]}", C7_MAX_ITERATIONS,
+    bad = c7_exhaustion_doc(src, schema_name("m4x-c7-pred"), C7_MAX_ITERATIONS,
                            pass_when="nodes.review.outputs.verdict == true")
     if bad["doc"] is None:
         gap("C7c indeterminate predicate", f"could not splice the undeclared-output passWhen "
@@ -4787,7 +4828,12 @@ def c8():
             "m4x-c8-detach", """  - id: e1
     kind: process.exec
     timeoutSeconds: 60
-    config: {executable: /bin/true}
+    config: {executable: m4-exit.sh}   # the schema-legal shape of this field
+                                       # (configProcessExec.executable is
+                                       # ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$): the old
+                                       # '/bin/true' added its own schema_shape error to a
+                                       # refusal that is meant to be about cancelPolicy
+                                       # alone — and a bare `true` would parse as a bool
 """, policies=C13_POLICIES.replace("cancelPolicy: cascade", "cancelPolicy: detach")))
         c8_emit(c8_detach_verdict(detach["vresp"] if detach else None))
 
@@ -6150,7 +6196,7 @@ def c10():
                    "never compiled, because a reply rejected against a schema nobody authored "
                    "proves nothing")
         return
-    mal = c10_malformed_doc(src, f"m4x-c10-invalid-{suffix[-8:]}")
+    mal = c10_malformed_doc(src, schema_name("m4x-c10-invalid"))
     c10_emit(c10_doc_verdicts(mal))
     show("C10 splices applied to the seed twin document", " | ".join(mal["applied"]) or "(none)")
     if mal["doc"] is None:
@@ -6715,7 +6761,7 @@ def c12_forbidden_docs(prefix="m4x-c12a"):
     is the expression itself."""
     out = []
     for i, (label, expr, code) in enumerate(C12_FORBIDDEN):
-        doc = c12_until_doc(f"{prefix}-{i}", expr)
+        doc = c12_until_doc(schema_name(f"{prefix}-{i}", ""), expr)
         out.append((label, expr, code, doc, "/spec/nodes/0/config/passWhen"))
     return out
 
@@ -8371,7 +8417,7 @@ def c13():
             ("C13b cwd binding", "m4x-c13b-cwd", cwd, "/spec/nodes/0/config/cwd", ()),
             ("C13b unquoted date", "m4x-c13b-date", date, "/spec/nodes/0/config/prompt",
              ("unquoted_date",))):
-        res = c13_draft_probe(admin, pid_pipe, tag, c13_doc(slug, nodes))
+        res = c13_draft_probe(admin, pid_pipe, tag, c13_doc(schema_name(slug, ""), nodes))
         c5_emit([c13_refusal_verdict(f"C13b {tag.split(' ', 1)[1]} refused at {loc}",
                                      res["vresp"] if res else None, loc, codes)])
     # policies.maxConcurrentNodes: -1 — the same rule on the spec-level block.
@@ -8470,21 +8516,22 @@ def c13():
 
     # Deprecation needs a revision THIS gate owns: deprecating a § 7.0 seed revision
     # would mutate state C12/C14 read, so a scratch pipeline holds the probe instead.
-    scratch = admin.post(LB, "/api/v1/pipelines", {"slug": "m4x-c13-scratch",
-                                                   "display_name": "m4x-c13-scratch",
+    scratch_slug = schema_name("m4x-c13-scratch", "")
+    scratch = admin.post(LB, "/api/v1/pipelines", {"slug": scratch_slug,
+                                                   "display_name": scratch_slug,
                                                    "description": "C13 deprecate probe"})
     show(f"C13g POST /api/v1/pipelines (scratch) -> {scratch.status}", scratch.text[:200])
     src = admin.get(LB, f"/api/v1/revisions/{rev}/document?format=yaml")
     doc = src.text if src.status == 200 and src.text.startswith("apiVersion") else None
     if doc:
-        doc = doc.replace("name: " + TW_SLUG, "name: m4x-c13-scratch", 1)
+        doc = doc.replace("name: " + TW_SLUG, "name: " + scratch_slug, 1)
     pub = None
     if scratch.status in (201, 409) and doc:
         sid = str(scratch.json().get("id")) if scratch.status == 201 else ""
         if not sid:
             lst = admin.get(LB, "/api/v1/pipelines")
             for p in (lst.json().get("pipelines") or []):
-                if p.get("slug") == "m4x-c13-scratch":
+                if p.get("slug") == scratch_slug:
                     sid = str(p.get("id"))
         pub = c13_draft_probe(admin, sid, "C13g scratch revision", doc, publish=True)
     elif not doc:
