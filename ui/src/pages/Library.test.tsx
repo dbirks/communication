@@ -559,5 +559,32 @@ describe("/library/:pipelineId", () => {
       await screen.findByTestId("pipeline-page");
       expect(screen.queryByTestId("assign-open")).toBeNull();
     });
+
+    // The two dead ends render a line rather than nothing: a button that leads
+    // to an empty select, or a form with no candidates, tells the reader the
+    // pipeline is unassignable without saying so.
+    it("says so when you maintain no project, and points at the projects list", async () => {
+      mount(detail, [{ path: "/api/v1/projects", body: { items: [viewerProject] } }]);
+      const line = await screen.findByTestId("assign-no-maintainer", undefined, settled);
+      expect(line.textContent).toContain("You maintain no project");
+      expect(line.textContent).toContain("a project maintainer can assign this pipeline");
+      // No button is offered for a path the reader cannot walk.
+      expect(screen.queryByTestId("assign-open")).toBeNull();
+      expect(screen.getByTestId("assign-projects-link").getAttribute("href")).toBe("/");
+    });
+
+    it("says already-assigned when every maintained project pins it", async () => {
+      mount(detail, [
+        { path: "/api/v1/projects", body: { items: [maintainerProject2] } },
+        // The one project Gadgets maintains already pins this pipeline.
+        { path: secondProjectPath, body: wireAssignmentList },
+      ]);
+      fireEvent.click(await screen.findByTestId("assign-open"));
+      const line = await screen.findByTestId("assign-every-project", undefined, settled);
+      expect(line.textContent).toContain("Already assigned to every project you maintain");
+      // Not the form with a candidate-less select behind it.
+      expect(screen.queryByTestId("assign-project-select")).toBeNull();
+      expect(screen.getByTestId("assign-projects-link").getAttribute("href")).toBe("/");
+    });
   });
 });

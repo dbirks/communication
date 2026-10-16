@@ -17,6 +17,7 @@
  *   publishing to org admins alone.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Panel } from "../components/ds/Panel";
@@ -614,6 +615,12 @@ export function PipelinePage() {
  *
  * After a successful assign the panel shows "Assigned to <name> — Start a run"
  * linking to the project's run list, which is where a maintainer goes next.
+ *
+ * The two dead ends say so instead of rendering a control that cannot be used:
+ * no maintainer project at all (the button is never offered — a maintainer
+ * assigns it from that project's own Pipelines page), and every project you
+ * maintain already pinning it (the form gives way to the same line). Both link
+ * to `/`, the projects list.
  */
 function AssignToProjectPanel({
   pipelineId,
@@ -652,6 +659,15 @@ function AssignToProjectPanel({
     return !list.assignments.some((a) => a.pipeline_id === pipelineId);
   });
 
+  // Every maintainer project's assignments list has arrived. An errored list is
+  // never treated as loaded — better an empty select than a false "already
+  // assigned" for a project whose read failed.
+  const listsLoaded =
+    maintainerProjects.length > 0 && assignmentResults.every((result) => result.data !== undefined);
+  // Nothing left to assign: the honest end of the form, not a select with no
+  // options and a Confirm that can never enable.
+  const nothingToAssign = open && listsLoaded && candidates.length === 0;
+
   // Resolve the newest published revision digest → uuid (route 13). Armed only
   // while the form is open and a project is chosen.
   const resolvedRevision = useRevision(open && projectId ? newestPublishedDigest : "");
@@ -671,11 +687,42 @@ function AssignToProjectPanel({
     );
   }
 
+  // Known, with no click spent: this viewer cannot assign anything here.
+  if (projects.data && maintainerProjects.length === 0) {
+    return (
+      <AssignDeadEnd headingId="assign-no-project-heading" testid="assign-no-maintainer">
+        You maintain no project — a project maintainer can assign this pipeline from the{" "}
+        <Link
+          to="/"
+          className="font-mono text-[11.5px] text-accent-text"
+          data-testid="assign-projects-link"
+        >
+          project&apos;s Pipelines page
+        </Link>
+      </AssignDeadEnd>
+    );
+  }
+
   if (!open) {
     return (
       <Button variant="secondary" compact data-testid="assign-open" onClick={() => setOpen(true)}>
         Assign to a project
       </Button>
+    );
+  }
+
+  if (nothingToAssign && !assignedName) {
+    return (
+      <AssignDeadEnd headingId="assign-every-heading" testid="assign-every-project">
+        Already assigned to every project you maintain —{" "}
+        <Link
+          to="/"
+          className="font-mono text-[11.5px] text-accent-text"
+          data-testid="assign-projects-link"
+        >
+          your projects
+        </Link>
+      </AssignDeadEnd>
     );
   }
 
@@ -713,10 +760,8 @@ function AssignToProjectPanel({
         {projects.isError ? (
           <ProblemBanner error={projects.error} fallback="Your projects could not be read." />
         ) : null}
-        {maintainerProjects.length === 0 && projects.data ? (
-          <p className="font-mono text-[11px] text-muted" data-testid="assign-no-maintainer">
-            You are not a maintainer of any project — ask a maintainer to assign this pipeline.
-          </p>
+        {assignmentResults.some((result) => result.isPending) ? (
+          <Spinner label="Checking which projects already have this pipeline" />
         ) : null}
         {maintainerProjects.length > 0 ? (
           <Field
@@ -787,6 +832,29 @@ function AssignToProjectPanel({
         ) : null}
         {create.isError ? <FormError error={create.error} testid="assign-error" /> : null}
       </form>
+    </Panel>
+  );
+}
+
+/**
+ * The honest end of the assign path: no usable target, stated in place of a
+ * control that cannot be used, with the way out — the projects list (`/`),
+ * where a maintainer assigns from that project's own Pipelines page.
+ */
+function AssignDeadEnd({
+  headingId,
+  testid,
+  children,
+}: {
+  headingId: string;
+  testid: string;
+  children: ReactNode;
+}) {
+  return (
+    <Panel title="ASSIGN TO A PROJECT" headingId={headingId} headingLevel={2}>
+      <p className="p-[10px] text-[12.5px]" data-testid={testid}>
+        {children}
+      </p>
     </Panel>
   );
 }

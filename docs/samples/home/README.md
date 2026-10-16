@@ -17,7 +17,8 @@ clones it into `repos/<name>` in the run workspace. Both samples pass it to the 
 **Kinds this worker executes today** (`cmd/communication/worker.go`): `process.exec`,
 `model.chat`, `artifact.publish`, `agent.acp`. Kinds the control plane settles without a
 lease: `condition`, `human.approval`, `until`, `for_each`, `pipeline.invoke`. Scheduling
-is not here yet — timer/cron triggers land in M6, so start a run by hand.
+is not a pipeline field — a 5-field UTC cron hangs off the project assignment (ADR-0032),
+added at project → Pipelines → "When to run"; with no schedule there, start a run by hand.
 
 **Click path:** Library → New pipeline → New draft → paste the file → Validate → Publish
 → open the project → Pipelines → Assign → Runs → New run.

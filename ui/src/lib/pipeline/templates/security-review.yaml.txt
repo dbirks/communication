@@ -6,9 +6,10 @@
 # runtime image ships besides coreutils/node), the judgement pass is model.chat
 # against the operator's OpenAI-compatible endpoint.
 #
-# Scheduling is not here yet: nothing runs this on a timer. The scheduler's cron/timer
-# triggers arrive in M6 (communication-spec/11-build-roadmap.md); until then a run is
-# started by hand from project → Pipelines → Runs → New run.
+# Scheduling is not in this document: a schedule belongs to a project ASSIGNMENT
+# (ADR-0032) and is set per project at project → Pipelines → "When to run" as a
+# 5-field cron in UTC. Until one is added there nothing runs this on a timer —
+# start a run by hand from project → Pipelines → Runs → New run.
 #
 # `repository` is the project repository BINDING name (07 § repositories are project
 # bindings), not a URL. The worker's checkout sits at repos/<name> in the run workspace;
