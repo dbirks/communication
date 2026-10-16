@@ -1061,12 +1061,63 @@ def watch_run(client, facts, run_id, cap, label, allow_unattended=False):
     return None, watch
 
 
-def post_c1_run(client, facts, idem, label):
+# --- the fault legs' hold on the twin's process.exec steps (§ 7.1 C4/C5/C6) ----
+#
+# The shipped twin's plan/implement/test/review steps are printfs that close in <1s,
+# so in live6 every fault landed on an attempt that had already succeeded — C4
+# FAIL=14, C5 GAP, C6 FAIL=9, each of them "nothing was running". Document 2 of
+# docs/compatibility/probes/m4/pipeline.yaml takes an integer run input
+# `hold_seconds` (0-600, default 0) that .harness/m4-fixtures/bin/m4-exit.sh sleeps
+# BEFORE doing any work, so the lease freeze (C4), the docker kill (C5/C6) and the
+# restore (C6) find an attempt a worker still holds. 45s covers the 30s lease + the
+# 15s reconciler tick (§ 7.1 C4a) and C4's own 45s freeze.
+#
+# ONLY the fault legs post it: C1 compares key sets and timings across the two
+# manifest runs, C7 exhausts the until loop and C8 measures real in-flight
+# concurrency — all keep the schema default 0, which sleeps nothing and leaves
+# stdout byte-identical (README: "the fault gates therefore have to post their runs
+# with hold_seconds: 45").
+C_FAULT_HOLD_SECONDS = 45
+C_FAULT_HOLD_STEPS = 4          # plan + implement + test + review, each held open
+C_FAULT_LEASE_S = 45            # lease 30s + reconciler tick 15s (§ 7.1 C4a)
+
+
+def with_hold(inputs, seconds=C_FAULT_HOLD_SECONDS):
+    """Run inputs for a fault leg: the manifest's inputs plus hold_seconds=seconds.
+    A COPY — the manifest's own dict is what C1 and every other leg posts. A missing
+    or non-dict `inputs` degrades to the hold alone (the schema defaults the rest)."""
+    body = dict(inputs) if isinstance(inputs, dict) else {}
+    body["hold_seconds"] = int(seconds)
+    return body
+
+
+def hold_cover(steps=C_FAULT_HOLD_STEPS):
+    """Seconds a held run needs before it can reach a terminal state: `steps`
+    process.exec steps that each sleep hold_seconds first, plus the lease/reconciler
+    window the fault itself opens."""
+    return C_FAULT_HOLD_SECONDS * int(steps) + C_FAULT_LEASE_S
+
+
+def hold_window(cap, steps=C_FAULT_HOLD_STEPS):
+    """A wait window that covers the hold — never SHORTER than the window its author
+    chose, long enough for `steps` held steps to close. Applied to every fault leg's
+    gate-first and terminal waits (45s x steps, § 7.1 C4a/C5a/C6b)."""
+    try:
+        base = int(cap)
+    except (TypeError, ValueError):
+        base = 0
+    return max(base, hold_cover(steps))
+
+
+def post_c1_run(client, facts, idem, label, hold_seconds=None):
     """§ 7.1 C1a: POST /api/v1/projects/{p}/runs pinned straight to the
     manifest's revision (the frozen route and RunCreate body from
-    api/openapi.yaml); 201/queued or nothing."""
+    api/openapi.yaml); 201/queued or nothing. `hold_seconds` is the fault legs'
+    opt-in hold (C4/C5/C6); C1 and C2 post the manifest's inputs untouched."""
+    inputs = mf(facts, "inputs", default={})
     body = {"pipeline_revision_id": mf(facts, "revision_id"),
-            "inputs": mf(facts, "inputs", default={}), "idempotency": idem}
+            "inputs": with_hold(inputs, hold_seconds) if hold_seconds else inputs,
+            "idempotency": idem}
     r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
     if not check(f"C1a {label}: POST runs ({idem}) -> 201 queued",
                  r.status in (200, 201), f"{r.status} {r.text[:200]}"):
@@ -2228,7 +2279,7 @@ def c4():
         return
     CTX["alice"] = alice
     run_id = post_c1_run(alice, tw, f"m4x-c4-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
-                         "c4")
+                         "c4", hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
         return
     CTX["c4_run"] = run_id
@@ -2236,7 +2287,7 @@ def c4():
     # /approve ahead of the node that leases, so the old bare poll stared at
     # status='waiting_human' for its whole 300s and GAPped "no attempt … was ever
     # held by a worker" (live5/C4.out) — the same driver bug C5 had.
-    live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id, 300, "C4a")
+    live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id, hold_window(300), "C4a")
     if live is None:
         dump_run_evidence(alice, run_id)
         gap("C4a a live lease to freeze",
@@ -2351,7 +2402,7 @@ def c4():
     for label, ok, detail in c4_retry_verdicts(gt):
         check(label, ok, detail)
 
-    status, _watch = watch_run(alice, tw, run_id, 900, "c4")
+    status, _watch = watch_run(alice, tw, run_id, hold_window(900), "c4")
     if status:
         repl = psql(
             f"SELECT attempt_number::text || ' ' || status FROM attempts WHERE "
@@ -2869,7 +2920,7 @@ def c5():
         return
     CTX["alice"] = alice
     run_id = post_c1_run(alice, tw, f"m4x-c5-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}",
-                         "c5")
+                         "c5", hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
         return
     CTX["c5_run"] = run_id
@@ -2920,7 +2971,7 @@ def c5():
     try:
         while tries < C5_KILL_TRIES and not killed:
             live = wait_live_past_gate(alice, mf(tw, "project_id"), run_id,
-                                       C5_KILL_POLL_S if tries else 300, "C5a")
+                                       hold_window(C5_KILL_POLL_S if tries else 300), "C5a")
             if live is None:
                 if tries:
                     kill_state = "unattainable"
@@ -3090,7 +3141,7 @@ def c5():
     show(f"C5e POST /api/v1/runs/{run_id}/retry -> {r.status}", r.text[:300])
     rows = attempts_of_key()
     c5_emit(c5_retry_api_verdicts(r.status, r.text[:200], rows))
-    deadline = time.time() + 180
+    deadline = time.time() + hold_window(180)
     while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1 for x in rows):
         time.sleep(5)
         rows = attempts_of_key()
@@ -3131,7 +3182,7 @@ def c5():
         f"LEFT JOIN attempts a ON a.node_execution_id = ne.id WHERE ne.run_id = '{run_id}' "
         f"GROUP BY ne.node_instance_key ORDER BY ne.node_instance_key"), 5)]
     c5_emit(c5_append_only_verdicts(ne_rows))
-    status, _watch = watch_run(alice, tw, run_id, 900, "c5")
+    status, _watch = watch_run(alice, tw, run_id, hold_window(900), "c5")
     if status is None:
         gap("C5g the run's final state is valid", "the retried run never reached a terminal "
                                                  "status within 900s (dumped above)")
@@ -3814,7 +3865,8 @@ def c6():
              "no restore_checkpoint string found in the validate response's plan: the "
              "restore verdicts below will GAP rather than assume the splice compiled")
 
-    run_id = c7_post_run(alice, twin, rev, f"m4x-c6-restore-{suffix}", "restore twin")
+    run_id = c7_post_run(alice, twin, rev, f"m4x-c6-restore-{suffix}", "restore twin",
+                         hold_seconds=C_FAULT_HOLD_SECONDS)
     if not run_id:
         gap("C6b/C6c", "the restore run could not be posted through POST /projects/{p}/runs "
                        "— the ledger has nothing to measure")
@@ -3827,7 +3879,7 @@ def c6():
     # ahead of the node this kill needs, so a bare live-attempt poll spent its
     # whole 300s in waiting_human and reported "no attempt … was ever held by a
     # worker" (live4/C6.out) — the same driver bug C5 had.
-    live = wait_live_past_gate(alice, mf(twin, "project_id"), run_id, 300, "C6b")
+    live = wait_live_past_gate(alice, mf(twin, "project_id"), run_id, hold_window(300), "C6b")
     if live is None:
         dump_run_evidence(alice, run_id)
         gap("C6b a live attempt to kill",
@@ -3930,7 +3982,7 @@ def c6():
             show(f"C6b POST /api/v1/runs/{{id}}/retry (restore) -> {r2.status}", r2.text[:260])
         rows = c6_attempts_of_key(run_id, key)
         c5_emit(c5_retry_api_verdicts(r2.status, r2.text[:200], rows))
-        deadline = time.time() + 180
+        deadline = time.time() + hold_window(180)
         while time.time() < deadline and not any(_int(x.get("attempt_number")) > 1
                                                  for x in rows):
             time.sleep(5)
@@ -4023,7 +4075,7 @@ def c6():
             show("C6e workspace.recovery_lost + the refused attempt",
                  f"event={json.dumps(ev_c) if ev_c else '(none)'} | attempt="
                  f"{json.dumps(latest[-1]) if latest else '(none)'}")
-            c8_watch(alice, twin, run_id, 180, "cross-worker arm")
+            c8_watch(alice, twin, run_id, hold_window(180), "cross-worker arm")
             run_st, cause = (psql_rows(c6_row(f"SELECT status || '|' || "
                                               f"coalesce(failed_cause,'-') FROM runs WHERE "
                                               f"id = '{run_id}'", "run row"), 2) or [[""]])[0]
@@ -4598,10 +4650,13 @@ def c7_evaluations_api(client, run_id):
         return None
 
 
-def c7_post_run(client, facts, revision_id, idem, label):
+def c7_post_run(client, facts, revision_id, idem, label, hold_seconds=None):
     """Start the run ONLY through the public API: POST /projects/{p}/runs pinned to the
-    gate's own published revision (the same § 3 body C1 uses)."""
-    body = {"pipeline_revision_id": revision_id, "inputs": mf(facts, "inputs") or {},
+    gate's own published revision (the same § 3 body C1 uses). `hold_seconds` is again
+    the fault legs' opt-in hold (C6's restore run); C7/C10/C12 post the default 0."""
+    inputs = mf(facts, "inputs") or {}
+    body = {"pipeline_revision_id": revision_id,
+            "inputs": with_hold(inputs, hold_seconds) if hold_seconds else inputs,
             "idempotency": idem}
     r = client.post(LB, f"/api/v1/projects/{mf(facts, "project_id")}/runs", body)
     if not check(f"C7 {label}: POST runs (revision {revision_id}) -> 201", r.status in (200, 201),
@@ -12321,7 +12376,8 @@ def w_kill_worker_mid_node(client, project_id, run_id, tag, sample=None, restart
     try:
         while facts["tries"] < C5_KILL_TRIES:
             live = wait_live_past_gate(client, project_id, run_id,
-                                       C5_KILL_POLL_S if facts["tries"] else 300, tag)
+                                       hold_window(C5_KILL_POLL_S if facts["tries"] else 300),
+                                       tag)
             if live is None:
                 if facts["tries"]:
                     facts["state"] = "unattainable"
@@ -12442,7 +12498,7 @@ def w5():
     CTX["alice"] = client
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     {"pipeline_revision_id": mf(twin, "revision_id"),
-                     "inputs": mf(twin, "inputs", default={}),
+                     "inputs": with_hold(mf(twin, "inputs", default={})),
                      "idempotency": f"m4-exit-w5-{int(time.time())}"})
     run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
     if not check("W5 the run whose worker gets killed is started", r.status in (200, 201)
@@ -12521,9 +12577,18 @@ def w5():
         cdown = sample("countdown")
         shot_cd = pw_shot("w5-retry-countdown", session=session)
         c5_emit([w5_countdown_verdict(cdown["dom"], sched)])
-        # attempt 2 runs and the run terminates: the page is kept open the whole way
-        deadline = time.time() + 600
-        while time.time() < deadline and run_status(run_id) not in C14_TERMINAL:
+        # attempt 2 runs and the run terminates: the page is kept open the whole way.
+        # Alice's gate decision is landed on the way, as watch_run/c8_watch do: a held
+        # attempt (hold_seconds) can be the one AHEAD of /approve, and a run parked in
+        # waiting_human never reaches the terminal state this row watches, which would
+        # leave 'no stuck spinner' unmeasurable for the rest of the leg.
+        deadline, approved = time.time() + hold_window(600), False
+        while time.time() < deadline:
+            status = run_status(run_id)
+            if status in C14_TERMINAL:
+                break
+            if status == "waiting_human" and not approved:
+                approved = approve_gate(client, project_id, run_id)
             if len(samples) < 40:               # bounded: the evidence stays readable
                 sample(f"attempt2-{len(samples)}")
             time.sleep(15)
@@ -12623,7 +12688,7 @@ def w6_produce_loss(client, twin, tag="W6"):
     project_id = mf(twin, "project_id")
     r = client.post(LB, f"/api/v1/projects/{project_id}/runs",
                     {"pipeline_revision_id": mf(twin, "revision_id"),
-                     "inputs": mf(twin, "inputs", default={}),
+                     "inputs": with_hold(mf(twin, "inputs", default={})),
                      "idempotency": f"{tag.lower()}-loss-{int(time.time())}"})
     run_id = (r.json() or {}).get("run_id") if r.text[:1] == "{" else None
     if not check(f"{tag} a run is started to lose its workspace", r.status in (200, 201)
