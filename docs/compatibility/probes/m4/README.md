@@ -300,6 +300,22 @@ four deliberate, provenance-headed adjustments:
    `apiVersion:`/`kind: Pipeline` inside the first 600 characters of the
    document's text, and they already sit at 543/582 — hence this note lives in
    the README rather than in the YAML header.
+6. **Document 1's `/plan` output is an object, not § 9.3's string.** Every real
+   `m4-planner` reply captured live in the lab answers
+   `{"plan":{"goal","findings":[…],"steps":[{id,file,action}]}}`; against § 9.3's
+   `plan: {type: string}` the validator honestly refused it
+   (`invalid_output: at /plan: got object, want string`, 3 attempts × 2 runs).
+   The declared schema now matches the observed shape (goal/findings/steps
+   required, steps' `action` required, extra keys like `risks`/`acceptance`
+   admitted), and the prompt names that shape explicitly. The approval gate
+   reads the object through the bindingText join rule (ADR-0022 § 1 /
+   `expr.Stringify`: canonical JSON for a structured value), split into
+   Objective/Findings/Steps lines; the `Plan for ${{ inputs.goal }}` C12/C11
+   needle is byte-unchanged. The twin (document 2) keeps its string plan and
+   `make_fixture_repo.sh` its string fixture: C1's cross-variant proof
+   compares `node_instance_key` SETS (and per-pipeline `plan_digest`), never
+   output shapes — verified against the three live replies, which all validate
+   clean under the new schema.
 
 ### Offline validation (no server needed)
 
