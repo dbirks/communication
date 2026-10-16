@@ -47,3 +47,20 @@ controller-only rule.
 
 Recommendation: adopt 1 now, evaluate 2 in the compatibility lab, park 3/4 until a real
 workflow needs an unattended `ask` to survive.
+
+## Decision for the lab (ADR-0036)
+
+Option 2 has since been evaluated and **adopted for the M4 lab only**: the three seeded profiles in
+`docs/compatibility/probes/m4/seed.sh` (`m4-planner`, `m4-implementer`, `m4-reviewer`) now run
+`preapproved_within_sandbox`, on the evidence in `docs/compatibility/SANDBOX.md` §
+"preapproved_within_sandbox lab evaluation (2026-10-16)" (in-grant compute/writes allowed;
+`/etc/shadow`, an outside-grant read and an outside-grant write all `EACCES` from the kernel with no
+human involved) and § "Egress allowlist lab evaluation (rows 8a/8b)" (egress limited to the ADR-0035
+allowlist, `example.com` refused with a `host_denied` audit record, and real `claude-agent-acp` turns
+completing on `api.anthropic.com` alone). This document's analysis stands unchanged for everything
+else: the product's seeds (migration 00003) and any deployment stay `ask`, attended conversations keep
+answering prompts as before, `process.exec` stays the recommendation for deterministic test/build
+steps, and the journal still records no verdict for a preapproved tool call — condition (a) of that
+evaluation, still open, and the reason the mode was not shipped as a product default. See
+[`../adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md`](../adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md).
+

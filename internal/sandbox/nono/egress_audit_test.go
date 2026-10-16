@@ -62,6 +62,41 @@ func TestAuditSessionEgressRefusesAnUnattributableRun(t *testing.T) {
 	}
 }
 
+// TestAuditSessionEgressFindsATurnMarker is ADR-0036's coverage row: the
+// conversation path stamps its launches with a per-turn id rather than an
+// attempt id, and the read side must attribute on exactly the same terms — the
+// newest session carrying THIS marker, never the newest session, and never the
+// attempt-marked launch that happens to be audited alongside it.
+func TestAuditSessionEgressFindsATurnMarker(t *testing.T) {
+	script := `case "$1 $2" in
+  "audit list")
+    echo '[{"session_id":"turn0000000000003","command":["env","COMMUNICATION_TURN_ID=turn-7","HOME=/w/home","node","adapter.js"]},` +
+		`{"session_id":"attempt000000000002","command":["env","COMMUNICATION_ATTEMPT_ID=attempt-1","HOME=/w/home","node","adapter.js"]}]'
+    exit 0 ;;
+  "audit show")
+    echo '{"session_id":"'"$3"'","network_events":[{"decision":"allow","mode":"connect","target":"api.anthropic.com","port":443},{"decision":"deny","mode":"connect","denial_category":"host_denied","target":"example.com","port":443,"reason":"host example.com:443 is not in the allowlist"}]}'
+    exit 0 ;;
+esac
+exit 7
+`
+	l := &Launcher{Binary: writeFake(t, script), Home: t.TempDir()}
+	obs, err := l.AuditSessionEgress(context.Background(), "COMMUNICATION_TURN_ID=turn-7")
+	if err != nil {
+		t.Fatalf("AuditSessionEgress(turn marker): %v", err)
+	}
+	if obs.SessionID != "turn0000000000003" {
+		t.Fatalf("session = %q, want the launch whose argv carried this turn's marker", obs.SessionID)
+	}
+	if obs.Allows != 1 || len(obs.Denials) != 1 {
+		t.Fatalf("allows=%d denials=%d, want 1/1", obs.Allows, len(obs.Denials))
+	}
+	// A marker is matched as a whole argv entry, so a turn id that is a prefix of
+	// another's must not resolve to it.
+	if _, err := l.AuditSessionEgress(context.Background(), "COMMUNICATION_TURN_ID=turn"); err == nil {
+		t.Fatal("a prefix of a turn marker attributed someone else's audit")
+	}
+}
+
 // TestEgressAuditReadIsBounded proves the 2 s cap with a nono that never
 // answers: the read is what costs time here, and a turn must not wait on it.
 func TestEgressAuditReadIsBounded(t *testing.T) {

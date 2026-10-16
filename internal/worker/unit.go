@@ -51,6 +51,12 @@ type UnitService struct {
 	// Sandbox enforces the policy. An interface so the loop is testable without
 	// a kernel; the real implementation is *nono.Launcher.
 	Sandbox AgentSandbox
+	// Egress optionally reads one finished launch's own egress audit (ADR-0035).
+	// It is nil in production and still works, because the nono launcher that IS
+	// this worker's Sandbox answers AuditSessionEgress too; the field exists so a
+	// test can hand the conversation path an audit it controls, exactly as
+	// AgentTurn.Egress does for pipeline attempts.
+	Egress EgressAuditor
 	// APM stages a profile's packaged context before launch. Nil means no
 	// packaged context is in play, which is a configuration (D-020: no default
 	// MCP/CLI privileges), not a defect.
@@ -544,6 +550,14 @@ func (u *Unit) adapterEnv(launcher acp.Launcher) ([]string, error) {
 		secretEnv = u.Materialized.Env
 	}
 	extra := []string{"COMMUNICATION_WORKSPACE_ID=" + u.WorkspaceID}
+	if u.TurnID != "" {
+		// The conversation path's egress-audit marker (ADR-0035, ADR-0036's
+		// coverage row): nono records the child's argv in its audit journal, so
+		// this entry is what lets a finished turn find ITS OWN session rather than
+		// the newest one on the worker. The pipeline attempt carries the same
+		// evidence as COMMUNICATION_ATTEMPT_ID (agentturn.go).
+		extra = append(extra, egressTurnMarker(u.TurnID))
+	}
 	env, err := acp.LaunchEnv(acp.EnvRequest{
 		Home:    u.Layout.Home,
 		Scratch: u.Layout.Scratch,

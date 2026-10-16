@@ -245,6 +245,14 @@ func (l *TurnLoop) captureAndRelease(ctx context.Context, c Claim) {
 			l.log.Warn("workspace.committed could not be journalled", slog.String("error", err.Error()))
 		}
 	}
+	// ADR-0035's evidence read, the conversation path's half of it. It lands here
+	// rather than in the ACP runtime because this is the loop's turn-end hook: the
+	// turn's terminal row is already durable (so a lost audit read can cost a label
+	// and never the turn), the append is fenced on the claim it belongs to, and it
+	// runs before Cleanup because a wedged teardown must not be able to swallow the
+	// one row that says what this turn's allowlist did. It is a no-op unless this
+	// turn launched the unit and its profile committed to a host set.
+	l.journalTurnEgressAudit(cleanupCtx, c, u)
 	if _, err := u.Cleanup(cleanupCtx); err != nil {
 		l.log.Error("unit cleanup failed", slog.String("workspace_id", u.WorkspaceID), slog.String("error", err.Error()))
 	}

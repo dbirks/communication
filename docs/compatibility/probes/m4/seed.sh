@@ -38,7 +38,8 @@
 #   3. repository app -> file:///srv/m4/fixtures/app.git (e2e/m4/make_fixture_repo.sh)
 #   4. profiles m4-planner/m4-implementer/m4-reviewer by SQL — M3's D10: there is
 #      no profile-write API; § 7.0's launcher claude, sandbox required, implementer
-#      commit_granted=true
+#      commit_granted=true, and (per ADR-0036, lab evidence only) permission_mode
+#      preapproved_within_sandbox — the product's own seeds stay 'ask'
 #   5. secret test-database-url = the § 7.0 contract sentinel (write-only per
 #      ADR-0018; never echoed) allowlisted to m4-implementer, mounted env/DATABASE_URL/
 #      lifecycle=node_attempt
@@ -256,10 +257,15 @@ put_member() { # put_member <user> <role>
 }
 
 # ---- profiles: § 7.0 seeds them; there is no profile-write API (M3 D10) ------
-seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode>
-    local name="$1" commit="$2" ws="$3" sql
+# permission_mode is an argument, not a literal, so the mode each lab profile runs
+# under is stated at its call site. It stays inside this function's INSERT because
+# M3 D10 has no profile-write route: the upsert below is the only writer, and it
+# re-affirms permission_mode on every re-seed (idempotent, like the other columns).
+seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode> <permission_mode>
+    local name="$1" commit="$2" ws="$3" mode="$4" sql
+    case "$mode" in ask|preapproved_within_sandbox|deny) ;; *) loud "seed profile $name: permission_mode '$mode' is not one of ask|preapproved_within_sandbox|deny (04-agent-runtime.md 'Permission policy')";; esac
     sql="INSERT INTO agent_profiles (organization_id, name, launcher_id, permission_mode, workspace_mode, sandbox_enforcement, commit_granted)
-         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', 'claude', 'ask', '$ws', 'required', $commit)
+         VALUES ((SELECT id FROM organizations WHERE slug = 'default'), '$name', 'claude', '$mode', '$ws', 'required', $commit)
          ON CONFLICT (organization_id, name) DO UPDATE SET launcher_id = EXCLUDED.launcher_id,
              permission_mode = EXCLUDED.permission_mode, workspace_mode = EXCLUDED.workspace_mode,
              sandbox_enforcement = EXCLUDED.sandbox_enforcement, commit_granted = EXCLUDED.commit_granted;
@@ -270,7 +276,7 @@ seed_profile() { # seed_profile <name> <commit_granted> <workspace_mode>
     case "$PROFILE_ID" in *[!0-9a-f-]*|"") LAST_NOTE="psql returned [$out]"; loud "seed profile $name: no uuid back";; esac
     PROFILE_ID=$(printf '%s' "$PROFILE_ID" | tr -d '[:space:]')
     PROFILE_IDS[$name]="$PROFILE_ID"
-    say "profile: $name -> $PROFILE_ID (launcher claude, commit_granted=$commit, workspace_mode=$ws)"
+    say "profile: $name -> $PROFILE_ID (launcher claude, permission_mode=$mode, commit_granted=$commit, workspace_mode=$ws)"
 }
 declare -A PROFILE_IDS
 
@@ -537,9 +543,17 @@ put_member dan maintainer
 create_project_b
 create_repo
 
-seed_profile m4-planner false worktree
-seed_profile m4-implementer true worktree
-seed_profile m4-reviewer false worktree
+# ADR-0036 (docs/adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md):
+# the M4 lab's three seeded profiles run preapproved_within_sandbox, on the lab
+# evidence in docs/compatibility/SANDBOX.md (filesystem enforced + egress limited
+# to the ADR-0035 allowlist, both observed on a real claude turn). This is the
+# compatibility-lab result ADR-0016 § 10 asked for, and it is scoped to THIS file:
+# the product's default seeds (migration 00003, "Claude Code"/"Codex") stay 'ask',
+# and so does every real deployment. It holds only while sandbox enforcement is
+# `required` and the agent egress allowlist is active — see the ADR's conditions.
+seed_profile m4-planner false worktree preapproved_within_sandbox
+seed_profile m4-implementer true worktree preapproved_within_sandbox
+seed_profile m4-reviewer false worktree preapproved_within_sandbox
 
 req alice POST "/api/v1/projects/$PROJECT_ID/secrets" \
     "{\"slug\":\"test-database-url\",\"purpose\":\"M4 exit C2 sentinel (docs/m4-contract.md § 7.0)\",\"delivery_mode\":\"env\",\"allowed_agent_profile_ids\":[\"${PROFILE_IDS[m4-implementer]}\"],\"value\":\"$SENTINEL\"}" \
