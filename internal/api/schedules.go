@@ -320,6 +320,12 @@ func (h *scheduleHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller
 	case errors.Is(err, ErrScheduleNotFound):
 		h.denied(w, r, c, resourceID, action, "no such schedule, or it is not visible to you")
 		WriteProblem(w, http.StatusNotFound, "Not Found", "No such schedule.")
+	case errors.Is(err, ErrProjectNotFound):
+		// The project gate's own answer (ADR-0014 § 3): a non-member sees the
+		// same 404 as an unknown project, never the 500 an unmapped store
+		// error would produce here.
+		h.denied(w, r, c, resourceID, action, "no such project, or it is not visible to you")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such project.")
 	case errors.Is(err, ErrScheduleStaleVersion):
 		m4WriteTypedProblem(w, http.StatusConflict, ScheduleCodeVersionStale,
 			"Schedule Version Stale",

@@ -21,7 +21,8 @@ import { NewRunForm } from "../components/m4/NewRunForm";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { usePipelines } from "../api/pipelines";
 import { useProjectRuns } from "../api/runs";
-import { problemOf } from "../api/client";
+import { useProject } from "../api/queries";
+import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import type { RunSummary } from "../api/types";
 import type { RunStatus } from "../lib/pipeline/contract";
 
@@ -245,22 +246,21 @@ export { ProjectSectionNav } from "../components/ProjectSectionNav";
  */
 export default function ProjectRuns() {
   const { projectId = "" } = useParams();
+  const project = useProject(projectId);
   const runs = useProjectRuns(projectId);
 
-  if (runs.isError) {
-    const problem = problemOf(runs.error);
-    if (problem.status === 404) {
-      return (
-        <div className="px-4 py-6" data-testid="project-runs-not-found">
-          <Panel title="RUNS" headingId="project-runs-heading">
-            <p className="p-[10px] text-[12.5px] text-muted">
-              This project is not visible to you, or no longer exists — the control plane answered
-              404, and this page invents no list to fill the gap.
-            </p>
-          </Panel>
-        </div>
-      );
-    }
+  // A non-member (or a deleted project) gets the overview's sentence, not a
+  // run column around a project she cannot open: the list route answers the
+  // same 404 the project read does, and a shell that renders "no runs" would
+  // confirm more than the API chose to say.
+  if (projectAccessRefused(project.error) || projectAccessRefused(runs.error)) {
+    return (
+      <ProjectUnavailable
+        heading="Runs"
+        headingId="project-runs-heading"
+        testid="project-runs-not-found"
+      />
+    );
   }
 
   return (

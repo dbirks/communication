@@ -11,6 +11,7 @@ import { ApiError } from "../api/client";
 import { useArtifacts, useProject } from "../api/queries";
 import { ArtifactsPanel } from "../components/Artifacts";
 import ProjectSectionNav from "../components/ProjectSectionNav";
+import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
 
@@ -21,20 +22,19 @@ export default function Artifacts() {
 
   if (project.isPending || artifacts.isPending) return <Spinner label="Loading artifacts" />;
 
+  // The project's own refusal — 404 (unknown or invisible) or 403 — is the
+  // overview's sentence. A refused *index* while the project reads fine is a
+  // different fact ("not readable with your role") and stays a banner.
   const missing =
-    (project.error instanceof ApiError && project.error.status === 404) ||
+    projectAccessRefused(project.error) ||
     (artifacts.error instanceof ApiError && artifacts.error.status === 404);
   if (missing) {
     return (
-      <section aria-labelledby="artifacts-missing-heading">
-        <h1 id="artifacts-missing-heading" className="text-title-l font-bold">
-          Artifacts
-        </h1>
-        <p className="mt-2 text-st-failed-tag-fg" role="alert">
-          <span aria-hidden="true">× </span>
-          <span data-testid="artifacts-not-found">Project not found or you do not have access</span>
-        </p>
-      </section>
+      <ProjectUnavailable
+        heading="Artifacts"
+        headingId="artifacts-missing-heading"
+        testid="artifacts-not-found"
+      />
     );
   }
   if (project.error || !project.data) {

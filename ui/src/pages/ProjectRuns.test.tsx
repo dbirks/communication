@@ -108,3 +108,55 @@ describe("/projects/:projectId/runs", () => {
     expect(row.textContent).toMatch(/#\w{8} feature-development/);
   });
 });
+
+/**
+ * The non-member case (M5 QA): `/runs` used to render the run column around a
+ * project the reader cannot open, with a raw 500 banner where the list should
+ * have been. The project's own refusal is the page's answer now.
+ */
+describe("/projects/:projectId/runs as a non-member", () => {
+  const problem = (status: number) => ({
+    type: "about:blank",
+    title: status === 403 ? "Forbidden" : "Not Found",
+    status,
+    detail: status === 403 ? "Nope." : "No such project.",
+  });
+
+  it("shows the project refusal instead of the shell when the runs read is 404", async () => {
+    mountRuns(undefined, [
+      {
+        path: `/api/v1/projects/${wireProjectId}`,
+        status: 404,
+        body: problem(404),
+      },
+      { path: RUNS_PATH, status: 404, body: problem(404) },
+    ]);
+
+    expect((await screen.findByTestId("project-runs-not-found")).textContent).toContain(
+      "Project not found or you do not have access",
+    );
+    // Not a shell with partial data: no run column, no "New run", no rail.
+    expect(screen.queryByTestId("project-runs")).toBeNull();
+    expect(screen.queryByTestId("runs-list")).toBeNull();
+    expect(screen.queryByTestId("runs-new")).toBeNull();
+    expect(screen.queryByText(/Internal Server Error/)).toBeNull();
+  });
+
+  it("shows the same refusal when the project read answers 403", async () => {
+    mountRuns({ runs: [] }, [
+      { path: `/api/v1/projects/${wireProjectId}`, status: 403, body: problem(403) },
+    ]);
+
+    expect((await screen.findByTestId("project-runs-not-found")).textContent).toContain(
+      "Project not found or you do not have access",
+    );
+    expect(screen.queryByTestId("runs-empty")).toBeNull();
+  });
+
+  it("keeps the banner in place for a failure that is not an access refusal", async () => {
+    mountRuns(undefined, [{ path: RUNS_PATH, status: 500, body: problem(500) }]);
+
+    expect(await screen.findByTestId("runs-list")).toBeTruthy();
+    expect(screen.queryByTestId("project-runs-not-found")).toBeNull();
+  });
+});

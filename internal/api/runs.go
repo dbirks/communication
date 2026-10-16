@@ -1299,6 +1299,13 @@ func (h *rnHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 		errors.Is(err, ErrPipelineNotFound):
 		h.denied(w, r, c, resourceID, action, "no such object, or it is not visible to you")
 		WriteProblem(w, http.StatusNotFound, "Not Found", "No such "+m4NounFor(action)+".")
+	case errors.Is(err, ErrProjectNotFound):
+		// ADR-0014 § 3: a non-member sees exactly what an unknown project
+		// sees — the same 404 GET /projects/{id} answers — never a 500 that
+		// says "this project exists and you are not allowed near it". The gate
+		// error is the project store's own, so its audit arm is too.
+		h.projectDenied(w, r, c, resourceID, action)
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such project.")
 	case errors.Is(err, ErrNodeExecutionNotFound):
 		var named *NodeExecutionNotFound
 		key := ""
@@ -1378,6 +1385,21 @@ func (h *rnHandlers) recordDenied(ctx context.Context, c Caller, action, id stri
 		return h.assignments.RecordDenied(ctx, c, id, action)
 	}
 	return h.store.RecordDenied(ctx, c, id, action)
+}
+
+// projectDenied audits a refusal raised by the project gate itself (the
+// project read or the project-prefixed list/write behind it), which is the
+// only store that can resolve the id the caller typed in the URL.
+func (h *rnHandlers) projectDenied(w http.ResponseWriter, r *http.Request, c Caller, projectID, action string) {
+	if err := h.projects.RecordDenied(r.Context(), c, projectID, action); err != nil {
+		h.log(r).ErrorContext(r.Context(), "could not write audit denial",
+			slog.String("action", action), slog.String("project_id", projectID),
+			slog.String("request_id", RequestIDFrom(r)), slog.Any("error", err))
+		return
+	}
+	h.log(r).WarnContext(r.Context(), "project access denied",
+		slog.String("action", action), slog.String("user_id", c.UserID),
+		slog.String("project_id", projectID), slog.String("request_id", RequestIDFrom(r)))
 }
 
 func (h *rnHandlers) serverError(w http.ResponseWriter, r *http.Request, resourceID, action string, err error) {

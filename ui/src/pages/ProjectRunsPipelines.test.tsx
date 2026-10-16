@@ -461,3 +461,76 @@ describe("a schedule row says what the schedule is actually doing", () => {
     );
   });
 });
+
+/**
+ * M5 QA: erin is a member of one project only. `/pipelines` used to render the
+ * whole shell for a project she cannot open — rail, library rows, "not
+ * assigned to this project" chips — around a raw 500 banner, and the draft row
+ * named its editor with an id fragment. Both are honesty bugs, not styling.
+ */
+const UNKNOWN_EDITOR = "01987b22-0006-7000-8000-abcdef987654";
+
+describe("/projects/:projectId/pipelines as a caller who cannot open the project", () => {
+  const problem = (status: number) => ({
+    type: "about:blank",
+    title: status === 403 ? "Forbidden" : "Not Found",
+    status,
+    detail: status === 403 ? "Nope." : "No such project.",
+  });
+
+  it("shows the project refusal instead of the shell on a 404", async () => {
+    mount("viewer", [
+      { path: `/api/v1/projects/${wireProjectId}`, status: 404, body: problem(404) },
+      { path: ASSIGNMENTS_PATH, status: 404, body: problem(404) },
+    ]);
+
+    expect((await screen.findByTestId("project-pipelines-not-found")).textContent).toContain(
+      "Project not found or you do not have access",
+    );
+    // The shell is the leak: none of it renders.
+    expect(screen.queryByTestId("project-pipelines")).toBeNull();
+    expect(screen.queryAllByTestId(/pipeline-no-assignment-/)).toHaveLength(0);
+    expect(screen.queryByText(/not assigned to this project/)).toBeNull();
+    expect(screen.queryByText(/no pipeline assignment is enabled/)).toBeNull();
+    expect(screen.queryByText(/Internal Server Error/)).toBeNull();
+  });
+
+  it("shows the same refusal when only the assignments read is refused", async () => {
+    mount("viewer", [{ path: ASSIGNMENTS_PATH, status: 403, body: problem(403) }]);
+
+    expect(await screen.findByTestId("project-pipelines-not-found")).toBeTruthy();
+    expect(screen.queryByTestId("pipeline-library-count")).toBeNull();
+  });
+
+  it("names an unknown draft editor in words, never an id fragment", async () => {
+    mount("viewer", [
+      {
+        path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/drafts`,
+        body: {
+          drafts: [
+            {
+              id: "01987b22-0007-7000-8000-abcdef012345",
+              status: "valid",
+              version: 2,
+              updated_at: "2026-07-31T08:12:00Z",
+              edited_by: UNKNOWN_EDITOR,
+            },
+          ],
+        },
+      },
+    ]);
+
+    const cell = await screen.findByTestId("pipeline-validation-feature-development");
+    expect(cell.textContent).toContain("draft v2");
+    expect(cell.textContent).toContain("a member");
+    expect(cell.textContent).not.toContain(shortId(UNKNOWN_EDITOR));
+    expect(cell.textContent).not.toContain(UNKNOWN_EDITOR);
+  });
+
+  it("still names a draft editor the reader can resolve", async () => {
+    mount("viewer");
+
+    const cell = await screen.findByTestId("pipeline-validation-feature-development");
+    expect(cell.textContent).toContain("draft v12 · Ada Lovelace");
+  });
+});

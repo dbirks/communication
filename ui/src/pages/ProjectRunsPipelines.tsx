@@ -43,6 +43,8 @@ import {
   type Schedule,
 } from "../api/pipelines";
 import { useMe, useProject, useRepositories } from "../api/queries";
+import { useActorNames } from "../api/actors";
+import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import { viewDraftSummary, viewPipeline, viewPipelineSummary } from "../api/m4view";
 import { shortId } from "../api/names";
 import {
@@ -94,6 +96,9 @@ export default function ProjectPipelines() {
     "";
   const revision = useRevision(pin);
   const project = useProject(projectId);
+  // Names for the library's draft rows, resolved through the reads the app
+  // already has (the caller, this project's members, the org directory).
+  const actors = useActorNames(projectId);
   // Revision numbers live on the pipeline read, not on the assignment (which
   // carries only a digest), so the digest → r<N> map is built from the rows.
   const revisionNumbers = new Map<string, number>();
@@ -136,6 +141,28 @@ export default function ProjectPipelines() {
   });
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const newestRun = runs.data?.runs?.[0] ?? null;
+
+  // A caller who cannot open the project gets the overview's sentence, not the
+  // project shell: the rail, the library rows and the "not assigned to this
+  // project" chips each confirm exactly what a 404 is written to withhold,
+  // and a raw problem banner is a server error wearing the page's clothes.
+  if (projectAccessRefused(project.error) || projectAccessRefused(assignments.error)) {
+    return (
+      <ProjectUnavailable
+        heading="Pipelines"
+        headingId="project-pipelines-heading"
+        testid="project-pipelines-not-found"
+      />
+    );
+  }
+
+  // The draft cell's "who edited this" words. The component's own fallback is
+  // `shortId`, which printed "draft v2 · 24625fe2" to a reader with no
+  // directory row for that person — an id fragment dressed as a name (M5 QA).
+  // When nobody can be named, this page names the gap in a word instead.
+  function draftNameOf(userId: string): string {
+    return actors.lookup(userId) ?? "a member";
+  }
 
   return (
     <div
@@ -181,6 +208,7 @@ export default function ProjectPipelines() {
                 emptyCopy="nothing assigned to this project"
                 headingId="project-pipeline-rows-heading"
                 assignmentFor={assignmentFor}
+                nameOf={draftNameOf}
               />
             ) : null}
             {/* ADR-0032 "when to run": one block per ASSIGNED pipeline row —
