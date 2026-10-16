@@ -1,7 +1,14 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
-import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
+import { wireApproval, wireRun } from "../test/fixtures/m4/wire";
+import {
+  conversationSummaryFixture,
+  meFixture,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
 import type { Project } from "../api/types";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
@@ -109,6 +116,7 @@ describe("/ projects index", () => {
       ],
     });
 
+    fireEvent.click(await screen.findByTestId("new-project-toggle"));
     fireEvent.change(await screen.findByTestId("create-project-name"), {
       target: { value: "Widgets" },
     });
@@ -147,5 +155,118 @@ describe("/ projects index", () => {
     fireEvent.click(screen.getByTestId("create-project-submit"));
 
     expect((await screen.findByTestId("form-error")).textContent).toContain("name is required.");
+  });
+});
+
+/* --------------------------------------------------- the board (design 6b) */
+
+/** A second project with no attention at all, to sit behind `otherProject`. */
+const quietProject: Project = {
+  ...projectFixture,
+  id: "01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b82",
+  slug: "quiet-app",
+  name: "Quiet App",
+};
+
+const failedRun = {
+  ...wireRun,
+  status: "failed",
+  failed_cause: "node_execution_failed:/implement",
+} as unknown as typeof wireRun;
+
+const secondGate = {
+  ...wireApproval,
+  id: "01987b26-0000-7000-8000-abcdef012346",
+  created_at: "2026-07-31T09:44:02Z",
+  summary: "Approve spec: claims export v2",
+} as unknown as typeof wireApproval;
+
+interface AttentionStub {
+  approvals?: unknown;
+  runs?: unknown;
+  conversations?: unknown;
+}
+
+/** The wires `lib/attention.ts` reads for every listed project, so a card's
+ * counts come from a real fan-out rather than a page-local guess. */
+function boardStub(projects: Project[], perProject: Record<string, AttentionStub> = {}) {
+  const routes: RouteStub[] = [
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/projects", method: "GET", body: { items: projects } },
+  ];
+  for (const project of projects) {
+    const stub = perProject[project.id] ?? {};
+    routes.push(
+      {
+        path: `/api/v1/projects/${project.id}/approvals`,
+        body: stub.approvals ?? { approvals: [] },
+      },
+      { path: `/api/v1/projects/${project.id}/runs`, body: stub.runs ?? { runs: [] } },
+      {
+        path: `/api/v1/projects/${project.id}/conversations`,
+        body: stub.conversations ?? { items: [] },
+      },
+    );
+  }
+  return renderApp({ path: "/", routes });
+}
+
+function cards(): string[] {
+  return screen
+    .getAllByTestId(/^project-card-/)
+    .map((card) => (card.getAttribute("data-testid") ?? "").replace("project-card-", ""));
+}
+
+describe("/ projects board", () => {
+  it("counts what each project still asks of you", async () => {
+    boardStub([projectFixture, quietProject], {
+      [projectFixture.id]: {
+        approvals: { approvals: [wireApproval] },
+        runs: { runs: [failedRun] },
+        conversations: { items: [conversationSummaryFixture] },
+      },
+    });
+
+    await screen.findByTestId("project-list");
+    expect(screen.getByTestId("project-count-widgets-decisions").textContent).toContain("1");
+    expect(screen.getByTestId("project-count-widgets-stalled").textContent).toContain("1");
+    expect(screen.getByTestId("project-count-widgets-conversations").textContent).toContain("1");
+    expect(screen.getByTestId("project-count-widgets-running").textContent).toContain("0");
+
+    // The board-wide tally is the same arithmetic summed across projects.
+    expect(screen.getByTestId("projects-tally").textContent).toContain("1 decisions");
+    expect(screen.getByTestId("projects-tally").textContent).toContain("1 stalled");
+
+    // A card shows at most two items, gates before stalls — the live
+    // conversation is real attention, but it is third, so it stays off the card.
+    const items = screen.getAllByTestId(/^project-item-/);
+    expect(items).toHaveLength(2);
+    expect(items[0]?.getAttribute("data-testid")).toBe(`project-item-decision-${wireApproval.id}`);
+    expect(items[1]?.getAttribute("data-testid")).toBe(`project-item-stalled-${wireRun.id}`);
+  });
+
+  it("says so on a card with nothing outstanding", async () => {
+    boardStub([quietProject]);
+    await screen.findByTestId("project-quiet-quiet-app");
+    expect(screen.getByTestId("project-quiet-quiet-app").textContent).toBe("Nothing needs you.");
+  });
+
+  it("orders needs-me first by default and alphabetically on a–z", async () => {
+    boardStub([projectFixture, otherProject, quietProject], {
+      [projectFixture.id]: { approvals: { approvals: [wireApproval] } },
+      [otherProject.id]: {
+        approvals: { approvals: [wireApproval, secondGate] },
+        runs: { runs: [failedRun] },
+      },
+    });
+
+    await screen.findByTestId("project-list");
+    expect(cards()).toEqual(["other-app", "widgets", "quiet-app"]);
+
+    fireEvent.click(screen.getByTestId("projects-sort-az"));
+    expect(cards()).toEqual(["other-app", "quiet-app", "widgets"]);
+
+    fireEvent.click(screen.getByTestId("projects-sort-needs-me"));
+    expect(cards()).toEqual(["other-app", "widgets", "quiet-app"]);
   });
 });

@@ -36,6 +36,8 @@ export type TranscriptItem =
       text: string;
       truncated: boolean;
       final: boolean;
+      /** When the message's first chunk committed — the speaker line's time. */
+      at: string;
     }
   | { kind: "thought"; id: string; turnId: string; text: string; truncated: boolean }
   | {
@@ -138,6 +140,65 @@ export function meaningfulPreview(raw: string): string {
     }
   }
   return raw;
+}
+
+/** A JSON object, which is all any caller here is willing to read. */
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * Whether an object is a plan rather than some other payload.
+ *
+ * `goal` and `steps` are the two members `PlanView` renders a plan from
+ * (`docs/m4-contract.md` § 7's planner output); an object with neither is a
+ * result, an error body, or a tool echo, and dressing one up as a plan would
+ * invent structure the agent never served.
+ */
+function looksLikePlan(value: Record<string, unknown>): boolean {
+  return "goal" in value || "steps" in value;
+}
+
+/** A plan lifted out of an agent message, in the JSON text `PlanView` accepts. */
+export interface PlanDocument {
+  /** The plan object as JSON: the message itself, or its `plan` member. */
+  body: string;
+}
+
+/**
+ * The plan an agent message served, or null when the message is prose.
+ *
+ * A planner turn answers with structured output, and the whole message is then
+ * JSON: either the plan object itself or the `{"plan":{"goal":…,"steps":[…]}}`
+ * envelope the extractor keeps. Printed raw that is one wall of escaped text
+ * (`live-conversation-3.png`), so the fold offers the plan to `PlanView` — but
+ * only when the *entire* text parses and names a `goal` or `steps`, because a
+ * half-read message is a fabricated reading: a chunk still streaming, a JSON
+ * fragment inside prose, or a tool echo all stay the text they are.
+ */
+export function planDocumentOf(text: string): PlanDocument | null {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed.startsWith("{")) return null;
+  const parsed = record(parseJson(trimmed));
+  if (!parsed) return null;
+  if (looksLikePlan(parsed)) return { body: trimmed };
+  // A `plan` member is either the object or the JSON string the extractor
+  // carried (§ 7's `structuredOutput` shape); both name the same plan.
+  const declared = parsed["plan"];
+  const wrapped =
+    record(declared) ?? (typeof declared === "string" ? record(parseJson(declared)) : null);
+  return wrapped && looksLikePlan(wrapped) ? { body: JSON.stringify(wrapped) } : null;
+}
+
+/** `JSON.parse` as a value-or-null answer; never a throw, never a warning. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -278,6 +339,7 @@ export function projectTranscript(
           text,
           truncated: bool(payload, "truncated"),
           final: bool(payload, "final"),
+          at,
         };
         push(item);
         if (turnId) agentByTurn.set(turnId, item);
@@ -438,6 +500,35 @@ export function projectTranscript(
   }
 
   return { items, turns: [...turns.values()], throughSeq };
+}
+
+/**
+ * The run a conversation's transcript is correlated to, read off the journal.
+ *
+ * M4 stamps `run_id`/`node_execution_id`/`attempt_id` on the envelope of every
+ * conversation row an attempt writes (docs/m4-contract.md § 3, ADR-0023), so a
+ * run-controlled conversation names its run in the frames the page already
+ * streams — no second read, and nothing invented: an id is reported only where
+ * an event actually carried it. `Conversation` itself names no run, so a
+ * conversation whose frames carry none has no link to offer.
+ */
+export interface RunLink {
+  runId: string;
+  nodeExecutionId: string | null;
+  attemptId: string | null;
+}
+
+export function runLinkOf(events: readonly EventEnvelope[]): RunLink | null {
+  let runId = "";
+  let nodeExecutionId: string | null = null;
+  let attemptId: string | null = null;
+  for (const event of events) {
+    if (!runId && event.run_id) runId = event.run_id;
+    if (!nodeExecutionId && event.node_execution_id) nodeExecutionId = event.node_execution_id;
+    if (!attemptId && event.attempt_id) attemptId = event.attempt_id;
+    if (runId && nodeExecutionId && attemptId) break;
+  }
+  return runId ? { runId, nodeExecutionId, attemptId } : null;
 }
 
 /**

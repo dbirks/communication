@@ -22,10 +22,12 @@ import {
   projectFixture,
   requestsTo,
   turnId,
+  turnSandboxFixture,
   workerId,
   type RouteStub,
 } from "../test/fakes";
-import type { Conversation } from "../api/types";
+import type { Conversation, TurnSandbox } from "../api/types";
+import { shortId } from "../api/names";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
 const projectPath = `/api/v1/projects/${projectFixture.id}`;
@@ -116,6 +118,12 @@ describe("/projects/:projectId/conversations/:conversationId", () => {
     const transcript = await screen.findByTestId("transcript");
     expect(within(transcript).getAllByTestId("transcript-item")).toHaveLength(1);
     expect(screen.getByTestId("tool-status-toolu_01").textContent).toBe("status: in_progress");
+    // 6d: a tool call is one row; its output is behind a click, not on screen.
+    expect(within(transcript).queryByTestId("tool-preview-input")).toBeNull();
+    fireEvent.click(screen.getByTestId("tool-row-toolu_01"));
+    expect(within(transcript).getByTestId("tool-preview-input").textContent).toContain(
+      "func list()",
+    );
 
     act(() => {
       source.emit(
@@ -128,10 +136,12 @@ describe("/projects/:projectId/conversations/:conversationId", () => {
       );
     });
 
-    // Same single row, now completed.
+    // Same single row, now completed, and the output is on screen because the
+    // row was expanded (a second click would show all of it).
     expect(within(transcript).getAllByTestId("transcript-item")).toHaveLength(1);
     expect(screen.getByTestId("tool-status-toolu_01").textContent).toBe("status: completed");
     expect(transcript.textContent).toContain("written");
+    expect(screen.getByTestId("tool-row-toolu_01").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("does not duplicate items when a reconnect replays frames", async () => {
@@ -556,5 +566,288 @@ describe("/projects/:projectId/conversations/:conversationId", () => {
     });
 
     await screen.findByTestId("conversation-not-found");
+  });
+});
+
+/* ------------------------------------------------- 6d layout: two columns */
+
+const RUN_ID = "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c";
+const NODE_EXECUTION_ID = "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d";
+const ATTEMPT_ID = "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e";
+
+describe("the conversation page is a transcript column with a context rail", () => {
+  it("puts the workspace, the sandbox and the controller line in the rail", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+
+    const main = await screen.findByTestId("conversation-main");
+    const rail = screen.getByRole("complementary", { name: "Conversation context" });
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.message.user", {
+          submitted_by: meFixture.id,
+          text: "Where is the context rail?",
+        }),
+      );
+    });
+    // The transcript and the composer are the reading surface; the context that
+    // explains them is beside it, never below it.
+    expect(await screen.findByTestId("transcript")).toBeTruthy();
+    expect(within(main).getByTestId("transcript")).toBeTruthy();
+    expect(within(main).getByTestId("composer-input")).toBeTruthy();
+    expect(within(rail).getByTestId("workspace-widget")).toBeTruthy();
+    expect(within(rail).getByTestId("sandbox-verdict")).toBeTruthy();
+    expect(within(rail).getByTestId("controller-badge")).toBeTruthy();
+    expect(within(rail).queryByTestId("take-control")).toBeNull(); // you already hold control
+    expect(within(rail).getByTestId("return-control")).toBeTruthy();
+  });
+
+  it("names the run the transcript belongs to from the ids the journal carried", async () => {
+    const factoryRun: Conversation = {
+      ...conversationFixture,
+      control: { kind: "run_attempt", version: 3 },
+    };
+    renderApp({ path, routes: routes(factoryRun) });
+    await screen.findByTestId("conversation-title");
+
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent(
+          "conversation.turn.started",
+          { worker_id: workerId, fencing_token: 41, session_origin: "new" },
+          { run_id: RUN_ID, node_execution_id: NODE_EXECUTION_ID, attempt_id: ATTEMPT_ID },
+        ),
+      );
+    });
+
+    const link = await screen.findByTestId("part-of-run-link");
+    expect(link.getAttribute("href")).toBe(`/projects/${projectFixture.id}/runs/${RUN_ID}`);
+    expect(screen.getByTestId("part-of-node").textContent).toContain("node execution");
+    expect(screen.getByTestId("controller-badge").textContent).toContain("pipeline run");
+  });
+
+  it("offers no run link when nothing in the journal names a run", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.turn.started", { session_origin: "new" }),
+      );
+    });
+    await screen.findByTestId("transcript");
+    expect(screen.queryByTestId("part-of-run-link")).toBeNull();
+  });
+
+  it("renders an agent message as a speaker block and cycles the tool output open", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+
+    act(() => {
+      const source = FakeEventSource.last();
+      source.emit(
+        conversationEvent(
+          "conversation.message.agent",
+          { text: "Reading the tests.", final: true },
+          { occurred_at: "2026-10-14T18:03:07Z" },
+        ),
+      );
+      source.emit(
+        conversationEvent("conversation.tool.call", {
+          tool_call_id: "toolu_big",
+          title: "go test ./...",
+          kind: "execute",
+          status: "in_progress",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.tool.update", {
+          tool_call_id: "toolu_big",
+          status: "in_progress",
+          output_preview: "line one\nline two\nline three\nline four\nline five",
+        }),
+      );
+    });
+
+    const speaker = await screen.findByTestId("agent-speaker");
+    expect(speaker.textContent).toBe("Claude Code · 18:03:07 UTC");
+
+    const row = screen.getByTestId("tool-row-toolu_big");
+    expect(within(row).getByText("go test ./...")).toBeTruthy();
+    // Row one: collapsed. Row two: the head of the output. Row three: all of it.
+    fireEvent.click(row);
+    expect(screen.getByTestId("tool-preview-output").textContent).toBe(
+      "line one\nline two\nline three",
+    );
+    fireEvent.click(screen.getByTestId("tool-show-all-toolu_big"));
+    expect(screen.getByTestId("tool-preview-output").textContent).toContain("line five");
+    expect(within(row).getByText("status: in_progress")).toBeTruthy();
+  });
+});
+
+/** Turn a factory attempt's ids onto the stream the way the worker stamps them. */
+function emitAttemptTurn(): void {
+  act(() => {
+    FakeEventSource.last().emit(
+      conversationEvent(
+        "conversation.turn.started",
+        { worker_id: workerId, fencing_token: 41, session_origin: "new" },
+        { run_id: RUN_ID, node_execution_id: NODE_EXECUTION_ID, attempt_id: ATTEMPT_ID },
+      ),
+    );
+  });
+}
+
+describe("the PART OF panel says which run this transcript belongs to", () => {
+  it("renders the attempt's short id, with no expression left unrendered", async () => {
+    const runControlled: Conversation = {
+      ...conversationFixture,
+      control: { kind: "run_attempt", version: 3 },
+    };
+    renderApp({ path, routes: routes(runControlled) });
+    await screen.findByTestId("conversation-title");
+    emitAttemptTurn();
+
+    const node = await screen.findByTestId("part-of-node");
+    // The bug this pins: `· attempt {shortId(runLink.attemptId)}` sat inside a
+    // template literal, so the page printed the source code as a label.
+    const panel = node.closest("section") ?? node;
+    expect(panel.textContent).not.toContain("{");
+    expect(panel.textContent).not.toContain("}");
+    expect(node.textContent).toContain(`attempt ${shortId(ATTEMPT_ID)}`);
+    // And the attempt is not a bare hex: it names the run it lives inside.
+    const attempt = screen.getByTestId("part-of-attempt-link");
+    expect(attempt.getAttribute("href")).toBe(`/projects/${projectFixture.id}/runs/${RUN_ID}`);
+    expect(screen.getByTestId("part-of-run-link").getAttribute("href")).toBe(
+      `/projects/${projectFixture.id}/runs/${RUN_ID}`,
+    );
+  });
+
+  it("says no verdict was recorded instead of asserting the run was unsandboxed", async () => {
+    // What `GET /turns/{id}/sandbox` honestly answers for a turn whose journal
+    // holds no sandbox event: stage `none`, verified false, nothing else. A
+    // pipeline attempt writes `sandbox.verified` against its own attempt, with
+    // no turn and no conversation on the row, so this conversation cannot reach
+    // the enforcement it really ran under — and must not claim the opposite.
+    const noRecord: TurnSandbox = {
+      turn_id: turnId,
+      workspace_id: null,
+      worker_id: null,
+      stage: "none",
+      reason: null,
+      policy_digest: null,
+      backend: "none",
+      backend_version: null,
+      enforcement: null,
+      verified: false,
+      af_unix_mediation: null,
+      network_enforced: false,
+      child_started: false,
+      grants: [],
+      commit_granted: false,
+      denied_what: [],
+    };
+    renderApp({
+      path,
+      routes: routes(conversationFixture, [
+        { path: `/api/v1/turns/${turnId}/sandbox`, body: noRecord },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.turn.started", { session_origin: "new" }),
+      );
+    });
+
+    const verdict = await screen.findByText(/No sandbox verdict recorded for this conversation/);
+    expect(verdict.getAttribute("data-testid")).toBe("sandbox-verdict");
+    // The old copy asserted a finding nobody recorded.
+    expect(document.body.textContent).not.toContain("WITHOUT a verified sandbox");
+    expect(document.body.textContent).not.toContain("treat this unit as unsandboxed");
+  });
+
+  it("still shows a recorded verdict in full", async () => {
+    renderApp({
+      path,
+      routes: routes(conversationFixture, [
+        { path: `/api/v1/turns/${turnId}/sandbox`, body: turnSandboxFixture },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.turn.started", { session_origin: "new" }),
+      );
+    });
+
+    await screen.findByTestId("sandbox-verdict-panel");
+    expect(document.body.textContent).not.toContain("No sandbox verdict recorded");
+  });
+});
+
+describe("an agent message that served a plan", () => {
+  // The m4-planner's real final message, brace for brace.
+  const planText = JSON.stringify({
+    plan: {
+      goal: "Document and fix add() in app/hello.py",
+      steps: [
+        { id: 1, file: "app/hello.py", action: "Add a docstring to add()" },
+        { id: 2, file: "app/tests/test_hello.py", action: "Correct the failing assertion" },
+      ],
+      risks: ["If the contract requires the test file unchanged, steps 1-2 conflict."],
+    },
+  });
+
+  async function agentSays(text: string) {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.message.agent", { text, final: true }),
+      );
+    });
+    return screen.findByTestId("transcript");
+  }
+
+  it("renders it as a plan, with the raw text one click away", async () => {
+    const transcript = await agentSays(planText);
+    // PlanView's own surface, not the wall of escaped text (`live-conversation-3.png`).
+    expect(within(transcript).getByTestId("plan-view")).toBeTruthy();
+    expect(within(transcript).getByTestId("plan-goal").textContent).toContain(
+      "Document and fix add()",
+    );
+    expect(within(transcript).getAllByTestId(/^plan-step-/).length).toBeGreaterThan(0);
+    expect(transcript.textContent).not.toContain('{"plan":{"goal"');
+
+    fireEvent.click(within(transcript).getByTestId("agent-plan-toggle"));
+    expect(within(transcript).getByTestId("agent-plan-raw").textContent).toBe(planText);
+    // Nothing is lost on the way back either.
+    fireEvent.click(within(transcript).getByTestId("agent-plan-toggle"));
+    expect(within(transcript).getByTestId("plan-view")).toBeTruthy();
+  });
+
+  it("leaves every other message as the text it is", async () => {
+    const transcript = await agentSays("Reading the failing spec now.");
+    expect(within(transcript).queryByTestId("plan-view")).toBeNull();
+    expect(within(transcript).queryByTestId("agent-plan-toggle")).toBeNull();
+    expect(transcript.textContent).toContain("Reading the failing spec now.");
+  });
+
+  it("waits for a plan that has not fully arrived", async () => {
+    // A chunk of the same document mid-stream is not a plan, and rendering the
+    // fragment as one would show a goal that was never served.
+    const transcript = await agentSays(planText.slice(0, 40));
+    expect(within(transcript).queryByTestId("plan-view")).toBeNull();
+    expect(transcript.textContent).toContain('{"plan":{"goal":');
+  });
+
+  it("reads a plan served without the envelope too", async () => {
+    const bare = JSON.stringify({
+      goal: "Split the billing job",
+      steps: [{ id: 1, title: "Cut the cron entry", actions: ["remove the schedule"] }],
+    });
+    const transcript = await agentSays(bare);
+    expect(within(transcript).getByTestId("plan-goal").textContent).toBe("Split the billing job");
+    expect(within(transcript).getByTestId("agent-plan-toggle")).toBeTruthy();
   });
 });

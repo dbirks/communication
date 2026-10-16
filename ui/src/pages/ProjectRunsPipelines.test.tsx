@@ -12,6 +12,7 @@ import { renderApp } from "../test/render";
 import { shortId } from "../api/names";
 import type { Pipeline, PipelineRevision } from "../api/types";
 import type { Schedule } from "../api/pipelines";
+import { cronInWords, scheduleClock } from "./ProjectRunsPipelines";
 import {
   WIRE_ASSIGNMENT_ID,
   WIRE_CHILD_PIPELINE_ID,
@@ -378,5 +379,85 @@ describe("/projects/:projectId/pipelines — when to run", () => {
     const alert = await screen.findByTestId("schedule-error-feature-development");
     expect(alert.textContent).toContain("5-field cron");
     expect(screen.getByTestId("schedule-form-feature-development")).toBeTruthy();
+  });
+});
+
+/* ------------------------------------------- schedule rows: paused, due now */
+
+describe("a schedule row says what the schedule is actually doing", () => {
+  const withSchedules = (role: "maintainer" | "viewer", overrides: Partial<Schedule> = {}) =>
+    mount(role, [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule(overrides)] } }]);
+
+  it("a paused schedule is shown paused: the box is unchecked and no stale 'next' is promised", async () => {
+    await withSchedules("maintainer", { enabled: false, next_run_at: "2026-06-19T09:00:00Z" });
+
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    const toggle = within(block).getByTestId("schedule-enabled-feature-development");
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
+      "paused",
+    );
+    // `next_run_at` keeps its last value while a schedule is off (ADR-0032 never
+    // backfills missed slots), so the row must not read it as a countdown.
+    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toBe(
+      "paused",
+    );
+    expect(within(block).getByTestId("schedule-next-feature-development").textContent).not.toMatch(
+      /passed|next /,
+    );
+  });
+
+  it("an enabled schedule reads as on, and a slot already gone by is due now", async () => {
+    await withSchedules("maintainer", { next_run_at: "2020-01-02T09:00:00Z" });
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    expect(
+      (within(block).getByTestId("schedule-enabled-feature-development") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe("on");
+    expect(within(block).getByTestId("schedule-next-feature-development").textContent).toBe(
+      "due now",
+    );
+  });
+
+  it("a viewer reads the same states without a control", async () => {
+    await withSchedules("viewer", { enabled: false });
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    expect(within(block).queryByTestId("schedule-enabled-feature-development")).toBeNull();
+    expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
+      "paused",
+    );
+  });
+
+  it("the three presets and every-minute speak in words; anything else stays verbatim", async () => {
+    await withSchedules("viewer", { cron_expr: "0 9 * * 1" });
+    const block = await screen.findByTestId("schedules-block-feature-development");
+    expect(
+      within(block).getByTestId("schedule-cron-words-feature-development").textContent,
+    ).toContain("weekly Monday 09:00 UTC");
+    expect(block.textContent).toContain("0 9 * * 1"); // the expression is never hidden
+  });
+
+  it("cronInWords translates only the cadences the form offers", () => {
+    expect(cronInWords("0 * * * *")).toBe("hourly");
+    expect(cronInWords("0 9 * * *")).toBe("daily 09:00 UTC");
+    expect(cronInWords("  0 9 * * 1 ")).toBe("weekly Monday 09:00 UTC");
+    expect(cronInWords("* * * * *")).toBe("every minute");
+    // Anything else is shown exactly as written — no invented reading of it.
+    expect(cronInWords("*/15 8-17 * * 2-4")).toBe("*/15 8-17 * * 2-4");
+    expect(cronInWords("@daily")).toBe("@daily");
+  });
+
+  it("scheduleClock: paused beats a stale clock, a gone-by slot is due now", () => {
+    const now = Date.parse("2026-06-20T10:00:00Z");
+    expect(scheduleClock({ enabled: false, next_run_at: "2026-06-19T09:00:00Z" }, now)).toContain(
+      "paused",
+    );
+    expect(scheduleClock({ enabled: true, next_run_at: "2026-06-19T09:00:00Z" }, now)).toBe(
+      "due now",
+    );
+    expect(scheduleClock({ enabled: true, next_run_at: "2026-06-20T12:00:00Z" }, now)).toBe(
+      "next 2h left",
+    );
   });
 });

@@ -177,6 +177,8 @@ describe("a tool call with no arguments says so by showing nothing", () => {
       .getAllByTestId("transcript-item")
       .find((item) => item.textContent?.includes("List files"));
     expect(empty).toBeDefined();
+    // Rows start collapsed (6d); expand them to see what the call carried.
+    fireEvent.click(within(empty as HTMLElement).getByTestId("tool-row-toolu_empty"));
     expect(within(empty as HTMLElement).queryByTestId("tool-preview-input")).toBeNull();
     // A real output still shows, and a real input still shows.
     expect(within(empty as HTMLElement).getByTestId("tool-preview-output").textContent).toContain(
@@ -185,12 +187,14 @@ describe("a tool call with no arguments says so by showing nothing", () => {
     const real = within(root)
       .getAllByTestId("transcript-item")
       .find((item) => item.textContent?.includes("Edit secrets.go"));
+    fireEvent.click(within(real as HTMLElement).getByTestId("tool-row-toolu_real"));
     expect(within(real as HTMLElement).getByTestId("tool-preview-input").textContent).toContain(
       "secrets.go",
     );
     // Nowhere in the transcript is a bare pair of braces standing in for content.
     expect(root.textContent).not.toMatch(/^\{\}$/m);
     expect(root.textContent).not.toContain(" {} ");
+    expect(root.textContent).not.toContain("{}");
   });
 });
 

@@ -239,6 +239,54 @@ function liveConversations(
 }
 
 /**
+ * One project's slice of a cross-project read. The lists keep the order the
+ * reduction gave them (stalled newest-first, decisions oldest gate first,
+ * prompts leading conversations), so a caller that shows "the top two" takes a
+ * prefix rather than re-sorting with its own opinion.
+ */
+export interface ProjectAttentionView {
+  decisions: DecisionItem[];
+  stalled: RunItem[];
+  conversations: ConversationItem[];
+  running: RunItem[];
+}
+
+export const EMPTY_PROJECT_VIEW: ProjectAttentionView = {
+  decisions: [],
+  stalled: [],
+  conversations: [],
+  running: [],
+};
+
+/**
+ * Bucket an already-computed `Attention` by project. This is a split of the one
+ * read, not a second one: the board page fans out over all its projects once
+ * and cuts the result per card, so counts on a card are the counts Inbox
+ * summed.
+ */
+export function attentionByProject(
+  attention: Attention,
+  projects: readonly Project[],
+): Map<string, ProjectAttentionView> {
+  const views = new Map<string, ProjectAttentionView>();
+  for (const project of projects) {
+    views.set(project.id, { decisions: [], stalled: [], conversations: [], running: [] });
+  }
+  for (const item of attention.decisions) views.get(item.project.id)?.decisions.push(item);
+  for (const item of attention.stalled) views.get(item.project.id)?.stalled.push(item);
+  for (const item of attention.conversations) {
+    views.get(item.project.id)?.conversations.push(item);
+  }
+  for (const item of attention.running) views.get(item.project.id)?.running.push(item);
+  return views;
+}
+
+/** What makes a project "need someone": an open gate or a run that stopped. */
+export function needsYou(view: Pick<ProjectAttentionView, "decisions" | "stalled">): number {
+  return view.decisions.length + view.stalled.length;
+}
+
+/**
  * Attention for a single project — the same read, one element wide. Passing a
  * `null` project (still loading) asks for nothing rather than fetching a blank
  * id.

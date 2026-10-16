@@ -48,6 +48,14 @@ describe("auth", () => {
   it("follows the replica header across a navigation between API replicas", async () => {
     // The load balancer round-robins, so a project opened after the index may
     // be answered by a different replica; the badge must show the latest one.
+    // The board and the project page read the same conversations endpoint, so
+    // this stub answers from replica-a while the board is up and switches to
+    // replica-b for the post-navigation reads (the mock resolves `replica` per
+    // request).
+    const conversationsStub: RouteStub = {
+      path: `/api/v1/projects/${projectFixture.id}/conversations`,
+      body: { items: [] },
+    };
     renderApp({
       path: "/",
       replica: "replica-a",
@@ -71,11 +79,7 @@ describe("auth", () => {
         },
         { path: "/api/v1/users", body: { items: [] }, replica: "replica-b" },
         { path: "/api/v1/agent-profiles", body: { items: [] }, replica: "replica-b" },
-        {
-          path: `/api/v1/projects/${projectFixture.id}/conversations`,
-          body: { items: [] },
-          replica: "replica-b",
-        },
+        conversationsStub,
         // M3 reads the project page also makes, from the same replica.
         {
           path: `/api/v1/projects/${projectFixture.id}/workspaces`,
@@ -95,6 +99,7 @@ describe("auth", () => {
       expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-a"),
     );
 
+    conversationsStub.replica = "replica-b";
     fireEvent.click(screen.getByTestId("project-link-widgets"));
     await screen.findByTestId("project-name");
     await waitFor(() =>

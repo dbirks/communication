@@ -1,6 +1,10 @@
+import { useMemo, useState } from "react";
 import { problemOf } from "../api/client";
-import type { TranscriptItem } from "../api/transcript";
+import { planDocumentOf, type TranscriptItem } from "../api/transcript";
 import type { PermissionOption } from "../api/types";
+import { formatClock } from "../lib/format";
+
+import { PlanView } from "./m4/PlanView";
 
 import { Alert } from "./ds/Alert";
 import { Button } from "./ds/Button";
@@ -10,7 +14,15 @@ import { PERMISSION_STATE, STATES, TOOL_STATE, stateOf } from "./ds/states";
 const itemClass = "rounded-[3px] border border-line-strong bg-surface px-[10px] py-2 text-[12.5px]";
 
 /** A tool call's streamed preview, shown only when it says something. */
-function ToolPreview({ label, text }: { label: string; text: string }) {
+function ToolPreview({
+  label,
+  text,
+  tall = false,
+}: {
+  label: string;
+  text: string;
+  tall?: boolean;
+}) {
   if (!text) return null;
   return (
     <div className="mt-1">
@@ -20,7 +32,9 @@ function ToolPreview({ label, text }: { label: string; text: string }) {
       {/* Mono (rule 07: machine-produced) and scrollable: a 4 KB diff must not
           push the transcript off the screen. */}
       <pre
-        className="max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted"
+        className={`overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted ${
+          tall ? "max-h-[45vh]" : "max-h-24"
+        }`}
         data-testid={`tool-preview-${label}`}
       >
         {text}
@@ -29,8 +43,164 @@ function ToolPreview({ label, text }: { label: string; text: string }) {
   );
 }
 
+/** Two-letter initials for a speaker box (6d: `CI` for claude-impl). */
+export function speakerInitials(label: string): string {
+  const words = label
+    .trim()
+    .split(/[\s/_-]+/)
+    .filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0].slice(0, 1) + words[1].slice(0, 1)).toUpperCase();
+}
+
+/** How many output lines the first click reveals. */
+const PREVIEW_LINES = 3;
+
+/**
+ * An agent message's body: the plan it served, or its text.
+ *
+ * A planner turn answers with structured output — `{"plan":{"goal":…,"steps":…}}`
+ * — which printed raw is one wall of escaped text (`live-conversation-3.png`), so
+ * the message renders through the same `PlanView` a gate summary gets. Nothing is
+ * substituted: the toggle keeps the original text one click away, a message that
+ * is not a whole plan renders exactly as it always did, and the transcript row
+ * still carries the text the API wrote.
+ */
+function AgentMessageBody({ text }: { text: string }) {
+  const [raw, setRaw] = useState(false);
+  const plan = useMemo(() => planDocumentOf(text), [text]);
+
+  if (!plan) {
+    return <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-ink">{text}</p>;
+  }
+  return (
+    <div className="mt-1" data-testid="agent-plan">
+      {raw ? (
+        <pre
+          className="overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted"
+          data-testid="agent-plan-raw"
+        >
+          {text}
+        </pre>
+      ) : (
+        <PlanView text={plan.body} />
+      )}
+      <button
+        type="button"
+        aria-expanded={raw}
+        onClick={() => setRaw((current) => !current)}
+        className="mt-[2px] block font-mono text-[10.5px] text-accent-text hover:text-ink"
+        data-testid="agent-plan-toggle"
+      >
+        {raw ? "plan" : "raw"}
+      </button>
+    </div>
+  );
+}
+
+/** The head of a machine block — the whole text when it is already short. */
+function headLines(text: string, lines = PREVIEW_LINES): string {
+  const parts = text.split("\n");
+  return parts.length <= lines ? text : parts.slice(0, lines).join("\n");
+}
+
+/**
+ * One tool call as a transcript row: kind, the command/title on one line, the
+ * state as a chip. The output can run to hundreds of lines and is what makes a
+ * transcript unreadable, so it sits behind a click — first click shows its head,
+ * the next the whole thing, and a third folds it away. Collapsing is never
+ * deleting: the row keeps its title, state, ids and `data-tool-call-id`.
+ */
+function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) {
+  const [depth, setDepth] = useState<"closed" | "head" | "all">("closed");
+  const open = depth !== "closed";
+  const cycle = () =>
+    setDepth((current) => (current === "closed" ? "head" : current === "head" ? "all" : "closed"));
+  const input = open ? (depth === "all" ? item.inputPreview : headLines(item.inputPreview)) : "";
+  const output = open ? (depth === "all" ? item.outputPreview : headLines(item.outputPreview)) : "";
+  const hidden =
+    depth === "head" &&
+    (headLines(item.inputPreview) !== item.inputPreview ||
+      headLines(item.outputPreview) !== item.outputPreview);
+
+  return (
+    <li
+      data-testid="transcript-item"
+      data-tool-call-id={item.toolCallId}
+      className="rounded-[3px] border border-line bg-surface"
+    >
+      <button
+        type="button"
+        data-testid={`tool-row-${item.toolCallId}`}
+        aria-expanded={open}
+        onClick={cycle}
+        className="flex w-full items-center gap-2 px-[10px] py-[5px] text-left"
+      >
+        <span className="w-[54px] shrink-0 truncate font-mono text-[10px] uppercase tracking-[.04em] text-muted">
+          {item.toolKind || "tool"}
+        </span>
+        {/* One line, ellipsized: the full command is one click away below. */}
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">
+          {item.title}
+        </span>
+        {item.truncated ? (
+          <span className="shrink-0 font-mono text-[10px] text-faint">(truncated)</span>
+        ) : null}
+        <StatusChip
+          className="h-[15px]"
+          state={stateOf(TOOL_STATE[item.status])}
+          label={`status: ${item.status}`}
+          labelProps={{ "data-testid": `tool-status-${item.toolCallId}` }}
+        />
+        <span
+          aria-hidden="true"
+          className="w-3 shrink-0 text-center font-mono text-[10px] text-faint"
+        >
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open ? (
+        <div className="border-t border-line px-[10px] pb-2">
+          <ToolPreview label="input" text={input} tall={depth === "all"} />
+          <ToolPreview label="output" text={output} tall={depth === "all"} />
+          {!input && !output ? (
+            <p className="mt-1 font-mono text-[11px] text-faint" data-testid="tool-preview-empty">
+              no input or output was recorded for this call
+            </p>
+          ) : null}
+          <div className="mt-1 flex items-center gap-2">
+            {hidden ? (
+              <button
+                type="button"
+                data-testid={`tool-show-all-${item.toolCallId}`}
+                className="font-mono text-[10.5px] text-accent-text hover:text-ink"
+                onClick={() => setDepth("all")}
+              >
+                show all
+              </button>
+            ) : null}
+            {depth === "all" ? (
+              <button
+                type="button"
+                data-testid={`tool-collapse-${item.toolCallId}`}
+                className="font-mono text-[10.5px] text-muted hover:text-ink"
+                onClick={() => setDepth("head")}
+              >
+                collapse to {PREVIEW_LINES} lines
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
 export interface TranscriptProps {
   items: TranscriptItem[];
+  /** Speaker label for an agent message (the profile name), never a uuid. */
+  agentName?: string;
   /** True only for the current controller — a viewer sees prompts read-only. */
   canDecide: boolean;
   /** Name of whoever must answer an open prompt, for the read-only explanation. */
@@ -187,6 +357,7 @@ function PermissionCard({
  */
 export default function Transcript({
   items,
+  agentName = "agent",
   canDecide,
   controllerName,
   nameOf,
@@ -222,22 +393,33 @@ export default function Transcript({
             );
           case "agent":
             return (
-              <li key={item.id} data-testid="transcript-item" className={itemClass}>
-                <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-ink-2">
-                  Agent
-                </span>
-                {item.final ? null : (
-                  <span className="ml-2 text-[12.5px] text-muted" role="status">
-                    <span aria-hidden="true" className="text-st-running-strong">
-                      ●{" "}
-                    </span>
-                    writing…
+              <li key={item.id} data-testid="transcript-item" className="px-1 py-1">
+                {/* 6d's speaker block: an initials box, then a mono who/when line,
+                    then the text — so a long agent message reads as a person
+                    talking, not as another bordered card. */}
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[3px] border border-line-strong bg-surface font-mono text-[9px] font-semibold text-ink-2"
+                  >
+                    {speakerInitials(agentName)}
                   </span>
-                )}
-                {item.truncated ? (
-                  <span className="ml-2 font-mono text-[10.5px] text-muted">(truncated)</span>
-                ) : null}
-                <p className="mt-1 whitespace-pre-wrap">{item.text}</p>
+                  <span className="font-mono text-[10.5px] text-muted" data-testid="agent-speaker">
+                    {agentName} · {formatClock(item.at)}
+                  </span>
+                  {item.final ? null : (
+                    <span className="text-[12px] text-muted" role="status">
+                      <span aria-hidden="true" className="text-st-running-strong">
+                        ●{" "}
+                      </span>
+                      writing…
+                    </span>
+                  )}
+                  {item.truncated ? (
+                    <span className="font-mono text-[10.5px] text-muted">(truncated)</span>
+                  ) : null}
+                </div>
+                <AgentMessageBody text={item.text} />
               </li>
             );
           case "thought":
@@ -257,30 +439,7 @@ export default function Transcript({
               </li>
             );
           case "tool":
-            return (
-              <li
-                key={item.id}
-                data-testid="transcript-item"
-                data-tool-call-id={item.toolCallId}
-                className={`${itemClass} font-mono`}
-              >
-                <span className="font-semibold">{item.title}</span>
-                <StatusChip
-                  className="ml-2 align-middle"
-                  state={stateOf(TOOL_STATE[item.status])}
-                  label={`status: ${item.status}`}
-                  labelProps={{ "data-testid": `tool-status-${item.toolCallId}` }}
-                />
-                {item.toolKind ? (
-                  <span className="ml-2 text-[10.5px] text-muted">{item.toolKind}</span>
-                ) : null}
-                <ToolPreview label="input" text={item.inputPreview} />
-                <ToolPreview label="output" text={item.outputPreview} />
-                {item.truncated ? (
-                  <span className="font-mono text-[10.5px] text-muted">(truncated)</span>
-                ) : null}
-              </li>
-            );
+            return <ToolRow key={item.id} item={item} />;
           case "permission":
             return (
               <PermissionCard

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   interruptedCopy,
   meaningfulPreview,
+  planDocumentOf,
   projectTranscript,
   turnStatusText,
 } from "./transcript";
@@ -310,5 +311,52 @@ describe("meaningfulPreview", () => {
   it("survives input that is not valid JSON", () => {
     expect(meaningfulPreview("{oops")).toBe("{oops");
     expect(meaningfulPreview(undefined as unknown as string)).toBe("");
+  });
+});
+
+describe("planDocumentOf", () => {
+  // The body a real m4-planner turn served (`live-conversation-3.png`): the
+  // whole final message is one JSON document, so the wall of escaped text the
+  // transcript printed is the plan.
+  const plan = {
+    goal: "Document and fix add() in app/hello.py",
+    steps: [
+      { id: 1, file: "app/hello.py", action: "Add a docstring to add()" },
+      { id: 2, file: "app/tests/test_hello.py", action: "Correct the assertion" },
+    ],
+    risks: ["If the contract requires the test file to stay unchanged, steps 1-2 conflict."],
+  };
+
+  it("reads the {plan:{goal,steps}} envelope a planner turn answers with", () => {
+    const document = planDocumentOf(JSON.stringify({ plan }));
+    expect(document).not.toBeNull();
+    // The plan itself reaches PlanView, not the envelope: `plan` as one opaque
+    // member is the wall of text this closes.
+    const body = JSON.parse(document?.body ?? "{}") as Record<string, unknown>;
+    expect(body["goal"]).toBe(plan.goal);
+    expect(Array.isArray(body["steps"])).toBe(true);
+  });
+
+  it("reads a message that is the plan object directly", () => {
+    const text = JSON.stringify(plan);
+    expect(planDocumentOf(text)?.body).toBe(text.trim());
+  });
+
+  it("reads a plan carried as a JSON string", () => {
+    expect(planDocumentOf(JSON.stringify({ plan: JSON.stringify(plan) }))?.body).toContain(
+      "Document and fix add()",
+    );
+  });
+
+  it("leaves prose, half-received JSON and other documents as text", () => {
+    // Ordinary narration is untouched, and a chunk still streaming is not a
+    // plan nobody served.
+    expect(planDocumentOf("Reading the failing spec now.")).toBeNull();
+    expect(planDocumentOf('{"goal": "Docume')).toBeNull();
+    // JSON with neither goal nor steps is some other payload — a result, an
+    // error body — and dressing it as a plan would invent structure.
+    expect(planDocumentOf(JSON.stringify({ status: "ok", diff: "--- a" }))).toBeNull();
+    expect(planDocumentOf("")).toBeNull();
+    expect(planDocumentOf(undefined as unknown as string)).toBeNull();
   });
 });

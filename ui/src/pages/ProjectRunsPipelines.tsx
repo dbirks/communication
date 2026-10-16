@@ -19,6 +19,7 @@ import { useQueries } from "@tanstack/react-query";
 import { Button } from "../components/ds/Button";
 import { Field, Input } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
+import { StatusChip } from "../components/ds/Row";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
 import {
@@ -39,6 +40,7 @@ import {
   usePipelines,
   useRevision,
   useSchedules,
+  type Schedule,
 } from "../api/pipelines";
 import { useMe, useProject, useRepositories } from "../api/queries";
 import { viewDraftSummary, viewPipeline, viewPipelineSummary } from "../api/m4view";
@@ -397,6 +399,49 @@ function AssignPipelineRow({
 }
 
 /**
+ * The row's clock, in the one form that is true for the schedule's actual state.
+ *
+ * `next_run_at` is a derived column that keeps its last value while a schedule
+ * is off (ADR-0032: re-enabling re-derives it from *now*, missed slots are
+ * never backfilled), so a paused row's "next" is a stale number, not a promise.
+ * A disabled schedule therefore says "paused"; an enabled one whose slot has
+ * already gone by says "due now" — the fire is late, not never — and only an
+ * enabled schedule with a future slot shows a countdown.
+ */
+export function scheduleClock(
+  schedule: Pick<Schedule, "enabled" | "next_run_at">,
+  now = Date.now(),
+): string {
+  if (!schedule.enabled) return "paused";
+  const remaining = formatRemaining(schedule.next_run_at, now);
+  if (remaining === "passed") return "due now";
+  return `next ${remaining}`;
+}
+
+/**
+ * The three cadences the presets offer, spelled once here so a row says what it
+ * does in words (`ADR-0032`: cron is UTC wall clock). `* * * * *` is the one
+ * every cron reader agrees on and the one people most often paste while testing,
+ * so it is translated too; anything else stays verbatim — a guess at a
+ * half-supported expression would be a lie about the cadence.
+ */
+export function cronInWords(expr: string): string {
+  const fields = expr.trim().split(/\s+/).join(" ");
+  switch (fields) {
+    case "* * * * *":
+      return "every minute";
+    case "0 * * * *":
+      return "hourly";
+    case "0 9 * * *":
+      return "daily 09:00 UTC";
+    case "0 9 * * 1":
+      return "weekly Monday 09:00 UTC";
+    default:
+      return expr.trim();
+  }
+}
+
+/**
  * ADR-0032's "When to run" block for one assignment: its schedules with the
  * derived clock (`formatRemaining` reads `next_run_at` — "in 3h 20m" is the
  * whole question a schedule screen exists to answer), the enabled toggle,
@@ -450,11 +495,19 @@ function WhenToRun({
             <code className="rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[11.5px] text-ink">
               {schedule.cron_expr}
             </code>
+            {/* The cadence in words next to the expression: the expression is the
+                machine's truth, the words are the reader's. */}
+            <span
+              className="font-mono text-[11px] text-ink-2"
+              data-testid={`schedule-cron-words-${slug}`}
+            >
+              {cronInWords(schedule.cron_expr)}
+            </span>
             <span
               className="font-mono text-[11px] text-faint"
               data-testid={`schedule-next-${slug}`}
             >
-              next {formatRemaining(schedule.next_run_at)}
+              {scheduleClock(schedule)}
             </span>
             {schedule.last_run_id ? (
               <Link
@@ -469,10 +522,15 @@ function WhenToRun({
             )}
             {canManage ? (
               <label className="flex items-center gap-[6px] font-mono text-[11px] text-ink">
+                {/* The box is the schedule's `enabled` flag itself: checked means it
+                    is running to the clock, unchecked means it is paused. The word
+                    beside it is the same fact in the other direction, so the control
+                    can never read as "paused: ☐" over a schedule that is on. */}
                 <input
                   type="checkbox"
                   className="size-3 accent-accent"
                   checked={schedule.enabled}
+                  aria-label={`schedule ${slug} enabled`}
                   data-testid={`schedule-enabled-${slug}`}
                   onChange={(event) =>
                     patch.mutate({
@@ -481,9 +539,18 @@ function WhenToRun({
                     })
                   }
                 />
-                {schedule.enabled ? "enabled" : "paused"}
+                <span data-testid={`schedule-state-${slug}`}>
+                  {schedule.enabled ? "on" : "paused"}
+                </span>
               </label>
-            ) : null}
+            ) : (
+              /* A viewer has no toggle to read the state off, so the state is said. */
+              <StatusChip
+                state={schedule.enabled ? "info" : "interrupted"}
+                label={schedule.enabled ? "on" : "paused"}
+                labelProps={{ "data-testid": `schedule-state-${slug}` }}
+              />
+            )}
           </li>
         ))}
       </ul>
