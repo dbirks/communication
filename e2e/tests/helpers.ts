@@ -63,10 +63,26 @@ export async function addRepository(
   gitUrl: string,
 ): Promise<void> {
   await page.goto(projectUrl);
+  await revealAddForm(page, "repo-add-toggle", page.getByTestId("repo-name"));
   await page.getByTestId("repo-name").fill(name);
   await page.getByTestId("repo-git-url").fill(gitUrl);
   await page.getByTestId("repo-submit").click();
   await expect(rowFor(page, name)).toBeVisible();
+}
+
+/**
+ * The overview's add-forms are collapsed behind a toggle (open by default only
+ * on an empty project), so a helper must open the form before filling it.
+ */
+async function revealAddForm(page: Page, toggleTestid: string, firstField: Locator): Promise<void> {
+  const toggle = page.getByTestId(toggleTestid);
+  // The toggle renders as soon as the panel knows the viewer is a maintainer;
+  // waiting on it avoids racing the SPA's first data fetch.
+  await expect(toggle.or(firstField).first()).toBeVisible();
+  if (!(await firstField.isVisible())) {
+    await toggle.click();
+  }
+  await expect(firstField).toBeVisible();
 }
 
 /** The repo table row for a given repository name. */
@@ -91,6 +107,7 @@ export async function addMember(
   role: string,
 ): Promise<void> {
   await page.goto(projectUrl);
+  await revealAddForm(page, "member-add-toggle", page.getByTestId("member-user"));
   await selectByOptionText(page, "member-user", displayName);
   await page.getByTestId("member-role").selectOption(role);
   await page.getByTestId("member-submit").click();

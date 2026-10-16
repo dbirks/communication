@@ -13,6 +13,7 @@ import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useAgentProfiles, useProject, useRepositories, useSecrets } from "../api/queries";
 import type { Project, Secret } from "../api/types";
+import ProjectSectionNav from "../components/ProjectSectionNav";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { MaterializationsPanel, SecretMountsPanel, SecretsPanel } from "../components/Secrets";
 import { WorkspacesPanel } from "../components/Workspaces";
@@ -75,25 +76,28 @@ export default function ProjectSettings() {
   const data = project.data;
 
   return (
-    <div className="space-y-4">
-      <header className="space-y-1">
-        <p className="font-mono text-[11px] text-muted">
-          <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
-            {data.name}
-          </Link>
-          <span aria-hidden="true"> / </span>
-          <span>Settings</span>
-        </p>
-        <h1 id="settings-heading" className="text-title-l font-bold" data-testid="settings-title">
-          Secrets &amp; workspaces — {data.name}
-        </h1>
-        <p className="text-[12.5px] text-muted">
-          Your role: <span className="font-mono">{data.my_role}</span>. A viewer may read metadata;
-          only a maintainer may create, rotate, revoke or place a secret.
-        </p>
-      </header>
-      <Settings project={data} />
-      <WorkspacesPanel projectId={data.id} />
+    <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
+      <ProjectSectionNav projectId={data.id} active="settings" />
+      <div className="min-w-0 space-y-4">
+        <header className="space-y-1">
+          <p className="font-mono text-[11px] text-muted">
+            <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
+              {data.name}
+            </Link>
+            <span aria-hidden="true"> / </span>
+            <span>Settings</span>
+          </p>
+          <h1 id="settings-heading" className="text-title-l font-bold" data-testid="settings-title">
+            Secrets &amp; workspaces — {data.name}
+          </h1>
+          <p className="text-[12.5px] text-muted">
+            Your role: <span className="font-mono">{data.my_role}</span>. A viewer may read
+            metadata; only a maintainer may create, rotate, revoke or place a secret.
+          </p>
+        </header>
+        <Settings project={data} />
+        <WorkspacesPanel projectId={data.id} />
+      </div>
     </div>
   );
 }

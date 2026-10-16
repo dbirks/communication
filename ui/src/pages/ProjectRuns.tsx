@@ -12,11 +12,10 @@
  * `spec.inputs` — the page never invents an input shape of its own.
  */
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
-import { SubNav } from "../components/ds/SubNav";
 import { RUN_STATE, type StateName } from "../components/ds/states";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import { ProblemBanner, Spinner } from "../components/Feedback";
@@ -225,35 +224,12 @@ export function elapsed(
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** The left rail's section nav: routes, not fragments, so it survives leaving
- * the overview page. */
-export function ProjectSectionNav({
-  projectId,
-  active,
-}: {
-  projectId: string;
-  active: "runs" | "pipelines" | "overview";
-}) {
-  const navigate = useNavigate();
-  const href = (section: string) =>
-    section === "overview" ? `/projects/${projectId}` : `/projects/${projectId}/${section}`;
-  return (
-    <SubNav
-      label="Project sections"
-      active={href(active)}
-      onNavigate={(target) => {
-        if (target.startsWith("/")) navigate(target);
-      }}
-      items={[
-        { href: href("overview"), label: "Overview" },
-        { href: href("runs"), label: "Runs" },
-        { href: href("pipelines"), label: "Pipelines" },
-        { href: `/projects/${projectId}/artifacts`, label: "Artifacts" },
-        { href: `/projects/${projectId}/settings`, label: "Settings" },
-      ]}
-    />
-  );
-}
+/**
+ * The project's section rail lives in `../components/ProjectSectionNav.tsx`
+ * now that every screen under `/projects/:id` mounts the same one; this
+ * re-export keeps the run pages' existing imports working.
+ */
+export { ProjectSectionNav } from "../components/ProjectSectionNav";
 
 /**
  * The route body: the list column plus the honest middle. The design's empty

@@ -10,6 +10,7 @@ import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useArtifacts, useProject } from "../api/queries";
 import { ArtifactsPanel } from "../components/Artifacts";
+import ProjectSectionNav from "../components/ProjectSectionNav";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
 
@@ -50,31 +51,34 @@ export default function Artifacts() {
   const data = project.data;
 
   return (
-    <div className="space-y-4">
-      <header className="space-y-1">
-        <p className="font-mono text-[11px] text-muted">
-          <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
-            {data.name}
-          </Link>
-          <span aria-hidden="true"> / </span>
-          <span>Artifacts</span>
-        </p>
-        <h1 className="text-title-l font-bold" data-testid="artifacts-title">
-          Artifacts — {data.name}
-        </h1>
-      </header>
-      {artifacts.error ? (
-        <Alert state="failed" label="FAILED" role="alert" testid="artifacts-error">
-          {artifacts.error instanceof ApiError && artifacts.error.status === 403
-            ? "Artifacts are not readable with your role here."
-            : (artifacts.error as Error).message || "Artifacts could not be loaded."}
-        </Alert>
-      ) : (
-        <ArtifactsPanel
-          headingId="artifacts-list-heading"
-          artifacts={artifacts.data?.artifacts ?? []}
-        />
-      )}
+    <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
+      <ProjectSectionNav projectId={data.id} active="artifacts" />
+      <div className="min-w-0 space-y-4">
+        <header className="space-y-1">
+          <p className="font-mono text-[11px] text-muted">
+            <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
+              {data.name}
+            </Link>
+            <span aria-hidden="true"> / </span>
+            <span>Artifacts</span>
+          </p>
+          <h1 className="text-title-l font-bold" data-testid="artifacts-title">
+            Artifacts — {data.name}
+          </h1>
+        </header>
+        {artifacts.error ? (
+          <Alert state="failed" label="FAILED" role="alert" testid="artifacts-error">
+            {artifacts.error instanceof ApiError && artifacts.error.status === 403
+              ? "Artifacts are not readable with your role here."
+              : (artifacts.error as Error).message || "Artifacts could not be loaded."}
+          </Alert>
+        ) : (
+          <ArtifactsPanel
+            headingId="artifacts-list-heading"
+            artifacts={artifacts.data?.artifacts ?? []}
+          />
+        )}
+      </div>
     </div>
   );
 }

@@ -9,6 +9,8 @@ import {
   requestsTo,
   type RouteStub,
 } from "../test/fakes";
+import { WIRE_RUN_ID, wirePipelineList, wireRun } from "../test/fixtures/m4/wire";
+import { testidOf } from "../lib/format";
 import type { Member, Project, Repository, User } from "../api/types";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
@@ -16,6 +18,9 @@ const projectId = projectFixture.id;
 const projectPath = `/api/v1/projects/${projectId}`;
 const reposPath = `${projectPath}/repos`;
 const membersPath = `${projectPath}/members`;
+const approvalsPath = `${projectPath}/approvals`;
+const runsPath = `${projectPath}/runs`;
+const conversationsPath = `${projectPath}/conversations`;
 
 const repository: Repository = {
   id: "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0",
@@ -42,10 +47,87 @@ function projectRoutes(project: Project, extra: RouteStub[] = []): RouteStub[] {
     { path: reposPath, method: "GET", body: { items: [repository] } },
     { path: membersPath, method: "GET", body: { items: [member] } },
     { path: "/api/v1/users", method: "GET", body: { items: [directoryUser] } },
+    // The dashboard reads the attention wires; unstubbed they would 404 and the
+    // panel would honestly report that rather than show an empty state.
+    { path: approvalsPath, method: "GET", body: { approvals: [] } },
+    { path: runsPath, method: "GET", body: { runs: [] } },
+    { path: conversationsPath, method: "GET", body: { items: [] } },
+    { path: "/api/v1/pipelines", method: "GET", body: wirePipelineList },
   ];
 }
 
 describe("/projects/:projectId", () => {
+  it("mounts the one project nav with Overview current, and no second menu", async () => {
+    renderApp({ path: `/projects/${projectId}`, routes: projectRoutes(projectFixture) });
+    await screen.findByTestId("project-name");
+
+    const nav = screen.getByRole("navigation", { name: "Project sections" });
+    const items = within(nav).getAllByRole("link");
+    expect(items.map((item) => item.textContent)).toEqual([
+      "Overview",
+      "Runs",
+      "Conversations",
+      "Pipelines",
+      "Artifacts",
+      "Settings",
+    ]);
+    expect(within(nav).getByText("Overview").getAttribute("aria-current")).toBe("true");
+    // No `/projects/:id/conversations` route exists, so the item points at the
+    // overview's own conversations section rather than a route the app lacks.
+    expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
+      `/projects/${projectId}#conversations`,
+    );
+
+    // The page's former left menu (Repositories/Members/Workspaces/Activity as
+    // nav items) and its header links are gone; only the panels named by the
+    // nav remain.
+    expect(screen.queryByText("Repositories")).toBeNull();
+    expect(screen.queryByText("Workspaces")).toBeNull();
+    expect(screen.queryByText("Activity")).toBeNull();
+    expect(screen.queryByTestId("project-artifacts-link")).toBeNull();
+    expect(screen.queryByTestId("project-settings-link")).toBeNull();
+    // The section this nav's Overview page is responsible for still renders.
+    expect((await screen.findByRole("heading", { name: "REPOSITORIES" })).textContent).toBe(
+      "REPOSITORIES",
+    );
+  });
+
+  it("lists a failed run of this project under needs attention", async () => {
+    const failed = {
+      ...wireRun,
+      status: "failed",
+      failed_cause: "node_execution_failed:/implement",
+      finished_at: "2026-07-31T10:20:00Z",
+    } as unknown as typeof wireRun;
+    renderApp({
+      path: `/projects/${projectId}`,
+      routes: projectRoutes(projectFixture, [
+        { path: runsPath, method: "GET", body: { runs: [failed] } },
+      ]),
+    });
+
+    const row = await screen.findByTestId(`project-attention-run-${testidOf(WIRE_RUN_ID)}`);
+    expect(
+      within(row).getByTestId(`project-attention-run-status-${testidOf(WIRE_RUN_ID)}`).textContent,
+    ).toBe("failed");
+    // Named by the pipeline slug and the short id the wire serves — never an
+    // invented run title.
+    expect(row.textContent).toContain("feature-development");
+    expect(row.getAttribute("href")).toBe(`/projects/${projectId}/runs/${WIRE_RUN_ID}`);
+    expect(screen.queryByTestId("project-attention-empty")).toBeNull();
+    // The same run is the newest one, so it is the recent list too.
+    expect(screen.getByTestId(`recent-run-${testidOf(WIRE_RUN_ID)}`).textContent).toContain(
+      "feature-development",
+    );
+  });
+
+  it("says nothing needs attention when the project has no open work", async () => {
+    renderApp({ path: `/projects/${projectId}`, routes: projectRoutes(projectFixture) });
+    expect((await screen.findByTestId("project-attention-empty")).textContent).toBe(
+      "Nothing needs attention in this project.",
+    );
+  });
+
   it("shows the project name, repositories and members", async () => {
     renderApp({ path: `/projects/${projectId}`, routes: projectRoutes(projectFixture) });
 
@@ -53,11 +135,15 @@ describe("/projects/:projectId", () => {
 
     const repoRow = await screen.findByTestId("repo-row-communication");
     expect(repoRow.textContent).toContain("communication");
-    expect(repoRow.textContent).toContain("https://github.com/example/communication.git");
     expect(repoRow.textContent).toContain("main");
 
     const memberRow = await screen.findByTestId("member-row-Ada Lovelace");
     expect(memberRow.textContent).toContain("role: maintainer");
+
+    // The compact row shortens the remote for a 320px column but still carries
+    // the whole URL (a screen reader gets it, and so does an operator).
+    expect(repoRow.textContent).toContain("github.com/example/communication");
+    expect(repoRow.textContent).toContain("https://github.com/example/communication.git");
   });
 
   it("hides the add-repository form for a viewer", async () => {
@@ -85,6 +171,7 @@ describe("/projects/:projectId", () => {
       ]),
     });
 
+    fireEvent.click(await screen.findByTestId("repo-add-toggle"));
     fireEvent.change(await screen.findByTestId("repo-name"), { target: { value: "web" } });
     fireEvent.change(screen.getByTestId("repo-git-url"), {
       target: { value: "https://github.com/example/web.git" },
@@ -123,6 +210,7 @@ describe("/projects/:projectId", () => {
       ]),
     });
 
+    fireEvent.click(await screen.findByTestId("repo-add-toggle"));
     fireEvent.change(await screen.findByTestId("repo-name"), { target: { value: "web" } });
     fireEvent.change(screen.getByTestId("repo-git-url"), {
       target: { value: "ftp://example.com/web.git" },
@@ -139,6 +227,7 @@ describe("/projects/:projectId", () => {
     });
 
     await screen.findByTestId("project-name");
+    fireEvent.click(screen.getByTestId("member-add-toggle"));
     const userSelect = await screen.findByTestId("member-user");
     await waitFor(() => expect(within(userSelect).getAllByRole("option").length).toBe(2));
 

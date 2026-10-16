@@ -109,17 +109,14 @@ export default function Conversations({ project }: ConversationsProps) {
                       state={stateOf(CONVERSATION_STATE[conversation.status])}
                       label={conversation.status}
                     />
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
-                      {conversation.title}
-                    </span>
-                    <span className="hidden font-mono text-[10.5px] text-muted lg:inline">
-                      profile: {profileName(conversation)}
-                    </span>
-                    <span className="hidden font-mono text-[10.5px] text-muted md:inline">
-                      controller: {controllerName(conversation)}
-                    </span>
-                    <span className="font-mono text-[10.5px] text-faint">
-                      updated: {conversation.updated_at}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12.5px] font-semibold">
+                        {conversation.title}
+                      </span>
+                      <span className="block truncate font-mono text-[10.5px] text-muted">
+                        profile: {profileName(conversation)} · controller:{" "}
+                        {controllerName(conversation)} · updated: {conversation.updated_at}
+                      </span>
                     </span>
                     {conversation.has_active_turn ? (
                       <StatusChip state="running" label="turn open" />

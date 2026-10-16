@@ -1,36 +1,239 @@
-import { useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+/**
+ * `/projects/:projectId` — the project overview, read as a dashboard.
+ *
+ * The design's project section tabs (`ProjectSectionNav`) are the only
+ * navigation here: the page used to carry a second left menu of in-page
+ * fragments on top of header links, so one project had two navigations. Below
+ * the header it is two columns — the work that asks something of you on the
+ * left, the project's inventory on the right.
+ *
+ * The attention read is the inbox's (`../lib/attention.ts`), narrowed to this
+ * project, so a stalled run never reads as fine here and urgent there. Run rows
+ * obey the run pages' honesty rule: no invented title, only the pipeline slug,
+ * the short id and the state the wire serves.
+ */
+import { useMemo, useState, type FormEvent } from "react";
+import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import {
   useAddRepository,
+  useArtifacts,
   useMembers,
   useProject,
   usePutMember,
   useRepositories,
   useUsers,
 } from "../api/queries";
+import { usePipelines } from "../api/pipelines";
+import { useProjectRuns } from "../api/runs";
 import type { MemberRole, Project } from "../api/types";
 import ActivityFeed from "../components/ActivityFeed";
-import Conversations from "../components/Conversations";
 import { ArtifactsPanel } from "../components/Artifacts";
+import Conversations from "../components/Conversations";
+import ProjectSectionNav from "../components/ProjectSectionNav";
 import { WorkspacesPanel } from "../components/Workspaces";
-import { useArtifacts } from "../api/queries";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { Button } from "../components/ds/Button";
 import { Field, Input, Select } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
-import { Row } from "../components/ds/Row";
-import { SubNav } from "../components/ds/SubNav";
+import { Row, StatusChip } from "../components/ds/Row";
+import { useAttentionForProject } from "../lib/attention";
+import { formatAge, testidOf } from "../lib/format";
+import { RunStatusChip, elapsed, shortId } from "./ProjectRuns";
 
 const MEMBER_ROLES: readonly MemberRole[] = ["maintainer", "contributor", "viewer"];
 
+/**
+ * The remote a person recognises — `github.com/example/app` — from whatever
+ * shape the git URL arrives in (https, ssh, or scp-style `git@host:path`). The
+ * full URL stays in the row's text and `title`; only the visible line is
+ * shortened, because the right column is 320px and a whole URL is unreadable
+ * there.
+ */
+export function gitRemote(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const scp = /^[^@/\s]+@([^:\s]+):(.+)$/.exec(trimmed);
+  if (scp) return `${scp[1]}/${scp[2]}`.replace(/\.git$/, "");
+  const withoutScheme = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  return withoutScheme.replace(/\.git$/, "");
+}
+
+/** Pipeline id → slug, the only name the wire gives a run. */
+function useSlugMap(): ReadonlyMap<string, string> {
+  const pipelines = usePipelines();
+  return useMemo(
+    () =>
+      new Map((pipelines.data?.pipelines ?? []).map((pipeline) => [pipeline.id, pipeline.slug])),
+    [pipelines.data],
+  );
+}
+
+/**
+ * Pending approvals plus failed/paused/waiting runs *of this project* — the
+ * inbox's aggregation read for one project, with the same dedupe: a
+ * `waiting_human` run whose gate is still open is a decision, not a stall.
+ */
+function NeedsAttention({ project }: { project: Project }) {
+  const attention = useAttentionForProject(project);
+  const slugs = useSlugMap();
+  const total = attention.decisions.length + attention.stalled.length;
+
+  return (
+    <Panel
+      id="attention"
+      title={`NEEDS ATTENTION IN THIS PROJECT · ${total}`}
+      headingId="attention-heading"
+      headingLevel={2}
+      state={total > 0 ? "waiting" : undefined}
+    >
+      <div className="space-y-[6px] p-[10px]" data-testid="project-attention">
+        {attention.pending ? <Spinner label="Loading what needs attention" /> : null}
+        {attention.unread.map(({ title }) => (
+          <p
+            key={title}
+            className="font-mono text-[10.5px] text-st-failed-tag-fg"
+            role="alert"
+            data-testid="project-attention-unread"
+          >
+            × {title}
+          </p>
+        ))}
+        {!attention.pending && total === 0 ? (
+          <p className="text-[12.5px] text-muted" data-testid="project-attention-empty">
+            Nothing needs attention in this project.
+          </p>
+        ) : null}
+        {attention.decisions.map(({ approval }) => (
+          <div
+            key={approval.id}
+            data-testid={`project-attention-decision-${testidOf(approval.id)}`}
+          >
+            <Row to={`/projects/${project.id}/runs/${approval.run_id}`}>
+              <StatusChip
+                state="waiting"
+                label="approval"
+                labelProps={{
+                  "data-testid": `project-attention-decision-status-${testidOf(approval.id)}`,
+                }}
+              />
+              <span
+                className="min-w-0 flex-1 truncate text-[12.5px] font-semibold"
+                title={approval.summary}
+              >
+                {approval.summary}
+              </span>
+              <span className="font-mono text-[10.5px] text-faint">
+                {formatAge(approval.created_at)}
+              </span>
+            </Row>
+            <p className="truncate font-mono text-[10.5px] text-muted">
+              run {shortId(approval.run_id)} · {approval.node_instance_key}
+            </p>
+          </div>
+        ))}
+        {attention.stalled.map(({ run }) => (
+          <Row
+            key={run.id}
+            to={`/projects/${project.id}/runs/${run.id}`}
+            data-testid={`project-attention-run-${testidOf(run.id)}`}
+          >
+            <RunStatusChip
+              status={run.status}
+              testid={`project-attention-run-status-${testidOf(run.id)}`}
+            />
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+              #{shortId(run.id)} {slugs.get(run.pipeline_id) ?? run.pipeline_id}
+              {run.failed_cause ? ` — ${run.failed_cause}` : ""}
+            </span>
+            <span className="font-mono text-[10.5px] text-faint">{formatAge(run.created_at)}</span>
+          </Row>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * The five newest top-level runs. Children are excluded for the same reason the
+ * run list excludes them (`pages/ProjectRuns.tsx`): they belong to their
+ * parent's tree, and a dashboard that mixed them would read as independent
+ * work. "All runs" is the one route that owns the rest.
+ */
+function RecentRuns({ project }: { project: Project }) {
+  const runs = useProjectRuns(project.id);
+  const slugs = useSlugMap();
+
+  const rows = useMemo(
+    () =>
+      (runs.data?.runs ?? [])
+        .filter((run) => run.depth === 0)
+        .slice()
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, 5),
+    [runs.data],
+  );
+
+  return (
+    <Panel
+      id="recent-runs"
+      title="RECENT RUNS"
+      headingId="recent-runs-heading"
+      headingLevel={2}
+      meta={
+        <Link
+          to={`/projects/${project.id}/runs`}
+          className="font-mono text-[10.5px] normal-case"
+          data-testid="recent-runs-all"
+        >
+          all runs →
+        </Link>
+      }
+    >
+      <div className="space-y-[6px] p-[10px]">
+        {runs.isPending ? <Spinner label="Loading runs" /> : null}
+        {runs.isError ? (
+          <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+        ) : null}
+        {runs.data && rows.length === 0 ? (
+          <p className="text-[12.5px] text-muted" data-testid="recent-runs-empty">
+            No runs yet — this project has never started a pipeline.
+          </p>
+        ) : null}
+        {rows.map((run) => (
+          <Row
+            key={run.id}
+            to={`/projects/${project.id}/runs/${run.id}`}
+            data-testid={`recent-run-${testidOf(run.id)}`}
+          >
+            <RunStatusChip status={run.status} testid={`recent-run-status-${testidOf(run.id)}`} />
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+              #{shortId(run.id)} {slugs.get(run.pipeline_id) ?? run.pipeline_id}
+            </span>
+            <span className="font-mono text-[10.5px] text-faint">{elapsed(run)}</span>
+          </Row>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * The project's repositories in the right column's narrow space: one line each,
+ * the remote shortened to what a person recognises. The add form is the old one,
+ * collapsed behind a button so the list stays a list.
+ */
 function Repositories({ project }: { project: Project }) {
   const repos = useRepositories(project.id);
   const add = useAddRepository(project.id);
+  const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [gitUrl, setGitUrl] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("");
   const isMaintainer = project.my_role === "maintainer";
+  const items = repos.data?.items ?? [];
+  // A project with no repository has nothing to scan, so the form is simply
+  // open — the first checkout is the one moment adding one is the whole point.
+  const showForm = isMaintainer && (adding || items.length === 0);
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -48,6 +251,7 @@ function Repositories({ project }: { project: Project }) {
           setName("");
           setGitUrl("");
           setDefaultBranch("");
+          setAdding(false);
         },
       },
     );
@@ -59,7 +263,22 @@ function Repositories({ project }: { project: Project }) {
       title="REPOSITORIES"
       headingId="repos-heading"
       headingLevel={2}
-      meta={repos.data ? `${repos.data.items.length} total` : undefined}
+      meta={
+        isMaintainer ? (
+          <Button
+            variant="secondary"
+            compact
+            aria-expanded={showForm}
+            aria-controls="add-repo-form"
+            data-testid="repo-add-toggle"
+            onClick={() => setAdding((current) => !current)}
+          >
+            {showForm ? "Close" : "Add repository"}
+          </Button>
+        ) : repos.data ? (
+          `${items.length} total`
+        ) : undefined
+      }
     >
       <div className="space-y-3 p-[10px]">
         {repos.isPending ? <Spinner label="Loading repositories" /> : null}
@@ -67,52 +286,52 @@ function Repositories({ project }: { project: Project }) {
           <ProblemBanner error={repos.error} fallback="Repositories could not be loaded." />
         ) : null}
         {repos.data ? (
-          repos.data.items.length === 0 ? (
-            <p className="text-[12.5px] text-muted">No repositories yet.</p>
+          items.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="repo-list-empty">
+              No repositories yet.
+            </p>
           ) : (
-            <table className="w-full border-collapse text-[12.5px]" data-testid="repo-list">
-              <caption className="sr-only">Repositories in this project</caption>
-              <thead>
-                <tr className="border-b border-line-strong text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                  <th scope="col" className="py-1 pr-4">
-                    Name
-                  </th>
-                  <th scope="col" className="py-1 pr-4">
-                    Git URL
-                  </th>
-                  <th scope="col" className="py-1">
-                    Default branch
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {repos.data.items.map((repo) => (
-                  <tr
-                    key={repo.id}
-                    data-testid={`repo-row-${repo.name}`}
-                    className="border-b border-line-soft last:border-b-0"
-                  >
-                    <td className="py-[5px] pr-4 font-semibold">{repo.name}</td>
-                    <td className="py-[5px] pr-4 font-mono text-[11px] break-all">
-                      {repo.git_url}
-                    </td>
-                    <td className="py-[5px] font-mono text-[11px]">{repo.default_branch}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="space-y-[4px]" data-testid="repo-list">
+              {items.map((repo) => (
+                <li key={repo.id} data-testid={`repo-row-${repo.name}`}>
+                  <Row>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12.5px] font-semibold">
+                        {repo.name}
+                      </span>
+                      <span className="block truncate font-mono text-[10.5px] text-muted">
+                        <span aria-hidden="true">{gitRemote(repo.git_url)}</span>
+                        <span className="sr-only">{repo.git_url}</span>
+                      </span>
+                    </span>
+                    <span className="font-mono text-[10.5px] text-faint">
+                      {repo.default_branch}
+                    </span>
+                  </Row>
+                </li>
+              ))}
+            </ul>
           )
         ) : null}
 
-        {isMaintainer ? (
-          <form onSubmit={onSubmit} aria-labelledby="add-repo-heading" className="space-y-3">
+        {!isMaintainer ? (
+          <p className="text-[12.5px] text-muted">Only project maintainers can add repositories.</p>
+        ) : null}
+
+        {showForm ? (
+          <form
+            id="add-repo-form"
+            onSubmit={onSubmit}
+            aria-labelledby="add-repo-heading"
+            className="space-y-3"
+          >
             <h3
               id="add-repo-heading"
               className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
             >
               Add a repository
             </h3>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3">
               <Field id="repo-name" label="Name">
                 <Input
                   id="repo-name"
@@ -157,26 +376,36 @@ function Repositories({ project }: { project: Project }) {
             ) : null}
             <FormError error={add.error} />
           </form>
-        ) : (
-          <p className="text-[12.5px] text-muted">Only project maintainers can add repositories.</p>
-        )}
+        ) : null}
       </div>
     </Panel>
   );
 }
 
+/**
+ * Members in the same narrow shape: a name and the role the server reports. The
+ * add-or-update form (a PUT, so one control covers both) sits behind a button.
+ */
 function Members({ project }: { project: Project }) {
   const members = useMembers(project.id);
   const users = useUsers();
   const put = usePutMember(project.id);
+  const [adding, setAdding] = useState(false);
   const [userId, setUserId] = useState("");
   const [role, setRole] = useState<MemberRole>("contributor");
   const isMaintainer = project.my_role === "maintainer";
+  const items = members.data?.items ?? [];
+  const showForm = isMaintainer && (adding || items.length === 0);
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!userId) return;
-    put.mutate({ userId, role });
+    put.mutate(
+      { userId, role },
+      {
+        onSuccess: () => setAdding(false),
+      },
+    );
   };
 
   return (
@@ -185,7 +414,22 @@ function Members({ project }: { project: Project }) {
       title="MEMBERS"
       headingId="members-heading"
       headingLevel={2}
-      meta={members.data ? `${members.data.items.length} total` : undefined}
+      meta={
+        isMaintainer ? (
+          <Button
+            variant="secondary"
+            compact
+            aria-expanded={showForm}
+            aria-controls="add-member-form"
+            data-testid="member-add-toggle"
+            onClick={() => setAdding((current) => !current)}
+          >
+            {showForm ? "Close" : "Add member"}
+          </Button>
+        ) : members.data ? (
+          `${items.length} total`
+        ) : undefined
+      }
     >
       <div className="space-y-3 p-[10px]">
         {members.isPending ? <Spinner label="Loading members" /> : null}
@@ -193,14 +437,18 @@ function Members({ project }: { project: Project }) {
           <ProblemBanner error={members.error} fallback="Members could not be loaded." />
         ) : null}
         {members.data ? (
-          members.data.items.length === 0 ? (
-            <p className="text-[12.5px] text-muted">No members yet.</p>
+          items.length === 0 ? (
+            <p className="text-[12.5px] text-muted" data-testid="member-list-empty">
+              No members yet.
+            </p>
           ) : (
             <ul className="space-y-[4px]" data-testid="member-list">
-              {members.data.items.map((member) => (
+              {items.map((member) => (
                 <li key={member.user_id} data-testid={`member-row-${member.display_name}`}>
                   <Row>
-                    <span className="text-[12.5px] font-semibold">{member.display_name}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+                      {member.display_name}
+                    </span>
                     <span className="font-mono text-[10.5px] text-muted">role: {member.role}</span>
                   </Row>
                 </li>
@@ -209,15 +457,24 @@ function Members({ project }: { project: Project }) {
           )
         ) : null}
 
-        {isMaintainer ? (
-          <form onSubmit={onSubmit} aria-labelledby="add-member-heading" className="space-y-3">
+        {!isMaintainer ? (
+          <p className="text-[12.5px] text-muted">Only project maintainers can change members.</p>
+        ) : null}
+
+        {showForm ? (
+          <form
+            id="add-member-form"
+            onSubmit={onSubmit}
+            aria-labelledby="add-member-heading"
+            className="space-y-3"
+          >
             <h3
               id="add-member-heading"
               className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
             >
               Add or update a member
             </h3>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3">
               <Field
                 id="member-user"
                 label="User"
@@ -273,15 +530,17 @@ function Members({ project }: { project: Project }) {
             </Button>
             <FormError error={put.error} />
           </form>
-        ) : (
-          <p className="text-[12.5px] text-muted">Only project maintainers can change members.</p>
-        )}
+        ) : null}
       </div>
     </Panel>
   );
 }
 
-function ProjectArtifacts({ project }: { project: Project }) {
+/**
+ * The newest five artifacts, as a pointer into the Artifacts section: the index
+ * itself (with the sensitivity caveat) is `/projects/:id/artifacts`.
+ */
+function RecentArtifacts({ project }: { project: Project }) {
   const artifacts = useArtifacts(project.id);
   if (artifacts.isPending) return <Spinner label="Loading artifacts" />;
   if (artifacts.error)
@@ -298,19 +557,7 @@ function ProjectArtifacts({ project }: { project: Project }) {
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
-  const navigate = useNavigate();
   const project = useProject(id);
-  const [activeSection, setActiveSection] = useState("#repos");
-  // `SubNav` owns its clicks (deep-link fragments without a jump-cut), so a
-  // route-shaped item navigates here: the two M4 screens live at their own
-  // routes, not in a section this page could hold.
-  const onNavigateSection = (href: string) => {
-    if (href.startsWith("/")) {
-      navigate(href);
-      return;
-    }
-    setActiveSection(href);
-  };
 
   if (project.isPending) return <Spinner label="Loading project" />;
 
@@ -342,69 +589,38 @@ export default function Project() {
   const projectData = project.data;
 
   return (
-    <div className="space-y-4">
-      <header className="space-y-1">
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
+      <ProjectSectionNav projectId={projectData.id} active="overview" />
+      <div className="min-w-0 space-y-4">
+        <header className="space-y-1">
           <h1 data-testid="project-name" className="text-title-l font-bold">
             {projectData.name}
           </h1>
-          {/* Deep links to the two screens this page cannot hold: J8's secret
-              settings and the artifact index. */}
-          <Link
-            to={`/projects/${projectData.id}/artifacts`}
-            className="font-mono text-[11px] text-accent-text hover:text-ink"
-            data-testid="project-artifacts-link"
-          >
-            Artifacts
-          </Link>
-          <Link
-            to={`/projects/${projectData.id}/settings`}
-            className="font-mono text-[11px] text-accent-text hover:text-ink"
-            data-testid="project-settings-link"
-          >
-            Settings
-          </Link>
-        </div>
-        <p className="font-mono text-[11px] text-muted">
-          <span>role: {projectData.my_role}</span>
-          <span className="px-2" aria-hidden="true">
-            ·
-          </span>
-          <span>slug: {projectData.slug}</span>
+          <p className="font-mono text-[11px] text-muted">
+            <span>role: {projectData.my_role}</span>
+            <span className="px-2" aria-hidden="true">
+              ·
+            </span>
+            <span>slug: {projectData.slug}</span>
+          </p>
           {projectData.description ? (
-            <>
-              <span className="px-2" aria-hidden="true">
-                ·
-              </span>
-              <span className="font-ui text-[12.5px]">{projectData.description}</span>
-            </>
+            <p className="max-w-[60ch] text-[12.5px] text-muted">{projectData.description}</p>
           ) : null}
-        </p>
-      </header>
-      <div className="grid items-start gap-4 md:grid-cols-[160px_minmax(0,1fr)]">
-        <SubNav
-          className="md:sticky md:top-[64px]"
-          active={activeSection}
-          onNavigate={onNavigateSection}
-          items={[
-            { href: `/projects/${id}/runs`, label: "Runs" },
-            { href: `/projects/${id}/pipelines`, label: "Pipelines" },
-            { href: "#repos", label: "Repositories" },
-            { href: "#members", label: "Members" },
-            { href: "#conversations", label: "Conversations" },
-            { href: "#workspaces", label: "Workspaces" },
-            { href: "#artifacts", label: "Artifacts" },
-            { href: "#activity", label: "Activity" },
-          ]}
-        />
-        <div className="min-w-0 space-y-4">
-          <Repositories project={projectData} />
-          <Members project={projectData} />
-          <Conversations project={projectData} />
-          <WorkspacesPanel projectId={projectData.id} />
-          <ProjectArtifacts project={projectData} />
-          <ActivityFeed projectId={projectData.id} />
+        </header>
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="min-w-0 space-y-4">
+            <NeedsAttention project={projectData} />
+            <RecentRuns project={projectData} />
+            <Conversations project={projectData} />
+          </div>
+          <div className="min-w-0 space-y-4">
+            <Repositories project={projectData} />
+            <Members project={projectData} />
+            <WorkspacesPanel projectId={projectData.id} />
+            <RecentArtifacts project={projectData} />
+          </div>
         </div>
+        <ActivityFeed projectId={projectData.id} />
       </div>
     </div>
   );
