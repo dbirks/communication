@@ -108,3 +108,53 @@ digest) differs per target because it records per-target `deployments`.
   (C14b: staged tree + completed turn with post-install digest == pin),
   per-attempt HOME (T4) unchanged, and the staged trees stay out of the
   project's tracked surface (C14b `git status`).
+
+## Git-tag sources (spike 2026-10-16)
+
+Probed inside `communication-worker:dev` (apm 0.33.0, `/opt/apm/apm`, git 2.47)
+in throwaway containers, per-run `HOME=/w/home`, anonymous https to github.com.
+Target: `mattpocock/skills`; tags from `git ls-remote --tags` (peeled):
+`v1.3.1` → `24fe0ef7737efae15c87225755e9f6f5965e4888`,
+`v1.3.0` → `984a2c023c9fb42bb6ea40c70a652284a109dc05`. Manifest used:
+
+```yaml
+name: spike-tag
+version: 0.1.0
+description: apm git-tag spike
+dependencies:
+  apm:
+    - mattpocock/skills#v1.3.1   # owner/repo#<tag|branch|SHA>; also object
+                                 # form {git:, ref:, path:, skills:}
+```
+
+| Test | claude | codex | Evidence (literal tails) |
+|------|--------|-------|--------------------------|
+| T-tag-1 install at tag | PASS | PASS | `[+] mattpocock/skills #v1.3.1 @24fe0ef7` / `27 skill(s) integrated -> .claude/skills/` (codex: `-> .agents/skills/` + empty `.codex/`); generated: `.claude/skills/*/SKILL.md`…, `apm_modules/mattpocock/skills/**`, `apm.lock.yaml`, `.gitignore` |
+| T-tag-2 lock records resolved commit | PASS | PASS | `resolved_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888` / `resolved_ref: v1.3.1` + per-file `deployed_file_hashes` + `content_hash: sha256:127ccf2b…` |
+| T-tag-3 reproducible (`--frozen` after deleting trees) | PASS | PASS | claude lock `f6bfa2d6…e33` SAME, tree `6a2e0a1c…378` SAME; codex lock `a303a649…89e` SAME, tree `a14a2ca0…cc3` SAME (`apm install --frozen --target t` → "Lockfile presence verified") |
+| T-tag-4 different tag → different digest | PASS | n/a (digest is target-specific; claude shown) | `#v1.3.0` → `@984a2c02`, lock `14edbd6c…33c` ≠ `f6bfa2d6…e33` |
+| T-tag-5 single skill from multi-skill repo | PASS | PASS (same flag) | `--skill grill-me`: apm.yml persists `skills: [grill-me]`, lock persists `skill_subset: [grill-me]`, only `.claude/skills/grill-me/**` deployed; frozen replay identical (`510cdc49…966`/`05738bc0…059a`). Virtual-subdirectory form also works: `mattpocock/skills/skills/engineering/ask-matt#v1.3.1` deploys only ask-matt; a wrong subpath fails loudly ("Subdirectory … not found", nothing committed) |
+
+Key extra observation: a `--frozen` reinstall with `--network none` succeeded
+identically — for git deps the frozen path replays the **locked commit** with
+no ref discovery (0.33 `install --help` also says `--frozen` rejects a lock
+"out of sync with apm.yml, including Git source, ref"). The lock digest was
+stable across repeat frozen installs (no in-place rewrite, unlike the A5
+local-path case).
+
+### Meaning for `internal/agent/apm/stage.go`
+
+- `sha256(apm.lock.yaml)` **does pin the tag's content**: the lock carries
+  `resolved_commit`, and the digest changes when the pinned content changes
+  (T-tag-2/3/4). So the existing digest gate is sufficient for git-tag refs.
+- **A moved tag cannot change content under the same lock with `--frozen`**
+  (proven offline): the clone is by commit, and only `apm install` without
+  `--frozen`, `--refresh`, or `apm update` re-resolves the ref. Keep
+  `--frozen` in `Stage`; a bare install would let a force-pushed tag move the
+  staged tree (and then the digest gate is what refuses the launch).
+- Caveat inherited from A5b: the pin is only load-bearing if profiles record
+  the post-install digest; a profile with no `apm_lock_digest` stages whatever
+  the tag currently points at.
+- T5: single-skill selection persists in both apm.yml and the lock, so it
+  survives frozen per-run staging; the `--skill` flag itself is not needed by
+  `Stage` (manifest-authored is enough).
