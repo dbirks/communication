@@ -403,6 +403,14 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// One preparer shared by both kinds: the run workspace is per run, so two
 	// attempts of one run must go through the same door, not two copies of it.
 	prepareRunWorkspace := newRunWorkspacePreparer(opts, pool, w.ID, log)
+	// artifact.publish needs the same byte backend M3's captures write to; the
+	// row writer behind it is fenced on the attempt triple (ADR-0016 § 9.2).
+	attemptArtifactBytes, err := artifactBytesFromEnv(false, log)
+	if err != nil {
+		stop()
+		log.Error("invalid artifact byte backend", slog.String("error", err.Error()))
+		return 2
+	}
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
@@ -420,6 +428,25 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			},
 			worker.NodeKindAgentACP: &worker.RunWorkspaceExecutor{
 				Inner:   agentTurn,
+				Prepare: prepareRunWorkspace,
+				Logger:  log,
+			},
+			// The M4 exit pipeline's final nodes (§ 4 step 9). Wrapped like the
+			// others: a workspace_path publish reads the run tree, so that tree
+			// has to exist first even when this worker only publishes.
+			// Redact is deliberately nil: the secret scan is a unit's
+			// Materialized.Redact (worker/seams.go), i.e. the values THIS UNIT
+			// materialized, and an M4 attempt publishes with no unit-scoped
+			// materialization in hand. Nil is the honest answer — the executor
+			// then reports redaction_count 0 ("nothing was materialized here")
+			// rather than a count over values it never saw (ADR-0020 D4).
+			worker.NodeKindArtifactPublish: &worker.RunWorkspaceExecutor{
+				Inner: &worker.ArtifactPublish{
+					Bytes:      attemptArtifactBytes,
+					Rows:       &postgres.AttemptArtifacts{Pool: pool},
+					Workspaces: worker.RunWorkspacePaths{WorkspaceRoot: opts.workspaceRoot},
+					Logger:     log,
+				},
 				Prepare: prepareRunWorkspace,
 				Logger:  log,
 			},
