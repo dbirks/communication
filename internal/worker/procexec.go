@@ -289,12 +289,19 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 		}
 	}
 
+	// The schema text says an empty cwd means the run workspace ROOT, but the
+	// executor deliberately defaults to scratch/: probe C-CWD requires the cwd
+	// to sit inside an rw grant, and an rw grant on layout.Work itself would
+	// let a command delete, rename or replace the granted children beneath it
+	// (rm -rf work/repos, or swap the checkout for a symlink) — a sandbox
+	// widening the per-child grants never allowed. Reconciling the schema
+	// text with this default needs an ADR; until then the default is scratch/.
 	cwd, err := p.resolveUnderWork(layout.Work, spec.cwd, layout.Scratch)
 	if err != nil { // ADR-0019 FC3's escape refusal, before anything runs.
 		return failedResult(ErrorClassInfra, p.redact(err.Error())), nil
 	}
 	if spec.extraction == "json_from_path" {
-		spec.path, err = p.resolveUnderWork(layout.Work, spec.path, "")
+		spec.path, err = p.resolveUnder(layout.Work, cwd, spec.path)
 		if err != nil {
 			return failedResult(ErrorClassInfra, "output path: "+p.redact(err.Error())), nil
 		}
@@ -879,13 +886,21 @@ func (p *ProcExec) resolveUnderWork(work, value, def string) (string, error) {
 	if value == "" {
 		return def, nil
 	}
+	return p.resolveUnder(work, work, value)
+}
+
+// resolveUnder joins a relative value under base (an absolute value is taken
+// as written) and then applies ADR-0019 FC3's containment check against the
+// run workspace root, so a path that walks out of the granted tree is refused
+// no matter which directory it started from.
+func (p *ProcExec) resolveUnder(root, base, value string) (string, error) {
 	candidate := value
 	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(work, value)
+		candidate = filepath.Join(base, value)
 	}
 	clean := filepath.Clean(candidate)
-	inner := work
-	if real, err := filepath.EvalSymlinks(work); err == nil {
+	inner := root
+	if real, err := filepath.EvalSymlinks(root); err == nil {
 		inner = real
 	}
 	check := clean

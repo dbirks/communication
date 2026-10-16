@@ -1006,3 +1006,134 @@ func TestProcExecToolReads(t *testing.T) {
 		}
 	})
 }
+
+// TestProcExecExtractPathRelativeToCwd is the live-lab regression: the twin's
+// test node runs `cargo`-style tooling that writes build/test-result.json
+// inside its own working directory, and outputExtraction.path must be read
+// from that same directory, not from the workspace root. It also pins the
+// deliberate default: with NO cwd the command runs in scratch/ (an rw grant
+// on the workspace root would let a command remove its own granted trees —
+// see the comment at the default-cwd line), and no plan ever grants
+// layout.Work itself.
+func TestProcExecExtractPathRelativeToCwd(t *testing.T) {
+	const body = `mkdir -p build && printf '{"verdict":"pass"}' > build/out.json && pwd > ran-here.txt`
+
+	t.Run("with no cwd the command runs in scratch/ and extracts from there", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		cfg := shScript(body)
+		cfg["outputExtraction"] = extraction("json_from_path", "build/out.json")
+		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want the cwd-relative build/out.json extracted", res)
+		}
+		if got := res.Outputs.(map[string]any)["verdict"]; got != "pass" {
+			t.Fatalf("outputs = %#v, want the JSON from scratch/build/out.json", res.Outputs)
+		}
+		raw, err := os.ReadFile(filepath.Join(f.layout.Scratch, "ran-here.txt"))
+		if err != nil {
+			t.Fatalf("the command ran somewhere other than scratch/: %v", err)
+		}
+		if got := strings.TrimSpace(string(raw)); got != f.layout.Scratch {
+			t.Errorf("command cwd = %s, want %s (default cwd is scratch/, not the root)", got, f.layout.Scratch)
+		}
+		if _, err := os.Stat(filepath.Join(f.layout.Work, "ran-here.txt")); err == nil {
+			t.Error("the default cwd still writes to the workspace root")
+		}
+	})
+
+	t.Run("the plan never grants the workspace root itself", func(t *testing.T) {
+		f, fake := toolReadsFixture(t)
+		res, err := f.proc.Execute(context.Background(), f.claim(shScript(`exit 0`)), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want the stand-in launch to succeed", res)
+		}
+		spec := fake.lastSpec()
+		if spec.Plan.Cwd != f.layout.Scratch {
+			t.Errorf("plan cwd = %s, want the scratch/ default %s", spec.Plan.Cwd, f.layout.Scratch)
+		}
+		for _, g := range spec.Plan.Grants {
+			if g.Path == f.layout.Work {
+				t.Fatalf("plan grants the workspace root %s (%s): an rw grant on work/ lets a command remove its own granted children", g.Path, g.Role)
+			}
+		}
+	})
+
+	t.Run("explicit cwd is honoured by the command and the extraction alike", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		checkout := filepath.Join(f.layout.Repos, "app")
+		if err := os.MkdirAll(checkout, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cfg := shScript(body)
+		cfg["cwd"] = "repos/app"
+		cfg["outputExtraction"] = extraction("json_from_path", "build/out.json")
+		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want build/out.json read under repos/app", res)
+		}
+		if got := res.Outputs.(map[string]any)["verdict"]; got != "pass" {
+			t.Fatalf("outputs = %#v, want the JSON from repos/app/build/out.json", res.Outputs)
+		}
+		if _, err := os.Stat(filepath.Join(checkout, "build", "out.json")); err != nil {
+			t.Errorf("the command wrote outside its checkout: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(f.layout.Work, "build", "out.json")); err == nil {
+			t.Error("extraction still resolved against the workspace root, not the cwd")
+		}
+	})
+
+	t.Run("a cwd-relative path still cannot escape the workspace", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		if err := os.MkdirAll(filepath.Join(f.layout.Repos, "app"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cfg := shScript(`exit 0`)
+		cfg["cwd"] = "repos/app"
+		cfg["outputExtraction"] = extraction("json_from_path", "../../../../../../etc/passwd")
+		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra ||
+			!strings.Contains(res.Detail, "escapes") {
+			t.Fatalf("res = %+v, want an infra refusal naming the FC3 escape", res)
+		}
+	})
+
+	t.Run("a cwd-relative path inside the workspace is accepted", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		checkout := filepath.Join(f.layout.Repos, "app")
+		if err := os.MkdirAll(checkout, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.layout.Scratch, "sibling.json"), []byte(`{"verdict":"approve"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := shScript(`exit 0`)
+		cfg["cwd"] = "repos/app"
+		cfg["outputExtraction"] = extraction("json_from_path", "../../scratch/sibling.json")
+		res, err := f.proc.Execute(context.Background(), f.claim(cfg), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want ../../scratch/sibling.json read as inside the granted tree", res)
+		}
+		if got := res.Outputs.(map[string]any)["verdict"]; got != "approve" {
+			t.Errorf("outputs = %#v, want the sibling JSON merged in", res.Outputs)
+		}
+	})
+}
