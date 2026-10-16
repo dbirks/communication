@@ -2094,6 +2094,478 @@ def c8():
     skip("C8", "for_each 0/25 items with bounded concurrency, child failure policies, cascade")
 
 
+# --- C9 pure logic — unit-tested offline by e2e/m4/test_c9_logic.py -----------
+# Verdict algebra for the durable gate, computed over canned ledger rows and
+# canned decide responses so the live gate only has to feed it real Postgres/API
+# output. `ok is None` is a GAP: the lab produced no row to measure. Nothing here
+# stands in for the live decide (12-test-strategy.md: a mocked green is not done).
+
+C9_GATE_KEY = "/approve"
+C9_TERMINAL_RUNS = ("completed", "failed", "cancelled", "interrupted")
+C9_REFUSAL_STATUSES = (403, 409)
+C9_SNAP_COLS = ("state", "version", "decision", "decided_by", "node_status", "node_outcome",
+                "node_error_class", "attempts", "run_status")
+
+
+def c9_gate_snapshot(text):
+    """The gate's joined ledger row (gate + its node + its run) as a dict; {} when
+    the ledger has nothing — an unreadable gate GAPs, it never reads as pending."""
+    rows = psql_rows(text, len(C9_SNAP_COLS))
+    return dict(zip(C9_SNAP_COLS, rows[0])) if rows else {}
+
+
+def c9_manifest_users(obj):
+    """seed-manifest/1's `users` block -> {name: id}; non-empty strings only. The
+    manifest is the seed's truth about who the lab identities are (README: lab
+    users and their roles), and {} means the gate has to GAP its own arms."""
+    users = obj.get("users") if isinstance(obj, dict) else None
+    if not isinstance(users, dict):
+        return {}
+    return {k: str(v).strip() for k, v in users.items() if isinstance(v, str) and str(v).strip()}
+
+
+def c9_holds_nothing_verdicts(snap, live_run, live_all, sched):
+    """§ 7.1 C9a — the gate holds NOTHING: zero attempts behind /approve, the run
+    waits, no lease anywhere for it, and the ops counters see a waiting approval
+    rather than work. live_run/live_all are ledger counts of leased+running
+    attempts for this run / for every run; sched is the parsed API body."""
+    if not snap:
+        return [("C9a the gate's ledger row is readable", None,
+                 "no approval_requests row came back — there is no gate to measure")]
+    n = count_or_none(snap.get("attempts"))
+    out = [
+        ("C9a /approve is 'waiting' with ZERO attempts behind it (§ 7.1's psql: 0)",
+         str(snap.get("node_status")) == "waiting" and n == 0,
+         f"node_status={snap.get('node_status')!r} attempts={n}"),
+        ("C9a the run is waiting_human — the wait is a row, not a process",
+         str(snap.get("run_status")) == "waiting_human",
+         f"runs.status={snap.get('run_status')!r}"),
+        ("C9a the gated run holds no leased/running attempt (no worker, no lease)",
+         count_or_none(live_run) == 0, f"leased/running attempts of this run={live_run}"),
+    ]
+    if not isinstance(sched, dict):
+        out.append(("C9a GET /api/v1/system/scheduler answers", None,
+                    "the ops route returned no JSON body — the active_attempts arm is unreadable"))
+        return out
+    waiting = count_or_none(sched.get("waiting_approvals"))
+    active = sum(_int(w.get("active_attempts")) for w in sched.get("workers") or []
+                 if isinstance(w, dict))
+    la, lr = count_or_none(live_all), count_or_none(live_run)
+    out += [
+        ("C9a the ops counters see the gate as a waiting_approval", waiting is not None
+         and waiting >= 1, f"waiting_approvals={waiting}"),
+        ("C9a no worker's active_attempts includes the gated run (the counters match the "
+         "ledger, and the run's own share of it is 0)",
+         la is not None and lr == 0 and active == la,
+         f"sum(active_attempts)={active} ledger(all runs)={la} ledger(this run)={lr}"),
+    ]
+    return out
+
+
+def c9_durable_verdicts(before, after, restarted):
+    """§ 7.1 C9's headline: the gate SURVIVES a restart because it is a row. The
+    lab-side restart is whatever c9 could honestly do (a worker container); a None
+    name means it restarted nothing — that GAPs, it never PASSes by schedule."""
+    label = ("C9a the gate survives the restart — the SAME row on the other side of it "
+             "(it holds no process)")
+    if not restarted:
+        return [(label, None, "nothing was restarted (see the GAP above the verdicts) — "
+                              "durability is asserted over a real restart, never inferred")]
+    if not before or not after:
+        return [(label, None, f"no gate row on both sides of the restart "
+                             f"(before={'yes' if before else 'no'}, "
+                             f"after={'yes' if after else 'no'})")]
+    same = all(str(before.get(k)) == str(after.get(k)) for k in C9_SNAP_COLS)
+    diff = {k: (before.get(k), after.get(k)) for k in C9_SNAP_COLS
+            if str(before.get(k)) != str(after.get(k))}
+    return [
+        (label, same, f"restarted {restarted}; row identical across it: {not diff} "
+                      f"diff={diff or '-'}"),
+        ("C9a the gate is still pending at the SAME CAS version after the restart",
+         str(after.get("state")) == "pending" and str(before.get("version"))
+         == str(after.get("version")),
+         f"state={after.get('state')!r} version {before.get('version')}->"
+         f"{after.get('version')}"),
+        ("C9a the run is still waiting_human after the restart (it was never lost, only "
+         "unattended)", str(after.get("run_status")) == "waiting_human",
+         f"runs.status={after.get('run_status')!r}"),
+        ("C9a still ZERO attempts behind the gate after the restart",
+         count_or_none(after.get("attempts")) == 0, f"attempts={after.get('attempts')!r}"),
+    ]
+
+
+def c9_denial_verdicts(label, want_reason, resp, denied, snap, version_before):
+    """§ 7.1 C9b/C9c over ONE refused decide. resp is the canned response
+    {status, ctype, body}; denied is the approval.denied reasons the journal
+    carries for this gate; snap is the gate's row afterwards. A refusal is not a
+    decision, so every arm of 'nothing moved' is its own verdict."""
+    out = []
+    if not isinstance(resp, dict) or resp.get("status") is None:
+        out.append((f"{label}: the decide call answered", None,
+                    "no HTTP response came back — the refusal cannot be read"))
+    else:
+        st = _int(resp.get("status"))
+        ctype = str(resp.get("ctype", ""))
+        out.append((f"{label}: POST /approvals/{{id}}/decide -> 403/409 problem+json",
+                    st in C9_REFUSAL_STATUSES and "problem+json" in ctype,
+                    f"observed {st} {ctype or '(no content-type)'} "
+                    f"{str(resp.get('body'))[:140]!r}"))
+    out.append((f"{label}: approval.denied{{reason:'{want_reason}'}} is journaled",
+                want_reason in (denied or []), f"observed reasons={denied or '(none)'}"))
+    if not snap:
+        out.append((f"{label}: the gate's row is readable after the refusal", None,
+                    "the approval_requests row vanished — the state arms are unmeasurable"))
+        return out
+    out += [
+        (f"{label}: the gate is STILL pending (a refusal is not a decision)",
+         str(snap.get("state")) == "pending", f"state={snap.get('state')!r}"),
+        (f"{label}: the CAS version is UNMOVED by the refusal",
+         str(snap.get("version")) == str(version_before),
+         f"version was {version_before!r}, now {snap.get('version')!r}"),
+        (f"{label}: no decision or decider was written",
+         str(snap.get("decision")) in ("-", "", "NULL")
+         and str(snap.get("decided_by")) in ("-", "", "NULL"),
+         f"decision={snap.get('decision')!r} decided_by={snap.get('decided_by')!r}"),
+        (f"{label}: the run is still waiting_human", str(snap.get("run_status"))
+         == "waiting_human", f"runs.status={snap.get('run_status')!r}"),
+    ]
+    return out
+
+
+def c9_cas_verdicts(responses, snap):
+    """§ 7.1 C9d — exactly-once decision over two canned decide responses
+    [{who, status, body}] and the gate's ledger row afterwards."""
+    out = []
+    live = [r for r in responses if isinstance(r, dict) and r.get("status") is not None]
+    wins = [r for r in live if _int(r.get("status")) == 200]
+    losses = [r for r in live if _int(r.get("status")) in C9_REFUSAL_STATUSES]
+    if len(live) < 2:
+        out.append(("C9d two decide responses came back (the race needs both deciders)",
+                    None, f"only {len(live)} of {len(responses)} deciders answered — "
+                          "exactly-once cannot be counted over one response"))
+    else:
+        out.append(("C9d EXACTLY one POST returns 200", len(wins) == 1,
+                    f"200s={len(wins)} of {len(live)} ({[r.get('who') for r in live]})"))
+    losers = [r for r in live if _int(r.get("status")) != 200]
+    if len(live) < 2 or not losers:
+        out.append(("C9d the loser gets 409 approval_already_decided", None,
+                    "no second response to read the loser's verdict from"))
+    else:
+        l = losers[0]
+        body = l.get("body") if isinstance(l.get("body"), dict) else {}
+        code = str(body.get("type", "")).rsplit("/", 1)[-1].replace("-", "_")
+        carried = "approval_already_decided" in str(l.get("body") or "")
+        out.append(("C9d the loser gets 409 approval_already_decided",
+                    _int(l.get("status")) == 409
+                    and (code == "approval_already_decided" or carried),
+                    f"{l.get('who')} saw {l.get('status')} type={code or '(none)'} "
+                    f"{str(l.get('body'))[:120]!r}"))
+        if not snap:
+            out.append(("C9d the loser's 409 carries the WINNER's decision/version", None,
+                        "the ledger row is unreadable, so there is nothing to compare against"))
+        else:
+            ap = body.get("approval") if isinstance(body.get("approval"), dict) else {}
+            out.append(("C9d the loser's 409 carries the WINNER's decision/version",
+                        str(ap.get("decision")) == str(snap.get("decision"))
+                        and str(ap.get("version")) == str(snap.get("version"))
+                        and bool(ap.get("decision")),
+                        f"409 carried {ap or '(no approval member)'}; ledger says "
+                        f"decision={snap.get('decision')!r} version={snap.get('version')!r}"))
+    if not snap:
+        out.append(("C9d ONE row, ONE decider, version=2", None,
+                    "the approval_requests row is unreadable after the race"))
+    else:
+        out.append(("C9d ONE row, ONE decider, version=2 (approvals_decided_consistency: a "
+                    "second decision is unrepresentable)",
+                    str(snap.get("state")) == "decided"
+                    and str(snap.get("decision")) in ("approved", "rejected")
+                    and str(snap.get("decided_by")) not in ("", "-", "NULL")
+                    and str(snap.get("version")) == "2",
+                    f"state={snap.get('state')} decision={snap.get('decision')} "
+                    f"decided_by={str(snap.get('decided_by'))[:8]} version={snap.get('version')}"))
+    return out
+
+
+def c9_rejection_verdicts(snap, run_st, failed_cause, skipped, skip_reasons):
+    """§ 7.1 C9e — a rejection is a BUSINESS outcome: succeeded|rejected on the
+    gate's node, the graph's `when` doing the rest, and no execution error."""
+    if not snap:
+        return [("C9e the rejected gate's node row is readable", None,
+                 "no gate row came back after the rejection")]
+    out = [
+        ("C9e /approve is succeeded with outcome='rejected' (03's "
+         "execution_status=success / business_outcome=fail applied to gates)",
+         str(snap.get("node_status")) == "succeeded"
+         and str(snap.get("node_outcome")) == "rejected",
+         f"node_status={snap.get('node_status')!r} outcome={snap.get('node_outcome')!r}"),
+        ("C9e the gate carries no execution error_class (only a TIMEOUT is execution-side)",
+         str(snap.get("node_error_class")) in ("-", "", "NULL"),
+         f"error_class={snap.get('node_error_class')!r}"),
+    ]
+    reason_of = {str(r.get("key")): str(r.get("reason")) for r in skipped or []}
+    out.append(("C9e the when-gated dependants are node.execution_skipped"
+                "{{reason:'condition_default'}} rows, not failures",
+                bool(reason_of) and all(v == "condition_default" for v in reason_of.values())
+                and any("condition_default" in str(x) for x in skip_reasons or []),
+                f"skipped={reason_of or '(none)'} journal reasons={skip_reasons or '(none)'}"))
+    out.append(("C9e the run terminates on the graph's terms — never run.failed{{"
+                "error_class:'approval_expired'}} for a decision a human made",
+                str(run_st) in C9_TERMINAL_RUNS
+                and "approval" not in str(failed_cause).lower(),
+                f"runs.status={run_st!r} failed_cause={failed_cause!r}"))
+    return out
+
+
+def c9_deadline_verdicts(snap, on_timeout, seconds_left, re_requested):
+    """C9f's readable half: the deadline is ARMED on the row (on_timeout + a future
+    deadline_at) while nothing is claimed. The EXPIRY itself needs a short-deadline
+    revision the § 7.0 seed does not author — the caller GAPs those arms."""
+    if not snap:
+        return [("C9f the gate's deadline is armed on the row", None,
+                 "no gate row to read deadline_at/on_timeout from")]
+    try:
+        left = int(float(str(seconds_left).strip()))
+    except (TypeError, ValueError):
+        left = None
+    return [
+        ("C9f the gate's deadline is ARMED (on_timeout is one of fail/expire/cancel_run, "
+         "deadline_at is in the FUTURE) while it holds no attempt",
+         str(on_timeout) in ("fail", "expire", "cancel_run") and left is not None and left > 0
+         and count_or_none(snap.get("attempts")) == 0,
+         f"on_timeout={on_timeout!r} seconds_until_deadline={left} "
+         f"attempts={snap.get('attempts')!r} re_requested={re_requested!r}"),
+    ]
+
+
+# --- C9 live helpers — the stack-facing half -----------------------------------
+
+
+def c9_manifest_json():
+    """The raw seed manifest as written (validate_manifest keeps only C1's facts);
+    {} when it is absent or unreadable — the caller GAPs what it needs."""
+    try:
+        with open(MANIFEST_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def c9_role_of(project_id, user_id):
+    """Observation only: the caller's CURRENT project role ('' = no membership)."""
+    try:
+        return psql(f"SELECT role FROM memberships WHERE project_id = '{project_id}' "
+                    f"AND user_id = '{user_id}'").strip()
+    except RuntimeError as e:
+        show("C9 membership read (psql)", str(e)[:200])
+        return ""
+
+
+def c9_gate_row(aid):
+    """The gate + its node + its run in ONE read (the § 7.1 C9a SQL, widened).
+    Observation only — every decision in C9 goes through the API."""
+    try:
+        return c9_gate_snapshot(psql(
+            f"SELECT ar.state || '|' || ar.version::text || '|' || coalesce(ar.decision,'-') "
+            f"|| '|' || coalesce(ar.decided_by::text,'-') || '|' || ne.status || '|' || "
+            f"coalesce(ne.outcome,'-') || '|' || coalesce(ne.error_class,'-') || '|' || "
+            f"(SELECT count(*) FROM attempts a WHERE a.node_execution_id = ne.id)::text "
+            f"|| '|' || r.status FROM approval_requests ar "
+            f"JOIN node_executions ne ON ne.id = ar.node_execution_id "
+            f"JOIN runs r ON r.id = ar.run_id WHERE ar.id = '{aid}'"))
+    except RuntimeError as e:
+        show("C9 gate row (psql)", str(e)[:260])
+        return {}
+
+
+def c9_live_attempts(run_id=None):
+    """leased+running attempts, this run or (with run_id=None) every run — the
+    'active_attempts does not include it' arm needs both sides to be honest."""
+    where = f"WHERE run_id = '{run_id}' AND " if run_id else "WHERE "
+    try:
+        return psql(f"SELECT count(*)::text FROM attempts {where}status IN "
+                    f"('leased','running')").strip()
+    except RuntimeError as e:
+        show("C9 live-attempt count (psql)", str(e)[:260])
+        return ""
+
+
+def c9_denied_reasons(run_id, aid, since_seq="0"):
+    """approval.denied reasons (§ 3 row 29) journaled for THIS gate after a sequence
+    mark — the correlation is by approval_id because the API's own refusal rows
+    carry it while run_id is the runtime's path. C9c must therefore read ONLY its
+    own refusal, never C9b's."""
+    try:
+        return [r[0] for r in psql_rows(psql(
+            f"SELECT coalesce(payload->>'reason','-') FROM domain_events WHERE type = "
+            f"'approval.denied' AND global_seq > {_int(since_seq)} "
+            f"AND (run_id = '{run_id}' OR payload->>'approval_id' = '{aid}') "
+            f"ORDER BY global_seq"), 1)]
+    except RuntimeError as e:
+        show("C9 approval.denied read (psql)", str(e)[:260])
+        return []
+
+
+def c9_journal_seq():
+    """The journal's high-water mark: a sequence filter, so a refusal that C9 did
+    NOT cause cannot be credited to it (nor one it caused lost)."""
+    try:
+        return psql("SELECT coalesce(max(global_seq), 0)::text FROM domain_events").strip()
+    except RuntimeError:
+        return "0"
+
+
+def c9_wait_for_gate(client, project_id, run_id, cap=900, exclude=()):
+    """Poll until the run waits at /approve with a PENDING gate row, and hand back
+    this run's approval id. This gate waits — nothing here decides it."""
+    deadline = time.time() + cap
+    while time.time() < deadline:
+        st = run_status(run_id)
+        if st in ("completed", "failed", "cancelled", "interrupted"):
+            return None
+        if st == "waiting_human":
+            r = client.get(LB, f"/api/v1/projects/{project_id}/approvals")
+            if r.status == 200:
+                for a in r.json().get("approvals", []):
+                    if (a.get("run_id") == run_id and a.get("state") == "pending"
+                            and str(a.get("id")) not in exclude):
+                        return str(a["id"])
+        time.sleep(5)
+    return None
+
+
+def c9_pending_gate(client, project_id, exclude=()):
+    """Reuse what the lab ALREADY has: the project's oldest pending gate (route 34
+    orders pending first by deadline). (run_id, approval_id) or (None, None)."""
+    try:
+        r = client.get(LB, f"/api/v1/projects/{project_id}/approvals")
+        if r.status != 200:
+            show(f"C9 GET /projects/{{id}}/approvals -> {r.status}", r.text[:200])
+            return None, None
+        for a in r.json().get("approvals", []):
+            if a.get("state") == "pending" and str(a.get("id")) not in exclude:
+                return a.get("run_id"), str(a["id"])
+    except Exception as e:  # noqa: BLE001 — the fresh-run path covers any API hiccup
+        show("C9 pending-gate probe", str(e)[:200])
+    return None, None
+
+
+def c9_acquire_gate(alice, facts, used, label):
+    """A gate to work on: reuse a pending one the lab already holds (the § 7.0 seed
+    POSTs two runs that wait until someone decides), else start a fresh twin run
+    and wait for ITS gate. (run_id, approval_id, source) — never invented ids."""
+    pid = facts["project_id"]
+    run_id, aid = c9_pending_gate(alice, pid, used)
+    if aid:
+        show(f"{label}: reusing the pending gate route 34 already lists", f"{aid} run={run_id}")
+        return run_id, aid, "a pending seeded gate"
+    tw = facts.get("twin")
+    if not isinstance(tw, dict) or not tw.get("revision_id"):
+        return None, None, "the seed manifest carries no twin revision to start a run from"
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    # Route 22 exactly as C1 posts it, but under C9's own label — the run is C9's.
+    r = alice.post(LB, f"/api/v1/projects/{pid}/runs",
+                   {"pipeline_revision_id": tw["revision_id"],
+                    "inputs": tw.get("inputs") or {},
+                    "idempotency": f"m4x-c9-{stamp}-{label.lower()}"})
+    if not check(f"{label}: POST /projects/{{id}}/runs (twin) -> 201 queued",
+                 r.status in (200, 201), f"{r.status} {r.text[:200]}"):
+        return None, None, "POST /runs refused (the line above says how)"
+    run_id = r.json().get("run_id")
+    aid = c9_wait_for_gate(alice, pid, run_id, 900, used)
+    if not aid:
+        dump_run_evidence(alice, run_id)
+        return run_id, None, (f"run {run_id} never opened a pending gate within 900s "
+                             f"(status={run_status(run_id)!r}) — evidence dumped above")
+    return run_id, aid, "a run this gate started"
+
+
+def c9_decide(client, aid, decision, version, comments):
+    """Route 36 through the API — C9's every decision (SQL never decides a gate)."""
+    r = client.post(LB, f"/api/v1/approvals/{aid}/decide",
+                    {"decision": decision, "version": version, "comments": comments})
+    try:
+        body = r.json()
+    except ValueError:
+        body = {"_raw": r.text[:300]}
+    return {"who": client.who, "status": r.status, "ctype": r.headers.get("Content-Type", ""),
+            "body": body}
+
+
+def c9_decide_race(clients, aid, decision, version):
+    """C9d's race: both maintainers click at once (separate sessions, separate CSRF
+    tokens, one gate, ONE version echoed). (live, raw) — a thread that never
+    answered stays None so the CAS verdict GAPs instead of guessing."""
+    out = [None] * len(clients)
+    fire = threading.Barrier(len(clients) + 1)
+
+    def go(i, client):
+        fire.wait(timeout=30)
+        out[i] = c9_decide(client, aid, decision, version,
+                           f"M4 exit C9d from {client.who} (docs/m4-contract.md § 7.1)")
+
+    ths = [threading.Thread(target=go, args=(i, cl)) for i, cl in enumerate(clients)]
+    for t in ths:
+        t.start()
+    fire.wait(timeout=30)                       # every thread parked, then fire together
+    for t in ths:
+        t.join(90)
+    return [r for r in out if r], out
+
+
+def c9_lab_write(sql, why):
+    """A LAB-SIDE state write with no contract route — the M3 D10 exception seed.sh
+    already uses for profiles. § 7.1 C9c's precondition is a member REMOVED from the
+    project, and the frozen 37-route table has no DELETE member: openapi's putMember
+    says so in words ("In M1 a membership is never removed"). Every DECISION in C9
+    still goes through POST /approvals/{id}/decide; SQL never decides a gate."""
+    show(f"C9 lab-side precondition — {why}", "$ " + sql)
+    try:
+        out = psql(sql)
+    except RuntimeError as e:
+        show("C9 lab-side write FAILED", str(e)[:300])
+        return ""
+    return out.strip()
+
+
+def c9_restore_member(admin, project_id, user_id, role):
+    """The finally: alice's membership goes back. API first (route PUT /members, the
+    lab's org admin holds it), SQL fallback (the same M3 D10 exception as her
+    removal) — a later gate without its maintainer would be this gate's fault."""
+    ok = False
+    if admin is not None:
+        r = admin.put(LB, f"/api/v1/projects/{project_id}/members/{user_id}", {"role": role})
+        ok = r.status == 200
+        show(f"C9 restore via PUT /projects/{{id}}/members/{{userId}} as {admin.who} "
+             f"-> {r.status}", r.text[:200])
+    else:
+        show("C9 restore — no admin session, going straight to the lab-side write",
+             "seed.sh logs admin in as the lab's bootstrap org admin (README)")
+    if not ok:
+        c9_lab_write(f"INSERT INTO memberships (project_id, user_id, role) VALUES "
+                     f"('{project_id}', '{user_id}', '{role}') ON CONFLICT (project_id, user_id) "
+                     f"DO UPDATE SET role = EXCLUDED.role", "put alice back")
+    now = c9_role_of(project_id, user_id)
+    check("C9 restore: alice is a maintainer of the project again (later gates keep their "
+          "designated approver)", now == role, f"memberships.role={now!r} want {role!r}")
+    return now
+
+
+def c9_run_to_terminal(run_id, cap, client, label):
+    """Poll a run to a terminal status WITHOUT deciding anything on the way (C1's
+    watch_run approves gates; a rejected gate must stay rejected). Returns the last
+    status seen, '' if the cap expired (with the evidence dump already printed)."""
+    deadline = time.time() + cap
+    st = ""
+    while time.time() < deadline:
+        st = run_status(run_id)
+        if st in C9_TERMINAL_RUNS:
+            return st
+        time.sleep(5)
+    dump_run_evidence(client, run_id)
+    show(f"{label}: the run never went terminal within {cap}s — last status", st or "(unreadable)")
+    return ""
+
+
 def c9():
     """C9 — durable gates, and the approver who lost access (12 case 9).
     Acceptance: while /approve waits there are ZERO attempts and no lease, run is
@@ -2104,8 +2576,312 @@ def c9():
     200, the other 409 approval_already_decided; rejection is a BUSINESS outcome
     (succeeded|rejected, dependants skipped); only a timeout is execution-side
     (approval_expired; expire re-requests exactly once); take-control pauses the run
-    and return-control resumes with the intervention as retry_context."""
-    skip("C9", "gates hold no lease; authorization is checked at decision time")
+    and return-control resumes with the intervention as retry_context.
+
+    Live shape: reuse a pending seeded gate when the lab has one (the § 7.0 seed
+    POSTs two runs that wait for a decision), else start a twin run and wait for
+    its gate. Every decision goes through route 36; SQL observes and never decides.
+    The ONE lab-side write is alice's removal/re-restore (no DELETE-member route
+    exists in the frozen 37-route table — M3 D10's exception, as in seed.sh).
+    """
+    if not CTX.get("stack_up"):
+        skip("C9", "gates hold no lease; authorization is checked at decision time")
+        return
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if facts is None:
+        gap("C9", f"needs the § 7.0 seed manifest at {MANIFEST_PATH}: with no seeded project "
+                  "there is no gate to wait on, no designated approver to refuse and no CAS to "
+                  "race (C1 seeds on demand)")
+        return
+    CTX["manifest"] = facts
+    pid = facts["project_id"]
+    users = c9_manifest_users(c9_manifest_json())
+    if not users:
+        show("C9 note — the manifest's users block is unreadable",
+             "the lab ids come from the § 7.0 seed manifest (README: alice maintainer, bob "
+             "contributor, carol+dan maintainers); C9 will resolve what it can from sessions")
+
+    alice = CTX.get("alice") or Client("alice")
+    me_doc = login(alice)
+    if me_doc is None:
+        check("C9: alice signed in", False, "no session — the gate has no designated approver")
+        return
+    CTX["alice"] = alice
+    alice_id = str(me_doc.get("id") or users.get("alice") or "")
+
+    # ---- C9a: a gate to work on, and the proof that it holds NOTHING ----
+    run_id, aid, src = c9_acquire_gate(alice, facts, set(), "C9")
+    if not aid:
+        gap("C9a a gate waiting at /approve", f"no pending gate to measure: {src}")
+        return
+    CTX["c9_run"], CTX["c9_gate"] = run_id, aid
+    snap0 = c9_gate_row(aid)
+    show(f"C9a the gate's ledger row (§ 7.1's SQL: attempts on {C9_GATE_KEY} must be 0)",
+         json.dumps(snap0) if snap0 else "(no row)")
+    live_run, live_all = c9_live_attempts(run_id), c9_live_attempts()
+    show("C9a leased/running attempts — this run / every run", f"{live_run} / {live_all}")
+    sched = None
+    r = alice.get(LB, "/api/v1/system/scheduler")
+    show(f"C9a GET /api/v1/system/scheduler -> {r.status}", r.text[:400])
+    try:
+        sched = r.json() if r.status == 200 else None
+    except ValueError:
+        sched = None
+    c5_emit(c9_holds_nothing_verdicts(snap0, live_run, live_all, sched))
+    g = alice.get(LB, f"/api/v1/approvals/{aid}")
+    try:
+        ap = g.json() if g.status == 200 else {}
+    except ValueError:
+        ap = {}
+    show(f"C9a GET /api/v1/approvals/{{id}} -> {g.status}", g.text[:400])
+    try:
+        secs_left = psql(f"SELECT extract(epoch FROM (deadline_at - now()))::text FROM "
+                         f"approval_requests WHERE id = '{aid}'").strip()
+    except RuntimeError as e:
+        secs_left = ""
+        show("C9f deadline read", str(e)[:200])
+    c5_emit(c9_deadline_verdicts(snap0, ap.get("on_timeout"), secs_left, ap.get("re_requested")))
+
+    # ---- THE durable half: restart a process and the gate is the same row ----
+    live_now = c9_live_attempts()
+    restarted = None
+    if _int(live_now) > 0:
+        gap("C9 the gate survives a restart (compose restart worker-a)",
+            f"{live_now} attempt(s) of ANOTHER run are leased/running right now — restarting "
+            "worker-a would break a live lease that is not this gate's business (§ 7.0: the "
+            "driver disturbs only what it created). C9a above shows the gate itself holds "
+            "nothing, which is the same claim from the other side")
+    else:
+        rc, out = run(COMPOSE + ["restart", "worker-a"])
+        if rc != 0:
+            gap("C9 the gate survives a restart (compose restart worker-a)",
+                f"rc={rc}: {out[-200:]} — with no restart the durability arm is unmeasurable")
+        else:
+            show("compose restart worker-a — the gate holds no worker, so nothing is interrupted",
+                 out[-240:])
+            wait_worker_row("worker-a", 120)
+            restarted = "worker-a"
+    snap1 = c9_gate_row(aid)
+    show("C9 the SAME gate row after the restart", json.dumps(snap1) if snap1 else "(no row)")
+    c5_emit(c9_durable_verdicts(snap0, snap1, restarted))
+    # The other half of "a row, not a process": both replicas read the SAME gate.
+    reps = []
+    for name, base in (("api-a", A), ("api-b", B)):
+        rr = alice.get(base, f"/api/v1/approvals/{aid}")
+        try:
+            d = rr.json() if rr.status == 200 else {}
+        except ValueError:
+            d = {}
+        reps.append({"replica": name, "status": rr.status, "state": d.get("state"),
+                     "version": d.get("version")})
+    show("C9a GET /api/v1/approvals/{id} on EACH replica (direct 18092/18093, never the LB)",
+         str(reps))
+    live_r = [x for x in reps if _int(x.get("status")) == 200]
+    if len(live_r) < 2:
+        gap("C9a both replicas read the same pending gate", f"{live_r} — a replica that does not "
+                                                            "answer is not evidence of shared state")
+    else:
+        check("C9a both API replicas read the SAME pending gate at the SAME version (no replica-"
+              "local memory is involved)",
+              len({(x["state"], x["version"]) for x in live_r}) == 1
+              and str(live_r[0]["state"]) == "pending",
+              str([(x["replica"], x["state"], x["version"]) for x in live_r]))
+
+    version = count_or_none((snap1 or {}).get("version") or ap.get("version")) or 1
+    show("C9 the CAS version every decide below must echo", str(version))
+
+    # ---- C9b: bob (contributor) cannot decide a maintainer gate ----
+    bob = CTX.get("bob") or Client("bob")
+    bob_doc = login(bob) or {}
+    CTX["bob"] = bob
+    if not bob_doc:
+        gap("C9b bob (contributor) is refused", "bob never signed in — a non-approver's refusal "
+                                                "cannot be produced without that session")
+    else:
+        bob_role = c9_role_of(pid, str(bob_doc.get("id") or users.get("bob") or ""))
+        show("C9b bob's CURRENT project role (memberships, the decision-time predicate)",
+             bob_role or "(no membership row)")
+        seq = c9_journal_seq()
+        rb = c9_decide(bob, aid, "approved", version,
+                       "M4 exit C9b: a contributor must NOT be able to decide (route 36)")
+        show(f"C9b POST /api/v1/approvals/{aid}/decide as bob -> {rb['status']}",
+             f"content-type={rb['ctype']}\n{json.dumps(rb['body'])[:400]}")
+        c5_emit(c9_denial_verdicts("C9b bob (contributor)", "not_a_designated_approver", rb,
+                                   c9_denied_reasons(run_id, aid, seq), c9_gate_row(aid), version))
+        if bob_role in ("maintainer", "contributor", "viewer"):
+            check("C9b the lab's seeded truth still says bob is a contributor (his refusal is the "
+                  "designated-approver rule, not a missing membership)",
+                  bob_role == "contributor", f"memberships.role={bob_role!r}")
+        else:
+            gap("C9b bob is a contributor in this lab", f"memberships.role={bob_role!r}")
+
+    # ---- C9c: THE case. Authorized at gate-open, removed, refused at decide. ----
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None:
+        gap("C9 restore via the API (admin holds PUT /members/{userId})",
+            "admin never signed in — alice's membership goes back by the same lab-side SQL "
+            "that removed it, which is the M3 D10 exception twice rather than the API once")
+        admin = None
+    else:
+        CTX["admin"] = admin
+    if not alice_id:
+        gap("C9c the approver who lost access",
+            "neither GET /me nor the seed manifest gave alice's user id — the membership row to "
+            "remove cannot be named (a guessed uuid is not a precondition)")
+    else:
+        seq = c9_journal_seq()
+        alice_role = c9_role_of(pid, alice_id)
+        show("C9c alice's role WHILE THE GATE IS OPEN (she is authorized now)",
+             alice_role or "(no membership row)")
+        if alice_role != "maintainer":
+            gap("C9c the approver who lost access",
+                f"memberships.role={alice_role!r}: § 7.1 C9c's precondition is a MAINTAINER "
+                "removed between gate-open and decide — C9c refuses to verdict a demotion "
+                "(that reason is 'not_a_designated_approver', i.e. C9b's)")
+        else:
+            try:
+                c9_lab_write(f"DELETE FROM memberships WHERE project_id = '{pid}' "
+                             f"AND user_id = '{alice_id}'",
+                             "remove alice from the project (no DELETE-member route exists in "
+                             "the frozen 37-route table — 12 case 9's precondition)")
+                show("C9c the membership is gone (observation, not the write)",
+                     c9_role_of(pid, alice_id) or "(no membership row — removed)")
+                rc_ = c9_decide(alice, aid, "approved", version,
+                                "M4 exit C9c: alice was authorized when the gate opened")
+                show(f"C9c POST /api/v1/approvals/{aid}/decide as REMOVED alice -> {rc_['status']}",
+                     f"content-type={rc_['ctype']}\n{json.dumps(rc_['body'])[:400]}")
+                snap_c = c9_gate_row(aid)
+                show("C9c the gate's row after the refused decide", json.dumps(snap_c) or "(no row)")
+                show("C9c the run's state after the refused decide", run_status(run_id))
+                c5_emit(c9_denial_verdicts("C9c alice (removed from the project)",
+                                           "approver_lost_access", rc_,
+                                           c9_denied_reasons(run_id, aid, seq), snap_c, version))
+            finally:
+                # Always put her back: C9d/C9e and every later gate need their approver.
+                c9_restore_member(admin, pid, alice_id, "maintainer")
+
+    # ---- C9d: two maintainers click; exactly one decision is representable ----
+    carol, dan = CTX.get("carol") or Client("carol"), CTX.get("dan") or Client("dan")
+    if login(carol) is None or login(dan) is None:
+        gap("C9d the CAS race (two maintainers, one decision)",
+            "carol and/or dan never signed in — exactly-once cannot be counted with one decider")
+    else:
+        CTX["carol"], CTX["dan"] = carol, dan
+        cur = c9_gate_row(aid)
+        if str(cur.get("state")) != "pending":
+            gap("C9d the CAS race (two maintainers, one decision)",
+                f"the gate is already {cur.get('state')!r} (a refusal above was wrongly a "
+                "decision — see the FAILs) — there is nothing left to race for")
+        else:
+            version = count_or_none(cur.get("version")) or version
+            seq = c9_journal_seq()
+            replies, raw = c9_decide_race([carol, dan], aid, "approved", version)
+            show("C9d both decides, as they came back",
+                 "\n".join(f"{r.get('who')}: {r.get('status')} {str(r.get('body'))[:200]}"
+                           for r in raw if r) or "(neither answered)")
+            snap_d = c9_gate_row(aid)
+            show("C9d approval_requests after the race (§ 7.1: one row, one decider, version=2)",
+                 json.dumps(snap_d) if snap_d else "(no row)")
+            try:
+                show("C9d the approval.decided rows for the run (§ 3 row 27 — exactly one)", psql(
+                    f"SELECT global_seq::text || ' ' || actor_kind || ' ' || "
+                    f"coalesce(payload->>'decision','-') || ' v' || coalesce(payload->>'version','-') "
+                    f"|| ' by ' || coalesce(payload->>'decided_by','-') FROM domain_events "
+                    f"WHERE run_id = '{run_id}' AND type = 'approval.decided' ORDER BY global_seq"))
+            except RuntimeError as e:
+                show("C9d approval.decided read", str(e)[:260])
+            c5_emit(c9_cas_verdicts(replies, snap_d))
+
+    # ---- C9e: a rejection is a business outcome, on its OWN run ----
+    run_e, aid_e, src_e = c9_acquire_gate(alice, facts, {aid}, "C9e")
+    if not aid_e:
+        gap("C9e rejection is a business outcome", f"no second gate to reject: {src_e}")
+    else:
+        CTX["c9_reject_run"], CTX["c9_reject_gate"] = run_e, aid_e
+        gate_e = c9_gate_row(aid_e)
+        cur_v = count_or_none(gate_e.get("version")) or 1
+        rr = c9_decide(alice, aid_e, "rejected", cur_v,
+                       "M4 exit C9e: rejected — the graph's `when` decides what that means "
+                       "(docs/m4-contract.md § 5.3)")
+        check("C9e a REJECTION is accepted by route 36 (200 — it is a decision, not a refusal)",
+              rr["status"] == 200, f"{rr['status']} {json.dumps(rr['body'])[:200]}")
+        status_e = c9_run_to_terminal(run_e, 900, alice, "C9e")
+        snap_e = c9_gate_row(aid_e)
+        show("C9e the rejected gate's row", json.dumps(snap_e) if snap_e else "(no row)")
+        try:
+            srows = psql_rows(psql(
+                f"SELECT ne.node_instance_key || '|' || coalesce(e.payload->>'reason','-') "
+                f"FROM node_executions ne LEFT JOIN domain_events e ON e.node_execution_id = ne.id "
+                f"AND e.type = 'node.execution_skipped' WHERE ne.run_id = '{run_e}' "
+                f"AND ne.status = 'skipped'"), 2)
+        except RuntimeError as e:
+            show("C9e skipped-row read (psql)", str(e)[:260])
+            srows = []
+        skipped = [dict(zip(("key", "reason"), r)) for r in srows]
+        show("C9e this run's skipped node rows", "\n".join(
+            f"{s['key']} reason={s['reason']}" for s in skipped) or "(none)")
+        try:
+            run_row = psql_rows(psql(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM "
+                                     f"runs WHERE id = '{run_e}'"), 2)
+        except RuntimeError as e:
+            show("C9e runs-row read (psql)", str(e)[:260])
+            run_row = []
+        c5_emit(c9_rejection_verdicts(snap_e, status_e or (run_row[0][0] if run_row else ""),
+                                      run_row[0][1] if run_row else "",
+                                      skipped, [s["reason"] for s in skipped]))
+        gap("C9e the dependants skipped BECAUSE of the rejection", "the seeded § 7.0 graph guards "
+            "nothing on nodes.approve.outputs.decision (its when-skipped pair is gated on "
+            "inputs.fanout), so 'rejected skips its dependants' is not producible without "
+            "publishing an extra revision — C7/C8's authored-revision pattern, not this gate's")
+
+    # ---- C9f: the timeout arms are the reconciler's, and this lab cannot arm them ----
+    gap("C9f on_timeout=fail → approval.expired → run.failed{error_class:'approval_expired'}",
+        "the § 7.0 seed authors the gate with deadlineSeconds: 86400 (pipeline.yaml), so the "
+        "deadline is a day out; arming it early needs a re-authored short-deadline revision "
+        "published as admin (C7/C8's pattern). Pulling deadline_at forward by SQL would fake "
+        "the clock, and § 7.0 keeps SQL as evidence only — the arms above are the reconciler's "
+        "§ 8 integration matrix until then")
+    for arm in ("on_timeout=expire re-requests EXACTLY ONCE (re_requested=t) and then fails",
+                "on_timeout=cancel_run cancels the run and cascades (C8g's path)"):
+        gap(f"C9f {arm}", "same precondition: no seeded revision carries that on_timeout value "
+                          "(the seed authors 'fail'), so the lab cannot produce the row to expire")
+    try:
+        tree = psql(f"SELECT node_instance_key || ' ' || status || ' loc=' || "
+                    f"execution_location || ' att=' || attempt_count::text FROM node_executions "
+                    f"WHERE run_id = '{run_id}' ORDER BY node_instance_key")
+    except RuntimeError as e:
+        tree = f"PSQL_ERROR {e}"[:200]
+    show("C9f what IS observable: the node tree while the gate waits (nothing is claimed "
+         "behind it, and the branches that could run already have)", tree or "(no node rows)")
+
+    # ---- C9g: human takeover of a RUN conversation ----
+    scope = "', '".join([r for r in (run_id, run_e) if r]) or "(none)"
+    try:
+        conv = psql_rows(psql(f"SELECT count(*)::text || '|' || count(a.turn_id)::text "
+                              f"FROM attempts a WHERE a.run_id IN ('{scope}') "
+                              f"AND a.conversation_id IS NOT NULL"), 2)
+    except RuntimeError as e:
+        conv = []
+        show("C9g conversation probe (psql)", str(e)[:260])
+    show("C9g attempts of the C9 runs that carry a conversation_id / turn_id",
+         f"{conv[0][0]} / {conv[0][1]}" if conv else "(unreadable)")
+    if conv and _int(conv[0][0]) > 0:
+        gap("C9g human takeover of a run conversation (take-control / return-control)",
+            f"a run conversation DOES exist here ({conv[0][0]} attempt rows carry one), but C9 "
+            "does not drive the takeover leg: § 5.3's CAS control transfer, the "
+            "node.attempt.interrupted{human_takeover} close and the run's "
+            "paused_reason=human_takeover are ADR-0016's machinery and need the attempt to be "
+            "LIVE mid-turn — which the gate's own waiting window is not")
+    else:
+        gap("C9g human takeover of a run conversation (take-control / return-control)",
+            "the C9 runs' attempts carry NO conversation_id (the literal above): the "
+            "deterministic twin is process.exec, and attempts_agent_turn_pair makes "
+            "conversation_id NULL with turn_id — so POST /conversations/{cid}/take-control "
+            "has no run conversation to take. The arm needs a live agent.acp turn (C1's agent "
+            "variant); M2's journey spec proves the takeover machinery itself, and C9 will "
+            "re-run this leg against the agent variant when the exit pass serializes one")
+    CTX["c9"] = {"run_id": run_id, "approval_id": aid, "restarted": restarted,
+                 "reject_run_id": run_e, "reject_approval_id": aid_e}
 
 
 def c10():
