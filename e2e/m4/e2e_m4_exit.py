@@ -8649,11 +8649,449 @@ def _playwright_stub(gid, intent):
     skip(gid, f"Playwright leg: {intent}")
 
 
+# --- shared browser helpers (ADR-0006: pnpm dlx @playwright/cli, nothing else) ---
+
+PW = ["pnpm", "dlx", "@playwright/cli"]
+PW_SHOTS = ".playwright-cli"          # gitignored; never committed
+_NODE_LINE = re.compile(r'^\s*-\s*(?P<role>[A-Za-z][\w.-]*)\s*(?P<tail>.*)$')
+_QUOTED = re.compile(r'"(?P<name>[^"]*)"')
+_REF = re.compile(r'ref=(?P<attr>[A-Za-z0-9]*e\d+)\b|(?P<bare>\bf?\d*e\d+)\b')
+_SNAP_FILE = re.compile(r'([\w./+@-]+\.(?:yml|yaml))')
+
+
+def pw(*args, session="m4exit", timeout=180):
+    """One playwright-cli command against a NAMED session — the browser persists
+    between invocations, so login cookies survive. DISPLAY is stripped: the lab
+    box has no X server and chromium runs headless. Never raises; a timeout
+    comes back as rc=124 so the caller can GAP rather than crash the gate."""
+    env = dict(COMPOSE_ENV)
+    env.pop("DISPLAY", None)
+    argv = PW + [f"-s={session}"] + [str(a) for a in args]
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, cwd=REPO_DIR,
+                           env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, f"TIMEOUT after {timeout}s: {' '.join(str(a) for a in argv[:4])}"
+    out = ((p.stdout or "") + (("\n" + p.stderr) if p.stderr else "")).strip()
+    return p.returncode, out
+
+
+def pw_first(text):
+    """First line of a psql/CLI blob — an EMPTY result stays empty rather than
+    IndexError-ing the gate (a missing row is a verdict, not a crash)."""
+    return ((text or "").split("\n")[0] or "").strip()
+
+
+def pw_snapshot_nodes(text):
+    """Parse playwright-cli's snapshot YAML into [{role,name,text,ref}]. Refs are
+    matched by role + accessible name only — never by coordinates, and never by
+    data-testid (the snapshot does not carry attributes). An unquoted tail after
+    the role (`- paragraph: some copy`) lands in `text`, which is what the
+    wording assertions read. A line with no ref (a plain text node) is kept with
+    ref=None rather than dropped: its words still carry verdicts."""
+    nodes = []
+    for line in (text or "").splitlines():
+        m = _NODE_LINE.match(line)
+        if not m:
+            continue
+        role, tail = m.group("role"), m.group("tail")
+        if role.startswith("#") or not tail:
+            continue
+        name = ""
+        q = _QUOTED.search(tail)
+        if q:
+            name = q.group("name")
+        attrs = tail[tail.find("["):]
+        rest = tail[q.end():] if q else tail
+        rest = re.sub(r'\[[^\]]*\]', " ", rest).strip()
+        if rest.startswith(":"):
+            rest = rest[1:].strip()
+        ref = None
+        r = _REF.search(attrs or tail)
+        if r:
+            ref = r.group("attr") or r.group("bare")
+        nodes.append({"role": role, "name": name, "text": rest, "ref": ref})
+    return nodes
+
+
+def pw_text(node):
+    return f"{node.get('name') or ''} {node.get('text') or ''}".strip()
+
+
+def pw_snapshot(session="m4exit", timeout=180):
+    """snapshot -> (rc, text). When the CLI spills the full tree to a file (it
+    prints the path), that file is the source of truth — inline output is
+    truncated and a truncated tree silently loses assertions."""
+    rc, out = pw("snapshot", session=session, timeout=timeout)
+    m = _SNAP_FILE.search(out or "")
+    if m:
+        path = m.group(1)
+        full = path if os.path.isabs(path) else os.path.join(REPO_DIR, path)
+        try:
+            with open(full, encoding="utf-8") as f:
+                body = f.read()
+            if body.strip():
+                return rc, body
+        except OSError:
+            pass
+    return rc, out
+
+
+def pw_refs(nodes, role=None, name=None, contains=None, ref_role_name=True):
+    """Refs for role + accessible-name (exact) or a substring over name+text."""
+    hits = []
+    for n in nodes:
+        if role and n["role"] != role:
+            continue
+        if name is not None and n["name"] != name:
+            continue
+        if contains is not None and contains.lower() not in pw_text(n).lower():
+            continue
+        if n["ref"]:
+            hits.append(n["ref"])
+    return hits
+
+
+def pw_shot(name, session="m4exit"):
+    """Screenshot into the gitignored .playwright-cli/; returns the path for the
+    evidence line (AGENTS.md: never committed)."""
+    fname = f"{PW_SHOTS}/{name}.png"      # the CLI writes relative to the repo root
+    pw("screenshot", f"--filename={fname}", session=session, timeout=120)
+    return os.path.join(PW_SHOTS, fname)
+
+
+def pw_login(user, path="/projects", session="m4exit"):
+    """The lab's mock IdP (same form /tmp/.../ui_check.sh drives by hand): open
+    /auth/login?return_to=..., fill the username textbox, press Enter. True once
+    the page behind the login renders."""
+    url = f"{LB}/auth/login?return_to={urllib.parse.quote(path, safe='/')}"
+    pw("open", url, session=session, timeout=120)
+    rc, snap = pw_snapshot(session=session)
+    nodes = pw_snapshot_nodes(snap)
+    refs = (pw_refs(nodes, role="textbox", name="username")
+            or pw_refs(nodes, role="textbox", contains="username")
+            or [n["ref"] for n in nodes if n["role"] == "textbox" and n["ref"]][:1])
+    if not refs:
+        check(f"{user}: mock IdP form rendered (browser)", False, f"{rc} {snap[:200]}")
+        return False
+    pw("fill", refs[0], user, session=session)
+    # the mock IdP submits on its button; Enter is only the fallback. Refs carry
+    # the frame prefix (f4e14) and change with every snapshot, so the button is
+    # looked up again after the fill.
+    rc2, snap2 = pw_snapshot(session=session)
+    btn = pw_refs(pw_snapshot_nodes(snap2), role="button", name="Sign-in")
+    if btn:
+        pw("click", btn[0], session=session)
+    else:
+        pw("press", "Enter", session=session)
+    time.sleep(3)
+    rc, snap = pw_snapshot(session=session)
+    ok = "not signed in" not in snap and (user in snap or "sign out" in snap.lower())
+    check(f"{user}: signed in through the browser", bool(ok), f"rc={rc}")
+    return bool(ok)
+
+
+def pw_goto(path_or_url, session="m4exit"):
+    return pw("goto", path_or_url if path_or_url.startswith("http") else LB + path_or_url,
+              session=session)
+
+
+def pw_poll(nodes_pred, session="m4exit", tries=8, delay=2):
+    """snapshot → pred(nodes) → retry. The app renders its shell first and
+    streams the panels in, so ONE snapshot is a race rather than a measurement;
+    the caller's predicate says which evidence actually landed."""
+    nodes = []
+    for _ in range(tries):
+        rc, snap = pw_snapshot(session=session)
+        nodes = pw_snapshot_nodes(snap)
+        if nodes_pred(nodes):
+            return True, nodes
+        time.sleep(delay)
+    return False, nodes
+
+
+def pw_click(role=None, name=None, contains=None, session="m4exit", label=""):
+    """snapshot -> ref by role+name -> click. (ok, ref, detail)."""
+    rc, snap = pw_snapshot(session=session)
+    refs = pw_refs(pw_snapshot_nodes(snap), role=role, name=name, contains=contains)
+    if not refs:
+        return False, None, f"no {role or 'element'} {name or contains!r} in the snapshot"
+    rc2, out = pw("click", refs[0], session=session)
+    time.sleep(1)
+    return rc2 == 0, refs[0], out[:200]
+
+
+# --- pure W-leg helpers (e2e/m4/test_w_logic.py) -----------------------------
+
+
+def _find_inputs(node):
+    """The first {inputs: {properties: …}} object anywhere in a revision document
+    (a canonical document, a wrapped pipeline list — the shape is the store's)."""
+    if isinstance(node, dict):
+        ins = node.get("inputs")
+        if isinstance(ins, dict) and isinstance(ins.get("properties"), dict):
+            return ins
+        for value in node.values():
+            got = _find_inputs(value)
+            if got:
+                return got
+    elif isinstance(node, list):
+        for value in node:
+            got = _find_inputs(value)
+            if got:
+                return got
+    return None
+
+
+def w_input_expectations(doc):
+    """spec.inputs (from the PINNED revision document) -> the field list the form
+    must render: name, required-ness, declared default, type. The whole W1 claim
+    is that these come from the schema and not from a hard-coded component, so
+    the expectation is built here, straight off the document, and never by hand."""
+    ins = _find_inputs(doc)
+    if not ins:
+        return []
+    props = ins.get("properties") if isinstance(ins.get("properties"), dict) else {}
+    required = set(ins.get("required") or [])
+    out = []
+    for name, schema in props.items():
+        schema = schema if isinstance(schema, dict) else {}
+        out.append({"name": name, "required": name in required,
+                    "default": schema.get("default"), "type": schema.get("type"),
+                    "kind": schema.get("format") or schema.get("type") or "string",
+                    "label": f"{name} *" if name in required else name,
+                    "testid": f"new-run-input-{name}"})
+    return out
+
+
+def w_form_field_verdicts(expected, nodes):
+    """One verdict per declared input: rendered, with the required marker the
+    schema asked for. Field controls are matched by accessible name (`goal *`),
+    which is where the schema's required-ness surfaces in the a11y tree."""
+    verdicts = []
+    for field in expected:
+        want = field["label"]
+        hits = [n for n in nodes if n["role"] in ("textbox", "combobox", "checkbox",
+                                                  "spinbutton", "listbox", "slider")
+                and (n["name"] == want or n["name"] == field["name"]
+                     or (n["name"] or "").startswith(field["name"] + " ")
+                     or (n["name"] or "").startswith(field["name"] + "*"))]
+        if not hits:
+            verdicts.append((f"field {field['name']}", False,
+                             f"no control named {want!r} in the snapshot — the form is "
+                             "not generated from spec.inputs"))
+            continue
+        n = hits[0]
+        star = "*" in (n["name"] or "")
+        if field["required"] and not star:
+            verdicts.append((f"field {field['name']}", False,
+                             f"required by spec.inputs but rendered without the marker "
+                             f"(accessible name {n['name']!r})"))
+            continue
+        verdicts.append((f"field {field['name']}", True,
+                         f"role={n['role']} name={n['name']!r} "
+                         f"required={field['required']}"))
+    return verdicts
+
+
+# § 6.2's counter set as the Ops page renders it (term + the JSON member).
+W7_COUNTERS = [
+    ("attempts queued", ["attempts_by_status", "queued"]),
+    ("attempts leased", ["attempts_by_status", "leased"]),
+    ("attempts running", ["attempts_by_status", "running"]),
+    ("lease expirations", ["lease_expirations"]),
+    ("max retry loop depth", ["max_retry_loop_depth"]),
+    ("oldest queued age", ["oldest_queued_age_seconds"]),
+    ("waiting approvals", ["waiting_approvals"]),
+    ("queued unbindable runs", ["queued_unbindable_runs"]),
+]
+
+
+def w_json_path(obj, path):
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return None
+        cur = cur[key]
+    return cur
+
+
+def w_counter_verdicts(status, nodes):
+    """Every § 6.2 counter must RENDER (a 0 is a value, its absence is not), plus
+    the per-worker active_attempts/capacity pair. [] for a status the caller
+    could not read — that is the GAP path, never a PASS by schedule."""
+    if not isinstance(status, dict) or not status:
+        return []
+    text = [pw_text(n) for n in nodes]
+    verdicts = []
+    for term, path in W7_COUNTERS:
+        value = w_json_path(status, path)
+        shown = any(term.lower() in t.lower() for t in text)
+        verdicts.append((f"counter {term}", shown,
+                         f"API value={value!r} rendered={shown}"))
+    for worker in status.get("workers") or []:
+        name = worker.get("name") or worker.get("id") or "?"
+        pair = f"{worker.get('active_attempts')} / {worker.get('capacity')}"
+        shown = any(name.lower() in t.lower() for t in text)
+        verdicts.append((f"worker {name} load", shown,
+                         f"active_attempts/capacity={pair} row rendered={shown}"))
+    return verdicts
+
+
+def w_approval_verdicts(approver, decided, nodes, roles="", deadline=True, artifacts=True):
+    """W3's card assertions. `approver` is which identity is looking, so the
+    labels are unique per observer; the button is only ever a PASS for the
+    designated side, and bob's arm FAILS the moment a button appears."""
+    who = "alice" if approver else "bob"
+    text = [pw_text(n) for n in nodes]
+    joined = "\n".join(text).lower()
+    has_button = any(n["role"] == "button" and (n["name"] or "").strip().lower() == "approve"
+                     for n in nodes)
+    v = [(f"{who}: approver roles shown", bool(roles) and roles.split(",")[0].strip().lower()
+          in joined, f"approver_roles={roles!r} rendered in the card")]
+    if deadline:
+        v.append((f"{who}: deadline countdown shown",
+                  any("deadline" in t for t in text) and any(
+                      k in joined for k in ("left", "remaining", "·", "+", "/")),
+                  "the deadline row plus a countdown"))
+    if artifacts:
+        v.append((f"{who}: artifact/evidence links shown",
+                  any("artifact" in t or "evidence" in t for t in text),
+                  "the gate's evidence list"))
+    if decided:
+        v.append((f"{who}: card reads decided",
+                  any(k in joined for k in ("approved", "decided", "rejected")),
+                  "state chip + decision copy"))
+    elif approver:
+        v.append((f"{who}: Approve button present", has_button,
+                  "the designated approver posts /decide from the card"))
+    else:
+        v.append((f"{who}: no Approve button", not has_button,
+                  "C9b's 403 has a UI arm — the button must not render for a "
+                  "non-approver"))
+        v.append((f"{who}: not-a-designated-approver line",
+                  "not a designated approver" in joined,
+                  "the copy names who does hold the gate"))
+    return v
+
+
 def w1():
     """W1 — the New-run form renders from spec.inputs (goal textarea, repository
     select, acceptance-criteria with default); the POST carries the Idempotency-Key
     header; a second Submit click creates ONE run."""
-    _playwright_stub("W1", "run form generated from spec.inputs; idempotent submit")
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W1 all arms", "no seed manifest (§ 7.0 seed has not run) — there is no "
+                           "project, revision or pinned spec.inputs to render a form from")
+        return
+    project_id, revision_id = mf(facts, "project_id"), mf(facts, "revision_id", "agent")
+    client = Client("alice")
+    if not login(client):
+        gap("W1 all arms", "alice could not sign in over the API, so the pinned "
+                           "revision document cannot be read")
+        return
+    rev = client.get(LB, f"/api/v1/revisions/{revision_id}")
+    expected = w_input_expectations(rev.json().get("canonical_document")) \
+        if rev.status == 200 else []
+    show(f"GET /api/v1/revisions/{revision_id}",
+         f"{rev.status} spec.inputs declares {[f['name'] for f in expected]}")
+    if not check("W1 pinned revision declares spec.inputs", bool(expected),
+                 f"{rev.status} {rev.text[:160]}"):
+        gap("W1 form-generation arms", "the revision document carries no input schema "
+                                       "to compare the rendered form against")
+        return
+
+    before = psql("SELECT extract(epoch from now())::text")
+    if not pw_login("alice", f"/projects/{project_id}/runs", session="m4w1"):
+        gap("W1 browser arms", "the mock IdP form did not sign alice in in the browser")
+        return
+    pw_goto(f"/projects/{project_id}/runs", session="m4w1")
+    opened, ref, detail = pw_click(role="button", name="New run", session="m4w1",
+                                   label="new-run panel")
+    check("W1 New run opens the form", opened, f"ref={ref} {detail}")
+    # the form renders the FIRST assignment's revision; pin the arm to the exit
+    # pipeline whose spec.inputs the manifest named, so the comparison is honest
+    rc, snap = pw_snapshot(session="m4w1")
+    arefs = pw_refs(pw_snapshot_nodes(snap), role="combobox", name="Pipeline assignment")
+    picked = ""
+    if arefs:
+        rc2, opts = pw("snapshot", arefs[0], session="m4w1")
+        want_opt = next((ln for ln in (opts or "").splitlines()
+                         if FD_SLUG in ln and "deterministic" not in ln), "")
+        label = _QUOTED.search(want_opt)
+        if label:
+            picked = label.group("name")
+            pw("select", arefs[0], picked, session="m4w1")
+    show("New run: pipeline assignment selected", picked or "(left on the default)")
+    landed, nodes = pw_poll(lambda ns: bool(pw_refs(ns, name="goal *")), session="m4w1",
+                           tries=8, delay=2)
+    shot = pw_shot("w1-form", session="m4w1")
+    for label, ok, detail in w_form_field_verdicts(expected, nodes):
+        check(f"W1 {label}", ok, f"{detail} [{shot}]")
+    # the declared default arrives in the control, not in a hard-coded placeholder
+    ac = next((f for f in expected if f["name"] == "acceptance_criteria"), None)
+    if ac and ac["default"]:
+        hit = pw_refs(nodes, name=ac["label"]) or pw_refs(nodes, name=ac["name"])
+        rc2, val = pw("eval", f"el => el.value", hit[0], session="m4w1") if hit else (1, "")
+        check("W1 declared default prefilled", str(ac["default"]) in (val or ""),
+              f"default={ac['default']!r} observed={val!r} [{shot}]")
+    else:
+        gap("W1 declared default prefilled",
+            "the pinned revision declares no default to render")
+    # repository select carries the project's repositories, from the API
+    repo_nodes = [n for n in nodes if n["role"] == "option"]
+    repos = client.get(LB, f"/api/v1/projects/{project_id}/repos")
+    repo_json = repos.json() if repos.status == 200 else {}
+    rows = repo_json.get("items") or repo_json.get("repos") or repo_json.get("repositories") or []
+    want = sorted({r.get("name") for r in rows if isinstance(r, dict) and r.get("name")})
+    shown = sorted({n["name"] for n in repo_nodes if n["name"] and n["name"] != "— choose —"})
+    if want:
+        check("W1 repository select lists the project's repositories",
+              all(any(w in s for s in shown) for w in want),
+              f"api={want} rendered={shown} [{shot}]")
+    else:
+        gap("W1 repository select lists the project's repositories",
+            f"GET repositories -> {repos.status}; nothing to compare the select against")
+
+    # fill it and double-click Submit: one run, whatever the click count
+    def fill(name, value):
+        rc, s = pw_snapshot(session="m4w1")
+        ns = pw_snapshot_nodes(s)
+        refs = pw_refs(ns, name=name) or pw_refs(ns, contains=name)
+        if not refs:
+            return False, f"no control for {name!r}"
+        rc2, out = pw("fill", refs[0], value, session="m4w1")
+        return rc2 == 0, out[:120]
+
+    for f in expected:
+        if f["name"] == "goal":
+            fill(f["label"], "W1 exit leg: prove the form is schema-driven")
+        elif f["name"] == "repository":
+            rc, s = pw_snapshot(session="m4w1")
+            refs = pw_refs(pw_snapshot_nodes(s), name=f["label"])
+            if refs:
+                pw("select", refs[0], (want or ["app"])[0], session="m4w1")
+        elif f["name"] == "acceptance_criteria" and f["required"]:
+            fill(f["label"], "hello.py adds")
+    shot2 = pw_shot("w1-filled", session="m4w1")
+    ok_submit, sref, _ = pw_click(role="button", name="Start run", session="m4w1")
+    check("W1 Submit is enabled once the required inputs are filled", ok_submit,
+          f"ref={sref} [{shot2}]")
+    if sref:
+        pw("click", sref, session="m4w1", timeout=30)   # the second click, same key
+    time.sleep(6)
+    shot3 = pw_shot("w1-after-submit", session="m4w1")
+    created = psql(f"SELECT count(*) FROM runs WHERE project_id = '{project_id}' "
+                   f"AND created_at > to_timestamp({before}::double precision)")
+    keys = psql(f"SELECT count(*) FROM run_idempotency_keys WHERE project_id = "
+                f"'{project_id}' AND created_at > to_timestamp({before}::double precision)")
+    check("W1 a double click on Submit creates ONE run", created.strip() == "1",
+          f"runs created after the submit={created}, idempotency keys recorded={keys} "
+          f"(the X-Idempotency-Key the form generated is what the second POST reused) "
+          f"[{shot3}]")
+    check("W1 the POST carried an idempotency key the server stored", keys.strip() == "1",
+          f"run_idempotency_keys rows for this submit={keys} [{shot3}]")
+    pw("close", session="m4w1")
 
 
 def w2():
@@ -8667,7 +9105,126 @@ def w3():
     """W3 — gate card: approver roles, deadline countdown, artifact links;
     alice's Approve posts /decide; bob sees the card with NO button and the
     'not a designated approver' line (C9b's UI arm)."""
-    _playwright_stub("W3", "gate card: designated approver sees a button, others don't")
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W3 all arms", "no seed manifest (§ 7.0 seed has not run) — no project, "
+                           "no pinned revision, therefore no gate to render")
+        return
+    project_id = mf(facts, "project_id")
+    client = Client("alice")
+    if not login(client):
+        gap("W3 all arms", "alice could not sign in over the API")
+        return
+    body = {"pipeline_revision_id": mf(facts, "revision_id", "agent"),
+            "inputs": mf(facts, "inputs", "agent", default={}),
+            "idempotency": f"m4-exit-w3-{int(time.time())}"}
+    r = client.post(LB, f"/api/v1/projects/{project_id}/runs", body)
+    if not check("W3 a run is started so its gate can be reached",
+                 r.status in (200, 201), f"{r.status} {r.text[:160]}"):
+        gap("W3 gate-card arms", "no run could be created — there is no gate to render")
+        return
+    run_id = r.json().get("run_id")
+    CTX["w3_run_id"] = run_id
+    aid, cap = "", time.time() + 420
+    while time.time() < cap:
+        aid = pw_first(psql(f"SELECT id FROM approval_requests WHERE run_id = '{run_id}' "
+                            "AND state = 'pending' LIMIT 1"))
+        if aid or run_status(run_id) in ("failed", "cancelled", "completed"):
+            break
+        time.sleep(5)
+    if not aid:
+        dump_run_evidence(client, run_id)
+        gap("W3 gate-card arms",
+            f"run {run_id} never parked on a pending approval (status "
+            f"{run_status(run_id)!r} after 420s) — the card has nothing to render from")
+        return
+    check("W3 the run parks on a pending gate", True, f"approval {aid}")
+    gate = client.get(LB, f"/api/v1/approvals/{aid}").json()
+    roles = ", ".join(gate.get("approver_roles") or [])
+    check("W3 the API exposes the gate's approver roles and deadline",
+          bool(roles) and bool(gate.get("deadline_at")),
+          f"approver_roles={gate.get('approver_roles')} deadline_at={gate.get('deadline_at')}")
+    # the inspector renders the card INSIDE the selected node's detail panel, and
+    # that panel waits for an attempt to exist; a control-plane gate has none, so
+    # the card can be unreachable for a reason the report must name rather than a
+    # vague "no Approve button" FAIL.
+    ne = gate.get("node_execution_id") or ""
+    nd = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{ne}") if ne else None
+    atts = (nd.json().get("attempts") or []) if nd and nd.status == 200 else []
+    show(f"GET /api/v1/runs/{run_id}/nodes/{ne}",
+         f"{nd.status if nd else 'no node_execution_id'} "
+         f"attempt_count={((nd.json().get('attempt_count') if nd and nd.status == 200 else None))} "
+         f"attempts={len(atts)}")
+    check("W3 the gate's node detail offers the attempt the card is rendered behind",
+          bool(atts),
+          f"the run inspector keeps its detail panel on \"Reading attempts…\" until the "
+          f"node execution reports an attempt, and this control-plane gate reports "
+          f"attempt_count=0 — the gate card therefore never mounts (C9b's UI arm has "
+          f"nothing to render into)")
+
+    def card(session):
+        """The inspector renders its shell before the gate panel lands, so the card
+        is polled for; if it does not arrive, the gate's own node row is clicked
+        (what an operator does) and the poll resumes."""
+        def has(ns):
+            return any(pw_text(n).lower().startswith("approver roles")
+                       or "not a designated approver" in pw_text(n).lower()
+                       or (n["role"] == "button"
+                           and (n["name"] or "").strip().lower() == "approve") for n in ns)
+        found, ns = pw_poll(has, session=session, tries=4, delay=2)
+        if not found:
+            # the gate card lives in the detail panel of the SELECTED node
+            # execution, so select the waiting gate row, not the definition node.
+            for needle in ("waiting approve", "approve human.approval", "approve"):
+                if pw_click(role="button", contains=needle, session=session)[0]:
+                    break
+            found, ns = pw_poll(has, session=session, tries=6, delay=2)
+        return ns, ""
+
+    # bob first: while the gate is still PENDING, so "no button" can only be the
+    # authorization rule, not a decided card.
+    if pw_login("bob", f"/projects/{project_id}/runs/{run_id}", session="m4w3b"):
+        pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w3b")
+        time.sleep(3)
+        nodes, _ = card("m4w3b")
+        shot = pw_shot("w3-bob-card", session="m4w3b")
+        for label, ok, detail in w_approval_verdicts(False, False, nodes, roles=roles,
+                                                    deadline=bool(gate.get("deadline_at"))):
+            check(f"W3 {label}", ok, f"{detail} [{shot}]")
+        pw("close", session="m4w3b")
+    else:
+        gap("W3 bob's arm", "bob could not sign in through the browser")
+
+    if not pw_login("alice", f"/projects/{project_id}/runs/{run_id}", session="m4w3"):
+        gap("W3 alice's arm", "alice could not sign in through the browser")
+        return
+    pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w3")
+    time.sleep(3)
+    nodes, _ = card("m4w3")
+    shot = pw_shot("w3-alice-card", session="m4w3")
+    for label, ok, detail in w_approval_verdicts(True, False, nodes, roles=roles,
+                                                 deadline=bool(gate.get("deadline_at"))):
+        check(f"W3 {label}", ok, f"{detail} [{shot}]")
+    clicked, bref, detail = pw_click(role="button", name="Approve", session="m4w3")
+    if not check("W3 alice's Approve button is on the card", clicked,
+                 f"ref={bref} {detail} [{shot}]"):
+        gap("W3 the decision round-trip", "the button never appeared, so /decide "
+                                         "was never posted from the browser")
+        return
+    time.sleep(6)
+    state = pw_first(psql(f"SELECT state FROM approval_requests WHERE id = '{aid}'"))
+    check("W3 the click posts /approvals/{id}/decide", state == "approved",
+          f"approval_requests.state={state!r}")
+    nodes2, _ = card("m4w3")
+    shot2 = pw_shot("w3-alice-decided", session="m4w3")
+    for label, ok, det in w_approval_verdicts(True, True, nodes2, roles=roles,
+                                             deadline=bool(gate.get("deadline_at"))):
+        check(f"W3 {label}", ok, f"{det} [{shot2}]")
+    try:
+        client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+    except Exception as e:  # noqa: BLE001 — housekeeping only, never a verdict
+        show("cancel the W3 run", str(e)[:120])
+    pw("close", session="m4w3")
 
 
 def w4():
@@ -8697,7 +9254,107 @@ def w7():
     expirations, retry loops, queued_unbindable_runs, per-worker
     active_attempts/capacity); an offline worker makes the page say the run is
     'waiting for its worker' in those words."""
-    _playwright_stub("W7", "scheduler counters and the honest waiting-for-worker state")
+    facts = CTX.get("manifest") or load_manifest_facts()
+    if not facts:
+        gap("W7 all arms", "no seed manifest (§ 7.0 seed has not run)")
+        return
+    project_id = mf(facts, "project_id")
+    client = Client("alice")
+    if not login(client):
+        gap("W7 all arms", "alice could not sign in over the API")
+        return
+    rs = client.get(LB, "/api/v1/system/scheduler")
+    status = rs.json() if rs.status == 200 else {}
+    show("GET /api/v1/system/scheduler", f"{rs.status} {rs.text[:400]}")
+    if not check("W7 the scheduler read answers for the Ops page", rs.status == 200,
+                 f"{rs.status} {rs.text[:160]}"):
+        gap("W7 counter arms", "the § 6.2 read itself failed — the page can render nothing")
+        return
+    if not pw_login("alice", "/ops", session="m4w7"):
+        gap("W7 all browser arms", "alice could not sign in through the browser")
+        return
+    pw_goto("/ops", session="m4w7")
+    landed, nodes = pw_poll(lambda ns: any(pw_text(n).lower().startswith("attempts queued")
+                                          for n in ns), session="m4w7", tries=8, delay=2)
+    shot = pw_shot("w7-ops", session="m4w7")
+    check("W7 the Ops page renders its SCHEDULER panel", landed,
+          f"attempts queued row seen={landed} [{shot}]")
+    for label, ok, detail in w_counter_verdicts(status, nodes):
+        check(f"W7 {label}", ok, f"{detail} [{shot}]")
+
+    # the honest sentence: one worker stopped, one run waiting for exactly it.
+    stopped = False
+    try:
+        rc1, out1 = run(COMPOSE + ["stop", "worker-b"])
+        stopped = rc1 == 0
+        show(f"docker compose -p communication-m4 stop worker-b (rc={rc1})", out1[-300:])
+        gone = ""
+        for _ in range(24):
+            gone = pw_first(psql("SELECT status FROM workers WHERE name LIKE '%worker-b'"))
+            if gone and gone != "online":
+                break
+            time.sleep(5)
+        check("W7 worker-b is offline in the workers table", gone != "online",
+              f"workers.status={gone!r}")
+        body = {"pipeline_revision_id": mf(facts, "revision_id", "agent"),
+                "inputs": mf(facts, "inputs", "agent", default={}),
+                "idempotency": f"m4-exit-w7-{int(time.time())}"}
+        r = client.post(LB, f"/api/v1/projects/{project_id}/runs", body)
+        run_id = r.json().get("run_id") if r.status in (200, 201) else None
+        if not check("W7 a run is queued while its worker is offline",
+                     bool(run_id), f"{r.status} {r.text[:140]}"):
+            gap("W7 waiting-for-its-worker arm", "no queued run to bind to the offline worker")
+            return
+        # root_kind='repos' is worker-b's OWN volume digest (the workspaces root is
+        # the same digest on both workers, which would let worker-a claim the run).
+        psql("UPDATE runs SET worker_affinity = w.id, worker_volume_id = v.volume_id "
+             "FROM workers w, worker_volumes v WHERE w.name LIKE '%worker-b' "
+             f"AND v.worker_id = w.id AND v.root_kind = 'repos' AND runs.id = '{run_id}'")
+        CTX["w7_run_id"] = run_id
+        unbindable = -1
+        for _ in range(6):
+            got = client.get(LB, "/api/v1/system/scheduler")
+            unbindable = (got.json().get("queued_unbindable_runs") or 0) if got.status == 200 else -1
+            if unbindable >= 1:
+                status = got.json()
+                break
+            time.sleep(5)
+        st_now = run_status(run_id)
+        check("W7 queued_unbindable_runs counts the affinity-bound run",
+              unbindable >= 1, f"counter={unbindable}, run status={st_now!r} (the "
+                               "affinity is written with SQL because the public API "
+                               "reports it as a placement view only)")
+        if unbindable < 1:
+            gap("W7 waiting-for-its-worker arm",
+                f"the run left 'queued' (status {st_now!r}) or the counter stayed "
+                f"{unbindable} — the state the sentence describes never existed")
+        else:
+            pw_goto("/ops", session="m4w7")
+            landed2, nodes2 = pw_poll(lambda ns: "waiting for its worker"
+                                      in "\n".join(pw_text(n) for n in ns).lower(),
+                                      session="m4w7", tries=5, delay=2)
+            shot2 = pw_shot("w7-waiting-worker", session="m4w7")
+            joined = "\n".join(pw_text(n) for n in nodes2).lower()
+            check("W7 the Ops page says 'waiting for its worker' in those words",
+                  "waiting for its worker" in joined,
+                  f"queued_unbindable_runs={unbindable} [{shot2}]")
+            for label, ok, detail in w_counter_verdicts(status, nodes2):
+                check(f"W7 rerender {label}", ok, f"{detail} [{shot2}]")
+            try:
+                client.post(LB, f"/api/v1/runs/{run_id}/cancel", {})
+            except Exception:  # noqa: BLE001 — housekeeping
+                pass
+    finally:
+        if stopped:
+            rc3, out3 = run(COMPOSE + ["start", "worker-b"])
+            show(f"docker compose -p communication-m4 start worker-b (rc={rc3})", out3[-300:])
+            for _ in range(24):
+                back = pw_first(psql("SELECT status FROM workers WHERE name LIKE '%worker-b'"))
+                if back == "online":
+                    break
+                time.sleep(5)
+            check("W7 worker-b restored to online", back == "online", f"status={back!r}")
+    pw("close", session="m4w7")
 
 
 def w8():
