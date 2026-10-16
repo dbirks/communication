@@ -21,6 +21,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/api/auth"
 	"github.com/dbirks/communication/internal/artifacts"
+	"github.com/dbirks/communication/internal/integrations/github"
 	"github.com/dbirks/communication/internal/pipelines/runtime"
 	"github.com/dbirks/communication/internal/secrets"
 	"github.com/dbirks/communication/internal/store/postgres"
@@ -417,6 +418,7 @@ func serveWorkerHeartbeat(getenv func(string) string) (time.Duration, error) {
 //	                          /api/v1/me, /api/v1/users (and the cookie
 //	                          session Authenticator)
 //	api.RegisterProjects      projects, repositories, members
+//	api.RegisterGitHubIssues  GET /api/v1/projects/{projectId}/repos/{repositoryId}/issues (ADR-0031)
 //	api.RegisterEvents        GET /api/v1/projects/{projectId}/events (SSE)
 //	api.RegisterConversations agent profiles, conversations, messages, control,
 //	                          cancel, permission decisions and
@@ -463,6 +465,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	handler := api.New(d.API, d.Readiness, authenticator, d.UI)
 	authenticator.Register(handler)
 	api.RegisterProjects(handler, apiProjects)
+	api.RegisterGitHubIssues(handler, apiProjects, github.New())
 	api.RegisterEvents(handler, apiProjects,
 		postgres.APIEventStream{S: projectStore, Wakes: wakes})
 	api.RegisterConversations(handler, apiConversations, apiConversations,

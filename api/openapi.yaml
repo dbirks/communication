@@ -533,6 +533,83 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/projects/{projectId}/repos/{repositoryId}/issues:
+    get:
+      operationId: listRepositoryIssues
+      tags: [repositories]
+      summary: List GitHub issues for one repository (read-only, anonymous upstream)
+      description: >
+        Answers "what is in the tracker right now" so a run can be started
+        from an issue (ADR-0031, wishlist W3's read half). The adapter calls
+        `GET https://api.github.com/repos/{owner}/{repo}/issues` with no
+        token, so only public repositories answer; `git_url` is parsed into
+        `owner/repo` and pull requests are filtered out. Nothing is stored —
+        GitHub owns the issue data (`07`), and this route is not a trigger:
+        webhooks/invocations and the `integration.query` node kind need the
+        M6 tables and dedupe. `viewer` or above; bodies are truncated to
+        4000 bytes with `body_truncated` saying so. A non-GitHub remote is
+        `422 not_a_github_repository`; upstream failures are `502` with a
+        `github_repository_not_found`, `github_rate_limited` or
+        `github_upstream_error` code.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/RepositoryId"
+        - name: state
+          in: query
+          required: false
+          description: GitHub issue state filter; defaults to `open`.
+          schema:
+            type: string
+            enum: [open, closed, all]
+            default: open
+        - name: label
+          in: query
+          required: false
+          description: GitHub label name to filter by (exact match, upstream semantics).
+          schema:
+            type: string
+            maxLength: 100
+      responses:
+        "200":
+          description: Issues as GitHub answered moments ago; never cached (`no-store`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GitHubIssueList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `state` is not one of open/closed/all, or the repository's
+            `git_url` is not a GitHub remote (`code: not_a_github_repository`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: >
+            GitHub refused or failed the anonymous read: an upstream `404`
+            (private or missing repository) becomes
+            `github_repository_not_found`, a spent anonymous budget becomes
+            `github_rate_limited`, anything else (including the 10 s
+            timeout) becomes `github_upstream_error`.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/projects/{projectId}/members:
     get:
       operationId: listMembers
@@ -4478,6 +4555,66 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Repository"
+    GitHubIssue:
+      title: GitHubIssue
+      type: object
+      required: [number, title, body, labels, html_url, state, updated_at, body_truncated]
+      properties:
+        number:
+          type: integer
+          description: GitHub issue number, unique within the repository.
+        title:
+          type: string
+        body:
+          type: string
+          description: >
+            Issue body as GitHub returned it, truncated to 4000 bytes on a
+            rune boundary; `body_truncated` says whether that happened. May
+            be empty.
+        labels:
+          type: array
+          items:
+            type: string
+          description: Label names; GitHub's own `labels[].name`.
+        html_url:
+          type: string
+          format: uri
+          description: GitHub's URL for the issue — the link to open the tracker entry.
+        state:
+          type: string
+          enum: [open, closed]
+        updated_at:
+          type: string
+          format: date-time
+          description: GitHub's `updated_at`, not our read time.
+        body_truncated:
+          type: boolean
+    GitHubIssueList:
+      title: GitHubIssueList
+      type: object
+      required: [repository, state, items]
+      properties:
+        repository:
+          type: string
+          description: >
+            The `owner/repo` the upstream call addressed, echoed so a client
+            can confirm which remote a `git_url` resolved to.
+          example: octo/widgets
+        state:
+          type: string
+          enum: [open, closed, all]
+          description: The effective state filter (defaults to `open`).
+        label:
+          type: string
+          description: The label filter, when one was given.
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GitHubIssue"
+          description: >
+            Pull requests are excluded (GitHub's issues endpoint returns
+            them); at most `per_page=50` newest-first issues per call, no
+            pagination surface yet.
     MemberList:
       title: MemberList
       type: object
