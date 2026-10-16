@@ -20,6 +20,8 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
+import { Field, Input, Textarea } from "../ds/Field";
+import { KindChip } from "./KindChip";
 import { StatusChip } from "../ds/Row";
 import { DRAFT_STATE, stateOf } from "../ds/states";
 import { ProblemBanner, Spinner } from "../Feedback";
@@ -34,6 +36,14 @@ import {
 } from "../../api/pipelines";
 import type { PipelineRevision } from "../../api/types";
 import type { ValidateBody } from "../../lib/pipeline/contract";
+import {
+  editableFields,
+  listNodes,
+  NO_EDITABLE_FIELDS,
+  readScalar,
+  writeScalar,
+  type NodeField,
+} from "../../lib/pipeline/nodeFields";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
 
 export interface DraftEditorProps {
@@ -76,6 +86,13 @@ export function DraftEditor({
   // Server verdict only — `valid` is the sole state publish accepts (§ 2.2).
   const canPublish = status === "valid";
   const verdict = fresh ?? viewValidate(draft.data?.validation ?? null);
+
+  /** A form edit is a keystroke elsewhere in the document: same rules. */
+  function applyText(next: string) {
+    setText(next);
+    setDirty(true);
+    setFresh(null);
+  }
 
   async function save(): Promise<boolean> {
     if (!draft.data) return false;
@@ -148,77 +165,80 @@ export function DraftEditor({
       }
       className={className}
     >
-      <div className="space-y-[10px] p-[10px]">
-        <textarea
-          value={text}
-          onChange={(event) => {
-            setText(event.target.value);
-            setDirty(true);
-            // The verdict describes the bytes it ran against, not this edit.
-            setFresh(null);
-          }}
-          spellCheck={false}
-          aria-label="Pipeline draft YAML"
-          rows={16}
-          className="w-full resize-y rounded-[3px] border border-line bg-surface p-[8px] font-mono text-[11.5px] leading-[17px]"
-          data-testid="draft-editor-input"
-        />
-        <div className="flex flex-wrap items-center gap-[8px]">
-          <Button
-            variant="primary"
-            onClick={save}
-            disabled={busy || !dirty}
-            data-testid="draft-editor-save"
-          >
-            {put.isPending ? "Saving…" : "Save"}
-          </Button>
-          <Button onClick={runValidate} disabled={busy} data-testid="draft-editor-validate">
-            {validate.isPending ? "Validating…" : dirty ? "Validate (saves first)" : "Validate"}
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={runPublish}
-            disabled={busy || !canPublish}
-            data-testid="draft-editor-publish"
-            title={
-              canPublish
-                ? "publish this draft as a new immutable revision"
-                : `the server reports this draft as “${status}” — publish needs a valid draft`
-            }
-          >
-            {publish.isPending ? "Publishing…" : "Publish"}
-          </Button>
-          <StatusChip
-            state={stateOf(DRAFT_STATE[status])}
-            label={
-              verdict === null
-                ? "never validated"
-                : verdict.valid
-                  ? "valid"
-                  : `${verdict.errors.length} findings`
-            }
-            labelProps={{ "data-testid": "draft-editor-verdict" }}
+      <div className="grid items-start gap-[10px] p-[10px] xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="min-w-0 space-y-[10px]">
+          <textarea
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setDirty(true);
+              // The verdict describes the bytes it ran against, not this edit.
+              setFresh(null);
+            }}
+            spellCheck={false}
+            aria-label="Pipeline draft YAML"
+            rows={16}
+            className="w-full resize-y rounded-[3px] border border-line bg-surface p-[8px] font-mono text-[11.5px] leading-[17px]"
+            data-testid="draft-editor-input"
           />
-          {dirty ? (
-            <span className="font-mono text-[10.5px] text-faint" data-testid="draft-editor-dirty">
-              unsaved changes
-            </span>
+          <div className="flex flex-wrap items-center gap-[8px]">
+            <Button
+              variant="primary"
+              onClick={save}
+              disabled={busy || !dirty}
+              data-testid="draft-editor-save"
+            >
+              {put.isPending ? "Saving…" : "Save"}
+            </Button>
+            <Button onClick={runValidate} disabled={busy} data-testid="draft-editor-validate">
+              {validate.isPending ? "Validating…" : dirty ? "Validate (saves first)" : "Validate"}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={runPublish}
+              disabled={busy || !canPublish}
+              data-testid="draft-editor-publish"
+              title={
+                canPublish
+                  ? "publish this draft as a new immutable revision"
+                  : `the server reports this draft as “${status}” — publish needs a valid draft`
+              }
+            >
+              {publish.isPending ? "Publishing…" : "Publish"}
+            </Button>
+            <StatusChip
+              state={stateOf(DRAFT_STATE[status])}
+              label={
+                verdict === null
+                  ? "never validated"
+                  : verdict.valid
+                    ? "valid"
+                    : `${verdict.errors.length} findings`
+              }
+              labelProps={{ "data-testid": "draft-editor-verdict" }}
+            />
+            {dirty ? (
+              <span className="font-mono text-[10.5px] text-faint" data-testid="draft-editor-dirty">
+                unsaved changes
+              </span>
+            ) : null}
+          </div>
+          {failure ? (
+            <ProblemBanner
+              error={failure}
+              fallback="The draft write did not land."
+              testid="draft-editor-failure"
+            />
           ) : null}
+          {published ? (
+            <p className="font-mono text-[10.5px] text-muted" data-testid="draft-editor-published">
+              published r{published.revision_number} · {published.version_label} ·{" "}
+              {shortDigest(published.revision_digest)} — immutable from here on
+            </p>
+          ) : null}
+          {verdict ? <Verdict verdict={verdict} /> : null}
         </div>
-        {failure ? (
-          <ProblemBanner
-            error={failure}
-            fallback="The draft write did not land."
-            testid="draft-editor-failure"
-          />
-        ) : null}
-        {published ? (
-          <p className="font-mono text-[10.5px] text-muted" data-testid="draft-editor-published">
-            published r{published.revision_number} · {published.version_label} ·{" "}
-            {shortDigest(published.revision_digest)} — immutable from here on
-          </p>
-        ) : null}
-        {verdict ? <Verdict verdict={verdict} /> : null}
+        <NodeForm text={text} onApply={applyText} />
       </div>
     </Panel>
   );
@@ -243,5 +263,154 @@ function Verdict({ verdict }: { verdict: ValidateBody }) {
         {verdict.notes.length > 0 ? verdict.notes.join(" · ") : "no notes from the server"}
       </p>
     </div>
+  );
+}
+
+/**
+ * The per-step form (W4): pick a node, edit the fields its `kind` has. The
+ * table of fields is fixed (`nodeFields.editableFields`) and every edit is a
+ * one-line rewrite of the textarea's own text, so the form never holds a
+ * version of the document Save would not send — and a kind with no fields says
+ * so instead of pretending to edit YAML it cannot parse.
+ */
+function NodeForm({
+  text,
+  onApply,
+}: {
+  /** The textarea's current text — the only copy of the document. */
+  text: string;
+  onApply: (next: string) => void;
+}) {
+  const nodes = listNodes(text);
+  const [picked, setPicked] = useState<number | null>(null);
+  // The picker follows the text: delete `/spec/nodes/2` in the textarea and the
+  // pane moves to a node that is still there rather than showing a ghost.
+  const current = nodes.find((node) => node.index === picked) ?? nodes[0] ?? null;
+  const fields = editableFields(current === null ? null : current.kind);
+
+  return (
+    <div
+      className="space-y-[8px] rounded-[3px] border border-line bg-paper p-[8px]"
+      data-testid="draft-editor-node-form"
+    >
+      <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+        Node fields
+      </p>
+      {nodes.length === 0 ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="draft-editor-no-nodes">
+          this draft has no nodes to edit
+        </p>
+      ) : (
+        <div
+          className="flex flex-wrap gap-[4px]"
+          role="group"
+          aria-label="Draft nodes"
+          data-testid="draft-editor-nodes"
+        >
+          {nodes.map((node) => (
+            <Button
+              key={node.index}
+              compact
+              variant={current?.index === node.index ? "secondary" : "secondaryPlain"}
+              aria-pressed={current?.index === node.index}
+              onClick={() => setPicked(node.index)}
+              data-testid={`draft-editor-node-${node.index}`}
+            >
+              {node.id ?? `node ${node.index}`}
+            </Button>
+          ))}
+        </div>
+      )}
+      {current === null ? null : (
+        <div className="space-y-[8px]">
+          <div data-testid="draft-editor-node-kind">
+            {current.kind === null ? (
+              <span className="font-mono text-[10.5px] text-faint">no kind</span>
+            ) : (
+              <KindChip kind={current.kind} />
+            )}
+          </div>
+          {fields.length === 0 ? (
+            // The honest answer for the seven kinds this form does not know:
+            // the textarea is the editor, and saying so beats an empty form.
+            <p className="font-mono text-[11px] text-faint" data-testid="draft-editor-no-fields">
+              {NO_EDITABLE_FIELDS}
+            </p>
+          ) : (
+            fields.map((field) => (
+              <NodeFieldRow
+                key={field.key}
+                field={field}
+                nodeIndex={current.index}
+                text={text}
+                onApply={onApply}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One labelled field: read its scalar, write back only that key's value. */
+function NodeFieldRow({
+  field,
+  nodeIndex,
+  text,
+  onApply,
+}: {
+  field: NodeField;
+  nodeIndex: number;
+  text: string;
+  onApply: (next: string) => void;
+}) {
+  const pointer = field.pointer(nodeIndex);
+  const value = readScalar(text, pointer);
+  // Null is not an empty field: the key is absent (or holds structure), and the
+  // answer is to say where to add it rather than invent a line.
+  const missing = value === null;
+  const id = `draft-node-${nodeIndex}-${field.key}`;
+
+  function edit(next: string) {
+    const result = writeScalar(text, pointer, next, field.type);
+    if (!result.missing) onApply(result.text);
+  }
+
+  return (
+    <Field
+      id={id}
+      label={field.label}
+      hint={
+        missing ? (
+          <p className="font-mono text-[11px] text-faint" data-testid="draft-editor-field-missing">
+            not in this document — add it in the YAML at{" "}
+            <span className="text-ink-2">{pointer}</span>
+          </p>
+        ) : (
+          <p className="font-mono text-[10px] text-faint">{pointer}</p>
+        )
+      }
+    >
+      {field.type === "textarea" ? (
+        <Textarea
+          id={id}
+          rows={6}
+          value={value ?? ""}
+          disabled={missing}
+          onChange={(event) => edit(event.target.value)}
+          data-testid={`draft-editor-field-${field.key}`}
+        />
+      ) : (
+        <Input
+          id={id}
+          type={field.type === "number" ? "number" : "text"}
+          value={value ?? ""}
+          disabled={missing}
+          onChange={(event) => edit(event.target.value)}
+          data-testid={`draft-editor-field-${field.key}`}
+        />
+      )}
+    </Field>
   );
 }
