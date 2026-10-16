@@ -250,18 +250,15 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		n.InFlight++
 		st.Attempts = append(st.Attempts, a)
 		_ = prog
-		if d.Mode == WorkspaceRestore {
-			// The worker performs the unsandboxed reset BEFORE launching
-			// anything; the event is the engine stating the difference
-			// (contract § 3 row 8).
-			st.event(at, pevents.ActorKindSystem, pevents.Record{
-				Type: pevents.TypeRunCheckpointRestored, RunID: runID, NodeExecutionID: n.ID,
-				Payload: pevents.RunCheckpointRestored{
-					ProjectID: st.Run.ProjectID, RunID: runID,
-					NodeInstanceKey: n.InstanceKey, FromCommit: d.FromCommit,
-				},
-			})
-		}
+		// No run.checkpoint_restored here, deliberately: queueing a
+		// restore_checkpoint retry resets nothing. ADR-0023 § 6 and contract
+		// § 3 row 8 make that event the WORKER's alone — the proof the
+		// unsandboxed reset actually happened before anything launched. The
+		// policy a target was queued under is stated in run.retried's
+		// workspace_policies below; a restore that never ran (the C6d
+		// refusal, a worker that never claims) then leaves zero
+		// checkpoint_restored rows, which is what "nothing was destroyed"
+		// is supposed to look like in the journal.
 	}
 	if st.Run.Status == RunCancelled || st.Run.Status == RunFailed || st.Run.Status == RunInterrupted {
 		if err := st.Run.ReopenForRetry(); err != nil {
@@ -273,7 +270,7 @@ func (ms *MemStore) Retry(runID, requestedBy string, targets []string, inputOver
 		Payload: pevents.RunRetried{
 			ProjectID: st.Run.ProjectID, RunID: runID, RequestedBy: requestedBy,
 			Targets: sortedTargetKeys(rows), InputNames: sortedInputNames(inputOverrides),
-			WorkspacePolicies: map[string]string{},
+			WorkspacePolicies: workspacePoliciesByTarget(decisions),
 		},
 	})
 	if ms.Adv != nil {
@@ -310,6 +307,19 @@ func checkGateRetry(st *State, n *NodeExecution) error {
 	}
 	return ErrGateNotRearmable{ApprovalID: row.ID, NodeInstanceKey: n.InstanceKey,
 		State: row.State, Reason: reason}
+}
+
+// workspacePoliciesByTarget states, inside run.retried's own payload
+// (contract § 3 row 6's workspace_policies{}), which workspace policy each
+// retried target was QUEUED under. It is the queue-time fact the removed
+// queue-time run.checkpoint_restored used to fake: "a restore was requested"
+// belongs to the retry event; "a restore happened" belongs to the worker.
+func workspacePoliciesByTarget(ds []RetryDecision) map[string]string {
+	out := make(map[string]string, len(ds))
+	for _, d := range ds {
+		out[d.NodeInstanceKey] = d.Mode
+	}
+	return out
 }
 
 func decisionFor(ds []RetryDecision, key string) (RetryDecision, bool) {

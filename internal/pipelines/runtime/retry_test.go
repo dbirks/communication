@@ -98,6 +98,9 @@ func TestCheckpointUnavailableRefusesRestore(t *testing.T) {
 		t.Errorf("refusal names %s, want /b", unavail.NodeInstanceKey)
 	}
 	st = dv.state()
+	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 0 {
+		t.Errorf("run.checkpoint_restored = %d after the refusal, want 0 — a refused restore reset nothing and the queue must never journal the event (C6d)", c)
+	}
 	if before != strings.Join(st.RunKeys(), ",")+"|"+st.Run.Status {
 		t.Fatal("a checkpoint_unavailable refusal must reset nothing (validate-then-mutate)")
 	}
@@ -138,6 +141,11 @@ func TestContinueWorkspaceRetryAcceptsAnUncapturedBoundary(t *testing.T) {
 	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 0 {
 		t.Errorf("run.checkpoint_restored = %d, want 0 — a continue retry resets nothing (C5f)", c)
 	}
+	rt := lastPayload(t, st, pevents.TypeRunRetried)
+	if wp, _ := rt["workspace_policies"].(map[string]any); wp["/b"] != runtime.WorkspaceContinue {
+		t.Errorf("run.retried.workspace_policies = %v, want /b under %s — the queue states the policy, the worker states the reset",
+			rt["workspace_policies"], runtime.WorkspaceContinue)
+	}
 	b := st.Node("/b")
 	atts := st.AttemptsFor(b.ID)
 	if len(atts) != 2 {
@@ -158,8 +166,14 @@ func TestContinueWorkspaceRetryAcceptsAnUncapturedBoundary(t *testing.T) {
 }
 
 // TestRestoreCheckpointFromCommittedBoundary: the same retry with a committed
-// boundary succeeds, and run.checkpoint_restored — the event that "proves
-// the engine knows the difference" (contract § 3 row 8) — is written.
+// boundary succeeds, and the queue states the policy it reopened the target
+// under — inside run.retried's workspace_policies (contract § 3 row 6).
+// run.checkpoint_restored (row 8, "the event that proves the engine knows
+// the difference") is NOT written here: ADR-0023 § 6 assigns it to the
+// worker that performs the unsandboxed reset, and this package has no worker
+// to perform one. Queueing a restore resets nothing, so the journal must
+// stay silent until a real reset happens (the worker's own emission is
+// proven by internal/worker and cmd/communication restore tests).
 func TestRestoreCheckpointFromCommittedBoundary(t *testing.T) {
 	plan := loadPlan(t, "testdata/restore.yaml")
 	dv := newDriver(t, plan, map[string]any{"goal": "g"})
@@ -181,17 +195,22 @@ func TestRestoreCheckpointFromCommittedBoundary(t *testing.T) {
 		t.Fatalf("retry: %v", err)
 	}
 	st = dv.state()
-	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 1 {
-		t.Errorf("run.checkpoint_restored = %d, want 1 under restore_checkpoint (and 0 under continue — C5f)", c)
+	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 0 {
+		t.Errorf("run.checkpoint_restored = %d, want 0 at queue time — only the worker that resets journals it (C6); a queued-but-never-restored retry must not fake the proof", c)
 	}
-	rv := lastPayload(t, st, pevents.TypeRunCheckpointRestored)
-	if rv["from_commit"] != "head-/a" {
-		t.Errorf("from_commit = %v, want the committed boundary head", rv["from_commit"])
+	rt := lastPayload(t, st, pevents.TypeRunRetried)
+	wp, _ := rt["workspace_policies"].(map[string]any)
+	if wp["/b"] != runtime.WorkspaceRestore {
+		t.Errorf("run.retried.workspace_policies = %v, want /b under %s — the queue-time fact the old checkpoint_restored emission invented",
+			rt["workspace_policies"], runtime.WorkspaceRestore)
 	}
 	dv.pump(30)
 	st = dv.state()
 	if st.Run.Status != runtime.RunCompleted {
 		t.Fatalf("run = %s/%s", st.Run.Status, st.Run.FailedCause)
+	}
+	if c := countType(st, pevents.TypeRunCheckpointRestored); c != 0 {
+		t.Errorf("run.checkpoint_restored = %d after the run completed, want 0 — no worker reset in this harness, so nothing may journal it (C6)", c)
 	}
 }
 
