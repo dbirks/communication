@@ -32,7 +32,7 @@ type Config struct {
 	// APIKey is the bearer token. It only ever reaches a request header: never
 	// a log line, a detail string or an answer.
 	APIKey string
-	// Model is the deployment's LLM collective (default qwen3-8-flash-next).
+	// Model is the deployment's LLM collective (default qwen3-8-27b).
 	Model string
 	// HTTPClient is injectable for tests; nil uses a client with no own
 	// timeout (per-request deadline).

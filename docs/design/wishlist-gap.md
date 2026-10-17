@@ -408,7 +408,7 @@ on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6f
    question→answer→link click is a click, not code.
 4. **One model on the chat allowlist.** `COMMUNICATION_MODEL_CHAT_MODELS` on the
    cluster worker allowlists one model (`docs/home-cluster.md` names
-   `qwen3-8-flash-next`); anything else is refused at execution
+   `qwen3-8-27b`); anything else is refused at execution
    (`internal/worker/modelchat.go:308`).
 5. **No resource limits.** The Operations page says so openly (C13f, `09411da`);
    its copy has never been rendered in a gate (GAP, `docs/m4-exit-status.md`).

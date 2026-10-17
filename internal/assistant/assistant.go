@@ -34,7 +34,7 @@ const (
 	// MaxPromptBytes caps what this broker will ever put on the wire.
 	MaxPromptBytes = 64 << 10
 	// DefaultModel is the deployment's LLM collective (ADR-0034).
-	DefaultModel = "qwen3-8-flash-next"
+	DefaultModel = "qwen3-8-27b"
 )
 
 // Errors the ask route maps onto problem+json statuses.

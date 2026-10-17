@@ -31,7 +31,7 @@ spec:
     kind: model.chat
     dependsOn: [survey]
     config:
-      model: qwen3-8-flash-next
+      model: qwen3-8-27b
       messages:
       - role: system
         content: Reply with a numbered plan and nothing else.

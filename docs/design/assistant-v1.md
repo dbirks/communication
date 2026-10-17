@@ -46,7 +46,7 @@ sanitized client-side (ADR-0020's viewer rules, never the app's origin). A denie
 The registry is a closed map built at process start: no client-supplied tool, no write method, no store
 handle that is not handed a `Caller`. Caps: ≤4 tool calls per turn, ≤64 items and ≤2 KB per result
 (`truncated: true` when cut), ≤1 round of follow-up tool calls, one egress request body per turn. The model
-is the deployment's LLM collective (`COMMUNICATION_ASSISTANT_MODEL=qwen3-8-flash-next`); tool results go back
+is the deployment's LLM collective (`COMMUNICATION_ASSISTANT_MODEL=qwen3-8-27b`); tool results go back
 as a **user**-role message inside a fixed envelope, never as system instructions.
 
 ## UI — the palette gains an Ask row

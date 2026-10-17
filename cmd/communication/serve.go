@@ -132,7 +132,7 @@ environment:
                                         logged, never placed in a prompt; the _FILE
                                         form is trimmed of trailing whitespace.
   COMMUNICATION_ASSISTANT_MODEL         model name to send (default
-                                        "qwen3-8-flash-next", ADR-0034).
+                                        "qwen3-8-27b", ADR-0034).
 
 migrations are applied separately: communication migrate up
 `

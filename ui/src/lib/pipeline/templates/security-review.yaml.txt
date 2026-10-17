@@ -108,7 +108,7 @@ spec:
       backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
       retriableErrors: [infra, timeout, invalid_output]
     config:
-      model: qwen3-8-flash-next
+      model: qwen3-8-27b
       temperature: 0.1
       maxTokens: 4000
       messages:

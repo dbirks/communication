@@ -43,7 +43,7 @@ spec:
 const modelChatBody = `  - id: plan
     kind: model.chat
     config:
-      model: qwen3-8-flash-next
+      model: qwen3-8-27b
       messages:
       - role: system
         content: Reply with a plan.

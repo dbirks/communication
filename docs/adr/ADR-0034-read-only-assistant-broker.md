@@ -89,3 +89,5 @@ Design only — nothing here is claimed as working. Required before Accept statu
 Rollout: unset = feature absent. Rollback: unmount `RegisterAssistant` and unset the vars — no schema, no
 stored transcript, nothing to migrate. Supersede: persistence + write tools + the `08` event protocol need
 their own ADR, which must decide the transcript table.
+
+Note 2026-10-17: the deployment default moved to `qwen3-8-27b` (flash-next outages); the decision is unchanged.

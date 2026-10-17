@@ -62,7 +62,7 @@ func TestResolveNodeConfigInterpolatesModelChatMessages(t *testing.T) {
 	if st.Run.ExpressionEvaluations == 0 {
 		t.Error("claim-time resolution was not counted in runs.expression_evaluations")
 	}
-	if model, _ := cfg["model"].(string); model != "qwen3-8-flash-next" {
+	if model, _ := cfg["model"].(string); model != "qwen3-8-27b" {
 		t.Errorf("config.model = %v", cfg["model"])
 	}
 }

@@ -33,7 +33,7 @@ import (
 
 // sampleModel is the only model the home-cluster worker's
 // COMMUNICATION_MODEL_CHAT_MODELS allowlist is documented to serve.
-const sampleModel = "qwen3-8-flash-next"
+const sampleModel = "qwen3-8-27b"
 
 type sample struct {
 	path  string

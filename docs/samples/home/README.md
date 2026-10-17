@@ -2,7 +2,7 @@
 
 Two pipelines that run on the home-cluster worker **without ACP credentials**: no
 `agent.acp` node. The thinking step is `model.chat` — one OpenAI-compatible completion
-the worker issues against the operator's endpoint (`qwen3-8-flash-next`, the only model
+the worker issues against the operator's endpoint (`qwen3-8-27b`, the only model
 in the worker's `COMMUNICATION_MODEL_CHAT_MODELS` allowlist).
 
 | File | What it does |

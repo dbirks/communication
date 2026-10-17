@@ -258,7 +258,7 @@ func TestAssistantAskAnswersWithReadTools(t *testing.T) {
 	}}
 	s := asstMount(t, AssistantDeps{
 		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,
-		Config: AssistantConfig{BaseURL: asstEndpoint(t, model), APIKey: "endpoint-key", Model: "qwen3-8-flash-next"},
+		Config: AssistantConfig{BaseURL: asstEndpoint(t, model), APIKey: "endpoint-key", Model: "qwen3-8-27b"},
 	}, principalAuth(testPrincipal(), nil))
 
 	rec := asstPost(t, s, map[string]any{"question": "which of my projects have runs waiting on an approval?",
@@ -322,7 +322,7 @@ func TestAssistantAskAnswersAsTheCallerOnly(t *testing.T) {
 	}}
 	s := asstMount(t, AssistantDeps{
 		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,
-		Config: AssistantConfig{BaseURL: asstEndpoint(t, model), Model: "qwen3-8-flash-next"},
+		Config: AssistantConfig{BaseURL: asstEndpoint(t, model), Model: "qwen3-8-27b"},
 	}, principalAuth(testPrincipal(), nil))
 
 	rec := asstPost(t, s, map[string]any{"question": "what is failing in 01JPROJECTB"}, true)
@@ -362,7 +362,7 @@ func TestAssistantAskNamesTheFailureWhenTheEndpointIsDown(t *testing.T) {
 	t.Cleanup(srv.Close)
 	s := asstMount(t, AssistantDeps{
 		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,
-		Config: AssistantConfig{BaseURL: srv.URL + "/v1", Model: "qwen3-8-flash-next"},
+		Config: AssistantConfig{BaseURL: srv.URL + "/v1", Model: "qwen3-8-27b"},
 	}, principalAuth(testPrincipal(), nil))
 
 	rec := asstPost(t, s, map[string]any{"question": "anything at all"}, true)

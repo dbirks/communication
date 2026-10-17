@@ -25,9 +25,12 @@ doc has not marked live.
 
 Kinds this worker executes today (`cmd/communication/worker.go`): **`process.exec`**, **`model.chat`**
 (one OpenAI-compatible completion against `COMMUNICATION_MODEL_CHAT_BASE_URL`;
-`COMMUNICATION_MODEL_CHAT_MODELS` allowlists exactly `qwen3-8-flash-next`), **`artifact.publish`**, and
+`COMMUNICATION_MODEL_CHAT_MODELS` allowlists exactly `qwen3-8-27b`), **`artifact.publish`**, and
 `agent.acp` (see below). **`human.approval`** — plus `condition`, `until`, `for_each`, `pipeline.invoke` —
 is settled by the control plane with no worker lease (`docs/samples/home/README.md`).
+Because the cluster manifests are not in this repo, the owner must update the deployed
+`COMMUNICATION_MODEL_CHAT_MODELS` and `COMMUNICATION_ASSISTANT_MODEL` env vars to `qwen3-8-27b`
+so the new default is allowed and used.
 
 `agent.acp` runs **only after you create the optional Claude credentials Secret**; until then the dir stays
 empty, `agent.acp` fails closed with the worker's honest refusal, and only `process.exec`/`model.chat`/
