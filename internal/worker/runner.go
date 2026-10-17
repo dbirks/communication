@@ -314,12 +314,14 @@ func (l *TurnLoop) turnWake(ctx context.Context) <-chan struct{} {
 // decision (wake/poll), and close honestly on deadline or turn cancel. Only
 // this worker ever speaks ACP, so the DB row is the handoff point.
 //
-// Under `deny` (and, defensively, any mode that reaches here without a human
-// owner) the answer is policy, not a person: the request is still opened — so
-// conversation.permission.requested is journaled and the refusal is visible —
-// and then closed immediately as cancelled. Nobody is ever asked, so the turn
-// must not sit pending until expiry waiting for a controller who was never
-// consulted (that is how a deny became an ask in a live run).
+// Under `deny` and `preapproved_within_sandbox` (and, defensively, any mode
+// that reaches here without a human owner) the answer is policy, not a
+// person: the request is still opened — so conversation.permission.requested
+// is journaled and the verdict is visible — and then closed immediately
+// `decided` with the policy's own option, the row naming the policy as
+// decider (ADR-0039 Option A). Nobody is ever asked, so the turn must not
+// sit pending until expiry waiting for a controller who was never consulted
+// (that is how a deny became an ask in a live run).
 func (rt *runningTurn) decidePermission(ctx context.Context, p domain.PermissionPrompt) (domain.PermissionChoice, error) {
 	l := rt.loop
 	c := rt.claim
@@ -344,16 +346,38 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 	}
 
 	if c.PermissionMode != "ask" {
-		// Answered by policy. `decided` is not available here:
-		// permission_requests.decided_by is a user uuid, so no policy can own a
-		// decided row — `cancelled` with no option is the honest close (same
-		// reasoning as AgentTurn.permissionBridge in agentturn.go, and
-		// docs/design/attempt-permissions.md). The agent sees the ACP cancelled
-		// outcome: a refusal it can act on, and no waiting or polling.
+		// Answered by policy (ADR-0039 Option A): the request is still opened —
+		// so conversation.permission.requested is journaled and the verdict is
+		// visible — and then closed `decided` with the policy's own option, the
+		// row naming the policy as decider (decided_by_kind='policy'). Nobody
+		// is ever asked, so the turn must not sit pending until expiry waiting
+		// for a controller who was never consulted (that is how a deny became
+		// an ask in a live run).
 		//
-		// preapproved_within_sandbox should never arrive (the turnloop keeps it
-		// on the harness's auto mode where no prompt is sent); if it somehow
-		// does, failing closed like deny is safer than routing it to a human.
+		// Option selection is by KIND, never label or id (domain.PermissionOption
+		//'s rule, mirrored from pickKind in agentturn_seams.go): deny prefers
+		// reject_once then reject_always; preapproved prefers allow_once then
+		// allow_always. No option of the policy's kinds (or a mode the policy
+		// knows no option for) falls back to today's cancelled close — the
+		// honest "nobody said yes", never a fabricated option id.
+		var kinds []string
+		switch c.PermissionMode {
+		case "deny":
+			kinds = []string{"reject_once", "reject_always"}
+		case "preapproved_within_sandbox":
+			kinds = []string{"allow_once", "allow_always"}
+		}
+		if optionID := pickPolicyOption(p.Options, kinds); optionID != "" {
+			final, _, cerr := l.store.DecidePermissionByPolicy(ctx, c, requestID, optionID, c.PermissionMode)
+			if cerr != nil {
+				l.log.Warn("recording policy permission decision failed",
+					slog.String("request_id", requestID),
+					slog.String("permission_mode", c.PermissionMode),
+					slog.String("error", cerr.Error()))
+				return domain.PermissionChoice{}, nil
+			}
+			return domain.PermissionChoice{OptionID: final.OptionID}, nil
+		}
 		_, _, cerr := l.store.ClosePermission(ctx, c, requestID, events.PermissionStatusCancelled)
 		if cerr != nil {
 			l.log.Warn("closing policy-denied permission failed",
@@ -427,6 +451,23 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 // now is clock-adjacent: durations come from Clock.After, instants for
 // deadlines from the wall clock (tests pin TTLs, not times).
 func (l *TurnLoop) now() time.Time { return time.Now() }
+
+// pickPolicyOption mirrors the attempt path's pickKind
+// (internal/store/postgres/agentturn_seams.go): choose by KIND, never label
+// or id — observed harness ids disagree with their kinds (Codex names its
+// reject option literally "cancel") — trying each kind in the policy's
+// preference order and returning the matching option's id ("" when no option
+// offers the policy a compatible choice).
+func pickPolicyOption(options []domain.PermissionOption, kinds []string) string {
+	for _, k := range kinds {
+		for _, o := range options {
+			if o.Kind == k {
+				return o.OptionID
+			}
+		}
+	}
+	return ""
+}
 
 func safeKey(s string) string {
 	if s == "" {

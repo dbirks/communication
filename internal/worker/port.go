@@ -134,6 +134,13 @@ type TurnStore interface {
 	// the decided event; returns the final state and whether this call
 	// closed it (a decided row is never rewritten).
 	ClosePermission(ctx context.Context, c Claim, permissionID, status string) (PermissionState, bool, error)
+	// DecidePermissionByPolicy records a still-pending prompt as `decided` by
+	// the turn's permission policy (ADR-0039 Option A): the row carries
+	// decided_by_kind='policy' + the policy name and the chosen option, and
+	// the decided event names the policy as the decider. Returns the final
+	// state and whether this call decided it (a decided row is never
+	// rewritten).
+	DecidePermissionByPolicy(ctx context.Context, c Claim, permissionID, optionID, policy string) (PermissionState, bool, error)
 
 	// ProjectRepos lists a project's repositories for workspace prep.
 	ProjectRepos(ctx context.Context, projectID string) ([]Repo, error)

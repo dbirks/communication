@@ -2506,9 +2506,16 @@ export interface components {
       options: components["schemas"]["PermissionOption"][];
       /**
        * Format: uuid
-       * @description Controller who answered; null while `pending`.
+       * @description Controller who answered; null while `pending` and on policy-answered rows.
        */
       decided_by?: string | null;
+      /**
+       * @description Who (or what) owns the answer (ADR-0039): `user` for a controller's decision, `policy` when the profile's permission mode answered without a human.
+       * @enum {string|null}
+       */
+      decided_by_kind?: "user" | "policy" | null;
+      /** @description The deciding permission mode (`deny`, `preapproved_within_sandbox`); null unless `decided_by_kind` is `policy`. */
+      decided_by_policy?: string | null;
       /** @description The `option_id` chosen; null unless `status` is `decided`. */
       decision_option_id?: string | null;
       /** Format: date-time */

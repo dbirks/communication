@@ -198,13 +198,15 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00006, the M6 schedule-trigger
-// table (ADR-0032), on top of 00005 (M4 pipeline/run/node-execution/attempt
-// model, docs/m4-contract.md § 1, ADR-0021..0024), 00004 (M3
-// workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
-// 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
-// ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 6
+// version every replica demands. Current head: 00007, the policy-owned
+// permission verdicts on the conversation path (ADR-0039 Option A), on top of
+// 00006 (the M6 schedule-trigger table, ADR-0032), 00005 (M4
+// pipeline/run/node-execution/attempt model, docs/m4-contract.md § 1,
+// ADR-0021..0024), 00004 (M3 workspace/secret/artifact model,
+// docs/m3-contract.md § 1, ADR-0017..0020), 00003 (M2 conversations/control/
+// turns, ADR-0016), 00002 (the event-stream ordering column, ADR-0014 §9) and
+// 00001 (M1 core).
+const migHeadVersion = 7
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

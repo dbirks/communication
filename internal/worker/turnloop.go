@@ -446,24 +446,19 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		}
 	}
 
-	// `ask` and `deny` both need the launcher's prompting mode: the harness
-	// must actually send session/request_permission for either verdict to be
-	// produced — the turn's permission bridge answers `ask` with the human
-	// and answers `deny` with policy immediately (decidePermission). Leaving
+	// `ask`, `deny` and `preapproved_within_sandbox` all need the launcher's
+	// prompting mode: the harness must actually send session/request_permission
+	// for any verdict to be produced — the turn's permission bridge answers
+	// `ask` with the human, and `deny`/`preapproved_within_sandbox` with the
+	// profile's policy immediately (decidePermission, ADR-0039 Option A: the
+	// policy verdict is a durable `decided` row naming the policy). Leaving
 	// modeID empty would pin the adapter to its never-asks default
 	// (docs/compatibility/ACP.md), which sends no session/request_permission
-	// at all, so a 'deny' conversation would silently allow every tool call
-	// (ADR-0036 (a)).
-	//
-	// `preapproved_within_sandbox` stays on the harness's own auto mode
-	// (modeID ""), the behaviour before 1b93069: a conversation has no durable
-	// column for a policy decider (permission_requests.decided_by is a user
-	// uuid), so journaling per-call preapproved verdicts on this path needs a
-	// schema change plus an ADR — see docs/design/attempt-permissions.md.
-	// Attempts journal them already (a0fd9e7, AgentTurn.permissionBridge).
+	// at all, so a policy conversation would silently allow every tool call
+	// (ADR-0036 (a)) and journal no verdict (preapproved).
 	modeID := ""
 	switch c.PermissionMode {
-	case "ask", "deny":
+	case "ask", "deny", "preapproved_within_sandbox":
 		modeID = l.cfg.AskModeID(c.LauncherID)
 		if modeID == "" {
 			// Fail closed: without a verified prompting mode the adapter's
@@ -472,8 +467,6 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 			// mode property).
 			return nil, errNoAskMode{launcher: c.LauncherID, mode: c.PermissionMode}
 		}
-	case "preapproved_within_sandbox":
-		// modeID stays empty: the sandbox is the enforcement, not a prompt.
 	default:
 		return nil, errors.New("worker: unknown permission mode " + c.PermissionMode)
 	}

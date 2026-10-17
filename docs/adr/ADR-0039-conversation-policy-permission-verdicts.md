@@ -1,6 +1,6 @@
 # ADR-0039 — Policy permission verdicts on the conversation path: a schema decider, journal-only, or status quo
 
-- **Date:** 2026-10-16 · **Status:** Proposed · **Owners:** persistence schema maintainer; worker runtime maintainer
+- **Date:** 2026-10-16 · **Status:** Accepted (Option A, 2026-10-17 — owner delegated the decision to the orchestrator) · **Owners:** persistence schema maintainer; worker runtime maintainer
 - **Related:** ADR-0016 § 5 (prompts to the controller), ADR-0036 Addendum 2026-10-16 (condition (a) closed
   **for attempts only**), ADR-0009/ADR-0019 (sandbox-verified preapproval);
   `docs/design/attempt-permissions.md`; migration `00003_m2_conversations.sql` `permission_requests`
@@ -43,7 +43,7 @@ change plus an ADR". This is that record.
 
 ## Decision
 
-**Proposed (drafter's recommendation — pending the owner's decision): Option A.**
+**Accepted (Option A, 2026-10-17 — owner delegated the decision to the orchestrator): Option A.**
 
 1. **Schema** — new migration (after `00006`): `permission_requests` gains
    `decided_by_kind text NOT NULL DEFAULT 'user' CHECK (decided_by_kind IN ('user','policy'))` and

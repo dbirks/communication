@@ -148,19 +148,23 @@ type PermissionOptionView struct {
 
 // PermissionRequestView is the PermissionRequest schema.
 type PermissionRequestView struct {
-	ID               string                 `json:"id"`
-	ConversationID   string                 `json:"conversation_id"`
-	TurnID           string                 `json:"turn_id"`
-	Status           string                 `json:"status"`
-	ToolTitle        string                 `json:"tool_title"`
-	ToolKind         string                 `json:"tool_kind"`
-	ToolCallID       *string                `json:"tool_call_id"`
-	Options          []PermissionOptionView `json:"options"`
-	DecidedBy        *string                `json:"decided_by"`
-	DecisionOptionID *string                `json:"decision_option_id"`
-	RequestedAt      time.Time              `json:"requested_at"`
-	DeadlineAt       *time.Time             `json:"deadline_at"`
-	DecidedAt        *time.Time             `json:"decided_at"`
+	ID             string                 `json:"id"`
+	ConversationID string                 `json:"conversation_id"`
+	TurnID         string                 `json:"turn_id"`
+	Status         string                 `json:"status"`
+	ToolTitle      string                 `json:"tool_title"`
+	ToolKind       string                 `json:"tool_kind"`
+	ToolCallID     *string                `json:"tool_call_id"`
+	Options        []PermissionOptionView `json:"options"`
+	DecidedBy      *string                `json:"decided_by"`
+	// DecidedByKind is user | policy (ADR-0039 Option A): the policy's
+	// permission mode names itself on `decided` rows the controller never saw.
+	DecidedByKind    *string    `json:"decided_by_kind"`
+	DecidedByPolicy  *string    `json:"decided_by_policy"`
+	DecisionOptionID *string    `json:"decision_option_id"`
+	RequestedAt      time.Time  `json:"requested_at"`
+	DeadlineAt       *time.Time `json:"deadline_at"`
+	DecidedAt        *time.Time `json:"decided_at"`
 }
 
 // ConversationView is the Conversation schema.

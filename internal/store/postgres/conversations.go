@@ -163,15 +163,21 @@ type CnvBinding struct {
 // CnvPermission is a durable ACP prompt awaiting (or carrying) the
 // controller's answer.
 type CnvPermission struct {
-	ID               string
-	ConversationID   string
-	TurnID           string
-	Status           string
-	ToolTitle        string
-	ToolKind         string
-	ToolCallID       string
-	Options          []events.PermissionOption
-	DecidedBy        string
+	ID             string
+	ConversationID string
+	TurnID         string
+	Status         string
+	ToolTitle      string
+	ToolKind       string
+	ToolCallID     string
+	Options        []events.PermissionOption
+	DecidedBy      string
+	// DecidedByKind is user | policy (ADR-0039 Option A); user for every row
+	// written before the migration (the column defaults to 'user').
+	DecidedByKind string
+	// DecidedByPolicy names the deciding permission mode (deny,
+	// preapproved_within_sandbox); "" unless DecidedByKind is policy.
+	DecidedByPolicy  string
 	DecisionOptionID string
 	RequestedAt      time.Time
 	DeadlineAt       *time.Time
@@ -485,6 +491,7 @@ func cnvLiveBinding(ctx context.Context, q prjQuerier, conversationID string) (*
 const cnvPendingPermissionsSQL = `
 	SELECT id::text, conversation_id::text, turn_id::text, status, tool_title, tool_kind,
 	       COALESCE(tool_call_id, ''), options, COALESCE(decided_by::text, ''),
+	       decided_by_kind, COALESCE(decided_by_policy, ''),
 	       COALESCE(decision_option_id, ''), requested_at, deadline_at, decided_at
 	FROM permission_requests
 	WHERE conversation_id = $1::uuid
@@ -517,7 +524,8 @@ func cnvScanPermission(row interface{ Scan(dest ...any) error }) (CnvPermission,
 	var p CnvPermission
 	var options []byte
 	err := row.Scan(&p.ID, &p.ConversationID, &p.TurnID, &p.Status, &p.ToolTitle, &p.ToolKind,
-		&p.ToolCallID, &options, &p.DecidedBy, &p.DecisionOptionID,
+		&p.ToolCallID, &options, &p.DecidedBy, &p.DecidedByKind, &p.DecidedByPolicy,
+		&p.DecisionOptionID,
 		&p.RequestedAt, &p.DeadlineAt, &p.DecidedAt)
 	if err != nil {
 		return CnvPermission{}, fmt.Errorf("postgres: scan permission request: %w", err)
@@ -1265,12 +1273,14 @@ func (s *CnvStore) DecidePermission(ctx context.Context, c Caller, conversationI
 		err = tx.QueryRow(ctx, `
 			SELECT id::text, conversation_id::text, turn_id::text, status, tool_title, tool_kind,
 			       COALESCE(tool_call_id, ''), options, COALESCE(decided_by::text, ''),
+			       decided_by_kind, COALESCE(decided_by_policy, ''),
 			       COALESCE(decision_option_id, ''), requested_at, deadline_at, decided_at
 			FROM permission_requests
 			WHERE id = $1::uuid AND conversation_id = $2::uuid
 			FOR UPDATE`, requestID, conversationID).
 			Scan(&p.ID, &p.ConversationID, &p.TurnID, &status, &p.ToolTitle, &p.ToolKind,
-				&p.ToolCallID, &options, &p.DecidedBy, &p.DecisionOptionID,
+				&p.ToolCallID, &options, &p.DecidedBy, &p.DecidedByKind, &p.DecidedByPolicy,
+				&p.DecisionOptionID,
 				&p.RequestedAt, &p.DeadlineAt, &p.DecidedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A prompt of another conversation is answered like one that does not
@@ -2064,6 +2074,8 @@ func cnvAPIPermission(p CnvPermission) api.PermissionRequestView {
 		ToolCallID:       apiNullString(p.ToolCallID),
 		Options:          options,
 		DecidedBy:        apiNullString(p.DecidedBy),
+		DecidedByKind:    apiNullString(p.DecidedByKind),
+		DecidedByPolicy:  apiNullString(p.DecidedByPolicy),
 		DecisionOptionID: apiNullString(p.DecisionOptionID),
 		RequestedAt:      p.RequestedAt,
 		DeadlineAt:       p.DeadlineAt,

@@ -529,6 +529,67 @@ func trnPermState(status string, optionID, decidedBy *string) worker.PermissionS
 	return st
 }
 
+// DecidePermissionByPolicy records a still-pending prompt as `decided` by the
+// turn's permission policy (ADR-0039 Option A): the row carries
+// decided_by_kind='policy', decided_by_policy (the profile's recorded mode)
+// and the chosen option, and conversation.permission.decided is journalled
+// with the policy named as the decider. Modelled on ClosePermission: a row
+// the API already decided is returned as-is, never rewritten (the decision
+// is durable before it is live, ADR-0016 §5), and the fence triple must still
+// match even on a terminal turn (a prompt can close after the turn ended).
+func (s *TurnStore) DecidePermissionByPolicy(ctx context.Context, c worker.Claim, permissionID, optionID, policy string) (worker.PermissionState, bool, error) {
+	if policy == "" {
+		return worker.PermissionState{}, false, fmt.Errorf("postgres: DecidePermissionByPolicy requires a policy name")
+	}
+	var closed bool
+	var final worker.PermissionState
+	decidedBy := "profile_policy:" + policy
+	err := s.trnWithFenceTripleTx(ctx, c, func(ctx context.Context, tx pgx.Tx) error {
+		var st string
+		var readOption, readDecidedBy *string
+		err := tx.QueryRow(ctx, `
+			UPDATE permission_requests
+			SET status = 'decided', decision_option_id = $2,
+			    decided_by_kind = 'policy', decided_by_policy = $3, decided_at = now()
+			WHERE id = $1 AND status = 'pending'
+			RETURNING status`, permissionID, optionID, policy).Scan(&st)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Someone else closed it — read what they wrote.
+			err := tx.QueryRow(ctx, `
+				SELECT status, decision_option_id, decided_by::text FROM permission_requests WHERE id = $1`,
+				permissionID).Scan(&st, &readOption, &readDecidedBy)
+			if err != nil {
+				return fmt.Errorf("postgres: read permission %s: %w", permissionID, err)
+			}
+			final = trnPermState(st, readOption, readDecidedBy)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("postgres: decide permission %s: %w", permissionID, err)
+		}
+		closed = true
+		final = worker.PermissionState{Status: events.PermissionStatusDecided, OptionID: optionID, DecidedBy: decidedBy}
+		_, err = trnAppendTx(ctx, tx, c.OrganizationID, c.ProjectID, c.ConversationID, worker.TurnEvent{
+			Type:      events.TypeConversationPermissionDecided,
+			ActorKind: events.ActorKindWorker,
+			ActorID:   c.WorkerID,
+			Payload: events.PermissionDecidedPayload{
+				ConversationID:      c.ConversationID,
+				TurnID:              c.TurnID,
+				PermissionRequestID: permissionID,
+				Status:              events.PermissionStatusDecided,
+				DecisionOptionID:    optionID,
+				DecidedBy:           decidedBy,
+			},
+		})
+		return err
+	})
+	if err != nil {
+		return worker.PermissionState{}, false, err
+	}
+	return final, closed, nil
+}
+
 // trnWithFenceTripleTx is trnWithFencedTx without the non-terminal status
 // requirement: same owner+token check, usable while the turn is already
 // closed (permission stragglers).

@@ -472,3 +472,99 @@ func TestTurnsSessionEventsCarryConversationScope(t *testing.T) {
 		t.Errorf("session event scoped to project=%q conversation=%q, want %q/%q", project, conv, f.ProjectID, f.ConvID)
 	}
 }
+
+// TestDecidePermissionByPolicy proves ADR-0039 Option A at the store level:
+// a still-pending prompt can be closed `decided` by the profile's permission
+// policy — the row names the policy (decided_by_kind='policy',
+// decided_by_policy) and the chosen option, names no user, and the decided
+// event carries the policy as decider. A second decision returns the durable
+// row and never rewrites it, and the rewritten answered CHECK still rejects
+// a policy decision with no policy name.
+func TestDecidePermissionByPolicy(t *testing.T) {
+	pool, f := trnSetup(t)
+	ctx := testCtx(t)
+	f.queueTurn(t, "policy prompt")
+	claim, ok, err := f.Store.ClaimTurn(ctx, f.WorkerA)
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if err := f.Store.BeginTurn(ctx, claim, "b-p", trnSession("new")); err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	permID, err := f.Store.OpenPermission(ctx, claim, worker.PermissionOpen{
+		ACPRequestID: "tc-p-1", ToolCallID: "tc-p", Title: "Write hello.txt", Kind: "edit",
+		Options: []events.PermissionOption{
+			{OptionID: "allow-once", Label: "Yes", Kind: "allow_once"},
+			{OptionID: "reject", Label: "No", Kind: "reject_once"},
+		},
+		Deadline: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("OpenPermission: %v", err)
+	}
+
+	final, closed, err := f.Store.DecidePermissionByPolicy(ctx, claim, permID, "reject", "deny")
+	if err != nil {
+		t.Fatalf("DecidePermissionByPolicy: %v", err)
+	}
+	if !closed {
+		t.Fatalf("DecidePermissionByPolicy closed=false, want the still-pending row closed")
+	}
+	if final.Status != events.PermissionStatusDecided || final.OptionID != "reject" ||
+		final.DecidedBy != "profile_policy:deny" {
+		t.Fatalf("final state = %+v", final)
+	}
+
+	var status, kind, policy, option string
+	var decidedBy *string
+	if err := pool.QueryRow(ctx, `
+		SELECT status, decided_by_kind, COALESCE(decided_by_policy, ''),
+		       COALESCE(decision_option_id, ''), decided_by
+		FROM permission_requests WHERE id = $1`, permID).
+		Scan(&status, &kind, &policy, &option, &decidedBy); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if status != events.PermissionStatusDecided || kind != "policy" || policy != "deny" ||
+		option != "reject" || decidedBy != nil {
+		t.Fatalf("row = status=%s kind=%s policy=%s option=%s user=%v, want decided/policy/deny/reject with no user",
+			status, kind, policy, option, decidedBy)
+	}
+
+	// The journal says the policy — not a person — decided, with the option.
+	var payload string
+	if err := pool.QueryRow(ctx, `
+		SELECT payload::text FROM domain_events
+		WHERE conversation_id = $1 AND type = $2`,
+		f.ConvID, events.TypeConversationPermissionDecided).Scan(&payload); err != nil {
+		t.Fatalf("decided event: %v", err)
+	}
+	if !strings.Contains(payload, `"status": "decided"`) ||
+		!strings.Contains(payload, `"decision_option_id": "reject"`) ||
+		!strings.Contains(payload, `"decided_by": "profile_policy:deny"`) {
+		t.Fatalf("decided event payload = %s", payload)
+	}
+
+	// A second decision returns the durable row, never rewrites it.
+	again, closedNow, err := f.Store.DecidePermissionByPolicy(ctx, claim, permID, "allow-once", "deny")
+	if err != nil {
+		t.Fatalf("second DecidePermissionByPolicy: %v", err)
+	}
+	if closedNow || again.Status != events.PermissionStatusDecided || again.OptionID != "reject" {
+		t.Fatalf("second decision rewrote the row: closed=%v state=%+v", closedNow, again)
+	}
+
+	// The rewritten answered CHECK (00007): a `decided` row that claims a
+	// policy decider must name it — kind='policy' with a NULL
+	// decided_by_policy violates the constraint.
+	_, err = pool.Exec(ctx, `
+		UPDATE permission_requests
+		SET status = 'decided', decided_by_kind = 'policy', decided_by_policy = NULL,
+		    decision_option_id = 'reject'
+		WHERE id = $1`, permID)
+	if err == nil {
+		t.Fatalf("CHECK accepted kind='policy' with a NULL decided_by_policy")
+	}
+	if !strings.Contains(err.Error(), "permission_request_decision_is_answered") {
+		t.Fatalf("rejected for the wrong reason: %v", err)
+	}
+}

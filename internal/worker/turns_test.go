@@ -59,8 +59,10 @@ type recordedAppend struct {
 	event worker.TurnEvent
 }
 type closedPerm struct {
-	id     string
-	status string
+	id       string
+	status   string
+	optionID string
+	policy   string
 }
 type closedBind struct {
 	conversation, workerID, reason string
@@ -215,6 +217,18 @@ func (f *fakeStore) ClosePermission(_ context.Context, _ worker.Claim, id, statu
 	}
 	f.permClosed <- closedPerm{id: id, status: status}
 	return worker.PermissionState{Status: status}, true, nil
+}
+
+func (f *fakeStore) DecidePermissionByPolicy(_ context.Context, _ worker.Claim, id, optionID, policy string) (worker.PermissionState, bool, error) {
+	key := strings.TrimPrefix(id, "perm-")
+	f.mu.Lock()
+	final, had := f.permFinal[key]
+	f.mu.Unlock()
+	if had && final.Status != events.PermissionStatusPending {
+		return final, false, nil
+	}
+	f.permClosed <- closedPerm{id: id, status: events.PermissionStatusDecided, optionID: optionID, policy: policy}
+	return worker.PermissionState{Status: events.PermissionStatusDecided, OptionID: optionID, DecidedBy: "profile_policy:" + policy}, true, nil
 }
 
 func (f *fakeStore) ProjectRepos(_ context.Context, _ string) ([]worker.Repo, error) {
@@ -578,15 +592,14 @@ func TestAskModeSelectionAndRefusal(t *testing.T) {
 }
 
 // TestRecordedModesAllUsePrompting proves which recorded permission modes pin
-// the launcher's prompting mode on the conversation path. ask and deny must:
-// with an empty modeID the adapter stays in its never-asks default
-// (docs/compatibility/ACP.md), so a deny conversation would allow every tool
-// call. A launcher with no verified prompting mode fails closed instead.
-// preapproved_within_sandbox must NOT: the sandbox is its enforcement, and
-// prompting it would route every tool call to a human (a conversation has no
-// policy-decider column — see docs/design/attempt-permissions.md).
+// the launcher's prompting mode on the conversation path. All three must
+// (ADR-0039 Option A): with an empty modeID the adapter stays in its
+// never-asks default (docs/compatibility/ACP.md), so a deny conversation
+// would allow every tool call and a preapproved conversation would journal no
+// verdict at all. A launcher with no verified prompting mode fails closed
+// instead.
 func TestRecordedModesAllUsePrompting(t *testing.T) {
-	for _, mode := range []string{"ask", "deny"} {
+	for _, mode := range []string{"ask", "deny", "preapproved_within_sandbox"} {
 		st := newFakeStore()
 		st.claims = []worker.Claim{testClaim2(t, mode)}
 		sess := newFakeSession(domain.SessionInfo{})
@@ -616,36 +629,14 @@ func TestRecordedModesAllUsePrompting(t *testing.T) {
 			t.Errorf("%s: launched %d sessions with no prompting mode, want 0", mode, ff2.count())
 		}
 	}
-
-	// preapproved_within_sandbox: the harness's own auto mode, on every
-	// launcher, with no prompting-mode requirement.
-	for _, launcher := range []string{"claude", "gemini"} {
-		st := newFakeStore()
-		c := testClaim2(t, "preapproved_within_sandbox")
-		c.LauncherID = launcher
-		st.claims = []worker.Claim{c}
-		sess := newFakeSession(domain.SessionInfo{})
-		sess.promptFn = func(context.Context, *fakeSession) (domain.StopReason, error) {
-			return domain.StopEndTurn, nil
-		}
-		ff := &fakeFactory{sessions: []*fakeSession{sess}}
-		l := newLoop(t, fastCfg(), st, ff)
-		startLoop(t, l)
-		out := recv(t, st.finishing, "preapproved finish "+launcher)
-		if out.Status != events.TurnStatusCompleted {
-			t.Fatalf("%s: outcome = %+v, want completed", launcher, out)
-		}
-		if got := ff.request(0).ModeID; got != "" {
-			t.Errorf("preapproved on %s: ModeID = %q, want the harness's own auto mode (empty)", launcher, got)
-		}
-	}
 }
 
 // TestPermissionDenyIsAnsweredByPolicy proves a deny prompt is refused by
 // policy instead of waiting for a human: the request is opened (so
-// conversation.permission.requested is journaled) and closed cancelled
-// immediately, the agent gets the ACP cancelled outcome, and the decider
-// never enters the wake/poll wait loop.
+// conversation.permission.requested is journaled) and closed `decided`
+// immediately with the policy's own reject option — the row names the policy
+// as decider (ADR-0039 Option A), the agent gets the rejected option it can
+// act on, and the decider never enters the wake/poll wait loop.
 func TestPermissionDenyIsAnsweredByPolicy(t *testing.T) {
 	st := newFakeStore()
 	st.claims = []worker.Claim{testClaim2(t, "deny")}
@@ -687,9 +678,12 @@ func TestPermissionDenyIsAnsweredByPolicy(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	closed := recv(t, st.permClosed, "immediate policy close")
-	if closed.status != events.PermissionStatusCancelled {
-		t.Fatalf("closed as %q, want cancelled — decided needs a user decided_by, a policy cannot own it", closed.status)
+	closed := recv(t, st.permClosed, "immediate policy decision")
+	if closed.status != events.PermissionStatusDecided {
+		t.Fatalf("closed as %q, want decided by policy with an option (ADR-0039 Option A)", closed.status)
+	}
+	if closed.optionID != "reject" || closed.policy != "deny" {
+		t.Fatalf("policy decision = option %q policy %q, want the harness's reject_once option named deny", closed.optionID, closed.policy)
 	}
 	if closed.id != "perm-"+open.ACPRequestID {
 		t.Fatalf("closed %q, want the opened request %q", closed.id, open.ACPRequestID)
@@ -699,13 +693,121 @@ func TestPermissionDenyIsAnsweredByPolicy(t *testing.T) {
 	if got.err != nil {
 		t.Fatalf("decider error: %v", got.err)
 	}
-	if got.choice != (domain.PermissionChoice{}) {
-		t.Fatalf("choice = %+v, want the cancelled outcome (no option offered)", got.choice)
+	if got.choice.OptionID != "reject" {
+		t.Fatalf("choice = %+v, want the policy's rejected option (the refusal is a real answer, not a cancellation)", got.choice)
 	}
 	recv(t, st.finishing, "finish")
 	if n := st.stateCalls(); n != 0 {
 		t.Errorf("PermissionState polled %d times on a policy answer; the wait loop must not run", n)
 	}
+}
+
+// TestPermissionPreapprovedIsAnsweredByPolicy proves a
+// preapproved_within_sandbox prompt is answered allow by the profile's
+// policy: the row is closed `decided` with the policy's allow option and the
+// policy named as decider, so the journal can distinguish "the sandbox story
+// allowed it" from a broken prompt (ADR-0039 Option A).
+func TestPermissionPreapprovedIsAnsweredByPolicy(t *testing.T) {
+	st := newFakeStore()
+	st.claims = []worker.Claim{testClaim2(t, "preapproved_within_sandbox")}
+	cfg := fastCfg()
+	cfg.PermissionTTL = time.Hour // nothing may wait on a human, TTL or not
+	sess := newFakeSession(domain.SessionInfo{})
+	type answer struct {
+		choice domain.PermissionChoice
+		err    error
+	}
+	result := make(chan answer, 1)
+	sess.promptFn = func(ctx context.Context, s *fakeSession) (domain.StopReason, error) {
+		wait := make(chan struct{})
+		go func() {
+			defer close(wait)
+			choice, err := s.decider(ctx, domain.PermissionPrompt{
+				ToolCallID: "tc-pre", Title: "Write file", Kind: "edit",
+				Options: []domain.PermissionOption{
+					{OptionID: "allow-always", Label: "Yes, always", Kind: "allow_always"},
+					{OptionID: "allow-once", Label: "Yes", Kind: "allow_once"},
+				},
+			})
+			result <- answer{choice: choice, err: err}
+		}()
+		<-wait
+		return domain.StopEndTurn, nil
+	}
+	ff := &fakeFactory{sessions: []*fakeSession{sess}}
+	startLoop(t, newLoop(t, cfg, st, ff))
+	recv(t, st.begun, "begin")
+
+	closed := recv(t, st.permClosed, "immediate policy decision")
+	if closed.status != events.PermissionStatusDecided || closed.policy != "preapproved_within_sandbox" {
+		t.Fatalf("closed as %q policy %q, want decided by preapproved_within_sandbox", closed.status, closed.policy)
+	}
+	// allow_once is preferred over allow_always (mirrors pickKind's order),
+	// even though the harness listed allow_always first.
+	if closed.optionID != "allow-once" {
+		t.Fatalf("policy decision option = %q, want the harness's allow_once option", closed.optionID)
+	}
+
+	got := recv(t, result, "preapproved decider return")
+	if got.err != nil {
+		t.Fatalf("decider error: %v", got.err)
+	}
+	if got.choice.OptionID != "allow-once" {
+		t.Fatalf("choice = %+v, want the policy's allowed option", got.choice)
+	}
+	recv(t, st.finishing, "finish")
+	if n := st.stateCalls(); n != 0 {
+		t.Errorf("PermissionState polled %d times on a policy answer; the wait loop must not run", n)
+	}
+}
+
+// TestPermissionPolicyFallsBackToCancelledWithoutOption proves the no-option
+// fallback: when the harness offers no option of the policy's kinds, the
+// prompt closes cancelled (today's behaviour) — the honest "nobody said
+// yes", never a fabricated option id.
+func TestPermissionPolicyFallsBackToCancelledWithoutOption(t *testing.T) {
+	st := newFakeStore()
+	st.claims = []worker.Claim{testClaim2(t, "deny")}
+	cfg := fastCfg()
+	cfg.PermissionTTL = time.Hour
+	sess := newFakeSession(domain.SessionInfo{})
+	type answer struct {
+		choice domain.PermissionChoice
+		err    error
+	}
+	result := make(chan answer, 1)
+	sess.promptFn = func(ctx context.Context, s *fakeSession) (domain.StopReason, error) {
+		wait := make(chan struct{})
+		go func() {
+			defer close(wait)
+			choice, err := s.decider(ctx, domain.PermissionPrompt{
+				ToolCallID: "tc-noopt", Title: "Write file", Kind: "edit",
+				Options: []domain.PermissionOption{
+					{OptionID: "allow-once", Label: "Yes", Kind: "allow_once"},
+				},
+			})
+			result <- answer{choice: choice, err: err}
+		}()
+		<-wait
+		return domain.StopEndTurn, nil
+	}
+	ff := &fakeFactory{sessions: []*fakeSession{sess}}
+	startLoop(t, newLoop(t, cfg, st, ff))
+	recv(t, st.begun, "begin")
+
+	closed := recv(t, st.permClosed, "fallback cancelled close")
+	if closed.status != events.PermissionStatusCancelled || closed.optionID != "" {
+		t.Fatalf("closed as %q option %q, want cancelled with no option (no reject option offered)", closed.status, closed.optionID)
+	}
+
+	got := recv(t, result, "decider return")
+	if got.err != nil {
+		t.Fatalf("decider error: %v", got.err)
+	}
+	if got.choice != (domain.PermissionChoice{}) {
+		t.Fatalf("choice = %+v, want the cancelled outcome (no option offered)", got.choice)
+	}
+	recv(t, st.finishing, "finish")
 }
 
 // TestStaleAppendAbortsWrites proves fail-closed behaviour: when a fenced
