@@ -32,8 +32,8 @@ cluster's click-through is not done.
 |---|---|---|
 | W1 Browse projects + repositories | works end-to-end (CHECKED LIVE: `e2e/tests/m1-journey.spec.ts`, M4 W1 leg; the overview's SSE refetch storm fixed — browser-checked 962→22 requests, `82902b4`) | Record one real `https://github.com/…` mirror clone in `docs/compatibility/WORKSPACES.md` |
 | W2 Plan workflow with a human gate | works end-to-end (gate card CHECKED LIVE 21/0/0 **on a real Claude plan**, re-confirmed pass 12 `live12/W3.out:55`; the real-Claude loop **completes end to end** — C1 98/0/0 at passes 12/14/15, `5820aab`; M5 journey is now **live-green 10 passed / 0 failed / 1 fixme** on `14e8ff5` after the step-6 fix `ef470a0` re-ran — the one `fixme` is a recorded product contradiction at `:965`, `docs/m4-exit-status.md:320`) | Decide the `:965` contradiction the `fixme` records (the rejected-gate card's "fails the run" promise vs a BUSINESS outcome) and re-arm that arm as a test |
-| W3 GitHub-issue run, fan out + join | issue list works end-to-end on public repos (real call observed, `docs/compatibility/GITHUB.md`); `pipeline.invoke` children **CHECKED LIVE** and C8e stop/`fail_after_all` are now **PASS** (C8 38/0/2 at pass 11, `d8b927c`+`b2bfe62`, `live11/C8.out:78-92`); prefill wired, not clicked live; triggers/join spec only | One Playwright arm clicking issue→prefill→`run_inputs`; webhook/poll triggers need `triggers`+`invocations` tables + ADR (M6) |
-| W4 Edit step prompts, drafts → publish | works end-to-end (YAML edit→validate→publish; the **step form was clicked live** — m5-journey step 2 edits `timeoutSeconds`, saves, validates and publishes r1 (`e2e/tests/m5-journey.spec.ts:292-330`; 12 passed incl. step 2, `docs/m4-exit-status.md:296-299`); read-only templates + assign panel CHECKED LIVE `9be68fd`; editing a `prompt` field through the form is still unrecorded) | One Playwright arm editing an `agent.acp` step's `prompt` through the form and publishing |
+| W3 GitHub-issue run, fan out + join | issue list works end-to-end on public repos (real call observed, `docs/compatibility/GITHUB.md`); `pipeline.invoke` children **CHECKED LIVE** and C8e stop/`fail_after_all` are now **PASS** (C8 38/0/2 at pass 11, `d8b927c`+`b2bfe62`, `live11/C8.out:78-92`); issue→prefill→`run_inputs` **CHECKED LIVE** (`4a72d31`, m5-issue-run 5/5 live on `1c1733b`, `live33/m5-suite.out`); triggers/join spec only | Webhook/poll triggers need `triggers`+`invocations` tables + ADR (M6) |
+| W4 Edit step prompts, drafts → publish | works end-to-end (YAML edit→validate→publish; the **step form was clicked live** — m5-journey step 2 edits `timeoutSeconds`, saves, validates and publishes r1 (`e2e/tests/m5-journey.spec.ts:292-330`; 12 passed incl. step 2, `docs/m4-exit-status.md:296-299`); read-only templates + assign panel CHECKED LIVE `9be68fd`; editing an `agent.acp` `prompt` through the form is now **CHECKED LIVE** (`1879714`, m5-prompt-edit 6/6 live on `1c1733b` — the spec also found and fixed in `1c1733b` the valid-draft validate response missing its required `revision_digest`/`plan_digest`)) | None for W4's journey (system prompts stay spec-only until an ADR decides node vs profile) |
 | W5 Scheduled security workflow | works end-to-end (schedule firing OBSERVED LIVE, 2026-10-16, `016f11e`; the cron clock + pause clicked live — agents+schedules spec **3/3 on the lab**, `be97fd1`) | Home-cluster weekly `security-review` on a schedule; record `run.created` plus the schedule's `last_run_at` before/after |
 | W6 APM skills, tag pin, cross-agent | works end-to-end for the claude target (CHECKED LIVE, `docs/compatibility/APM.md:223-246`; profile create + skill pin + digest help now clicked through `/agents` — **3/3 live**, `be97fd1`); codex target NOT RUN live | Run the same live probe with `target=codex`; append the row to `docs/compatibility/APM.md` |
 | W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) now have **PASS legs** — C6 restore b/c/e at pass 20 + C6d at pass 25 (`3f35115`, `fa0c0e0`), C2a/C2b's agent variant at pass 17 (`320c6fe`, `599e4f9`), C4e at pass 18 (`cc0bff8`), W6 14/0/0 at pass 19 (`2b24738`+`6e57274`); agents now run git in their worktree (`e83913a`, pass 26 `76a9e64`) and every permission prompt in attempts closes as one journaled policy verdict (`a0fd9e7`, pass 27's 23/23 journal read; C1j PASS at pass 29, `d4cd945`)) | Mount the owner's Claude secret on the cluster worker (home-cluster blocker 1) so the real-agent legs run there; record the Gemini/Pi rows in `docs/compatibility/ACP.md` |
@@ -128,7 +128,7 @@ call with literal output (HTTP 200, 3 open issues for `mattpocock/skills`, 2026-
 authenticated/private listing and webhooks stay **not verified / not built** there.
 `d777165` put it in the New run form: "Use this issue" fills the revision's declared
 `goal`/`issue_number`/`issue_url` inputs (`ui/src/components/m4/NewRunForm.tsx:28,
-238-249`). **Prefill itself still has no recorded live click.**
+238-249`). **Prefill is now CHECKED LIVE:** m5-issue-run (`4a72d31`) clicks a live issue, picks it, and requires the prefilled `goal`/`issue_number` to reach `POST /runs` and land in `run_inputs` — **5/5 live** on a `1c1733b` lab (`live33/m5-suite.out`).
 
 **Fan-out: proven live, stop policy included.** `for_each` executes and joins
 branch results into the parent scope (`internal/pipelines/runtime/advancer.go`);
@@ -148,13 +148,11 @@ live** (`19175b3`, `live14/W11.out:36`).
 **Status.** No webhook receiver, no `triggers`/`invocations` tables, no polling
 reconciler — runs start manually, from a parent node, or (ADR-0032) a schedule.
 Issue listing: **works end-to-end** on public repos (CHECKED LIVE,
-`GITHUB.md`). Prefill: **backend + UI wired, no live click recorded**. Child runs
+`GITHUB.md`). Prefill: **CHECKED LIVE** (m5-issue-run, `4a72d31`, on `1c1733b`). Child runs
 + stop/`fail_after_all`: **works end-to-end, CHECKED LIVE** (C8 38/0/2, pass 11).
 Webhook triggers, dedupe, `parallel`/`join`: **spec only**.
 
-**Next step.** One Playwright arm: open New run on a project with a public GitHub
-repo, pick an issue, require the prefilled goal + number to reach `POST /runs` and
-land in `run_inputs`. Webhook trigger + dedupe needs tables and an ADR — keep it M6.
+**Next step.** Webhook trigger + dedupe needs `triggers`+`invocations` tables and an ADR — keep it M6. (The issue→prefill→`run_inputs` arm is done: m5-issue-run, `4a72d31`.)
 
 ## W4 — Edit each step's prompt / system prompt; save, publish drafts, start from a template
 
@@ -182,16 +180,24 @@ the step form, watches it land in the YAML, then Save → Validate ("valid") →
 Publish ("published r1") (`e2e/tests/m5-journey.spec.ts:292-330`); the journey ran
 live **12 passed / 1 failed / 4 not run** with step 2 in the passed set
 (`docs/m4-exit-status.md:296-299`). The § 7.2 W4 leg (pinned-digest notice) PASSed
-at pass 5 (`live5/W4.out:30, :46-52`). No test clicks a **prompt** field through
-the form, and `8f28cb3`'s guards are unit-tested only.
+at pass 5 (`live5/W4.out:30, :46-52`). **A prompt field is now clicked live through
+the form**: m5-prompt-edit (`1879714`) edits an `agent.acp` step's `prompt` through the
+step form, saves, validates and publishes; the `revision_digest`/`plan_digest` move and
+the served YAML carries the new prompt — **6/6 live** on a `1c1733b` lab
+(`live33/m5-suite.out`). Writing that spec found a product bug, fixed in `1c1733b`: a
+valid draft's validate response omitted `revision_digest`/`plan_digest`, which the
+OpenAPI `ValidateResponse` requires. `8f28cb3`'s guards are unit-tested only.
 
 **Status: works end-to-end** for YAML edit→validate→publish, template-start, and
-now the step form itself (live-clicked via m5-journey step 2); the prompt-field
-edit and the guards stay **UI wired**; system prompts stay **spec only** until an
-ADR decides node vs profile.
+now the step form itself (live-clicked via m5-journey step 2) and **now the prompt-field
+edit too** (m5-prompt-edit, `1879714`, CHECKED LIVE on `1c1733b`); the `8f28cb3` guards
+stay **UI wired**; system prompts stay **spec only** until an ADR decides node vs
+profile.
 
-**Next step.** Extend m5-journey step 2's idiom into an arm that edits an
-`agent.acp` step's `prompt` through the form and publishes.
+**Next step.** None for W4's journey: YAML edit→validate→publish, template-start, the
+step form (m5-journey step 2) and the `agent.acp` `prompt` edit (m5-prompt-edit, `1879714`)
+are all CHECKED LIVE; only the guards are unit-tested and system prompts await the
+node-vs-profile ADR.
 
 ## W5 — A security workflow that runs on a schedule
 
