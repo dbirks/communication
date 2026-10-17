@@ -767,6 +767,19 @@ class C1PermissionEventsSqlTest(unittest.TestCase):
         self.assertIn("ORDER BY global_seq", self.SQL)
         self.assertNotIn("{", self.SQL, "the only substitution is already applied")
 
+    def test_every_json_arrow_projection_is_parenthesised(self):
+        """Live pass 28 crashed with "operator does not exist: text ->> unknown":
+        in Postgres `||` binds tighter than `->>`, so a bare payload->>'x' inside
+        a concatenation is parsed as (text || payload) ->> 'x'. Every occurrence
+        must sit directly inside its own parentheses."""
+        for i in range(len(self.SQL)):
+            if self.SQL.startswith("payload->>", i):
+                self.assertEqual("(", self.SQL[i - 1],
+                                 f"unparenthesised payload->> at {i}: "
+                                 f"...{self.SQL[max(0, i - 30):i + 40]}...")
+        # and there really are occurrences to check (a vacuous pass is not proof)
+        self.assertEqual(self.SQL.count("payload->>"), 3)
+
     def test_the_event_type_constants_are_the_ones_in_the_sql(self):
         for const in (m.PERMISSION_TYPE_REQUESTED, m.PERMISSION_TYPE_DECIDED):
             self.assertIn(f"'{const}'", m.c1_permission_events_sql("run-2"), const)

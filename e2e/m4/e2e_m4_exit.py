@@ -929,10 +929,14 @@ def c1_permission_events_sql(run_id):
     """The run's permission pair read from the journal. Both halves land on the
     RUN journal (permissionBridge journals through the attempt sink, whose rows
     carry domain_events.run_id), so this is the same direct `run_id` read C1c's
-    c1_failure_evidence already uses — no node_execution hop is involved."""
-    return ("SELECT type || '|' || payload->>'permission_request_id' || '|' || "
-            "COALESCE(payload->>'status','-') || '|' || "
-            "COALESCE(payload->>'decided_by','-') FROM domain_events "
+    c1_failure_evidence already uses — no node_execution hop is involved.
+
+    Every `payload->>'x'` is parenthesised: in Postgres `||` binds tighter than
+    `->>`, so the un-parenthesised join crashed live on pass 28 with "operator
+    does not exist: text ->> unknown" (e2e/m4/test_c1_logic.py pins this)."""
+    return ("SELECT type || '|' || COALESCE((payload->>'permission_request_id'),'-') || '|' || "
+            "COALESCE((payload->>'status'),'-') || '|' || "
+            "COALESCE((payload->>'decided_by'),'-') FROM domain_events "
             f"WHERE run_id = '{run_id}' AND type IN ("
             f"'{PERMISSION_TYPE_REQUESTED}', '{PERMISSION_TYPE_DECIDED}') "
             "ORDER BY global_seq")
