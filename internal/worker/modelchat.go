@@ -17,6 +17,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/dbirks/communication/internal/artifacts"
+	"github.com/dbirks/communication/internal/domain"
 )
 
 // NodeKindModelChat is the § 4 step 8 node kind this executor runs, the
@@ -252,36 +253,22 @@ func parseModelChat(c AttemptClaim) (*modelChatSpec, *AttemptResult) {
 		spec.schema = v
 	}
 	if v, present := cfg["temperature"]; present {
-		f, ok := jsonNumber(v)
-		if !ok {
+		f, ok := domain.NumberAsFloat(v)
+		if !ok || !domain.FloatIn(f, 0, 2) {
 			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
 				"model.chat: config.temperature must be a number between 0 and 2")
 		}
 		spec.temperature = &f
 	}
 	if v, present := cfg["maxTokens"]; present {
-		f, ok := jsonNumber(v)
+		n, ok := domain.IntegerIn(v, 1, 200000)
 		if !ok {
 			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
 				"model.chat: config.maxTokens must be an integer between 1 and 200000")
 		}
-		n := int(f)
 		spec.maxTokens = &n
 	}
 	return spec, nil
-}
-
-func jsonNumber(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case int:
-		return float64(n), true
-	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
-	}
-	return 0, false
 }
 
 // Execute implements AttemptExecutor. Config → allowlist → request body →

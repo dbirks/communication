@@ -176,3 +176,79 @@ func TestModelChatMessageRoleMustBeKnown(t *testing.T) {
 		}
 	}
 }
+
+// The live pass-34 failure: temperature: 0 is an integer literal the schema
+// admits (minimum 0), yet the run-time check only read float64 and refused it
+// before the model was called. The validate half of the same rule lives in
+// chatPolicy: it must accept the canon loader's int64 and name a range the
+// worker would refuse at run time — at the key's own pointer, at publish.
+// compiler.Compile is driven directly (loader → compiler, no schema pass) so
+// these cases pin the policy check itself, not the schema validator that
+// would otherwise catch the same ranges first.
+func compileModelChatNoSchema(t *testing.T, body string) diag.List {
+	t.Helper()
+	doc, ld := loader.Load([]byte(modelChatHeader + body))
+	if !ld.Valid() {
+		t.Fatalf("loader: %s", showDiags(ld))
+	}
+	_, cd := compiler.Compile(doc, compiler.Options{})
+	return cd
+}
+
+func modelChatFinding(d diag.List, pointer string) *diag.Diagnostic {
+	for i := range d {
+		if d[i].InstanceLocation.String() == pointer {
+			return &d[i]
+		}
+	}
+	return nil
+}
+
+// TestModelChatNumericConfigAtCompile: an integer 0 is in range and compiles;
+// an out-of-range or non-whole value is refused at the key's pointer with
+// schema_shape — the same ranges the worker enforces (internal/domain
+// chatnumber helper, shared by both sides).
+func TestModelChatNumericConfigAtCompile(t *testing.T) {
+	valid := []string{
+		"      temperature: 0\n",
+		"      temperature: 1\n",
+		"      temperature: 2\n",
+		"      temperature: 0.2\n",
+		"      maxTokens: 1\n",
+		"      maxTokens: 64\n",
+		"      maxTokens: 200000\n",
+	}
+	for _, extra := range valid {
+		d := compileModelChatNoSchema(t, strings.Replace(modelChatBody, "    outputs:\n",
+			extra+"    outputs:\n", 1))
+		if !d.Valid() {
+			t.Errorf("valid numeric config %q refused: %s", extra, showDiags(d))
+		}
+	}
+	refused := []struct {
+		line    string
+		pointer string
+	}{
+		{"      temperature: 2.5\n", "/spec/nodes/0/config/temperature"},
+		{"      temperature: -1\n", "/spec/nodes/0/config/temperature"},
+		{"      maxTokens: 0\n", "/spec/nodes/0/config/maxTokens"},
+		{"      maxTokens: 1.5\n", "/spec/nodes/0/config/maxTokens"},
+		{"      maxTokens: 200001\n", "/spec/nodes/0/config/maxTokens"},
+	}
+	for _, tc := range refused {
+		d := compileModelChatNoSchema(t, strings.Replace(modelChatBody, "    outputs:\n",
+			tc.line+"    outputs:\n", 1))
+		if d.Valid() {
+			t.Errorf("out-of-range %s compiled: %s", strings.TrimSpace(tc.line), showDiags(d))
+			continue
+		}
+		hit := modelChatFinding(d, tc.pointer)
+		if hit == nil {
+			t.Errorf("%s: no finding at the key's pointer: %s", strings.TrimSpace(tc.line), showDiags(d))
+			continue
+		}
+		if hit.Code != diag.CodeSchemaShape {
+			t.Errorf("%s code = %s, want %s", strings.TrimSpace(tc.line), hit.Code, diag.CodeSchemaShape)
+		}
+	}
+}

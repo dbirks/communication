@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dbirks/communication/internal/domain"
 	"github.com/dbirks/communication/internal/pipelines/diag"
 	"github.com/dbirks/communication/internal/pipelines/ptr"
 	"github.com/dbirks/communication/internal/pipelines/schema"
@@ -279,6 +280,29 @@ func (w *walk) execPolicy(s *scope, id string, cfg map[string]canonValue, at ptr
 }
 
 func (w *walk) chatPolicy(s *scope, id string, cfg map[string]canonValue, at ptr.Pointer) {
+	// The schema already carries the model.chat ranges (temperature 0…2,
+	// maxTokens integer 1…200000), but a config the worker cannot execute
+	// must be named at VALIDATE, not first at run time — and both sides read
+	// the same canonical values, so the same shared helper decides both
+	// (internal/domain/chatnumber.go: a check that only accepts float64
+	// refuses temperature: 0, an in-range integer literal). Strings are
+	// bindings or schema faults, not numbers: nothing here re-checks them.
+	if v, ok := cfg["temperature"]; ok {
+		if _, isStr := v.(string); !isStr {
+			if f, isNum := domain.NumberAsFloat(v); isNum && !domain.FloatIn(f, 0, 2) {
+				w.err(at.Child("temperature"), diag.CodeSchemaShape,
+					"model.chat temperature must be a number between 0 and 2 (schema minimum 0, maximum 2)")
+			}
+		}
+	}
+	if v, ok := cfg["maxTokens"]; ok {
+		if _, isStr := v.(string); !isStr {
+			if _, ok := domain.IntegerIn(v, 1, 200000); !ok {
+				w.err(at.Child("maxTokens"), diag.CodeSchemaShape,
+					"model.chat maxTokens must be an integer between 1 and 200000 (schema integer, minimum 1, maximum 200000)")
+			}
+		}
+	}
 	if _, ok := cfg["responseSchema"]; ok {
 		// The response schema is an embedded JSON Schema, not a binding; the
 		// worker validates the model's answer against it at execution.

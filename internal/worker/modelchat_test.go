@@ -330,6 +330,83 @@ func TestModelChatConfigurationDoor(t *testing.T) {
 	}
 }
 
+// The live pass-34 refusal: the canonical document carries an integer
+// (int64) for temperature: 0, and the executor's type check only accepted
+// float64/int/json.Number, so an in-range value was refused before the model
+// was ever called. The numeric reads must accept every JSON-number shape —
+// and the ranges the schema declares (0…2, integer 1…200000) must actually
+// be checked, not merely the shape.
+func TestModelChatNumericConfig(t *testing.T) {
+	temps := []struct {
+		name  string
+		value any
+		want  float64
+		ok    bool
+	}{
+		{"int64 zero", int64(0), 0, true},
+		{"float zero", 0.0, 0, true},
+		{"int one", 1, 1, true},
+		{"int64 two", int64(2), 2, true},
+		{"float 0.5", 0.5, 0.5, true},
+		{"number 0", json.Number("0"), 0, true},
+		{"too high", 2.5, 0, false},
+		{"negative", int64(-1), 0, false},
+		{"quoted number", "1", 0, false},
+	}
+	for _, tc := range temps {
+		t.Run("temperature "+tc.name, func(t *testing.T) {
+			cfg := mcConfig()
+			cfg["temperature"] = tc.value
+			spec, bad := parseModelChat(mcClaim(cfg))
+			if tc.ok {
+				if bad != nil || spec == nil {
+					t.Fatalf("temperature %v (type %T) refused: %v", tc.value, tc.value, bad)
+				}
+				if spec.temperature == nil || *spec.temperature != tc.want {
+					t.Fatalf("temperature = %v, want %v", spec.temperature, tc.want)
+				}
+				return
+			}
+			if bad == nil || bad.ErrorClass != ErrorClassInvalidOutput || !strings.Contains(bad.Detail, "between 0 and 2") {
+				t.Fatalf("temperature %v (type %T) was not refused with the range named: %+v", tc.value, tc.value, bad)
+			}
+		})
+	}
+	maxTokens := []struct {
+		name  string
+		value any
+		want  int
+		ok    bool
+	}{
+		{"int64", int64(200), 200, true},
+		{"float64", float64(64), 64, true},
+		{"json number", json.Number("1000"), 1000, true},
+		{"zero", int64(0), 0, false},
+		{"fractional", 1.5, 0, false},
+		{"quoted number", "100", 0, false},
+		{"over the cap", int64(200001), 0, false},
+	}
+	for _, tc := range maxTokens {
+		t.Run("maxTokens "+tc.name, func(t *testing.T) {
+			cfg := mcConfig()
+			cfg["maxTokens"] = tc.value
+			spec, bad := parseModelChat(mcClaim(cfg))
+			if tc.ok {
+				if bad != nil || spec == nil {
+					t.Fatalf("maxTokens %v (type %T) refused: %v", tc.value, tc.value, bad)
+				}
+				if spec.maxTokens == nil || *spec.maxTokens != tc.want {
+					t.Fatalf("maxTokens = %v, want %v", spec.maxTokens, tc.want)
+				}
+				return
+			}
+			if bad == nil || bad.ErrorClass != ErrorClassInvalidOutput || !strings.Contains(bad.Detail, "integer between 1 and 200000") {
+				t.Fatalf("maxTokens %v (type %T) was not refused with the range named: %+v", tc.value, tc.value, bad)
+			}
+		})
+	}
+}
+
 // ------------------------------------------------- § 4 step 8's over-cap spill
 
 // mcSpillConfig is a schema the big reply below satisfies.
