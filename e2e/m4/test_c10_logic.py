@@ -424,5 +424,169 @@ class Words(unittest.TestCase):
             self.assertIn(needle, body, needle)
 
 
+class C10cScratchDoc(unittest.TestCase):
+    """The C10c scratch-pipeline authoring: one model.chat node, the seed
+    reviewer's declared outputs schema copied verbatim into responseSchema, the
+    exact malformed reply in the prompt, retry.maxAttempts 1."""
+
+    def setUp(self):
+        if yaml is None:
+            self.skipTest("PyYAML not installed — canonical-document splices untestable")
+
+    def twin(self):
+        return yaml.safe_load(yaml.safe_dump(Doc.TWIN, indent=4, sort_keys=True))
+
+    def test_one_model_chat_node_with_the_reviewer_schema_verbatim(self):
+        base = self.twin()
+        review = base["spec"]["nodes"][1]["config"]["body"]["nodes"][0]
+        sp = m.c10c_scratch_doc(base, "m4x-c10c-chat-x")
+        self.assertEqual(sp["missing"], [], str(sp["missing"]))
+        self.assertIsInstance(sp["doc"], str)
+        doc = yaml.safe_load(sp["doc"])
+        self.assertEqual(doc["kind"], "Pipeline")
+        self.assertEqual(doc["metadata"]["name"], "m4x-c10c-chat-x")
+        nodes = doc["spec"]["nodes"]
+        self.assertEqual(len(nodes), 1, "the scratch pipeline is ONE node")
+        node = nodes[0]
+        self.assertEqual(node["kind"], "model.chat")
+        self.assertEqual(node["id"], m.C10C_NODE_ID)
+        self.assertEqual(node["retry"], {"maxAttempts": 1})
+        cfg = node["config"]
+        self.assertEqual(cfg["model"], "qwen3-8-27b")
+        self.assertEqual(cfg["temperature"], 0)
+        self.assertEqual(cfg["maxTokens"], 200)
+        self.assertEqual(cfg["responseSchema"], review["outputs"],
+                         "responseSchema must be the reviewer's declared schema verbatim")
+        self.assertTrue(all(k in ("role", "content") and v
+                            for msg in cfg["messages"] for k, v in msg.items()))
+        user = [x for x in cfg["messages"] if x["role"] == "user"]
+        self.assertEqual(len(user), 1)
+        self.assertIn(m.C10C_REPLY, user[0]["content"])
+        self.assertIn("${{ inputs.goal }}", user[0]["content"])
+        self.assertTrue(isinstance(node["outputs"]["properties"].get("text"), dict),
+                        "the node's own outputs keep the model.chat shape (text)")
+
+    def test_the_prompt_reply_is_the_malformed_shape(self):
+        sp = m.c10c_scratch_doc(self.twin(), "m4x-c10c-chat-y")
+        # doc_yaml_emit renders the prompt as a YAML double-quoted scalar, so the
+        # reply's quotes are escaped; unescape before asserting the shape.
+        plain = sp["doc"].replace(chr(92) + chr(34), chr(34))
+        self.assertIn("\"approved\": \"yes\"", plain)
+        self.assertIn("\"evidence\": 42", plain)
+        self.assertEqual(sp["doc"].count("kind: model.chat"), 1)
+        self.assertTrue(all(ok is True for _l, ok, _d in m.c10c_doc_verdicts(sp)),
+                        str(m.c10c_doc_verdicts(sp)))
+
+    def test_the_builder_does_not_mutate_the_source(self):
+        frozen = yaml.safe_load(yaml.safe_dump(self.twin()))
+        base = self.twin()
+        m.c10c_scratch_doc(base, "m4x-c10c-chat-z")
+        self.assertEqual(frozen, base, "the seed twin document must stay untouched")
+
+    def test_no_review_node_or_wrong_schema_shape_is_a_refusal(self):
+        no_review = self.twin()
+        no_review["spec"]["nodes"][1]["config"]["body"]["nodes"] = []
+        sp = m.c10c_scratch_doc(no_review, "m4x-c10c-norev")
+        self.assertIsNone(sp["doc"])
+        self.assertTrue(sp["missing"])
+        two = self.twin()
+        two["spec"]["nodes"][1]["config"]["body"]["nodes"].append(
+            {"id": "review", "kind": "process.exec"})
+        sp = m.c10c_scratch_doc(two, "m4x-c10c-two")
+        self.assertIsNone(sp["doc"])
+        self.assertTrue(any("exactly one" in x for x in sp["missing"]), str(sp["missing"]))
+        bad = self.twin()
+        rev = bad["spec"]["nodes"][1]["config"]["body"]["nodes"][0]
+        rev["outputs"]["properties"]["approved"] = {"type": "string"}
+        sp = m.c10c_scratch_doc(bad, "m4x-c10c-bad")
+        self.assertIsNone(sp["doc"])
+        self.assertTrue(sp["missing"], "a reviewer whose approved slot is not "
+                                       "{type: boolean} cannot carry the C10 shape")
+        for junk in ({"apiVersion": "v1", "kind": "Thing"}, "apiVersion: v1\n"):
+            self.assertTrue(m.c10c_scratch_doc(junk, "m4x-c10c-junk")["missing"])
+
+
+class C10cEnv(unittest.TestCase):
+    """The C10c precondition probe: the worker reads COMMUNICATION_MODEL_CHAT_*
+    (never the stale COMMUNICATION_MODEL_PROVIDER_BASE_URL), the endpoint is
+    echoed as set/unset only, the allowlist is not a secret and is echoed."""
+
+    def test_the_probe_names_the_worker_envs_and_never_echoes_the_url(self):
+        cmd = m.c10c_env_probe_cmd()
+        self.assertIn(m.C10C_BASE_URL_ENV, cmd)
+        self.assertIn(m.C10C_MODELS_ENV, cmd)
+        self.assertNotIn("COMMUNICATION_MODEL_PROVIDER_BASE_URL", cmd)
+        self.assertIn("echo set", cmd)          # set/unset spelling only
+        self.assertIn("printenv " + m.C10C_MODELS_ENV, cmd)
+        self.assertNotIn("printenv " + m.C10C_BASE_URL_ENV, cmd)
+
+    def test_the_probe_out_parser(self):
+        self.assertEqual(m.c10c_env_probe_out("set\nqwen3-8-27b\n"),
+                         (True, ["qwen3-8-27b"]))
+        self.assertEqual(m.c10c_env_probe_out("set\na, b\n"), (True, ["a", "b"]))
+        self.assertEqual(m.c10c_env_probe_out("set\n"), (True, []))
+        self.assertEqual(m.c10c_env_probe_out("unset\n\n"), (False, []))
+        self.assertEqual(m.c10c_env_probe_out("unset"), (False, []))
+        for junk in ("", "  ", "garbage\nset\n", "set x\n"):
+            self.assertEqual(m.c10c_env_probe_out(junk), (None, None))
+
+
+class C10cArm(unittest.TestCase):
+    """The C10c arm-result rule: a VALID model reply is a GAP, never a PASS; the
+    NOTE carries the raw reply's size/shape, never its secrets."""
+
+    MALFORMED_ATT = {"id": "a1", "status": "failed", "error_class": "invalid_output",
+                     "output_errors": '[{"code": "response_schema_mismatch", '
+                                      '"message": "at /approved: got string, want '
+                                      'boolean | at /evidence: got number, want string"}]',
+                     "outputs": "-"}
+    VALID_ATT = {"id": "a1", "status": "succeeded", "error_class": "-",
+                 "output_errors": "[]",
+                 "outputs": m.json.dumps({"text": m.json.dumps(
+                     {"approved": True, "evidence": "ok"}),
+                     "model": "qwen3-8-27b"})}
+
+    def test_a_valid_reply_is_a_gap_never_a_pass(self):
+        att, note = m.c10c_arm_result(self.VALID_ATT)
+        self.assertIsNone(att)
+        self.assertIn("SUCCEEDED", note)
+        self.assertIn("GAP", note)
+        v = m.c10_chat_verdicts(None, endpoint_configured=True, arm_note=note)
+        self.assertIsNone(one(v, "model.chat fails identically"))
+        self.assertIn("SUCCEEDED", detail(v, "model.chat fails identically"))
+
+    def test_a_malformed_reply_is_graded_like_c10a(self):
+        att, note = m.c10c_arm_result(self.MALFORMED_ATT)
+        self.assertIs(att, self.MALFORMED_ATT)
+        self.assertIsNone(note)
+        v = m.c10_chat_verdicts(att, endpoint_configured=True)
+        self.assertTrue(one(v, "C10c the malformed reviewer attempt closed"))
+        self.assertTrue(one(v, "C10c its error_class"))
+
+    def test_no_attempt_row_keeps_the_gap(self):
+        att, note = m.c10c_arm_result(None)
+        self.assertIsNone(att)
+        self.assertIn("no attempt row", note)
+        v = m.c10_chat_verdicts(None, endpoint_configured=True, arm_note=note)
+        self.assertIsNone(one(v, "model.chat fails identically"))
+
+    def test_the_reply_note_never_prints_the_reply_bytes(self):
+        note = m.c10c_reply_note(self.VALID_ATT)
+        self.assertIn("chars", note)
+        self.assertIn("json dict", note)
+        self.assertIn("evidence", note)
+        self.assertNotIn("qwen3", note)
+        note = m.c10c_reply_note(self.MALFORMED_ATT)
+        self.assertIn("got string, want boolean", note)
+        self.assertIn("not recorded", note)
+
+    def test_the_gate_wires_the_arm(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = body.split("def c10():")[1].split("def c11(")[0]
+        self.assertIn("c10c_scratch_arm", body)
+        self.assertIn("c10_chat_precondition", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
