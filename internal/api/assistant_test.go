@@ -110,6 +110,24 @@ func (m *asstModel) handler() http.Handler {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+		// The collective's real rule: a function name outside [A-Za-z0-9_-]{1,64}
+		// is a 400, so a dotted registry name on the wire fails the test.
+		if tools, ok := body["tools"].([]any); ok {
+			for _, item := range tools {
+				spec, _ := item.(map[string]any)
+				fn, _ := spec["function"].(map[string]any)
+				name, _ := fn["name"].(string)
+				if !wireToolNameOK(name) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+						"message": "function name must match [A-Za-z0-9_-]{1,64}",
+						"param":   "tools",
+					}})
+					return
+				}
+			}
+		}
 		blob, _ := json.Marshal(body)
 		m.mu.Lock()
 		idx := m.n
@@ -160,6 +178,20 @@ func asstToolCall(name string, args map[string]any) map[string]any {
 	blob, _ := json.Marshal(args)
 	return map[string]any{"id": "call-1", "type": "function",
 		"function": map[string]any{"name": name, "arguments": string(blob)}}
+}
+
+// wireToolNameOK is the collective's real rule (its 400 quotes the same
+// pattern); the fake endpoint enforces it on the request tools array.
+func wireToolNameOK(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func asstMount(t *testing.T, deps AssistantDeps, auth Authenticator) *Server {
@@ -253,8 +285,7 @@ func TestAssistantAskFollowsSessionAndCSFRules(t *testing.T) {
 func TestAssistantAskAnswersWithReadTools(t *testing.T) {
 	stores := &asstStores{projects: []ProjectView{{ID: "01JPROJECTA", Name: "Project A", MyRole: "member"}}}
 	model := &asstModel{steps: []asstStep{
-		{toolCalls: []map[string]any{asstToolCall("project.list", nil)}},
-		{text: "Project A has nothing waiting."},
+		{toolCalls: []map[string]any{asstToolCall("project_list", nil)}}, {text: "Project A has nothing waiting."},
 	}}
 	s := asstMount(t, AssistantDeps{
 		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,
@@ -317,8 +348,7 @@ func TestAssistantAskAnswersAsTheCallerOnly(t *testing.T) {
 		hidden:   "01JPROJECTB",
 	}
 	model := &asstModel{steps: []asstStep{
-		{toolCalls: []map[string]any{asstToolCall("run.list", map[string]any{"project_id": "01JPROJECTB"})}},
-		{echo: true},
+		{toolCalls: []map[string]any{asstToolCall("run_list", map[string]any{"project_id": "01JPROJECTB"})}}, {echo: true},
 	}}
 	s := asstMount(t, AssistantDeps{
 		Projects: stores, Runs: stores, Approvals: stores, Pipelines: stores, Profiles: stores,

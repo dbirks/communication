@@ -97,6 +97,9 @@ type Broker struct {
 	cfg   Config
 	tools map[string]tool
 	order []string
+	// wire decodes the model's tool_calls[].function.name back to the
+	// registry name (wire.go); never a reverse string replace.
+	wire map[string]string
 }
 
 // New refuses an unconfigured or invalid endpoint rather than building a broker
@@ -115,7 +118,11 @@ func New(cfg Config, store Store) (*Broker, error) {
 		cfg.Model = DefaultModel
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	return &Broker{store: store, cfg: cfg, tools: toolRegistry(), order: toolOrder}, nil
+	byWire, err := toolWireMap()
+	if err != nil {
+		return nil, err
+	}
+	return &Broker{store: store, cfg: cfg, tools: toolRegistry(), order: toolOrder, wire: byWire}, nil
 }
 
 // Configured reports whether egress is wired. The ask route answers 503

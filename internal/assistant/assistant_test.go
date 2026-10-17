@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -136,6 +137,11 @@ func (f *fakeStore) seenCallers() []Caller {
 
 // --- the fake OpenAI-compatible endpoint ----------------------------------
 
+// wireToolNameRe is the collective's real rule (its 400 quotes the same
+// pattern); the fake endpoint enforces it so a dotted name leaking onto the
+// wire fails the test the way it failed the M4 lab.
+var wireToolNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 // step is one scripted completion. echo replays the last user message back as
 // the answer text, which is how the authz test proves what the model was shown.
 type step struct {
@@ -166,6 +172,20 @@ func newFakeModel(t *testing.T, steps ...step) *fakeModel {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		// Enforce the collective's real rule: an OpenAI-compatible endpoint
+		// answers 400 for a function name outside [A-Za-z0-9_-]{1,64}, so a
+		// dotted registry name leaking onto the wire cannot pass unnoticed.
+		for _, spec := range req.Tools {
+			if !wireToolNameRe.MatchString(spec.Function.Name) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+					"message": "function name must match [A-Za-z0-9_-]{1,64}",
+					"param":   "tools",
+				}})
+				return
+			}
+		}
 		f.mu.Lock()
 		f.requests = append(f.requests, req)
 		idx := len(f.requests) - 1
@@ -177,6 +197,14 @@ func newFakeModel(t *testing.T, steps ...step) *fakeModel {
 		if idx < len(f.steps) {
 			scripted = f.steps[idx]
 		}
+		// A real model echoes back the function names it was announced, i.e. the
+		// wire names; encode the scripted registry names the same way so the
+		// scripted responses are what the wire would actually carry.
+		wireCalls := make([]toolCallRequest, len(scripted.toolCalls))
+		copy(wireCalls, scripted.toolCalls)
+		for i := range wireCalls {
+			wireCalls[i].Function.Name = wireName(wireCalls[i].Function.Name)
+		}
 		content := scripted.text
 		if scripted.echo {
 			content = lastUserContent(req)
@@ -186,7 +214,7 @@ func newFakeModel(t *testing.T, steps ...step) *fakeModel {
 				"message": map[string]any{
 					"role":       "assistant",
 					"content":    content,
-					"tool_calls": scripted.toolCalls,
+					"tool_calls": wireCalls,
 				},
 				"finish_reason": func() string {
 					if len(scripted.toolCalls) > 0 {
@@ -363,6 +391,48 @@ func deref(s *string) string {
 	return *s
 }
 
+// TestAskToolNameRoundTripsOnTheWire is the M4-lab regression: the request
+// tools array carries the legal wire name (project_list), the model's
+// project_list call executes the dotted registry tool project.list, and the
+// answer's audit record names project.list — the dotted name never reaches the
+// wire, and the wire name never reaches the answer.
+func TestAskToolNameRoundTripsOnTheWire(t *testing.T) {
+	store := newFakeStore()
+	store.projects = json.RawMessage(`[{"id":"01JPROJECTA","slug":"alpha","name":"Project A","my_role":"member"}]`)
+	// The model answers with the name it was announced with — the wire name,
+	// exactly as the collective does.
+	model := newFakeModel(t,
+		step{toolCalls: []toolCallRequest{toolCall("project_list", nil)}},
+		step{text: "Project A has one run."})
+	b := newTestBroker(t, model, store)
+
+	answer, bad := b.Ask(context.Background(), testCaller, "list my projects", QuestionContext{})
+	if bad != nil {
+		t.Fatalf("Ask failed: %+v", bad)
+	}
+	sawProjectList, sawDotted := false, false
+	for _, spec := range model.seen(0).Tools {
+		if spec.Function.Name == "project_list" {
+			sawProjectList = true
+		}
+		if strings.ContainsRune(spec.Function.Name, '.') {
+			sawDotted = true
+		}
+	}
+	if !sawProjectList {
+		t.Fatalf("request tools carry no project_list")
+	}
+	if sawDotted {
+		t.Fatalf("request tools carry a dotted registry name")
+	}
+	if !store.called("project.list") {
+		t.Fatal("the model's project_list call did not execute project.list")
+	}
+	if len(answer.ToolCalls) != 1 || answer.ToolCalls[0].Name != "project.list" || !answer.ToolCalls[0].OK {
+		t.Fatalf("answer must name project.list: %+v", answer.ToolCalls)
+	}
+}
+
 // TestAskNonMemberLearnsNothingAboutProjectB is ADR-0034's Verification case:
 // the ID-scoped tool answers the 404 rule, the refusal carries no rows and no
 // name, and an echo-model that repeats whatever it was shown still cannot
@@ -425,8 +495,10 @@ func TestAskRefusesToolsOutsideTheRegistry(t *testing.T) {
 	if bad != nil {
 		t.Fatalf("Ask failed: %+v", bad)
 	}
-	want := map[string]string{"pipeline.publish": "write_not_allowed", "secret.list": "unknown_tool",
-		"approval.decide": "write_not_allowed", "project.list": "bad_arguments"}
+	// Known tools decode back to the dotted registry name; unknown names are
+	// refused and recorded exactly as the model sent them — the wire names.
+	want := map[string]string{"pipeline_publish": "write_not_allowed", "secret_list": "unknown_tool",
+		"approval_decide": "write_not_allowed", "project.list": "bad_arguments"}
 	if len(answer.ToolCalls) != len(want) {
 		t.Fatalf("tool_calls = %+v", answer.ToolCalls)
 	}

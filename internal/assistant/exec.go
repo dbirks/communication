@@ -63,6 +63,13 @@ func (t *turn) record(call ToolCall, payload json.RawMessage) {
 func (t *turn) exec(call toolCallRequest) {
 	b := t.b
 	name := claimedName(t, call)
+	// The model answered with the wire name it was announced with; decode it
+	// back to the registry name through the map built from the same registry.
+	// An unknown wire name falls through to the unknown-tool refusal below,
+	// exactly as an unknown registry name does today.
+	if reg, ok := b.wire[name]; ok {
+		name = reg
+	}
 	tl, known := b.tools[name]
 	if !known {
 		reason := "unknown_tool"

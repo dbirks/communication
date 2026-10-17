@@ -133,13 +133,15 @@ var toolRegistry = func() map[string]tool {
 	return reg
 }
 
-// toolSpecs is the OpenAI `tools` array for the registry.
+// toolSpecs is the OpenAI `tools` array for the registry. Names are encoded
+// to legal wire names here (wire.go) — the dotted registry names never leave
+// the process.
 func (b *Broker) toolSpecs() []toolSpec {
 	specs := make([]toolSpec, 0, len(b.order))
 	for _, name := range b.order {
 		tl := b.tools[name]
 		spec := toolSpec{Type: "function"}
-		spec.Function.Name = tl.name
+		spec.Function.Name = wireName(tl.name)
 		spec.Function.Description = tl.desc + " Read-only: this tool cannot change anything."
 		params := map[string]any{"type": "object", "properties": tl.props, "additionalProperties": false}
 		if len(tl.require) > 0 {
