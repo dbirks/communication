@@ -48,3 +48,24 @@ journalling `sandbox.egress_observed` — is closed by this change's worker work
 
 Pass `ask` as the fourth argument at the three call sites in `docs/compatibility/probes/m4/seed.sh`
 and re-run it: the upsert re-affirms `permission_mode` in place. No migration, no API change.
+
+## Addendum 2026-10-16 — condition (a) measured
+
+Condition (a) — a journalled verdict for a policy decision — is **closed in the lab**, superseding the
+sentence in Security/privacy that called it open.
+
+**Cause:** no mode was ever requested. `deny` and `preapproved_within_sandbox` fell through with
+`modeID = ""` (`internal/worker/agentturn.go:405-416`) and `session/set_mode` is sent only when a mode is
+set (`internal/agent/acp/handle.go:200-211`), so the harness stayed in `claude-agent-acp`'s shipped `auto`
+mode, which never prompts: no prompt, hence no `conversation.permission.*` rows, and `deny` was unenforced
+too. **Fix:** `a0fd9e7` (attempts) + `1b93069` (conversation turns) ask for the launcher's verified
+prompting mode under both policies, failing closed without one; the existing bridge then journals the
+`requested` + `decided` pair — no new event type or payload field.
+
+**Measured, pass 27** (`live27/`, lab `1b93069`): C1+C2 **127 PASS / 0 FAIL / 0 GAP**
+(`live27/C1,C2.out:280`); journal after the pass: `permission.requested` **23**, `permission.decided` **23**
+(all `status=decided`, `decided_by=node_policy:preapproved_within_sandbox`), `tool.call` **31** — vs **0**
+permission rows over 34 tool calls on live25. Driver check C1j (`7e6eda3`) first runs at pass 28: **pending**.
+
+**This ADR's lab-only scope is NOT changed:** migration 00003, the profile API and every deployment stay
+`ask`, and whether `preapproved_within_sandbox` becomes a product default is a separate owner decision.

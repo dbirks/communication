@@ -422,16 +422,26 @@ on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6f
    re-run.
 7. **Attempt agents could not run git in their own worktree.** In live25's agent run the
    agent reported "Git commands also failed because the repo's worktree link is broken"
-   (`docs/m4-exit-status.md`, C1g's live25 note): the attempt launch plan omits ADR-0017's
-   `mirror_read` grant, without which every git command in the worktree dies. Fix in
-   progress; no verdict is changed for it.
-8. **A `deny` profile is not enforced in an attempt.** The attempt path asks the harness to
-   prompt only for `ask` — `deny` and `preapproved_within_sandbox` both fall through with
+   (`docs/m4-exit-status.md`, C1g's live25 note): the attempt launch plan omitted ADR-0017's
+   `mirror_read` grant, without which every git command in the worktree dies. **Fixed in
+   `e83913a`, measured in pass 26** (`live26/`, lab `76a9e64`): C1 re-ran **98 PASS / 0 FAIL / 0 GAP**
+   (`live26/C1.out:211`) and the agent runs git in its worktree now — `live26/_events-C1.txt` carries
+   zero `not a git repository` / `worktree link` / `backing repo` strings where live25 carried them,
+   and the reviewer's own messages cite a `git diff` against HEAD (`:14, :16`).
+8. **A `deny` profile was not enforced in an attempt.** The attempt path asked the harness to
+   prompt only for `ask` — `deny` and `preapproved_within_sandbox` both fell through with
    `modeID = ""` (`internal/worker/agentturn.go:405-416`) and `session/set_mode` is sent
    only when a mode is set (`internal/agent/acp/handle.go:200-211`) — so the attempt never
-   leaves `claude-agent-acp`'s shipped `auto` mode: no prompt arrives, nothing is
+   left `claude-agent-acp`'s shipped `auto` mode: no prompt arrived, nothing was
    journalled, and the lab's 34 tool calls produced 0 `conversation.permission.*` rows
-   (`docs/design/attempt-permissions.md` § "Why attempts journal no verdict"). Fix queued.
+   (`docs/design/attempt-permissions.md` § "Why attempts journal no verdict"). **Fixed in
+   `a0fd9e7` + `1b93069`, measured in pass 27** (`live27/`, lab `1b93069`): C1+C2 **127 PASS / 0 FAIL /
+   0 GAP** (`live27/C1,C2.out:280`), and the lab journal after the pass reads
+   `conversation.permission.requested` 23 / `conversation.permission.decided` 23 (all `status=decided`,
+   `decided_by=node_policy:preapproved_within_sandbox`) over 31 `conversation.tool.call` rows — so
+   `deny` prompts and is answered by policy. Condition (a) of the 2026-10-16 evaluation — the one item
+   blocker 2 above waits on — is thereby closed **in the lab** (ADR-0036's 2026-10-16 addendum); what
+   blocker 2 still waits on is the owner's separate decision to make the mode a product default.
 9. **The cluster runs a build older than every fix above.** GitHub Actions has not run
    since `c5c7888` (account billing), so no `main` image has been published for Flux image
    automation to pin (`docs/home-cluster.md` § 4) — the cluster worker predates `d9928d9`,

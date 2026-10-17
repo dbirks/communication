@@ -116,4 +116,18 @@ amending ADR-0036's condition (a). Alternative — stamping `tool.call` with the
 `internal/events`), so it needs an ADR, and it journals an absence instead of a decision. Both keep
 the `auto`-mode caveat: with `default` mode Claude prompts per edit/bash, so attempt latency rises.
 
+**Implemented and measured (2026-10-16).** The proposal above was implemented in `a0fd9e7` (attempts) and
+`1b93069` (conversation turns) — both policies now request the launcher's verified prompting mode and fail
+closed without one — and measured in pass 27 (`live27/`, lab `1b93069`): **C1+C2 127 PASS / 0 FAIL / 0 GAP**
+(`live27/C1,C2.out:280`), with the lab journal after the pass reading `conversation.permission.requested`
+**23**, `conversation.permission.decided` **23** (every row `status=decided`,
+`decided_by=node_policy:preapproved_within_sandbox`) against **31** `conversation.tool.call` rows — the
+`(0 rows)` read of section 1 is dead while its diagnosis is exactly what shipped (it named
+`agentturn.go:414` as the change point and both commits make that change). The finding that grew out of
+the same fall-through — **`deny` was unenforced**, because `deny` also reached `auto` and let every tool
+through — is fixed by the same two commits: `deny` now prompts and is answered by policy instead of by the
+harness's silent default. Whether the mode becomes a product default is a separate owner decision;
+ADR-0036 stays lab-only (see its 2026-10-16 addendum), and driver check C1j (`7e6eda3`) asserts the
+requested/decided pairing from the live side — first run pass 28, pending.
+
 
