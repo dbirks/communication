@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1207,4 +1208,144 @@ func newLoopForAgent(t *testing.T, store *fakeAttemptStore, execs AttemptExecuto
 		t.Fatalf("NewAttemptLoop: %v", err)
 	}
 	return l
+}
+
+// --- ADR-0017 D4: the attempt plan's mirror grant axis -----------------------
+//
+// The lab's agent.task node could run no git command at all: the attempt's
+// hand-built grant set omitted RoleMirrorRead, which probe P10 measured as
+// never optional — every git command in a linked worktree dies with
+// "fatal: not a git repository" without it (the worktree .git file points into
+// the mirror tree). These pins hold the attempt shape to what wsgit.Plan
+// builds: mirror_read always, the four commit-axis writes only under the
+// profile's commit grant, in Plan's role order.
+
+func agentTurnMirrorFixture(t *testing.T, commitGranted bool) (*agentTurnFixture, *recordingSandbox, string, string) {
+	t.Helper()
+	f := newAgentTurnFixture(t, domain.EnforceRequired)
+	fake := &recordingSandbox{}
+	f.turn.Sandbox = fake
+	f.turn.SandboxPath = "/usr/local/bin/nono"
+	mirror := filepath.Join(f.root, "repos", "proj-mirror", "app.git")
+	checkout := filepath.Join(f.layout.Repos, "app")
+	adminDir := filepath.Join(mirror, "worktrees", "app")
+	for _, dir := range []string{
+		filepath.Join(mirror, "objects"),
+		filepath.Join(mirror, "refs", "heads", fakeRunID),
+		filepath.Join(mirror, "logs", "refs", "heads", fakeRunID),
+		adminDir,
+		checkout,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(checkout, ".git"), []byte("gitdir: "+adminDir+"\n"), 0o600); err != nil {
+		t.Fatalf("write gitfile: %v", err)
+	}
+	f.turn.Secrets = &agentSecretsStub{repos: []MaterializeRepo{{
+		ID: "repo-1", Name: "app", CheckoutPath: checkout, MirrorPath: mirror,
+	}}}
+	f.turn.Profiles = &profilesStub{ok: true, prof: AgentProfile{
+		AgentProfileID: "m4-implementer", LauncherID: "claude", PermissionMode: "deny",
+		CommitGranted: commitGranted,
+	}}
+	f.spawn.queue(newAgentSessionStub(domain.SessionInfo{}))
+	return f, fake, mirror, adminDir
+}
+
+func hasGrant(grants []wsgit.Grant, role, path string) bool {
+	for _, g := range grants {
+		if g.Role == role && g.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func grantPaths(grants []wsgit.Grant, role string) []string {
+	var out []string
+	for _, g := range grants {
+		if g.Role == role {
+			out = append(out, g.Path)
+		}
+	}
+	return out
+}
+
+func TestAgentTurnAttemptPlanGrantsTheMirrorReadAlways(t *testing.T) {
+	f, fake, mirror, _ := agentTurnMirrorFixture(t, false)
+	res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("work")), f.sink)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("res = %+v, want succeeded", res)
+	}
+	plan := fake.lastSpec().Plan
+	if !hasGrant(plan.Grants, wsgit.RoleMirrorRead, mirror) {
+		t.Errorf("grants = %+v, want a mirror_read grant on %s (probe P10: without it every git command in the worktree dies)", plan.Grants, mirror)
+	}
+	for _, role := range []string{wsgit.RoleMirrorObjects, wsgit.RoleMirrorRef, wsgit.RoleMirrorReflog, wsgit.RoleWorktreeAdmin} {
+		if got := grantPaths(plan.Grants, role); len(got) != 0 {
+			t.Errorf("commit-axis grant %s present without the commit axis: %v", role, got)
+		}
+	}
+	// The pre-existing attempt shape is untouched: same checkout/scratch/home
+	// grants, same cwd.
+	if !hasGrant(plan.Grants, wsgit.RoleCheckout, f.layout.Repos) ||
+		!hasGrant(plan.Grants, wsgit.RoleScratch, f.layout.Scratch) ||
+		!hasGrant(plan.Grants, wsgit.RoleAgentHome, f.layout.Home) {
+		t.Errorf("grants = %+v, want the checkout/scratch/home grants unchanged", plan.Grants)
+	}
+	if plan.Cwd != f.layout.Repos {
+		t.Errorf("cwd = %q, want %q unchanged", plan.Cwd, f.layout.Repos)
+	}
+}
+
+func TestAgentTurnAttemptPlanGrantsTheCommitAxisOnlyWhenGranted(t *testing.T) {
+	f, fake, mirror, adminDir := agentTurnMirrorFixture(t, true)
+	res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("work")), f.sink)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("res = %+v, want succeeded", res)
+	}
+	plan := fake.lastSpec().Plan
+	if !plan.CommitGranted {
+		t.Errorf("plan.CommitGranted = false, want the profile axis carried through")
+	}
+	want := [][2]string{
+		{wsgit.RoleMirrorRead, mirror},
+		{wsgit.RoleMirrorObjects, filepath.Join(mirror, "objects")},
+		{wsgit.RoleMirrorRef, filepath.Join(mirror, "refs", "heads", fakeRunID)},
+		{wsgit.RoleMirrorReflog, filepath.Join(mirror, "logs", "refs", "heads", fakeRunID)},
+		{wsgit.RoleWorktreeAdmin, adminDir},
+	}
+	for _, w := range want {
+		if !hasGrant(plan.Grants, w[0], w[1]) {
+			t.Errorf("grants = %+v, want %s at %s", plan.Grants, w[0], w[1])
+		}
+	}
+	// Plan's per-repo role order, contiguously: read first, then the four
+	// writes — the attempt must not reorder the axis wsgit.Plan defines.
+	roles := make([]string, 0, len(plan.Grants))
+	for _, g := range plan.Grants {
+		for _, w := range want {
+			if g.Role == w[0] && g.Path == w[1] {
+				roles = append(roles, g.Role)
+				break
+			}
+		}
+	}
+	wantRoles := []string{wsgit.RoleMirrorRead, wsgit.RoleMirrorObjects, wsgit.RoleMirrorRef, wsgit.RoleMirrorReflog, wsgit.RoleWorktreeAdmin}
+	if strings.Join(roles, ",") != strings.Join(wantRoles, ",") {
+		t.Errorf("mirror axis order = %v, want %v (Plan's shape)", roles, wantRoles)
+	}
+	// And the admin dir came from the gitfile read-back, not a construction:
+	// the grant is the exact directory the .git file named.
+	if got := grantPaths(plan.Grants, wsgit.RoleWorktreeAdmin); len(got) != 1 || got[0] != adminDir {
+		t.Errorf("mirror_admin_dir = %v, want exactly %s", got, adminDir)
+	}
 }

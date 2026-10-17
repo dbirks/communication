@@ -216,23 +216,36 @@ func Plan(prep *PreparedWorkspace, opts PlanOptions) (LaunchPlan, error) {
 
 	for _, repo := range prep.Repos {
 		add(RoleCheckout, repo.CheckoutPath)
-		// P10: any git command in a linked worktree dies with
-		// `fatal: gitfile does not point to a valid repository` unless the
-		// mirror itself is readable. This grant is never optional.
-		add(RoleMirrorRead, repo.MirrorPath)
-		if !opts.CommitGranted {
-			continue
+		for _, g := range MirrorGrants(prep.Layout.ScopeID, repo.MirrorPath, repo.AdminDir, opts.CommitGranted) {
+			add(g.Role, g.Path)
 		}
-		scope := prep.Layout.ScopeID
-		add(RoleMirrorObjects, filepath.Join(repo.MirrorPath, "objects"))
-		add(RoleMirrorRef, filepath.Join(repo.MirrorPath, "refs", "heads", scope))
-		add(RoleMirrorReflog, filepath.Join(repo.MirrorPath, "logs", "refs", "heads", scope))
-		add(RoleWorktreeAdmin, repo.AdminDir)
 	}
 	for _, rw := range opts.HarnessCredentialDirs {
 		add(RoleHarnessAuth, rw)
 	}
 	return plan, plan.Check()
+}
+
+// MirrorGrants is ADR-0017 D4's per-repository mirror axis — the single
+// source of the shape Plan documents: P10's never-optional read of the whole
+// mirror (any git command in a linked worktree dies with `fatal: gitfile does
+// not point to a valid repository` without it), and, when the commit axis is
+// granted, exactly the four mirror writes: objects, this scope's refs, this
+// scope's reflog, this worktree's admin dir. Plan uses it; so does any path
+// that consumes a preparation it did not run itself (the agent.acp attempt,
+// which reads the rows § 4 step 3 wrote) and must therefore rebuild the
+// grant set from workspace_repos rather than from a *PreparedWorkspace.
+func MirrorGrants(scopeID, mirrorPath, adminDir string, commitGranted bool) []Grant {
+	grants := []Grant{{Role: RoleMirrorRead, Path: mirrorPath}}
+	if !commitGranted {
+		return grants
+	}
+	return append(grants,
+		Grant{Role: RoleMirrorObjects, Path: filepath.Join(mirrorPath, "objects")},
+		Grant{Role: RoleMirrorRef, Path: filepath.Join(mirrorPath, "refs", "heads", scopeID)},
+		Grant{Role: RoleMirrorReflog, Path: filepath.Join(mirrorPath, "logs", "refs", "heads", scopeID)},
+		Grant{Role: RoleWorktreeAdmin, Path: adminDir},
+	)
 }
 
 // PlanOptions are the profile axes and runtime paths Plan needs.

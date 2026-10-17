@@ -447,12 +447,21 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		}
 	}
 
+	// ADR-0017 D4 / probe P10: the attempt consumes the § 4 step 3 preparation,
+	// so it reads the workspace's repositories back once and uses them twice —
+	// for the mirror grants of the launch plan below, and for the secret mounts
+	// (materializeSecrets), which already asked this same read.
+	repos, refusal := a.attemptRepos(ctx, workspaceID)
+	if refusal != nil {
+		return *refusal, nil
+	}
+
 	// § 4 step 4, in the order the contract fixes: secrets are materialized
 	// before the launch, and therefore before any checkpoint capture, so the
 	// exclusion that keeps an env_file mount out of the artifact is already in
 	// place when the capture reads the tree (ADR-0020 § 6). A refusal here fails
 	// the attempt with no child and no partial set (ADR-0018 D4's rule).
-	materialized, refusal := a.materializeSecrets(ctx, c, prof, conv, workspaceID, layout)
+	materialized, refusal := a.materializeSecrets(ctx, c, prof, conv, workspaceID, layout, repos)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -510,6 +519,18 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		Cwd:           layout.Repos,
 		CommitGranted: prof.CommitGranted,
 	}
+	// ADR-0017 D4 required this plan to carry the mirror axis Plan() documents
+	// as never optional: probe P10 measured that ANY git command inside a linked
+	// worktree dies with "fatal: not a git repository" unless the mirror is
+	// readable (the lab's agent saw exactly this — the worktree .git file
+	// pointing into the mirror tree with no grant reaching it), and with the
+	// commit axis granted the four mirror writes join too. Same roles, same
+	// order, same source wsgit.Plan uses (git.MirrorGrants is the single shape).
+	mirrorGrants, err := attemptMirrorGrants(layout, repos, prof.CommitGranted)
+	if err != nil {
+		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
+	}
+	plan.Grants = append(plan.Grants, mirrorGrants...)
 	// M3's credential grant in the attempt shape (ADR-0019 D4): the launcher's
 	// declared credential directories join the grant set under the
 	// harness_credentials role — the same role, and the same access, the
@@ -777,6 +798,75 @@ func (a *AgentTurn) runWorkspace(c AttemptClaim) (wsgit.Layout, *AttemptResult) 
 	return layout, nil
 }
 
+// attemptRepos reads the run workspace's prepared repositories back once per
+// attempt (the same authorized read the secret mounts use — the rows § 4 step 3
+// wrote, never a path inferred from the layout). No Secrets seam or no run
+// workspace means no repos are known, and therefore no mirror grants: the
+// attempt shape degrades to what it was before ADR-0017 D4 was wired here,
+// visibly, rather than inventing a path.
+func (a *AgentTurn) attemptRepos(ctx context.Context, workspaceID string) ([]MaterializeRepo, *AttemptResult) {
+	if a.Secrets == nil || workspaceID == "" {
+		return nil, nil
+	}
+	repos, err := a.Secrets.ReposForWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, ptrResult(failedResult(ErrorClassInfra,
+			"read the run workspace's repositories for the attempt grant set: "+a.redact(err.Error())))
+	}
+	return repos, nil
+}
+
+// attemptMirrorGrants builds the per-repository mirror grant axis for the
+// attempt-shaped plan from the workspace_repos rows. The roles and their order
+// are git.MirrorGrants' — the same source wsgit.Plan consumes — so the two
+// shapes cannot drift. The admin dir the commit axis needs is not a row the
+// attempt reads (MaterializeRepo carries four paths, not five), so it is read
+// back the way probe G1c validated: the worktree's own `.git` file agrees with
+// `rev-parse --absolute-git-dir`, and a read that cannot answer fails the plan
+// rather than dropping the grant (C-FC3: a silently missing grant is the bug
+// this whole axis exists to close).
+func attemptMirrorGrants(layout wsgit.Layout, repos []MaterializeRepo, commitGranted bool) ([]wsgit.Grant, error) {
+	var out []wsgit.Grant
+	for _, repo := range repos {
+		if repo.MirrorPath == "" {
+			continue
+		}
+		adminDir := ""
+		if commitGranted {
+			dir, err := worktreeAdminDir(repo.CheckoutPath)
+			if err != nil {
+				return nil, err
+			}
+			adminDir = dir
+		}
+		out = append(out, wsgit.MirrorGrants(layout.ScopeID, repo.MirrorPath, adminDir, commitGranted)...)
+	}
+	return out, nil
+}
+
+// worktreeAdminDir reads the linked worktree's git dir from its `.git` file
+// (G1c's read-back; the admin dir is never constructed — probe G1 measured the
+// `worktrees/<name>1` collision-suffix form a second worktree gets).
+func worktreeAdminDir(checkoutPath string) (string, error) {
+	if checkoutPath == "" {
+		return "", fmt.Errorf("workspace: cannot read back the git dir of a checkout with no path")
+	}
+	raw, err := os.ReadFile(filepath.Join(checkoutPath, ".git"))
+	if err != nil {
+		return "", fmt.Errorf("workspace: read back the git dir of %s: %w", checkoutPath, err)
+	}
+	line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(string(raw)), "\n", 2)[0])
+	target, ok := strings.CutPrefix(line, "gitdir:")
+	if !ok {
+		return "", fmt.Errorf("workspace: %s/.git is not a linked-worktree gitfile", checkoutPath)
+	}
+	adminDir := filepath.Clean(strings.TrimSpace(target))
+	if !filepath.IsAbs(adminDir) {
+		adminDir = filepath.Clean(filepath.Join(checkoutPath, adminDir))
+	}
+	return adminDir, nil
+}
+
 // materializeSecrets is contract § 4 step 4 at attempt scope: the same
 // SecretMaterializer the M3 turn unit drives, asked for the `node_attempt` arm
 // only, with the attempt id that the ledger row must carry. The repositories a
@@ -787,14 +877,9 @@ func (a *AgentTurn) runWorkspace(c AttemptClaim) (wsgit.Layout, *AttemptResult) 
 // verified until step 5, and a digest claimed at step 4 would be a promise about
 // a launch that has not been checked yet. The event reports it empty, which is
 // the same honest answer M3's non-required modes give.
-func (a *AgentTurn) materializeSecrets(ctx context.Context, c AttemptClaim, prof AgentProfile, conv AttemptConversation, workspaceID string, layout wsgit.Layout) (*Materialized, *AttemptResult) {
+func (a *AgentTurn) materializeSecrets(ctx context.Context, c AttemptClaim, prof AgentProfile, conv AttemptConversation, workspaceID string, layout wsgit.Layout, repos []MaterializeRepo) (*Materialized, *AttemptResult) {
 	if a.Secrets == nil {
 		return nil, nil
-	}
-	repos, err := a.Secrets.ReposForWorkspace(ctx, workspaceID)
-	if err != nil {
-		return nil, ptrResult(failedResult(ErrorClassInfra,
-			"read the run workspace's repositories for node_attempt secret mounts: "+a.redact(err.Error())))
 	}
 	var extra []string
 	m, err := a.Secrets.Materialize(ctx, MaterializeRequest{
