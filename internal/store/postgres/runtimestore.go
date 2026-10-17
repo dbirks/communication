@@ -433,7 +433,8 @@ func takeoverRuntime() *RuntimeStore { return NewRuntimeStore(nil, nil) }
 // schedules no retry for the attempt the human is taking over). Unfenced by
 // design, like every reconciler-side close: the human's CAS on the control row
 // is the authorization, and the attempt's own worker learns to stop from the
-// turn's cancel_requested_at that the same transaction wrote.
+// turn's cancel_requested_at — and the attempt's own, which cnvRunTakeover
+// stamps beside it — because the run-attempt worker watches the attempt row.
 func (s *RuntimeStore) HumanTakeover(ctx context.Context, runID, attemptID, requestedBy string) error {
 	return s.settle(ctx, runID, func(_ context.Context, _ pgx.Tx, ms *runtime.MemStore, _ *runtime.State) error {
 		return ms.MarkCancelledByHumanTakeover(runID, attemptID, rteIdentity(requestedBy))

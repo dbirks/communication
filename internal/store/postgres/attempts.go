@@ -450,18 +450,36 @@ func (s *RunStore) BeginAttempt(ctx context.Context, c AttemptClaim, event RunEv
 // CancelRequested reports whether a cancel has been requested for this
 // still-owned, non-terminal attempt (contract § 4 step 11's read on the
 // renewal tick). No matching row means we are stale.
+//
+// One terminal answers too: ADR-0016 § 5's takeover. take-control closes the
+// attempt interrupted{human_takeover} itself (unfenced — the human's CAS on the
+// control row is the authorization) and stamps cancel_requested_at in the same
+// transaction, precisely so the worker still standing learns to stop. Reporting
+// that combination as a plain lost lease would abandon the paired conversation
+// turn to the reconciler's lease arm; it is reported as the cancel it is, and
+// the fenced terminal writes stay refused.
 func (s *RunStore) CancelRequested(ctx context.Context, c AttemptClaim) (time.Time, bool, error) {
 	var at *time.Time
+	var status string
 	err := s.Pool.QueryRow(ctx, `
-		SELECT cancel_requested_at FROM attempts
-		WHERE id = $1 AND worker_id = $2 AND fencing_token = $3
-		  AND status IN ('leased', 'running')`,
-		c.AttemptID, c.WorkerID, c.FencingToken).Scan(&at)
+		SELECT cancel_requested_at, status FROM attempts
+		WHERE id = $1 AND worker_id = $2 AND fencing_token = $3`,
+		c.AttemptID, c.WorkerID, c.FencingToken).Scan(&at, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, ErrLeaseLost
 	}
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("postgres: read cancel flag attempt %s: %w", c.AttemptID, err)
+	}
+	switch status {
+	case "leased", "running":
+	case "interrupted":
+		if at != nil {
+			return *at, true, nil
+		}
+		return time.Time{}, false, ErrLeaseLost
+	default:
+		return time.Time{}, false, ErrLeaseLost
 	}
 	if at == nil {
 		return time.Time{}, false, nil
@@ -744,6 +762,82 @@ func closeAttemptTurnTx(ctx context.Context, tx pgx.Tx, c AttemptClaim, in Attem
 		Payload:   cl.Payload,
 	})
 	return err
+}
+
+// ------------------------------------------- takeover close of the paired turn
+
+// CloseAttemptTurnCancelled is ADR-0016 § 5's word for the ONE row a takeover
+// leaves to the worker: the attempt's paired conversation turn. The takeover
+// closed the attempt over the worker's head (so every fenced attempt write is
+// refused, correctly), and it set cancel_requested_at on the turn, but § 5 makes
+// the turn's cancelled the WORKER's to write — the human's CAS sets a request,
+// the worker's session/cancel ack is the outcome. This is the worker's side of
+// that pair: cancelled + stop_reason cancelled + conversation.turn.cancelled,
+// fenced on the TURN's own triple (the claim stamps the attempt-scoped turn with
+// the attempt's worker/fencing pair) and on its cancel_requested_at, so a turn
+// the reconciler already interrupted, or one another worker owns, answers
+// nothing.
+func (s *RunStore) CloseAttemptTurnCancelled(ctx context.Context, c AttemptClaim) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: begin takeover turn close: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		turnID, convID, orgID, projectID string
+		token                            int64
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT t.id::text, COALESCE(t.conversation_id::text, ''),
+		       r.organization_id::text, r.project_id::text, t.fencing_token
+		FROM conversation_turns t
+		JOIN attempts a2 ON a2.id = t.node_attempt_id
+		JOIN runs r ON r.id = a2.run_id
+		WHERE t.node_attempt_id = $1::uuid AND t.worker_id = $2::uuid
+		  AND t.fencing_token = $3
+		  AND t.status IN ('leased', 'running')
+		  AND t.cancel_requested_at IS NOT NULL
+		FOR UPDATE OF t`,
+		c.AttemptID, c.WorkerID, c.FencingToken).Scan(
+		&turnID, &convID, &orgID, &projectID, &token)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// No live cancel-requested turn on this triple: either there is no
+		// paired turn (a non-agent node) or somebody else has answered for it.
+		return nil
+	case err != nil:
+		return fmt.Errorf("postgres: lock taken-over turn for attempt %s: %w", c.AttemptID, err)
+	}
+	// The human whose CAS set cancel_requested_at: the taker now holds the lock,
+	// so the control row names them without guessing.
+	var requestedBy *string
+	if err := tx.QueryRow(ctx, `
+		SELECT controller_user_id::text FROM conversation_control
+		WHERE conversation_id = $1::uuid AND controller_kind = 'human'`,
+		convID).Scan(&requestedBy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("postgres: read takeover controller for turn %s: %w", turnID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_turns
+		SET status = 'cancelled', finished_at = now(), stop_reason = 'cancelled'
+		WHERE id = $1::uuid`, turnID); err != nil {
+		return fmt.Errorf("postgres: close taken-over turn %s for attempt %s: %w", turnID, c.AttemptID, err)
+	}
+	if convID != "" {
+		if _, err := trnAppendTx(ctx, tx, orgID, projectID, convID, worker.TurnEvent{
+			Type:      events.TypeConversationTurnCancelled,
+			ActorKind: events.ActorKindWorker,
+			ActorID:   c.WorkerID,
+			Payload: events.TurnCancelledPayload{
+				ConversationID: convID, TurnID: turnID, WorkerID: c.WorkerID,
+				FencingToken: token, StopReason: "cancelled", RequestedBy: derefStr(requestedBy),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ------------------------------------------------------------- checkpoints

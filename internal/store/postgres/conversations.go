@@ -1490,6 +1490,17 @@ func cnvRunTakeover(ctx context.Context, tx pgx.Tx, attemptID, actor string) err
 	if !live {
 		return nil
 	}
+	// The worker still standing must learn to stop the harness: ADR-0016 § 5
+	// makes cancel_requested_at the signal it polls, and only that worker knows
+	// whether the ACP session answered session/cancel — the interrupted terminal
+	// below is the run's word, never the turn's. Stamped BEFORE the engine's
+	// close so the hydrate inside HumanTakeoverTx carries the flag on the row it
+	// writes back.
+	if _, err := tx.Exec(ctx, `
+		UPDATE attempts SET cancel_requested_at = COALESCE(cancel_requested_at, now())
+		WHERE id = $1::uuid`, attemptID); err != nil {
+		return fmt.Errorf("postgres: cancel-request taken-over attempt %s: %w", attemptID, err)
+	}
 	return takeoverRuntime().HumanTakeoverTx(ctx, tx, runID, attemptID, actor)
 }
 

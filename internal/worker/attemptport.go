@@ -206,8 +206,26 @@ type AttemptStore interface {
 
 	// CancelRequestedAttempt reads this attempt's cancel_requested_at
 	// (written by the advancer's cascade or the reconciler's deadline pass,
-	// § 5.4 pass 3); ErrLeaseLost when the triple is stale.
+	// § 5.4 pass 3) — and, for the ADR-0016 § 5 takeover arm, an attempt the
+	// human's take-control already closed interrupted{human_takeover} while it
+	// stamped cancel_requested_at in the same transaction: the terminal is
+	// spoken for, but the worker still standing owns its paired conversation
+	// turn and must still stop the harness. ErrLeaseLost when the triple is
+	// stale for any other reason.
 	CancelRequestedAttempt(ctx context.Context, c AttemptClaim) (time.Time, bool, error)
+
+	// CloseAttemptTurnCancelled is ADR-0016 § 5's worker close of the ONE row a
+	// takeover leaves to the worker: the attempt's paired conversation turn.
+	// The takeover wrote the attempt's terminal (unfenced — the human's CAS on
+	// the control row is the authorization) and cancel-requested the turn, but
+	// only the worker knows the harness answered session/cancel with a
+	// cancelled turn, and ADR-0016 § 5 makes that word the worker's to write:
+	// conversation_turns → cancelled, stop_reason cancelled, with
+	// conversation.turn.cancelled appended, all fenced on the turn's own triple
+	// and its cancel_requested_at. ErrLeaseLost when the turn is no longer
+	// ours (reconciler expired it, or another worker owns it); a conversation
+	// with no live paired turn is a no-op, not an error.
+	CloseAttemptTurnCancelled(ctx context.Context, c AttemptClaim) error
 
 	// CompleteAttempt is the boundary transaction (contract § 4 step 10;
 	// same argument set as runtime.MemStore.Complete at store.go:263):

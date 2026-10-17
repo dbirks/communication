@@ -84,7 +84,7 @@ func m4TakeoverEvents(t *testing.T, f *m4Fixture, runID string) map[string]int {
 }
 
 func TestM4Takeover(t *testing.T) {
-	f, _, runID, claim, conversationID, turnID := m4TakeoverAttempt(t)
+	f, store, runID, claim, conversationID, turnID := m4TakeoverAttempt(t)
 	caller := Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}
 	cnv := &CnvStore{Pool: f.pool}
 	ctx := testCtx(t)
@@ -107,6 +107,16 @@ func TestM4Takeover(t *testing.T) {
 	}
 	if at := m4TakeoverRow(t, f, `SELECT coalesce(cancel_requested_at::text, '') FROM conversation_turns WHERE id = $1::uuid`, turnID); at == "" {
 		t.Error("the live turn was not cancel-requested by the takeover")
+	}
+	// The worker watching the ATTEMPT (not the turn) learns to send ACP
+	// session/cancel from attempts.cancel_requested_at. Without the stamp the
+	// watch never fires, the harness keeps working, and the turn sits leased
+	// until the reconciler's lease arm expires it (live19 C9g).
+	if at := m4TakeoverRow(t, f, `SELECT coalesce(cancel_requested_at::text, '') FROM attempts WHERE id = $1::uuid`, claim.AttemptID); at == "" {
+		t.Error("the taken-over attempt was not cancel-requested, so no worker would ever send session/cancel")
+	}
+	if _, ok, err := store.CancelRequestedAttempt(ctx, claim); err != nil || !ok {
+		t.Errorf("CancelRequestedAttempt after a takeover = (%v, %v), want the cancel reported to the live worker", ok, err)
 	}
 	if st := m4TakeoverRow(t, f, `SELECT status FROM attempts WHERE id = $1::uuid`, claim.AttemptID); st != "interrupted" {
 		t.Errorf("attempt status = %s, want interrupted", st)
@@ -137,13 +147,34 @@ func TestM4Takeover(t *testing.T) {
 		t.Errorf("node.attempt.interrupted{human_takeover} rows = %s, want 1", n)
 	}
 	// --- the human drives -------------------------------------------------
-	// The worker acknowledges the cancel and closes its own turn (M2's
-	// machinery); only then may the human's own turn exist, because
-	// conversation_turns_one_active_idx admits one live turn per conversation.
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE conversation_turns SET status = 'interrupted', finished_at = now()
-		WHERE id = $1::uuid AND status IN ('leased', 'running')`, turnID); err != nil {
-		t.Fatalf("close the taken-over turn as the worker would: %v", err)
+	// The worker acknowledges the cancel and closes its own turn — ADR-0016 § 5
+	// makes that terminal the WORKER's, and this is its real write, not a
+	// hand-seeded UPDATE: the attempt's own terminal is already spoken for by the
+	// takeover, so only the paired turn is left to close. Only then may the
+	// human's own turn exist, because conversation_turns_one_active_idx admits one
+	// live turn per conversation.
+	if err := store.CloseAttemptTurnCancelled(ctx, claim); err != nil {
+		t.Fatalf("CloseAttemptTurnCancelled: %v", err)
+	}
+	if st, stop := func() (string, string) {
+		var s, r string
+		if err := f.pool.QueryRow(ctx, `SELECT status, coalesce(stop_reason, '') FROM conversation_turns WHERE id = $1::uuid`, turnID).Scan(&s, &r); err != nil {
+			t.Fatal(err)
+		}
+		return s, r
+	}(); st != "cancelled" || stop != "cancelled" {
+		t.Errorf("taken-over turn = (%s, %s), want (cancelled, cancelled)", st, stop)
+	}
+	if n := m4TakeoverRow(t, f, `
+		SELECT count(*)::text FROM domain_events
+		WHERE conversation_id = $1::uuid AND type = 'conversation.turn.cancelled'
+		  AND payload->>'requested_by' = $2`, conversationID, f.userID); n != "1" {
+		t.Errorf("conversation.turn.cancelled{requested_by} rows = %s, want 1", n)
+	}
+	// A second close is a no-op: the reconciler's or another worker's write is
+	// fenced out by the turn's own status.
+	if err := store.CloseAttemptTurnCancelled(ctx, claim); err != nil {
+		t.Errorf("re-closing the taken-over turn = %v, want a no-op", err)
 	}
 	if _, err := f.pool.Exec(ctx, `
 		INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)

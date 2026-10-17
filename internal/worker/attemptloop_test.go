@@ -42,6 +42,13 @@ type fakeAttempt struct {
 	finishedAt   time.Time
 	artifactRefs []any
 
+	// refuseLive is ADR-0016 § 5's takeover: the attempt's terminal was written
+	// over the worker's head, so its fenced writes are refused from then on.
+	// turnClosed records the paired conversation turn's terminal, which the
+	// worker DOES still own (conversation.turn.cancelled).
+	refuseLive bool
+	turnClosed string
+
 	// cfg exists so an executor under test (process.exec) receives the same
 	// shape the real claim hydration gives it.
 	cfg map[string]any
@@ -107,6 +114,20 @@ func (s *fakeAttemptStore) find(id string) *fakeAttempt {
 // verify is the fence: zero rows for a stale triple means ErrLeaseLost and
 // nothing written (ADR-0016 § 9 obligation 2).
 func (s *fakeAttemptStore) verify(c AttemptClaim) (*fakeAttempt, error) {
+	a, err := s.verifyTriple(c)
+	if err != nil {
+		return nil, err
+	}
+	if a.refuseLive {
+		return nil, ErrLeaseLost // runCheckFence: a terminal attempt owns no live work
+	}
+	return a, nil
+}
+
+// verifyTriple is the fence without the liveness test — the read the cancel
+// watch performs, which reports ADR-0016 § 5's takeover honestly instead of a
+// bare lease loss (RunStore.CancelRequested's rule).
+func (s *fakeAttemptStore) verifyTriple(c AttemptClaim) (*fakeAttempt, error) {
 	a := s.find(c.AttemptID)
 	if a == nil {
 		return nil, ErrLeaseLost
@@ -115,6 +136,45 @@ func (s *fakeAttemptStore) verify(c AttemptClaim) (*fakeAttempt, error) {
 		return nil, ErrLeaseLost
 	}
 	return a, nil
+}
+
+// takeOverAttempt is conversation TakeControl's run half (contract § 5.3):
+// cancel_requested_at is stamped and attempts.status='interrupted'
+// error_class='interrupted' land in the same transaction, while the paired
+// turn stays live and owned by this worker.
+func (s *fakeAttemptStore) takeOverAttempt(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.find(id)
+	if a == nil {
+		return
+	}
+	at := time.Now()
+	a.cancelAt = &at
+	a.status = AttemptStatusInterrupted
+	a.errorClass = ErrorClassInterrupted
+	a.detail = InterruptReasonHumanTakeover
+	a.finishedAt = at
+	a.refuseLive = true
+	s.active--
+	s.writes = append(s.writes, "takeover "+id)
+}
+
+// CloseAttemptTurnCancelled is the worker's own write on the turn's fence: it
+// needs a cancel-requested attempt whose terminal was closed over its head.
+func (s *fakeAttemptStore) CloseAttemptTurnCancelled(_ context.Context, c AttemptClaim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, err := s.verifyTriple(c)
+	if err != nil {
+		return err
+	}
+	if !a.refuseLive || a.cancelAt == nil || a.turnClosed != "" {
+		return nil // no live cancel-requested turn on this triple: a no-op
+	}
+	a.turnClosed = "cancelled"
+	s.writes = append(s.writes, "turn-cancel "+a.id)
+	return nil
 }
 
 func (s *fakeAttemptStore) ClaimAttempts(_ context.Context, workerID string, capacity int) ([]AttemptClaim, error) {
@@ -208,7 +268,7 @@ func (s *fakeAttemptStore) AppendAttemptEvent(_ context.Context, c AttemptClaim,
 func (s *fakeAttemptStore) CancelRequestedAttempt(_ context.Context, c AttemptClaim) (time.Time, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a, err := s.verify(c)
+	a, err := s.verifyTriple(c)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -216,6 +276,18 @@ func (s *fakeAttemptStore) CancelRequestedAttempt(_ context.Context, c AttemptCl
 		return time.Time{}, false, s.cancelErr
 	}
 	s.cancelsSeen++
+	switch a.status {
+	case AttemptStatusLeased, AttemptStatusRunning:
+	case AttemptStatusInterrupted:
+		// ADR-0016 § 5's takeover arm: interrupted WITH the flag set is the
+		// human's take-control, and is reported as the cancel it is.
+		if a.cancelAt == nil {
+			return time.Time{}, false, ErrLeaseLost
+		}
+		return *a.cancelAt, true, nil
+	default:
+		return time.Time{}, false, ErrLeaseLost
+	}
 	if a.cancelAt == nil {
 		return time.Time{}, false, nil
 	}

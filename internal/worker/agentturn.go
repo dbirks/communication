@@ -621,6 +621,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 
 	var stop domain.StopReason
 	var promptErr error
+	var cancelErr error
 	ackTimedOut := false
 	stopAsked := false
 	select {
@@ -629,8 +630,10 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	case <-ctx.Done():
 		// § 4 step 11: send ACP session/cancel, wait the grace window, then
 		// retire the session; the ack that never came is what names the
-		// terminal process_group_kill_timeout instead of acp_cancel_ack.
-		_ = sess.Cancel(context.WithoutCancel(ctx))
+		// terminal process_group_kill_timeout instead of acp_cancel_ack. The
+		// write failing IS an ack that never came, so it is captured, not
+		// dropped — a cancel nobody received must not close a cancelled.
+		cancelErr = sess.Cancel(context.WithoutCancel(ctx))
 		select {
 		case p := <-pproc:
 			stop, promptErr = p.stop, p.err
@@ -642,7 +645,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		// in-flight prompt land; the loop's shutdown flag writes the honest
 		// interrupted{worker_shutdown} whatever the harness answered.
 		stopAsked = true
-		_ = sess.Cancel(context.WithoutCancel(ctx))
+		cancelErr = sess.Cancel(context.WithoutCancel(ctx))
 		p := <-pproc
 		stop, promptErr = p.stop, p.err
 	}
@@ -658,7 +661,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	}
 	time.Sleep(a.quiesce())
 
-	ts := turnStop{asked: stopAsked, ackTimedOut: ackTimedOut}
+	ts := turnStop{asked: stopAsked, ackTimedOut: ackTimedOut, cancelFailed: cancelErr != nil}
 	res := a.mapTurnOutcome(ctx, stop, promptErr, ts)
 	// mapTurnOutcome's default arm answers end_turn with the empty result:
 	// extraction owns the answer. The guards keep the drain and cancel arms
@@ -1098,8 +1101,9 @@ func (a *AgentTurn) permissionBridge(c AttemptClaim, conv AttemptConversation, p
 // drain asked (stopAsked) and whether the harness never acked the cancel
 // (ackTimedOut).
 type turnStop struct {
-	asked       bool
-	ackTimedOut bool
+	asked        bool
+	ackTimedOut  bool
+	cancelFailed bool // the session/cancel write itself failed — nothing reached the harness
 }
 
 // mapTurnOutcome is the attempt-loop analogue of mapOutcome: the honest word,
@@ -1122,6 +1126,12 @@ func (a *AgentTurn) mapTurnOutcome(ctx context.Context, stop domain.StopReason, 
 		return AttemptResult{}
 	case ctx.Err() == context.DeadlineExceeded:
 		return failedResult(ErrorClassTimeout, "node deadline exceeded mid-turn; the ACP session was cancelled")
+	case ts.cancelFailed && ctx.Err() == context.Canceled:
+		// The loop asked, but session/cancel never reached the harness — no
+		// notification, no ack. Claiming acp_cancel_ack would be a lie about
+		// a write that failed, so the honest terminal is the interrupt the
+		// teardown's process-group kill owns (§ 4 step 11).
+		return AttemptResult{Status: AttemptStatusInterrupted, InterruptReason: interruptReasonKillTimeout}
 	case ctx.Err() == context.Canceled:
 		// Remote cancel-requested or lease loss arrived here; the loop's flags
 		// choose the terminal. What this executor knows is that session/cancel

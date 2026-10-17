@@ -535,10 +535,20 @@ func (s *AttemptStore) AppendAttemptEvent(ctx context.Context, c worker.AttemptC
 }
 
 // CancelRequestedAttempt reads the attempt's cancel flag under the current
-// triple (§ 4 step 11's read on the renewal tick).
+// triple (§ 4 step 11's read on the renewal tick), including ADR-0016 § 5's
+// takeover arm: an attempt the human's take-control closed interrupted while it
+// cancel-requested the pair.
 func (s *AttemptStore) CancelRequestedAttempt(ctx context.Context, c worker.AttemptClaim) (time.Time, bool, error) {
 	at, ok, err := s.Runs.CancelRequested(ctx, workerClaim(c))
 	return at, ok, attemptErrStaleLease(err)
+}
+
+// CloseAttemptTurnCancelled is ADR-0016 § 5's worker close of the turn a
+// takeover cancel-requested (RunStore.CloseAttemptTurnCancelled owns the
+// SQL). The attempt's own terminal is already spoken for, so this write is
+// fenced on the turn row alone.
+func (s *AttemptStore) CloseAttemptTurnCancelled(ctx context.Context, c worker.AttemptClaim) error {
+	return attemptErrStaleLease(s.Runs.CloseAttemptTurnCancelled(ctx, workerClaim(c)))
 }
 
 // CompleteAttempt is the boundary transaction (contract § 4 step 10):

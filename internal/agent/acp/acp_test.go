@@ -578,6 +578,61 @@ func TestCancelDuringPendingPermissionYieldsCancelled(t *testing.T) {
 	}
 }
 
+// TestCancelMidTurnReachesABusyAgent is the ACP half of ADR-0016 § 5's takeover:
+// a harness deep inside session/prompt must actually RECEIVE session/cancel on
+// the wire, and the client must read the cancelled stop reason it answers with.
+// The fake holds the prompt open until the notification arrives, so a cancel
+// that only cancels the client-side context fails here.
+func TestCancelMidTurnReachesABusyAgent(t *testing.T) {
+	fake := newFakeAgent()
+	promptStarted := make(chan struct{})
+	fake.promptFn = func(_ context.Context, f *fakeAgent) (acp.PromptResponse, error) {
+		close(promptStarted)
+		select {
+		case <-f.cancelled: // the agent is busy until session/cancel lands
+			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+		case <-time.After(10 * time.Second):
+			return acp.PromptResponse{}, errors.New("fake: session/cancel never reached the agent")
+		}
+	}
+	h := startInProcess(t, fake, PermissionPreapproved)
+
+	done := make(chan domain.StopReason, 1)
+	go func() {
+		r, err := h.Prompt(context.Background(), "edit the whole repository")
+		if err != nil {
+			t.Errorf("Prompt: %v", err)
+		}
+		done <- r
+	}()
+
+	select {
+	case <-promptStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent never entered prompt")
+	}
+	started := time.Now()
+	if err := h.Cancel(context.Background()); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	select {
+	case r := <-done:
+		if r != domain.StopCancelled {
+			t.Fatalf("stop reason = %q, want cancelled", r)
+		}
+		if elapsed := time.Since(started); elapsed > 10*time.Second {
+			t.Fatalf("cancel took %s to reach a busy agent; the takeover may not wait out a turn", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("busy prompt did not end after session/cancel")
+	}
+	select {
+	case <-fake.cancelled:
+	default:
+		t.Fatal("the agent never observed session/cancel")
+	}
+}
+
 func TestUnsupportedAgentRequestsGetMethodNotFound(t *testing.T) {
 	fake := newFakeAgent()
 	fake.promptFn = func(ctx context.Context, f *fakeAgent) (acp.PromptResponse, error) {

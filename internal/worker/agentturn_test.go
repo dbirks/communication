@@ -1043,7 +1043,66 @@ func TestAgentTurnCancelWatchThroughTheLoop(t *testing.T) {
 	}
 }
 
-// TestAgentTurnLeaseLossMidTurnStopsWriting is `12` case 3 through the real
+// TestAgentTurnTakeoverClosesThePairedTurn runs ADR-0016 § 5's takeover through
+// the REAL loop and the REAL executor: take-control closes the attempt over the
+// worker's head and cancel-requests the pair in one transaction; the worker must
+// still send ACP session/cancel and — having earned the ack — close the ONE row
+// the takeover left it, the conversation turn. If it does not, the turn sits
+// leased until the reconciler's lease arm expires it (~50s) and the resumed
+// attempt's turn is refused by the one-active-turn index beside it.
+func TestAgentTurnTakeoverClosesThePairedTurn(t *testing.T) {
+	store := newFakeAttemptStore(1)
+	store.queueACP(fakeAttemptID, fakeRunID, agentCfg("long implementation turn"))
+	f := newAgentTurnFixture(t, domain.EnforceDisabled)
+	sess := newAgentSessionStub(domain.SessionInfo{})
+	sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+		<-s.cancelled // the harness answers only when session/cancel arrives
+		return domain.StopCancelled, nil
+	}
+	f.spawn.queue(sess)
+
+	l := newLoopForAgent(t, store, AttemptExecutors{NodeKindAgentACP: f.turn}, 1)
+	startLoop(t, l)
+	waitFor(t, "attempt began", func() bool { return store.snapshot(fakeAttemptID).status == AttemptStatusRunning })
+	store.takeOverAttempt(fakeAttemptID)
+	waitFor(t, "taken-over attempt stopped", func() bool { return l.attemptsCompleted() >= 1 })
+
+	select {
+	case <-sess.cancelled:
+	default:
+		t.Fatal("no ACP session/cancel was sent for the taken-over turn")
+	}
+	if a := store.snapshot(fakeAttemptID); a.turnClosed != "cancelled" {
+		t.Fatalf("paired turn close = %q, want cancelled: %v", a.turnClosed, store.writeLog())
+	}
+	for _, w := range store.writeLog() {
+		if strings.HasPrefix(w, "cancel "+fakeAttemptID) || strings.HasPrefix(w, "interrupt "+fakeAttemptID) {
+			t.Fatalf("the taken-over worker wrote an attempt terminal the takeover owns: %v", store.writeLog())
+		}
+	}
+	if a := store.snapshot(fakeAttemptID); a.status != AttemptStatusInterrupted || a.errorClass != ErrorClassInterrupted {
+		t.Fatalf("the takeover's own attempt terminal was disturbed: status=%s class=%s", a.status, a.errorClass)
+	}
+}
+
+// TestAgentTurnCancelWriteFailureIsNotAnAck pins the honesty of the cancel arm:
+// a session/cancel whose WRITE failed never reached the harness, so no ack was
+// earned — interrupted{process_group_kill_timeout}, never a cancelled claiming
+// acp_cancel_ack (which is also what licenses the takeover's turn close).
+func TestAgentTurnCancelWriteFailureIsNotAnAck(t *testing.T) {
+	f := newAgentTurnFixture(t, domain.EnforceDisabled)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the attempt loop stopped the body
+	res := f.turn.mapTurnOutcome(ctx, domain.StopCancelled, nil,
+		turnStop{cancelFailed: true})
+	if res.Status != AttemptStatusInterrupted || res.InterruptReason != interruptReasonKillTimeout {
+		t.Fatalf("result = %+v, want interrupted/%s", res, interruptReasonKillTimeout)
+	}
+	if res.CancelReason != "" {
+		t.Fatalf("a cancel nobody received reported ack %q", res.CancelReason)
+	}
+}
+
 // executor: a renewal rejected on the fence stops the body, and NOTHING this
 // executor would normally do at the teardown — the disconnect event, the
 // binding close, any terminal — may touch the attempt after the steal

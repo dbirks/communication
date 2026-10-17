@@ -423,6 +423,21 @@ func (l *AttemptLoop) attemptRenewLoop(tctx, base context.Context, c AttemptClai
 		err := l.store.RenewAttempt(ctx, c)
 		cancel()
 		if errors.Is(err, ErrLeaseLost) {
+			// ADR-0016 § 5's takeover races this tick: take-control closes the
+			// attempt over our head, so the renewal is refused for a worker that
+			// is not stale at all — it still owns the paired turn. Ask the cancel
+			// flag once before abandoning: a takeover says cancel-requested (stop
+			// the body so the harness gets session/cancel, and the cancel arm owns
+			// the close); a real steal says nothing and stays a steal.
+			if at, ok, cerr := l.store.CancelRequestedAttempt(tctx, c); ok && cerr == nil && !at.IsZero() {
+				if !rt.cancelRequested.Swap(true) {
+					l.log.Info("cancel requested with the attempt closed over our head; stopping the attempt body",
+						slog.String("attempt_id", c.AttemptID),
+						slog.String("requested_at", at.UTC().Format(time.RFC3339)))
+					rt.cancel()
+				}
+				return
+			}
 			l.log.Warn("attempt lease lost; stopping all writes for the attempt",
 				slog.String("attempt_id", c.AttemptID))
 			rt.lostLease.Store(true)
@@ -479,7 +494,15 @@ func (l *AttemptLoop) closeAttempt(base context.Context, rt *runningAttempt, res
 	switch {
 	case rt.lostLease.Load():
 		// Somebody else owns the attempt now; writing nothing is the honest
-		// answer (runner.go:83-86's abandon rule).
+		// answer (runner.go:83-86's abandon rule). The one exception is
+		// ADR-0016 § 5's takeover: a takeover's terminal refuses EVERY fenced
+		// attempt write — including a journal append made mid-teardown — yet the
+		// cancel-requested paired turn is still this worker's to close, and only
+		// this worker knows the harness answered session/cancel. A plain steal
+		// (no cancel requested, or no ack earned) still writes nothing.
+		if rt.cancelRequested.Load() && res.CancelReason == CancelReasonACPAck {
+			l.closePairedTurnCancelled(base, rt)
+		}
 		return
 
 	case res.Status == AttemptStatusSucceeded:
@@ -539,11 +562,61 @@ func (l *AttemptLoop) closeAttempt(base context.Context, rt *runningAttempt, res
 // cancelOwn closes a cancel-requested attempt as cancelled (§ 4 step 11);
 // the ack-reasoning that distinguishes acp_cancel_ack from the timeout arm
 // arrives with the executors that own the processes.
+//
+// The one refusal that is not a stale writer is ADR-0016 § 5's takeover: the
+// human's take-control closes the attempt interrupted{human_takeover} itself,
+// so this worker's fenced attempt terminal cannot land — and must not. What it
+// still owns is the paired conversation turn the same transaction
+// cancel-requested, and § 5 assigns that terminal to the worker that proved the
+// ack. So an acp_cancel_ack refusal falls through to the turn-only close;
+// every other reason (drain, process teardown, a genuinely stolen lease) writes
+// nothing on the attempt's behalf.
 func (l *AttemptLoop) cancelOwn(base context.Context, rt *runningAttempt, reason string) {
 	c := rt.claim
-	l.fenced(base, rt, func(ctx context.Context) error {
-		return l.store.CancelAttemptOwn(ctx, c, firstString(reason, CancelReasonACPAck))
-	})
+	if rt.lostLease.Load() {
+		return
+	}
+	ack := firstString(reason, CancelReasonACPAck)
+	ctx, cancel := context.WithTimeout(base, attemptTerminalWriteTimeout)
+	defer cancel()
+	err := l.store.CancelAttemptOwn(ctx, c, ack)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrLeaseLost) {
+		l.log.Info("attempt terminal refused: its attempt was closed over our head",
+			slog.String("attempt_id", c.AttemptID), slog.String("cancel_reason", ack))
+		if reason == CancelReasonACPAck {
+			l.closePairedTurnCancelled(base, rt)
+		}
+		return
+	}
+	l.log.Error("attempt terminal write failed",
+		slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
+}
+
+// closePairedTurnCancelled is ADR-0016 § 5's takeover arm: the harness answered
+// session/cancel with a cancelled turn, so the worker that spoke to it closes
+// that turn — never the attempt, whose terminal the takeover already wrote —
+// under the turn's own fence. Without this the turn sits leased until the
+// reconciler's lease arm speaks for a worker standing right there, and the
+// resumed attempt's turn is refused by the one-active-turn index meanwhile.
+func (l *AttemptLoop) closePairedTurnCancelled(base context.Context, rt *runningAttempt) {
+	ctx, cancel := context.WithTimeout(base, attemptTerminalWriteTimeout)
+	defer cancel()
+	if err := l.store.CloseAttemptTurnCancelled(ctx, rt.claim); err != nil {
+		if errors.Is(err, ErrLeaseLost) {
+			// A newer turn owner or the reconciler already answered for it.
+			return
+		}
+		// The lease will expire and the reconciler will close the turn as
+		// interrupted — visible outcome preserved, guess logged (§ 5.4 pass 1).
+		l.log.Error("takeover: closing the paired turn failed",
+			slog.String("attempt_id", rt.claim.AttemptID), slog.String("error", err.Error()))
+		return
+	}
+	l.log.Info("takeover: paired conversation turn closed cancelled on the ACP ack",
+		slog.String("attempt_id", rt.claim.AttemptID))
 }
 
 // interruptOwn is the worker's honest shutdown close (§ 4 step 12).
