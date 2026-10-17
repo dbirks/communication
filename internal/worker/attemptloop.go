@@ -498,27 +498,36 @@ func (l *AttemptLoop) closeAttempt(base context.Context, rt *runningAttempt, res
 		// ADR-0016 § 5's takeover: a takeover's terminal refuses EVERY fenced
 		// attempt write — including a journal append made mid-teardown — yet the
 		// cancel-requested paired turn is still this worker's to close, and only
-		// this worker knows the harness answered session/cancel. A plain steal
-		// (no cancel requested, or no ack earned) still writes nothing.
-		if rt.cancelRequested.Load() && res.CancelReason == CancelReasonACPAck {
+		// this worker knows the harness answered session/cancel. The decision
+		// asks the STORE, not the cancelRequested flag: a rejected live journal
+		// append cancels the body (attemptSink.AppendEvent) before the renewal
+		// tick or the cancel watch has read and propagated the flag, so the
+		// flag can lag the very race this arm decides. A plain steal (token no
+		// longer current) or a close without the cancel flag reads as not-a-
+		// takeover there, and without an earned ack there is nothing to close.
+		if l.owesPairedTurnClose(base, c, res) {
 			l.closePairedTurnCancelled(base, rt)
 		}
 		return
 
 	case res.Status == AttemptStatusSucceeded:
-		l.fenced(base, rt, func(ctx context.Context) error {
+		if rejected := l.fenced(base, rt, func(ctx context.Context) error {
 			return l.store.CompleteAttempt(ctx, c, res.Outputs, res.OutputsDigest,
 				nzAny(res.ArtifactRefs), res.Outcome, res.Checkpoint)
-		})
+		}); rejected && l.owesPairedTurnClose(base, c, res) {
+			l.closePairedTurnCancelled(base, rt)
+		}
 
 	case res.Status == AttemptStatusFailed:
 		class := res.ErrorClass
 		if class == "" {
 			class = ErrorClassInfra // attempts_failed_has_class: a class is mandatory
 		}
-		l.fenced(base, rt, func(ctx context.Context) error {
+		if rejected := l.fenced(base, rt, func(ctx context.Context) error {
 			return l.store.FailAttempt(ctx, c, class, bounded(res.Detail, 512), nzAny(res.OutputErrors))
-		})
+		}); rejected && l.owesPairedTurnClose(base, c, res) {
+			l.closePairedTurnCancelled(base, rt)
+		}
 
 	case res.Status == AttemptStatusCancelled:
 		l.cancelOwn(base, rt, res.CancelReason)
@@ -546,16 +555,20 @@ func (l *AttemptLoop) closeAttempt(base context.Context, rt *runningAttempt, res
 		if errors.Is(execErr, context.DeadlineExceeded) {
 			class = ErrorClassTimeout // § 4 step 7's deadline arm
 		}
-		l.fenced(base, rt, func(ctx context.Context) error {
+		if rejected := l.fenced(base, rt, func(ctx context.Context) error {
 			return l.store.FailAttempt(ctx, c, class, bounded(execErr.Error(), 512), nil)
-		})
+		}); rejected && l.owesPairedTurnClose(base, c, res) {
+			l.closePairedTurnCancelled(base, rt)
+		}
 
 	default:
 		// An executor that returns nothing honest is itself the failure.
-		l.fenced(base, rt, func(ctx context.Context) error {
+		if rejected := l.fenced(base, rt, func(ctx context.Context) error {
 			return l.store.FailAttempt(ctx, c, ErrorClassInfra,
 				"worker: executor for kind "+c.Kind+" returned no honest terminal", nil)
-		})
+		}); rejected && l.owesPairedTurnClose(base, c, res) {
+			l.closePairedTurnCancelled(base, rt)
+		}
 	}
 }
 
@@ -619,6 +632,26 @@ func (l *AttemptLoop) closePairedTurnCancelled(base context.Context, rt *running
 		slog.String("attempt_id", rt.claim.AttemptID))
 }
 
+// owesPairedTurnClose is ADR-0016 § 5's honest check at the fence-refusal
+// moment: did the takeover transaction close this attempt over our head AND
+// cancel-request the pair, with the harness actually answering session/cancel?
+// If so, the paired conversation turn is still this worker's to close. The
+// word comes from the store, not the cancelRequested flag — the flag is set
+// by the renewal tick and the cancel watch, and a rejected live journal append
+// can cancel the body (and end the attempt) before either has read the flag,
+// leaving a turn leased until the reconciler's ~50s lease arm speaks. A plain
+// steal answers ErrLeaseLost (the token is no longer current); a close without
+// the cancel flag answers not-cancel-requested; neither speaks on the turn.
+func (l *AttemptLoop) owesPairedTurnClose(base context.Context, c AttemptClaim, res AttemptResult) bool {
+	if res.CancelReason != CancelReasonACPAck {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(base, attemptTerminalWriteTimeout)
+	defer cancel()
+	at, ok, err := l.store.CancelRequestedAttempt(ctx, c)
+	return err == nil && ok && !at.IsZero()
+}
+
 // interruptOwn is the worker's honest shutdown close (§ 4 step 12).
 func (l *AttemptLoop) interruptOwn(base context.Context, rt *runningAttempt, reason string) {
 	c := rt.claim
@@ -629,10 +662,13 @@ func (l *AttemptLoop) interruptOwn(base context.Context, rt *runningAttempt, rea
 
 // fenced performs one terminal write on a detached, bounded context; a
 // rejected fence flips the lost-lease flag and stops, per runner.go:183-188:
-// a newer owner has already spoken for this attempt.
-func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write func(ctx context.Context) error) {
+// a newer owner has already spoken for this attempt. It reports whether the
+// write was refused on the fence (or skipped by an already-lost lease) — the
+// refusal is the moment ADR-0016 § 5's takeover turns the paired conversation
+// turn back over to the worker that earned the ACP ack.
+func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write func(ctx context.Context) error) (rejected bool) {
 	if rt.lostLease.Load() {
-		return
+		return true
 	}
 	ctx, cancel := context.WithTimeout(base, attemptTerminalWriteTimeout)
 	defer cancel()
@@ -641,7 +677,7 @@ func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write fun
 			l.log.Warn("attempt terminal write rejected: lease lost",
 				slog.String("attempt_id", rt.claim.AttemptID))
 			rt.lostLease.Store(true)
-			return
+			return true
 		}
 		// The lease will expire and the reconciler will close it as
 		// interrupted — the visible outcome is preserved, the guess is ours
@@ -649,6 +685,7 @@ func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write fun
 		l.log.Error("attempt terminal write failed",
 			slog.String("attempt_id", rt.claim.AttemptID), slog.String("error", err.Error()))
 	}
+	return false
 }
 
 // attemptSink gives one in-flight attempt body fenced journal writes and the
