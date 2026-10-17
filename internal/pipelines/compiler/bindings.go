@@ -244,8 +244,21 @@ func (w *walk) configValues(cfg map[string]canon.Value, at ptr.Pointer, s *scope
 	var out []Binding
 	for _, k := range keys {
 		switch k {
-		case "body", "branches", "responseSchema", "outputSchema", "outputs":
-			// a nested schema or scope, not a value
+		case "body", "branches":
+			// a nested scope, not a value
+			continue
+		case "outputSchema", "outputs":
+			// stored separately on the plan node (Node.Outputs), not a value
+			continue
+		case "responseSchema":
+			// An embedded JSON Schema (schema position): its strings are schema
+			// vocabulary, never bindings (ADR-0022 § 1). It is NOT dropped — the
+			// executor must receive it whole as one literal leaf so model.chat can
+			// validate the completion against it (§ 4 step 8). The plan's claim
+			// hydration (store hydrateConfigs / runtime ConfigTree) rebuilds the
+			// config from these bindings, so a literal here is what carries it
+			// to the worker.
+			out = append(out, w.binding(cfg[k], at.Child(k), s, schema.PositionSchema))
 			continue
 		case "resultBindings", "passWhen", "failWhen":
 			// A composite's own predicates and outputs are evaluated over the

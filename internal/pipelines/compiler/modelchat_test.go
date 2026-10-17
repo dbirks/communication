@@ -252,3 +252,76 @@ func TestModelChatNumericConfigAtCompile(t *testing.T) {
 		}
 	}
 }
+
+// modelChatSchemaBody is a model.chat node whose config carries a
+// responseSchema. Pass 37 evidence (lab cabade3): the executor rebuilt its
+// config from the plan's configBindings and the schema was gone, so the reply
+// failed the declared outputs ("missing property 'json'").
+const modelChatSchemaBody = `  - id: review
+    kind: model.chat
+    config:
+      model: qwen3-8-27b
+      messages:
+      - role: system
+        content: Reply with JSON only.
+      - role: user
+        content: |
+          Goal: ${{ inputs.goal }}
+      responseSchema:
+        type: object
+        required: [verdict]
+        properties:
+          verdict: {type: string}
+          notes: {type: string}
+    outputs:
+      type: object
+      required: [text, json]
+      properties:
+        text: {type: string}
+        json:
+          type: object
+          required: [verdict]
+          properties:
+            verdict: {type: string}
+`
+
+// TestModelChatResponseSchemaSurvivesCompilation pins the compiler half of the
+// pass-37 fix: responseSchema compiles into the plan's configBindings as ONE
+// whole literal leaf at the schema position. The claim hydration (store
+// hydrateConfigs / runtime ConfigTree) rebuilds the executor's config from
+// exactly these bindings, so a schema the compiler drops is a schema the
+// worker never sees — and the worker sets outputs.json only when it sees it.
+func TestModelChatResponseSchemaSurvivesCompilation(t *testing.T) {
+	plan, d := compileModelChat(t, modelChatSchemaBody)
+	if !d.Valid() {
+		t.Fatalf("compiler refused the document: %s", showDiags(d))
+	}
+	at := "/spec/nodes/0/config/responseSchema"
+	got := bindingsAt(plan, at)
+	if len(got) != 1 {
+		t.Fatalf("%s: %d bindings, want exactly 1 — the executor rebuilds its config from the plan's configBindings, so a dropped responseSchema is the pass-37 bug", at, len(got))
+	}
+	b := got[0]
+	if b.Position != schema.PositionSchema {
+		t.Errorf("%s position = %q, want %q (its strings are schema vocabulary, never bindings)", at, b.Position, schema.PositionSchema)
+	}
+	if !b.IsLiteral() {
+		t.Fatalf("%s compiled %v expression ids, want the whole schema as one literal", at, b.ExprIDs)
+	}
+	sch, ok := b.Literal.(map[string]any)
+	if !ok || sch["type"] != "object" {
+		t.Fatalf("literal = %#v, want the authored schema object", b.Literal)
+	}
+	props, _ := sch["properties"].(map[string]any)
+	if _, ok := props["verdict"]; !ok {
+		t.Errorf("literal lost the schema's properties: %#v", b.Literal)
+	}
+	// No binding may point INSIDE the schema: its strings must never bind.
+	for _, n := range plan.Nodes {
+		for _, bb := range n.ConfigBindings {
+			if strings.HasPrefix(bb.Pointer, at+"/") {
+				t.Errorf("binding %s points inside the schema; schema strings must never become binding positions", bb.Pointer)
+			}
+		}
+	}
+}
