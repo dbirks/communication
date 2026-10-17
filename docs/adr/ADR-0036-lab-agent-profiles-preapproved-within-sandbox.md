@@ -49,10 +49,11 @@ journalling `sandbox.egress_observed` — is closed by this change's worker work
 Pass `ask` as the fourth argument at the three call sites in `docs/compatibility/probes/m4/seed.sh`
 and re-run it: the upsert re-affirms `permission_mode` in place. No migration, no API change.
 
-## Addendum 2026-10-16 — condition (a) measured
+## Addendum 2026-10-16 — condition (a) measured — corrected 2026-10-17
 
-Condition (a) — a journalled verdict for a policy decision — is **closed in the lab**, superseding the
-sentence in Security/privacy that called it open.
+Condition (a) — a journalled verdict for a policy decision — is **closed in the lab for pipeline
+attempts**, superseding the sentence in Security/privacy that called it open. The conversation path is
+NOT covered (correction below).
 
 **Cause:** no mode was ever requested. `deny` and `preapproved_within_sandbox` fell through with
 `modeID = ""` (`internal/worker/agentturn.go:405-416`) and `session/set_mode` is sent only when a mode is
@@ -66,6 +67,21 @@ prompting mode under both policies, failing closed without one; the existing bri
 (`live27/C1,C2.out:280`); journal after the pass: `permission.requested` **23**, `permission.decided` **23**
 (all `status=decided`, `decided_by=node_policy:preapproved_within_sandbox`), `tool.call` **31** — vs **0**
 permission rows over 34 tool calls on live25. Driver check C1j (`7e6eda3`) first runs at pass 28: **pending**.
+
+**Correction (2026-10-17, passes 28–30).** (1) The pass-27 23/23 counts are **attempt** rows — the
+request ids are `attempt-…-permission-N` (same shape at `live29/C1.out:90-:96`) — so they were always
+attempt-path evidence. C1j crashed its first run at pass 28 on a driver bug in its own query
+(`live28/C1.out:84`, `||` binds tighter than `->>`; fixed in `c11d01f`) and measures PASS at pass 29
+(`live29/C1.out:97-:100`: 8 requested / 8 decided, every one
+`decided_by=node_policy:preapproved_within_sandbox`, no orphans). (2) On the **conversation** path
+`1b93069`'s prompting-mode change had turned `deny` into `ask`: the prompt waited for a human and a
+live deny conversation's prompt closed `expired`. `c1c7c19` fixes this — deny conversation prompts are
+opened then closed `cancelled` by policy at once, enforced live at pass 30 (`docs/compatibility/probes/m4/deny_probe.sh`,
+`14b110f`; `live30/deny_probe.out`: 1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved, and
+`deny-probe.txt` lands in no workspace) — and returns preapproved conversations to the harness's
+`auto` mode, where there is **no per-call verdict**: `permission_requests.decided_by` is a user uuid,
+so recording a policy decider on that path needs a schema change plus an ADR. Attempts are unaffected
+and still journal policy verdicts. Condition (a) is therefore closed **for pipeline attempts only**.
 
 **This ADR's lab-only scope is NOT changed:** migration 00003, the profile API and every deployment stay
 `ask`, and whether `preapproved_within_sandbox` becomes a product default is a separate owner decision.

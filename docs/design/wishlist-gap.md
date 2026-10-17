@@ -440,8 +440,14 @@ on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6f
    `conversation.permission.requested` 23 / `conversation.permission.decided` 23 (all `status=decided`,
    `decided_by=node_policy:preapproved_within_sandbox`) over 31 `conversation.tool.call` rows — so
    `deny` prompts and is answered by policy. Condition (a) of the 2026-10-16 evaluation — the one item
-   blocker 2 above waits on — is thereby closed **in the lab** (ADR-0036's 2026-10-16 addendum); what
-   blocker 2 still waits on is the owner's separate decision to make the mode a product default.
+   blocker 2 above waits on — is thereby closed **in the lab for pipeline attempts** (ADR-0036's addendum,
+   corrected 2026-10-17); what blocker 2 still waits on is the owner's separate decision to make the mode a
+   product default. **Update (passes 28–30):** `deny` is now enforced on **both** paths — `c1c7c19` opens
+   then immediately closes deny conversation prompts `cancelled` by policy (a `1b93069` live deny prompt had
+   waited for a human and closed `expired`), proven at pass 30 (`live30/deny_probe.out`: 1 requested / 1
+   decided (cancelled) / 0 allow / 0 preapproved, `deny-probe.txt` in no workspace); the remaining gap is
+   that preapproved **conversations** run in the harness's auto mode with no per-call journaled verdict —
+   attempts still journal policy verdicts (C1j PASS at pass 29, `live29/C1.out:97-:100`).
 9. **The cluster runs a build older than every fix above.** GitHub Actions has not run
    since `c5c7888` (account billing), so no `main` image has been published for Flux image
    automation to pin (`docs/home-cluster.md` § 4) — the cluster worker predates `d9928d9`,

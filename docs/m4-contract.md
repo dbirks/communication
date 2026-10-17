@@ -972,6 +972,12 @@ C1h  psql -tAc "select count(*) from domain_events where run_id='$RUN'
      # > 0 and the sequence run.created → node.attempt.* → run.checkpoint_saved → node.scope.* → run.completed is contiguous
 C1i  replay the whole thing a second time (fresh run, same revision) and assert an identical
      *node_instance_key set* and an identical `plan_digest`: run identity is reproducible (§ 9.4).
+C1j  psql -tAc "SELECT type || '|' || COALESCE((payload->>'permission_request_id'),'-') || '|' ||
+                  COALESCE((payload->>'status'),'-') || '|' || COALESCE((payload->>'decided_by'),'-')
+                FROM domain_events WHERE run_id='$RUN'
+                  AND type IN ('conversation.permission.requested','conversation.permission.decided')
+                ORDER BY global_seq"   # every payload->> parenthesised: || binds tighter than ->> (pass 28 crashed)
+     # agent leg: >=1 requested; every request exactly one decided, status=decided, decided_by=node_policy:preapproved_within_sandbox; no decided row without a request (ADR-0036 (a))
 ```
 
 **C2 — the unit of work is the attempt, not the turn (invariant 5 + ADR-0018's `node_attempt`).**

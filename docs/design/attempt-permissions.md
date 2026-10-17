@@ -130,4 +130,16 @@ harness's silent default. Whether the mode becomes a product default is a separa
 ADR-0036 stays lab-only (see its 2026-10-16 addendum), and driver check C1j (`7e6eda3`) asserts the
 requested/decided pairing from the live side — first run pass 28, pending.
 
+**Correction (2026-10-17, passes 28–30).** The 23/23 rows above are **attempt** rows (request ids
+`attempt-…-permission-N`): C1j crashed its first run at pass 28 on a bug in its own query
+(`live28/C1.out:84`, fixed in `c11d01f`) and measures PASS at pass 29 (`live29/C1.out:97-:100`: 8
+requested / 8 decided, every one `decided_by=node_policy:preapproved_within_sandbox`, no orphans) —
+attempt-path evidence. On the **conversation** path `1b93069` had turned `deny` into `ask` (a live deny
+prompt waited for a human and closed `expired`); `c1c7c19` opens then immediately closes deny
+conversation prompts `cancelled` by policy — enforced live at pass 30 (`live30/deny_probe.out`: 1
+requested / 1 decided (cancelled) / 0 allow / 0 preapproved, `deny-probe.txt` in no workspace) — and
+returns preapproved conversations to the harness's `auto` mode, where no per-call verdict is journalled.
+The open follow-up: giving the conversation path policy verdicts needs a decider column on
+`permission_requests` (its `decided_by` is a user uuid) plus an ADR.
+
 
