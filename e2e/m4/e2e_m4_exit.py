@@ -11572,15 +11572,20 @@ def c10_chat_precondition(run_id=None):
 
 def c10c_scratch_doc(canonical, name):
     """C10c — author the gate-owned scratch pipeline WITHOUT editing the fixture:
-    ONE model.chat node whose config.responseSchema is the seed twin's reviewer
-    `outputs` declaration copied VERBATIM (the C10 reviewer shape: approved
-    boolean required, etc. — the same schema C10a is graded against), and whose
-    prompt instructs the model to reply with the exact malformed reply
-    C10C_REPLY. model qwen3-8-27b, temperature 0, maxTokens 200,
-    retry.maxAttempts 1. The node's OWN outputs declaration is the model.chat
-    shape (text + model, the plan-with-approval.yaml form). Returns {doc,
-    applied, missing, schema}: doc None (the caller GAPs) unless the reviewer
-    schema read exactly in the shape C10c copies it."""
+    ONE model.chat node whose OWN `outputs` declaration is the seed twin's
+    reviewer `outputs` declaration copied VERBATIM (the C10 reviewer shape:
+    approved boolean required, etc. — the same schema C10a is graded against),
+    and whose prompt instructs the model to reply with the exact malformed reply
+    C10C_REPLY. NO config.responseSchema: a responseSchema goes to the endpoint
+    as a constrained-decoding constraint, which makes a schema-violating reply
+    impossible, so the arm could never observe the boundary refusing one — the
+    boundary the claim is about is the node's declared outputs schema
+    (internal/store/postgres/attempt_worker.go declaredOutputRejection), so the
+    reviewer schema is declared on the node's `outputs`, exactly the way the
+    seed twin's reviewer node declares its outputs. model qwen3-8-27b,
+    temperature 0, maxTokens 200, retry.maxAttempts 1. Returns {doc, applied,
+    missing, schema}: doc None (the caller GAPs) unless the reviewer schema read
+    exactly in the shape C10c copies it."""
     out = {"doc": None, "applied": [], "missing": [], "schema": None}
     if not doc_is_pipeline(canonical):
         out["missing"].append("source document (GET /revisions/{id} served no canonical "
@@ -11628,7 +11633,6 @@ def c10c_scratch_doc(canonical, name):
                     "model": C10C_MODEL,
                     "temperature": 0,
                     "maxTokens": C10C_MAX_TOKENS,
-                    "responseSchema": json.loads(json.dumps(schema)),
                     "messages": [
                         {"role": "system",
                          "content": ("You are a strict JSON reviewer. Your entire "
@@ -11641,14 +11645,14 @@ def c10c_scratch_doc(canonical, name):
                                       + C10C_REPLY)},
                     ],
                 },
-                "outputs": {"type": "object", "required": ["text"],
-                             "properties": {"text": {"type": "string", "minLength": 1},
-                                             "model": {"type": "string"}}},
+                "outputs": json.loads(json.dumps(schema)),
             }],
         },
     }
     out["applied"].append("the reviewer's declared outputs schema copied verbatim into "
-                          "config.responseSchema (the C10 reviewer shape)")
+                          "the node's OWN outputs declaration (no config.responseSchema — "
+                          "the reply is not constrained on the wire; the boundary's "
+                          "declared-outputs check is the check)")
     out["applied"].append(f"one model.chat node {C10C_NODE_ID}: model={C10C_MODEL} "
                           f"temperature=0 maxTokens={C10C_MAX_TOKENS} "
                           f"retry.maxAttempts={C10C_MAX_ATTEMPTS}")
@@ -11662,14 +11666,16 @@ def c10c_scratch_doc(canonical, name):
 
 def c10c_doc_verdicts(res):
     """C10c's honesty gate on the scratch document itself: the arm only proves the
-    boundary-vs-adapter claim if the doc is ONE model.chat node whose
-    responseSchema is the seed reviewer's declaration and whose prompt carries
-    the exact malformed reply."""
+    boundary-vs-adapter claim if the doc is ONE model.chat node whose OWN
+    outputs declaration is the seed reviewer's declaration — with NO
+    config.responseSchema, or the reply would be constrained on the wire and
+    the boundary could never be the refusal — and whose prompt carries the
+    exact malformed reply."""
     sp = res if isinstance(res, dict) else {}
     applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
-    v = [("C10c scratch doc: ONE model.chat node, responseSchema copied from the "
-          "seed twin's reviewer declaration", any("responseSchema" in a for a in applied),
-          f"applied={applied[:2]}")]
+    v = [("C10c scratch doc: ONE model.chat node, the seed twin's reviewer declaration "
+          "copied into the node's OWN outputs declaration (no config.responseSchema)",
+          any("outputs declaration" in a for a in applied), f"applied={applied[:2]}")]
     v.append((f"C10c scratch doc: retry.maxAttempts 1, model {C10C_MODEL}, "
               "temperature 0, maxTokens 200",
               any(C10C_MODEL in a for a in applied), f"applied={applied[:2]}"))
@@ -11680,6 +11686,9 @@ def c10c_doc_verdicts(res):
         # doc_yaml_emit renders the prompt as a YAML double-quoted scalar, so the
         # reply's quotes are escaped in the emitted bytes; unescape before the check.
         unescaped = doc.replace(chr(92) + chr(34), chr(34))
+        v.append(("C10c scratch doc: no responseSchema anywhere in the document "
+                  "(the model's reply is NOT constrained on the wire)",
+                  "responseSchema" not in doc, f"{len(doc)} bytes"))
         v.append((f"C10c scratch doc: the prompt names the exact malformed reply "
                   f"({C10C_REPLY}) and no second model.chat node exists",
                   C10C_REPLY in unescaped and doc.count("kind: model.chat") == 1,
@@ -11726,8 +11735,8 @@ def c10c_arm_result(att):
     if not att:
         return None, "the scratch run closed with no attempt row to read"
     if str(att.get("status") or "") == "succeeded":
-        return None, ("the model.chat attempt SUCCEEDED — the model replied VALIDLY "
-                      "against the reviewer-shaped responseSchema (it did not follow "
+        return None, ("the model.chat attempt SUCCEEDED — the reply passed the "
+                      "boundary's declared-outputs check (the model did not follow "
                       "the malformed-reply instruction), so the arm yields a GAP, "
                       "never a PASS")
     return att, None

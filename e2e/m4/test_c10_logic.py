@@ -425,9 +425,11 @@ class Words(unittest.TestCase):
 
 
 class C10cScratchDoc(unittest.TestCase):
-    """The C10c scratch-pipeline authoring: one model.chat node, the seed
-    reviewer's declared outputs schema copied verbatim into responseSchema, the
-    exact malformed reply in the prompt, retry.maxAttempts 1."""
+    """The C10c scratch-pipeline authoring: one model.chat node whose OWN outputs
+    declaration is the seed reviewer's declared outputs schema copied verbatim
+    (no config.responseSchema — the reply must not be constrained on the wire,
+    or the boundary could never be the refusal), the exact malformed reply in
+    the prompt, retry.maxAttempts 1."""
 
     def setUp(self):
         if yaml is None:
@@ -455,16 +457,20 @@ class C10cScratchDoc(unittest.TestCase):
         self.assertEqual(cfg["model"], "qwen3-8-27b")
         self.assertEqual(cfg["temperature"], 0)
         self.assertEqual(cfg["maxTokens"], 200)
-        self.assertEqual(cfg["responseSchema"], review["outputs"],
-                         "responseSchema must be the reviewer's declared schema verbatim")
+        self.assertNotIn("responseSchema", cfg,
+                         "no responseSchema on the wire — the boundary's declared-"
+                         "outputs check is the check")
+        self.assertEqual(node["outputs"], review["outputs"],
+                         "the node's OWN outputs declaration must be the reviewer's "
+                         "declared schema verbatim (the C10 reviewer shape)")
         self.assertTrue(all(k in ("role", "content") and v
                             for msg in cfg["messages"] for k, v in msg.items()))
         user = [x for x in cfg["messages"] if x["role"] == "user"]
         self.assertEqual(len(user), 1)
         self.assertIn(m.C10C_REPLY, user[0]["content"])
         self.assertIn("${{ inputs.goal }}", user[0]["content"])
-        self.assertTrue(isinstance(node["outputs"]["properties"].get("text"), dict),
-                        "the node's own outputs keep the model.chat shape (text)")
+        self.assertNotIn("responseSchema", sp["doc"],
+                         "the emitted document carries no responseSchema at all")
 
     def test_the_prompt_reply_is_the_malformed_shape(self):
         sp = m.c10c_scratch_doc(self.twin(), "m4x-c10c-chat-y")
