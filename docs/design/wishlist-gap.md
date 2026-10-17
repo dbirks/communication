@@ -9,10 +9,10 @@ end-to-end; **CHECKED LIVE** is claimed only where a commit message or a
 row records the literal observed output (`communication-spec/12-test-strategy.md`).
 Landed since the previous refresh (`6b60d1a`), all cited with shas below: **the
 real-Claude agent pipeline now completes end to end live** — C1 98/0/0 at passes
-12/14/15 after `5820aab`'s review-prompt fix; scoreboard at pass 24 **PASS 80 / FAIL 0 /
-GAP 3 / NOT RUN 2** (`0f4c72a`), with pass 25 (`fa0c0e0`) recorded in
-`docs/m4-exit-status.md` promoting C6d, C3d and C11c and leaving C7c and C10c as the
-GAPs. M5 lab specs passed: agents+schedules **3/3**
+12/14/15 after `5820aab`'s review-prompt fix; scoreboard after pass 30 **PASS 84 / FAIL 0 / GAP 2 / NOT RUN 0** over 86
+items (`c1c7c19`, `docs/m4-exit-status.md`), with pass 29 (`d4cd945`) promoting C1j new →
+PASS and pass 30's deny probe proving `deny` on the conversation path
+(`live30/deny_probe.out`) — C7c and C10c stay the two GAPs. M5 lab specs passed: agents+schedules **3/3**
 (`be97fd1`), layout 18/20 with both real 390px overflows then fixed (`ef0d848`,
 `19175b3`), two-user Inbox **6/6** (`docs/m4-exit-status.md:299`). The run page
 lists every attempt with honest interrupted wording (W5 11/0, `f010fe2`), child
@@ -20,7 +20,8 @@ runs carry status words (W11 11/0, `19175b3`), and SSE survives a reload and an
 api-replica roll (W10 15/0, pass 14). Also: overview refetch storm fixed
 (962→22 requests, browser-checked, `82902b4`); `/projects/:id/conversations` its
 own page (browser-checked, `059d132`); `restore_checkpoint` implemented + wired
-(`e2de8fa`, `5c03d6c` — backend only until C6 re-runs); refused recovery classed
+(`e2de8fa`, `5c03d6c`; its C6 legs now PASS at passes 20/25 — `3f35115`,
+`fa0c0e0`); refused recovery classed
 `workspace_lost` (`efb82bd`); mid-turn ACP disconnect classed infra (`320c6fe`).
 The assistant has still never answered live: no model in the lab, and the home
 cluster's click-through is not done.
@@ -30,13 +31,13 @@ cluster's click-through is not done.
 | Item | Status | Smallest next step |
 |---|---|---|
 | W1 Browse projects + repositories | works end-to-end (CHECKED LIVE: `e2e/tests/m1-journey.spec.ts`, M4 W1 leg; the overview's SSE refetch storm fixed — browser-checked 962→22 requests, `82902b4`) | Record one real `https://github.com/…` mirror clone in `docs/compatibility/WORKSPACES.md` |
-| W2 Plan workflow with a human gate | works end-to-end (gate card CHECKED LIVE 21/0/0 **on a real Claude plan**, re-confirmed pass 12 `live12/W3.out:55`; the real-Claude loop **completes end to end** — C1 98/0/0 at passes 12/14/15, `5820aab`; M5 journey ran live 12/1/4 — its step-6 fix `ef470a0` awaits a re-run) | Re-run `e2e/tests/m5-journey.spec.ts` live (`COMMUNICATION_E2E_M5=1`) on a build containing `ef470a0` |
+| W2 Plan workflow with a human gate | works end-to-end (gate card CHECKED LIVE 21/0/0 **on a real Claude plan**, re-confirmed pass 12 `live12/W3.out:55`; the real-Claude loop **completes end to end** — C1 98/0/0 at passes 12/14/15, `5820aab`; M5 journey is now **live-green 10 passed / 0 failed / 1 fixme** on `14e8ff5` after the step-6 fix `ef470a0` re-ran — the one `fixme` is a recorded product contradiction at `:965`, `docs/m4-exit-status.md:320`) | Decide the `:965` contradiction the `fixme` records (the rejected-gate card's "fails the run" promise vs a BUSINESS outcome) and re-arm that arm as a test |
 | W3 GitHub-issue run, fan out + join | issue list works end-to-end on public repos (real call observed, `docs/compatibility/GITHUB.md`); `pipeline.invoke` children **CHECKED LIVE** and C8e stop/`fail_after_all` are now **PASS** (C8 38/0/2 at pass 11, `d8b927c`+`b2bfe62`, `live11/C8.out:78-92`); prefill wired, not clicked live; triggers/join spec only | One Playwright arm clicking issue→prefill→`run_inputs`; webhook/poll triggers need `triggers`+`invocations` tables + ADR (M6) |
 | W4 Edit step prompts, drafts → publish | works end-to-end (YAML edit→validate→publish; the **step form was clicked live** — m5-journey step 2 edits `timeoutSeconds`, saves, validates and publishes r1 (`e2e/tests/m5-journey.spec.ts:292-330`; 12 passed incl. step 2, `docs/m4-exit-status.md:296-299`); read-only templates + assign panel CHECKED LIVE `9be68fd`; editing a `prompt` field through the form is still unrecorded) | One Playwright arm editing an `agent.acp` step's `prompt` through the form and publishing |
 | W5 Scheduled security workflow | works end-to-end (schedule firing OBSERVED LIVE, 2026-10-16, `016f11e`; the cron clock + pause clicked live — agents+schedules spec **3/3 on the lab**, `be97fd1`) | Home-cluster weekly `security-review` on a schedule; record `run.created` plus the schedule's `last_run_at` before/after |
 | W6 APM skills, tag pin, cross-agent | works end-to-end for the claude target (CHECKED LIVE, `docs/compatibility/APM.md:223-246`; profile create + skill pin + digest help now clicked through `/agents` — **3/3 live**, `be97fd1`); codex target NOT RUN live | Run the same live probe with `target=codex`; append the row to `docs/compatibility/APM.md` |
-| W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) are **backend only** — their legs (C6, C2, C4e, W6/C6e) have reruns pending) | Re-run C6 on a `5c03d6c`+ build, C2's agent variant (`599e4f9`), C4e (`2f0fe1f`) and W6/C6e after `efb82bd`+`0a0d6a9`, and paste the literal PASSes |
-| W8 Shared one-off conversations | works end-to-end (CHECKED LIVE: m2-journey browser; two-user Inbox **6/6 live**, `docs/m4-exit-status.md:299`; the per-project conversations page browser-checked, `059d132`; permission mode decided for the **lab only** — ADR-0036, `382d42b`) | Record one live conversation turn whose `sandbox.egress_observed` proves the `382d42b` journalling; then the product-mode decision |
+| W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) now have **PASS legs** — C6 restore b/c/e at pass 20 + C6d at pass 25 (`3f35115`, `fa0c0e0`), C2a/C2b's agent variant at pass 17 (`320c6fe`, `599e4f9`), C4e at pass 18 (`cc0bff8`), W6 14/0/0 at pass 19 (`2b24738`+`6e57274`); agents now run git in their worktree (`e83913a`, pass 26 `76a9e64`) and every permission prompt in attempts closes as one journaled policy verdict (`a0fd9e7`, pass 27's 23/23 journal read; C1j PASS at pass 29, `d4cd945`)) | Mount the owner's Claude secret on the cluster worker (home-cluster blocker 1) so the real-agent legs run there; record the Gemini/Pi rows in `docs/compatibility/ACP.md` |
+| W8 Shared one-off conversations | works end-to-end (CHECKED LIVE: m2-journey browser; two-user Inbox **6/6 live**, `docs/m4-exit-status.md:299`; the per-project conversations page browser-checked, `059d132`; permission mode decided for the **lab only** — ADR-0036, `382d42b`; **`deny` is now enforced on the conversation path** (`c1c7c19`, pass 30 deny probe: 1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved, `live30/deny_probe.out`); per-call verdicts for preapproved conversations (ADR-0039) in implementation, not done) | Record one live conversation turn whose `sandbox.egress_observed` proves the `382d42b` journalling; then the product-mode decision |
 | W9 In-UI assistant | backend + UI built and unit-tested (ADR-0034, `3cbf2a3`); **NOT answered live anywhere** — the lab has no model endpoint, the home cluster is configured (`docs/home-cluster.md`) but the click-through is not done; write tools spec only | Ask one question live on the home cluster and record question→answer→route-link click |
 
 ## W1 — Browse projects; see a project's repositories
@@ -100,16 +101,19 @@ Passes 12/14/15 all came back **C1 98 PASS / 0 FAIL / 0 GAP** (`live12/C1.out:21
 `review_approved == true`, 2 iterations, contiguous journal, SSE saw both frames
 (`live15/C1.out:28, :63-66, :66-74, :83`). The M5 exit journey ran live **12
 passed / 1 failed / 4 not run** — the failure is step 6's wrong assumption (exit 1
-alone is a business outcome, not a failure), fixed in `ef470a0`, **re-run pending**
-(`docs/m4-exit-status.md:296-299`).
+alone is a business outcome, not a failure), fixed in `ef470a0` — and the re-run
+has landed live-green: **10 passed / 0 failed / 1 fixme** on `14e8ff5`
+(`docs/m4-exit-status.md:320`), where the one `fixme` is the recorded product
+contradiction at `:965`, not a broken test.
 
 **Status: works end-to-end** — gate card CHECKED LIVE and the full real-Claude
 loop plan→approve→iterations→`completed` CHECKED LIVE at passes 12/14/15
 (`5820aab`); the prior "still fails before exhaustion" line is closed, the M5
-journey re-run pending.
+journey re-run landed live-green (10/0/1 fixme, `14e8ff5`).
 
-**Next step.** Re-run `e2e/tests/m5-journey.spec.ts` live (`COMMUNICATION_E2E_M5=1`)
-on a build containing `ef470a0`; the C1c exhaustion diagnosis is no longer needed.
+**Next step.** Decide the `:965` product contradiction the journey's one `fixme`
+records (the rejected-gate card's "fails the run" promise vs a BUSINESS outcome)
+and re-arm that arm as a test; the C1c exhaustion diagnosis is no longer needed.
 
 ## W3 — "Build" workflow driven by GitHub issues, fanning out and joining back
 
@@ -274,8 +278,8 @@ discarded paths, emit `run.checkpoint_restored`, refuse submodules — `e2de8fa`
 `continue_workspace` unchanged); refused workspace recovery classed
 `workspace_lost`, never infra, never auto-retried (`efb82bd`); mid-turn ACP
 disconnect classed infra, retried per policy, not `invalid_output` (`320c6fe`, a
-C2 live finding) — the last three **backend only** (unit-tested; legs in the
-reruns below). The home-cluster worker runs only
+C2 live finding) — the last three now have their legs measured (all PASS at
+passes 17–25, below). The home-cluster worker runs only
 `process.exec`/`model.chat`/`artifact.publish` until the owner's Claude secret is
 mounted (`docs/home-cluster.md` § 1); `c5c7888` added read-only checks proving a
 run executed on that worker.
@@ -298,21 +302,26 @@ id in the DOM (`19175b3`, `live14/W11.out:36`). Egress CHECKED LIVE: two real
 (ADR-0035, `b058d08`), `example.com` denied by a `host_denied` audit record,
 `docs/compatibility/SANDBOX.md:429-481` (`9e83e12`).
 
-**Still unrecorded (reruns pending):** C4e's fenced-`agent.acp`-turn rewrite
-(`2f0fe1f`, `live11/C4.out:65` GAP); C6's restore leg on a `5c03d6c`+ build
-(`live14/C6.out:73` GAP); C2a/C2b on the agent variant (`599e4f9`,
-`live14/C2.out:42` GAP); W6/C6e's cross-volume `workspace_lost` (`efb82bd`+
-`live13/W6.out:51` GAP); C5h's scratch `maxAttempts: 1` arm (`0a0d6a9`, never
-live). Gemini and Pi stay GAP rows in `docs/compatibility/ACP.md`.
+**All previously pending legs are now recorded:** C4e's fenced-`agent.acp`-turn
+rewrite (`2f0fe1f`) **PASS at pass 18** (`cc0bff8`, `live18/C4.out:76, :86-:88`);
+C6's restore leg on a `5c03d6c`+ build — C6b/C6c/C6e **PASS at pass 20**
+(`3f35115`, `live20/C1,C5,C6.out:422-:428, :431-:434, :473-:477`) and C6d
+**PASS at pass 25** (`fa0c0e0`, `live25/C1,C5,C6.out:481, :484-:488`); C2a/C2b
+on the agent variant (`599e4f9`) **PASS at pass 17** (`320c6fe`,
+`live17/C2.out:54-:63`); W6's cross-volume `workspace_lost` **PASS 14/0/0 at
+pass 19** (`2b24738`+`6e57274`, `live19/W6.out:74`); C5h's scratch
+`maxAttempts: 1` arm **PASS at pass 20** (`3f35115`,
+`live20/C1,C5,C6.out:304-:343`). Gemini and Pi stay GAP rows in
+`docs/compatibility/ACP.md`.
 
 **Status: works end-to-end** — conversations CHECKED LIVE; the real-Claude
 pipeline completing CHECKED LIVE (C1 98/0/0, three passes); run-page stream,
 interrupted wording and child statuses CHECKED LIVE (W2/W5/W10/W11, passes
 11/14); agent-turn egress CHECKED LIVE (rows 8a/8b). `restore_checkpoint`,
-`workspace_lost` and disconnect→infra are **backend only** until reruns land.
+`workspace_lost` and disconnect→infra now have PASS legs (passes 17–25, above).
 
-**Next step.** One lab pass on HEAD runs the five pending legs above; on the
-cluster, the owner's Claude secret turns the samples into full-agent pipelines.
+**Next step.** The five formerly pending legs are all recorded PASS above (passes 17–25);
+on the cluster, the owner's Claude secret turns the samples into full-agent pipelines.
 
 ## W8 — One-off agent conversations, shared, grouped under a project
 
@@ -323,7 +332,8 @@ observer, takeover/return); milestone M2 exit.
 take/return with 409s, durable store + SSE (`internal/api/conversations.go`,
 `internal/worker/{agentturn,turnloop*}.go`). New: mid-turn ACP disconnect is
 classed infra and retried per policy, not `invalid_output` (`320c6fe`,
-`internal/agent/acp/disconnect.go`, unit-tested; live rerun pending).
+`internal/agent/acp/disconnect.go`, unit-tested; C2 re-ran 29/0/0 on this
+build at pass 17 (`320c6fe`)).
 
 **UI.** `/projects/:id/conversations` is its own page — members see the list,
 non-members "not found or no access" — **browser-checked** (`059d132`).
@@ -344,9 +354,14 @@ browser-checked `059d132`).
 
 **Next step.** ADR-0036 (`382d42b`) decided the lab half of the permission
 question (`preapproved_within_sandbox` for the three M4 seed profiles); every
-product default and deployment stays `ask` — condition (a) is open, the journal
-records no verdict for a preapproved tool call
-(`docs/design/attempt-permissions.md`). Turns now journal their own
+product default and deployment stays `ask`. Condition (a) is closed **for
+pipeline attempts** — the journal reads 23/23
+`node_policy:preapproved_within_sandbox` decisions (`a0fd9e7`, pass 27
+`1b93069`; C1j PASS at pass 29, `d4cd945`) — but stays open **on the
+conversation path**: after `c1c7c19` preapproved conversations run in the
+harness's auto mode with no per-call journaled verdict (`live30/deny_probe.out`
+proves `deny` there; ADR-0039 is in implementation, not done). Turns now
+journal their own
 `sandbox.egress_observed` via a per-turn marker (`382d42b`, unit-tested — no live
 turn has re-observed it yet); record one that does.
 
