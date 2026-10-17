@@ -134,6 +134,14 @@ cat > "$BIN/m4-exit.sh" <<'SCRIPT'
 # N seconds before doing anything, so C4/C5/C6's fault gates catch a LIVE attempt.
 # 0 = the shipped <1s steps, byte-for-byte unchanged stdout.
 #
+# M4_LEAVE_DIRTY (default 0; the twin's leave_dirty run input, env on implement
+# ONLY): truthy makes the implement step, AFTER its own edit+printf, write one extra
+# UNCOMMITTED file (git add/commit is never run here — process.exec carries no commit
+# grant) so the boundary the worker captures when implement COMPLETES records a dirty
+# tree (run_checkpoints.repo_states: committed=false, modified_path_count>0). That is
+# the state § 7.1 C6d's refusal arm reads; 0 (default) writes nothing and the step's
+# stdout is byte-for-byte unchanged.
+#
 # POSIX sh + GNU sed/grep only — no python3, no pytest in the worker image.
 set -eu
 
@@ -166,6 +174,28 @@ hold() {
     sleep "$n"
 }
 
+# leave_dirty — opt-in DIRTY-BOUNDARY producer on the implement step ONLY, fed by the
+# twin's leave_dirty run input (docs/compatibility/probes/m4/pipeline.yaml) as
+# M4_LEAVE_DIRTY. The § 7.1 C6d refusal arm needs a boundary whose RECORDED repo
+# state is uncommitted (run_checkpoints.repo_states.committed=false). Every shipped
+# twin step commits its tracked edit, so implement's own boundary always reads
+# committed=true (live20 C6d precondition GAP, `nodes=['/plan']`). Truthy makes
+# implement, AFTER it has applied its edit and printed its stdout, write ONE extra
+# file it never stages/commits — process.exec carries no commit grant, so git status
+# sees it as untracked and the boundary the worker captures on completion records a
+# dirty tree. Semantics mirror hold: unset / 0 / empty / 'false' -> write nothing,
+# stdout byte-for-byte unchanged; anything else -> one untracked file, one STDERR
+# note (stdout stays the single JSON document json_from_stdout extracts).
+leave_dirty_note() {
+    [ -f m4-leave-dirty.txt ] && return 0
+    printf 'uncommitted on purpose (m4-exit.sh leave_dirty; § 7.1 C6d dirty-boundary refusal arm)\n' > m4-leave-dirty.txt
+    echo "m4-exit.sh implement: left m4-leave-dirty.txt uncommitted (M4_LEAVE_DIRTY=$1)" >&2
+}
+dirty_gate() {
+    case "${M4_LEAVE_DIRTY:-}" in ''|0|[Ff][Aa][Ll][Ss][Ee]) return 0 ;; esac
+    leave_dirty_note "${M4_LEAVE_DIRTY:-1}"
+}
+
 step="${1:-}"
 case "$step" in
 plan)
@@ -184,6 +214,7 @@ implement)
     else
         printf '{"summary": "fixture edits already applied; nothing to change", "files_changed": []}\n'
     fi
+    dirty_gate implement
     ;;
 test)
     in_app test

@@ -330,3 +330,122 @@ class D3ReportFiles(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)
+
+
+class _Quiet(unittest.TestCase):
+    """C11c's grading goes through the driver's printers, which append to
+    module-level pools; leave every pool exactly as it was found."""
+    POOLS = ("VERDICTS", "DEFERRED", "FAILURES", "GAPS", "SKIPPED")
+
+    def setUp(self):
+        m._atexit_ok = False
+        self.saved = {}
+        for name in self.POOLS:
+            pool = getattr(m, name)
+            self.saved[name] = list(pool)
+            pool.clear()
+        self.inplace = list(m.C11C_INPLACE)
+        m.C11C_INPLACE[:] = []
+
+    def tearDown(self):
+        for name in self.POOLS:
+            getattr(m, name)[:] = self.saved[name]
+        m.C11C_INPLACE[:] = self.inplace
+
+
+def fake(**rolls):
+    """A witness reader over canned rollups: fake(C10A=("PASS", 7))."""
+    def read(leg):
+        return rolls.get(leg.upper(), ("", 0))
+    return read
+
+
+class C11cStructural(_Quiet):
+    def graded(self, **rolls):
+        return {label: (ok, detail) for label, ok, detail
+                in m.c11c_structural_verdicts(witness=fake(**rolls))}
+
+    def test_every_clause_of_the_row_is_a_claim(self):
+        text = " ".join(claim for claim, _, _ in m.C11C_CLAIMS)
+        for phrase in ("project-scoped", "size-capped", "schema-validated",
+                       "redaction-scanned", "its own profile", "allowlist"):
+            self.assertIn(phrase, text)
+
+    def test_the_row_names_c12b_and_c12b_is_a_witness(self):
+        self.assertIn("C12b", [l for c, ls, _ in m.C11C_CLAIMS if "allowlist" in c
+                               for l in ls])
+
+    def test_all_witnesses_measured_passes_every_claim(self):
+        rolls = {leg: ("PASS", 3) for _, legs, _ in m.C11C_CLAIMS for leg in legs}
+        out = m.c11c_structural_verdicts(witness=fake(**{k.upper(): v
+                                                        for k, v in rolls.items()}))
+        self.assertEqual(set(ok for _, ok, _ in out), {True}, out)
+        self.assertIn("C10A=PASS over 3 verdict line(s)",
+                      [d for l, _, d in out if "schema-validated" in l][0])
+
+    def test_a_failed_witness_fails_the_claim_it_would_have_proved(self):
+        out = self.graded(C10A=("PASS", 4), C10B=("PASS", 2), C7C=("FAIL", 1))
+        self.assertIs(out["C11c outputs are schema-validated"][0], False)
+        self.assertIn("does not hold", out["C11c outputs are schema-validated"][1])
+
+    def test_nothing_measured_is_a_gap_never_a_pass(self):
+        ok, detail = self.graded()["C11c outputs are size-capped"]
+        self.assertIsNone(ok)
+        self.assertIn("NOT PRINTED", detail)
+        self.assertIn("nothing measured this claim", detail)
+
+    def test_half_measured_is_a_gap(self):
+        ok, detail = self.graded(C1F=("PASS", 9), C2C=("PASS", 5))[
+            "C11c outputs are redaction-scanned"]
+        self.assertIsNone(ok)
+        self.assertIn("partly measured", detail)
+        self.assertIn("C13C", detail)
+
+    def test_a_witness_that_only_gapped_is_unmeasured_not_passing(self):
+        ok, _ = self.graded(C2D=("GAP", 2))[
+            "C11c the reviewer's permission mode is its own profile (04)"]
+        self.assertIsNone(ok)
+
+    def test_a_claim_with_no_witness_cannot_pass(self):
+        out = m.c11c_structural_verdicts(witness=fake(),
+                                         claims=(("a claim nobody measures", (), "nothing"),))
+        self.assertIsNone(out[0][1])
+
+    def test_later_gates_are_named_as_the_reason_a_witness_is_missing(self):
+        self.assertTrue(m.c11c_runs_after_c11("C12b"))
+        self.assertTrue(m.c11c_runs_after_c11("C14a"))
+        self.assertFalse(m.c11c_runs_after_c11("C8b"))
+        self.assertFalse(m.c11c_runs_after_c11("C10a"))
+        self.assertIn("run after C11 in GATES",
+                      self.graded()["C11c outputs are size-capped"][1])
+
+    def test_regrade_prints_nothing_while_no_witness_exists(self):
+        m.C11C_INPLACE[:] = m.c11c_structural_verdicts()
+        _, printed = m.printed_by(m.c11c_regrade)
+        self.assertNotIn("regraded", printed)
+
+    def test_regrade_promotes_a_claim_once_its_witnesses_print(self):
+        m.C11C_INPLACE[:] = m.c11c_structural_verdicts()
+        m.check("C8b children inherit project", True)
+        m.check("C14a no cross-project event reaches this stream", True)
+        _, printed = m.printed_by(m.c11c_regrade)
+        self.assertIn("project-scoped data [regraded once its witnesses printed]",
+                      printed)
+        self.assertNotIn("schema-validated", printed)   # C10a/C10b/C7c printed nothing
+        self.assertEqual([v["verdict"] for v in m.VERDICTS if "regraded" in v["label"]][:1],
+                         ["PASS"])
+
+    def test_regrade_carries_a_witness_failure(self):
+        m.C11C_INPLACE[:] = m.c11c_structural_verdicts()
+        m.check("C2d the reviewer attempt materialized NOTHING", False, "1 row leaked")
+        _, printed = m.printed_by(m.c11c_regrade)
+        self.assertIn("FAIL", printed)
+        self.assertIn("its own witness says it does not hold",
+                      [v["detail"] for v in m.VERDICTS if "regraded" in v["label"]][0])
+
+    def test_an_already_graded_pass_is_not_reprinted(self):
+        m.check("C2d the reviewer attempt materialized NOTHING", True, "0 rows")
+        m.C11C_INPLACE[:] = m.c11c_structural_verdicts()
+        self.assertIs(True, [ok for l, ok, _ in m.C11C_INPLACE if "own profile" in l][0])
+        _, printed = m.printed_by(m.c11c_regrade)
+        self.assertNotIn("own profile", printed)

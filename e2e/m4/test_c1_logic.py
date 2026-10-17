@@ -549,16 +549,16 @@ class C1eDeclaredInputsTest(unittest.TestCase):
     from the run's pinned revision, and the origin checks stay."""
 
     SIX = ["acceptance_criteria", "fanout", "fanout_count", "goal", "hold_seconds",
-           "repository"]
+           "leave_dirty", "repository"]
     SIX_ORIGINS = ["acceptance_criteria=default", "fanout=submitted",
                    "fanout_count=submitted", "goal=submitted", "hold_seconds=default",
-                   "repository=submitted"]
+                   "leave_dirty=default", "repository=submitted"]
 
     def test_live8s_own_six_rows_pass_against_six_declared_inputs(self):
         label, ok, detail = m.c1e_inputs_verdict(self.SIX, self.SIX_ORIGINS)
         self.assertTrue(ok, detail)
-        self.assertIn("6 declared", label)
-        self.assertIn("count=6", detail)
+        self.assertIn("7 declared", label)
+        self.assertIn("count=7", detail)
 
     def test_a_row_that_was_never_validated_is_a_named_fail(self):
         _l, ok, detail = m.c1e_inputs_verdict(self.SIX, [o for o in self.SIX_ORIGINS

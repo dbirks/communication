@@ -375,6 +375,10 @@ spec:
         maximum: 600
         default: 0
         description: Seconds each process.exec step holds its attempt open (m4-exit.sh M4_HOLD_SECONDS) before any work, so C4/C5/C6 fault injection lands on a LIVE attempt; 0 = shipped speed.
+      leave_dirty:
+        type: boolean
+        default: false
+        description: Opt-in dirty-boundary arm for § 7.1 C6d. When true the twin's implement step (m4-exit.sh M4_LEAVE_DIRTY) writes ONE extra UNCOMMITTED file after its edit, so the boundary captured when implement completes records committed=false; false (default) writes nothing and every step is byte-identical.
   outputs:
     type: object
     required: [implementation_summary]
@@ -443,6 +447,7 @@ spec:
             args: [implement]
             env:
               M4_HOLD_SECONDS: ${{ string(inputs.hold_seconds) }}
+              M4_LEAVE_DIRTY: ${{ string(inputs.leave_dirty) }}
             cwd: repos/app
             workspace:
               mode: run_workspace

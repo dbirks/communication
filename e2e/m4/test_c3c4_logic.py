@@ -12,6 +12,7 @@ ALGEBRA is right — it never substitutes for C3/C4's live two-worker § 7 run
 usage: python3 e2e/m4/test_c3c4_logic.py [-v]
 """
 import os
+import re
 import sys
 import unittest
 
@@ -431,6 +432,122 @@ class C3NegativeControlTest(unittest.TestCase):
         self.assertIn("not the execution", s)
         self.assertIn("fenc", s.lower())
         self.assertNotIn("exactly-once execution is guaranteed", s)
+
+
+# --- § 7.1 C3d is now a MEASURED verdict: the row's claim is that the sentence
+# is RECORDED, so the verdict grades the recording (tee'd stdout + filed
+# evidence) and cites C4's fence verdicts when they exist in this process.
+
+
+def flat(s):
+    return " ".join((s or "").split())
+
+
+def arms(verdicts, needle):
+    return [ok for label, ok, _ in verdicts if needle in label]
+
+
+class _Quiet(unittest.TestCase):
+    """Driver printers append to module-level FAILURES/GAPS/SKIPPED; a leg test
+    that calls them must leave them exactly as it found them (test_c5_logic.py
+    asserts on their contents)."""
+    POOLS = ("VERDICTS", "DEFERRED", "FAILURES", "GAPS", "SKIPPED")
+
+    def setUp(self):
+        m._atexit_ok = False
+        self.saved = {}
+        for name in self.POOLS:
+            pool = getattr(m, name)
+            self.saved[name] = list(pool)
+            pool.clear()
+
+    def tearDown(self):
+        for name in self.POOLS:
+            getattr(m, name)[:] = self.saved[name]
+
+
+class VerdictLedgerTest(_Quiet):
+    def test_check_and_gap_record_their_leg(self):
+        m.check("C4c the stale write was refused", True, "log grep > 0")
+        m.gap("C9c bob's arm", "no membership row")
+        self.assertEqual([v["leg"] for v in m.VERDICTS], ["C4C", "C9C"])
+        self.assertEqual(m.ledger_of("C4C")[0]["verdict"], "PASS")
+
+    def test_gate_query_never_swallows_a_two_digit_gate(self):
+        for label in ("C1a ok", "C1i ok", "C10a ok", "C10c ok", "C1 ok"):
+            m.check(label, True)
+        self.assertEqual([v["leg"] for v in m.ledger_gate("C1")],
+                         ["C1A", "C1I", "C1"])
+
+    def test_rollup_is_empty_when_the_gate_never_printed(self):
+        m.check("C12b budget refused", True)
+        self.assertEqual(m.rollup("C4"), "")
+        m.check("C4c refused", False)
+        self.assertEqual(m.rollup("C4"), "FAIL")
+
+    def test_rollup_all_gap_is_gap_not_pass(self):
+        m.gap("C4a no lease", "nothing to freeze")
+        self.assertEqual(m.rollup("C4"), "GAP")
+        m.check("C4d retry succeeded", True)
+        self.assertEqual(m.rollup("C4"), "PASS")
+
+    def test_printed_by_tees_what_the_leg_actually_writes(self):
+        _, printed = m.printed_by(m.show, "C3d NEGATIVE CONTROL", "hello fence")
+        self.assertIn("hello fence", printed)
+        self.assertEqual(m.rollup("C3"), "")   # show prints no verdict
+
+
+class C3dRecordedTest(_Quiet):
+    GOOD = flat(m.C3_NEGATIVE_CONTROL)
+
+    def verdicts(self, printed=None, recorded=None, roll="", lines=0):
+        return m.c3d_verdicts(m.C3D_HEAD + " " + (self.GOOD if printed is None else printed),
+                              self.GOOD if recorded is None else recorded, roll, lines)
+
+    def test_report_lines_wrap_without_breaking_the_sentence(self):
+        joined = flat("\n".join(m.c3d_report_lines()))
+        self.assertIn(self.GOOD, joined)
+
+    def test_recorded_and_printed_passes(self):
+        v = self.verdicts(roll="PASS", lines=12)
+        self.assertEqual(set(ok for _, ok, _ in v), {True}, v)
+
+    def test_absent_sentence_fails(self):
+        self.assertEqual(arms(self.verdicts(printed=""), "own printed report"), [False])
+
+    def test_evidence_that_drifted_from_the_sentence_fails(self):
+        self.assertEqual(arms(self.verdicts(recorded="SKIP LOCKED is fine"),
+                              "gate's evidence"), [False])
+
+    def test_sentence_that_lost_the_fence_clause_fails_its_elements(self):
+        gutted = " ".join(re.sub(r"fenc\w*", "queue", self.GOOD).split())
+        self.assertEqual(arms(self.verdicts(printed=gutted), "C3d's elements"), [False])
+
+    def test_a_sentence_claiming_exactly_once_execution_fails_the_control(self):
+        self.assertEqual(arms(self.verdicts(printed=self.GOOD + " The claim guarantees "
+                                            "exactly-once execution."),
+                              "does not itself claim"), [False])
+
+    def test_unmeasured_c4_is_a_gap_never_a_pass(self):
+        self.assertEqual(arms(self.verdicts(), "proof it points at"), [None])
+        self.assertEqual(arms(self.verdicts(roll="GAP", lines=3), "proof it points at"), [None])
+
+    def test_c4_fail_fails_the_row_that_defers_to_it(self):
+        self.assertEqual(arms(self.verdicts(roll="FAIL", lines=9), "proof it points at"), [False])
+
+    def test_deferred_regrade_cites_c4_once_it_has_printed(self):
+        m.check("C4c the stale owner's write was refused by the fence", True, "log grep=2")
+        m.defer_regrade("C3d", m.c3d_cite_c4)
+        _, printed = m.printed_by(m.run_deferred_regrades)
+        self.assertIn("[regraded after C4]", printed)
+        self.assertEqual([v["verdict"] for v in m.VERDICTS if "regraded" in v["label"]],
+                         ["PASS"])
+
+    def test_regrade_prints_nothing_when_c4_never_ran(self):
+        m.defer_regrade("C3d", m.c3d_cite_c4)
+        _, printed = m.printed_by(m.run_deferred_regrades)
+        self.assertNotIn("regraded", printed)
+
 
 
 if __name__ == "__main__":

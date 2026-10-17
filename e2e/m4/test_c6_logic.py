@@ -123,6 +123,71 @@ class C6aAuthoring(unittest.TestCase):
         self.assertIsNone(res["doc"], "no retry anchor => no honest splice")
 
 
+class C6dWithDirtyTest(unittest.TestCase):
+    def test_with_dirty_copies_and_sets_the_flag(self):
+        base = {"goal": "ship it", "repository": "app"}
+        got = m.with_dirty(base)
+        self.assertIs(True, got["leave_dirty"])
+        self.assertEqual("ship it", got["goal"])
+        self.assertNotIn("leave_dirty", base, "with_dirty returns a COPY (C1's manifest stays)")
+
+    def test_with_dirty_default_false_is_a_no_op(self):
+        base = {"goal": "ship it"}
+        self.assertNotIn("leave_dirty", m.with_dirty(base, on=False),
+                         "off must leave the dict exactly as every other leg posts it")
+
+    def test_with_dirty_degrades_on_bogus_inputs(self):
+        self.assertEqual({"leave_dirty": True}, m.with_dirty(None))
+        self.assertEqual({"leave_dirty": True}, m.with_dirty("nope"))
+
+
+class C6dScratchAuthoring(unittest.TestCase):
+    def setUp(self):
+        if yaml is None:
+            self.skipTest("PyYAML not installed — canonical-document splices untestable")
+
+    def test_splice_builds_the_two_node_scratch_from_the_real_twin(self):
+        res = m.c6_dirty_scratch_doc(twin_doc(), "m4x-c6d-dirty-test")
+        self.assertEqual([], res["missing"],
+                         f"the seed twin is not the shape C6d splices: {res['missing']}")
+        doc = res["doc"]
+        self.assertEqual(1, doc.count(f"workspacePolicy: {m.C6_RESTORE_POLICY}"))
+        self.assertEqual(1, (doc.count('M4_LEAVE_DIRTY: "true"')
+                             + doc.count("M4_LEAVE_DIRTY: 'true'")
+                             + doc.count("M4_LEAVE_DIRTY: true")))
+        self.assertIn("dirty_seed", doc)
+        self.assertIn("kill_target", doc)
+        v = m.c6_dirty_doc_verdicts(res)
+        self.assertNotIn(False, [ok for _l, ok, _d in v], f"a clean splice must PASS: {v}")
+
+    def test_scratch_is_a_deep_copy_and_never_mutates_the_twin(self):
+        base = twin_doc()
+        frozen = yaml.safe_load(yaml.safe_dump(base))
+        m.c6_dirty_scratch_doc(base, "m4x-c6d-exported")
+        self.assertEqual(frozen, base, "the splice must not mutate the caller's document")
+
+    def test_the_kill_node_carries_restore_and_one_budget(self):
+        res = m.c6_dirty_scratch_doc(twin_doc(), "x")
+        self.assertIsNotNone(res["doc"])
+        parsed = yaml.safe_load(res["doc"])
+        nodes = {n["id"]: n for n in parsed["spec"]["nodes"]}
+        self.assertIn(m.C6D_SEED_NODE, nodes)
+        kill = nodes[m.C6D_KILL_NODE]
+        self.assertEqual(1, kill["retry"]["maxAttempts"])
+        self.assertEqual(m.C6_RESTORE_POLICY, kill["retry"]["workspacePolicy"])
+        self.assertEqual([m.C6D_SEED_NODE], kill["dependsOn"])
+        self.assertEqual("true", nodes[m.C6D_SEED_NODE]["config"]["env"]["M4_LEAVE_DIRTY"])
+
+    def test_missing_held_node_refuses_to_author(self):
+        doc = twin_doc()
+        impl = [n for n in doc["spec"]["nodes"] if n.get("id") == "build_until_verified"][0]
+        body = [n for n in impl["config"]["body"]["nodes"] if n["id"] == "implement"][0]
+        body["config"]["workspace"]["mode"] = "read_only"
+        res = m.c6_dirty_scratch_doc(doc, "x")
+        self.assertIsNone(res["doc"],
+                          "a read_only held checkout captures no dirty boundary — no splice")
+
+
 class C6dAvailability(unittest.TestCase):
     def test_reader_parses_the_canned_boundary_row(self):
         rows = m.c6_ckpts(ckpt())

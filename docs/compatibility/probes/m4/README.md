@@ -300,6 +300,17 @@ four deliberate, provenance-headed adjustments:
    `apiVersion:`/`kind: Pipeline` inside the first 600 characters of the
    document's text, and they already sit at 543/582 — hence this note lives in
    the README rather than in the YAML header.
+5a. **`inputs.leave_dirty` on the twin's `implement` step only** (boolean, default
+   `false`): when true, `m4-exit.sh implement` writes ONE extra UNCOMMITTED file
+   (`m4-leave-dirty.txt`, env `M4_LEAVE_DIRTY`) after its own edit and its stdout,
+   so the boundary the worker captures when implement *completes* records a dirty
+   repo (`run_checkpoints.repo_states: committed=false`, `modified_path_count>0`).
+   That is the ONLY state § 7.1 C6d's refusal arm reads (`runtime/retry.go` refuses
+   a `restore_checkpoint` retry on `committed=false`); every other twin step and
+   the default `false` leave the tree exactly as before, so C1/C5/C6b/C6c's
+   byte-identical boundaries and key sets are untouched (a default-false run
+   produces no `m4-leave-dirty.txt` at all — pinned offline by
+   `e2e/m4/test_leave_dirty.sh`). Only C6d's scratch arm posts it `true`.
 6. **Document 1's `/plan` output is an object, not § 9.3's string.** Every real
    `m4-planner` reply captured live in the lab answers
    `{"plan":{"goal","summary","findings":[…],"steps":[{id,file,action}]}}`; against § 9.3's

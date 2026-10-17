@@ -1440,6 +1440,22 @@ def with_hold(inputs, seconds=C_FAULT_HOLD_SECONDS):
     return body
 
 
+def with_dirty(inputs, on=True):
+    """Run inputs for § 7.1 C6d's refusal arm: the manifest's inputs (or the fault
+    legs' held inputs) plus leave_dirty=on. When true the twin's implement step
+    writes ONE extra UNCOMMITTED file, so the boundary the worker captures when
+    implement COMPLETES records a dirty repo (run_checkpoints.repo_states:
+    committed=false) — the ONLY state runtime/retry.go refuses a restore_checkpoint
+    retry on, and the state the ledger never carried while every twin step committed
+    its edits (live20 C6d precondition GAP). A COPY, exactly like with_hold; on=False
+    (the default every other leg keeps) leaves the dict untouched so the shipped
+    output is byte-identical."""
+    body = dict(inputs) if isinstance(inputs, dict) else {}
+    if on:
+        body["leave_dirty"] = True
+    return body
+
+
 def hold_cover(steps=C_FAULT_HOLD_STEPS):
     """Seconds a held run needs before it can reach a terminal state: `steps`
     process.exec steps that each sleep hold_seconds first, plus the lease/reconciler
@@ -2789,6 +2805,144 @@ C3_NEGATIVE_CONTROL = (
     "by token order — is that proof. No line in C3 claims exactly-once execution.")
 
 
+# --- the in-process verdict ledger ------------------------------------------
+# § 7.1 C3d and C11c are rows whose PROOF lives in another leg (C4's fence, C12's
+# budgets). They can only be measured against verdicts THIS driver process has
+# actually printed, so every check/gap/skip line is recorded here and those two
+# legs grade themselves over the record — a witness that never printed is a GAP,
+# never an assumption.
+VERDICTS = []           # {"leg","verdict","label","detail"} in print order
+DEFERRED = []           # (title, callable) regrades to run again at process exit
+_atexit_ok = True       # flipped off by tests that import this module
+
+
+def _leg_of(label):
+    """The § 7.1 sub-case a verdict label names — its leading C<n><letter>, upper."""
+    mm = re.match(r"\s*(C\d+[a-z]?)", label or "")
+    return mm.group(1).upper() if mm else ""
+
+
+def ledger_of(leg=""):
+    """Recorded verdicts whose leg is exactly LEG (all of them when LEG is empty)."""
+    key = (leg or "").upper()
+    return [v for v in VERDICTS if not key or v["leg"] == key]
+
+
+def ledger_gate(gate):
+    """Every recorded verdict for the GATE: its own leg plus each of its
+    sub-cases. 'C1' sees C1/C1A…C1I but NOT C10/C10A (the next char must be a
+    letter, so a two-digit gate can never be swallowed by a one-digit query)."""
+    g = (gate or "").upper()
+    out = []
+    for v in VERDICTS:
+        leg = v["leg"]
+        if leg == g or (leg.startswith(g) and leg[len(g):].isalpha()):
+            out.append(v)
+    return out
+
+
+def rollup(gate):
+    """What THIS process has measured for GATE so far: PASS / FAIL / GAP, or ""
+    when the gate printed no verdict line at all (never ran here)."""
+    entries = ledger_gate(gate)
+    if not entries:
+        return ""
+    if any(e["verdict"] == "FAIL" for e in entries):
+        return "FAIL"
+    if all(e["verdict"] in ("GAP", "SKIP") for e in entries):
+        return "GAP"
+    return "PASS"
+
+
+def _record(verdict, label, detail=""):
+    VERDICTS.append({"leg": _leg_of(label), "verdict": verdict,
+                     "label": label, "detail": detail})
+
+
+_check0, _gap0, _skip0 = check, gap, skip
+
+
+def check(label, ok, detail=""):
+    _record("PASS" if ok else "FAIL", label, detail)
+    return _check0(label, ok, detail)
+
+
+def gap(label, why):
+    _record("GAP", label, why)
+    return _gap0(label, why)
+
+
+def skip(label, intent):
+    _record("SKIP", label, intent)
+    return _skip0(label, intent)
+
+
+def defer_regrade(title, fn):
+    """Register a leg whose witnesses run LATER in GATES order (C4 after C3,
+    C12 after C11) to print its verdict again at process exit, when the ledger
+    holds those verdicts. Safe by construction: the regrade may only print
+    PASS/FAIL derived from a verdict already in the ledger, so it can never turn
+    a green summary red or a red one green (a derived FAIL implies the witness
+    itself FAILed, which already set the exit code)."""
+    DEFERRED.append((title, fn))
+    if _atexit_ok:
+        _atexit_register()
+
+
+_ATEXIT_ON = [False]
+
+
+def _atexit_register():
+    if _ATEXIT_ON[0]:
+        return
+    _ATEXIT_ON[0] = True
+    import atexit
+    atexit.register(run_deferred_regrades)
+
+
+def run_deferred_regrades():
+    """Print the deferred regrades (also called directly by the offline tests)."""
+    if not DEFERRED:
+        return
+    step("deferred regrades (witnesses that ran after the leg that cites them)")
+    for title, fn in list(DEFERRED):
+        try:
+            fn()
+        except BaseException as e:  # noqa: BLE001 — a regrade must never mask the run
+            _check0(f"{title} regrade crashed: {type(e).__name__}: {str(e)[:120]}", False,
+                    "the in-place verdict for this row stands unregraded")
+    DEFERRED.clear()
+
+
+class _StdoutTee:
+    """Writes to the real stdout AND a buffer, so a leg can grade the text it
+    ACTUALLY printed — C3d's falsifiable half: nothing printed, nothing graded."""
+
+    def __init__(self, inner, buf):
+        self.inner, self.buf = inner, buf
+
+    def write(self, s):
+        self.buf.append(s)
+        return self.inner.write(s)
+
+    def flush(self):
+        self.inner.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def printed_by(fn, *a, **kw):
+    """Run fn (which prints) with stdout tee'd; return (result, printed_text)."""
+    buf, inner = [], sys.stdout
+    sys.stdout = _StdoutTee(inner, buf)
+    try:
+        r = fn(*a, **kw)
+    finally:
+        sys.stdout = inner
+    return r, "".join(buf)
+
+
 def psql_rows(text, ncols, sep="|"):
     """Split `psql -tAqc` output into equal-length rows; ragged lines (psql can
     print notes/errors on stdout between rows) are dropped, never verdicted."""
@@ -3265,6 +3419,104 @@ def c3_build_queue(online):
     return fan_id
 
 
+# --- C3d: RECORDING the negative control is itself the assertion --------------
+# § 7.1 C3d reads, verbatim: "C3d  NEGATIVE CONTROL for `SKIP LOCKED` (ADR-0016
+# § 3's caveat restated): the *claim* is not exactly-once execution — the fence is.
+# C4 is that proof; record the sentence in the report." So the row's own claim is
+# (a) the sentence is RECORDED — falsifiable, because the verdict is computed over
+# the text this leg actually wrote to stdout and over the evidence it files (no
+# sentence printed => FAIL) — and (b) the proof it points at is C4's, read from C4's
+# measured verdicts when C4 printed in this process, GAP with the reason when not.
+C3D_ID = "C3d"
+C3D_HEAD = ("C3d NEGATIVE CONTROL (12 case 2 / ADR-0016 § 3 — recorded verbatim, "
+            "as the contract requires)")
+C3D_REQUIRED = ("CLAIM", "exactly-once", "fenc", "C4")
+C3D_FORBIDDEN = ("guarantees exactly-once", "execution is exactly-once",
+                 "claim is exactly-once", "claim guarantees")
+
+
+def c3d_report_lines(sentence=C3_NEGATIVE_CONTROL, width=92):
+    """The report block C3d prints: a header line, then the sentence verbatim,
+    wrapped (wrapping only inserts whitespace, so the normalized text still has
+    to contain the sentence contiguously)."""
+    words = (sentence or "").split()
+    lines, cur = [], "negative control recorded verbatim (ADR-0016 § 3):"
+    for w in words:
+        if len(cur) + 1 + len(w) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}" if cur else w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def c3d_verdicts(printed, recorded, c4_roll="", c4_lines=0, required=C3D_REQUIRED):
+    """The algebra over (what C3d printed, what it recorded, C4's rollup here).
+    c4_roll="" means C4 never printed a verdict in this process => honest GAP."""
+    flat = re.sub(r"\s+", " ", printed or "").strip()
+    sent = re.sub(r"\s+", " ", C3_NEGATIVE_CONTROL).strip()
+    rec = re.sub(r"\s+", " ", recorded or "").strip()
+    out = [(f"{C3D_ID} the negative-control sentence is in this leg's own printed report",
+            bool(sent) and sent in flat,
+            f"{len(flat)} chars tee'd from stdout, sentence is {len(sent)} chars"
+            if sent in flat else "the leg printed no such line"),
+           (f"{C3D_ID} the sentence is recorded verbatim in the gate's evidence",
+            bool(rec) and rec == sent,
+            "recorded text == the contract sentence" if rec == sent
+            else f"recorded {rec[:80]!r}"),
+           (f"{C3D_ID} the recorded sentence carries § 7.1 C3d's elements "
+            f"({', '.join(required)})",
+            not [r for r in required if r.lower() not in flat.lower()],
+            f"missing={[r for r in required if r.lower() not in flat.lower()]}"
+            if [r for r in required if r.lower() not in flat.lower()]
+            else "the claim, the denial of exactly-once, the fence and C4 are all there")]
+    said = [p for p in C3D_FORBIDDEN if p in flat.lower()]
+    out.append((f"{C3D_ID} the negative control does not itself claim exactly-once execution",
+                not said, f"forbidden phrasing observed: {said}" if said
+                else "it disclaims the claim and hands the proof to the fence"))
+    if c4_roll in ("PASS", "FAIL"):
+        out.append((f"{C3D_ID} the proof it points at is measured in this process (C4's fence)",
+                    c4_roll == "PASS",
+                    f"C4's {c4_lines} verdict lines here roll up to {c4_roll}"
+                    + (" — the stale write was refused by the fence, as the sentence says"
+                       if c4_roll == "PASS" else
+                       " — C4 says the fence did NOT refuse it; the negative control's "
+                       "premise is false, so this row FAILs")))
+    elif c4_roll == "GAP":
+        out.append((f"{C3D_ID} the proof it points at is measured in this process (C4's fence)",
+                    None, f"C4 printed {c4_lines} verdict lines here and every one of them "
+                    "GAPs — the lab produced no lease to freeze, so the fence is unmeasured "
+                    "rather than disproven (never a PASS on an unmeasured proof)"))
+    else:
+        out.append((f"{C3D_ID} the proof it points at is measured in this process (C4's fence)",
+                    None, "C4 printed no verdict line in this driver process (GATES runs C3 "
+                    "before C4, and a per-gate lab pass runs only C3), so the fence is "
+                    "unmeasured HERE: the sentence names C4 as the proof and C4's own row "
+                    "carries it; regraded at exit once C4 prints"))
+    return out
+
+
+def c3d_cite_c4():
+    """Exit-time regrade of C3d's witness arm over whatever C4 has printed by now.
+    Prints only when C4 actually printed (PASS/FAIL/GAP rollups) and only a
+    PASS/FAIL line — a derived FAIL means C4's own line FAILed and set the exit
+    code already; a GAP rollup keeps the in-place GAP line as the counted one."""
+    entries = ledger_gate("C4")
+    roll = rollup("C4")
+    if not entries:
+        return
+    label, ok, detail = c3d_verdicts(printed_by_c3d[0], EVIDENCE.get("C3d", ""),
+                                     roll, len(entries))[-1]
+    if ok is None:
+        return
+    check(label + " [regraded after C4]", ok, detail)
+
+
+printed_by_c3d = [""]
+
+
 def c3():
     """C3 — two workers claim one ready attempt; only one fencing token commits (12 case 2).
     Acceptance: both lab workers online; the leg POSTS its OWN fan-out run (§ 7.1
@@ -3355,9 +3607,15 @@ def c3():
             check(label, ok, detail)
     except RuntimeError as e:
         show("C3c fencing token vs sequence", str(e)[:300])
-    show("C3d NEGATIVE CONTROL (12 case 2 / ADR-0016 § 3 — recorded verbatim, as "
-         "the contract requires)", C3_NEGATIVE_CONTROL)
+    # C3d — the contract asks for RECORDING, so what is graded is the recording:
+    # the tee'd stdout plus the evidence this leg files. Nothing printed => FAIL.
+    def _print_c3d():
+        show(C3D_HEAD, "\n".join(c3d_report_lines()))
+    printed_by_c3d[0] = printed_by(_print_c3d)[1]
     EVIDENCE["C3d"] = C3_NEGATIVE_CONTROL
+    c4_entries = ledger_gate("C4")
+    c3_emit3(c3d_verdicts(printed_by_c3d[0], EVIDENCE["C3d"], rollup("C4"), len(c4_entries)))
+    defer_regrade("C3d", c3d_cite_c4)
 
 
 def c4():
@@ -5629,6 +5887,211 @@ def c6_doc_verdicts(splices):
     return v
 
 
+C6D_SEED_NODE = "dirty_seed"      # node A: m4-exit.sh implement + M4_LEAVE_DIRTY, SUCCEEDS
+C6D_KILL_NODE = "kill_target"     # node B: restore_checkpoint + maxAttempts 1, killed mid-way
+
+
+def c6_dirty_scratch_doc(canonical, name):
+    """§ 7.1 C6d's refusal needs a boundary the engine READS as uncommitted at RETRY
+    time — and `runtime/retry.go`'s RetryPlan inherits the boundary of the LAST
+    COMPLETED node BEFORE the retried one (it skips the retried node's own checkpoint),
+    so a killed implement cannot refuse ITSELF: its own dirty capture is not the one
+    consulted. The shipped twin also cannot arm it (re-authoring the held node would
+    change C1's key set). So C6d measures on the gate's OWN two-node scratch, published
+    draft -> validate -> publish like C5h (c5h_scratch_doc is the template):
+
+      dirty_seed (node A): a verbatim copy of the twin's held implement node with
+        env M4_LEAVE_DIRTY: 'true' — it COMPLETES, and the boundary the worker
+        captures at its completion records committed=false (modified_path_count>0).
+      kill_target (node B): the same held node with retry replaced by
+        {maxAttempts: 1, workspacePolicy: restore_checkpoint} and M4_HOLD_SECONDS
+        riding the run input — the gate KILLS the owning worker mid-B so the run
+        fails honestly (budget 1, no engine auto-retry), then POSTs /runs/{id}/retry
+        for B. B's inherited boundary is A's DIRTY checkpoint -> RetryPlan refuses
+        ErrCheckpointUnavailable -> the 409 problem+json code=checkpoint_unavailable.
+
+    inputs keeps goal/repository/hold_seconds (+ their defaults) so the node bindings
+    resolve; leave_dirty rides the RUN input, the scratch hard-codes M4_LEAVE_DIRTY on
+    A only. Returns {doc, applied, missing} with doc None unless every splice applied
+    verbatim — an invented node proves nothing about the twin's refusal."""
+    out = {"doc": None, "applied": [], "missing": []}
+    if not doc_is_pipeline(canonical):
+        out["missing"].append("source document (GET /revisions/{id} served no canonical "
+                              "kind: Pipeline document)")
+        return out
+    held = doc_body_node(canonical, C5H_NODE_ID)
+    if held is None:
+        out["missing"].append(f"the twin's held node '{C5H_NODE_ID}' (not exactly one "
+                              "until-body node with that id)")
+        return out
+    cfg = held.get("config") if isinstance(held.get("config"), dict) else {}
+    if cfg.get("executable") != "m4-exit.sh":
+        out["missing"].append(f"held node '{C5H_NODE_ID}' is not the m4-exit.sh "
+                              f"process.exec (executable={cfg.get('executable')!r})")
+        return out
+    if "M4_HOLD_SECONDS" not in (cfg.get("env") or {}):
+        out["missing"].append("held node has no M4_HOLD_SECONDS env — nothing to kill "
+                              "a worker mid-way through")
+        return out
+    if (cfg.get("workspace") or {}).get("mode") != "run_workspace":
+        out["missing"].append("held node does not run in the run_workspace — a read_only "
+                              "checkout captures no dirty boundary and resets nothing")
+        return out
+    props = ((canonical.get("spec") or {}).get("inputs") or {}).get("properties") or {}
+    kept = {k: props[k] for k in ("goal", "repository", "hold_seconds") if k in props}
+    for k in ("repository", "hold_seconds"):
+        if k not in kept:
+            out["missing"].append(f"inputs.{k} on the seed twin ({k} is what the held "
+                                  "node's bindings read)")
+    if out["missing"]:
+        return out
+
+    seed = json.loads(json.dumps(held))              # node A: deep copy of the held node
+    seed["id"] = C6D_SEED_NODE
+    seed.pop("dependsOn", None)
+    seed["retry"] = {"maxAttempts": 1}               # it only needs to succeed once
+    seed_cfg = seed.setdefault("config", {})
+    seed_env = seed_cfg.setdefault("env", {})
+    seed_env["M4_LEAVE_DIRTY"] = "true"             # the one variable on A: leave it dirty
+
+    kill = json.loads(json.dumps(held))             # node B: the killed restore_checkpoint node
+    kill["id"] = C6D_KILL_NODE
+    kill["dependsOn"] = [C6D_SEED_NODE]             # it inherits A's boundary
+    kill["retry"] = {"maxAttempts": 1, "workspacePolicy": C6_RESTORE_POLICY}
+    kill_cfg = kill.setdefault("config", {})
+    kill_env = kill_cfg.setdefault("env", {})
+    kill_env["M4_LEAVE_DIRTY"] = "false"            # B is held+ killed, not the dirty one
+
+    scratch = {"apiVersion": canonical.get("apiVersion"), "kind": "Pipeline",
+               "metadata": {"name": name,
+                            "description": "C6d refusal arm: node A leaves a committed=false "
+                                           "boundary, node B (restore_checkpoint, budget 1) "
+                                           "is killed mid-way and its retry refuses"},
+               "spec": {"inputs": {"type": "object", "required": ["goal", "repository"],
+                                   "properties": kept},
+                        "policies": json.loads(json.dumps(
+                            (canonical.get("spec") or {}).get("policies") or {})),
+                        "nodes": [seed, kill]}}
+    out["applied"].append(f"'{C6D_SEED_NODE}' = the twin's held implement copied verbatim + "
+                          "M4_LEAVE_DIRTY: true (it completes -> dirty boundary)")
+    out["applied"].append(f"'{C6D_KILL_NODE}' = the same node with retry := "
+                          f"{{maxAttempts: 1, workspacePolicy: {C6_RESTORE_POLICY}}} "
+                          f"dependsOn {C6D_SEED_NODE} (killed -> run fails -> its retry "
+                          "inherits A's dirty boundary)")
+    out["doc"] = doc_yaml_emit(scratch)
+    return out
+
+
+def c6_dirty_doc_verdicts(splices):
+    """Honesty gate on the C6d scratch: node A must carry the dirty write and node B
+    the ONE restore budget — nothing else. A doc the gate cannot show carrying both
+    the leave_dirty env and the restore policy cannot license the refusal."""
+    sp = splices if isinstance(splices, dict) else {}
+    applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
+    v = [(f"C6d scratch doc: '{C6D_SEED_NODE}' copied with M4_LEAVE_DIRTY: true",
+          any(C6D_SEED_NODE in a and "M4_LEAVE_DIRTY: true" in a for a in applied),
+          f"applied={applied[:3]}")]
+    v.append((f"C6d scratch doc: '{C6D_KILL_NODE}' carries restore_checkpoint + maxAttempts 1 "
+              f"and dependsOn the dirty node",
+          any(C6D_KILL_NODE in a and C6_RESTORE_POLICY in a and "maxAttempts: 1" in a
+              for a in applied),
+          f"applied={applied[:3]}"))
+    if missing:
+        v.append(("C6d scratch doc: every required splice applied", False,
+                  f"missing={missing}"))
+    if isinstance(doc, str):
+        v.append(("C6d scratch doc: TWO nodes, one restore policy, one dirty write "
+                  "and no other retry budget (no gate, no until)",
+                  doc.count(f"workspacePolicy: {C6_RESTORE_POLICY}") == 1
+                  and doc.count('M4_LEAVE_DIRTY: "true"') + doc.count("M4_LEAVE_DIRTY: 'true'")
+                  + doc.count("M4_LEAVE_DIRTY: true") == 1
+                  and doc.count("maxAttempts: 1") == 2
+                  and "kind: until" not in doc
+                  and "human.approval" not in doc,
+                  f"{len(doc)} bytes"))
+    return v
+
+
+def c6d_dirty_arm(alice, facts, tw):
+    """§ 7.1 C6d measured on the gate's OWN published two-node scratch (README notes
+    the shipped twin commits every edit, so no boundary is ever dirty). Publish
+    c6_dirty_scratch_doc -> draft -> validate -> publish (like C5h), POST a run with
+    hold_seconds + leave_dirty=true, wait for node A ('dirty_seed') to COMPLETE so
+    its boundary records committed=false, then kill the owning worker mid node B
+    ('kill_target', restore_checkpoint + maxAttempts 1) so the RUN fails honestly
+    (budget 1, no engine auto-retry). Only THEN is a manual POST /runs/{id}/retry a
+    checkpoint-door question, not the run-status door's — retry inherits A's dirty
+    boundary and RetryPlan answers 409 problem+json code=checkpoint_unavailable.
+    Grade c6_unavailable_verdicts (which asserts the § 7.1 C6d row exactly: 409 +
+    code + nothing reset + zero run.checkpoint_restored + no new attempt). A publish,
+    run or kill the lab refuses to give is a GAP with the reason, never a guess.
+    Returns the graded verdicts, or None when the arm never reached the retry."""
+    admin = CTX.get("admin") or Client("admin")
+    if login(admin) is None and "communication_session" not in admin.cookies:
+        gap("C6d dirty-boundary arm", "no admin (library-role) session — the two-node "
+            "scratch revision is an extra PUBLISHED revision and only the library role "
+            "may draft it")
+        return
+    src = doc_revision_canonical(admin, mf(tw, "revision_id"))
+    if src is None:
+        gap("C6d dirty-boundary arm", f"GET /revisions/{mf(tw, 'revision_id')!r} served "
+            "no canonical Pipeline document — the gate will not author a refusal into "
+            "bytes it cannot show the compiler actually read")
+        return
+    slug = schema_name("m4x-c6d-dirty")
+    res = c6_dirty_scratch_doc(src, slug)
+    c6_emit(c6_dirty_doc_verdicts(res))
+    show("C6d dirty-scratch splices applied to the twin document",
+         " | ".join(res["applied"]) or "(none)")
+    if res["doc"] is None:
+        gap("C6d dirty-boundary arm", f"the twin document is not the shape C6d copies "
+            f"({res['missing']}) — an invented node would not be the twin's held step and "
+            "would prove nothing about the twin's boundary rule")
+        return
+    r = admin.post(LB, "/api/v1/pipelines", {"slug": slug, "display_name": slug,
+                                             "description": "C6d dirty-boundary refusal arm"})
+    show(f"C6d POST /api/v1/pipelines (scratch) -> {r.status}", r.text[:160])
+    pid = str((r.json() or {}).get("id") or "") if r.status in (201, 409) else ""
+    if r.status == 409 and not pid:
+        for p in (admin.get(LB, "/api/v1/pipelines").json() or {}).get("pipelines") or []:
+            if p.get("slug") == slug:
+                pid = str(p.get("id") or "")
+    if not pid:
+        gap("C6d dirty-boundary arm", f"POST /api/v1/pipelines -> {r.status}: no scratch "
+            "pipeline to hold the dirty-boundary draft")
+        return
+    pub = c7_publish(admin, pid, "C6d dirty-boundary scratch", res["doc"])
+    rev = str((pub or {}).get("revision_id") or "")
+    if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
+        gap("C6d dirty-boundary arm", f"the dirty-boundary revision could not be drafted/"
+            f"validated/published (validate={pub and pub.get('validate_status')} "
+            f"errors={str((pub or {}).get('vresp') or '')[:240]}) — with no published "
+            "scratch there is no boundary for RetryPlan to refuse on")
+        return
+    check("C6d dirty scratch revision published (the § 7.0 seed twin untouched)", True,
+          f"revision {rev[:8]} on scratch pipeline {slug}")
+    if not require_fault_hold("C6d"):
+        return
+    base = mf(tw, "inputs", default={}) or mf(facts, "inputs", default={}) or {}
+    # The scratch revision declares goal/repository/hold_seconds ONLY — node A's
+    # M4_LEAVE_DIRTY is baked into the published document, NOT a run input (posting
+    # an undeclared leave_dirty would be refused by run-input validation). with_hold
+    # gives the held node its live window; the dirty file is the scratch's own work.
+    inputs = with_hold({k: base[k] for k in ("goal", "repository") if k in base},
+                       C_FAULT_HOLD_SECONDS)
+    r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
+                   {"pipeline_revision_id": rev, "inputs": inputs,
+                    "idempotency": idem_key("m4x-c6d")})
+    show(f"C6d POST runs (scratch {rev[:8]}, node A leaves it dirty) -> {r.status}", r.text[:200])
+    if r.status not in (200, 201):
+        gap("C6d dirty-boundary arm", f"POST runs -> {r.status} {r.text[:160]} — the "
+            "dirty-boundary pipeline never ran, so the refusal has no ledger to read")
+        return
+    run_id = (r.json() or {}).get("run_id")
+    CTX["c6d_run"] = run_id
+    return _c6d_kill_and_refuse(alice, facts, run_id)
+
+
 def c6_policy_in_plan(admin, revision_id):
     """True only when the published revision's COMPILED PLAN carries
     restore_checkpoint. GET /revisions/{id} -> compiled_plan is the only place
@@ -5689,8 +6152,12 @@ def c6_avail_verdicts(cks):
                  f"every run_checkpoints.repo_states row says committed=true "
                  f"(nodes={[c['node'] for c in known][:3]}) — the engine's refusal reads "
                  "ONLY the recorded state, and the lab cannot make a committed boundary "
-                 "dirty from outside without forging ledger rows. The 409 arm needs an "
-                 "agent that leaves uncommitted edits inside the checkpointed node.")]
+                 "dirty from outside without forging ledger rows. The 409 arm needs a "
+                 "boundary left uncommitted INSIDE the checkpointed node: post this run "
+                 "with the twin's opt-in `leave_dirty` run input (m4-exit.sh M4_LEAVE_DIRTY "
+                 "writes an uncommitted file after implement's edit, so the boundary its "
+                 "COMPLETION captures records committed=false) — with the default false the "
+                 "boundary is honest and clean, and this GAP is the truthful answer.")]
     return [("C6d precondition: an uncommitted recorded boundary exists", None,
              "no readable run_checkpoints.repo_states rows (committed flag unreadable or "
              "no checkpoints) — the refusal arm has nothing to stand on")]
@@ -6316,10 +6783,106 @@ def c6():
                          "error_class": lost.get("error_class", ""),
                          "detail": detail_c, "produced": True})
     CTX["c6_loss"] = loss_ctx
+    # C6d — the refusal needs a boundary the engine READS as uncommitted AT RETRY
+    # TIME. The kill leg above (C6b/C6c) runs the SHIPPED twin, whose every step
+    # commits its edit, so its boundary is honest and clean and its refusal arm can
+    # only GAP (live20: 'every run_checkpoints.repo_states row says committed=true').
+    # The opt-in `leave_dirty` fixture behaviour is the ONE thing that produces the
+    # dirty boundary — so C6d measures on its OWN published scratch (c6d_dirty_arm,
+    # like C5h's budget arm), where node A (leave_dirty) completes on a committed=
+    # false boundary and node B (restore_checkpoint + maxAttempts 1) is killed to
+    # fail the run, leaving a genuinely retriable FAILED run on a dirty boundary.
+    c6d_dirty_arm(alice, facts, twin)
     CTX["c6"] = {"run_id": run_id, "revision_id": rev, "attempt_id": att, "owner": owner,
                  "key": key, "head_boundary": head_bnd, "events": ev,
                  "volume_before": (ws_before or [{}])[0].get("volume_id"),
                  "checkpoints": ck_after}
+
+
+def _c6d_kill_and_refuse(alice, facts, run_id):
+    """The C6d live sequence on the dirty scratch: wait for the held node B
+    ('kill_target') to be HELD by a worker (node A already completed, so its dirty
+    boundary is recorded), kill the owner so the run fails on budget 1, wait for the
+    run to reach a terminal FAILED state, then POST /runs/{id}/retry — the one door
+    left is RetryPlan's checkpoint door. Reads the HEAD/dirty set either side of the
+    POST and the run.checkpoint_restored count either side, and grades
+    c6_unavailable_verdicts with them (which asserts § 7.1 C6d verbatim). Host safety
+    as in C5/C6b: the killed worker is always composed back up."""
+    live = wait_live_past_gate(alice, mf(facts, "project_id"), run_id,
+                               hold_window(C5_KILL_POLL_S), "C6d",
+                               target="/" + C6D_KILL_NODE)
+    if live is None:
+        gap("C6d the mid-node kill on the dirty scratch",
+            f"no attempt on run {run_id} was ever HELD at /{C6D_KILL_NODE} within the "
+            f"window (status={run_status(run_id)!r}) — with node A's dirty boundary "
+            "recorded but nothing running at B there is no kill, so the run never fails "
+            "on budget 1 and the retry hits the run-status door, not the checkpoint door")
+        return
+    att, owner, key = live["id"], live["worker"], live["key"]
+    svc = c4_worker_service(owner)
+    if svc is None:
+        gap("C6d the mid-node kill on the dirty scratch",
+            f"the live claim belongs to worker row {owner!r}, which is not one of this "
+            "project's two lab workers — the driver never kills a container it did not "
+            "create (§ 7.0)")
+        return
+    killed = None
+    try:
+        rc, out = run(COMPOSE + ["kill", owner])
+        if rc != 0:
+            gap("C6d compose kill the owning worker",
+                f"rc={rc}: {out[-240:]} — without a kill the run never fails on budget 1")
+            return
+        killed = owner
+        show(f"compose kill {owner} — the owning worker and its child die together",
+             out[-240:])
+        time.sleep(C5_KILL_WAIT_S)
+        deadline = time.time() + C5_KILL_POLL_S
+        while time.time() < deadline and run_status(run_id) not in ("failed", "completed",
+                                                                    "cancelled"):
+            time.sleep(3)
+    finally:
+        if killed:
+            rc, out = run(COMPOSE + ["start", killed])
+            show(f"compose start {killed} (host safety; rc={rc})", out[-200:] or killed)
+            wait_worker_row(killed, 120)
+
+    fr = psql_rows(c6_row(f"SELECT status || '|' || coalesce(failed_cause,'-') FROM runs "
+                          f"WHERE id = '{run_id}'", "run row"), 2)
+    run_st, run_cause = (fr[0][0], fr[0][1]) if fr else ("", "")
+    ck = c6_ckpts(c6_row(c6_ckpts_sql(run_id), "checkpoints") or "")
+    show("C6d the scratch run closed / its recorded boundaries",
+         f"status={run_st!r} cause={run_cause!r} ckpts={json.dumps(ck[:4]) or '(none)'}")
+    c6_emit(c6_avail_verdicts(ck))
+    n_before = len(c6_attempts_of_key(run_id, "/" + C6D_KILL_NODE))
+    n_restored_before = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                               f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'",
+                               "restored count before")
+    r = alice.post(LB, f"/api/v1/runs/{run_id}/retry",
+                   {"reason": "C6d dirty-boundary refusal arm",
+                    "node_instance_keys": ["/" + C6D_KILL_NODE]})
+    try:
+        code = str((r.json() or {}).get("code") or "")
+    except ValueError:
+        code = ""
+    if not code and "checkpoint" in str(r.text).lower():
+        code = "checkpoint_unavailable"
+    show(f"C6d POST /api/v1/runs/{{id}}/retry (dirty scratch) -> {r.status}",
+         f"ctype={r.headers.get('Content-Type','')} code={code!r} {r.text[:260]}")
+    n_restored = c6_row(f"SELECT count(*)::text FROM domain_events WHERE run_id = "
+                        f"'{run_id}' AND type = '{C6_RESTORED_EVENT}'", "restored count")
+    graded = c6_unavailable_verdicts(
+        r.status, r.headers.get("Content-Type", ""), code,
+        "", "", "", "", n_restored,
+        len(c6_attempts_of_key(run_id, "/" + C6D_KILL_NODE)), body=r.text[:300],
+        attempts_before=n_before, restored_before=n_restored_before)
+    c6_emit(graded)
+    show("C6d § 7.1 C6d verbatim (the row this arm measures)",
+         "the refusal path: on a boundary where the repo has uncommitted changes, the "
+         "retry request returns 409 problem+json code=checkpoint_unavailable, and NOTHING "
+         "is reset (a destructive default would be a data-loss bug wearing a feature badge)")
+    return graded
+
 
 # --- C7 pure logic — unit-tested offline by e2e/m4/test_c7_logic.py -----------
 # Verdict algebra for the `until`-never-passes gate (docs/m4-contract.md § 7.1 C7).
@@ -11316,6 +11879,108 @@ def c11_sink_liveness_verdicts(probe_status, probe_in_log, tag="C11a"):
              f"{probe_in_log}")]
 
 
+# --- C11c: the structural claims are GRADED over the verdicts that prove them --
+# § 7.1 C11c reads, verbatim: "C11c  the structural mitigation is what is actually
+# asserted: outputs are project-scoped data, size-capped, schema-validated,
+# redaction-scanned, and the reviewer's permission mode is its own profile (04); an
+# expression over injected output cannot escape ADR-0022's allowlist (proven in
+# C12b)". C11 measures none of that itself, so each claim is graded over what its
+# named witnesses PRINTED IN THIS DRIVER PROCESS and cited leg by leg. A witness
+# that never printed is a GAP with the reason; a witness that FAILed fails the
+# claim; nothing ever PASSes on a claim no leg measured.
+C11C_CLAIMS = (
+    ("outputs are project-scoped data", ("C8b", "C14a"),
+     "children inherit the parent's project id (C8b) and no foreign-project event "
+     "reaches a run's stream (C14a)"),
+    ("outputs are size-capped", ("C12b",),
+     "the expression / fan-out-item / node-execution budgets refuse (§ 6's caps, "
+     "C12b — the cap is what bounds an output's reach)"),
+    ("outputs are schema-validated", ("C10a", "C10b", "C7c"),
+     "a reply that misses its outputs schema fails invalid_output and stays invisible "
+     "to routing (C10a/C10b); an undeclared output field is refused at validate (C7c)"),
+    ("outputs are redaction-scanned", ("C1f", "C2c", "C13c"),
+     "artifact rows carry the scanner's redaction_count (C1f), the sentinel is absent "
+     "from every durable surface (C2c) and a literal document is refused with the "
+     "value redacted (C13c)"),
+    ("the reviewer's permission mode is its own profile (04)", ("C2d",),
+     "the reviewer attempt materializes NOTHING and the secret allowlist names only "
+     "m4-implementer (C2d)"),
+    ("an expression over injected output cannot escape ADR-0022's allowlist",
+     ("C12a", "C12b", "C13b"),
+     "exists()/now()/matches()/workspace.* are refused outside the subset (C12a), "
+     "the budgets refuse (C12b, the leg this row names), an escaped binding is "
+     "refused escape_not_supported (C13b)"),
+)
+C11C_INPLACE = []              # C11c's verdicts as printed inside the gate
+
+
+def c11c_gate_of(leg):
+    """'C12b' -> 'C12' — the GATES entry a witness leg belongs to."""
+    mm = re.match(r"\s*(C\d+)", (leg or "").upper())
+    return mm.group(1) if mm else ""
+
+
+def c11c_runs_after_c11(leg):
+    """True when the witness gate is one of this driver's LATER GATES rows, so an
+    empty ledger for it is an ordering fact rather than an omission."""
+    gate = c11c_gate_of(leg)
+    order = [gid for gid, _ in globals().get("GATES", ())] or ["C11"]
+    try:
+        return order.index(gate) > order.index("C11")
+    except ValueError:
+        return False
+
+
+def c11c_witness(leg):
+    """The default reader: (rollup measured in this process, verdict-line count)."""
+    return rollup(leg), len(ledger_gate(leg))
+
+
+def c11c_structural_verdicts(witness=None, claims=C11C_CLAIMS):
+    """One verdict per structural claim, citing each witness's measured rollup."""
+    read = witness or c11c_witness
+    out = []
+    for claim, legs, why in claims:
+        seen = {leg.upper(): read(leg) for leg in legs}
+        proved = sorted(k for k, v in seen.items() if v[0] == "PASS")
+        failed = sorted(k for k, v in seen.items() if v[0] == "FAIL")
+        unmeasured = sorted(k for k, v in seen.items() if v[0] in ("", "GAP"))
+        cite = "; ".join(f"{k}={(seen[k][0] or 'NOT PRINTED')}"
+                         + (f" over {seen[k][1]} verdict line(s)" if seen[k][0] else "")
+                         for k in seen)
+        later = (" (" + ", ".join(sorted(unmeasured)) + " run after C11 in GATES, so the "
+                 "exit-time regrade repeats this row once they have)") \
+            if any(c11c_runs_after_c11(k) for k in unmeasured) else ""
+        if failed:
+            out.append((f"C11c {claim}", False,
+                        f"its own witness says it does not hold — {cite}; what would "
+                        f"have proven it: {why}"))
+        elif seen and len(proved) == len(seen):
+            out.append((f"C11c {claim}", True,
+                        f"measured in this process by {cite}; what they prove: {why}"))
+        elif proved:
+            out.append((f"C11c {claim}", None,
+                        f"partly measured — {cite}; never a PASS on a half-measured "
+                        f"claim ({why}){later}"))
+        else:
+            out.append((f"C11c {claim}", None,
+                        f"nothing measured this claim in this driver process — {cite}; "
+                        f"what would prove it: {why}{later}"))
+    return out
+
+
+def c11c_regrade():
+    """Exit-time regrade of the rows whose witnesses ran AFTER C11 (C12/C13/C14).
+    It may only print PASS/FAIL derived from a verdict already in the ledger — a
+    derived FAIL means the witness itself FAILed, which already set the exit code
+    — and never prints a GAP (the in-place GAP line is the counted one)."""
+    before = {label: ok for label, ok, _ in C11C_INPLACE}
+    for label, ok, detail in c11c_structural_verdicts():
+        if ok is None or before.get(label) is ok:
+            continue          # still unmeasured: the in-place GAP line stands
+        check(f"{label} [regraded once its witnesses printed]", ok, detail)
+
+
 def c11():
     """C11 — prompt-injection egress probe (this contract creates the vector; this contract tests it).
     Acceptance (docs/m4-contract.md § 7.1 C11a-c): the collector on host 18099 logs every
@@ -11460,14 +12125,17 @@ def c11():
     c11_emit(c11_report_honesty_verdicts(report, sources=[r for r, t in reads if t],
                                          missing=unread))
 
-    # C11c — the structural mitigation is asserted by C12 (allowlist refusal,
-    # 04-agent-runtime profiles); C11 records the dependency honestly rather
-    # than printing a PASS for a claim it does not itself measure.
-    show("C11c structural claims (scoped/capped/validated/redacted outputs, own "
-         "permission profiles, allowlist no-escape) are proven by C12b and 04 — "
-         "this gate does not re-claim them",
-         "ADR-0022 Security: 'the subset cannot mitigate it; the mitigation is "
-         "project-scoped data, output validation, permission profiles'")
+    # C11c — the row's claims are structural, so the row is graded over the
+    # verdicts of the legs that MEASURE them in this process, each one cited by
+    # leg; a witness that never printed leaves the claim a GAP with its reason.
+    show("C11c the contract's own words (the row being graded, § 7.1 verbatim)",
+         "the structural mitigation is what is actually asserted: outputs are "
+         "project-scoped data, size-capped, schema-validated, redaction-scanned, "
+         "and the reviewer's permission mode is its own profile (04); an expression "
+         "over injected output cannot escape ADR-0022's allowlist (proven in C12b)")
+    C11C_INPLACE[:] = c11c_structural_verdicts()
+    c11_emit(C11C_INPLACE)
+    defer_regrade("C11c", c11c_regrade)
 
     # The agent arm: a live Claude turn under the agent-turn profile (network
     # ALLOWED — that profile is the product) is the other half of C11a. This
