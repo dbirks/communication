@@ -12,7 +12,8 @@ real-Claude agent pipeline now completes end to end live** — C1 98/0/0 at pass
 12/14/15 after `5820aab`'s review-prompt fix; scoreboard after pass 30 **PASS 84 / FAIL 0 / GAP 2 / NOT RUN 0** over 86
 items (`c1c7c19`, `docs/m4-exit-status.md`), with pass 29 (`d4cd945`) promoting C1j new →
 PASS and pass 30's deny probe proving `deny` on the conversation path
-(`live30/deny_probe.out`) — C7c and C10c stay the two GAPs. M5 lab specs passed: agents+schedules **3/3**
+(`live30/deny_probe.out`) — C7c stays the only GAP (C10c GAP → PASS at pass 39, `1b872b8`,
+`live39/C10.out:110-:116`). M5 lab specs passed: agents+schedules **3/3**
 (`be97fd1`), layout 18/20 with both real 390px overflows then fixed (`ef0d848`,
 `19175b3`), two-user Inbox **6/6** (`docs/m4-exit-status.md:299`). The run page
 lists every attempt with honest interrupted wording (W5 11/0, `f010fe2`), child
@@ -23,8 +24,10 @@ own page (browser-checked, `059d132`); `restore_checkpoint` implemented + wired
 (`e2de8fa`, `5c03d6c`; its C6 legs now PASS at passes 20/25 — `3f35115`,
 `fa0c0e0`); refused recovery classed
 `workspace_lost` (`efb82bd`); mid-turn ACP disconnect classed infra (`320c6fe`).
-The assistant has still never answered live: no model in the lab, and the home
-cluster's click-through is not done.
+The assistant now answers live (2026-10-17, on the lab's LLM collective `qwen3-8-27b` — an
+uncommitted, owner-approved lab-only compose override; no key is in the repo — `e2e/tests/m5-assistant.spec.ts`
+**3/3**, `37b66a6`, first live answer `6eb0392`); the home cluster's click-through is not done yet
+(its model env must be set to `qwen3-8-27b` and its image predates these fixes until CI runs).
 
 ## Summary
 
@@ -38,7 +41,7 @@ cluster's click-through is not done.
 | W6 APM skills, tag pin, cross-agent | works end-to-end for the claude target (CHECKED LIVE, `docs/compatibility/APM.md:223-246`; profile create + skill pin + digest help now clicked through `/agents` — **3/3 live**, `be97fd1`); codex target NOT RUN live | Run the same live probe with `target=codex`; append the row to `docs/compatibility/APM.md` |
 | W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) now have **PASS legs** — C6 restore b/c/e at pass 20 + C6d at pass 25 (`3f35115`, `fa0c0e0`), C2a/C2b's agent variant at pass 17 (`320c6fe`, `599e4f9`), C4e at pass 18 (`cc0bff8`), W6 14/0/0 at pass 19 (`2b24738`+`6e57274`); agents now run git in their worktree (`e83913a`, pass 26 `76a9e64`) and every permission prompt in attempts closes as one journaled policy verdict (`a0fd9e7`, pass 27's 23/23 journal read; C1j PASS at pass 29, `d4cd945`)) | Mount the owner's Claude secret on the cluster worker (home-cluster blocker 1) so the real-agent legs run there; record the Gemini/Pi rows in `docs/compatibility/ACP.md` |
 | W8 Shared one-off conversations | works end-to-end (CHECKED LIVE: m2-journey browser; two-user Inbox **6/6 live**, `docs/m4-exit-status.md:299`; the per-project conversations page browser-checked, `059d132`; permission mode decided for the **lab only** — ADR-0036, `382d42b`; **`deny` is now enforced on the conversation path** (`c1c7c19`, pass 30 deny probe: 1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved, `live30/deny_probe.out`); per-call verdicts for preapproved conversations (ADR-0039) in implementation, not done) | Record one live conversation turn whose `sandbox.egress_observed` proves the `382d42b` journalling; then the product-mode decision |
-| W9 In-UI assistant | backend + UI built and unit-tested (ADR-0034, `3cbf2a3`); **NOT answered live anywhere** — the lab has no model endpoint, the home cluster is configured (`docs/home-cluster.md`) but the click-through is not done; write tools spec only | Ask one question live on the home cluster and record question→answer→route-link click |
+| W9 In-UI assistant | **CHECKED LIVE** (2026-10-17, on the lab's LLM collective `qwen3-8-27b` via an uncommitted, owner-approved lab-only compose override — no key is in the repo): `e2e/tests/m5-assistant.spec.ts` **3/3 live** — Ctrl K → Ask, a real collective answer with its tool calls, every link a real page (`37b66a6`); the first live answer needed `6eb0392` (the tool names were illegal OpenAI function names and the collective 400'd every ask) and `37b66a6` fixed the dead `/approvals` link; write tools spec only | Home cluster: set `COMMUNICATION_ASSISTANT_MODEL` / `COMMUNICATION_MODEL_CHAT_MODELS` to `qwen3-8-27b` and re-run the assistant spec once CI publishes an image newer than `1b872b8` |
 
 ## W1 — Browse projects; see a project's repositories
 
@@ -386,24 +389,32 @@ untrusted; links survive only from the app-route allowlist
 
 **UI.** Ctrl K / Ask box: a quick-jump palette over pages, projects, pipelines,
 recent runs and agents (`9e03244`, CHECKED LIVE); the Ask row backed by
-`POST /assistant/ask` (`854b2ef`, `ui/src/components/CommandPalette.tsx`). Only
-the Ask row's **rendering** is CHECKED LIVE — no live model has answered through
-it: the lab has no `COMMUNICATION_ASSISTANT_*` endpoint, and the home cluster sets
-it (`docs/home-cluster.md`, `0ae8c43`) with no recorded answer.
+`POST /assistant/ask` (`854b2ef`, `ui/src/components/CommandPalette.tsx`). The Ask row now
+**answers live**: on 2026-10-17 the owner allowed the lab to use the LLM collective
+(`qwen3-8-27b`) via a lab-only compose override (uncommitted and owner-approved; no key is in
+the repo), and `e2e/tests/m5-assistant.spec.ts` reads **3/3 live** (`37b66a6`) — Ctrl K → Ask,
+a real collective answer with a collapsed list of the tools it looked at, and every link the
+answer carries landing on a real page rather than "Not found". The first live answer needed
+`6eb0392` (the tool names were illegal OpenAI function names and the collective 400'd every
+ask), and the dead `/approvals` link was fixed in `37b66a6` (the link allowlist mirrors
+`App.tsx`, with a test failing on drift; approval links go to the run page or `/inbox`). The
+home cluster sets its own `COMMUNICATION_ASSISTANT_*` (`docs/home-cluster.md`, `0ae8c43`), but
+its image predates these fixes until CI runs.
 
 **Live evidence beyond the browser.** "Every W9 arm PASSes (404s, no
 project/node/digest in the DOM, SSE never opens)" (`763c3c4`) — authz/privacy
 proven live; the carol-literal arm stays an honest GAP; no row claims an answer.
 
-**Status: backend + UI built and unit-tested** as a **read-only** ask/navigate
-assistant (ADR-0034, `3cbf2a3`, `854b2ef`; outsider privacy CHECKED LIVE
-`763c3c4`); **NOT answered live anywhere** — no model endpoint in the lab, the
-configured home cluster has no recorded answer. Write tools and phrase-button
-navigation: **spec only** (`docs/design/assistant-v1.md`).
+**Status: CHECKED LIVE** as a **read-only** ask/navigate assistant (ADR-0034, `3cbf2a3`,
+`854b2ef`; outsider privacy CHECKED LIVE `763c3c4`; **the answer leg is live** —
+`e2e/tests/m5-assistant.spec.ts` 3/3, `37b66a6`, first live answer `6eb0392`, on the lab's
+owner-approved collective override). Write tools and phrase-button navigation: **spec only**
+(`docs/design/assistant-v1.md`).
 
-**Next step.** Nothing to configure — the home cluster already sets
-`COMMUNICATION_ASSISTANT_*` (`docs/home-cluster.md`): ask one question live there
-and record the question→answer→route-link click. Write tools need the ADR `08:38`
+**Next step.** Home cluster: set `COMMUNICATION_ASSISTANT_MODEL` /
+`COMMUNICATION_MODEL_CHAT_MODELS` to `qwen3-8-27b` and re-run
+`e2e/tests/m5-assistant.spec.ts` once CI publishes a cluster image newer than `1b872b8` (it
+predates the assistant and model.chat fixes). Write tools need the ADR `08:38`
 names before the first ships, publish staying behind an approval card.
 
 ## What still blocks a click-through on the home cluster
@@ -423,10 +434,12 @@ on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6f
    lab adopted `preapproved_within_sandbox` (ADR-0036, `382d42b`), but product
    defaults and this cluster stay `ask` until condition (a) closes — no per-call
    verdict in the journal (`docs/design/attempt-permissions.md`).
-3. **Assistant answer never recorded.** The cluster *does* set
-   `COMMUNICATION_ASSISTANT_*` (`docs/home-cluster.md` § 1); the lab has none (503
-   `assistant_not_configured`, `internal/api/assistant.go:161`). The first
-   question→answer→link click is a click, not code.
+3. **The cluster's assistant model env must point at the collective, and its image is
+   stale.** The assistant now answers live in the lab (`e2e/tests/m5-assistant.spec.ts` 3/3,
+   `37b66a6`; first live answer `6eb0392`, on the lab's owner-approved collective override —
+   no key is in the repo). The cluster's `COMMUNICATION_ASSISTANT_MODEL` /
+   `COMMUNICATION_MODEL_CHAT_MODELS` must be set to `qwen3-8-27b`, and the cluster image
+   predates these fixes until CI runs (blocker 9).
 4. **One model on the chat allowlist.** `COMMUNICATION_MODEL_CHAT_MODELS` on the
    cluster worker allowlists one model (`docs/home-cluster.md` names
    `qwen3-8-27b`); anything else is refused at execution
