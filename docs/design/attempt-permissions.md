@@ -64,3 +64,56 @@ steps, and the journal still records no verdict for a preapproved tool call — 
 evaluation, still open, and the reason the mode was not shipped as a product default. See
 [`../adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md`](../adr/ADR-0036-lab-agent-profiles-preapproved-within-sandbox.md).
 
+## Why attempts journal no verdict (2026-10-16 finding)
+
+Condition (a) was investigated against the live M4 lab (13 attempts, 34 tool calls, 0
+`conversation.permission.*` rows). It is not a broken bridge — **no prompt ever arrives**.
+
+**1. The cause is mode selection, not the worker's decider.** The attempt path only asks the
+harness to prompt for `ask`: `internal/worker/agentturn.go:405-416` sets `modeID` for
+`"ask"` and falls into `case "", "deny", "preapproved_within_sandbox":` with `modeID = ""`.
+`internal/agent/acp/handle.go:200-211` calls `session/set_mode` **only when `ModeID != ""`**, so a
+preapproved attempt never leaves `claude-agent-acp`'s shipped default `auto` —
+`internal/agent/acp/launchers.go:60-65`: "adapter default mode auto never sends
+`session/request_permission`" (`docs/compatibility/ACP.md:35,45,50`). `permissionBridge`
+(`internal/worker/agentturn.go:1053-1097`) and
+`PermissionPolicyFor("preapproved_within_sandbox")` → `allow_once`,
+`decided_by='node_policy:preapproved_within_sandbox'` (`internal/store/postgres/agentturn_seams.go:464-474`)
+are correct and simply never invoked. Lab check:
+`select type,count(*) from domain_events where type like 'conversation.permission%' group by 1;` →
+**(0 rows)**; `select count(*) from permission_requests;` → **0**; `agent.session.connected`
+payload keys are `acp_session_id, agent_capabilities, binding_id, conversation_id, launcher_id,
+launcher_version, protocol_version, session_origin, worker_id` — no mode is recorded at all.
+Nothing else steers it: `acp.LaunchEnv` passes only PATH/HOME/XDG_*/TMPDIR/git identity
+(`internal/agent/acp/launchenv.go:154-190`, `internal/worker/agentturn.go:472-498`) and the worker
+writes **no** `.claude/settings.json` (repo-wide grep for `settings.json` hits only probe fixtures
+and harness-generated transcripts). The harness's own state in the attempt home reads
+`"permissionMode":"default"` while our client saw zero prompts — the approval happened inside
+Claude Code, invisibly. So the harness *is* auto-allowing: preapproval is delegated to the agent,
+which is what `preapproved_within_sandbox` says, but silently.
+
+**2. `conversation.tool.call` records no permission answer.** Keys observed
+(`internal/events/events.go:479-488`): `conversation_id, turn_id, tool_call_id, title, kind,
+status, input_preview, truncated`. Lab sample: `execute|Terminal|31`, `edit|Preparing file…|2`,
+`edit|Edit|1`. There is no `decided_by`, `allowed_by`, `permission_mode` or `requested` field —
+nothing in the journal attributes the call's approval to anything.
+
+**3. An `ask` conversation does ask on the same harness** — prompting is a mode property, not a
+path property: `docs/compatibility/ACP.md:90` (worker container, mode `default`): `tool.call →
+tool.update → permission.requested` (durable `pending`) → decision → `completed` → **PASS**; and
+`docs/compatibility/SANDBOX.md:296-297` in this same lab shows seq 163 `requested` + seq 164
+`decided` with a real user id. Attempts under `ask` journal both halves too (this doc's opening).
+
+**4. Smallest fix (proposal only — not implemented).** Give `preapproved_within_sandbox` the same
+prompting mode `ask` already uses: in `agentturn.go:414` set `modeID = a.askMode(prof.LauncherID)`
+for it (fail closed if the launcher has no verified prompting mode, as `ask` does). The harness
+then prompts, and the existing bridge + `PermissionPolicyFor` journal `requested` + `decided
+{decided_by:'node_policy:preapproved_within_sandbox'}` with **no new event type and no new
+payload field** — the two types and `decided_by` already ship and are already exercised by the
+`ask` path, so this needs no API ADR, only a lab row (a `session/set_mode` round-trip per call)
+amending ADR-0036's condition (a). Alternative — stamping `tool.call` with the attempt's policy and
+`not_requested` — is the cheaper runtime but is a **public event payload change** (`api/openapi.yaml`,
+`internal/events`), so it needs an ADR, and it journals an absence instead of a decision. Both keep
+the `auto`-mode caveat: with `default` mode Claude prompts per edit/bash, so attempt latency rises.
+
+
