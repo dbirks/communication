@@ -306,9 +306,19 @@ func newAgentTurnFixture(t *testing.T, enforcement domain.EnforcementMode) *agen
 			AgentProfileID: "m4-implementer", LauncherID: "claude", PermissionMode: "deny",
 		}},
 		Checkpoints: stubCheckpoints{},
-		AckGrace:    300 * time.Millisecond,
-		Quiesce:     time.Millisecond,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// Prod always wires the launcher registry's prompting mode
+		// (cmd/communication/worker.go acpAskModeID); the fixture mirrors it so
+		// a deny/preapproved attempt reaches the session instead of failing
+		// closed. Tests of the fail-closed arm nil this out.
+		AskModeID: func(launcherID string) string {
+			if l, ok := acp.LookupLauncher(launcherID); ok {
+				return l.AskModeID
+			}
+			return ""
+		},
+		AckGrace: 300 * time.Millisecond,
+		Quiesce:  time.Millisecond,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	return f
 }
@@ -895,6 +905,7 @@ func TestAgentTurnDefensiveRefusals(t *testing.T) {
 
 	t.Run("ask mode fails closed without a verified prompting mode", func(t *testing.T) {
 		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		f.turn.AskModeID = nil
 		prof := f.turn.Profiles.(*profilesStub)
 		prof.mu.Lock()
 		prof.prof.PermissionMode = "ask"
@@ -921,6 +932,51 @@ func TestAgentTurnDefensiveRefusals(t *testing.T) {
 			t.Errorf("ModeID = %q, want the registry's verified prompting mode", got)
 		}
 	})
+
+	// Every recorded permission mode puts the harness in its prompting mode:
+	// in its default mode the adapter sends no session/request_permission, so a
+	// deny or preapproved attempt that skipped set_mode would enforce nothing
+	// (deny) and journal no verdict (preapproved) — ADR-0036 condition (a).
+	for _, mode := range []string{"ask", "deny", "preapproved_within_sandbox"} {
+		mode := mode
+		t.Run(mode+" requests the launcher prompting mode", func(t *testing.T) {
+			f := newAgentTurnFixture(t, domain.EnforceDisabled)
+			prof := f.turn.Profiles.(*profilesStub)
+			prof.mu.Lock()
+			prof.prof.PermissionMode = mode
+			prof.mu.Unlock()
+			f.spawn.queue(newAgentSessionStub(domain.SessionInfo{}))
+			if _, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got, want := f.spawn.lastReq().ModeID, "default"; got != want {
+				t.Errorf("%s: ModeID = %q, want the launcher's verified prompting mode %q", mode, got, want)
+			}
+		})
+
+		if mode == "ask" {
+			continue // fail-closed for 'ask' is covered by the case above
+		}
+		t.Run(mode+" fails closed without a verified prompting mode", func(t *testing.T) {
+			f := newAgentTurnFixture(t, domain.EnforceDisabled)
+			f.turn.AskModeID = nil
+			prof := f.turn.Profiles.(*profilesStub)
+			prof.mu.Lock()
+			prof.prof.PermissionMode = mode
+			prof.mu.Unlock()
+			res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra ||
+				!strings.Contains(res.Detail, "prompting mode") {
+				t.Fatalf("%s: res = %+v, want the fail-closed refusal (docs/compatibility/ACP.md)", mode, res)
+			}
+			if f.spawn.calls() != 0 {
+				t.Errorf("spawned %d sessions on the refused arm", f.spawn.calls())
+			}
+		})
+	}
 
 	t.Run("unbound success closes as infra exactly like procexec", func(t *testing.T) {
 		f := newAgentTurnFixture(t, domain.EnforceDisabled)

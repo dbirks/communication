@@ -402,17 +402,28 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	if refusal != nil {
 		return *refusal, nil
 	}
+	// All three recorded modes are enforced the same way: the harness is put
+	// into the launcher's prompting mode, and the permissionBridge plus
+	// PermissionPolicyFor then answer and journal each prompt (deny →
+	// cancelled, preapproved → allow_once with the node_policy decider).
+	// Leaving modeID empty would pin the adapter to its never-asks default
+	// (docs/compatibility/ACP.md), which sends no session/request_permission
+	// at all: a 'deny' profile would then allow every tool call, and a
+	// 'preapproved' attempt would journal no per-call verdict (ADR-0036 (a)).
 	modeID := ""
 	switch prof.PermissionMode {
-	case "ask":
+	case "ask", "deny", "preapproved_within_sandbox":
 		modeID = a.askMode(prof.LauncherID)
 		if modeID == "" {
 			return failedResult(ErrorClassInfra, fmt.Sprintf(
-				"agent profile %q asks for the prompting permission mode, but launcher %s has no verified prompting mode (docs/compatibility/ACP.md): running its never-asks default would be a lie about review",
-				spec.profileName, prof.LauncherID)), nil
+				"agent profile %q requires the prompting permission mode (%s), but launcher %s has no verified prompting mode (docs/compatibility/ACP.md): running its never-asks default would be a lie about review",
+				spec.profileName, prof.PermissionMode, prof.LauncherID)), nil
 		}
-	case "", "deny", "preapproved_within_sandbox":
-		// Static policy answers prompts; the Decider bridge still events them.
+	case "":
+		// No recorded mode: agent_profiles.permission_mode is NOT NULL DEFAULT
+		// 'ask' (migrations/00003_m2_conversations.sql:57), so no row the
+		// resolver can read is empty. Nothing to honour here; static policy
+		// answers prompts and the Decider bridge still events them.
 	default:
 		return failedResult(ErrorClassInfra, "agent profile names unknown permission mode "+prof.PermissionMode), nil
 	}
