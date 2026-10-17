@@ -963,7 +963,8 @@ C1f  artifact evidence: psql -tAc "select name,kind,media_type,sha256,sensitivit
                   where a.project_id='$P'" > 0
 C1g  run outputs: psql -tAc "select payload->'result_bindings' from domain_events
                              where run_id='$RUN' and type='run.completed'"
-     # implementation_summary non-empty, review_approved=true, iterations=2 (twin) / >=2 (agent)
+     # implementation_summary non-empty, review_approved=true, iterations=2 (twin, deterministic) /
+     # 1..4 (agent: a real model may fix the planted test in one iteration; the twin carries the loop proof)
 C1h  psql -tAc "select count(*) from domain_events where run_id='$RUN'
                   and type not in ('conversation.message.agent','conversation.tool.update',
                                    'conversation.message.user','conversation.thought',

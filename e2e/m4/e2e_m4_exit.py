@@ -914,7 +914,13 @@ def journal_shape(rows):
 
 def result_bindings_ok(rb, variant):
     """§ 7.1 C1g: implementation_summary non-empty, review_approved=true,
-    iterations=2 (twin) / >=2 (agent). [(label, ok, detail)] — pure."""
+    iterations=2 (twin, deterministic) / 1..maxIterations (agent). A real model
+    may read the planted test, fix it and get the reviewer's approval in a single
+    iteration, so the agent leg may not FAIL on iteration count — the twin leg is
+    the deterministic proof of the multi-iteration loop. The separate journal-vs-
+    ledger check in the caller still pins the number to what actually ran.
+    [(label, ok, detail)] — pure."""
+    max_iter = 4  # the seed loop's until.maxIterations (§ 9.3 / make_fixture_repo.sh)
     rb = rb if isinstance(rb, dict) else {}
     s = rb.get("implementation_summary")
     it = rb.get("iterations")
@@ -928,8 +934,10 @@ def result_bindings_ok(rb, variant):
         out.append(("result_bindings.iterations == 2 (twin is deterministic)",
                     it == 2, repr(it)))
     else:
-        out.append(("result_bindings.iterations >= 2 (agent, § 7.1 C1g)",
-                    isinstance(it, int) and not isinstance(it, bool) and it >= 2,
+        out.append((f"result_bindings.iterations in [1, {max_iter}] (agent, § 7.1 C1g: a "
+                    "real model may fix the planted test in one iteration)",
+                    isinstance(it, int) and not isinstance(it, bool)
+                    and 1 <= it <= max_iter,
                     repr(it)))
     return out
 
@@ -1752,6 +1760,12 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
     show(f"C1g {label}: result_bindings", raw or "(none)")
     for lbl, ok, detail in result_bindings_ok(rb, variant):
         ok_all &= check(f"C1g {label}: {lbl}", ok, detail)
+    if variant != "twin":
+        # NOTE, never a verdict: the record must still show whether iteration 1
+        # failed, even though a 1-iteration agent run is a legitimate outcome.
+        print(f"  NOTE  C1g {label}: agent iterations={rb.get('iterations')!r} "
+              f"(1 = the planted test fell in iteration 1; the twin leg carries the "
+              f"multi-iteration loop proof)", flush=True)
     it_rb = rb.get("iterations")
     ok_all &= check(f"C1g {label}: journal iterations agree with the ledger's last suffix",
                     it_rb == iters, f"rb={it_rb} ledger={iters}")

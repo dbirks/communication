@@ -387,11 +387,23 @@ class ResultBindingsTest(unittest.TestCase):
         bad = dict(self.GOOD, iterations=3)
         self.assertFalse([ok for _, ok, _ in m.result_bindings_ok(bad, "twin")][2])
 
-    def test_agent_at_least_two(self):
-        self.assertTrue(all(ok for _, ok, _ in
-                            m.result_bindings_ok(dict(self.GOOD, iterations=3), "agent")))
-        self.assertFalse([ok for _, ok, _ in
-                          m.result_bindings_ok(dict(self.GOOD, iterations=1), "agent")][2])
+    def test_agent_may_finish_in_one_iteration(self):
+        """live25: a real Claude model read the planted test, fixed it and got the
+        reviewer's approval in iteration 1. The agent leg may not FAIL on iteration
+        count — the twin leg is the deterministic loop proof."""
+        for it in (1, 2, 3, 4):
+            self.assertTrue(all(ok for _, ok, _ in
+                                m.result_bindings_ok(dict(self.GOOD, iterations=it), "agent")),
+                            f"iterations={it}")
+
+    def test_agent_iterations_must_be_a_bounded_positive_int(self):
+        # 0 (never ran), 5 (past the loop's maxIterations: 4 bound), True (a bool
+        # masquerading as 1) and "2" (a string) are all FAILs, not crashes.
+        for bad_it in (0, 5, True, "2", None, 2.0, -1):
+            self.assertFalse([ok for _, ok, _ in
+                              m.result_bindings_ok(dict(self.GOOD, iterations=bad_it),
+                                                   "agent")][2],
+                             f"iterations={bad_it!r}")
 
     def test_string_approved_never_passes_as_true(self):
         bad = dict(self.GOOD, review_approved="true")
