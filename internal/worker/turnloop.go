@@ -446,19 +446,25 @@ func (l *TurnLoop) sessionFor(ctx context.Context, c Claim, rt *runningTurn) (*l
 		}
 	}
 
+	// All three recorded modes are enforced the same way: the harness is put
+	// into the launcher's prompting mode, and the turn's permission bridge
+	// plus PermissionPolicyFor then answer and journal each prompt (deny →
+	// cancelled, preapproved → allow_once with the node_policy decider).
+	// Leaving modeID empty would pin the adapter to its never-asks default
+	// (docs/compatibility/ACP.md), which sends no session/request_permission
+	// at all: a 'deny' conversation would then allow every tool call, and a
+	// 'preapproved' one would journal no per-call verdict (ADR-0036 (a)).
 	modeID := ""
 	switch c.PermissionMode {
-	case "ask":
+	case "ask", "deny", "preapproved_within_sandbox":
 		modeID = l.cfg.AskModeID(c.LauncherID)
 		if modeID == "" {
 			// Fail closed: without a verified prompting mode the adapter's
-			// default answers every permission itself — "ask" would be a
-			// lie (docs/compatibility/ACP.md: prompting is a mode property).
-			return nil, errNoAskMode{launcher: c.LauncherID}
+			// default answers every permission itself — the recorded mode
+			// would be a lie (docs/compatibility/ACP.md: prompting is a
+			// mode property).
+			return nil, errNoAskMode{launcher: c.LauncherID, mode: c.PermissionMode}
 		}
-	case "deny", "preapproved_within_sandbox":
-		// deny/preapproved are answered by the static policy at the ACP
-		// layer; M2's seeded profiles are 'ask'.
 	default:
 		return nil, errors.New("worker: unknown permission mode " + c.PermissionMode)
 	}
@@ -597,10 +603,18 @@ func (l *TurnLoop) appendSessionEvent(ctx context.Context, conversationID string
 	}
 }
 
-// errNoAskMode reports an ask profile on a launcher with no verified
-// prompting mode.
-type errNoAskMode struct{ launcher string }
+// errNoAskMode reports a profile whose recorded permission mode needs a
+// prompting mode, on a launcher that has none verified. mode names the
+// recorded mode so the failure is honest about which one was refused.
+type errNoAskMode struct {
+	launcher string
+	mode     string
+}
 
 func (e errNoAskMode) Error() string {
-	return "worker: permission mode ask needs a prompting mode for launcher " + e.launcher + "; none is verified (docs/compatibility/ACP.md)"
+	mode := e.mode
+	if mode == "" {
+		mode = "ask"
+	}
+	return "worker: permission mode " + mode + " needs a prompting mode for launcher " + e.launcher + "; none is verified (docs/compatibility/ACP.md)"
 }

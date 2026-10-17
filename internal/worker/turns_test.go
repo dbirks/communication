@@ -524,8 +524,11 @@ func TestHappyPathCoalescesChunks(t *testing.T) {
 	if tools[0].Title != "write file" || tools[0].Kind != "edit" || tools[0].InputPreview != "some input" {
 		t.Errorf("tool payload = %+v", tools[0])
 	}
-	if got := ff.request(0); got.ModeID != "" || got.LauncherID != "claude" {
-		t.Errorf("launch request = %+v, want no mode for deny policy", got)
+	// deny is enforced by prompting too: without the launcher's asking mode
+	// the adapter never sends session/request_permission (see
+	// TestRecordedModesAllUsePrompting).
+	if got := ff.request(0); got.ModeID != "default" || got.LauncherID != "claude" {
+		t.Errorf("launch request = %+v, want the claude prompting mode for deny", got)
 	}
 }
 
@@ -561,6 +564,45 @@ func TestAskModeSelectionAndRefusal(t *testing.T) {
 	}
 	if ff2.count() != 0 {
 		t.Fatalf("launched %d sessions on an unsupported launcher, want 0", ff2.count())
+	}
+}
+
+// TestRecordedModesAllUsePrompting proves the conversation path pins the
+// launcher's prompting mode for *every* recorded permission mode, the way
+// a0fd9e7 did for attempts: with an empty modeID the adapter stays in its
+// never-asks default (docs/compatibility/ACP.md), so a deny conversation
+// would allow every tool call and a preapproved one would journal no verdict.
+// A launcher with no verified prompting mode fails closed instead.
+func TestRecordedModesAllUsePrompting(t *testing.T) {
+	for _, mode := range []string{"ask", "deny", "preapproved_within_sandbox"} {
+		st := newFakeStore()
+		st.claims = []worker.Claim{testClaim2(t, mode)}
+		sess := newFakeSession(domain.SessionInfo{})
+		sess.promptFn = func(context.Context, *fakeSession) (domain.StopReason, error) {
+			return domain.StopEndTurn, nil
+		}
+		ff := &fakeFactory{sessions: []*fakeSession{sess}}
+		startLoop(t, newLoop(t, fastCfg(), st, ff))
+		recv(t, st.finishing, mode+" finish")
+		if got := ff.request(0).ModeID; got != "default" {
+			t.Errorf("%s: ModeID = %q, want the claude prompting mode 'default'", mode, got)
+		}
+
+		// No verified prompting mode for that launcher: the turn fails and
+		// nothing is launched (fail closed, not silently auto-approving).
+		st2 := newFakeStore()
+		c2 := testClaim2(t, mode)
+		c2.LauncherID = "gemini"
+		st2.claims = []worker.Claim{c2}
+		ff2 := &fakeFactory{}
+		startLoop(t, newLoop(t, fastCfg(), st2, ff2))
+		out := recv(t, st2.finishing, mode+" refusal")
+		if out.Status != events.TurnStatusFailed || !strings.Contains(out.Message, "prompting mode for launcher gemini") {
+			t.Errorf("%s: outcome = %+v, want failed naming the missing prompting mode", mode, out)
+		}
+		if ff2.count() != 0 {
+			t.Errorf("%s: launched %d sessions with no prompting mode, want 0", mode, ff2.count())
+		}
 	}
 }
 
