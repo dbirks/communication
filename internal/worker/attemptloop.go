@@ -679,13 +679,42 @@ func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write fun
 			rt.lostLease.Store(true)
 			return true
 		}
-		// The lease will expire and the reconciler will close it as
-		// interrupted — the visible outcome is preserved, the guess is ours
-		// to log (§ 5.4 pass 1).
+		// The refusal is NOT a fence: the store answered with an honest
+		// non-fence error. Leaving the attempt to the reconciler's lease arm
+		// would turn a live refusal into an interrupted/lease_expired ~30s
+		// later, spoken by nobody standing here. The honest word, from this
+		// worker at this moment, is a failed attempt (infra) naming the
+		// store's message. The follow-up write is fenced like the original:
+		// if the first write actually committed and only its response was
+		// lost, the fence answers ErrLeaseLost and the landed terminal
+		// stands untouched.
 		l.log.Error("attempt terminal write failed",
 			slog.String("attempt_id", rt.claim.AttemptID), slog.String("error", err.Error()))
+		l.honestFail(ctx, rt, "worker: the store refused this attempt's terminal write: "+bounded(err.Error(), 400))
 	}
 	return false
+}
+
+// honestFail is the non-fence arm of a refused terminal write: ONE
+// FailAttempt (infra, the store's bounded message) so the run sees a failure
+// now instead of an interruption a lease expiry later. It is a plain fenced
+// write, never routed through fenced itself — the follow-up refusal is
+// handled here, and recursion is impossible.
+func (l *AttemptLoop) honestFail(ctx context.Context, rt *runningAttempt, detail string) {
+	err := l.store.FailAttempt(ctx, rt.claim, ErrorClassInfra, bounded(detail, 512), nil)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrLeaseLost) {
+		// The terminal already landed, or another owner closed the attempt:
+		// the fence's word outranks the guess, so write nothing.
+		l.log.Warn("attempt honest-fail write rejected: lease lost",
+			slog.String("attempt_id", rt.claim.AttemptID))
+		rt.lostLease.Store(true)
+		return
+	}
+	l.log.Error("attempt honest-fail write failed; the reconciler's lease arm is the backstop",
+		slog.String("attempt_id", rt.claim.AttemptID), slog.String("error", err.Error()))
 }
 
 // attemptSink gives one in-flight attempt body fenced journal writes and the

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/dbirks/communication/internal/artifacts"
 	"github.com/dbirks/communication/internal/domain"
+	wsgit "github.com/dbirks/communication/internal/workspace/git"
 )
 
 // NodeKindModelChat is the § 4 step 8 node kind this executor runs, the
@@ -104,11 +106,51 @@ type ModelChat struct {
 	// model_chat_outputs.json). Injectable for tests.
 	ArtifactName string
 	Logger       *slog.Logger
+
+	// Checkpoints resolves the run's boundary identity (§ 4 step 3) — the
+	// same seam process.exec and agent.acp take. The store's boundary
+	// transaction refuses a completion that names no volume (D-024 is
+	// same-volume only), so without it every successful model.chat node in
+	// a workspace run is refused: the executor then fails the attempt
+	// honestly instead of letting the terminal write die in the store.
+	Checkpoints RunWorkspaceResolver
+	// WorkspaceRoot is the worker's workspace tree the boundary capture's
+	// read manager is built from (unsandboxed worker-owned git plumbing,
+	// exactly procexec's boundaryGit rule).
+	WorkspaceRoot string
+	// BoundaryGit is the node-boundary capture's read seam; nil builds one
+	// unsandboxed reader from WorkspaceRoot, like process.exec.
+	BoundaryGit BoundaryGit
+
+	gitOnce   sync.Once
+	gitReader BoundaryGit
+	gitErr    error
 }
 
 const modelChatDefaultArtifactName = "model_chat_outputs.json"
 
 var _ AttemptExecutor = (*ModelChat)(nil)
+
+// WithRedact returns one attempt's copy of this executor configured with
+// the run's redactor. The copy is rebuilt field by field on purpose and
+// never touches the lazy git-reader state: gitOnce is a sync.Once and a
+// whole-struct copy of a non-zero one is the data race go vet's copylocks
+// refuses (a `chat := *m` line does exactly that). The copy's fresh gitOnce
+// rebuilds the read manager on first use, which for a copy that never
+// touches git is nothing, and for one that does is the same unsandboxed
+// reader the original would build.
+func (m *ModelChat) WithRedact(redact func(text string) (string, int)) *ModelChat {
+	if m == nil {
+		return nil
+	}
+	return &ModelChat{
+		BaseURL: m.BaseURL, APIKey: m.APIKey, Models: m.Models,
+		Redact: redact, HTTPClient: m.HTTPClient, Timeout: m.Timeout,
+		Bytes: m.Bytes, Rows: m.Rows, ArtifactName: m.ArtifactName,
+		Logger: m.Logger, Checkpoints: m.Checkpoints,
+		WorkspaceRoot: m.WorkspaceRoot, BoundaryGit: m.BoundaryGit,
+	}
+}
 
 func (m *ModelChat) logger() *slog.Logger {
 	if m != nil && m.Logger != nil {
@@ -318,6 +360,22 @@ func (m *ModelChat) Execute(ctx context.Context, c AttemptClaim, _ AttemptSink) 
 	out, err := m.buildOutputs(ctx, c, spec, host, text, parsed)
 	if err != nil {
 		return *err, nil
+	}
+	// ADR-0023 § 6: EVERY successful node boundary writes its checkpoint row
+	// in the terminal transaction, and the store refuses a completion that
+	// names no volume (D-024 is same-volume only). model.chat does not touch
+	// the tree, so the boundary is the workspace's CURRENT state — capture
+	// it like process.exec, then resolve the record the rows now carry. The
+	// capture itself is best-effort (its docblock); a run whose boundary is
+	// unbound fails the attempt honestly, the same word process.exec and
+	// agent.acp speak.
+	m.captureBoundary(ctx, c)
+	out.Checkpoint = m.checkpointFor(ctx, c, spec, out.OutputsDigest)
+	if out.Checkpoint.VolumeID == "" {
+		// Honest: there is no boundary to write. The completion answered;
+		// the engine cannot durably say so. Name the missing half.
+		return failedResult(ErrorClassInfra,
+			"model.chat completion succeeded but no run workspace boundary is bound (contract § 4 step 3): a checkpoint requires a workspace row and its volume (D-024 is same-volume only)"), nil
 	}
 	return out, nil
 }
@@ -789,4 +847,117 @@ func modelChatPreview(text string, max int) string {
 		cut--
 	}
 	return text[:cut] + "…"
+}
+
+// The model.chat half of ADR-0023 § 6's boundary rule, modelled on
+// procexec_capture.go: the checkpoint row is "the same capture the agent path
+// already produces, now attached to this node boundary". A model.chat node
+// does not touch the tree, so the boundary is the workspace's CURRENT state —
+// this capture reads the ref back and records what the rows truthfully hold,
+// never a fabricated one. Best-effort by the same rule: a capture that cannot
+// read git or cannot write its row keeps the boundary un-captured (the
+// engine reports that through restore_checkpoint's refusal) and never fails
+// the attempt — the completion itself is the worker's terminal claim.
+func (m *ModelChat) captureBoundary(ctx context.Context, c AttemptClaim) {
+	if m.Checkpoints == nil {
+		return
+	}
+	ref, ok, err := m.Checkpoints.RunWorkspace(context.WithoutCancel(ctx), c.RunID)
+	if err != nil || !ok || len(ref.Repos) == 0 {
+		return
+	}
+	rec, ok := m.Checkpoints.(BoundaryCommitRecorder)
+	if !ok {
+		// A resolver without the write half (an older wiring, a test stub):
+		// the boundary stays un-captured, the honest pre-existing state.
+		m.logger().Debug("model.chat: run workspace resolver records no boundary captures",
+			slog.String("attempt_id", c.AttemptID))
+		return
+	}
+	git, err := m.boundaryGit()
+	if err != nil {
+		m.logger().Warn("model.chat boundary capture could not open the git reader",
+			slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
+		return
+	}
+	repos := make([]CaptureRepo, 0, len(ref.Repos))
+	for _, r := range ref.Repos {
+		if strings.TrimSpace(r.CheckoutPath) == "" {
+			continue
+		}
+		repos = append(repos, CaptureRepo{
+			RowID: r.RowID, RepositoryID: r.RepositoryID, RepoName: r.RepositoryID,
+			CheckoutPath: r.CheckoutPath, RunRef: r.RunRef,
+			BaseCommit: r.BaseCommit, RecordedHead: r.RecordedHead,
+			RecordedPaths: r.RecordedPaths,
+		})
+	}
+	if len(repos) == 0 {
+		return
+	}
+	// model.chat materializes no secret trees (the run's redactor covers its
+	// egress instead), so the capture's declared set is the rows' own
+	// per-repository exclusions (ADR-0017 D6).
+	excluded := make([][]string, 0, len(ref.Repos))
+	for _, r := range ref.Repos {
+		excluded = append(excluded, r.ExcludedPaths)
+	}
+	if _, err := captureRepos(ctx, git, mergePaths(excluded...), ref.WorkspaceID, c.OrganizationID, c.ProjectID,
+		repos, rec.RecordBoundaryCommit); err != nil {
+		m.logger().Warn("model.chat boundary capture failed; the boundary stays un-captured",
+			slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
+	}
+}
+
+// boundaryGit is the capture's reader: the injected seam in tests, otherwise
+// one unsandboxed read-only manager built once from this worker's configured
+// workspace root — worker-owned git plumbing is explicitly unsandboxed, the
+// same argument procexec's boundaryGit carries, and AGENTS.md forbids
+// restricting this process regardless.
+func (m *ModelChat) boundaryGit() (BoundaryGit, error) {
+	if m.BoundaryGit != nil {
+		return m.BoundaryGit, nil
+	}
+	m.gitOnce.Do(func() {
+		var mgr *wsgit.Manager
+		mgr, m.gitErr = wsgit.NewReadManager(m.WorkspaceRoot)
+		if mgr != nil {
+			m.gitReader = mgr
+		}
+	})
+	return m.gitReader, m.gitErr
+}
+
+// checkpointFor fills the boundary record from the run workspace rows — the
+// states the capture above just wrote, never an invented volume id (D-024 is
+// same-volume only). A missing/unbound workspace returns an empty record and
+// the caller speaks the honest infra refusal it is.
+func (m *ModelChat) checkpointFor(ctx context.Context, c AttemptClaim, spec *modelChatSpec, outputsDigest string) AttemptCheckpoint {
+	if m.Checkpoints == nil {
+		return AttemptCheckpoint{}
+	}
+	ref, ok, err := m.Checkpoints.RunWorkspace(ctx, c.RunID)
+	if err != nil || !ok || ref.WorkspaceID == "" || ref.VolumeID == "" {
+		return AttemptCheckpoint{}
+	}
+	// The plan's own words, not the resolved ones: the model NAME and the
+	// shape of the prompt are what the run's snapshot declared, and two
+	// workers resolving one plan must agree on the digest (procexec's
+	// checkpointFor rule, applied to the fields a chat node declares).
+	inputs, err := json.Marshal(map[string]any{
+		"model":          spec.model,
+		"message_count":  len(spec.messages),
+		"schema_present": spec.schema != nil,
+	})
+	if err != nil {
+		return AttemptCheckpoint{}
+	}
+	return AttemptCheckpoint{
+		InputsDigest:  "sha256:" + sha256Hex(inputs),
+		OutputsDigest: outputsDigest,
+		RepoStates:    ref.RepoStates,
+		WorkspaceID:   ref.WorkspaceID,
+		VolumeID:      ref.VolumeID,
+		WorkerID:      c.WorkerID,
+	}
 }

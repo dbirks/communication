@@ -114,12 +114,20 @@ func mcClaim(cfg map[string]any) AttemptClaim {
 const mcAPIKey = "sk-unit-test-token-do-not-echo"
 
 func mcExecutor(base string) *ModelChat {
-	return &ModelChat{
+	// Wired the way cmd/communication wires it (modelchat_boundary_test.go
+	// names the seam): a BOUND run workspace plus the capture's read seam.
+	// A completion with no boundary is refused by the store's boundary
+	// transaction (D-024 is same-volume only), so a fixture that pretends
+	// otherwise could not observe the checkpoint the terminal writes.
+	m := &ModelChat{
 		BaseURL: base + "/v1",
 		APIKey:  mcAPIKey,
 		Models:  []string{"gpt-test", "reviewer-mini"},
 		Timeout: 2 * time.Second,
 	}
+	m.Checkpoints = mcBoundary()
+	m.BoundaryGit = mcBoundaryGit()
+	return m
 }
 
 func mcConfig() map[string]any {
@@ -166,8 +174,16 @@ func TestModelChatHappyPath(t *testing.T) {
 	if !strings.HasPrefix(res.OutputsDigest, "sha256:") {
 		t.Errorf("outputs digest = %q", res.OutputsDigest)
 	}
-	if res.Checkpoint.OutputsDigest != "" {
-		t.Errorf("model.chat owns no checkpoint: %#v", res.Checkpoint)
+	// ADR-0023 § 6: a successful node boundary carries the checkpoint row its
+	// terminal transaction writes — the store refuses a completion that names
+	// no volume (D-024 is same-volume only), so a completion without one is
+	// lost the moment the boundary transaction refuses it.
+	if res.Checkpoint.VolumeID != "vol-mc" || res.Checkpoint.WorkspaceID != "ws-mc" ||
+		res.Checkpoint.OutputsDigest != res.OutputsDigest {
+		t.Errorf("completion must carry the run workspace's boundary: %#v", res.Checkpoint)
+	}
+	if len(res.Checkpoint.RepoStates) != 1 || res.Checkpoint.RepoStates[0].HeadCommit != "bbbb2222" {
+		t.Errorf("boundary states = %#v, want the captured ref, not an un-captured boundary", res.Checkpoint.RepoStates)
 	}
 	req := srv.lastRequest()
 	if req["model"] != "gpt-test" || req["temperature"] != 0.2 {

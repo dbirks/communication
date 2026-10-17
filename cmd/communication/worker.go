@@ -1133,6 +1133,15 @@ func (o workerOptions) newModelChat(log *slog.Logger, pool *pgxpool.Pool, unitsS
 		Models:  o.modelChat.models,
 		Logger:  log,
 	}
+	// The node-boundary capture seam, wired exactly like process.exec's
+	// procExec above: the same run-workspace store (the run's boundary
+	// identity, § 4 step 3) and the same workspace root process.exec's
+	// boundaryGit is built from. Without it checkpointFor answers an empty
+	// record and the store's boundary transaction refuses the completion
+	// (D-024 is same-volume only), so every successful model.chat node would
+	// fail its terminal write — the kind's own code refuses honestly instead.
+	chat.Checkpoints = &postgres.RunWorkspaces{Pool: pool}
+	chat.WorkspaceRoot = o.workspaceRoot
 	// § 4 step 8's over-cap branch: a completion above the 32 KiB inline cap
 	// travels as a kind=json artifact, so model.chat gets the SAME byte backend
 	// and the SAME fenced row writer artifact.publish is given — one door for
@@ -1210,9 +1219,7 @@ func (s *modelChatSecretScan) Execute(ctx context.Context, c worker.AttemptClaim
 	}
 	defer wipe()
 
-	chat := *s.Chat
-	chat.Redact = redact
-	return chat.Execute(ctx, c, sink)
+	return s.Chat.WithRedact(redact).Execute(ctx, c, sink)
 }
 
 // modelChatDetail keeps an attempt detail inside attempts.detail's 512-byte

@@ -71,6 +71,11 @@ type fakeAttemptStore struct {
 	// a greater token) without disturbing the rest of the triple bookkeeping.
 	cancelErr error
 	appendErr error
+
+	// completeErr injects a NON-fence refusal of the terminal write: the
+	// store answered with an honest error that is not a stale fence, the arm
+	// TestAttemptNonFenceRefusalFailsTheAttempt exercises.
+	completeErr error
 }
 
 func newFakeAttemptStore(capacity int) *fakeAttemptStore {
@@ -301,6 +306,9 @@ func (s *fakeAttemptStore) CompleteAttempt(_ context.Context, c AttemptClaim,
 	a, err := s.verify(c)
 	if err != nil {
 		return err
+	}
+	if s.completeErr != nil {
+		return s.completeErr
 	}
 	// attempts_succeeded_has_outputs (01 invariant 4) and the volume
 	// requirement (D-024) are real CHECKs; the fake refuses them too.
@@ -862,5 +870,44 @@ func TestAttemptDrainStopsClaimingFinishesInFlight(t *testing.T) {
 		if a := store.snapshot(id); a.status != AttemptStatusSucceeded {
 			t.Fatalf("%s status %s, want an honest succeeded inside the grace window", id, a.status)
 		}
+	}
+}
+
+// TestAttemptNonFenceRefusalFailsTheAttempt is the lab-pass-35 arm at loop
+// level: a terminal write the store refuses for a NON-fence reason (an honest
+// error, not a stale triple) must not be left to the reconciler's lease arm
+// to become an interrupted/lease_expired a 30s later. The worker is standing
+// here, so the worker speaks the honest word: the attempt fails (infra)
+// with the store's bounded message, at once.
+func TestAttemptNonFenceRefusalFailsTheAttempt(t *testing.T) {
+	store := newFakeAttemptStore(1)
+	store.queue("a1", "process.exec", 0, time.Now())
+	store.completeErr = errFake("postgres: the boundary transaction lost a row lock")
+
+	exec := execFn(func(ctx context.Context, c AttemptClaim, sink AttemptSink) (AttemptResult, error) {
+		return okResult(), nil
+	})
+	l := newLoop(t, store, AttemptExecutors{"process.exec": exec}, 1)
+	startLoop(t, l)
+	waitFor(t, "honest fail terminal", func() bool {
+		a := store.snapshot("a1")
+		return a.status == AttemptStatusSucceeded || a.status == AttemptStatusFailed
+	})
+
+	a := store.snapshot("a1")
+	if a.status != AttemptStatusFailed || a.errorClass != ErrorClassInfra {
+		t.Fatalf("attempt = %s/%s, want failed/infra (a non-fence refusal is a live failure, not a 30s interruption)",
+			a.status, a.errorClass)
+	}
+	if !strings.Contains(a.detail, "lost a row lock") {
+		t.Fatalf("detail %q must carry the store's bounded message, so the run sees WHY", a.detail)
+	}
+	log := store.writeLog()
+	if len(log) == 0 || !strings.HasPrefix(log[len(log)-1], "fail a1 infra") {
+		t.Fatalf("the honest fail must be the LAST write (the refused complete never lands), log: %v", log)
+	}
+	// The slot came back in the terminal write, not the reconciler's arm.
+	if _, active, _ := store.counts(); active != 0 {
+		t.Fatalf("active_attempts=%d after the honest fail, want 0", active)
 	}
 }
