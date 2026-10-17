@@ -317,20 +317,63 @@ class D6AdvisoryLockProbe(unittest.TestCase):
         self.assertEqual({"api-a": 2, "api-b": 0}, m.c14_lock_lines(log))
         self.assertEqual({"api-a": 0}, m.c14_lock_lines("", ("api-a",)))
 
+    def test_compose_prints_the_container_instance_name_not_the_service(self):
+        """`docker compose logs` prefixes `api-a-1  |` (service + replica number).
+        The old pattern required `api-a` to be followed by a space or `|`, so every
+        real line was invisible and the counts read 0 for both arms (live22)."""
+        log = ("api-a-1  | 2026-10-16T03:00:00Z INF m4 driver acquired the advisory lock\n"
+               "api-a-1  | 2026-10-16T03:00:02Z INF m4 driver acquired the advisory lock\n"
+               "api-b-1  | 2026-10-16T03:00:01Z INF something else\n"
+               "api-a-2  | m4 driver acquired the advisory lock\n")
+        self.assertEqual({"api-a": 3, "api-b": 0}, m.c14_lock_lines(log))
+
+    def test_instance_suffix_never_lets_a_prefix_sibling_score(self):
+        """`api-a` must not claim `api-ab-1 | ...` lines: the instance suffix is
+        anchored to digits + separator, so a longer service name cannot match."""
+        log = ("api-ab-1 | 2026-10-16T03:00:00Z INF m4 driver acquired the advisory lock\n"
+               "api-a1   | m4 driver acquired the advisory lock\n"
+               "api-a-1x | m4 driver acquired the advisory lock\n")
+        self.assertEqual({"api-a": 0, "api-ab": 1},
+                         m.c14_lock_lines(log, ("api-a", "api-ab")))
+
 
 class OffReplicaTest(unittest.TestCase):
     """§ 7.1 C14c: one replica's engine is off, so a run posted there stays 'queued'
     and the OTHER replica advances it. The arm's evidence is the off replica's own
     startup line, the ledger status, and who ever acquired the driver's lock."""
 
-    LOG = ("api-a  | 2026-10-16T03:00:00Z INF serving on :8080 replica=api-a\n"
-           "api-b  | 2026-10-16T03:00:00Z INF pipeline scheduler disabled on this replica "
+    # Shaped exactly as `docker compose logs --no-color` prints it: the CONTAINER
+    # instance name (service + `-<n>`) padded, then `|`.
+    LOG = ("api-a-1  | 2026-10-16T03:00:00Z INF serving on :8080 replica=api-a\n"
+           "api-b-1  | 2026-10-16T03:00:00Z INF pipeline scheduler disabled on this replica "
            "(COMMUNICATION_PIPELINE_SCHEDULER=off)\n"
-           "api-b  | 2026-10-16T03:00:01Z INF serving on :8080 replica=api-b\n")
+           "api-b-1  | 2026-10-16T03:00:01Z INF serving on :8080 replica=api-b\n")
 
     def test_off_lines_parse_with_compose_padding(self):
         self.assertEqual({"api-a": 0, "api-b": 1}, m.c14_scheduler_off_lines(self.LOG))
         self.assertEqual({"api-a": 0}, m.c14_scheduler_off_lines("", ("api-a",)))
+
+    def test_off_lines_still_parse_unprefixed_compose_output(self):
+        """Some compose invocations print the bare service column; both shapes must
+        read the same engine state or the verdict depends on the log reader."""
+        bare = self.LOG.replace("api-a-1", "api-a").replace("api-b-1", "api-b")
+        self.assertEqual(m.c14_scheduler_off_lines(self.LOG),
+                         m.c14_scheduler_off_lines(bare))
+
+    def test_a_replica_that_never_printed_the_mark_reads_on(self):
+        log = ("api-a-1  | 2026-10-16T03:00:00Z INF serving on :8080 replica=api-a\n"
+               "api-b-1  | 2026-10-16T03:00:00Z INF pipeline scheduler disabled on this "
+               "replica (COMMUNICATION_PIPELINE_SCHEDULER=off)\n")
+        self.assertEqual({"api-a": "on", "api-b": "off"},
+                         m.c14_engine_states(m.c14_scheduler_off_lines(log)))
+
+    def test_off_mark_never_leaks_to_a_prefix_sibling(self):
+        log = "api-ab-1 | INF pipeline scheduler disabled on this replica\n"
+        self.assertEqual({"api-a": 0, "api-ab": 1},
+                         m.c14_scheduler_off_lines(log, ("api-a", "api-ab")))
+        # api-a stays 'on' — its engine state is not stolen from a longer name.
+        self.assertEqual({"api-a": "on", "api-ab": "off"},
+                         m.c14_engine_states(m.c14_scheduler_off_lines(log, ("api-a", "api-ab"))))
 
     def test_states_map_zero_to_on(self):
         self.assertEqual({"api-a": "on", "api-b": "off"},

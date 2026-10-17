@@ -13747,13 +13747,25 @@ def _c14_count(v):
         return 0
 
 
+def _c14_log_prefix(service):
+    """Compiled matcher for one compose log line's service prefix. `docker compose
+    logs` prints the CONTAINER-INSTANCE name, not the service name — `api-b-1  | ...`
+    for a scaled service (and `api-b  | ...` when compose is run without a project
+    prefix), so an optional `-<n>` instance suffix must be accepted or the parser is
+    blind to every real line (live22 read api-b's engine as 'on' although its own log
+    said disabled). The suffix is anchored to digits + a separator, so `api-a` never
+    matches `api-ab-1 | ...`. Pure."""
+    return re.compile(rf"^{re.escape(service)}(?:-\d+)?\s*(?:\||\s)")
+
+
 def c14_lock_lines(log_text, services=("api-a", "api-b")):
     """{service: n} acquisition lines per service, parsed from compose logs TEXT. The
-    prefix is `service` + whitespace + an optional compose `|` separator (compose pads
-    the service column, e.g. `api-a  | ...`); the old `startswith(s + " ")` filter could
-    match nothing at all, which is indistinguishable from 'the lock never moved' —
-    D6's unfalsifiability (docs/m4-live-findings.md). Pure."""
-    pats = {s: re.compile(rf"^{re.escape(s)}\s*(?:\||\s)") for s in services}
+    prefix is `service` (optionally `-<instance>`) + whitespace + an optional compose
+    `|` separator (compose pads the service column, e.g. `api-a-1  | ...`); the old
+    `startswith(s + " ")` filter could match nothing at all, which is indistinguishable
+    from 'the lock never moved' — D6's unfalsifiability (docs/m4-live-findings.md).
+    Pure."""
+    pats = {s: _c14_log_prefix(s) for s in services}
     return {s: len([l for l in (log_text or "").splitlines()
                     if pats[s].match(l) and C14_LOCK_MARK in l]) for s in services}
 
@@ -13784,8 +13796,9 @@ C14_SCHED_OFF_MARK = "pipeline scheduler disabled on this replica"
 
 def c14_scheduler_off_lines(log_text, services=("api-a", "api-b")):
     """{service: n} 'engine off' startup lines per service, parsed the same way as
-    c14_lock_lines (compose pads the service column). Pure."""
-    pats = {s: re.compile(rf"^{re.escape(s)}\s*(?:\||\s)") for s in services}
+    c14_lock_lines (compose prints the padded container-instance name, e.g. `api-b-1
+    | ...`). Pure."""
+    pats = {s: _c14_log_prefix(s) for s in services}
     return {s: len([l for l in (log_text or "").splitlines()
                     if pats[s].match(l) and C14_SCHED_OFF_MARK in l]) for s in services}
 
