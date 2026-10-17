@@ -102,7 +102,14 @@ var toolRegistry = func() map[string]tool {
 				if prj == "" {
 					return Link{}, false
 				}
-				return Link{Label: "Open approvals for " + short(prj), Href: "/projects/" + prj + "/approvals"}, true
+				// The approval row carries a run_id when the gate sits inside a
+				// run; that run page is the real destination. A gate without
+				// one has no dedicated page, so the inbox — which lists pending
+				// gates — is the page that actually exists.
+				if rid := field(row, "run_id"); rid != "" {
+					return Link{Label: "Gate on run " + short(rid), Href: "/projects/" + prj + "/runs/" + rid}, true
+				}
+				return Link{Label: "Open inbox", Href: "/inbox"}, true
 			})
 		})
 

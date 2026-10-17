@@ -574,17 +574,19 @@ func TestAskRefusesSecretShapedPromptBeforeSend(t *testing.T) {
 
 func TestAllowedHrefDropsLinksOutsideTheAppRoutes(t *testing.T) {
 	b := &Broker{}
-	good := []string{"/", "/inbox", "/library", "/library/01PIPELINE", "/agents", "/ops",
-		"/projects/01P", "/projects/01P/runs", "/projects/01P/runs/01R", "/projects/01P/approvals",
-		"/projects/01P/conversations/01C", "/artifacts/01A"}
+	good := []string{"/", "/login", "/inbox", "/library", "/library/01PIPELINE", "/agents", "/ops",
+		"/projects/01P", "/projects/01P/artifacts", "/projects/01P/runs", "/projects/01P/runs/01R",
+		"/projects/01P/pipelines", "/projects/01P/settings",
+		"/projects/01P/conversations", "/projects/01P/conversations/01C", "/artifacts/01A"}
 	for _, href := range good {
 		if _, ok := b.allowedHref(href); !ok {
 			t.Errorf("allowed route rejected: %q", href)
 		}
 	}
-	bad := []string{"", "https://evil.example/x", "//evil.example/x", "/x", "/login", "/api/v1/projects",
+	bad := []string{"", "https://evil.example/x", "//evil.example/x", "/x", "/schedules", "/api/v1/projects",
 		"/projects/01P/../01Q", "/projects/01P/runs/01R?next=evil", "/projects/01P#frag",
-		"/projects/01P/runs/01R/extra", "/projects", "/evil", "/projects/01P/settings/deep"}
+		"/projects/01P/approvals", "/projects/01P/runs/01R/extra", "/projects", "/evil",
+		"/projects/01P/settings/deep"}
 	for _, href := range bad {
 		if _, ok := b.allowedHref(href); ok {
 			t.Errorf("off-allowlist href accepted: %q", href)

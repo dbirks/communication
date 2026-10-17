@@ -11,23 +11,28 @@ import (
 
 // Route allowlist — the app routes a link may name (docs/design/assistant-v1.md:
 // "href must be same-origin and match a route allowlist ... or the server drops
-// the link"). The list mirrors ui/src/App.tsx's <Routes>, so a returned href is
-// a page that exists; anything else — including every URL a model invents — is
-// dropped. /projects/{id}/approvals is the one design-named href that has no UI
-// route yet (the inbox page carries pending gates today); it is allowed because
-// the brief's own example response uses it and it stays inside /projects/{id}.
+// the link"). The list mirrors ui/src/App.tsx's <Routes> exactly — one entry
+// per real route, nothing else — so a returned href is always a page that
+// exists; anything beyond that, including every URL a model invents, is
+// dropped. routes_test.go re-derives this list from ui/src/App.tsx and fails
+// the build if the two ever drift apart.
 var allowedRoutes = []*regexp.Regexp{
+	regexp.MustCompile(`^/login$`),
 	regexp.MustCompile(`^/$`),
 	regexp.MustCompile(`^/inbox$`),
 	regexp.MustCompile(`^/library$`),
-	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/agents$`),
-	regexp.MustCompile(`^/ops$`),
+	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}$`),
-	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/(runs|pipelines|artifacts|settings|approvals|conversations)$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/artifacts$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/runs$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/runs/[A-Za-z0-9_-]{1,64}$`),
-	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/pipelines$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/settings$`),
 	regexp.MustCompile(`^/artifacts/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/conversations$`),
+	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/ops$`),
 }
 
 // allowedHref accepts a same-origin app route and returns its clean form. A
