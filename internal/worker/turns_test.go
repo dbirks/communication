@@ -24,33 +24,34 @@ type fakeStore struct {
 	claims  []worker.Claim
 	claimed chan struct{} // pinged per successful claim
 
-	renewErr    error
-	renewCalls  int
-	renewed     chan error // each renewal outcome (nil or the error) delivered
-	beginErr    error
-	begun       chan worker.Claim
-	beginSess   []domain.SessionInfo // SessionInfo passed to each BeginTurn
-	appends     []recordedAppend
-	appended    chan recordedAppend // agent-message appends stream to wait on
-	finished    []worker.TurnOutcome
-	finishing   chan worker.TurnOutcome
-	cancelAt    map[string]time.Time
-	cancelErr   map[string]error
-	controller  string
-	permOpens   chan worker.PermissionOpen
-	permState   map[string]func(calls int) worker.PermissionState
-	permClosed  chan closedPerm
-	permFinal   map[string]worker.PermissionState
-	repos       []worker.Repo
-	bindingID   int
-	bindingSess []domain.SessionInfo
-	bindingConv []string // RecordBinding conversation ids
-	resumable   domain.SessionInfo
-	resumableOK bool
-	closedBinds chan closedBind
-	convStatus  chan string
-	convEvents  chan worker.TurnEvent
-	appendErrOn func(worker.TurnEvent) error
+	renewErr       error
+	renewCalls     int
+	renewed        chan error // each renewal outcome (nil or the error) delivered
+	beginErr       error
+	begun          chan worker.Claim
+	beginSess      []domain.SessionInfo // SessionInfo passed to each BeginTurn
+	appends        []recordedAppend
+	appended       chan recordedAppend // agent-message appends stream to wait on
+	finished       []worker.TurnOutcome
+	finishing      chan worker.TurnOutcome
+	cancelAt       map[string]time.Time
+	cancelErr      map[string]error
+	controller     string
+	permOpens      chan worker.PermissionOpen
+	permState      map[string]func(calls int) worker.PermissionState
+	permStateCalls int
+	permClosed     chan closedPerm
+	permFinal      map[string]worker.PermissionState
+	repos          []worker.Repo
+	bindingID      int
+	bindingSess    []domain.SessionInfo
+	bindingConv    []string // RecordBinding conversation ids
+	resumable      domain.SessionInfo
+	resumableOK    bool
+	closedBinds    chan closedBind
+	convStatus     chan string
+	convEvents     chan worker.TurnEvent
+	appendErrOn    func(worker.TurnEvent) error
 }
 
 type recordedAppend struct {
@@ -195,6 +196,7 @@ func (f *fakeStore) OpenPermission(_ context.Context, _ worker.Claim, p worker.P
 func (f *fakeStore) PermissionState(_ context.Context, id string) (worker.PermissionState, error) {
 	key := strings.TrimPrefix(id, "perm-")
 	f.mu.Lock()
+	f.permStateCalls++
 	fn := f.permState[key]
 	f.mu.Unlock()
 	if fn == nil {
@@ -244,6 +246,14 @@ func (f *fakeStore) CloseBinding(_ context.Context, conversationID, workerID, re
 func (f *fakeStore) SetConversationStatus(_ context.Context, _, status string) error {
 	f.convStatus <- status
 	return nil
+}
+
+// stateCalls counts the wake/poll loop's reads: a policy-answered prompt must
+// leave it at zero.
+func (f *fakeStore) stateCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.permStateCalls
 }
 
 func (f *fakeStore) snapshotAppends() []worker.TurnEvent {
@@ -567,14 +577,16 @@ func TestAskModeSelectionAndRefusal(t *testing.T) {
 	}
 }
 
-// TestRecordedModesAllUsePrompting proves the conversation path pins the
-// launcher's prompting mode for *every* recorded permission mode, the way
-// a0fd9e7 did for attempts: with an empty modeID the adapter stays in its
-// never-asks default (docs/compatibility/ACP.md), so a deny conversation
-// would allow every tool call and a preapproved one would journal no verdict.
-// A launcher with no verified prompting mode fails closed instead.
+// TestRecordedModesAllUsePrompting proves which recorded permission modes pin
+// the launcher's prompting mode on the conversation path. ask and deny must:
+// with an empty modeID the adapter stays in its never-asks default
+// (docs/compatibility/ACP.md), so a deny conversation would allow every tool
+// call. A launcher with no verified prompting mode fails closed instead.
+// preapproved_within_sandbox must NOT: the sandbox is its enforcement, and
+// prompting it would route every tool call to a human (a conversation has no
+// policy-decider column — see docs/design/attempt-permissions.md).
 func TestRecordedModesAllUsePrompting(t *testing.T) {
-	for _, mode := range []string{"ask", "deny", "preapproved_within_sandbox"} {
+	for _, mode := range []string{"ask", "deny"} {
 		st := newFakeStore()
 		st.claims = []worker.Claim{testClaim2(t, mode)}
 		sess := newFakeSession(domain.SessionInfo{})
@@ -603,6 +615,96 @@ func TestRecordedModesAllUsePrompting(t *testing.T) {
 		if ff2.count() != 0 {
 			t.Errorf("%s: launched %d sessions with no prompting mode, want 0", mode, ff2.count())
 		}
+	}
+
+	// preapproved_within_sandbox: the harness's own auto mode, on every
+	// launcher, with no prompting-mode requirement.
+	for _, launcher := range []string{"claude", "gemini"} {
+		st := newFakeStore()
+		c := testClaim2(t, "preapproved_within_sandbox")
+		c.LauncherID = launcher
+		st.claims = []worker.Claim{c}
+		sess := newFakeSession(domain.SessionInfo{})
+		sess.promptFn = func(context.Context, *fakeSession) (domain.StopReason, error) {
+			return domain.StopEndTurn, nil
+		}
+		ff := &fakeFactory{sessions: []*fakeSession{sess}}
+		l := newLoop(t, fastCfg(), st, ff)
+		startLoop(t, l)
+		out := recv(t, st.finishing, "preapproved finish "+launcher)
+		if out.Status != events.TurnStatusCompleted {
+			t.Fatalf("%s: outcome = %+v, want completed", launcher, out)
+		}
+		if got := ff.request(0).ModeID; got != "" {
+			t.Errorf("preapproved on %s: ModeID = %q, want the harness's own auto mode (empty)", launcher, got)
+		}
+	}
+}
+
+// TestPermissionDenyIsAnsweredByPolicy proves a deny prompt is refused by
+// policy instead of waiting for a human: the request is opened (so
+// conversation.permission.requested is journaled) and closed cancelled
+// immediately, the agent gets the ACP cancelled outcome, and the decider
+// never enters the wake/poll wait loop.
+func TestPermissionDenyIsAnsweredByPolicy(t *testing.T) {
+	st := newFakeStore()
+	st.claims = []worker.Claim{testClaim2(t, "deny")}
+	cfg := fastCfg()
+	cfg.PermissionTTL = time.Hour // nothing may wait on a human, TTL or not
+	sess := newFakeSession(domain.SessionInfo{})
+	type answer struct {
+		choice domain.PermissionChoice
+		err    error
+	}
+	result := make(chan answer, 1)
+	sess.promptFn = func(ctx context.Context, s *fakeSession) (domain.StopReason, error) {
+		wait := make(chan struct{})
+		go func() {
+			defer close(wait)
+			choice, err := s.decider(ctx, domain.PermissionPrompt{
+				ToolCallID: "tc-deny", Title: "Write file", Kind: "edit",
+				Options: []domain.PermissionOption{
+					{OptionID: "allow-once", Label: "Yes", Kind: "allow_once"},
+					{OptionID: "reject", Label: "No", Kind: "reject_once"},
+				},
+			})
+			result <- answer{choice: choice, err: err}
+		}()
+		<-wait
+		return domain.StopEndTurn, nil
+	}
+	ff := &fakeFactory{sessions: []*fakeSession{sess}}
+	startLoop(t, newLoop(t, cfg, st, ff))
+	recv(t, st.begun, "begin")
+
+	open := recv(t, st.permOpens, "permission row opened (deny is visible, not silent)")
+	if open.Title != "Write file" || len(open.Options) != 2 {
+		t.Fatalf("permission open = %+v", open)
+	}
+	select {
+	case extra := <-st.permOpens:
+		t.Fatalf("second OpenPermission for one prompt: %+v", extra)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	closed := recv(t, st.permClosed, "immediate policy close")
+	if closed.status != events.PermissionStatusCancelled {
+		t.Fatalf("closed as %q, want cancelled — decided needs a user decided_by, a policy cannot own it", closed.status)
+	}
+	if closed.id != "perm-"+open.ACPRequestID {
+		t.Fatalf("closed %q, want the opened request %q", closed.id, open.ACPRequestID)
+	}
+
+	got := recv(t, result, "deny decider return")
+	if got.err != nil {
+		t.Fatalf("decider error: %v", got.err)
+	}
+	if got.choice != (domain.PermissionChoice{}) {
+		t.Fatalf("choice = %+v, want the cancelled outcome (no option offered)", got.choice)
+	}
+	recv(t, st.finishing, "finish")
+	if n := st.stateCalls(); n != 0 {
+		t.Errorf("PermissionState polled %d times on a policy answer; the wait loop must not run", n)
 	}
 }
 
@@ -724,7 +826,7 @@ func TestCancelPropagation(t *testing.T) {
 func TestPermissionBridge(t *testing.T) {
 	t.Run("decided", func(t *testing.T) {
 		st := newFakeStore()
-		st.claims = []worker.Claim{testClaim2(t, "deny")}
+		st.claims = []worker.Claim{testClaim2(t, "ask")}
 		sess := newFakeSession(domain.SessionInfo{})
 		result := make(chan domain.PermissionChoice, 1)
 		perr := make(chan error, 1)
@@ -773,7 +875,7 @@ func TestPermissionBridge(t *testing.T) {
 
 	t.Run("deadline", func(t *testing.T) {
 		st := newFakeStore()
-		st.claims = []worker.Claim{testClaim2(t, "deny")}
+		st.claims = []worker.Claim{testClaim2(t, "ask")}
 		cfg := fastCfg()
 		cfg.PermissionTTL = 40 * time.Millisecond
 		sess := newFakeSession(domain.SessionInfo{})
@@ -806,7 +908,7 @@ func TestPermissionBridge(t *testing.T) {
 
 	t.Run("cancel-while-pending", func(t *testing.T) {
 		st := newFakeStore()
-		st.claims = []worker.Claim{testClaim2(t, "deny")}
+		st.claims = []worker.Claim{testClaim2(t, "ask")}
 		sess := newFakeSession(domain.SessionInfo{})
 		result := make(chan error, 1)
 		sess.promptFn = func(ctx context.Context, s *fakeSession) (domain.StopReason, error) {

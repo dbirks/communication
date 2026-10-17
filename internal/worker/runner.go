@@ -309,10 +309,17 @@ func (l *TurnLoop) turnWake(ctx context.Context) <-chan struct{} {
 	return ch
 }
 
-// decidePermission is the durable human bridge for one permission prompt:
-// insert + event, wait for the controller's decision (wake/poll), and close
-// honestly on deadline or turn cancel. Only this worker ever speaks ACP, so
-// the DB row is the handoff point.
+// decidePermission is the durable bridge for one permission prompt. Under
+// `ask` it is the human bridge: insert + event, wait for the controller's
+// decision (wake/poll), and close honestly on deadline or turn cancel. Only
+// this worker ever speaks ACP, so the DB row is the handoff point.
+//
+// Under `deny` (and, defensively, any mode that reaches here without a human
+// owner) the answer is policy, not a person: the request is still opened — so
+// conversation.permission.requested is journaled and the refusal is visible —
+// and then closed immediately as cancelled. Nobody is ever asked, so the turn
+// must not sit pending until expiry waiting for a controller who was never
+// consulted (that is how a deny became an ask in a live run).
 func (rt *runningTurn) decidePermission(ctx context.Context, p domain.PermissionPrompt) (domain.PermissionChoice, error) {
 	l := rt.loop
 	c := rt.claim
@@ -334,6 +341,27 @@ func (rt *runningTurn) decidePermission(ctx context.Context, p domain.Permission
 	})
 	if err != nil {
 		return domain.PermissionChoice{}, err
+	}
+
+	if c.PermissionMode != "ask" {
+		// Answered by policy. `decided` is not available here:
+		// permission_requests.decided_by is a user uuid, so no policy can own a
+		// decided row — `cancelled` with no option is the honest close (same
+		// reasoning as AgentTurn.permissionBridge in agentturn.go, and
+		// docs/design/attempt-permissions.md). The agent sees the ACP cancelled
+		// outcome: a refusal it can act on, and no waiting or polling.
+		//
+		// preapproved_within_sandbox should never arrive (the turnloop keeps it
+		// on the harness's auto mode where no prompt is sent); if it somehow
+		// does, failing closed like deny is safer than routing it to a human.
+		_, _, cerr := l.store.ClosePermission(ctx, c, requestID, events.PermissionStatusCancelled)
+		if cerr != nil {
+			l.log.Warn("closing policy-denied permission failed",
+				slog.String("request_id", requestID),
+				slog.String("permission_mode", c.PermissionMode),
+				slog.String("error", cerr.Error()))
+		}
+		return domain.PermissionChoice{}, nil
 	}
 
 	wake := l.turnWake(ctx)
