@@ -192,14 +192,14 @@ func TestModelChatHappyPath(t *testing.T) {
 	if req["max_tokens"] != float64(64) {
 		t.Errorf("max_tokens = %v", req["max_tokens"])
 	}
-	rf, ok := req["response_format"].(map[string]any)
-	if !ok || rf["type"] != "json_schema" {
-		t.Fatalf("response_format = %#v, want json_schema (§ 4 step 8)", req["response_format"])
-	}
-	js, _ := rf["json_schema"].(map[string]any)
-	sch, _ := js["schema"].(map[string]any)
-	if sch["type"] != "object" {
-		t.Errorf("response_format.json_schema.schema = %#v, want the node's declared schema", js["schema"])
+	// The wire body carries NO response_format by default: providers are
+	// allowed to refuse constrained output (the lab's llm-collective endpoint
+	// answers 400 response_format_not_supported), and the worker's own
+	// validateCompletion (asserted in TestModelChatSchemaMismatch) is the
+	// guarantee the pipeline contract relies on. Retrying with a different
+	// body is forbidden, so this stays one wire shape.
+	if _, hasRF := req["response_format"]; hasRF {
+		t.Errorf("request body must not carry response_format, got %#v (local validation owns the schema contract)", req["response_format"])
 	}
 	if got := sHdr(srv).Get("Authorization"); got != "Bearer "+mcAPIKey {
 		t.Errorf("Authorization header = %q, want the configured bearer token", got)

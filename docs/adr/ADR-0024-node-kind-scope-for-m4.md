@@ -177,3 +177,10 @@ change must appear in the M4 report as a deviation. Reordering the milestone bou
 remote in the lab, and an ADR that supersedes § 2's `git.*` row (D-018 stays Accepted either way; it
 is the *milestone scoping* that would change, which is still ADR-worthy because it moves a
 side-effect boundary into the engine).
+
+Note 2026-10-17: the `model.chat` wire call no longer sends a constrained
+`response_format.json_schema`; § 1's "JSON-schema-constrained response" is enforced by the
+worker's local validation of the completion against `responseSchema` (the boundary owns the
+guarantee, not the adapter), because OpenAI-compatible providers may lawfully refuse constrained
+output (lab evidence: llm-collective's `response_format_not_supported` http 400) and the executor
+must not retry with a different body.

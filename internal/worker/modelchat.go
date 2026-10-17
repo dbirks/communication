@@ -47,8 +47,6 @@ const (
 	// modelChatDefaultTimeout is the request arm when the claim carries no
 	// node deadline; a hung endpoint must not hold a lease forever.
 	modelChatDefaultTimeout = 120 * time.Second
-	// modelChatNameMax keeps a node's model name from inflating a detail.
-	modelChatResponseName = "node_outputs"
 )
 
 // Named failure codes beside ADR-0023 § 7's closed class enum — the same split
@@ -426,19 +424,14 @@ func (m *ModelChat) requestBody(spec *modelChatSpec) ([]byte, *AttemptResult) {
 	if spec.maxTokens != nil {
 		req["max_tokens"] = *spec.maxTokens
 	}
-	if spec.schema != nil {
-		// § 4 step 8's "JSON-schema-constrained": the node's declared output
-		// schema goes on the wire as response_format.json_schema, so the
-		// endpoint is asked for the shape the pipeline will validate.
-		req["response_format"] = map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   modelChatResponseName,
-				"schema": spec.schema,
-				"strict": false,
-			},
-		}
-	}
+	// The declared output schema stays a LOCAL contract: the worker
+	// validates the completion against it (validateCompletion, § 4 step 8),
+	// and the instructions in the prompt ask for the shape. The request body
+	// deliberately carries no response_format — OpenAI-compatible providers
+	// are allowed to refuse constrained output (the lab's llm-collective
+	// endpoint answers http 400 response_format_not_supported), and the
+	// boundary owns the guarantee, not the adapter. Retrying the same node
+	// with a different body is forbidden, so the wire body stays one thing.
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
