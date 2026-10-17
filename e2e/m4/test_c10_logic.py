@@ -588,5 +588,68 @@ class C10cArm(unittest.TestCase):
         self.assertIn("c10_chat_precondition", body)
 
 
+class C10cGuard(unittest.TestCase):
+    """C10c honesty guard (live34 regression): the gate may PASS only on a
+    schema violation of the MODEL'S REPLY. A config error that stopped the
+    model before the call (e.g. invalid_model_chat_config) is a single FAIL —
+    the status/class lines must not PASS for a reason that is not the claim —
+    and the attempt's completion events are measured, not omitted."""
+
+    CONFIG_ATT = {"id": "a1", "status": "failed", "error_class": "invalid_output",
+                  "output_errors": '[{"code": "invalid_model_chat_config", '
+                                   '"message": "model.chat: config.temperature must be '
+                                   'a number between 0 and 2"}]',
+                  "outputs": "-"}
+
+    def test_config_error_is_a_single_fail_not_status_class_passes(self):
+        v = m.c10_chat_verdicts(self.CONFIG_ATT, completed_seen=False)
+        self.assertEqual(len(v), 1, str(v))
+        self.assertFalse(one(v, "failed for a reason other than its reply's schema"))
+        d = detail(v, "failed for a reason other than its reply's schema")
+        self.assertIn("invalid_model_chat_config", d)
+        for l, _o, _dd in v:
+            self.assertNotIn("C10c the malformed reviewer attempt closed", l)
+            self.assertNotIn("C10c its error_class", l)
+            self.assertNotIn("output_errors is populated", l)
+
+    def test_schema_violation_named_by_code_and_reply_path_is_graded(self):
+        att = {"id": "a2", "status": "failed", "error_class": "invalid_output",
+               "output_errors": '[{"code": "response_schema_mismatch", '
+                                '"message": "at /approved: got string, want boolean"}]',
+               "outputs": "-"}
+        self.assertIsNone(m.c10c_non_schema_reason(att))
+        v = m.c10_chat_verdicts(att, completed_seen=False)
+        self.assertTrue(one(v, "C10c the malformed reviewer attempt closed"))
+        self.assertTrue(one(v, "C10c its error_class"))
+
+    def test_plain_json_schema_entries_pass_the_guard(self):
+        self.assertIsNone(m.c10c_non_schema_reason(GOOD_ATT))
+        self.assertIsNone(m.c10c_non_schema_reason({"status": "failed",
+                                                    "output_errors": BAD}))
+
+    def test_unreadable_or_empty_output_errors_fail(self):
+        for raw in (None, "not json", "[]"):
+            att = dict(self.CONFIG_ATT, output_errors=raw)
+            v = m.c10_chat_verdicts(att)
+            self.assertFalse(one(v, "failed for a reason other than its reply's schema"),
+                             repr(raw))
+
+    def test_completed_seen_is_measured_not_omitted(self):
+        v = m.c10_chat_verdicts(GOOD_ATT, completed_seen=True)
+        self.assertFalse(one(v, "NO node.attempt.completed"))
+        v = m.c10_chat_verdicts(GOOD_ATT, completed_seen=False)
+        self.assertTrue(one(v, "NO node.attempt.completed"))
+        v = m.c10_chat_verdicts(GOOD_ATT, completed_seen=None)
+        self.assertIsNone(one(v, "NO node.attempt.completed"))
+
+    def test_the_gate_wires_completed_for_the_c10c_attempt(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = body.split("def c10():")[1].split("def c11(")[0]
+        i = body.index("c10_chat_verdicts(")
+        tail = body[i:i + 400]
+        self.assertIn("completed_seen=c10_completed_for(", tail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2 if "-v" in sys.argv else 1)

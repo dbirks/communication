@@ -11155,13 +11155,64 @@ def c10_retry_verdicts(rows, max_attempts=C10_MAX_ATTEMPTS, retry_events=None):
     return v
 
 
-def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None):
+C10C_REPLY_PATH_RE = re.compile(r"\bat\s+/\S+")
+
+
+def c10c_non_schema_reason(att):
+    """C10c honesty guard: the gate may PASS only on a failure that IS the
+    REPLY'S schema violation. Returns a single FAIL verdict when the recorded
+    output_errors (a) is unreadable or empty, or (b) carries an entry with a
+    `code` (a config/adapter error such as invalid_model_chat_config — the
+    model was never called) or no JSON-Schema keyword/location, whose detail
+    does NOT say the reply violates its declared outputs schema (no schema
+    location, no reply path like `at /approved:`). Returns None when every
+    entry is a reply-schema violation, so c10_attempt_verdicts may grade the
+    row."""
+    label = ("C10c the model.chat attempt failed for a reason other than its "
+             "reply's schema")
+    errs = c10_output_errors((att or {}).get("output_errors"))
+    if errs is None:
+        return [(label, False, "attempts.output_errors could not be read — the "
+                 "failure's reason is unknown, and a status/class PASS on unknown "
+                 "evidence would be a PASS for a reason that is not the claim")]
+    if not errs:
+        return [(label, False, "attempts.output_errors is empty — the attempt "
+                 "closed failed with no recorded schema violation to grade")]
+    for ent in errs:
+        if isinstance(ent, dict):
+            if "keyword" in ent or "location" in ent:
+                continue  # a JSON-Schema entry: a violation of the reply's schema
+            if "code" in ent:
+                msg = str(ent.get("message") or ent.get("msg") or "")
+                if C10C_REPLY_PATH_RE.search(msg) or c10_schema_locations([ent])[0]:
+                    continue  # the detail names the reply's schema violation
+                return [(label, False, "output_errors carries a non-schema error "
+                         "code and its detail does not say the reply violates its "
+                         f"declared outputs schema: {json.dumps(ent, sort_keys=True)[:300]!r}")]
+            ent = json.dumps(ent, sort_keys=True)
+        msg = str(ent)
+        if C10C_REPLY_PATH_RE.search(msg) or c10_schema_locations([ent])[0]:
+            continue
+        return [(label, False, "output_errors entry does not say the reply violates "
+                 "its declared outputs schema (no keyword, location or reply "
+                 f"path): {msg[:300]!r}")]
+    return None
+
+
+def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
+                      completed_seen=None):
     """C10c — the SAME malformed reply through the model.chat variant fails
     identically: the guarantee is the boundary's, not the adapter's.
     chat_att: a model.chat reviewer attempt row {status,error_class,output_errors},
     or None when no model.chat attempt could be measured (the lab ran none, or the
     scratch arm ran and the model replied VALIDLY — arm_note then carries why,
-    and a valid reply is the arm's GAP, never a PASS)."""
+    and a valid reply is the arm's GAP, never a PASS).
+    The row is graded ONLY when the recorded failure IS the reply's schema
+    violation (c10c_non_schema_reason): a config/adapter error that stopped the
+    model before the reply is a single FAIL, never status/class PASSes.
+    completed_seen: True when a node.attempt.completed exists FOR that attempt,
+    False when the events were read and none matched, None when unreadable —
+    the C10c attempt's completion events are measured, not omitted."""
     if not chat_att:
         why = ("no model.chat node executed in this lab "
                f"({C10C_BASE_URL_ENV} configured={endpoint_configured}): "
@@ -11174,7 +11225,10 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None):
             why += "; " + arm_note
         return [("C10c the same malformed reply via model.chat fails identically "
                  "(the boundary owns the guarantee, not the adapter)", None, why)]
-    return c10_attempt_verdicts(chat_att, tag="C10c")
+    guard = c10c_non_schema_reason(chat_att)
+    if guard is not None:
+        return guard
+    return c10_attempt_verdicts(chat_att, completed_seen=completed_seen, tag="C10c")
 
 
 # --- C10 authored document — re-use the fixture, re-author only the SCHEMA ------
@@ -11895,10 +11949,16 @@ def c10():
     # its attempt row replaces the "no model.chat node executed" path.
     chat_att, endpoint = c10_chat_precondition(run_id)
     arm_note = None
+    chat_run = run_id
     if endpoint:
         chat_att, endpoint, arm_note = c10c_scratch_arm(alice, facts)
+        chat_run = CTX.get("c10c_run") or chat_run
+    # C10c's completion events are read the way C10a's caller does: the attempt's
+    # OWN run, filtered to node.attempt.completed naming that attempt row.
     c10_emit(c10_chat_verdicts(chat_att, endpoint_configured=endpoint,
-                               arm_note=arm_note))
+                               arm_note=arm_note,
+                               completed_seen=c10_completed_for(
+                                   chat_run, (chat_att or {}).get("id"))))
     dump_run_evidence(alice, run_id)
     CTX["c10"] = {"revision_id": rev, "run_id": run_id, "terminal": st,
                   "attempts": rows, "live_scope": live}
