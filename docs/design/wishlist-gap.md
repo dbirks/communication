@@ -9,8 +9,10 @@ end-to-end; **CHECKED LIVE** is claimed only where a commit message or a
 row records the literal observed output (`communication-spec/12-test-strategy.md`).
 Landed since the previous refresh (`6b60d1a`), all cited with shas below: **the
 real-Claude agent pipeline now completes end to end live** — C1 98/0/0 at passes
-12/14/15 after `5820aab`'s review-prompt fix; scoreboard **PASS 65 / FAIL 1 /
-GAP 17 / NOT RUN 2** (`11632ac`). M5 lab specs passed: agents+schedules **3/3**
+12/14/15 after `5820aab`'s review-prompt fix; scoreboard at pass 24 **PASS 80 / FAIL 0 /
+GAP 3 / NOT RUN 2** (`0f4c72a`), with pass 25 (`fa0c0e0`) recorded in
+`docs/m4-exit-status.md` promoting C6d, C3d and C11c and leaving C7c and C10c as the
+GAPs. M5 lab specs passed: agents+schedules **3/3**
 (`be97fd1`), layout 18/20 with both real 390px overflows then fixed (`ef0d848`,
 `19175b3`), two-user Inbox **6/6** (`docs/m4-exit-status.md:299`). The run page
 lists every attempt with honest interrupted wording (W5 11/0, `f010fe2`), child
@@ -411,10 +413,26 @@ on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6f
 5. **No resource limits.** The Operations page says so openly (C13f, `09411da`);
    its copy has never been rendered in a gate (GAP, `docs/m4-exit-status.md`).
    A noisy `process.exec` step is unbounded.
-6. **Live reruns pending — reruns, not code.** Scoreboard PASS 65 / FAIL 1 /
-   GAP 17 / NOT RUN 2 (`11632ac`); the wishlist rows still without a verdict:
-   m5-journey step 6 after `ef470a0`; C6's `restore_checkpoint` leg on a
-   `5c03d6c`+ build; C2a/C2b on the agent variant (`599e4f9`, `04fb651`);
-   C6e/W6's cross-volume `workspace_lost` (`efb82bd`+`0a0d6a9`); C5h's scratch
-   `maxAttempts: 1` arm; C4e (`2f0fe1f`); the `5145bcb` non-member 404 legs; the
-   C10b FAIL (`04fb651`'s grading fix unrun). All need a lab pass, not code.
+6. **The pending reruns have run.** Every rerun this list carried has a verdict row in
+   `docs/m4-exit-status.md` now — C6 (`C6d GAP → PASS` at pass 25, `fa0c0e0`), C2a/C2b on
+   the agent variant (`599e4f9`, `04fb651`), C6e/W6's cross-volume `workspace_lost`
+   (`efb82bd`+`0a0d6a9`), C5h's scratch `maxAttempts: 1` arm, C4e (`2f0fe1f`), the C10b
+   FAIL (`04fb651`'s grading fix) and the m5-journey browser legs — and the one item still
+   without a live verdict there is the `5145bcb` non-member 404 legs, recorded as not
+   re-run.
+7. **Attempt agents could not run git in their own worktree.** In live25's agent run the
+   agent reported "Git commands also failed because the repo's worktree link is broken"
+   (`docs/m4-exit-status.md`, C1g's live25 note): the attempt launch plan omits ADR-0017's
+   `mirror_read` grant, without which every git command in the worktree dies. Fix in
+   progress; no verdict is changed for it.
+8. **A `deny` profile is not enforced in an attempt.** The attempt path asks the harness to
+   prompt only for `ask` — `deny` and `preapproved_within_sandbox` both fall through with
+   `modeID = ""` (`internal/worker/agentturn.go:405-416`) and `session/set_mode` is sent
+   only when a mode is set (`internal/agent/acp/handle.go:200-211`) — so the attempt never
+   leaves `claude-agent-acp`'s shipped `auto` mode: no prompt arrives, nothing is
+   journalled, and the lab's 34 tool calls produced 0 `conversation.permission.*` rows
+   (`docs/design/attempt-permissions.md` § "Why attempts journal no verdict"). Fix queued.
+9. **The cluster runs a build older than every fix above.** GitHub Actions has not run
+   since `c5c7888` (account billing), so no `main` image has been published for Flux image
+   automation to pin (`docs/home-cluster.md` § 4) — the cluster worker predates `d9928d9`,
+   `fa0c0e0` and everything between.
