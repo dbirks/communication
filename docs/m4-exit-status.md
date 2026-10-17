@@ -36,6 +36,7 @@ Contract authority: `docs/m4-contract.md` § 7.1 (gates C1–C14, sub-cases name
 | pass 28 | `live28/` | `7e6eda3` | **C1 rerun — crashed in the driver, no verdict recorded:** the new C1j journal query died mid-gate — `live28/C1.out:84` `ERROR: operator does not exist: text ->> unknown` (in Postgres `||` binds tighter than `->>`, so the un-parenthesised join is a syntax-level bug in the check itself, not in the product) — after **30 PASS** lines; fixed in `c11d01f` and re-run at pass 29 |
 | pass 29 | `live29/` | `d4cd945` (contains `c11d01f`'s C1j parenthesisation fix) | **C1 rerun** (**C1 101 PASS / 0 FAIL / 0 GAP** — `grep -c '^  PASS' live29/C1.out` = 101, summary `live29/C1.out:228` `FAIL=0 GAP=0`; **C1j measured live for the first time**: all four arms PASS at `live29/C1.out:97-:100` — **8** permission requests / **8** decisions, every decided row `status=decided` with `decided_by=node_policy:preapproved_within_sandbox`, none unanswered, none doubled, no orphans) |
 | pass 30 | `live30/` | `c1c7c19` (conversation deny prompts closed `cancelled` by policy; preapproved conversations back to the harness's auto mode) | **deny probe** (`docs/compatibility/probes/m4/deny_probe.sh`, added in `14b110f`) — `live30/deny_probe.out`: a live `deny`-profile conversation, **every verdict PASS** — `1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved` and `deny-probe.txt` in no workspace: deny is enforced on the conversation path |
+| pass 31 | `live31/` | `c9b0a49` (the final M4 build — contains every fix through pass 30: `e83913a`'s mirror grants, `a0fd9e7`/`1b93069`/`c1c7c19`'s permission modes, `90a29c2`'s C1g bound, `7e6eda3`/`c11d01f`'s C1j) | **full regression sweep on the final M4 build: every gate group, 0 FAIL** — four driver processes, all rc=0: C1, C5, C6 (**186 PASS / 0 FAIL / 16 GAP lines** — summary `live31/C1,C5,C6.out:525` `FAIL=0 GAP=8`), C3, C4 (**70 PASS / 0 FAIL / 8 GAP lines** — `:193`), C1, C2, C7, C8, C10, C12, C13, C14, C11 (**329 PASS / 0 FAIL / 36 GAP lines** — `:1044`), C9 (**92 PASS / 0 FAIL / 14 GAP lines** — `:257`): 677 PASS / 0 FAIL across the sweep, and every GAP line is a row-named arm re-emitted (the C9 group, dormant since pass 21, re-emits the C9a/C9e/C9f/C9 arms recorded at passes 19/21) |
 
 **M5 browser journeys are recorded here too, but they are not § 7 items** and ran outside the gate
 driver: `e2e/tests/m5-journey.spec.ts` 10 passed / 0 failed / 1 fixme live on `14e8ff5` (the expired-gate
@@ -503,6 +504,18 @@ auto mode with no per-call verdict (recording a policy decider on that path need
 `permission_requests.decided_by` schema change + ADR), so ADR-0036 condition (a) is closed **for pipeline
 attempts only** (see that ADR's corrected addendum). The two GAPs left (C7c, C10c) are unchanged; no
 NOT RUN rows remain.
+
+**Totals after pass 31: PASS 84, FAIL 0, GAP 2, NOT RUN 0** — unchanged from pass 30: the recount
+(186 + 70 + 329 + 92 = **677 PASS / 0 FAIL** verdict lines across the four files, zero `FAIL` lines)
+promotes no row and moves no verdict. Pass 31 is the first single-build sweep of all 14 gate groups
+since the permission and grant fixes: one lab (`c9b0a49`) carrying every fix through pass 30 —
+`e83913a`'s mirror grants, `a0fd9e7`/`1b93069`/`c1c7c19`'s conversation permission modes, `90a29c2`'s
+C1g bound, `7e6eda3`/`c11d01f`'s C1j — in every driver process at once. The 74 GAP lines reduce to
+the arms the rows already name: the two scoreboard GAPs (C7c, C10c), the pre-regrade C3d/C11c lines,
+the superseded twin C6d arms, the named GAP arms C5e, C6c, C9 and C14b, and the other row-named
+secondary arms (C3a, C4c, C4e, C5h, C7a, C7b, C7d, C8f, C9a, C9e, C9f, C10b, C11, C11b, C14c) —
+nothing new is unmeasured; the C9 group's arms simply re-appear because C9 ran again. The two GAPs
+left (C7c, C10c) are unchanged; no NOT RUN rows remain.
 
 ## What blocks the M4 exit
 
