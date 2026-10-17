@@ -1011,13 +1011,18 @@ func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, docume
 		return api.ValidationOutcome{}, fmt.Errorf("postgres: digest compiled plan: %w", err)
 	}
 	notes := append([]string{}, doc.Notes...)
+	revisionDigest := canon.Digest(canonical)
+	// The § 2.2 body carries both digests on success (openapi.yaml: "null
+	// unless valid is true"); the route echoes in.Body verbatim and the
+	// draft row stores it verbatim too (contract § 2 route 8).
 	return api.ValidationOutcome{
 		Body: api.ValidateResponse{
 			Valid: true, DigestScope: canon.DigestScope,
+			RevisionDigest: &revisionDigest, PlanDigest: &planDigest,
 			Errors: []api.ValidateError{}, Notes: notes,
 		},
 		CanonicalDocument: json.RawMessage(canonical),
-		RevisionDigest:    canon.Digest(canonical),
+		RevisionDigest:    revisionDigest,
 		CompiledPlan:      json.RawMessage(planJSON),
 		PlanDigest:        planDigest,
 		DigestScope:       canon.DigestScope,
