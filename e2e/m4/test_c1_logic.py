@@ -635,5 +635,145 @@ class C1eDeclaredInputsTest(unittest.TestCase):
             self.assertIn(col, cols["run_inputs"], col)
 
 
+class C1PermissionVerdictsTest(unittest.TestCase):
+    """§ 7.1 C1j / ADR-0036 condition (a): under a prompting-mode profile the
+    agent asks, and the NODE POLICY answers in the open. Every prompt must close
+    exactly once with status=decided + decided_by=node_policy:
+    preapproved_within_sandbox, and no verdict may exist without a request.
+    Rows are the dicts the driver builds from c1_permission_events_sql's single
+    pipe-joined column."""
+
+    POLICY = m.PERMISSION_DECIDED_BY_POLICY
+    REQ = m.PERMISSION_TYPE_REQUESTED
+    DEC = m.PERMISSION_TYPE_DECIDED
+
+    @classmethod
+    def setUpClass(cls):
+        cls.request = {"type": cls.REQ, "permission_request_id": "perm-1",
+                       "status": "-", "decided_by": "-"}
+        cls.decided = {"type": cls.DEC, "permission_request_id": "perm-1",
+                       "status": "decided", "decided_by": cls.POLICY}
+
+    def rows(self, *extra):
+        return [dict(self.request), dict(self.decided), *extra]
+
+    def test_happy_path_two_prompts_all_four_checks_pass(self):
+        rows = [{"type": self.REQ, "permission_request_id": "perm-1",
+                 "status": "-", "decided_by": "-"},
+                {"type": self.DEC, "permission_request_id": "perm-1",
+                 "status": "decided", "decided_by": self.POLICY},
+                {"type": self.REQ, "permission_request_id": "perm-2",
+                 "status": "-", "decided_by": "-"},
+                {"type": self.DEC, "permission_request_id": "perm-2",
+                 "status": "decided", "decided_by": self.POLICY}]
+        verdicts = m.permission_verdicts_ok(rows)
+        self.assertEqual([ok for _, ok, _ in verdicts], [True, True, True, True],
+                         verdicts)
+        self.assertIn("2 request(s), 2 decision(s)", detail_of(verdicts, "at least one"))
+
+    def test_zero_requests_fails_the_first_check(self):
+        v = m.permission_verdicts_ok([dict(self.decided)])
+        self.assertFalse(ok_of(v, "at least one"), "a verdict with nobody asking")
+        self.assertIn("0 request(s)", detail_of(v, "at least one"))
+
+    def test_empty_and_none_journal_fail_the_first_check(self):
+        for rows in (None, [], ""):
+            # a request with an empty id still counts as a request (see
+            # test_the_blank_request_id_matches_a_blank_decision_id), so the
+            # zero-request arm is only really zero.
+            v = m.permission_verdicts_ok(rows)
+            self.assertFalse(ok_of(v, "at least one"), repr(rows))
+
+    def test_unanswered_request_fails_the_second_check(self):
+        v = m.permission_verdicts_ok([dict(self.request)])
+        self.assertTrue(ok_of(v, "at least one"), v)
+        self.assertFalse(ok_of(v, "exactly one decided row"), "prompt left open")
+        self.assertIn("unanswered=['perm-1']", detail_of(v, "exactly one decided row"))
+
+    def test_request_decided_twice_fails_the_second_check(self):
+        dup = {"type": self.DEC, "permission_request_id": "perm-1",
+               "status": "decided", "decided_by": self.POLICY}
+        v = m.permission_verdicts_ok(self.rows(dup))
+        self.assertFalse(ok_of(v, "exactly one decided row"), "answered twice")
+        self.assertIn("doubled=['perm-1']", detail_of(v, "exactly one decided row"))
+
+    def test_cancelled_decision_fails_the_third_check(self):
+        """A cancelled prompt means nobody answered it — the isolation evidence
+        is that the profile DECIDED, not that the row exists."""
+        cancelled = {"type": self.DEC, "permission_request_id": "perm-1",
+                     "status": "cancelled", "decided_by": self.POLICY}
+        v = m.permission_verdicts_ok([dict(self.request), cancelled])
+        self.assertTrue(ok_of(v, "exactly one decided row"), v)
+        self.assertFalse(ok_of(v, "status=decided"), "cancelled is not decided")
+        self.assertIn("cancelled", detail_of(v, "status=decided"))
+
+    def test_human_decided_by_fails_the_third_check(self):
+        human = {"type": self.DEC, "permission_request_id": "perm-1",
+                 "status": "decided", "decided_by": "user:interactive"}
+        v = m.permission_verdicts_ok([dict(self.request), human])
+        self.assertFalse(ok_of(v, "status=decided"), "a phantom human decided")
+        self.assertIn("user:interactive", detail_of(v, "status=decided"))
+
+    def test_decision_for_an_unrequested_id_fails_the_fourth_check(self):
+        orphan = {"type": self.DEC, "permission_request_id": "perm-9",
+                  "status": "decided", "decided_by": self.POLICY}
+        v = m.permission_verdicts_ok(self.rows(orphan))
+        self.assertTrue(ok_of(v, "exactly one decided row"), v)
+        self.assertTrue(ok_of(v, "status=decided"), v)
+        self.assertFalse(ok_of(v, "without a matching request"), "fabricated verdict")
+        self.assertIn("perm-9", detail_of(v, "without a matching request"))
+
+    def test_non_dict_rows_are_ignored_not_crashes(self):
+        for junk in (None, "perm-1", 42, [], {}):
+            v = m.permission_verdicts_ok([junk])
+            self.assertFalse(ok_of(v, "at least one"), repr(junk))
+        v = m.permission_verdicts_ok(self.rows(None, "x", 7, [], {}))
+        self.assertEqual([ok for _, ok, _ in v], [True, True, True, True],
+                         "junk alongside a real pair still passes")
+
+    def test_the_blank_request_id_matches_a_blank_decision_id(self):
+        """A row keyed `id` instead of `permission_request_id` reads as the empty
+        id. Requested and decided are compared on the SAME projection, so the
+        pair stays internally consistent (checks 2-4 pass) — the gate's real
+        teeth are check 3's decided_by, which a payload missing that field still
+        fails. Pinned so a future change to either projection is a deliberate
+        one."""
+        rows = [{"type": self.REQ, "id": "perm-1"},
+                {"type": self.DEC, "id": "perm-1", "status": "decided"}]
+        v = m.permission_verdicts_ok(rows)
+        self.assertEqual([ok for _, ok, _ in v], [True, True, False, True], v)
+        self.assertIn("decided_by", detail_of(v, "status=decided"))
+
+
+class C1PermissionEventsSqlTest(unittest.TestCase):
+    """The read behind C1j: one pipe-joined column off the RUN journal. If the
+    run id or either event type drifts, permission_verdicts_ok silently sees []
+    and the gate reports "no requests" instead of the truth."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.SQL = m.c1_permission_events_sql("run-1")
+
+    def test_sql_names_the_run_id_and_both_event_types(self):
+        self.assertIn("'run-1'", self.SQL)
+        self.assertIn("'conversation.permission.requested'", self.SQL)
+        self.assertIn("'conversation.permission.decided'", self.SQL)
+        self.assertIn("WHERE run_id = ", self.SQL)
+        self.assertIn("domain_events", self.SQL)
+
+    def test_sql_carries_the_verdict_fields_and_ordering(self):
+        for col in ("permission_request_id", "status", "decided_by"):
+            self.assertIn(f"payload->>'{col}'", self.SQL, col)
+        self.assertIn("ORDER BY global_seq", self.SQL)
+        self.assertNotIn("{", self.SQL, "the only substitution is already applied")
+
+    def test_the_event_type_constants_are_the_ones_in_the_sql(self):
+        for const in (m.PERMISSION_TYPE_REQUESTED, m.PERMISSION_TYPE_DECIDED):
+            self.assertIn(f"'{const}'", m.c1_permission_events_sql("run-2"), const)
+        # the decider the verdicts grade on is the profile, spelled once
+        self.assertEqual("node_policy:preapproved_within_sandbox",
+                         m.PERMISSION_DECIDED_BY_POLICY)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

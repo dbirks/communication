@@ -912,6 +912,73 @@ def journal_shape(rows):
     return out
 
 
+# § 7.1 C1j / ADR-0036 condition (a): under a prompting-mode profile the agent
+# really does raise session/request_permission, and the node policy answers it in
+# the open — so the journal must show a verdict for EVERY prompt, naming the
+# profile as the decider. A prompt that never closed, one that closed `cancelled`
+# (nobody could answer it), or a verdict nobody asked for are all FAILs: the
+# audit line is the evidence that isolation — not a phantom human — carried the
+# call (internal/worker/agentturn.go permissionBridge, internal/store/postgres
+# agentturn_seams.go PermissionPolicyFor).
+PERMISSION_TYPE_REQUESTED = "conversation.permission.requested"
+PERMISSION_TYPE_DECIDED = "conversation.permission.decided"
+PERMISSION_DECIDED_BY_POLICY = "node_policy:preapproved_within_sandbox"
+
+
+def c1_permission_events_sql(run_id):
+    """The run's permission pair read from the journal. Both halves land on the
+    RUN journal (permissionBridge journals through the attempt sink, whose rows
+    carry domain_events.run_id), so this is the same direct `run_id` read C1c's
+    c1_failure_evidence already uses — no node_execution hop is involved."""
+    return ("SELECT type || '|' || payload->>'permission_request_id' || '|' || "
+            "COALESCE(payload->>'status','-') || '|' || "
+            "COALESCE(payload->>'decided_by','-') FROM domain_events "
+            f"WHERE run_id = '{run_id}' AND type IN ("
+            f"'{PERMISSION_TYPE_REQUESTED}', '{PERMISSION_TYPE_DECIDED}') "
+            "ORDER BY global_seq")
+
+
+def permission_verdicts_ok(rows):
+    """C1j over one run's permission rows — dicts {type, permission_request_id,
+    status, decided_by}. Returns [(label, ok, detail)] for the gate's CHECK
+    lines; pure — e2e/m4/test_c1_logic.py pins it."""
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    requested = [str(r.get("permission_request_id") or "").strip()
+                 for r in rows if r.get("type") == PERMISSION_TYPE_REQUESTED]
+    decided = [(str(r.get("permission_request_id") or "").strip(),
+                str(r.get("status") or "").strip(),
+                str(r.get("decided_by") or "").strip())
+               for r in rows if r.get("type") == PERMISSION_TYPE_DECIDED]
+    distinct = list(dict.fromkeys(requested))
+    counts = {}
+    for rid, _, _ in decided:
+        counts[rid] = counts.get(rid, 0) + 1
+    seen = sorted({f"{st}/{by}" for _, st, by in decided})
+    out = [
+        ("at least one conversation.permission.requested (the prompting-mode "
+         "agent asked before it touched the workspace)",
+         bool(requested),
+         f"{len(requested)} request(s), {len(decided)} decision(s)")]
+    unanswered = [rid for rid in distinct if counts.get(rid, 0) == 0]
+    doubled = [rid for rid in distinct if counts.get(rid, 0) > 1]
+    out.append(("every requested id has exactly one decided row (no prompt left "
+                "open, none answered twice)",
+                not unanswered and not doubled,
+                f"unanswered={unanswered[:3]} doubled={doubled[:3]}"))
+    offenders = [(rid, st, by) for rid, st, by in decided
+                 if st != "decided" or by != PERMISSION_DECIDED_BY_POLICY]
+    out.append((f"every decided row carries status=decided and decided_by="
+                f"{PERMISSION_DECIDED_BY_POLICY} (the profile decided; a cancelled "
+                "prompt means nobody answered)",
+                not offenders,
+                f"offenders={offenders[:3]} status/decided_by seen={seen[:4]}"))
+    orphans = sorted({rid for rid, _, _ in decided if rid not in set(requested)})
+    out.append(("no decided row without a matching request (a verdict nobody asked "
+                "for is a fabricated decision)",
+                not orphans, f"orphans={orphans[:3]}"))
+    return out
+
+
 def result_bindings_ok(rb, variant):
     """§ 7.1 C1g: implementation_summary non-empty, review_approved=true,
     iterations=2 (twin, deterministic) / 1..maxIterations (agent). A real model
@@ -1788,6 +1855,18 @@ def assert_c1_run(client, facts, run_id, variant, watch, label):
     ok_all &= check("C1h run.checkpoint_saved rows exist per succeeded worker node",
                     sum(1 for r in jrows if r["type"] == "run.checkpoint_saved") >= sw,
                     f"events>={sum(1 for r in jrows if r['type'] == 'run.checkpoint_saved')} vs {sw}")
+
+    # C1j — ADR-0036 (a): every prompt the agent raised closed with a journaled
+    # verdict naming the node policy. Agent leg only: the twin has no agent, so
+    # it raises no session/request_permission and has nothing to verdict.
+    if variant != "twin":
+        prows = [dict(zip(("type", "permission_request_id", "status", "decided_by"), r))
+                 for r in psql_rows(psql(c1_permission_events_sql(run_id)), 4)]
+        show(f"C1j {label}: permission request/verdict rows",
+             "\n".join(f"{r['type']} {r['permission_request_id']} {r['status']} "
+                       f"{r['decided_by']}" for r in prows) or "(none)")
+        for lbl, ok, detail in permission_verdicts_ok(prows):
+            ok_all &= check(f"C1j {label}: {lbl}", ok, detail)
 
     # The SSE observer watched the same story as it happened.
     sse_types = [f.get("type") for f in watch.frames if isinstance(f, dict)]
