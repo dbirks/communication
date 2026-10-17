@@ -10746,6 +10746,9 @@ C10C_TIMEOUT = 240                      # node timeoutSeconds; the arm's wait ca
 C10C_BASE_URL_ENV = "COMMUNICATION_MODEL_CHAT_BASE_URL"  # what the worker actually reads
 C10C_MODELS_ENV = "COMMUNICATION_MODEL_CHAT_MODELS"      # the model allowlist (not a secret)
 C10C_REPLY = '{"approved": "yes", "evidence": 42}'
+C10C_CONTROL_NODE_ID = "chat_control"          # the same arm's VALID-reply control
+C10C_CONTROL_NODE_KEY = "/" + C10C_CONTROL_NODE_ID
+C10C_CONTROL_REPLY = '{"approved": true, "evidence": "ok"}'
 # the exact reply the arm instructs: a string where boolean is required, a number
 # where the reviewer's evidence slot admits a string/array.
 
@@ -11199,8 +11202,85 @@ def c10c_non_schema_reason(att):
     return None
 
 
+def c10c_reply_instance_locations(att):
+    """The `instance_location` values inside attempts.output_errors — the worker's
+    OutputViolation entries carry `instance_location` verbatim (internal/
+    pipelines/runtime/validator.go). [] when the recorded entries name nothing:
+    the location verdict turns that into a FAIL, never a PASS."""
+    errs = c10_output_errors((att or {}).get("output_errors"))
+    locs = []
+    if not errs:
+        return locs
+    for ent in errs:
+        if isinstance(ent, dict) and ent.get("instance_location") is not None:
+            locs.append(str(ent["instance_location"]))
+    return locs
+
+
+def c10c_reply_location_verdict(att):
+    """C10c — the boundary must refuse the REPLY, not the ENVELOPE. The scratch
+    node declares the model.chat ENVELOPE on its OWN outputs (text/model/
+    endpoint/json), with the reviewer's declared schema in the `json` slot and
+    the permissive config.responseSchema {type: object} on the wire; a reply
+    that violates it is recorded at /json/..., so EVERY instance_location must
+    start with /json. A location at / (or /text) is the boundary refusing the
+    ENVELOPE — which a VALID reply would trip too — and is not the claim.
+    Returns a single verdict; the locations are printed either way."""
+    if not att:
+        return [("C10c the boundary refused the reply's content, not the envelope "
+                 "(every output_errors instance_location starts with /json)", None,
+                 "no attempt row to read instance_locations from")]
+    locs = c10c_reply_instance_locations(att)
+    show("C10c attempts.output_errors instance_locations (the reply's content, "
+         "not the envelope)", " ".join(locs) or "(none recorded)")
+    ok = bool(locs) and all(x.startswith("/json") for x in locs)
+    detail = "instance_locations=" + (" ".join(locs) or "(none)")
+    if not ok:
+        detail += " — a refusal outside /json is the ENVELOPE being refused, which a " \
+                  "VALID reply would trip too: that is not the claim"
+    return [("C10c the boundary refused the reply's content, not the envelope "
+             "(every output_errors instance_location starts with /json)", ok, detail)]
+
+
+def c10c_control_row(run_id):
+    """C10c's control node row — the VALID reply {\"approved\": true, ...} under
+    the SAME declarations, read from node_executions (c10_node_row). {} when
+    unreadable."""
+    return c10_node_row(run_id, C10C_CONTROL_NODE_KEY)
+
+
+def c10c_control_verdicts(ctrl):
+    """C10c's CONTROL: the SAME declarations with the VALID reply
+    {\"approved\": true, \"evidence\": \"ok\"} must SUCCEED (status succeeded and
+    outputs.json.approved true). If the control fails, the declaration itself
+    is unsatisfiable, so the malformed node's refusal cannot be read as the
+    boundary refusing the malformed reply — C10c FAILs. ctrl: the control
+    node's node_execution row {status, outputs}; {} / None => GAP."""
+    if not ctrl or ctrl.get("status") is None:
+        return [("C10c control: the valid reply under the SAME declarations SUCCEEDED "
+                 "(the declaration is satisfiable)", None,
+                 "the control node's row could not be read — the control is unmeasured")]
+    st = str(ctrl.get("status") or "")
+    v = [(f"C10c control: the valid reply {C10C_CONTROL_REPLY} under the SAME "
+          "declarations SUCCEEDED (the declaration is satisfiable)",
+          st == "succeeded", f"status={st!r} (control node {C10C_CONTROL_NODE_KEY})")]
+    raw = str(ctrl.get("outputs") or "").strip()
+    ok_json = None
+    if raw and raw not in ("-", "<none>", "NULL", "null"):
+        try:
+            outs = json.loads(raw) or {}
+        except ValueError:
+            outs = {}
+        j = outs.get("json") if isinstance(outs, dict) else None
+        ok_json = (isinstance(j, dict) and j.get("approved") is True)
+    v.append(("C10c control: the control's outputs.json.approved is true (a VALID reply "
+              "passes the boundary — only the malformed one is refused)", ok_json,
+              f"outputs={raw[:140]!r}"))
+    return v
+
+
 def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
-                      completed_seen=None):
+                      completed_seen=None, control=None):
     """C10c — the SAME malformed reply through the model.chat variant fails
     identically: the guarantee is the boundary's, not the adapter's.
     chat_att: a model.chat reviewer attempt row {status,error_class,output_errors},
@@ -11209,7 +11289,11 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
     and a valid reply is the arm's GAP, never a PASS).
     The row is graded ONLY when the recorded failure IS the reply's schema
     violation (c10c_non_schema_reason): a config/adapter error that stopped the
-    model before the reply is a single FAIL, never status/class PASSes.
+    model before the reply is a single FAIL, never status/class PASSes. In
+    addition the refusal must be about the REPLY, not the ENVELOPE — every
+    output_errors instance_location must start with /json (c10c_reply_location_
+    verdict) — and the arm's CONTROL (control: the control node's row) must show
+    the SAME declarations succeeding on the valid reply (c10c_control_verdicts).
     completed_seen: True when a node.attempt.completed exists FOR that attempt,
     False when the events were read and none matched, None when unreadable —
     the C10c attempt's completion events are measured, not omitted."""
@@ -11223,12 +11307,18 @@ def c10_chat_verdicts(chat_att, endpoint_configured=None, arm_note=None,
             why += " (a lab with no provider endpoint cannot produce the reply at all)"
         if arm_note:
             why += "; " + arm_note
-        return [("C10c the same malformed reply via model.chat fails identically "
-                 "(the boundary owns the guarantee, not the adapter)", None, why)]
-    guard = c10c_non_schema_reason(chat_att)
-    if guard is not None:
-        return guard
-    return c10_attempt_verdicts(chat_att, completed_seen=completed_seen, tag="C10c")
+        out = [("C10c the same malformed reply via model.chat fails identically "
+                "(the boundary owns the guarantee, not the adapter)", None, why)]
+    else:
+        guard = c10c_non_schema_reason(chat_att)
+        if guard is not None:
+            out = guard
+        else:
+            out = c10_attempt_verdicts(chat_att, completed_seen=completed_seen, tag="C10c")
+            out += c10c_reply_location_verdict(chat_att)
+    if control is not None:
+        out += c10c_control_verdicts(control)
+    return out
 
 
 # --- C10 authored document — re-use the fixture, re-author only the SCHEMA ------
@@ -11570,19 +11660,37 @@ def c10_chat_precondition(run_id=None):
     return (att[0] if att else None), endpoint
 
 
+def c10c_envelope_outputs(schema):
+    """The model.chat node's OWN outputs declaration for the C10c scratch arm:
+    the ENVELOPE the worker publishes ({text, model, endpoint, json?}), with
+    `text` and `json` required (json is set only when config.responseSchema is
+    present — the permissive {type: object} guarantees it) and `json` declared
+    against the reviewer's declared schema VERBATIM. The boundary then grades
+    the REPLY's content (violations land at /json/...), never the envelope."""
+    return {"type": "object", "required": ["text", "json"],
+            "properties": {"text": {"type": "string"},
+                           "json": json.loads(json.dumps(schema))}}
+
+
 def c10c_scratch_doc(canonical, name):
     """C10c — author the gate-owned scratch pipeline WITHOUT editing the fixture:
-    ONE model.chat node whose OWN `outputs` declaration is the seed twin's
-    reviewer `outputs` declaration copied VERBATIM (the C10 reviewer shape:
-    approved boolean required, etc. — the same schema C10a is graded against),
-    and whose prompt instructs the model to reply with the exact malformed reply
-    C10C_REPLY. NO config.responseSchema: a responseSchema goes to the endpoint
-    as a constrained-decoding constraint, which makes a schema-violating reply
-    impossible, so the arm could never observe the boundary refusing one — the
-    boundary the claim is about is the node's declared outputs schema
-    (internal/store/postgres/attempt_worker.go declaredOutputRejection), so the
-    reviewer schema is declared on the node's `outputs`, exactly the way the
-    seed twin's reviewer node declares its outputs. model qwen3-8-27b,
+    TWO model.chat nodes, each declaring the model.chat ENVELOPE on the node's
+    OWN `outputs` — {type: object, required: [text, json], text: string,
+    json: the seed twin's reviewer `outputs` declaration VERBATIM} — and each
+    carrying the PERMISSIVE config.responseSchema {type: object}: the worker
+    parses the reply into outputs.json and validates it against the permissive
+    schema, so the endpoint only has to PRODUCE AN OBJECT (both the instructed
+    malformed reply and the control's valid reply are producible), while the
+    REPLY's content is graded against the reviewer's declared schema in the
+    json slot — the boundary's refusal lands at /json/..., never at /
+    (c10c_reply_location_verdict is the pass-36 regression guard: an envelope
+    refusal would fire on a VALID reply too and is not the claim).
+    Node 1 (chat_control): the VALID reply {"approved": true, "evidence":
+    "ok"} — the arm's CONTROL: the SAME declarations must SUCCEED, else the
+    declaration itself is unsatisfiable and the malformed refusal proves
+    nothing. Node 2 (chat_review): the exact malformed reply C10C_REPLY;
+    it dependsOn the control, so the control's success is measured before the
+    malformed node can fail the run and cancel anything. model qwen3-8-27b,
     temperature 0, maxTokens 200, retry.maxAttempts 1. Returns {doc, applied,
     missing, schema}: doc None (the caller GAPs) unless the reviewer schema read
     exactly in the shape C10c copies it."""
@@ -11624,41 +11732,74 @@ def c10c_scratch_doc(canonical, name):
             "policies": {"maxConcurrentNodes": 1, "maxDurationSeconds": 3600,
                          "maxNodeExecutions": 50, "maxChildDepth": 0,
                          "workspaceMode": "worktree", "cancelPolicy": "cascade"},
-            "nodes": [{
-                "id": C10C_NODE_ID,
-                "kind": "model.chat",
-                "timeoutSeconds": C10C_TIMEOUT,
-                "retry": {"maxAttempts": C10C_MAX_ATTEMPTS},
-                "config": {
-                    "model": C10C_MODEL,
-                    "temperature": 0,
-                    "maxTokens": C10C_MAX_TOKENS,
-                    "messages": [
-                        {"role": "system",
-                         "content": ("You are a strict JSON reviewer. Your entire "
-                                      "reply is one JSON object and nothing else: no "
-                                      "prose, no markdown, no code fences.")},
-                        {"role": "user",
-                         "content": ("Goal: ${{ inputs.goal }}\n"
-                                      "Reply with ONLY this exact JSON object, byte for "
-                                      "byte, changing nothing in it:\n"
-                                      + C10C_REPLY)},
-                    ],
+            "nodes": [
+                {
+                    "id": C10C_CONTROL_NODE_ID,
+                    "kind": "model.chat",
+                    "timeoutSeconds": C10C_TIMEOUT,
+                    "retry": {"maxAttempts": C10C_MAX_ATTEMPTS},
+                    "config": {
+                        "model": C10C_MODEL,
+                        "temperature": 0,
+                        "maxTokens": C10C_MAX_TOKENS,
+                        "responseSchema": {"type": "object"},
+                        "messages": [
+                            {"role": "system",
+                             "content": ("You are a strict JSON reviewer. Your entire "
+                                          "reply is one JSON object and nothing else: no "
+                                          "prose, no markdown, no code fences.")},
+                            {"role": "user",
+                             "content": ("Goal: ${{ inputs.goal }}\n"
+                                         "Reply with ONLY this exact JSON object, byte for "
+                                         "byte, changing nothing in it:\n"
+                                         + C10C_CONTROL_REPLY)},
+                        ],
+                    },
+                    "outputs": c10c_envelope_outputs(schema),
                 },
-                "outputs": json.loads(json.dumps(schema)),
-            }],
+                {
+                    "id": C10C_NODE_ID,
+                    "kind": "model.chat",
+                    "timeoutSeconds": C10C_TIMEOUT,
+                    "dependsOn": [C10C_CONTROL_NODE_ID],
+                    "retry": {"maxAttempts": C10C_MAX_ATTEMPTS},
+                    "config": {
+                        "model": C10C_MODEL,
+                        "temperature": 0,
+                        "maxTokens": C10C_MAX_TOKENS,
+                        "responseSchema": {"type": "object"},
+                        "messages": [
+                            {"role": "system",
+                             "content": ("You are a strict JSON reviewer. Your entire "
+                                          "reply is one JSON object and nothing else: no "
+                                          "prose, no markdown, no code fences.")},
+                            {"role": "user",
+                             "content": ("Goal: ${{ inputs.goal }}\n"
+                                         "Reply with ONLY this exact JSON object, byte for "
+                                         "byte, changing nothing in it:\n"
+                                         + C10C_REPLY)},
+                        ],
+                    },
+                    "outputs": c10c_envelope_outputs(schema),
+                },
+            ],
         },
     }
-    out["applied"].append("the reviewer's declared outputs schema copied verbatim into "
-                          "the node's OWN outputs declaration (no config.responseSchema — "
-                          "the reply is not constrained on the wire; the boundary's "
-                          "declared-outputs check is the check)")
-    out["applied"].append(f"one model.chat node {C10C_NODE_ID}: model={C10C_MODEL} "
+    out["applied"].append("the reviewer's declared outputs schema copied VERBATIM into the "
+                          "`json` slot of BOTH nodes' OWN envelope outputs (type object, "
+                          "required [text, json]) — the boundary grades the REPLY at "
+                          "/json/..., never the envelope")
+    out["applied"].append("the permissive config.responseSchema {type: object} on BOTH nodes: "
+                          "the worker parses the reply into outputs.json, so the endpoint "
+                          "only has to produce an object — the instructed malformed reply "
+                          "is producible, and the reply's content is what the boundary "
+                          "refuses")
+    out["applied"].append(f"two model.chat nodes: {C10C_CONTROL_NODE_ID} (the CONTROL: the "
+                          f"VALID reply {C10C_CONTROL_REPLY} must SUCCEED) and {C10C_NODE_ID} "
+                          f"(the exact malformed reply, dependsOn the control so the "
+                          f"control's success is measured first); model={C10C_MODEL} "
                           f"temperature=0 maxTokens={C10C_MAX_TOKENS} "
                           f"retry.maxAttempts={C10C_MAX_ATTEMPTS}")
-    out["applied"].append("the prompt instructs the exact reply " + C10C_REPLY +
-                          " (a string where boolean is required, a number where the "
-                          "evidence slot admits)")
     out["schema"] = schema
     out["doc"] = doc_yaml_emit(doc)
     return out
@@ -11666,16 +11807,22 @@ def c10c_scratch_doc(canonical, name):
 
 def c10c_doc_verdicts(res):
     """C10c's honesty gate on the scratch document itself: the arm only proves the
-    boundary-vs-adapter claim if the doc is ONE model.chat node whose OWN
-    outputs declaration is the seed reviewer's declaration — with NO
-    config.responseSchema, or the reply would be constrained on the wire and
-    the boundary could never be the refusal — and whose prompt carries the
-    exact malformed reply."""
+    boundary-vs-adapter claim if the doc is TWO model.chat nodes — the malformed
+    node and the VALID-reply control — each carrying the PERMISSIVE
+    config.responseSchema {type: object} (the reply is decoded to JSON, the
+    endpoint only has to produce an object: the instructed malformed reply IS
+    producible) and each declaring the ENVELOPE on the node's OWN outputs
+    (required [text, json], `json` = the seed reviewer's declared schema
+    VERBATIM), with the malformed node AFTER the control (dependsOn), so the
+    boundary's refusal is graded on the REPLY at /json/... — never on the
+    envelope, which a VALID reply would trip too."""
     sp = res if isinstance(res, dict) else {}
     applied, missing, doc = sp.get("applied") or [], sp.get("missing") or [], sp.get("doc")
-    v = [("C10c scratch doc: ONE model.chat node, the seed twin's reviewer declaration "
-          "copied into the node's OWN outputs declaration (no config.responseSchema)",
-          any("outputs declaration" in a for a in applied), f"applied={applied[:2]}")]
+    v = [("C10c scratch doc: the seed twin's reviewer declaration copied VERBATIM "
+          "into the `json` slot of BOTH nodes' OWN envelope outputs (required "
+          "[text, json])",
+          any("outputs schema copied VERBATIM" in a for a in applied),
+          f"applied={applied[:2]}")]
     v.append((f"C10c scratch doc: retry.maxAttempts 1, model {C10C_MODEL}, "
               "temperature 0, maxTokens 200",
               any(C10C_MODEL in a for a in applied), f"applied={applied[:2]}"))
@@ -11686,12 +11833,30 @@ def c10c_doc_verdicts(res):
         # doc_yaml_emit renders the prompt as a YAML double-quoted scalar, so the
         # reply's quotes are escaped in the emitted bytes; unescape before the check.
         unescaped = doc.replace(chr(92) + chr(34), chr(34))
-        v.append(("C10c scratch doc: no responseSchema anywhere in the document "
-                  "(the model's reply is NOT constrained on the wire)",
-                  "responseSchema" not in doc, f"{len(doc)} bytes"))
-        v.append((f"C10c scratch doc: the prompt names the exact malformed reply "
-                  f"({C10C_REPLY}) and no second model.chat node exists",
-                  C10C_REPLY in unescaped and doc.count("kind: model.chat") == 1,
+        v.append(("C10c scratch doc: config.responseSchema is the PERMISSIVE "
+                  "{type: object} on BOTH nodes and nothing else (the endpoint is "
+                  "not constrained past 'an object', so the instructed malformed "
+                  "reply is producible)",
+                  doc.count("responseSchema") == 2
+                  and "responseSchema: {type: object}" in doc,
+                  f"responseSchema occurrences={doc.count('responseSchema')} "
+                  f"({len(doc)} bytes)"))
+        v.append(("C10c scratch doc: BOTH nodes declare the ENVELOPE (required "
+                  "[text, json]) — the reviewer schema lives in the json slot, "
+                  "so the refusal is the reply's content, not the envelope",
+                  doc.count("required: [text, json]") == 2,
+                  f"required: [text, json] occurrences="
+                  f"{doc.count('required: [text, json]')} ({len(doc)} bytes)"))
+        v.append((f"C10c scratch doc: the prompts name the exact malformed reply "
+                  f"({C10C_REPLY}) AND the exact VALID control reply "
+                  f"({C10C_CONTROL_REPLY}) and exactly TWO model.chat nodes exist",
+                  C10C_REPLY in unescaped and C10C_CONTROL_REPLY in unescaped
+                  and doc.count("kind: model.chat") == 2,
+                  f"{len(doc)} bytes"))
+        v.append(("C10c scratch doc: the malformed node runs AFTER the control "
+                  f"(dependsOn {C10C_CONTROL_NODE_ID}), so the control's success "
+                  "is measured before the malformed node can fail the run",
+                  f"dependsOn: [{C10C_CONTROL_NODE_ID}]" in doc,
                   f"{len(doc)} bytes"))
     return v
 
@@ -11746,15 +11911,17 @@ def c10c_scratch_arm(alice, facts):
     """C10c — run the malformed reply through a REAL model.chat node on a gate-
     owned scratch pipeline (modelled on the C5h arm: draft -> validate ->
     publish -> run, the seed twin untouched). Returns (attempt_row_or_None,
-    endpoint_configured, arm_note_or_None): a None row + note when the model
-    replied VALIDLY (the GAP) or the arm itself could not be run. The caller
-    turns the row into c10_attempt_verdicts(tag='C10c') — the same verdict form
-    as C10a."""
+    endpoint_configured, arm_note_or_None, control_row_or_None): a None row +
+    note when the model replied VALIDLY (the GAP) or the arm itself could not
+    be run. The caller grades the row like C10a (c10_attempt_verdicts,
+    tag='C10c'), requires the refusal to sit under /json (the reply's content,
+    not the envelope), and grades the arm's CONTROL node row — the SAME
+    declarations with the VALID reply must have SUCCEEDED."""
     admin = CTX.get("admin") or Client("admin")
     if login(admin) is None and "communication_session" not in admin.cookies:
         gap("C10c scratch arm", "no admin (library-role) session — the scratch revision "
             "is a PUBLISHED revision and only the library role may draft it")
-        return None, None, "no admin session to draft the scratch revision"
+        return None, None, "no admin session to draft the scratch revision", None
     CTX["admin"] = admin
     twin = (facts or {}).get("twin") or {}
     src = doc_revision_canonical(admin, twin.get("revision_id"))
@@ -11762,7 +11929,7 @@ def c10c_scratch_arm(alice, facts):
         gap("C10c scratch arm", f"GET /api/v1/revisions/{twin.get('revision_id')!r} "
             "served no canonical Pipeline document — the reviewer shape the scratch "
             "node copies is unreadable, and the gate will not copy an invented schema")
-        return None, None, "no canonical twin document for the reviewer schema"
+        return None, None, "no canonical twin document for the reviewer schema", None
     name = schema_name("m4x-c10c-chat")
     res = c10c_scratch_doc(src, name)
     c10_emit(c10c_doc_verdicts(res))
@@ -11772,7 +11939,7 @@ def c10c_scratch_arm(alice, facts):
         gap("C10c scratch arm", f"the seed twin is not the shape C10c copies "
             f"({res['missing']}) — an invented reviewer schema would make every "
             "invalid_output verdict a coincidence")
-        return None, None, f"the reviewer schema did not copy ({res['missing'][:1]})"
+        return None, None, f"the reviewer schema did not copy ({res['missing'][:1]})", None
     r = admin.post(LB, "/api/v1/pipelines", {"slug": name, "display_name": name,
                                              "description": "C10c model.chat scratch arm"})
     show(f"C10c POST /api/v1/pipelines (scratch) -> {r.status}", r.text[:160])
@@ -11785,7 +11952,7 @@ def c10c_scratch_arm(alice, facts):
     if not pid:
         gap("C10c scratch arm", f"POST /api/v1/pipelines -> {r.status}: no scratch "
             "pipeline to hold the model.chat draft")
-        return None, None, f"POST /api/v1/pipelines -> {r.status}"
+        return None, None, f"POST /api/v1/pipelines -> {r.status}", None
     pub = c7_publish(admin, pid, "C10c model.chat arm", res["doc"])
     rev = str((pub or {}).get("revision_id") or "")
     if pub is None or (pub.get("vresp") or {}).get("valid") is False or not rev:
@@ -11793,7 +11960,7 @@ def c10c_scratch_arm(alice, facts):
             f"validated/published (validate={pub and pub.get('validate_status')} "
             f"publish={pub and pub.get('publish_status')} errors="
             f"{str((pub or {}).get('vresp') or '')[:240]})")
-        return None, None, "the scratch revision could not be drafted/validated/published"
+        return None, None, "the scratch revision could not be drafted/validated/published", None
     check("C10c scratch revision published through draft -> validate -> publish "
           "(the § 7.0 seed twin is untouched)", True,
           f"revision {rev[:8]} on scratch pipeline {name}")
@@ -11802,7 +11969,7 @@ def c10c_scratch_arm(alice, facts):
     if "repository" not in inputs:
         gap("C10c scratch arm", "the § 7.0 seed manifest carries no inputs.repository — "
             "the scratch pipeline declares it, so the run cannot be posted honestly")
-        return None, None, "no inputs.repository in the seed manifest"
+        return None, None, "no inputs.repository in the seed manifest", None
     r = alice.post(LB, f"/api/v1/projects/{mf(facts, 'project_id')}/runs",
                    {"pipeline_revision_id": rev, "inputs": inputs,
                     "idempotency": idem_key("m4x-c10c")})
@@ -11810,7 +11977,7 @@ def c10c_scratch_arm(alice, facts):
     if r.status not in (200, 201):
         gap("C10c scratch arm", f"POST runs -> {r.status} {r.text[:160]} — the "
             "model.chat pipeline never ran, so the reply has no ledger to read")
-        return None, None, f"POST runs -> {r.status}"
+        return None, None, f"POST runs -> {r.status}", None
     run_id = (r.json() or {}).get("run_id")
     CTX["c10c_run"] = run_id
     st = c8_watch(alice, facts, run_id, 300, "C10c scratch")
@@ -11827,12 +11994,15 @@ def c10c_scratch_arm(alice, facts):
         show("C10c NOTE", f"model {C10C_MODEL} is not in the worker's allowlist "
                           f"({C10C_MODELS_ENV}={models}) — the attempt never reaches "
                           "the endpoint (the verdicts show which class it closed)")
+    ctrl = c10c_control_row(run_id)
+    show("C10c control node (the VALID reply under the SAME declarations)",
+         f"status={ctrl.get('status')!r} key={C10C_CONTROL_NODE_KEY}")
     if att is None:
         return None, endpoint, (f"the scratch run closed {st!r} with no attempt row "
-                                "for " + C10C_NODE_KEY)
+                                "for " + C10C_NODE_KEY), ctrl
     show("C10c NOTE", c10c_reply_note(att))
     att, note = c10c_arm_result(att)
-    return att, endpoint, note
+    return att, endpoint, note, ctrl
 
 
 def c10():
@@ -11958,16 +12128,21 @@ def c10():
     # its attempt row replaces the "no model.chat node executed" path.
     chat_att, endpoint = c10_chat_precondition(run_id)
     arm_note = None
+    ctrl = None
     chat_run = run_id
     if endpoint:
-        chat_att, endpoint, arm_note = c10c_scratch_arm(alice, facts)
+        chat_att, endpoint, arm_note, ctrl = c10c_scratch_arm(alice, facts)
         chat_run = CTX.get("c10c_run") or chat_run
     # C10c's completion events are read the way C10a's caller does: the attempt's
-    # OWN run, filtered to node.attempt.completed naming that attempt row.
+    # OWN run, filtered to node.attempt.completed naming that attempt row. The
+    # refusal is also graded on the REPLY, not the ENVELOPE (every
+    # instance_location under /json), and the arm's CONTROL — the SAME
+    # declarations with the valid reply — must have SUCCEEDED.
     c10_emit(c10_chat_verdicts(chat_att, endpoint_configured=endpoint,
                                arm_note=arm_note,
                                completed_seen=c10_completed_for(
-                                   chat_run, (chat_att or {}).get("id"))))
+                                   chat_run, (chat_att or {}).get("id")),
+                               control=ctrl))
     dump_run_evidence(alice, run_id)
     CTX["c10"] = {"revision_id": rev, "run_id": run_id, "terminal": st,
                   "attempts": rows, "live_scope": live}

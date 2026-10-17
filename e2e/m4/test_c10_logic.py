@@ -425,11 +425,14 @@ class Words(unittest.TestCase):
 
 
 class C10cScratchDoc(unittest.TestCase):
-    """The C10c scratch-pipeline authoring: one model.chat node whose OWN outputs
-    declaration is the seed reviewer's declared outputs schema copied verbatim
-    (no config.responseSchema — the reply must not be constrained on the wire,
-    or the boundary could never be the refusal), the exact malformed reply in
-    the prompt, retry.maxAttempts 1."""
+    """The C10c scratch-pipeline authoring: TWO model.chat nodes — the malformed
+    node (exact malformed reply, dependsOn the control) and the VALID-reply
+    CONTROL node — each declaring the model.chat ENVELOPE on the node's OWN
+    outputs (required [text, json], `json` = the seed reviewer's declared schema
+    verbatim) and each carrying the PERMISSIVE config.responseSchema
+    {type: object}: the endpoint only has to produce an object, so the
+    instructed malformed reply IS producible, and the boundary's refusal lands
+    on the reply's content (/json/...), never the envelope."""
 
     def setUp(self):
         if yaml is None:
@@ -438,7 +441,7 @@ class C10cScratchDoc(unittest.TestCase):
     def twin(self):
         return yaml.safe_load(yaml.safe_dump(Doc.TWIN, indent=4, sort_keys=True))
 
-    def test_one_model_chat_node_with_the_reviewer_schema_verbatim(self):
+    def test_two_nodes_envelope_and_permissive_wire(self):
         base = self.twin()
         review = base["spec"]["nodes"][1]["config"]["body"]["nodes"][0]
         sp = m.c10c_scratch_doc(base, "m4x-c10c-chat-x")
@@ -448,38 +451,51 @@ class C10cScratchDoc(unittest.TestCase):
         self.assertEqual(doc["kind"], "Pipeline")
         self.assertEqual(doc["metadata"]["name"], "m4x-c10c-chat-x")
         nodes = doc["spec"]["nodes"]
-        self.assertEqual(len(nodes), 1, "the scratch pipeline is ONE node")
-        node = nodes[0]
-        self.assertEqual(node["kind"], "model.chat")
-        self.assertEqual(node["id"], m.C10C_NODE_ID)
-        self.assertEqual(node["retry"], {"maxAttempts": 1})
-        cfg = node["config"]
-        self.assertEqual(cfg["model"], "qwen3-8-27b")
-        self.assertEqual(cfg["temperature"], 0)
-        self.assertEqual(cfg["maxTokens"], 200)
-        self.assertNotIn("responseSchema", cfg,
-                         "no responseSchema on the wire — the boundary's declared-"
-                         "outputs check is the check")
-        self.assertEqual(node["outputs"], review["outputs"],
-                         "the node's OWN outputs declaration must be the reviewer's "
-                         "declared schema verbatim (the C10 reviewer shape)")
-        self.assertTrue(all(k in ("role", "content") and v
-                            for msg in cfg["messages"] for k, v in msg.items()))
-        user = [x for x in cfg["messages"] if x["role"] == "user"]
-        self.assertEqual(len(user), 1)
-        self.assertIn(m.C10C_REPLY, user[0]["content"])
-        self.assertIn("${{ inputs.goal }}", user[0]["content"])
-        self.assertNotIn("responseSchema", sp["doc"],
-                         "the emitted document carries no responseSchema at all")
+        self.assertEqual(len(nodes), 2,
+                         "the scratch pipeline is the malformed node + the VALID control")
+        by_id = {n["id"]: n for n in nodes}
+        self.assertEqual(set(by_id), {m.C10C_CONTROL_NODE_ID, m.C10C_NODE_ID})
+        env = m.c10c_envelope_outputs(review["outputs"])
+        self.assertEqual(env["required"], ["text", "json"])
+        self.assertEqual(env["properties"]["text"], {"type": "string"})
+        self.assertEqual(env["properties"]["json"], review["outputs"],
+                         "the reviewer's declared schema must sit in the json slot VERBATIM")
+        for nid in (m.C10C_CONTROL_NODE_ID, m.C10C_NODE_ID):
+            node = by_id[nid]
+            self.assertEqual(node["kind"], "model.chat")
+            self.assertEqual(node["retry"], {"maxAttempts": 1})
+            cfg = node["config"]
+            self.assertEqual(cfg["model"], "qwen3-8-27b")
+            self.assertEqual(cfg["temperature"], 0)
+            self.assertEqual(cfg["maxTokens"], 200)
+            self.assertEqual(cfg["responseSchema"], {"type": "object"},
+                             "the PERMISSIVE wire constraint: the endpoint only has to "
+                             "produce an object, so the instructed reply is producible")
+            self.assertEqual(node["outputs"], env,
+                             "the node's OWN outputs is the ENVELOPE — the refusal must be "
+                             "about the reply's content, not the envelope")
+            self.assertTrue(all(k in ("role", "content") and v
+                                for msg in cfg["messages"] for k, v in msg.items()))
+        prompts = {n["id"]: [x for x in n["config"]["messages"] if x["role"] == "user"][0]["content"]
+                   for n in nodes}
+        self.assertIn(m.C10C_REPLY, prompts[m.C10C_NODE_ID])
+        self.assertIn("${{ inputs.goal }}", prompts[m.C10C_NODE_ID])
+        self.assertIn(m.C10C_CONTROL_REPLY, prompts[m.C10C_CONTROL_NODE_ID])
+        self.assertNotIn(m.C10C_REPLY, prompts[m.C10C_CONTROL_NODE_ID],
+                         "the control must be told the VALID reply only")
+        self.assertEqual(by_id[m.C10C_NODE_ID]["dependsOn"], [m.C10C_CONTROL_NODE_ID],
+                         "the malformed node runs AFTER the control, so the control's "
+                         "success is measured before the malformed node can fail the run")
 
-    def test_the_prompt_reply_is_the_malformed_shape(self):
+    def test_the_prompts_carry_the_malformed_and_the_valid_replies(self):
         sp = m.c10c_scratch_doc(self.twin(), "m4x-c10c-chat-y")
         # doc_yaml_emit renders the prompt as a YAML double-quoted scalar, so the
-        # reply's quotes are escaped; unescape before asserting the shape.
+        # replies' quotes are escaped; unescape before asserting the shape.
         plain = sp["doc"].replace(chr(92) + chr(34), chr(34))
-        self.assertIn("\"approved\": \"yes\"", plain)
-        self.assertIn("\"evidence\": 42", plain)
-        self.assertEqual(sp["doc"].count("kind: model.chat"), 1)
+        self.assertIn("\"approved\": \"yes\"", plain)      # the malformed reply
+        self.assertIn("\"evidence\": 42", plain)            # the malformed reply
+        self.assertIn("\"approved\": true", plain)          # the VALID control reply
+        self.assertEqual(sp["doc"].count("kind: model.chat"), 2)
         self.assertTrue(all(ok is True for _l, ok, _d in m.c10c_doc_verdicts(sp)),
                         str(m.c10c_doc_verdicts(sp)))
 
@@ -655,6 +671,126 @@ class C10cGuard(unittest.TestCase):
         i = body.index("c10_chat_verdicts(")
         tail = body[i:i + 400]
         self.assertIn("completed_seen=c10_completed_for(", tail)
+
+
+class C10cReplyLocation(unittest.TestCase):
+    """The pass-36 regression (offline): C10c must grade the boundary refusing
+    the MALFORMED REPLY — every attempts.output_errors instance_location under
+    /json (the envelope's json slot holds the reviewer schema) — not the
+    model.chat ENVELOPE missing fields (a violation at / or /text fires for a
+    VALID reply too and is not the claim)."""
+
+    REPLY_ATT = {"id": "a1", "status": "failed", "error_class": "invalid_output",
+                 "output_errors": m.json.dumps([
+                     {"keyword": "type",
+                      "location": "#/properties/json/properties/approved/type",
+                      "instance_location": "/json/approved",
+                      "message": "expected boolean, got string"},
+                     {"keyword": "type",
+                      "location": "#/properties/json/properties/evidence/type",
+                      "instance_location": "/json/evidence",
+                      "message": "expected string, got number"}]),
+                 "outputs": "-"}
+
+    def test_a_refusal_at_the_envelope_is_not_the_claim(self):
+        for inst in ("/", "/text", "/model"):
+            att = {"id": "a9", "status": "failed", "error_class": "invalid_output",
+                   "output_errors": m.json.dumps([{"keyword": "required",
+                                                   "location": "#",
+                                                   "instance_location": inst,
+                                                   "message": "missing property "
+                                                   "'approved'"}]),
+                   "outputs": "-"}
+            v = m.c10c_reply_location_verdict(att)
+            self.assertFalse(one(v, "not the envelope"), repr(inst))
+            self.assertIn("instance_location", detail(v, "not the envelope"), inst)
+
+    def test_the_malformed_reply_refusal_under_json_passes(self):
+        v = m.c10c_reply_location_verdict(self.REPLY_ATT)
+        self.assertTrue(one(v, "not the envelope"), str(v))
+        d = detail(v, "not the envelope")
+        self.assertIn("/json/approved", d)
+        self.assertIn("/json/evidence", d)
+
+    def test_no_instance_location_recorded_is_a_fail_not_a_pass(self):
+        att = {"id": "a2", "status": "failed", "error_class": "invalid_output",
+               "output_errors": "[]", "outputs": "-"}
+        self.assertFalse(one(m.c10c_reply_location_verdict(att), "not the envelope"))
+
+    def test_no_attempt_row_is_a_gap(self):
+        self.assertIsNone(one(m.c10c_reply_location_verdict(None), "not the envelope"))
+
+    def test_the_locations_are_extracted_from_the_worker_entry_shape(self):
+        self.assertEqual(m.c10c_reply_instance_locations(self.REPLY_ATT),
+                         ["/json/approved", "/json/evidence"])
+        self.assertEqual(m.c10c_reply_instance_locations(GOOD_ATT), [])
+        self.assertEqual(m.c10c_reply_instance_locations(None), [])
+
+    def test_the_verdict_rides_into_the_c10c_gate(self):
+        v = m.c10_chat_verdicts(self.REPLY_ATT, completed_seen=False)
+        self.assertTrue(one(v, "not the envelope"), str(v))
+        self.assertTrue(one(v, "C10c the malformed reviewer attempt closed"))
+        envelope = {"id": "a3", "status": "failed", "error_class": "invalid_output",
+                    "output_errors": m.json.dumps([{"keyword": "required",
+                                                    "location": "#",
+                                                    "instance_location": "/",
+                                                    "message": "missing property "
+                                                    "'approved'"}]),
+                    "outputs": "-"}
+        v = m.c10_chat_verdicts(envelope, completed_seen=False)
+        self.assertFalse(one(v, "not the envelope"),
+                         "an envelope-level refusal must FAIL the C10c gate")
+
+
+class C10cControl(unittest.TestCase):
+    """C10c's CONTROL (offline): the SAME declarations with the VALID reply
+    {\"approved\": true, \"evidence\": \"ok\"} must SUCCEED — a failed control means
+    the declaration itself is unsatisfiable, so the malformed refusal proves
+    nothing and C10c FAILs."""
+
+    GOOD_CTRL = {"status": "succeeded",
+                 "outputs": m.json.dumps({"text": m.json.dumps(
+                     {"approved": True, "evidence": "ok"}),
+                     "model": "qwen3-8-27b",
+                     "json": {"approved": True, "evidence": "ok"}})}
+
+    def test_the_valid_reply_succeeds_with_approved_true(self):
+        v = m.c10c_control_verdicts(self.GOOD_CTRL)
+        self.assertTrue(one(v, "SUCCEEDED"), str(v))
+        self.assertTrue(one(v, "outputs.json.approved is true"), str(v))
+
+    def test_a_failed_control_is_a_fail_never_a_gap_or_pass(self):
+        v = m.c10c_control_verdicts({"status": "failed", "outputs": "-"})
+        self.assertFalse(one(v, "SUCCEEDED"), str(v))
+        v = m.c10c_control_verdicts({"status": "succeeded", "outputs": "-"})
+        self.assertTrue(one(v, "SUCCEEDED"))
+        self.assertIsNone(one(v, "outputs.json.approved is true"))
+
+    def test_an_unreadable_control_row_gaps_never_passes(self):
+        for ctrl in (None, {}, {"status": None}):
+            v = m.c10c_control_verdicts(ctrl)
+            self.assertTrue(all(ok is None for _l, ok, _d in v), repr(ctrl))
+
+    def test_the_control_rides_into_the_c10c_gate(self):
+        v = m.c10_chat_verdicts(C10cReplyLocation.REPLY_ATT, control=self.GOOD_CTRL)
+        self.assertTrue(one(v, "SUCCEEDED"))
+        self.assertTrue(one(v, "outputs.json.approved is true"))
+        v = m.c10_chat_verdicts(C10cReplyLocation.REPLY_ATT,
+                                control={"status": "failed", "outputs": "-"})
+        self.assertFalse(one(v, "SUCCEEDED"),
+                         "a failed control means the declaration is unsatisfiable: "
+                         "the C10c gate must FAIL")
+        v = m.c10_chat_verdicts(C10cReplyLocation.REPLY_ATT)
+        self.assertFalse(any("control" in l for l, _o, _d in v),
+                         "no control row passed: no control verdicts invented")
+
+    def test_the_gate_wires_the_control_row(self):
+        body = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "e2e_m4_exit.py"), encoding="utf-8").read()
+        body = body.split("def c10():")[1].split("def c11(")[0]
+        i = body.index("c10_chat_verdicts(")
+        self.assertIn("control=ctrl", body[i:i + 400])
+        self.assertIn("c10c_scratch_arm(alice, facts)", body)
 
 
 if __name__ == "__main__":
