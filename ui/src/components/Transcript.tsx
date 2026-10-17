@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { problemOf } from "../api/client";
 import { planDocumentOf, type TranscriptItem } from "../api/transcript";
+import { deciderLabel } from "../api/actors";
 import type { PermissionOption } from "../api/types";
 import { formatClock } from "../lib/format";
 
@@ -296,7 +297,7 @@ function PermissionCard({
           status: {item.status === "pending" ? "awaiting a decision" : item.status}
           {item.status === "decided" && item.decisionOptionId
             ? ` — answered "${chosen?.label || item.decisionOptionId}"${
-                item.decidedBy ? ` by ${nameOf(item.decidedBy)}` : ""
+                item.decidedBy ? ` by ${deciderLabel(item.decidedBy, nameOf)}` : ""
               }`
             : ""}
         </p>

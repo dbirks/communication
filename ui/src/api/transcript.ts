@@ -11,6 +11,7 @@
  * `interrupted` is rendered as "stopped, outcome unknown" (`10-ui-design-handoff
  * .md` J7) rather than as a resume.
  */
+import { deciderLabel } from "./actors";
 import { fallbackName } from "./names";
 import type {
   ConversationTurn,
@@ -451,7 +452,7 @@ export function projectTranscript(
           text:
             `Permission ${status}` +
             (decision ? ` (${decision})` : "") +
-            (decider ? ` — decided by ${nameOf(decider)}` : ""),
+            (decider ? ` — decided by ${deciderLabel(decider, nameOf)}` : ""),
           at,
         });
         break;

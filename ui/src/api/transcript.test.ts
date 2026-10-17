@@ -297,6 +297,52 @@ describe("projectTranscript", () => {
     expect(line?.kind === "system" && line.text).toContain("decided by Ada");
     expect(line?.kind === "system" && line.text).not.toMatch(/u-ada|[0-9a-f]{8}-/);
   });
+
+  it("names the policy when a policy, not a person, decided (ADR-0039)", () => {
+    const orphan = projectTranscript(
+      frames([
+        "conversation.permission.decided",
+        {
+          permission_request_id: "gone",
+          status: "decided",
+          decision_option_id: "allow",
+          decided_by: "profile_policy:preapproved_within_sandbox",
+        },
+      ]),
+    );
+    const line = orphan.items.find((item) => item.kind === "system");
+    expect(line?.kind === "system" && line.text).toBe(
+      "Permission decided (allow) — decided by the profile's preapproved policy (sandboxed)",
+    );
+    expect(line?.kind === "system" && line.text).not.toMatch(/profile_policy/);
+
+    const node = projectTranscript(
+      frames(
+        [
+          "conversation.permission.requested",
+          {
+            permission_request_id: "req-p",
+            title: "run command",
+            kind: "bash",
+            options: [{ option_id: "reject", label: "Reject", kind: "reject" }],
+          },
+        ],
+        [
+          "conversation.permission.decided",
+          {
+            permission_request_id: "req-p",
+            status: "decided",
+            decision_option_id: "reject",
+            decided_by: "node_policy:deny",
+          },
+        ],
+      ),
+    );
+    const card = node.items.find((item) => item.kind === "permission");
+    // The card keeps the raw decider id; `Transcript` renders it in words
+    // through `deciderLabel` (covered in actors.test.ts).
+    expect(card?.kind === "permission" && card.decidedBy).toBe("node_policy:deny");
+  });
 });
 
 describe("meaningfulPreview", () => {

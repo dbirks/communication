@@ -45,6 +45,27 @@ export function actorName(actor: EventActor, lookup: NameLookup): string {
   return `${label} (${id})`;
 }
 
+/**
+ * A `conversation.permission.decided` `decided_by` (ADR-0039) names a user
+ * or a policy, not always a person: the worker writes
+ * `profile_policy:<mode>` / `node_policy:<mode>` when the profile or step
+ * policy answered the request instead of a person, and
+ * `preapproved_within_sandbox` is the mode for an allow inside the sandbox.
+ * This turns that id into the words a feed line can read; anything that is
+ * not a policy id falls through to the normal user-name resolution.
+ */
+export function deciderLabel(decidedBy: string, nameOf: (userId: string) => string): string {
+  const match = /^([a-z]+)_policy:([a-z0-9_]+)$/i.exec(decidedBy ?? "");
+  if (!match) return nameOf(decidedBy);
+  const [, prefix, mode] = match;
+  if (prefix === "profile" || prefix === "node") {
+    const scope = prefix === "profile" ? "the profile's" : "the step's";
+    if (mode === "deny") return `${scope} deny policy`;
+    if (mode === "preapproved_within_sandbox") return `${scope} preapproved policy (sandboxed)`;
+  }
+  return `policy ${mode}`;
+}
+
 export interface ActorNames {
   /** Raw resolver, to merge with names a page holds locally. */
   lookup: NameLookup;
