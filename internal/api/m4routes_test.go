@@ -1295,6 +1295,57 @@ func TestM4PublishGates(t *testing.T) {
 	})
 }
 
+// TestM4PublishSecretFindingCode is § 7.1 C13c's measurable half: the block
+// must NAME itself. The publish gate short-circuits on the draft's recorded
+// validation, so the 422 it writes carries the § 2.2 code validate already
+// returned for the same finding (`secret_literal_detected`) as a stable
+// `code` member — not only inside prose or the `type` URI tail. And the code
+// belongs to the finding, not the route: the same draft re-validated clean
+// still publishes.
+func TestM4PublishSecretFindingCode(t *testing.T) {
+	const loc = "/spec/nodes/0/config/env/DATABASE_URL"
+	fx := m4PopulatedServer(t)
+	fx.pipes.draft.Status = "invalid"
+	fx.pipes.draft.Validation = json.RawMessage(`{"valid":false,"digest_scope":"v1alpha1-canonical-1",` +
+		`"errors":[{"code":"secret_literal_detected","source":"compiler","message":"URL with inline credentials",` +
+		`"instance_location":"` + loc + `","schema_location":null}],"notes":[]}`)
+	rec := fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/publish", `{"version":1}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("publish = %d: %s", rec.Code, rec.Body)
+	}
+	var problem struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+		Code   string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatal(err)
+	}
+	if problem.Code != string(DraftConflictSecretLiteral) {
+		t.Errorf("code = %q, want %q (body %s)", problem.Code, DraftConflictSecretLiteral, rec.Body)
+	}
+	if problem.Type != "https://communication.dev/errors/secret-literal-detected" || problem.Status != 422 {
+		t.Errorf("problem envelope = %+v", problem)
+	}
+	if !strings.Contains(problem.Detail, loc) {
+		t.Errorf("detail does not name the location: %q", problem.Detail)
+	}
+
+	fx.pipes.draft.Status = "valid"
+	fx.pipes.draft.Validation = json.RawMessage(`{"valid":true,"errors":[],"notes":[]}`)
+	fx.pipes.pipeline.LatestRevisionNumber = 6
+	fx.pipes.revision = RevisionView{} // nothing published at this digest
+	fx.pipes.publishedOut = RevisionView{ID: "rev-clean", RevisionNumber: 7, VersionLabel: "7.0.0"}
+	rec = fx.call(t, "POST", "http://localhost:8080/api/v1/drafts/"+m4UUID2+"/publish", `{"version":1}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("clean draft publish = %d: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), DraftConflictSecretLiteral) {
+		t.Errorf("the published revision body carries the secret code: %s", rec.Body)
+	}
+}
+
 func TestM4RevisionDocumentAndSchema(t *testing.T) {
 	fx := m4PopulatedServer(t)
 	rec := fx.get(t, "http://localhost:8080/api/v1/revisions/"+m4UUID+"/document?format=yaml")

@@ -853,8 +853,7 @@ func (h *plHandlers) refuseUnpublishable(w http.ResponseWriter, r *http.Request,
 	}
 	for _, e := range draftValidateErrors(draft.Validation) {
 		if e.Code == DraftConflictSecretLiteral {
-			m4WriteTypedProblem(w, http.StatusUnprocessableEntity, "secret-literal-detected",
-				"Secret Literal Detected",
+			m4SecretLiteralProblem(w,
 				fmt.Sprintf("a secret-shaped literal sits at %s; move it to a secret reference. "+
 					"The value is never quoted (ADR-0021 Security).", m4DerefOr(e.InstanceLocation, "an unresolved location")))
 			return
@@ -994,8 +993,7 @@ func (h *plHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 		h.denied(w, r, c, resourceID, action, conflict.Kind)
 		switch conflict.Kind {
 		case DraftConflictSecretLiteral:
-			m4WriteTypedProblem(w, http.StatusUnprocessableEntity, "secret-literal-detected",
-				"Secret Literal Detected", conflict.Detail)
+			m4SecretLiteralProblem(w, conflict.Detail)
 		default:
 			m4WriteDraftConflict(w, conflict)
 		}
@@ -1153,6 +1151,19 @@ func draftValidateErrors(raw json.RawMessage) []ValidateError {
 		return nil
 	}
 	return body.Errors
+}
+
+// m4SecretLiteralProblem writes the publish gate's invariant-5 refusal (m4
+// contract § 2.2 + § 7.1 C13c): the 422 carries the § 2.2 code the validate
+// endpoint already returns for the same finding — `secret_literal_detected`
+// — as a stable `code` member beside the matching `type` URI, so a client
+// switches on the code rather than parsing prose or the URI tail. The body
+// names the location and the shape and NEVER the literal (ADR-0021 Security).
+func m4SecretLiteralProblem(w http.ResponseWriter, detail string) {
+	m4WriteTypedProblemExtra(w, http.StatusUnprocessableEntity, "secret-literal-detected",
+		"Secret Literal Detected", detail, struct {
+			Code string `json:"code"`
+		}{Code: DraftConflictSecretLiteral})
 }
 
 // m4WriteTypedProblem writes a problem+json whose type member is the stable

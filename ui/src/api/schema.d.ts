@@ -1922,6 +1922,17 @@ export interface components {
       detail?: string;
     };
     /**
+     * PublishUnprocessableProblem
+     * @description The publish gate's `422`: the `Problem` shape plus the stable `code` member carrying the § 2.2 validation code verbatim (`secret_literal_detected` today). Codes are a public contract — adding one is additive, renaming one is not.
+     */
+    PublishUnprocessableProblem: components["schemas"]["Problem"] & {
+      /**
+       * @description The blocking validation class, identical to the `errors[].code` the draft's validation named (never the snake_case→kebab spelling of the `type` URI).
+       * @enum {string}
+       */
+      code: "secret_literal_detected";
+    };
+    /**
      * Me
      * @description The signed-in principal plus the CSRF token required by mutations.
      */
@@ -4350,7 +4361,7 @@ export interface components {
         "application/problem+json": components["schemas"]["ApprovalConflictProblem"];
       };
     };
-    /** @description `422` for `POST /drafts/{draftId}/publish`: the document would publish except for a blocking validation class — today that means a `secret_literal_detected` (ADR-0021 Security / `01` invariant 5: the compiler-side detector, a block not a warning, and the response body **redacts the value** — it names the location and the shape, never the literal). The `errors[]` units are the § 2.2 shape; the envelope path of ADR-0018 stays the only place a value is ever held. */
+    /** @description `422` for `POST /drafts/{draftId}/publish`: the document would publish except for a blocking validation class — today that means a `secret_literal_detected` (ADR-0021 Security / `01` invariant 5: the compiler-side detector, a block not a warning, and the response body **redacts the value** — it names the location and the shape, never the literal). The stable `code` member is the § 2.2 code the validate endpoint already returns for the same finding, so a client branches on one string rather than the `type` URI tail or the prose. The `errors[]` units are the § 2.2 shape; the envelope path of ADR-0018 stays the only place a value is ever held. */
     PublishUnprocessable: {
       headers: {
         "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
@@ -4362,10 +4373,11 @@ export interface components {
          *       "type": "https://communication.dev/errors/secret-literal-detected",
          *       "title": "Secret literal detected",
          *       "status": 422,
-         *       "detail": "a secret-shaped literal sits at /spec/nodes/2/config/prompt; move it to a secret reference."
+         *       "detail": "a secret-shaped literal sits at /spec/nodes/2/config/prompt; move it to a secret reference.",
+         *       "code": "secret_literal_detected"
          *     }
          */
-        "application/problem+json": components["schemas"]["Problem"];
+        "application/problem+json": components["schemas"]["PublishUnprocessableProblem"];
       };
     };
     /** @description `422` on run creation: the submitted `inputs` failed validation against the pinned revision's `spec.inputs`. The body reuses the § 2.2 shape — same `errors[]` units with machine-readable `instance_location`s — so one editor component renders both. */
