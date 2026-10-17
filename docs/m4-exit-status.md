@@ -35,7 +35,7 @@ Contract authority: `docs/m4-contract.md` § 7.1 (gates C1–C14, sub-cases name
 | pass 27 | `live27/` | `1b93069` (contains `a0fd9e7` + `1b93069`: `deny` and `preapproved_within_sandbox` put `claude-agent-acp` in the launcher's prompting mode, in attempts AND conversations) | **C1 + C2 in one process** (**127 PASS / 0 FAIL / 0 GAP** = C1's 98 (`:7-:209`) + C2's 29 (`:210-:278`); summary `live27/C1,C2.out:280`) — and the ADR-0036 condition (a) gap closed in the lab journal read after the pass: `conversation.permission.requested` **23**, `conversation.permission.decided` **23** (every row `status=decided`, `decided_by=node_policy:preapproved_within_sandbox`) against **31** `conversation.tool.call` rows. The same query on live25 read **0** permission rows against 34 tool calls (`docs/design/attempt-permissions.md` § "Why attempts journal no verdict") |
 | pass 28 | `live28/` | `7e6eda3` | **C1 rerun — crashed in the driver, no verdict recorded:** the new C1j journal query died mid-gate — `live28/C1.out:84` `ERROR: operator does not exist: text ->> unknown` (in Postgres `||` binds tighter than `->>`, so the un-parenthesised join is a syntax-level bug in the check itself, not in the product) — after **30 PASS** lines; fixed in `c11d01f` and re-run at pass 29 |
 | pass 29 | `live29/` | `d4cd945` (contains `c11d01f`'s C1j parenthesisation fix) | **C1 rerun** (**C1 101 PASS / 0 FAIL / 0 GAP** — `grep -c '^  PASS' live29/C1.out` = 101, summary `live29/C1.out:228` `FAIL=0 GAP=0`; **C1j measured live for the first time**: all four arms PASS at `live29/C1.out:97-:100` — **8** permission requests / **8** decisions, every decided row `status=decided` with `decided_by=node_policy:preapproved_within_sandbox`, none unanswered, none doubled, no orphans) |
-| pass 30 | `live30/` | `c1c7c19` (conversation deny prompts closed `cancelled` by policy; preapproved conversations back to the harness's auto mode) | **deny probe** (`docs/compatibility/probes/m4/deny_probe.sh`, added in `14b110f`) — `live30/deny_probe.out`: a live `deny`-profile conversation, **every verdict PASS** — `1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved` and `deny-probe.txt` in no workspace: deny is enforced on the conversation path |
+| pass 30 | `live30/` | `c1c7c19` (conversation deny prompts closed `cancelled` by policy; preapproved conversations back to the harness's auto mode) | **deny probe** (`docs/compatibility/probes/m4/deny_probe.sh`, added in `14b110f`) — `live30/deny_probe.out`: a live `deny`-profile conversation, **every verdict PASS** — `1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved` and `deny-probe.txt` in no workspace: deny is enforced on the conversation path. **Correction (pass 32):** that filesystem check was vacuous — the conversation workspace is released at turn end (the journal carries a `workspace.released` row for the conversation, so `/workspaces/conversation/<id>/` no longer exists) — and the journal shows the write ended `failed` with "User refused permission to run tool"; re-measured at pass 32 with the journal verdict, `live32/policy_probe3-deny.out`, every verdict PASS |
 | pass 31 | `live31/` | `c9b0a49` (the final M4 build — contains every fix through pass 30: `e83913a`'s mirror grants, `a0fd9e7`/`1b93069`/`c1c7c19`'s permission modes, `90a29c2`'s C1g bound, `7e6eda3`/`c11d01f`'s C1j) | **full regression sweep on the final M4 build: every gate group, 0 FAIL** — four driver processes, all rc=0: C1, C5, C6 (**186 PASS / 0 FAIL / 16 GAP lines** — summary `live31/C1,C5,C6.out:525` `FAIL=0 GAP=8`), C3, C4 (**70 PASS / 0 FAIL / 8 GAP lines** — `:193`), C1, C2, C7, C8, C10, C12, C13, C14, C11 (**329 PASS / 0 FAIL / 36 GAP lines** — `:1044`), C9 (**92 PASS / 0 FAIL / 14 GAP lines** — `:257`): 677 PASS / 0 FAIL across the sweep, and every GAP line is a row-named arm re-emitted (the C9 group, dormant since pass 21, re-emits the C9a/C9e/C9f/C9 arms recorded at passes 19/21) |
 
 **M5 browser journeys are recorded here too, but they are not § 7 items** and ran outside the gate
@@ -498,7 +498,11 @@ un-parenthesised `payload->>` crashed the query 30 PASS lines in (`||` binds tig
 `live28/C1.out:84`) — a driver bug fixed in `c11d01f`; no product verdict rides on it. Pass 30 added
 off-scoreboard evidence on `c1c7c19`: `deny_probe.sh` (`14b110f`) proves `deny` is enforced live on the
 **conversation** path — `live30/deny_probe.out` reads **1 requested / 1 decided (cancelled) / 0 allow /
-0 preapproved** and `deny-probe.txt` lands in no workspace, every verdict PASS. After `c1c7c19` the
+0 preapproved** and `deny-probe.txt` lands in no workspace, every verdict PASS. (Corrected at pass
+32: that filesystem check was vacuous — the conversation workspace is released at turn end, the
+journal carries a `workspace.released` row — and the journal shows the write ended `failed`,
+"User refused permission to run tool"; re-measured with the journal verdict in
+`live32/policy_probe3-deny.out`, every verdict PASS.) After `c1c7c19` the
 policy verdict C1j asserts is an **attempt-path** fact: preapproved conversations run in the harness's
 auto mode with no per-call verdict (recording a policy decider on that path needs a
 `permission_requests.decided_by` schema change + ADR), so ADR-0036 condition (a) is closed **for pipeline
@@ -516,6 +520,18 @@ the superseded twin C6d arms, the named GAP arms C5e, C6c, C9 and C14b, and the 
 secondary arms (C3a, C4c, C4e, C5h, C7a, C7b, C7d, C8f, C9a, C9e, C9f, C10b, C11, C11b, C14c) —
 nothing new is unmeasured; the C9 group's arms simply re-appear because C9 ran again. The two GAPs
 left (C7c, C10c) are unchanged; no NOT RUN rows remain.
+
+**Pass 32 (off-scoreboard, ADR-0039 policy decisions measured live on both modes):** lab `324818c`
+plus the held UI (committed as `6685f58`). `deny_probe.sh`'s verdict (f) now reads the journal,
+not the filesystem: the conversation workspace is released when the turn ends (a
+`workspace.released` row for the conversation), so the pass-30 "in no workspace" check was
+vacuous and "in exactly one workspace" could never pass (live: `worker matches=0` although the
+agent wrote the file). The re-measure (`live32/policy_probe3-deny.out`,
+`live32/policy_probe3-preapproved_within_sandbox.out`, both under
+`$HOME/.cache/communication-lab/m4-exit/`) is **every verdict PASS** on both modes — deny:
+the tool update for `deny-probe.txt` ended `failed` ("User refused permission to run tool")
+and no update says "created successfully" for it; preapproved: a tool update says "File
+created successfully" naming `preapproved-probe.txt`. No scoreboard row changes.
 
 ## What blocks the M4 exit
 

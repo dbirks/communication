@@ -24,7 +24,7 @@ no longer means "everything SKIPs".
 | `lib.sh` | Sourced helpers § 7.0 names: `run_sql`, `api` (cookie jar per user), `events_of_run <run_id> <type>…`, `m4_assert`, plus the `CHECK`/`NOTE` reporters and `m4_stack_up`. **bash only** — sourcing it from zsh breaks the shell's `PATH` (zsh ties `path` to `PATH`, and lib.sh sets `path` as an array), so always `bash -c 'source docs/compatibility/probes/m4/lib.sh; …'`. |
 | `pipeline.yaml` | The § 7 sample pipeline set — **three `---`-delimited documents**: the § 9.3 corrected sample (`feature-development`, agent variant), its deterministic `process.exec` twin (`feature-development-deterministic`, identical node ids ⇒ identical compiled `node_instance_key` set — the C1 twin requirement), and the C8 fan-out child (`issue-implementation`). See "The seed pipeline" below. |
 | `seed.sh` | The § 7.0 seed contract: logs the lab users through the mock IdP, creates the project/members/repo, seeds the three profiles (SQL — there is no profile-write API, M3 D10), creates + mounts the `test-database-url` sentinel secret, then draft → validate → publish → assignment → **POST two runs** (agent + twin), printing every id to a `seed-manifest.json` the exit gates consume. Contract = `api/openapi.yaml` only; every failed call prints the problem detail verbatim and stops. |
-| `deny_probe.sh` | Live deny-enforcement probe (a0fd9e7 / 1b93069): upserts profile `m4-deny-probe` (`permission_mode deny`, seed_profile's shape), creates a conversation as alice in the seeded project, POSTs one message asking for `deny-probe.txt`, waits (bounded 240s / 5s steps) for the turn to go terminal, then reads the `conversation.permission.*` pair out of the journal and prints `PASS`/`FAIL` verdicts: it prompted, no verdict was an allow, none was preapproved, and the refused file exists in no readable workspace. Needs the stack up **and** `seed.sh`'s project; exit 0 only when every verdict passed. |
+| `deny_probe.sh [deny\|preapproved_within_sandbox]` | Live policy-enforcement probe (a0fd9e7 / 1b93069 prompting modes, ADR-0039 policy verdicts): upserts profile `m4-<mode>-probe` (`permission_mode <mode>`, seed_profile's shape), creates a conversation as alice in the seeded project, POSTs one message asking for `deny-probe.txt` / `preapproved-probe.txt`, waits (bounded 240s / 5s steps) for the turn to go terminal, then reads the `conversation.permission.*` pair out of the journal and prints `PASS`/`FAIL` verdicts: it prompted, every requested prompt closed with exactly one `decided` row (status=decided, decided_by=profile_policy:<mode>, reject_* / allow_* option kind per policy), every `permission_requests` row is decided by the policy, and the journal's `conversation.tool.update` rows say the write was refused — the tool call naming the file ended `failed` and no update says it was created (deny) — or says "File created successfully" naming the file (preapproved); the conversation workspace is released at turn end (`workspace.released`), so the old filesystem look is only an informational line. Default `deny`, so existing usage is unchanged. Needs the stack up **and** `seed.sh`'s project; exit 0 only when every verdict passed. |
 | `validate_pipeline.py` | Offline schema check for `pipeline.yaml` against `internal/pipelines/schema/assets/pipeline-v1alpha1.schema.json` (the canonical asset the API serves at `GET /api/v1/schemas/pipeline-v1alpha1`). Host tooling only: `python3` + `PyYAML` + `jsonschema` (draft 2020-12) — already present in the lab, **not repo dependencies**; structure only — the loader/compiler rules (DAG, unknown ids, CEL subset, secret policy) are proven by the `validate` route and by C12/C13. |
 
 ## Isolation (§ 7.0 — the reason this directory has its own compose project)
@@ -414,11 +414,13 @@ sound in the pinned validator: `go run ./cmd/communication doctor --pipelines`
 cd docs/compatibility/probes/m4
 bash run.sh                 # -> results-exit.txt (intent ledger; SKIPs by contract)
 bash seed.sh                # § 7.0 seed: ids + seed-manifest.json (needs the stack up)
-bash deny_probe.sh          # live proof a `deny` profile refuses (seed.sh's m4-exit project + a running worker)
+bash deny_probe.sh                        # live proof a `deny` profile refuses (seed.sh's m4-exit project + a running worker)
+bash deny_probe.sh preapproved_within_sandbox   # ADR-0039: the prompt decides allow_* and the file lands
 ```
-`deny_probe.sh` is the live arm ADR-0036's condition (a) needs on conversations: a
-`deny` run must prompt, and every journalled verdict must be a rejection or an
-honest close-without-decision — never an allow and never a preapproval.
+`deny_probe.sh [deny|preapproved_within_sandbox]` (default `deny`) is the live arm ADR-0036's condition (a) needs on
+conversations, generalised after ADR-0039: every prompt closes `decided` by the profile's policy (decided_by
+profile_policy:<mode>, reject_* / allow_* option) — a cancelled-with-no-option close is now a FAIL unless no such
+option was offered — and the preapproved mode additionally proves the write landed.
 
 Seed.sh error-path proof without a stack (the two dry-run arms this was
 verified with): against nothing it dies at the readiness gate (`SEED FAIL
