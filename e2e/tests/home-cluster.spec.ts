@@ -514,6 +514,11 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       evidence.push(`project: ${PROJECT_NAME} (${shortRefOf(projectId)})`);
     });
     await test.step("add the public repository; the binding name is the form's name", async () => {
+      // The binding row and the empty list are both rendered only after the
+      // repositories fetch resolves; settle on one of them before branching.
+      await expect(
+        rowFor(page, REPO_BINDING).or(page.getByTestId("repo-list-empty")).first(),
+      ).toBeVisible({ timeout: 30_000 });
       if (await rowFor(page, REPO_BINDING).isVisible().catch(() => false)) {
         console.log(`repository binding already present: ${REPO_BINDING}`);
       } else {
@@ -604,6 +609,11 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       await gotoApp(page, `${projectPath}/pipelines`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       const open = page.getByTestId(`assign-open-${PLAN_SLUG}`);
+      const assignment = page.getByTestId(`pipeline-assignment-${PLAN_SLUG}`);
+      // The assign button and the pin chip are both rendered by the
+      // project-pipelines list once its fetch settles; settle on either
+      // branch's marker before deciding which one is present.
+      await expect(open.or(assignment).first()).toBeVisible({ timeout: 30_000 });
       if (await open.isVisible().catch(() => false)) {
         await open.click();
         await expect(page.getByTestId(`assign-pinning-${PLAN_SLUG}`)).toContainText("r1", {
@@ -617,9 +627,7 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
         // One assignment per pipeline is the store's UNIQUE, so the assign
         // button renders only while the assignment is absent: its absence plus
         // the project's own pin chip is the already-assigned state (re-run).
-        await expect(
-          page.getByTestId(`pipeline-assignment-${PLAN_SLUG}`),
-        ).toBeVisible({ timeout: 30_000 });
+        await expect(assignment).toBeVisible({ timeout: 30_000 });
         console.log(`already assigned to the project: ${PLAN_SLUG}`);
         evidence.push(`assignment (reused): ${PLAN_SLUG} r1 pinned to the project`);
       }
@@ -962,6 +970,10 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       await gotoApp(page, `${projectPath}/pipelines`);
       await expect(page.getByTestId("project-pipelines")).toBeVisible();
       const open = page.getByTestId(`assign-open-${CLAUDE_SLUG}`);
+      const assignment = page.getByTestId(`pipeline-assignment-${CLAUDE_SLUG}`);
+      // Same assign/already-assigned race as the plan pipeline: settle on
+      // either branch's marker before deciding which one is present.
+      await expect(open.or(assignment).first()).toBeVisible({ timeout: 30_000 });
       if (await open.isVisible().catch(() => false)) {
         await open.click();
         await expect(page.getByTestId(`assign-pinning-${CLAUDE_SLUG}`)).toContainText("r1", {
@@ -974,9 +986,7 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       } else {
         // Re-run: the assign button renders only while the UNIQUE assignment
         // is absent; its absence plus the project's pin chip is assigned.
-        await expect(
-          page.getByTestId(`pipeline-assignment-${CLAUDE_SLUG}`),
-        ).toBeVisible({ timeout: 30_000 });
+        await expect(assignment).toBeVisible({ timeout: 30_000 });
         console.log(`already assigned to the project: ${CLAUDE_SLUG}`);
         evidence.push(`assignment (reused): ${CLAUDE_SLUG} r1 pinned to the project`);
       }
