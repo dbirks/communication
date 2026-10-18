@@ -58,6 +58,11 @@ const (
 	ModelChatCodeSchemaFail  = "response_schema_mismatch"
 	ModelChatCodeOutputsLg   = "outputs_too_large"
 	ModelChatCodeBadResponse = "malformed_completion"
+	// completion_truncated: the model used its whole maxTokens budget on
+	// reasoning (finish_reason=length, empty answer). invalid_output is the
+	// only ADR-0023 § 7 class this fits — there is no model-budget class, and
+	// the failure surfaces exactly where malformed completions surface.
+	ModelChatCodeTruncated = "completion_truncated"
 )
 
 // ModelChat executes model.chat attempts (docs/m4-contract.md § 4 step 8): ONE
@@ -344,7 +349,7 @@ func (m *ModelChat) Execute(ctx context.Context, c AttemptClaim, _ AttemptSink) 
 	if bad != nil {
 		return *bad, nil
 	}
-	text, bad := completionText(status, resp)
+	text, bad := completionText(status, resp, spec)
 	if bad != nil {
 		return *bad, nil
 	}
@@ -570,6 +575,9 @@ type completionEnvelope struct {
 	Choices []struct {
 		Message *struct {
 			Content json.RawMessage `json:"content"`
+			// ReasoningContent is read only to count its characters for the
+			// completion_truncated detail — its text is never stored anywhere.
+			ReasoningContent json.RawMessage `json:"reasoning_content"`
 		} `json:"message"`
 		Text         string `json:"text"`
 		FinishReason string `json:"finish_reason"`
@@ -581,7 +589,7 @@ type completionEnvelope struct {
 }
 
 // completionText pulls the one message § 4 step 8 allows: text, nothing else.
-func completionText(status int, raw []byte) (string, *AttemptResult) {
+func completionText(status int, raw []byte, spec *modelChatSpec) (string, *AttemptResult) {
 	var env completionEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return "", mcBad(ErrorClassInvalidOutput, ModelChatCodeBadResponse, fmt.Sprintf(
@@ -620,6 +628,28 @@ func completionText(status int, raw []byte) (string, *AttemptResult) {
 	default:
 		return "", mcBad(ErrorClassInvalidOutput, ModelChatCodeBadResponse,
 			"model.chat: the completion carries no message content, so the node has no text")
+	}
+	// Reasoning models (e.g. qwen3-8-27b) can spend the whole budget thinking
+	// and answer nothing: finish_reason=length with empty content. Fail the
+	// attempt with the specific cause BEFORE schema validation, which would
+	// only report the downstream symptom (a minLength violation on /text).
+	if env.Choices[0].FinishReason == "length" && content == "" {
+		n := "unset"
+		if spec.maxTokens != nil {
+			n = fmt.Sprintf("%d", *spec.maxTokens)
+		}
+		var reasoning int
+		if msg != nil {
+			var s string
+			if err := json.Unmarshal(msg.ReasoningContent, &s); err == nil {
+				reasoning = utf8.RuneCountInString(s)
+			} else {
+				reasoning = len(msg.ReasoningContent)
+			}
+		}
+		return "", mcBad(ErrorClassInvalidOutput, ModelChatCodeTruncated, fmt.Sprintf(
+			"model.chat: the model used its whole maxTokens budget (%s) before answering (finish_reason=length; reasoning tokens: %d) — raise config.maxTokens",
+			n, reasoning))
 	}
 	return content, nil
 }

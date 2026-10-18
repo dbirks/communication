@@ -105,7 +105,7 @@ spec:
     config:
       model: qwen3-8-27b
       temperature: 0.2
-      maxTokens: 4000
+      maxTokens: 16000  # reasoning models (qwen3-8-27b) spend part of this budget thinking before they answer
       messages:
       - role: system
         content: >-

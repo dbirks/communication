@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -232,6 +233,89 @@ func TestModelChatSchemaMismatch(t *testing.T) {
 	res2, _ := mcExecutor(srv.srv.URL).Execute(context.Background(), mcClaim(mcConfig()), nil)
 	if res2.Status != AttemptStatusFailed || res2.ErrorClass != ErrorClassInvalidOutput {
 		t.Fatalf("non-json reply = %s/%s, want failed/invalid_output", res2.Status, res2.ErrorClass)
+	}
+}
+
+// Reasoning models (qwen3-8-27b in the lab collective) spend the whole
+// maxTokens budget thinking and answer nothing: finish_reason=length, empty
+// content. The attempt must fail with the specific cause BEFORE schema
+// validation — the schema would only report the symptom (minLength on /text)
+// — and the detail carries the budget and the reasoning content's length,
+// never its text.
+func TestModelChatCompletionTruncated(t *testing.T) {
+	const marker = "the-model-was-thoughtfully-pondering-this-for-a-long-time"
+	srv := newMCServer(t)
+	body, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"role":              "assistant",
+				"content":           "",
+				"reasoning_content": marker,
+			},
+			"finish_reason": "length",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.send(mcReply{status: 200, body: string(body)})
+	res, _ := mcExecutor(srv.srv.URL).Execute(context.Background(), mcClaim(mcConfig()), nil)
+	if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInvalidOutput {
+		t.Fatalf("terminal = %s/%s, want failed/invalid_output", res.Status, res.ErrorClass)
+	}
+	for _, want := range []string{
+		"maxTokens budget (64)", // mcConfig's maxTokens, named in the detail
+		"finish_reason=length",
+		"reasoning tokens: " + strconv.Itoa(len(marker)),
+		"raise config.maxTokens",
+	} {
+		if !strings.Contains(res.Detail, want) {
+			t.Errorf("detail = %q, want it to contain %q", res.Detail, want)
+		}
+	}
+	// The failure is the truncation, not the schema's downstream symptom, and
+	// the reasoning content's text must never enter the detail.
+	if strings.Contains(res.Detail, "responseSchema") || strings.Contains(res.Detail, marker) {
+		t.Errorf("detail leaked the schema symptom or the reasoning text: %s", res.Detail)
+	}
+	if res.Outputs != nil {
+		t.Errorf("outputs must stay empty on a truncated completion: %#v", res.Outputs)
+	}
+}
+
+// finish_reason=length with a non-empty answer keeps today's behaviour: the
+// text is what the node receives, the declared outputs shape is unchanged
+// (no truncated field is added), and only the schema owns the shape check.
+func TestModelChatTruncatedButAnswered(t *testing.T) {
+	srv := newMCServer(t)
+	body, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"role":              "assistant",
+				"content":           `{"verdict":"approve","notes":"clean"}`,
+				"reasoning_content": "a long chain of thought that ate most of the budget",
+			},
+			"finish_reason": "length",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.send(mcReply{status: 200, body: string(body)})
+	res, err := mcExecutor(srv.srv.URL).Execute(context.Background(), mcClaim(mcConfig()), nil)
+	if err != nil || res.Status != AttemptStatusSucceeded {
+		t.Fatalf("terminal = %s/%s err=%v, want succeeded (length with an answer is not a failure)",
+			res.Status, res.ErrorClass, err)
+	}
+	out, ok := res.Outputs.(map[string]any)
+	if !ok {
+		t.Fatalf("outputs = %#v, want an object", res.Outputs)
+	}
+	if _, hasTruncated := out["truncated"]; hasTruncated {
+		t.Errorf("outputs must not grow a truncated field: %#v", out)
+	}
+	if out["text"] != `{"verdict":"approve","notes":"clean"}` {
+		t.Errorf("outputs.text = %v", out["text"])
 	}
 }
 
