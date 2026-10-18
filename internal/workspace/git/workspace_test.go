@@ -64,16 +64,26 @@ func labDir(t *testing.T) string {
 	return dir
 }
 
-// gitEnv is the identity the fixture commits under — per-process env only, so
-// a developer's global git config is never touched.
+// gitIdentityEnv is the identity every fixture commits under, plus the
+// switches that keep the developer's global and system git config out of the
+// picture. CI has no global identity at all; these env vars make a local run
+// behave exactly like CI ("Author identity unknown" must never happen).
+var gitIdentityEnv = []string{
+	"GIT_AUTHOR_NAME=communication-test",
+	"GIT_AUTHOR_EMAIL=test@communication.invalid",
+	"GIT_COMMITTER_NAME=communication-test",
+	"GIT_COMMITTER_EMAIL=test@communication.invalid",
+	"GIT_CONFIG_GLOBAL=/dev/null",
+	"GIT_CONFIG_NOSYSTEM=1",
+}
+
 func setGitIdentity(t *testing.T) {
 	t.Helper()
-	t.Setenv("GIT_AUTHOR_NAME", "communication-test")
-	t.Setenv("GIT_AUTHOR_EMAIL", "test@communication.invalid")
-	t.Setenv("GIT_COMMITTER_NAME", "communication-test")
-	t.Setenv("GIT_COMMITTER_EMAIL", "test@communication.invalid")
-	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "nonexistent-gitconfig"))
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	for _, kv := range gitIdentityEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			t.Setenv(k, v)
+		}
+	}
 }
 
 // runOK is `run` for commands whose non-zero exit is an answer rather than a
@@ -83,6 +93,7 @@ func runOK(t *testing.T, dir string, argv ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", argv...) //nolint:gosec // test fixture argv
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), gitIdentityEnv...)
 	out, _ := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
@@ -91,6 +102,7 @@ func run(t *testing.T, dir string, argv ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", argv...) //nolint:gosec // test fixture argv
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), gitIdentityEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(argv, " "), err, out)

@@ -62,7 +62,10 @@ func procExecScratch(t *testing.T, name string) string {
 		t.Fatalf("create lab scratch: %v", err)
 	}
 	if err := wsgit.RefuseTempPath(dir); err != nil {
-		t.Fatalf("lab scratch location: %v", err)
+		// A location the contract refuses is a setup detail (e.g. $HOME itself
+		// is under /tmp), not a test failure: skip, as the workspace/git lab
+		// helper does.
+		t.Skipf("lab scratch location: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
