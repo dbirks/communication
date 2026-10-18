@@ -201,7 +201,7 @@ const runClaimPredicate = `
 // liveness and capacity, affinity-bound, tie-broken by
 // (priority DESC, scheduled_at, id), token drawn from attempt_fencing_seq at
 // claim time only. The joined columns the worker needs travel through the
-// sub-select (an UPDATE ... FROM can only RETURN from the target and the
+// picked CTE (an UPDATE ... FROM can only RETURN from the target and the
 // FROM alias), which is the ADR's `RETURNING a.*, ne.node_instance_key,
 // r.revision_digest, r.plan_digest` made executable. migrate_test.go pins
 // this shape against the real DB.
@@ -214,6 +214,17 @@ const runClaimPredicate = `
 // nothing never spends a token. Every row of one batch then shares one token,
 // max(fencing_token) tracks the claim count, and a replacement claim always
 // carries a strictly greater token (`12` case 3).
+//
+// Candidate selection is its own MATERIALIZED CTE as well, not a derived
+// table: in `UPDATE ... FROM (SELECT ... LIMIT n) w` the planner may place
+// the subquery on the inner side of a nested loop and RE-EXECUTE it per
+// outer row — and with SKIP LOCKED plus concurrent activity each execution
+// can return a different row, so one claim returned MORE rows than its LIMIT
+// (CI's "capacity-1 worker claimed 2 attempts" over-claim from a SINGLE
+// ClaimAttempts call, which the workers-row FOR UPDATE cannot prevent). A
+// MATERIALIZED CTE runs exactly once; the LIMIT is then absolute. The
+// plan shape is pinned by TestClaimSQLPlanPinsMaterializedCTE and
+// TestMigrate0005ClaimRace's EXPLAIN block.
 const runClaimSQL = `
 	WITH tok AS MATERIALIZED (
 		SELECT nextval('attempt_fencing_seq') AS token
@@ -225,13 +236,8 @@ const runClaimSQL = `
 			JOIN workers wr        ON wr.id = $1::uuid
 			WHERE ` + runClaimPredicate + `
 		)
-	)
-	UPDATE attempts a
-	SET status = 'leased',
-	    worker_id = w.worker_id,
-	    lease_expires_at = now() + make_interval(secs => $2::double precision),
-	    fencing_token = tok.token
-	FROM (
+	),
+	picked AS MATERIALIZED (
 		SELECT a2.id AS attempt_id, $1::uuid AS worker_id,
 		       ne.node_id, ne.node_instance_key, ne.kind, ne.execution_location,
 		       ne.scope_key,
@@ -245,7 +251,13 @@ const runClaimSQL = `
 		ORDER BY r.priority DESC, a2.scheduled_at, a2.id
 		FOR UPDATE OF a2 SKIP LOCKED
 		LIMIT $3::int
-	) w, tok
+	)
+	UPDATE attempts a
+	SET status = 'leased',
+	    worker_id = w.worker_id,
+	    lease_expires_at = now() + make_interval(secs => $2::double precision),
+	    fencing_token = tok.token
+	FROM picked w, tok
 	WHERE a.id = w.attempt_id
 	RETURNING a.id, a.node_execution_id, a.run_id, a.attempt_number,
 	          a.worker_id::text, a.fencing_token, a.deadline_at, a.overrides, a.retry_context,
@@ -322,6 +334,13 @@ func (s *RunStore) ClaimAttempts(ctx context.Context, workerID string, limit int
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: read claimed attempts: %w", err)
+	}
+	// Defensive invariant: picked ran once (MATERIALIZED) and yields at most
+	// LIMIT rows, so more than that means the claim statement misfired — a
+	// re-executing candidate selection would over-lease capacity. Refuse the
+	// whole claim and roll back rather than silently over-lease.
+	if len(claims) > limit {
+		return nil, fmt.Errorf("postgres: claim for %s returned %d attempts for LIMIT %d; refusing to over-lease", workerID, len(claims), limit)
 	}
 	if len(claims) == 0 {
 		return nil, nil

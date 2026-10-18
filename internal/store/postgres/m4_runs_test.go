@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -255,7 +256,11 @@ func TestMigrate0005AttemptLeaseLies(t *testing.T) {
 // database: two workers, one queue, FOR UPDATE SKIP LOCKED handing each
 // claim to exactly one owner with strictly monotonic tokens; capacity, run
 // status and affinity in the predicate; the stale token rejecting (case 3)
-// and capacity accounting closing on the terminal write.
+// and capacity accounting closing on the terminal write. The capacity gate
+// itself is exercised under a real race: two claims by the capacity-1
+// worker start on a barrier (two pools) and together may win exactly one
+// attempt — the workers-row FOR UPDATE, not the predicate read, is what
+// guarantees that.
 func TestMigrate0005ClaimRace(t *testing.T) {
 	ctx := testCtx(t)
 	f := m4Setup(t)
@@ -267,23 +272,63 @@ func TestMigrate0005ClaimRace(t *testing.T) {
 	online1 := m4Worker(t, ctx, f.pool, "race-one", 2)
 	online2 := m4Worker(t, ctx, f.pool, "race-two", 1)
 
-	// online2 has capacity 1: exactly one claim, then the predicate refuses.
-	claims2, err := f.runs.ClaimAttempts(ctx, online2, 5)
+	// online2 has capacity 1. The race it must survive is two claims by the
+	// SAME worker in flight at once: the workers-row FOR UPDATE in
+	// ClaimAttempts (attempts.go) serializes them, so the pair wins exactly
+	// ONE attempt together. Without that lock both could read
+	// active_attempts = 0 under READ COMMITTED and each lease one — the
+	// intermittent CI flake "capacity-1 worker claimed 2 attempts". The old
+	// version of this test only ever claimed sequentially, so it could never
+	// have observed that race; the barrier below makes the two claims truly
+	// concurrent. Two pools make the race un-optimizable (house pattern from
+	// TestAttemptWorkerConcurrentClaimsOneLeaseEach).
+	pool2, err := Open(ctx, mustMigrate(t))
 	if err != nil {
-		t.Fatalf("claim for worker 2: %v", err)
+		t.Fatalf("second pool: %v", err)
 	}
-	if len(claims2) != 1 {
-		t.Fatalf("capacity-1 worker claimed %d attempts, want 1 (workers.capacity is load-bearing)", len(claims2))
+	t.Cleanup(pool2.Close)
+	store2 := &RunStore{Pool: pool2}
+
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		claims []AttemptClaim
+	)
+	start := make(chan struct{})
+	for _, run := range []func() ([]AttemptClaim, error){
+		func() ([]AttemptClaim, error) { return f.runs.ClaimAttempts(ctx, online2, 5) },
+		func() ([]AttemptClaim, error) { return store2.ClaimAttempts(ctx, online2, 5) },
+	} {
+		wg.Add(1)
+		go func(run func() ([]AttemptClaim, error)) {
+			defer wg.Done()
+			<-start
+			cs, err := run()
+			if err != nil {
+				t.Errorf("racing claim for worker 2: %v", err)
+				return
+			}
+			mu.Lock()
+			claims = append(claims, cs...)
+			mu.Unlock()
+		}(run)
 	}
-	first := claims2[0]
+	close(start)
+	wg.Wait()
+
+	if len(claims) != 1 {
+		t.Fatalf("capacity-1 worker claimed %d attempts across two raced claims, want 1 (workers.capacity is load-bearing)", len(claims))
+	}
+	first := claims[0]
 	if first.FencingToken <= 0 {
 		t.Fatalf("claim drew fencing_token %d, want > 0", first.FencingToken)
 	}
 	if first.AttemptID != a1 && first.AttemptID != b1 {
 		t.Fatalf("claimed attempt %s is not one of the queued pair", first.AttemptID)
 	}
+	// A third, sequential claim while the first is live still refuses.
 	if again, err := f.runs.ClaimAttempts(ctx, online2, 5); err != nil {
-		t.Fatalf("second claim for worker 2: %v", err)
+		t.Fatalf("third claim for worker 2: %v", err)
 	} else if len(again) != 0 {
 		t.Errorf("capacity-1 worker claimed %d more attempts while its first was live", len(again))
 	}
@@ -396,6 +441,19 @@ func TestMigrate0005ClaimRace(t *testing.T) {
 			t.Errorf("worker %s claimed a run bound by affinity to %s", c.WorkerID, online1)
 		}
 	}
+
+	// Plan shape — the over-claim fix (claim-race2): the candidate
+	// selection must be a one-shot 'CTE Scan on picked', not a derived
+	// table a nested loop could re-execute per row of the UPDATE (with
+	// SKIP LOCKED each re-execution can hand a different row to the same
+	// LIMIT, so one claim leased more attempts than its LIMIT — the CI
+	// flake a workers-row lock cannot explain). EXPLAIN does not execute,
+	// so this has no effect on the claims above.
+	plan := explainPlanLines(t, f.pool, runClaimSQL, online2, 300.0, 1)
+	if !strings.Contains(plan, "CTE Scan on picked") {
+		t.Errorf("claim plan lacks the one-shot 'CTE Scan on picked' node; candidate selection may re-execute:\n%s", plan)
+	}
+	t.Logf("claim plan (MATERIALIZED picked CTE):\n%s", plan)
 }
 
 // m4Workspace seeds a run-scope workspace row (run_checkpoints references
