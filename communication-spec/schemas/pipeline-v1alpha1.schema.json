@@ -1050,6 +1050,14 @@
      "type": "integer",
      "minimum": 1,
      "maximum": 200000
+    },
+    "reasoningEffort": {
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "description": "Optional reasoning effort (ADR-0041). When set, the worker forwards it to the OpenAI-compatible endpoint as reasoning_effort; unset sends nothing, as before. Endpoints may ignore it."
     }
    }
   },

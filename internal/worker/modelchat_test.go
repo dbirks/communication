@@ -507,6 +507,62 @@ func TestModelChatNumericConfig(t *testing.T) {
 	}
 }
 
+// TestModelChatReasoningEffortWireBody is the ADR-0041 wire contract: when the
+// node sets reasoningEffort the OpenAI-compatible request carries
+// reasoning_effort; when it does not, the body is byte-identical to the
+// pre-ADR-0041 shape (exactly model, messages, temperature, max_tokens), so
+// opting in changes nothing for everyone else. Values outside the enum and a
+// non-string are the node's invalid_output, refused before any byte leaves.
+func TestModelChatReasoningEffortWireBody(t *testing.T) {
+	for _, effort := range []string{"low", "medium", "high"} {
+		t.Run("set "+effort, func(t *testing.T) {
+			srv := newMCServer(t)
+			srv.send(mcReply{status: 200, body: mcChatReply(`{"verdict":"approve","notes":"clean"}`)})
+			cfg := mcConfig()
+			cfg["reasoningEffort"] = effort
+			res, err := mcExecutor(srv.srv.URL).Execute(context.Background(), mcClaim(cfg), nil)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if res.Status != AttemptStatusSucceeded {
+				t.Fatalf("status = %s class=%s detail=%s, want succeeded", res.Status, res.ErrorClass, res.Detail)
+			}
+			req := srv.lastRequest()
+			if req["reasoning_effort"] != effort {
+				t.Errorf("wire request reasoning_effort = %v, want %q: %#v", req["reasoning_effort"], effort, req)
+			}
+		})
+	}
+	t.Run("unset sends nothing", func(t *testing.T) {
+		srv := newMCServer(t)
+		srv.send(mcReply{status: 200, body: mcChatReply(`{"verdict":"approve","notes":"clean"}`)})
+		res, err := mcExecutor(srv.srv.URL).Execute(context.Background(), mcClaim(mcConfig()), nil)
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("status = %s class=%s detail=%s, want succeeded", res.Status, res.ErrorClass, res.Detail)
+		}
+		req := srv.lastRequest()
+		if _, has := req["reasoning_effort"]; has {
+			t.Errorf("the node set no reasoningEffort, so the body must carry no reasoning_effort: %#v", req)
+		}
+		// The pre-ADR-0041 body is exactly these four keys; a new key here is a
+		// regression of today's behaviour for every node that never opted in.
+		if len(req) != 4 || req["model"] != "gpt-test" || req["temperature"] != 0.2 || req["max_tokens"] != float64(64) {
+			t.Errorf("unset body must be byte-identical to the pre-ADR-0041 shape (model, messages, temperature, max_tokens): %#v", req)
+		}
+	})
+	for _, bad := range []any{"maximum", 1, 0.5} {
+		cfg := mcConfig()
+		cfg["reasoningEffort"] = bad
+		_, res := parseModelChat(mcClaim(cfg))
+		if res == nil || res.ErrorClass != ErrorClassInvalidOutput || !strings.Contains(res.Detail, "low, medium or high") {
+			t.Errorf("reasoningEffort %#v (type %T) was not refused with the enum named: %+v", bad, bad, res)
+		}
+	}
+}
+
 // ------------------------------------------------- § 4 step 8's over-cap spill
 
 // mcSpillConfig is a schema the big reply below satisfies.

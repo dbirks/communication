@@ -191,7 +191,12 @@ const TABLE: Record<string, NodeField[]> = {
 const YAML_ONLY: Record<string, string[]> = {
   "agent.acp": ["config.context (from/as objects)", "config.workspace", "config.structuredOutput"],
   "process.exec": ["config.env", "config.workspace", "config.outputExtraction"],
-  "model.chat": ["config.messages", "config.responseSchema", "config.provider"],
+  "model.chat": [
+    "config.messages",
+    "config.responseSchema",
+    "config.provider",
+    "config.reasoningEffort",
+  ],
   "human.approval": [],
   until: ["config.body (the nested node graph)", "config.resultBindings"],
   for_each: ["config.body (the nested node graph)", "config.resultBindings"],

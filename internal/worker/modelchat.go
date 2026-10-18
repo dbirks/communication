@@ -200,7 +200,8 @@ func mcBad(class, code, detail string) *AttemptResult {
 
 // modelChatSpec is the resolved node config (§ 4 step 8's request, and the
 // schema branch in pipeline-v1alpha1: model, messages, responseSchema,
-// temperature, maxTokens, provider). Bindings are already resolved by the
+// temperature, maxTokens, provider, reasoningEffort (ADR-0041). Bindings are
+// already resolved by the
 // advancer (attemptport.go's Config comment) — this executor never evaluates
 // an expression, so a value that is still an expression is a binding_error.
 type modelChatSpec struct {
@@ -210,6 +211,10 @@ type modelChatSpec struct {
 	schema      any
 	temperature *float64
 	maxTokens   *int
+	// reasoningEffort (ADR-0041): low|medium|high. When set, the wire body
+	// carries reasoning_effort; when unset nothing is sent, so a node that
+	// never opted in sends a byte-identical request to before ADR-0041.
+	reasoningEffort *string
 }
 
 func modelChatString(v any) (string, bool) {
@@ -312,6 +317,20 @@ func parseModelChat(c AttemptClaim) (*modelChatSpec, *AttemptResult) {
 				"model.chat: config.maxTokens must be an integer between 1 and 200000")
 		}
 		spec.maxTokens = &n
+	}
+	if v, present := cfg["reasoningEffort"]; present {
+		s, ok := modelChatString(v)
+		if !ok {
+			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+				"model.chat: config.reasoningEffort must be the string low, medium or high (ADR-0041)")
+		}
+		switch s {
+		case "low", "medium", "high":
+		default:
+			return nil, mcBad(ErrorClassInvalidOutput, ModelChatCodeConfig,
+				fmt.Sprintf("model.chat: config.reasoningEffort = %q; the schema admits low, medium or high (ADR-0041)", v))
+		}
+		spec.reasoningEffort = &s
 	}
 	return spec, nil
 }
@@ -428,6 +447,13 @@ func (m *ModelChat) requestBody(spec *modelChatSpec) ([]byte, *AttemptResult) {
 	}
 	if spec.maxTokens != nil {
 		req["max_tokens"] = *spec.maxTokens
+	}
+	// ADR-0041: the OpenAI chat-completions field. Unset sends nothing —
+	// the endpoint's behaviour when it receives the field is endpoint-specific
+	// and unmeasured (the collective's vLLM/qwen backend is no exception), so
+	// the node's author owns the evidence, not the adapter.
+	if spec.reasoningEffort != nil {
+		req["reasoning_effort"] = *spec.reasoningEffort
 	}
 	// The declared output schema stays a LOCAL contract: the worker
 	// validates the completion against it (validateCompletion, § 4 step 8),

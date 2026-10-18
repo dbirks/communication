@@ -325,3 +325,44 @@ func TestModelChatResponseSchemaSurvivesCompilation(t *testing.T) {
 		}
 	}
 }
+
+// TestModelChatReasoningEffortSurvivesCompilation pins the compiler half of
+// ADR-0041: the literal reasoningEffort compiles into the plan's
+// configBindings as ONE literal leaf at the value position — the claim
+// hydration rebuilds the executor's config from exactly these bindings, so a
+// field the compiler drops is a field the worker can never send. Values
+// outside the enum are the schema's refusal at the key's pointer, before the
+// compiler sees the document.
+func TestModelChatReasoningEffortSurvivesCompilation(t *testing.T) {
+	plan, d := compileModelChat(t, strings.Replace(modelChatBody, "    outputs:\n",
+		"      reasoningEffort: high\n    outputs:\n", 1))
+	if !d.Valid() {
+		t.Fatalf("compiler refused the document: %s", showDiags(d))
+	}
+	at := "/spec/nodes/0/config/reasoningEffort"
+	got := bindingsAt(plan, at)
+	if len(got) != 1 {
+		t.Fatalf("%s: %d bindings, want exactly 1 — the executor rebuilds its config from the plan's configBindings, so a dropped reasoningEffort is the pass-37-class bug (330af07)", at, len(got))
+	}
+	b := got[0]
+	if b.Position != schema.PositionValue {
+		t.Errorf("%s position = %q, want %q", at, b.Position, schema.PositionValue)
+	}
+	if !b.IsLiteral() {
+		t.Fatalf("%s compiled %v expressions, want the authored literal", at, b.ExprIDs)
+	}
+	if s, _ := b.Literal.(string); s != "high" {
+		t.Fatalf("literal = %#v, want the authored %q", b.Literal, "high")
+	}
+	for _, bad := range []string{"maximum", "Medium", "low effort"} {
+		_, d := compileModelChat(t, strings.Replace(modelChatBody, "    outputs:\n",
+			"      reasoningEffort: "+bad+"\n    outputs:\n", 1))
+		if d.Valid() {
+			t.Errorf("reasoningEffort: %q compiled, but the schema admits low, medium or high only", bad)
+			continue
+		}
+		if hit := modelChatFinding(d, at); hit == nil {
+			t.Errorf("reasoningEffort: %q — no finding at the key's pointer: %s", bad, showDiags(d))
+		}
+	}
+}
