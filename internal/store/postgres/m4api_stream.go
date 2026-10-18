@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,6 +127,14 @@ func (a APIRunEventStream) Watch(ctx context.Context) (<-chan struct{}, func(), 
 type APISchedulerStore struct {
 	Pool *pgxpool.Pool
 
+	// HeartbeatInterval is the workers' configured heartbeat period (serve
+	// passes the same value it hands to APIWorkerStore); zero uses
+	// regDefaultHeartbeat. Together with regLivenessIntervals it is the SAME
+	// liveness window WorkerRegistry.ListWorkersWithLiveness applies, so the
+	// scheduler view and GET /api/v1/workers cannot disagree about which
+	// workers are live.
+	HeartbeatInterval time.Duration
+
 	// LeaseExpirations reports the attempt-lease expirations THIS replica has
 	// observed since it started, which is exactly the window openapi.yaml
 	// names ("Reconciler-observed ... since this replica started"). The
@@ -141,6 +150,20 @@ var (
 	_ api.SchedulerStore = APISchedulerStore{}
 	_ api.SchedulerStore = (*APISchedulerStore)(nil)
 )
+
+// m4SchedulerWorkerLiveness is the effective-status expression
+// WorkerRegistry.ListWorkersWithLiveness applies (worker_registry.go),
+// written over the workers alias w: a row still stored as 'online' whose
+// heartbeat is older than heartbeatInterval * regLivenessIntervals reads as
+// 'offline' ($1 is the window, in Postgres interval syntax). A worker pod
+// that died without a graceful exit never writes its own offline row; the
+// scheduler view must not credit its capacity, or a k8s rollout leaves ~90
+// long-dead pods each advertising capacity 2.
+const m4SchedulerWorkerLiveness = `
+	CASE
+		WHEN w.status = '` + WorkerStatusOnline + `' AND w.last_heartbeat_at < now() - $1::interval THEN '` + WorkerStatusOffline + `'
+		ELSE w.status
+	END`
 
 // m4SchedulerStatusSQL is the whole read in one round trip. Each member is
 // the number the contract names, computed from the rows that make the
@@ -168,7 +191,7 @@ var (
 //     run is claimable by any worker, and counting it would blame the
 //     scheduler for a state it is about to resolve.
 const m4SchedulerStatusSQL = `
-	SELECT
+	SELECT 
 		(SELECT COUNT(*) FROM attempts WHERE status = 'queued')::int8,
 		(SELECT COUNT(*) FROM attempts WHERE status = 'leased')::int8,
 		(SELECT COUNT(*) FROM attempts WHERE status = 'running')::int8,
@@ -187,15 +210,21 @@ const m4SchedulerStatusSQL = `
 		                    WHERE ne.run_id = r.id
 		                      AND a.status = 'queued'
 		                      AND a.scheduled_at <= now())))
-		   AND (w.status <> 'online' OR w.active_attempts >= w.capacity))::int8`
+		   AND (` + m4SchedulerWorkerLiveness + ` <> '` + WorkerStatusOnline + `' OR w.active_attempts >= w.capacity))::int8`
 
 // m4SchedulerWorkersSQL is the per-worker load pair the claim predicate
-// compares, every row of the fleet (offline included — "the worker is gone"
-// is the thing an operator is looking for, and GET /api/v1/workers already
-// answers liveness separately).
+// compares, for every worker the claim predicate could actually grant work
+// to: effective status 'online' (m4SchedulerWorkerLiveness, the same
+// window /api/v1/workers uses). A row whose heartbeat expired cannot claim
+// — its process is gone — so its capacity is not the engine's and listing
+// it at "capacity 2" would inflate the fleet total with pods k8s rolled
+// away long ago. Operators looking for the dead worker itself go to
+// GET /api/v1/workers, which still reports every row with its effective
+// status.
 const m4SchedulerWorkersSQL = `
 	SELECT w.id::text, w.name, w.capacity, w.active_attempts
 	FROM workers w
+	WHERE ` + m4SchedulerWorkerLiveness + ` = '` + WorkerStatusOnline + `'
 	ORDER BY w.name, w.id`
 
 // SchedulerStatus implements api.SchedulerStore.
@@ -209,12 +238,20 @@ func (a APISchedulerStore) SchedulerStatus(ctx context.Context) (api.SchedulerSt
 		return view, err
 	}
 
+	// The same liveness window ListWorkersWithLiveness applies; zero falls
+	// back to the registry default, mirroring its own rule.
+	heartbeat := a.HeartbeatInterval
+	if heartbeat <= 0 {
+		heartbeat = regDefaultHeartbeat
+	}
+	interval := regIntervalString(heartbeat * regLivenessIntervals)
+
 	var (
 		queued, leased, running   int64
 		oldest                    sql.NullFloat64
 		maxDepth, waiting, unbind int64
 	)
-	err = pool.QueryRow(ctx, m4SchedulerStatusSQL).Scan(
+	err = pool.QueryRow(ctx, m4SchedulerStatusSQL, interval).Scan(
 		&queued, &leased, &running, &oldest, &maxDepth, &waiting, &unbind)
 	if err != nil {
 		return api.SchedulerStatusView{}, fmt.Errorf("postgres: scheduler counters read: %w", err)
@@ -239,7 +276,7 @@ func (a APISchedulerStore) SchedulerStatus(ctx context.Context) (api.SchedulerSt
 	view.WaitingApprovals = int(waiting)
 	view.QueuedUnbindableRuns = int(unbind)
 
-	rows, err := pool.Query(ctx, m4SchedulerWorkersSQL)
+	rows, err := pool.Query(ctx, m4SchedulerWorkersSQL, interval)
 	if err != nil {
 		return api.SchedulerStatusView{}, fmt.Errorf("postgres: scheduler worker load read: %w", err)
 	}

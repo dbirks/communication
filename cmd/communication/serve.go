@@ -801,7 +801,8 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		apiProjects)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
-	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool})
+	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool,
+		HeartbeatInterval: d.WorkerHeartbeat}) // same liveness window as /workers
 	// ADR-0034's read-only assistant: one route, mounted unconditionally and
 	// honest about being unconfigured (503 assistant_not_configured). Its tools
 	// are the very store reads mounted above, each issued with the CALLER's own

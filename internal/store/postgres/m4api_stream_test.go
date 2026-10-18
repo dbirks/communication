@@ -503,3 +503,93 @@ func TestM4APIStreamSchedulerStatus(t *testing.T) {
 		t.Error("APISchedulerStore without a pool answered no error")
 	}
 }
+
+// TestM4APIStreamSchedulerStaleWorker proves the liveness filter behind
+// GET /api/v1/system/scheduler's per-worker list: a freshly registered
+// worker counts as live capacity, and the moment its heartbeat falls out
+// of the same window /api/v1/workers uses (heartbeatInterval ×
+// regLivenessIntervals) it leaves the list and its capacity drops out of
+// the fleet total. A dead k8s pod's row stays in workers (GET /workers
+// still reports it, offline) — only the scheduler's claimable-capacity
+// view stops crediting it.
+func TestM4APIStreamSchedulerStaleWorker(t *testing.T) {
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	store := APISchedulerStore{Pool: f.pool}
+
+	reg := &WorkerRegistry{Pool: f.pool, Capacity: 4}
+	name := "m4-stale-" + migFixtureToken(t)
+	workerID, err := reg.Register(ctx, name, "lab", "contract-test")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		// runs.worker_affinity can point here, and m4Setup's own unwind
+		// deletes those runs later (LIFO) than this callback.
+		if _, err := f.pool.Exec(bg,
+			"UPDATE runs SET worker_affinity = NULL, worker_volume_id = NULL WHERE worker_affinity = $1", workerID); err != nil {
+			t.Errorf("clear affinity by worker: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `DELETE FROM workers WHERE id = $1::uuid`, workerID); err != nil {
+			t.Errorf("cleanup scheduler-test worker: %v", err)
+		}
+	})
+
+	loads := func(t *testing.T) ([]api.SchedulerWorkerLoadView, int, bool) {
+		view, err := store.SchedulerStatus(ctx)
+		if err != nil {
+			t.Fatalf("SchedulerStatus: %v", err)
+		}
+		total, present := 0, false
+		for _, w := range view.Workers {
+			total += w.Capacity
+			if w.WorkerID == workerID {
+				present = true
+			}
+		}
+		return view.Workers, total, present
+	}
+
+	// Fresh heartbeat: the worker is live and its capacity is the fleet's.
+	_, liveCap, present := loads(t)
+	if !present {
+		t.Fatal("freshly registered worker (heartbeat = now()) missing from the scheduler worker list")
+	}
+
+	// Expire the heartbeat far past the default window
+	// (3 × regDefaultHeartbeat = 30s): the row still says 'online', but the
+	// process that should be heartbeating it is gone.
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE workers SET last_heartbeat_at = now() - interval '5 minutes' WHERE id = $1::uuid`,
+		workerID); err != nil {
+		t.Fatalf("expire heartbeat: %v", err)
+	}
+	stale, staleCap, present := loads(t)
+	if present {
+		t.Errorf("worker with a 5-minute-stale heartbeat is still listed at capacity 4: %+v", stale)
+	}
+	// No other test runs between the two reads, so the only capacity that
+	// may have moved is this worker's: the dead row's 4 must drop out.
+	if staleCap != liveCap-4 {
+		t.Errorf("fleet capacity %d -> %d; want exactly the dead worker's 4 to drop out", liveCap, staleCap)
+	}
+
+	// The window is the reader's configuration, exactly as /workers' is: a
+	// control plane configured for a 1h heartbeat (window 3h) still reads
+	// this worker as live at 5 minutes of silence.
+	wide := APISchedulerStore{Pool: f.pool, HeartbeatInterval: time.Hour}
+	view, err := wide.SchedulerStatus(ctx)
+	if err != nil {
+		t.Fatalf("SchedulerStatus (wide window): %v", err)
+	}
+	present = false
+	for _, w := range view.Workers {
+		if w.WorkerID == workerID {
+			present = true
+		}
+	}
+	if !present {
+		t.Errorf("5-minute-stale heartbeat must stay inside a 3-hour liveness window")
+	}
+}
