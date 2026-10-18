@@ -568,6 +568,44 @@ collective answer with its tool calls, every link a real page. Mechanical recoun
 column: 85 + 0 + 1 + 0 = 86. The only GAP left is C7c (the schema refuses the undeclared field
 before the eval-time arm); no NOT RUN rows remain.
 
+## Home cluster proof
+
+`docs/home-cluster.md` § 5 records the 2026-10-18 proof in full; this is the
+off-scoreboard summary — **no C-gate scoreboard numbers change**. Spec:
+`e2e/tests/home-cluster.spec.ts` (commit `560e2d5`), opt-in
+`COMMUNICATION_E2E_HOME=1`; lab mode adds
+`E2E_HOME_URL=E2E_BASE_URL=http://localhost:18091 E2E_HOME_LOGIN_SUBJECT=admin`.
+Evidence: `~/.cache/communication-lab/home-proof/` (`run-home3b.out`, `run-home3c.out`,
+`run-home3d.out`, `run-lab1b.out`).
+
+- **Local lab** (HEAD `5fad0d5`, real collective `qwen3-8-27b`, real Claude login):
+  **6/6 PASS (1.1 min)** — project "Home proof lab1" over
+  `github.com/dbirks/communication`; plan-with-approval `r1 sha256:8149ba4d…`; plan run
+  `a473a0f4` completed on worker-a (survey, plan `model.chat`, `human.approval`,
+  `publish_plan` all succeeded; `plan_digest sha256:71681a21…`); claude `agent.acp` run
+  `21f26cc5` completed on worker-b (launcher claude, permission `ask`); no finding.
+- **Home cluster** (`https://communication.beluga-wyvern.ts.net`, tsidp OIDC as dbirks,
+  Talos v1.13.6): **steps 1–4 PASS** — plan run `7b3e0ef0` (earlier `b5cc7a52`,
+  `a488fbd5`) completed on the cluster worker
+  `communication-worker-5f5db7fcf9-4ncrd`, `r1 sha256:1f3abb35…`,
+  `plan_digest sha256:14bde064…`, every node succeeded, gate approved through the UI.
+  **Step 5 (claude `agent.acp`) is a GAP, not a pass.** Three blockers were found and
+  fixed live, in order: blank template could never get a first draft (`0e988e6`, product
+  fix); the scheduler view listed ~90 dead worker pods (`2523dd5`, product fix); and every
+  TCP connect in the agent sandbox was EPERM under Talos
+  `kernel.yama.ptrace_scope=2` (nono's seccomp-notify AF_UNIX pathname mediation could
+  not open `/proc/<pid>/mem` — "Failed to read sockaddr from seccomp notification
+  (nr=42): Failed to open /proc/615/mem: Permission denied" — so the worker now
+  self-tests TCP reachability at startup and withholds `agent.acp` if it fails,
+  `5fad0d5`; remediation `ptrace_scope=1` on both nodes, home-k8s `4f6cbdf`, no reboot;
+  the cluster self-test logs "agent-turn TCP reachability observed"). The current
+  blocker: run `4d8fe087` failed in 4 s with
+  `{"code":-32000,"message":"Authentication required"}` — the
+  `communication-worker-claude` Secret is a snapshot of the owner's
+  `~/.claude/.credentials.json`, whose access token expired 03:28Z and whose refresh
+  token is rotated by the owner's local sessions, so a copied interactive login cannot
+  stay valid on a cluster; next is a long-lived `claude setup-token` credential.
+
 ## What blocks the M4 exit
 
 Finding ids (`P*`, `D*`, `RC*`) are `docs/m4-live-findings.md` (written from pass 1); "fixed in

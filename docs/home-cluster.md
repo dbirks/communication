@@ -371,3 +371,45 @@ answered, so an agent step that needs a write fails its run (§ 3), and every `a
 worker executes as the single mounted Claude login with `/harness/claude` as shared mutable state
 (ADR-0019 D4, § 1) — it is not credential isolation. And nothing in this section prints a Secret:
 if a command you typed starts echoing values, stop and re-read the manifest by name instead.
+
+### e. Proof record 2026-10-18
+
+Spec: `e2e/tests/home-cluster.spec.ts` (commit `560e2d5`), opt-in via
+`COMMUNICATION_E2E_HOME=1`; lab mode adds
+`E2E_HOME_URL=E2E_BASE_URL=http://localhost:18091 E2E_HOME_LOGIN_SUBJECT=admin`.
+Evidence files in `~/.cache/communication-lab/home-proof/`: `run-home3b.out`,
+`run-home3c.out`, `run-home3d.out`, `run-lab1b.out`.
+
+**Local lab (HEAD `5fad0d5`, real collective `qwen3-8-27b`, real Claude login): 6/6 PASS (1.1 min).**
+Project "Home proof lab1" with repository `github.com/dbirks/communication`;
+plan-with-approval `r1 sha256:8149ba4d…`; plan run `a473a0f4` completed on worker-a
+(survey, plan `model.chat`, approve `human.approval`, `publish_plan` — all succeeded;
+`plan_digest sha256:71681a21…`); claude `agent.acp` run `21f26cc5` completed on worker-b;
+profile launcher claude, permission `ask`; no finding.
+
+**Home cluster** (`https://communication.beluga-wyvern.ts.net`, tsidp OIDC as dbirks,
+Talos v1.13.6):
+
+- **Steps 1–4 PASS.** Plan run `7b3e0ef0` (and earlier `b5cc7a52`, `a488fbd5`) completed
+  on the cluster worker (`communication-worker-5f5db7fcf9-4ncrd`), `r1 sha256:1f3abb35…`,
+  `plan_digest sha256:14bde064…`, every node succeeded, gate approved through the UI.
+- **Step 5 (claude `agent.acp`) NOT YET PASSING.** Findings fixed along the way, in order:
+  1. Blank template could never get a first draft (`0e988e6`, product fix).
+  2. Scheduler view listed ~90 dead worker pods (`2523dd5`, product fix).
+  3. Every TCP connect in the agent sandbox was EPERM: nono's seccomp-notify AF_UNIX
+     pathname mediation could not open `/proc/<pid>/mem` under Talos
+     `kernel.yama.ptrace_scope=2` (nono trace: "Failed to read sockaddr from seccomp
+     notification (nr=42): Failed to open /proc/615/mem: Permission denied"). The worker
+     now self-tests TCP reachability at startup and withholds `agent.acp` if it fails
+     (`5fad0d5`). Remediation applied by the owner's home-k8s session: `ptrace_scope=1`
+     on both nodes (home-k8s `4f6cbdf`, no reboot); the cluster self-test now logs
+     "agent-turn TCP reachability observed".
+  4. **Current blocker.** Run `4d8fe087` failed in 4 s with
+     `{"code":-32000,"message":"Authentication required"}` — the
+     `communication-worker-claude` Secret is a snapshot of the owner's
+     `~/.claude/.credentials.json`; its access token expired 03:28Z and its refresh
+     token is rotated by the owner's local sessions, so a copied interactive login
+     cannot stay valid on a cluster. Next: a long-lived `claude setup-token` credential.
+
+Honest status: steps 1–4 pass on the cluster, step 5 is a **GAP with its reason** —
+not a pass.

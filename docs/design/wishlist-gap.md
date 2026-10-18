@@ -27,7 +27,10 @@ own page (browser-checked, `059d132`); `restore_checkpoint` implemented + wired
 The assistant now answers live (2026-10-17, on the lab's LLM collective `qwen3-8-27b` — an
 uncommitted, owner-approved lab-only compose override; no key is in the repo — `e2e/tests/m5-assistant.spec.ts`
 **3/3**, `37b66a6`, first live answer `6eb0392`); the home cluster's click-through is not done yet
-(its model env must be set to `qwen3-8-27b` and its image predates these fixes until CI runs).
+(its model env must be set to `qwen3-8-27b` and its image predates these fixes until CI runs)
+— as of 2026-10-18 its steps 1–4 (plan-with-approval on the cluster worker) PASS and step 5
+(Claude `agent.acp`) is a GAP on credential rotation (`docs/home-cluster.md` § 5, Proof record
+2026-10-18).
 
 ## Summary
 
@@ -37,9 +40,9 @@ uncommitted, owner-approved lab-only compose override; no key is in the repo —
 | W2 Plan workflow with a human gate | works end-to-end (gate card CHECKED LIVE 21/0/0 **on a real Claude plan**, re-confirmed pass 12 `live12/W3.out:55`; the real-Claude loop **completes end to end** — C1 98/0/0 at passes 12/14/15, `5820aab`; M5 journey is now **live-green 10 passed / 0 failed / 1 fixme** on `14e8ff5` after the step-6 fix `ef470a0` re-ran — the one `fixme` is a recorded product contradiction at `:965`, `docs/m4-exit-status.md:320`) | Decide the `:965` contradiction the `fixme` records (the rejected-gate card's "fails the run" promise vs a BUSINESS outcome) and re-arm that arm as a test |
 | W3 GitHub-issue run, fan out + join | issue list works end-to-end on public repos (real call observed, `docs/compatibility/GITHUB.md`); `pipeline.invoke` children **CHECKED LIVE** and C8e stop/`fail_after_all` are now **PASS** (C8 38/0/2 at pass 11, `d8b927c`+`b2bfe62`, `live11/C8.out:78-92`); issue→prefill→`run_inputs` **CHECKED LIVE** (`4a72d31`, m5-issue-run 5/5 live on `1c1733b`, `live33/m5-suite.out`); triggers/join spec only | Webhook/poll triggers need `triggers`+`invocations` tables + ADR (M6) |
 | W4 Edit step prompts, drafts → publish | works end-to-end (YAML edit→validate→publish; the **step form was clicked live** — m5-journey step 2 edits `timeoutSeconds`, saves, validates and publishes r1 (`e2e/tests/m5-journey.spec.ts:292-330`; 12 passed incl. step 2, `docs/m4-exit-status.md:296-299`); read-only templates + assign panel CHECKED LIVE `9be68fd`; editing an `agent.acp` `prompt` through the form is now **CHECKED LIVE** (`1879714`, m5-prompt-edit 6/6 live on `1c1733b` — the spec also found and fixed in `1c1733b` the valid-draft validate response missing its required `revision_digest`/`plan_digest`)) | None for W4's journey (system prompts stay spec-only until an ADR decides node vs profile) |
-| W5 Scheduled security workflow | works end-to-end (schedule firing OBSERVED LIVE, 2026-10-16, `016f11e`; the cron clock + pause clicked live — agents+schedules spec **3/3 on the lab**, `be97fd1`) | Home-cluster weekly `security-review` on a schedule; record `run.created` plus the schedule's `last_run_at` before/after |
+| W5 Scheduled security workflow | works end-to-end (schedule firing OBSERVED LIVE, 2026-10-16, `016f11e`; the cron clock + pause clicked live — agents+schedules spec **3/3 on the lab**, `be97fd1`) | Home-cluster weekly `security-review` on a schedule; record `run.created` plus the schedule's `last_run_at` before/after (the home-cluster click-through's steps 1–4 now PASS there — 2026-10-18, `docs/home-cluster.md` § 5; the scheduled leg is still not recorded) |
 | W6 APM skills, tag pin, cross-agent | works end-to-end for the claude target (CHECKED LIVE, `docs/compatibility/APM.md:223-246`; profile create + skill pin + digest help now clicked through `/agents` — **3/3 live**, `be97fd1`); codex target NOT RUN live | Run the same live probe with `target=codex`; append the row to `docs/compatibility/APM.md` |
-| W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) now have **PASS legs** — C6 restore b/c/e at pass 20 + C6d at pass 25 (`3f35115`, `fa0c0e0`), C2a/C2b's agent variant at pass 17 (`320c6fe`, `599e4f9`), C4e at pass 18 (`cc0bff8`), W6 14/0/0 at pass 19 (`2b24738`+`6e57274`); agents now run git in their worktree (`e83913a`, pass 26 `76a9e64`) and every permission prompt in attempts closes as one journaled policy verdict (`a0fd9e7`, pass 27's 23/23 journal read; C1j PASS at pass 29, `d4cd945`)) | Mount the owner's Claude secret on the cluster worker (home-cluster blocker 1) so the real-agent legs run there; record the Gemini/Pi rows in `docs/compatibility/ACP.md` |
+| W7 ACP agents in the worker image | works end-to-end (the real-Claude run completes live — C1 98/0/0, `5820aab`, passes 12/14/15; run-page legs live: W5 11/0 attempts + interrupted wording `f010fe2`, W10 15/0 across a replica roll, W11 11/0 child statuses `19175b3`; egress CHECKED LIVE, `docs/compatibility/SANDBOX.md:429-481`; `restore_checkpoint` (`e2de8fa`+`5c03d6c`), `workspace_lost` (`efb82bd`) and disconnect→infra (`320c6fe`) now have **PASS legs** — C6 restore b/c/e at pass 20 + C6d at pass 25 (`3f35115`, `fa0c0e0`), C2a/C2b's agent variant at pass 17 (`320c6fe`, `599e4f9`), C4e at pass 18 (`cc0bff8`), W6 14/0/0 at pass 19 (`2b24738`+`6e57274`); agents now run git in their worktree (`e83913a`, pass 26 `76a9e64`) and every permission prompt in attempts closes as one journaled policy verdict (`a0fd9e7`, pass 27's 23/23 journal read; C1j PASS at pass 29, `d4cd945`)) | Claude secret now mounted on the home-cluster worker (2026-10-18): steps 1–4 of the home-cluster click-through PASS, but step 5 (Claude `agent.acp`) is a **GAP** — the Secret is a snapshot of the owner's `~/.claude/.credentials.json` whose access token expired and whose refresh token is rotated by the owner's local sessions, so a copied interactive login cannot stay valid; next is a long-lived `claude setup-token` credential, then the real-agent legs run there (`docs/home-cluster.md` § 5, Proof record 2026-10-18); record the Gemini/Pi rows in `docs/compatibility/ACP.md` |
 | W8 Shared one-off conversations | works end-to-end (CHECKED LIVE: m2-journey browser; two-user Inbox **6/6 live**, `docs/m4-exit-status.md:299`; the per-project conversations page browser-checked, `059d132`; permission mode decided for the **lab only** — ADR-0036, `382d42b`; **`deny` is now enforced on the conversation path** (`c1c7c19`, pass 30 deny probe: 1 requested / 1 decided (cancelled) / 0 allow / 0 preapproved, `live30/deny_probe.out`); per-call verdicts for preapproved conversations (ADR-0039) in implementation, not done) | Record one live conversation turn whose `sandbox.egress_observed` proves the `382d42b` journalling; then the product-mode decision |
 | W9 In-UI assistant | **CHECKED LIVE** (2026-10-17, on the lab's LLM collective `qwen3-8-27b` via an uncommitted, owner-approved lab-only compose override — no key is in the repo): `e2e/tests/m5-assistant.spec.ts` **3/3 live** — Ctrl K → Ask, a real collective answer with its tool calls, every link a real page (`37b66a6`); the first live answer needed `6eb0392` (the tool names were illegal OpenAI function names and the collective 400'd every ask) and `37b66a6` fixed the dead `/approvals` link; write tools spec only | Home cluster: set `COMMUNICATION_ASSISTANT_MODEL` / `COMMUNICATION_MODEL_CHAT_MODELS` to `qwen3-8-27b` and re-run the assistant spec once CI publishes an image newer than `1b872b8` |
 
@@ -288,9 +291,15 @@ discarded paths, emit `run.checkpoint_restored`, refuse submodules — `e2de8fa`
 `workspace_lost`, never infra, never auto-retried (`efb82bd`); mid-turn ACP
 disconnect classed infra, retried per policy, not `invalid_output` (`320c6fe`, a
 C2 live finding) — the last three now have their legs measured (all PASS at
-passes 17–25, below). The home-cluster worker runs only
-`process.exec`/`model.chat`/`artifact.publish` until the owner's Claude secret is
-mounted (`docs/home-cluster.md` § 1); `c5c7888` added read-only checks proving a
+passes 17–25, below). The home-cluster worker's Claude secret is now mounted (2026-10-18) and
+its plan-with-approval flow (click-through steps 1–4) completed live on that worker;
+`agent.acp` there is a GAP, not a pass: the worker self-tests TCP reachability at startup and
+withholds `agent.acp` if it fails (`5fad0d5` — nono's seccomp-notify AF_UNIX mediation could
+not open `/proc/<pid>/mem` under Talos `kernel.yama.ptrace_scope=2`, since fixed by the
+owner's `ptrace_scope=1`, home-k8s `4f6cbdf`), and the mounted Secret is a snapshot of the
+owner's `~/.claude/.credentials.json` whose tokens rotate, so a long-lived
+`claude setup-token` credential is the next step (`docs/home-cluster.md` § 5, Proof record
+2026-10-18); `c5c7888` added read-only checks proving a
 run executed on that worker.
 
 **Live evidence.** Conversation path unchanged: `docs/compatibility/ACP.md:22-23`
@@ -420,15 +429,23 @@ names before the first ships, publish staying behind an approval card.
 ## What still blocks a click-through on the home cluster
 
 `docs/home-cluster.md` (click path + limits guide, now with read-only "did this run
-on the cluster worker?" checks, `c5c7888`) has these open blockers as of `320c6fe`;
-**the owner's one click-through has still not been done or recorded.**
+on the cluster worker?" checks, `c5c7888`) has these open blockers as of `5fad0d5`;
+the owner's click-through is now partly done and recorded — **steps 1–4 PASS on the
+cluster worker, step 5 (Claude `agent.acp`) is a GAP** (`docs/home-cluster.md` § 5,
+Proof record 2026-10-18).
 
-1. **Claude credentials secret — still absent.** The cluster worker runs
-   `process.exec`, `model.chat` and `artifact.publish` today; `agent.acp` (and so
-   W7/W8) fails closed until the owner creates the optional
-   `communication-worker-claude` secret — kubectl+sops command and shared-login
-   warning (ADR-0019 D4) in `docs/home-cluster.md` § 1 — even though the identical
-   flows now complete in the lab.
+1. **Claude credentials secret — mounted, but the copied login cannot stay valid.** The
+   `communication-worker-claude` secret now exists (mounted 2026-10-18) but is a snapshot of
+   the owner's `~/.claude/.credentials.json`: its access token expired 03:28Z and its refresh
+   token is rotated by the owner's local sessions, so run `4d8fe087` failed in 4 s with
+   `{"code":-32000,"message":"Authentication required"}` — `agent.acp` (and so W7/W8) stays a
+   GAP on the cluster until a long-lived `claude setup-token` credential lands (shared-login
+   warning, ADR-0019 D4, in `docs/home-cluster.md` § 1); the identical flows complete in the
+   lab and home-cluster steps 1–4 already PASS (§ 5, Proof record 2026-10-18). The TCP
+   prerequisite that blocked the agent sandbox on Talos is fixed: the worker now self-tests
+   TCP reachability at startup and withholds `agent.acp` if it fails (`5fad0d5`), and the
+   owner set `ptrace_scope=1` on both nodes (home-k8s `4f6cbdf`, no reboot) — the cluster
+   self-test logs "agent-turn TCP reachability observed".
 2. **The permission-prompt decision — narrowed, not closed.** In a run, an
    `ask`-mode prompt with no human controller is cancelled (`ask_unattended`); the
    lab adopted `preapproved_within_sandbox` (ADR-0036, `382d42b`), but product
