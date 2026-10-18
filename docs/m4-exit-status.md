@@ -576,7 +576,7 @@ off-scoreboard summary — **no C-gate scoreboard numbers change**. Spec:
 `COMMUNICATION_E2E_HOME=1`; lab mode adds
 `E2E_HOME_URL=E2E_BASE_URL=http://localhost:18091 E2E_HOME_LOGIN_SUBJECT=admin`.
 Evidence: `~/.cache/communication-lab/home-proof/` (`run-home3b.out`, `run-home3c.out`,
-`run-home3d.out`, `run-lab1b.out`).
+`run-home3d.out`, `run-home3e.out`, `run-lab1b.out`).
 
 - **Local lab** (HEAD `5fad0d5`, real collective `qwen3-8-27b`, real Claude login):
   **6/6 PASS (1.1 min)** — project "Home proof lab1" over
@@ -605,6 +605,20 @@ Evidence: `~/.cache/communication-lab/home-proof/` (`run-home3b.out`, `run-home3
   `~/.claude/.credentials.json`, whose access token expired 03:28Z and whose refresh
   token is rotated by the owner's local sessions, so a copied interactive login cannot
   stay valid on a cluster; next is a long-lived `claude setup-token` credential.
+  That blocker was closed the same day: a long-lived `claude setup-token` credential
+  (ADR-0040, `6c58dd6`) now authenticates the worker — Secret
+  `communication-worker-claude-token` (home-k8s `7c88f21`), mounted and wired via
+  `COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE` (home-k8s `e4052c9`); the worker's doctor
+  reports `claude:oauth-token ok configured, 108 chars, prefix ok`, and the earlier
+  copied-login Secret remains only as a `CLAUDE_CONFIG_DIR` seed. Result
+  (2026-10-18 13:4xZ, `run-home3e.out`): **HOME CLUSTER 6/6 PASS (58.7 s)** — project
+  "Home proof home3" (`b7eb3920`), repository binding communication →
+  `https://github.com/dbirks/communication`; plan run `aa82acca` completed
+  (`revision_digest sha256:1f3abb35…`, `plan_digest sha256:14bde064…`; approve/plan/
+  `publish_plan`/survey all succeeded) and claude `agent.acp` run `8437d930` completed
+  on `communication-worker-7959d8cffd-dbjfp` (profile `home-profile-home3`, launcher
+  claude, permission `ask`; `claude r1 sha256:fa24aa9c…`; finding: none). Step 5 is
+  no longer a GAP.
 
 ## What blocks the M4 exit
 

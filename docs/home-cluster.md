@@ -378,7 +378,7 @@ Spec: `e2e/tests/home-cluster.spec.ts` (commit `560e2d5`), opt-in via
 `COMMUNICATION_E2E_HOME=1`; lab mode adds
 `E2E_HOME_URL=E2E_BASE_URL=http://localhost:18091 E2E_HOME_LOGIN_SUBJECT=admin`.
 Evidence files in `~/.cache/communication-lab/home-proof/`: `run-home3b.out`,
-`run-home3c.out`, `run-home3d.out`, `run-lab1b.out`.
+`run-home3c.out`, `run-home3d.out`, `run-home3e.out`, `run-lab1b.out`.
 
 **Local lab (HEAD `5fad0d5`, real collective `qwen3-8-27b`, real Claude login): 6/6 PASS (1.1 min).**
 Project "Home proof lab1" with repository `github.com/dbirks/communication`;
@@ -404,12 +404,30 @@ Talos v1.13.6):
      (`5fad0d5`). Remediation applied by the owner's home-k8s session: `ptrace_scope=1`
      on both nodes (home-k8s `4f6cbdf`, no reboot); the cluster self-test now logs
      "agent-turn TCP reachability observed".
-  4. **Current blocker.** Run `4d8fe087` failed in 4 s with
+  4. **Current blocker (at the time).** Run `4d8fe087` failed in 4 s with
      `{"code":-32000,"message":"Authentication required"}` — the
      `communication-worker-claude` Secret is a snapshot of the owner's
      `~/.claude/.credentials.json`; its access token expired 03:28Z and its refresh
      token is rotated by the owner's local sessions, so a copied interactive login
      cannot stay valid on a cluster. Next: a long-lived `claude setup-token` credential.
+  5. **Authentication blocker closed.** A long-lived `claude setup-token` credential
+     (ADR-0040, `6c58dd6`) now authenticates the cluster worker: Secret
+     `communication-worker-claude-token` (home-k8s `7c88f21`), mounted and wired via
+     `COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE` (home-k8s `e4052c9`); the worker's doctor
+     reports `claude:oauth-token ok configured, 108 chars, prefix ok`. The earlier
+     copied-login Secret remains as a `CLAUDE_CONFIG_DIR` seed but is no longer what
+     authenticates.
 
-Honest status: steps 1–4 pass on the cluster, step 5 is a **GAP with its reason** —
-not a pass.
+- **HOME CLUSTER 6/6 PASS (58.7 s)** — 2026-10-18 13:4xZ
+  (`~/.cache/communication-lab/home-proof/run-home3e.out`),
+  `https://communication.beluga-wyvern.ts.net`, tsidp OIDC as dbirks. Project "Home
+  proof home3" (`b7eb3920`), repository binding communication →
+  `https://github.com/dbirks/communication`. Plan run `aa82acca` completed
+  (`revision_digest sha256:1f3abb35…`, `plan_digest sha256:14bde064…`; approve, plan,
+  `publish_plan` and survey all succeeded) on `communication-worker-7959d8cffd-dbjfp`
+  — the only online worker. claude `agent.acp` run `8437d930` completed on the same
+  worker; profile `home-profile-home3`, launcher claude, permission `ask`;
+  `claude r1 sha256:fa24aa9c…`; finding: none.
+
+Honest status: the home-cluster click-through now passes **6/6** — steps 1–4 and step 5
+(claude `agent.acp`) all pass; no open GAP.
