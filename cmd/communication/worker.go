@@ -107,6 +107,24 @@ environment:
                                  means profiles that pin packaged context
                                  refuse their turns rather than running a
                                  different agent than configured
+  COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE
+                                 ADR-0040: path to a FILE holding the owner's
+                                 long-lived 'claude setup-token' value (prefix
+                                 sk-ant-oat), e.g. a mounted Secret key. NEVER
+                                 the raw token in an environment variable.
+                                 When set, both the pipeline agent.acp and
+                                 conversation paths hand the claude launcher
+                                 CLAUDE_CODE_OAUTH_TOKEN=<token> through the
+                                 sandbox launcher's process environment (nono
+                                 inherits its own environment into the child)
+                                 — never argv (nono's audit journal records
+                                 argv verbatim), never a log or event field.
+                                 The file is read at each launch, so a
+                                 rotated Secret takes effect without a worker
+                                 restart; a missing/empty/wrong-prefix file
+                                 fails the launch closed. Unset means the
+                                 launcher authenticates through CLAUDE_CONFIG_DIR
+                                 as before
 
 migrations are applied separately: communication migrate up
 `

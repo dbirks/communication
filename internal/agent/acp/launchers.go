@@ -1,5 +1,11 @@
 package acp
 
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
 // Launcher describes one built-in ACP agent launcher: the executable the
 // worker spawns and the pinned adapter it was observed at.
 //
@@ -45,6 +51,21 @@ type Launcher struct {
 	// that uses this launcher. ADR-0019 Decision 4 owns that consequence and
 	// says this record may not be cited as evidence of credential isolation.
 	AuthEnvVars []string
+	// OAuthTokenEnv, when set, is the environment variable this agent reads a
+	// long-lived headless credential from (Claude Code's `claude setup-token`
+	// value, ADR-0040). OAuthTokenFileEnv names the operator environment
+	// variable holding the PATH to a file with the token, and OAuthTokenPrefix
+	// is the value's required prefix (fail-closed validation). Empty means the
+	// launcher authenticates through its AuthEnvVars directories only.
+	//
+	// Delivery rule (ADR-0040): the value is delivered through the sandbox
+	// launcher's process environment (nono inherits its own environment into
+	// the child) or, unsandboxed, through the child's exec environment —
+	// never through argv, the `env NAME=value` hop, a log line, or a journal
+	// entry, because nono's audit journal records the argv verbatim.
+	OAuthTokenEnv     string
+	OAuthTokenFileEnv string
+	OAuthTokenPrefix  string
 	// Notes records observed caveats; never a capability guarantee.
 	Notes string
 }
@@ -60,6 +81,13 @@ var knownLaunchers = []Launcher{
 		Version:     "0.90.0",
 		AskModeID:   "default",
 		AuthEnvVars: []string{"CLAUDE_CONFIG_DIR"},
+		// ADR-0040: long-lived headless credential. The operator mounts a
+		// Secret key at COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE; the worker reads
+		// it at each launch and hands it to the agent as
+		// CLAUDE_CODE_OAUTH_TOKEN without ever putting it in argv.
+		OAuthTokenEnv:     "CLAUDE_CODE_OAUTH_TOKEN",
+		OAuthTokenFileEnv: "COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE",
+		OAuthTokenPrefix:  "sk-ant-oat",
 		Notes: "probed at protocolVersion 1 with loadSession advertised; auth rides the " +
 			"ambient claude CLI login; adapter default mode auto never sends " +
 			"session/request_permission (docs/compatibility/ACP.md)",
@@ -93,4 +121,43 @@ func LookupLauncher(id string) (Launcher, bool) {
 		}
 	}
 	return Launcher{}, false
+}
+
+// OAuthTokenFile returns the configured long-lived token file for this
+// launcher, or "" when the launcher uses no token file or none is configured.
+func (l Launcher) OAuthTokenFile() string {
+	if l.OAuthTokenEnv == "" {
+		return ""
+	}
+	return strings.TrimSpace(os.Getenv(l.OAuthTokenFileEnv))
+}
+
+// OAuthTokenKV loads the launcher's long-lived authentication token from the
+// operator-configured file at launch time (a rotated Secret file takes effect
+// without a worker restart) and returns it as one "NAME=value" entry, or ""
+// and nil when the launcher uses no token or none is configured.
+//
+// ADR-0040: a misconfigured file fails the launch closed. Every error message
+// names the file and the fault and never the value — these errors are
+// journalled into attempt detail, where a token must never appear.
+func (l Launcher) OAuthTokenKV() (string, error) {
+	if l.OAuthTokenEnv == "" {
+		return "", nil
+	}
+	file := l.OAuthTokenFile()
+	if file == "" {
+		return "", nil
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("agent %s: %s is set to %s but the file cannot be read: %v", l.ID, l.OAuthTokenFileEnv, file, err)
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return "", fmt.Errorf("agent %s: %s is set to %s but the file is empty", l.ID, l.OAuthTokenFileEnv, file)
+	}
+	if !strings.HasPrefix(tok, l.OAuthTokenPrefix) {
+		return "", fmt.Errorf("agent %s: %s (file %s) does not hold a usable token: the value must start with %q — value not shown", l.ID, l.OAuthTokenEnv, file, l.OAuthTokenPrefix)
+	}
+	return l.OAuthTokenEnv + "=" + tok, nil
 }

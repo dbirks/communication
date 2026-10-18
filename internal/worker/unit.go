@@ -474,10 +474,19 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 	if u == nil {
 		return acp.LaunchPlan{}, errors.New("worker: no unit")
 	}
+	// ADR-0040: the launcher's long-lived token is read from the operator
+	// file at launch time. It rides nono's own process environment under a
+	// sandbox (or, unsandboxed, the adapter's exec environment) and never
+	// the adapterEnv `env NAME=value` argv hop, which nono's audit journal
+	// records verbatim. A misconfigured file fails the turn closed.
+	kv, err := launcher.OAuthTokenKV()
+	if err != nil {
+		return acp.LaunchPlan{}, err
+	}
 	if u.Enforcement == domain.EnforceDisabled || u.Enforcement == domain.EnforcePermissiveDev {
 		// The two configured non-required modes are still explicit about what
 		// they are: isolation="none" rides every event about them (05).
-		return u.plainPlan(launcher, string(u.Enforcement)), nil
+		return u.plainPlan(launcher, string(u.Enforcement), kv), nil
 	}
 	spec, err := u.launchSpec(launcher)
 	if err != nil {
@@ -503,10 +512,17 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 		return acp.LaunchPlan{}, &DenialError{Stage: events.SandboxStageGrantAssert, Reason: events.SandboxReasonGrantMismatch, Message: err.Error(), PolicyDigest: res.PolicyDigest}
 	}
 	bin := u.svc.nonoBinary()
+	env := u.svc.launcherNonoEnv()
+	if kv != "" {
+		// The token reaches the child because nono inherits its own process
+		// environment into the sandboxed child (ADR-0040); argv carries no
+		// secrets and the audit journal records argv verbatim.
+		env = append(env, kv)
+	}
 	return acp.LaunchPlan{
 		Path:     bin,
 		Args:     argv,
-		Env:      u.svc.launcherNonoEnv(),
+		Env:      env,
 		Dir:      u.Plan.Cwd,
 		Verified: verification(res, u.Plan),
 	}, nil
@@ -585,7 +601,7 @@ func (u *Unit) hopsHome() bool {
 // plainPlan is the non-required-mode plan: the adapter itself, with the same
 // from-scratch environment, labelled with the mode so nothing can read the turn
 // as sandboxed.
-func (u *Unit) plainPlan(launcher acp.Launcher, mode string) acp.LaunchPlan {
+func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string) acp.LaunchPlan {
 	env, err := u.adapterEnv(launcher)
 	if err != nil {
 		// A broken credential configuration in a *non-required* mode is the
@@ -594,6 +610,11 @@ func (u *Unit) plainPlan(launcher acp.Launcher, mode string) acp.LaunchPlan {
 		env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + u.Layout.Home}
 		u.logger.Warn("adapter environment could not be built for an unsandboxed launch",
 			slog.String("mode", mode), slog.String("error", err.Error()))
+	}
+	if oauthKV != "" {
+		// Unsandboxed (ADR-0040): the token joins the adapter's real exec
+		// environment — an environment, not argv.
+		env = append(env, oauthKV)
 	}
 	return acp.LaunchPlan{
 		Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: u.Plan.Cwd,

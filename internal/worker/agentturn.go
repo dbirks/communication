@@ -488,6 +488,15 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	if err != nil {
 		return failedResult(ErrorClassInfra, "resolve launcher credential directories: "+a.redact(err.Error())), nil
 	}
+	// ADR-0040: the launcher's long-lived token is read from the operator
+	// file at launch time. It rides the sandbox launcher's process
+	// environment (or, unsandboxed, the adapter's exec environment) — it
+	// must NOT join adapterEnv: that list renders into the `env NAME=value`
+	// argv hop, and nono's audit journal records the argv verbatim.
+	oauthKV, err := launcher.OAuthTokenKV()
+	if err != nil {
+		return failedResult(ErrorClassInfra, "resolve launcher long-lived token: "+a.redact(err.Error())), nil
+	}
 	required := a.enforcement() == domain.EnforceRequired
 	adapterEnv, err := acp.LaunchEnv(acp.EnvRequest{
 		Home:    homeDir,
@@ -556,7 +565,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
 	}
 
-	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, required, workspaceID)
+	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, oauthKV, required, workspaceID)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -1057,10 +1066,16 @@ func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (Attemp
 // non-required modes run the adapter directly and LABEL themselves. The
 // agent-turn profile carries network_enforced=false and stays labelled that
 // way (M3's label, § 4 step 5).
-func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
+func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
 	if !required {
+		// Unsandboxed: the token joins the child's real exec environment —
+		// an environment, not argv (ADR-0040).
+		env := adapterEnv
+		if oauthKV != "" {
+			env = append(append([]string{}, adapterEnv...), oauthKV)
+		}
 		return acp.LaunchPlan{
-			Path: launcher.Executable, Args: launcher.Args, Env: adapterEnv, Dir: plan.Cwd,
+			Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: plan.Cwd,
 			Unsandboxed: string(a.enforcement()),
 		}, nil, nil
 	}
@@ -1104,8 +1119,16 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 		return acp.LaunchPlan{}, res, &r
 	}
 	a.journal(ctx, sink, c, events.TypeSandboxVerified, a.verifiedPayload(c, workspaceID, plan, res))
+	// ADR-0040: the token rides nono's own process environment (nono
+	// inherits it into the child). It never enters argv: BuildLaunchArgv
+	// puts only the adapterEnv hop there, and the audit journal records
+	// that argv verbatim.
+	env := a.nonoLauncherEnv()
+	if oauthKV != "" {
+		env = append(env, oauthKV)
+	}
 	return acp.LaunchPlan{
-		Path: a.nonoBinary(), Args: argv, Env: a.nonoLauncherEnv(), Dir: plan.Cwd,
+		Path: a.nonoBinary(), Args: argv, Env: env, Dir: plan.Cwd,
 		Verified: verification(res, plan),
 	}, res, nil
 }

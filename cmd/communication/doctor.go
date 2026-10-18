@@ -65,6 +65,7 @@ var doctorChecks = []struct {
 	{"sandbox:nono-tcp-reachability", func(ctx context.Context) []CheckResult {
 		return []CheckResult{tcpReachabilityCheck(ctx)}
 	}},
+	{"claude:oauth-token", claudeOAuthTokenCheck},
 }
 
 // stringListFlag collects a repeatable and/or comma-separated flag value.
@@ -233,6 +234,33 @@ func sandboxCheck(ctx context.Context) []CheckResult {
 	}
 	results := []CheckResult{{Name: name, Status: statusOK, Detail: detail}}
 	return results
+}
+
+// claudeOAuthTokenCheck reports the ADR-0040 long-lived claude credential
+// configuration. It prints only "configured, N chars, prefix ok" (or the
+// fault) — never the token value, never the file contents.
+func claudeOAuthTokenCheck(ctx context.Context) []CheckResult {
+	const name = "claude:oauth-token"
+	launcher, ok := acp.LookupLauncher("claude")
+	if !ok || launcher.OAuthTokenFileEnv == "" {
+		return []CheckResult{{Name: name, Status: statusMissing, Detail: "not configured: the claude launcher authenticates through CLAUDE_CONFIG_DIR only"}}
+	}
+	file := strings.TrimSpace(os.Getenv(launcher.OAuthTokenFileEnv))
+	if file == "" {
+		return []CheckResult{{Name: name, Status: statusMissing, Detail: "not configured: " + launcher.OAuthTokenFileEnv + " is unset; the claude launcher authenticates through CLAUDE_CONFIG_DIR only"}}
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return []CheckResult{{Name: name, Status: statusError, Detail: fmt.Sprintf("token file %s cannot be read: %v", file, err)}}
+	}
+	tok := strings.TrimSpace(string(raw))
+	if tok == "" {
+		return []CheckResult{{Name: name, Status: statusError, Detail: fmt.Sprintf("token file %s is empty", file)}}
+	}
+	if !strings.HasPrefix(tok, launcher.OAuthTokenPrefix) {
+		return []CheckResult{{Name: name, Status: statusError, Detail: fmt.Sprintf("token in %s does not start with the %s prefix (value not shown)", file, launcher.OAuthTokenPrefix)}}
+	}
+	return []CheckResult{{Name: name, Status: statusOK, Detail: fmt.Sprintf("configured, %d chars, prefix ok", len(tok))}}
 }
 
 // tcpReachabilityCheck is its own doctor check — a separate name, separate
