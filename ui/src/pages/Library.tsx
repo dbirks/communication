@@ -61,6 +61,7 @@ import {
   LIBRARY_ROLE_LABEL,
 } from "../lib/pipeline/authoring";
 import {
+  BLANK_SKELETON_YAML,
   PIPELINE_TEMPLATES,
   templateById,
   withMetadataName,
@@ -140,8 +141,10 @@ export function LibraryPage() {
  * already required by hand (New pipeline → New draft → paste the sample) —
  * `POST /pipelines/{id}/drafts` with one of the two `docs/samples/home/`
  * documents, whose single `metadata.name` line is rewritten to the new slug so
- * the document agrees with the definition just created. Blank is the old
- * behavior exactly: one POST, no draft, no navigation. When a template's draft
+ * the document agrees with the definition just created. Blank does the same
+ * with the minimal skeleton document (`BLANK_SKELETON_YAML`): a draft is
+ * allowed to be invalid — Validate is what judges it — so a Blank pipeline is
+ * no longer a dead end with no first draft. When a template's draft
  * lands, the page opens at `/library/:id?draft=<id>` with that draft selected,
  * so the author sees the YAML they can now Validate and Publish. A failed
  * template post does not retry the pipeline (that would be a `409` on a slug
@@ -180,18 +183,15 @@ function NewPipelineForm() {
 
   async function submit() {
     if (slug.trim() === "") return;
-    const documentYaml = template?.documentYaml ?? null;
+    // Every template carries a document (Blank: the skeleton), so the second
+    // write always follows the definition — there is no document-less path.
+    const documentYaml = template?.documentYaml;
+    if (!documentYaml) return;
     try {
       const pipeline = await create.mutateAsync({
         slug: slug.trim(),
         display_name: name.trim() || undefined,
       });
-      if (!documentYaml) {
-        setSlug("");
-        setName("");
-        setTemplateId("blank");
-        return;
-      }
       setSeedFailure(null);
       setSeed({
         pipelineId: pipeline.id,
@@ -344,9 +344,7 @@ function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
           >
             <span className="flex flex-wrap items-baseline gap-[6px]">
               <span className="text-[12.5px] font-semibold">{template.label}</span>
-              <span className="font-mono text-[10px] text-faint">
-                {template.documentYaml ? "docs/samples/home" : "no document posted"}
-              </span>
+              <span className="font-mono text-[10px] text-faint">{template.source}</span>
             </span>
             <span className="block text-[12px] text-muted">{template.description}</span>
             {canCreate ? null : (
@@ -449,20 +447,40 @@ export function PipelinePage() {
   const newestDocument = useRevisionDocument(revisionRows[0]?.id ?? "");
 
   // The clone is a one-shot: a ref, not `isPending`, because the mutation
-  // object is new every render and would re-fire the effect.
+  // object is new every render and would re-fire the effect. With zero
+  // revisions there is nothing to clone, so the draft is seeded from the
+  // blank skeleton instead — named for this pipeline's slug, the same
+  // document the Blank template posts — and the wait on the revisions and
+  // pipeline reads keeps the decision from racing the queries.
   const creating = useRef(false);
   useEffect(() => {
-    if (!draftCreating || newestDocument.data === undefined || creating.current) return;
+    if (!draftCreating || creating.current) return;
+    const cloneDocument = newestDocument.data;
+    if (cloneDocument === undefined) {
+      // Zero published revisions (and the queries have settled on that).
+      if (revisions.data === undefined || pipeline.data === undefined) return;
+      if (revisionRows.length > 0) return;
+    }
     creating.current = true;
+    const documentYaml =
+      cloneDocument ?? withMetadataName(BLANK_SKELETON_YAML, pipeline.data?.slug ?? pipelineId);
     createDraft
-      .mutateAsync({ document_yaml: newestDocument.data })
+      .mutateAsync({ document_yaml: documentYaml })
       .then((draft) => setDraftId(draft.id))
       .catch((error: unknown) => setFailure(error))
       .finally(() => {
         creating.current = false;
         setDraftCreating(false);
       });
-  }, [draftCreating, newestDocument.data, createDraft]);
+  }, [
+    draftCreating,
+    newestDocument.data,
+    revisions.data,
+    pipeline.data,
+    revisionRows.length,
+    pipelineId,
+    createDraft,
+  ]);
 
   const summary = pipeline.data ? viewPipelineSummary(pipeline.data) : null;
   // First `published` in newest-first order — the one the assign form pins.
@@ -547,9 +565,13 @@ export function PipelinePage() {
                   setFailure(null);
                   setDraftCreating(true);
                 }}
-                disabled={createDraft.isPending || !revisionRows[0]}
+                disabled={createDraft.isPending}
                 data-testid="pipeline-new-draft"
-                title={revisionRows[0] ? undefined : "nothing to clone — no published revision yet"}
+                title={
+                  revisionRows[0]
+                    ? "clone the newest published revision"
+                    : "no published revision yet — starts from the blank skeleton"
+                }
               >
                 {createDraft.isPending ? "Creating…" : "New draft"}
               </Button>

@@ -24,6 +24,26 @@
 import planWithApprovalYaml from "./templates/plan-with-approval.yaml.txt?raw";
 import securityReviewYaml from "./templates/security-review.yaml.txt?raw";
 
+/**
+ * The minimal skeleton every zero-document start posts as its first draft —
+ * the Blank template and a "New draft" on a pipeline with no published
+ * revision (which has nothing to clone). It is the document's top-level
+ * shape only — `apiVersion`/`kind`/`metadata.name`/`spec` — with one node,
+ * the smallest node list the schema's shape allows (a node needs only its
+ * `id` and `kind`). It does not have to validate: a draft may be invalid,
+ * and Validate is what judges it. `withMetadataName` rewrites the `name:`
+ * line to the pipeline's slug, exactly as it does for the samples.
+ */
+export const BLANK_SKELETON_YAML = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: pipeline
+spec:
+  nodes:
+    - id: first
+      kind: process.exec
+`;
+
 export type TemplateId = "blank" | "plan-with-approval" | "security-review";
 
 export interface PipelineTemplate {
@@ -32,22 +52,30 @@ export interface PipelineTemplate {
   label: string;
   /** One line, from `docs/samples/home/README.md`. */
   description: string;
-  /** The sample document, or `null` for Blank (which creates no draft). */
-  documentYaml: string | null;
+  /** Where the document comes from: the samples live in `docs/samples/home`, the skeleton is inlined above. */
+  source: string;
+  /**
+   * The document a "New pipeline" from this template posts as the first
+   * draft — never `null`: even Blank seeds the skeleton so a pipeline can
+   * get its first draft through the UI.
+   */
+  documentYaml: string;
 }
 
 export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
   {
     id: "blank",
     label: "Blank",
-    description: "empty draft — write the YAML yourself",
-    documentYaml: null,
+    description: "skeleton draft — the top-level shape and one node, then write the YAML yourself",
+    source: "skeleton",
+    documentYaml: BLANK_SKELETON_YAML,
   },
   {
     id: "plan-with-approval",
     label: "Plan with approval",
     description:
       "inputs goal, repository: survey the checkout, plan with a chat model, hold behind a maintainer approval, publish plan.md",
+    source: "docs/samples/home",
     documentYaml: planWithApprovalYaml,
   },
   {
@@ -55,6 +83,7 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
     label: "Security review",
     description:
       "input repository: sweep the checkout for credential-shaped literals and dangerous exec patterns, grade findings by severity, publish security-review.md",
+    source: "docs/samples/home",
     documentYaml: securityReviewYaml,
   },
 ];

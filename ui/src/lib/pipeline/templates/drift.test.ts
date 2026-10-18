@@ -63,13 +63,20 @@ describe("bundled pipeline templates", () => {
     expect(Array.from(bundledBytes(slug))).toEqual(Array.from(original));
   });
 
-  it("ships the two samples plus Blank, and only Blank has no document", () => {
+  it("ships the two samples plus Blank, and only Blank is the skeleton", () => {
     expect(PIPELINE_TEMPLATES.map((template) => template.id)).toEqual([
       "blank",
       "plan-with-approval",
       "security-review",
     ]);
-    expect(PIPELINE_TEMPLATES[0]?.documentYaml).toBeNull();
+    // Blank seeds its first draft from the inlined skeleton, not from a
+    // sample; the two samples stay byte-identical to `docs/samples/home/`.
+    expect(PIPELINE_TEMPLATES.map((template) => template.source)).toEqual([
+      "skeleton",
+      "docs/samples/home",
+      "docs/samples/home",
+    ]);
+    expect(PIPELINE_TEMPLATES[0]?.documentYaml).toContain("kind: Pipeline");
   });
 });
 

@@ -660,6 +660,57 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
   }
 
   /**
+   * Open a draft editor on the pipeline page already under the cursor and
+   * take the one-node claude document through fill → save → validate →
+   * publish r1. The draft is the page's own state: an existing `draft-row-*`
+   * is selected when the page lists one (the resume of an interrupted run),
+   * otherwise the page's "New draft" control (`pipeline-new-draft`) is the
+   * click — with zero published revisions it posts the blank skeleton named
+   * for the slug, so the control is enabled by construction. Every wait is
+   * bounded; the only failure left is the page's own query settling on
+   * neither a row nor an enabled control.
+   */
+  async function authorFirstRevision(slug: string): Promise<void> {
+    const editor = page.getByTestId("draft-editor-input");
+    if (!(await editor.isVisible().catch(() => false))) {
+      const draftRow = page.getByTestId(/^draft-row-.+$/).first();
+      // Settle the drafts list first: it shows either a row or its own
+      // `drafts-empty` line, and the decision below must not race the query.
+      await expect(draftRow.or(page.getByTestId("drafts-empty")).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      const newDraft = page.getByTestId("pipeline-new-draft");
+      if (await draftRow.isVisible()) {
+        // An interrupted run left the draft: select it and finish the
+        // publish from wherever it stopped.
+        await draftRow.click();
+      } else {
+        // No row: "New draft" posts the skeleton (nothing to clone at zero
+        // revisions) and the editor opens on the page we are already on.
+        await expect(newDraft).toBeEnabled({ timeout: 30_000 });
+        await newDraft.click();
+      }
+    }
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+    const document = CLAUDE_PIPELINE.replace("__SLUG__", slug)
+      .replace("__PROFILE__", PROFILE_NAME)
+      .replace("__PROMPT__", CLAUDE_PROMPT_BLOCK);
+    await editor.fill(document);
+    await page.getByTestId("draft-editor-save").click();
+    await expect(page.getByTestId("draft-editor-dirty")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+    await page.getByTestId("draft-editor-validate").click();
+    await expect(page.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+      timeout: 30_000,
+    });
+    await page.getByTestId("draft-editor-publish").click();
+    await expect(page.getByTestId("draft-editor-published")).toContainText("published r1", {
+      timeout: 30_000,
+    });
+  }
+
+  /**
    * The § 5(c) reads that pin a run's attempts to a named worker: the attempt
    * view carries NO worker id by construction, so the identity travels through
    * the checkpoint row's worker_id, which must name a worker GET /api/v1/
@@ -921,49 +972,49 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       ).toBeVisible({ timeout: 30_000 });
       const existing = page.getByTestId(`pipeline-name-${CLAUDE_SLUG}`);
       if (await existing.isVisible().catch(() => false)) {
-        // Re-run: the server would 409 the duplicate slug, so reuse the
-        // definition whose stored r1 is the fact.
+        // Re-run: the server would 409 the duplicate slug, so the existing
+        // definition is opened and its stored state decides.
         await existing.click();
         await page.waitForURL(/\/library\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
         const revisions = await pipelineRevisions(new URL(page.url()).pathname);
         const r1 = revisions.find((row) => row.revision_number === 1);
-        if (r1?.status !== "published") {
+        if (r1?.status === "published") {
+          console.log(`reusing claude pipeline r1: ${r1.revision_digest}`);
+          evidence.push(`claude r1 revision_digest (reused): ${r1.revision_digest}`);
+          await shot(page, "home-10-claude-reused");
+          return;
+        }
+        if (revisions.length > 0) {
           throw new Error(
             `reused pipeline ${CLAUDE_SLUG} has no published r1 ` +
               `(status: ${r1?.status ?? "absent"}) — an interrupted earlier run left it ` +
               `half-published; delete the pipeline from the library and re-run`,
           );
         }
-        console.log(`reusing claude pipeline r1: ${r1.revision_digest}`);
-        evidence.push(`claude r1 revision_digest (reused): ${r1.revision_digest}`);
-        await shot(page, "home-10-claude-reused");
+        // Zero revisions: the legitimate leftover of the Blank path — the
+        // definition POST can land with the draft write still to come, so
+        // an interrupted run can stop right after the definition. Resume
+        // through a draft instead of throwing.
+        console.log(`resuming the zero-revision claude pipeline through a draft`);
+        await authorFirstRevision(CLAUDE_SLUG);
+        await shot(page, "home-10-claude-published");
         return;
       }
+      // Blank posts the skeleton as the first draft and navigates the
+      // create click straight to the pipeline page with it selected — the
+      // navigation is the fact (`waitForNavAfterWrite` semantics: a
+      // non-2xx on the write rejects before the wait burns its timeout).
       await page.getByTestId("library-new-slug-input").fill(CLAUDE_SLUG);
       await page.getByTestId("library-new-name-input").fill(CLAUDE_SLUG);
       await selectByOptionText(page, "library-new-template-select", "Blank");
-      await page.getByTestId("library-new-submit").click();
-      await waitForNavAfterWrite(
+      const created = waitForNavAfterWrite(
         page,
         /\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/,
         "create the claude pipeline",
       );
-      const document = CLAUDE_PIPELINE.replace("__SLUG__", CLAUDE_SLUG)
-        .replace("__PROFILE__", PROFILE_NAME)
-        .replace("__PROMPT__", CLAUDE_PROMPT_BLOCK);
-      await page.getByTestId("draft-editor-input").fill(document);
-      await page.getByTestId("draft-editor-save").click();
-      await expect(page.getByTestId("draft-editor-dirty")).toHaveCount(0, {
-        timeout: 30_000,
-      });
-      await page.getByTestId("draft-editor-validate").click();
-      await expect(page.getByTestId("draft-editor-verdict")).toHaveText("valid", {
-        timeout: 30_000,
-      });
-      await page.getByTestId("draft-editor-publish").click();
-      await expect(page.getByTestId("draft-editor-published")).toContainText("published r1", {
-        timeout: 30_000,
-      });
+      await page.getByTestId("library-new-submit").click();
+      await created;
+      await authorFirstRevision(CLAUDE_SLUG);
       await shot(page, "home-10-claude-published");
     });
     await test.step("assign it and start a run on the repository binding", async () => {

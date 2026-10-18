@@ -12,7 +12,11 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
 import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
-import { PIPELINE_TEMPLATES } from "../lib/pipeline/templates";
+import {
+  BLANK_SKELETON_YAML,
+  PIPELINE_TEMPLATES,
+  withMetadataName,
+} from "../lib/pipeline/templates";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import {
   WIRE_ASSIGNMENT_ID,
@@ -238,25 +242,47 @@ describe("/library", () => {
     expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1);
   });
 
-  it("leaves Blank exactly as it was: one POST, no draft, no navigation", async () => {
+  it("starts Blank from the skeleton: the pipeline, then a skeleton draft under the new slug", async () => {
+    // The draft the server would answer with, so the page we land on can open it.
+    const seededDraft: Draft = {
+      ...wireDraft("draft"),
+      document_yaml: withMetadataName(BLANK_SKELETON_YAML, "hand-written"),
+    };
     const { requests } = mount("/library", [
       { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
-      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
+      { path: draftsPath, method: "POST", status: 201, body: seededDraft },
     ]);
     await screen.findByTestId("library-new-pipeline", undefined, settled);
     fireEvent.change(screen.getByTestId("library-new-slug-input"), {
       target: { value: "hand-written" },
     });
+    // Blank is the picker's default and posts the skeleton, not "no document".
     fireEvent.click(screen.getByTestId("library-new-submit"));
+
     await waitFor(
       () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
       settled,
     );
-    expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
-    expect(await screen.findByTestId("library-page", undefined, settled)).toBeTruthy();
-    expect(screen.queryByTestId("pipeline-page")).toBeNull();
-    // The form is ready for the next slug.
-    expect((screen.getByTestId("library-new-slug-input") as HTMLInputElement).value).toBe("");
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1), settled);
+    const draftPost = requests.find(
+      (request) => request.method === "POST" && request.url === draftsPath,
+    );
+    const body = JSON.parse(draftPost?.body ?? "{}") as { document_yaml?: string };
+    const document = body.document_yaml ?? "";
+    // The skeleton itself: the top-level shape and one node…
+    expect(document).toContain("- id: first");
+    expect(document).toContain("kind: process.exec");
+    // …with `metadata.name` rewritten to the new pipeline's slug.
+    expect(metadataName(document)).toBe("name: hand-written");
+
+    // And the library opens that draft, not an empty page the draft never reached.
+    expect(await screen.findByTestId("pipeline-page", undefined, settled)).toBeTruthy();
+    const box = (await screen.findByTestId(
+      "draft-editor-input",
+      undefined,
+      settled,
+    )) as HTMLTextAreaElement | null;
+    expect(box?.value).toContain("kind: process.exec");
   });
 
   // M5 QA (`lib | polish`): the only place a template was ever mentioned was
@@ -313,9 +339,8 @@ describe("/library", () => {
       expect(within(list).getAllByTestId(/^library-template-/)).toHaveLength(
         PIPELINE_TEMPLATES.length,
       );
-      expect(within(list).getByTestId("library-template-blank").textContent).toContain(
-        "no document posted",
-      );
+      // Blank names its own source: the inlined skeleton, not a sample.
+      expect(within(list).getByTestId("library-template-blank").textContent).toContain("skeleton");
     });
   });
 });
@@ -377,6 +402,28 @@ describe("/library/:pipelineId", () => {
     expect(requestsTo(requests, draftsPath, "POST")[0].body).toContain(
       "apiVersion: communication.dev/v1alpha1",
     );
+    expect(await screen.findByTestId("draft-editor-input")).toBeTruthy();
+  });
+
+  it("seeds a zero-revision pipeline's new draft from the blank skeleton, named for the slug", async () => {
+    const { requests } = mount(detail, [
+      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
+      { path: revisionsPath, body: { revisions: [] } },
+      { path: draftsPath, body: { drafts: [] } },
+    ]);
+    // With nothing to clone the control is still the click — the skeleton is.
+    const newDraft = await screen.findByTestId("pipeline-new-draft");
+    expect((newDraft as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(newDraft);
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, draftsPath, "POST")[0].body ?? "{}") as {
+      document_yaml?: string;
+    };
+    const document = body.document_yaml ?? "";
+    expect(document).toContain("- id: first");
+    expect(document).toContain("kind: process.exec");
+    // Named for this pipeline's own slug, like the Blank template's post.
+    expect(metadataName(document)).toBe("name: feature-development");
     expect(await screen.findByTestId("draft-editor-input")).toBeTruthy();
   });
 
