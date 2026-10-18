@@ -1,9 +1,10 @@
-// Home-cluster proof (docs/home-cluster.md § 2 click path, § 5 read-only
-// verify checks): sign in through the UI against the live cluster
-// (tsidp OIDC — no credentials in this file, ever), create a project with
-// the public https://github.com/dbirks/communication repository, publish and
-// run the vetted "Plan with approval" sample, approve its gate as the owner,
-// and prove the attempts ran on the CLUSTER worker through § 5's reads
+// Home proof (docs/home-cluster.md § 2 click path, § 5 read-only verify
+// checks): sign in through the UI against the target — the live cluster by
+// default (tsidp OIDC, no credentials in this file, ever) or the local M4
+// lab on opt-in (mock OIDC IdP, E2E_HOME_LOGIN_SUBJECT) — create a project
+// with the public https://github.com/dbirks/communication repository,
+// publish and run the vetted "Plan with approval" sample, approve its gate
+// as the owner, and prove the attempts ran on the target's workers through § 5's reads
 // (GET /api/v1/workers, /api/v1/runs/{id}/checkpoints,
 // /api/v1/system/scheduler). Then author a one-node agent.acp pipeline on
 // the claude launcher profile, run it, and read its summary — or record the
@@ -14,6 +15,19 @@
 // new image is deployed):
 //   COMMUNICATION_E2E_HOME=1 \
 //     E2E_HOME_URL=https://communication.beluga-wyvern.ts.net \
+//     pnpm exec playwright test tests/home-cluster.spec.ts
+//
+// The same six-step proof runs unchanged against the local M4 lab (mock OIDC
+// IdP, http://localhost:18091): set E2E_HOME_LOGIN_SUBJECT to a seeded
+// subject (e.g. admin) to sign in through the lab's interactive form
+// instead of tsidp, and point E2E_BASE_URL at the lab too — the shared
+// signIn helper resolves relative navigation against the playwright
+// config's baseURL (e2e/tests/env.ts). Worker identity is read from the
+// API (GET /api/v1/workers, the attempts' checkpoints), so the same checks
+// are real on both targets:
+//   COMMUNICATION_E2E_HOME=1 \
+//     E2E_HOME_URL=http://localhost:18091 E2E_BASE_URL=http://localhost:18091 \
+//     E2E_HOME_LOGIN_SUBJECT=admin \
 //     pnpm exec playwright test tests/home-cluster.spec.ts
 //
 // This suite WRITES (project, repository, two pipelines, two runs, one agent
@@ -39,13 +53,47 @@ import {
   rowFor,
   selectByOptionText,
   shot,
+  signIn,
   shortRefOf,
 } from "./helpers.js";
 
 const HOME_ENABLED = process.env.COMMUNICATION_E2E_HOME === "1";
-/** The live cluster (docs/home-cluster.md § 1); overridable for the proof. */
-const HOME_BASE_URL =
-  process.env.E2E_HOME_URL ?? "https://communication.beluga-wyvern.ts.net";
+/** The target (default: the live cluster, docs/home-cluster.md § 1); overridable for the proof. */
+const HOME_BASE_URL = process.env.E2E_HOME_URL ?? "https://communication.beluga-wyvern.ts.net";
+const HOME_ORIGIN = new URL(HOME_BASE_URL).origin;
+
+/** Whether a browser response is a refused write to the APP's own API. Only
+ * non-GET/HEAD answers from the target's origin on a /api/ path count, and
+ * only 4xx/5xx verdicts — a 3xx redirect is a navigation, not a refusal.
+ * That excludes the lab's mock-IdP login-form POST (a redirect to a
+ * different origin, e.g. localhost:18095), which is sign-in plumbing made
+ * by the shared signIn helper, not an app write the suite depends on. */
+function isRefusedWriteResponse(response: PWResponse): boolean {
+  const method = response.request().method();
+  if (method === "GET" || method === "HEAD") return false;
+  const status = response.status();
+  if (status < 400) return false; // 2xx accepted, 3xx redirect — not a refusal
+  let url: URL;
+  try {
+    url = new URL(response.url());
+  } catch {
+    return false;
+  }
+  return url.origin === HOME_ORIGIN && url.pathname.startsWith("/api/");
+}
+
+/**
+ * The mock-IdP subject to sign in as through the lab's interactive form
+ * (the seeded identities; e2e/tests/helpers.ts' signIn — the subject plus a
+ * derived email claim, exactly as m5-inbox.spec.ts does, no invented name
+ * claim). Set for the local M4 lab run: step 1 then takes that path instead
+ * of the tsidp redirect loop. Unset: the unchanged tsidp behaviour.
+ */
+const HOME_LOGIN_SUBJECT = process.env.E2E_HOME_LOGIN_SUBJECT ?? "";
+/** Lab mode: mock-OIDC sign-in through the lab's form, not tsidp. */
+const LAB_MODE = HOME_LOGIN_SUBJECT !== "";
+/** The target's report title: the lab when opted in, the cluster by default. */
+const TARGET_TITLE = LAB_MODE ? "Home lab" : "Home cluster";
 
 /**
  * The timestamp stamp. The generated default is lowercased and slug-safe by
@@ -83,7 +131,10 @@ const PROJECT_SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/; // prjSlugP
 /** prjDeriveSlug (internal/api/projects.go), mirrored: lowercase, runs of
  * non-alphanumerics collapsed to one '-', trimmed, at most 40 characters. */
 function deriveProjectSlug(name: string): string {
-  const slashed = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const slashed = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
   return slashed.length > 40 ? slashed.slice(0, 40).replace(/-+$/, "") : slashed;
 }
 
@@ -236,9 +287,7 @@ async function waitForNavAfterWrite(
     refuse = reject;
   });
   const onResponse = (response: PWResponse): void => {
-    if (response.ok()) return;
-    const method = response.request().method();
-    if (method === "GET" || method === "HEAD") return;
+    if (!isRefusedWriteResponse(response)) return;
     void response.text().then(
       (body) =>
         refuse(
@@ -349,16 +398,17 @@ __PROMPT__
 `;
 
 /** The prompt as the editor must hold it: a YAML block scalar, 8-column indent. */
-const CLAUDE_PROMPT_BLOCK = AGENT_PROMPT
-  .split("\n")
+const CLAUDE_PROMPT_BLOCK = AGENT_PROMPT.split("\n")
   .map((line) => `        ${line}`)
   .join("\n");
 
-test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", () => {
+test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`, () => {
   test.describe.configure({ mode: "serial", timeout: TEST_TIMEOUT_MS });
   test.skip(
     !HOME_ENABLED,
-    "Needs the live home cluster — run with COMMUNICATION_E2E_HOME=1 (E2E_HOME_URL)",
+    LAB_MODE
+      ? "Needs the local M4 lab — run with COMMUNICATION_E2E_HOME=1 (E2E_HOME_URL, E2E_BASE_URL, E2E_HOME_LOGIN_SUBJECT)"
+      : "Needs the live home cluster — run with COMMUNICATION_E2E_HOME=1 (E2E_HOME_URL)",
   );
 
   let context: BrowserContext;
@@ -380,13 +430,14 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
   test.beforeAll(async ({ browser }) => {
     context = await browser.newContext();
     page = await context.newPage();
-    // Every UI write here is a POST/PUT/PATCH/DELETE to the API: record a
-    // non-2xx answer (status + body) so the owning step fails with the
-    // server's own verdict instead of a bare timeout.
+    // Every UI write here is a POST/PUT/PATCH/DELETE to the app's own API:
+    // record a refused (4xx/5xx) answer (status + body) so the owning step
+    // fails with the server's own verdict instead of a bare timeout.
+    // isRefusedWriteResponse keeps sign-in plumbing (the mock-IdP form POST)
+    // and other-origin traffic out of the record.
     page.on("response", (response) => {
-      if (response.ok()) return;
+      if (!isRefusedWriteResponse(response)) return;
       const method = response.request().method();
-      if (method === "GET" || method === "HEAD") return;
       void response.text().then(
         (body) =>
           refusedWrites.push({
@@ -410,81 +461,117 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
     if (context) await context.close();
   });
 
-  test("step 1 — sign in through the UI (tsidp OIDC, no credentials here)", async () => {
-    await test.step("the cluster answers readiness", async () => {
-      await expect
-        .poll(
-          async () => {
-            try {
-              return (
-                await context.request.get(`${HOME_BASE_URL}/api/v1/system/readiness`)
-              ).ok();
-            } catch {
-              return false;
-            }
-          },
-          { timeout: 120_000, intervals: [2_000] },
-        )
-        .toBe(true);
-    });
-    await test.step("follow the login redirects until /api/v1/me answers 200", async () => {
-      // The browser on this tailnet machine is already signed in to tsidp, so
-      // the OIDC redirect chain closes on its own — no password, no form.
-      // /api/v1/me is the session's own fact; the display name is read from
-      // the served /me body, and tokens/cookies are never read or stored.
-      await page.goto(`${HOME_BASE_URL}/`, { waitUntil: "domcontentloaded" }).catch(() => {});
-      // The app may land on /login with the provider link instead of the
-      // signed-in badge: click it and let the redirect chain close. The
-      // browser on this tailnet machine is already signed in to tsidp, so no
-      // password or form is ever filled. Loop: /me decides; the link is
-      // re-clicked only when the flow failed and /login shows it again.
-      const providerLink = page.getByRole("link", {
-        name: /Sign in with your organization identity provider/,
+  test(
+    LAB_MODE
+      ? `step 1 — sign in through the UI (lab mock OIDC as ${HOME_LOGIN_SUBJECT})`
+      : "step 1 — sign in through the UI (tsidp OIDC, no credentials here)",
+    async () => {
+      await test.step(`the target (${HOME_BASE_URL}) answers readiness`, async () => {
+        await expect
+          .poll(
+            async () => {
+              try {
+                return (await context.request.get(`${HOME_BASE_URL}/api/v1/system/readiness`)).ok();
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 120_000, intervals: [2_000] },
+          )
+          .toBe(true);
       });
-      const meDeadline = Date.now() + 120_000;
-      let me: { display_name?: string; name?: string } | undefined;
-      for (;;) {
-        const response = await context.request.get(`${HOME_BASE_URL}/api/v1/me`).catch(() => null);
-        if (response && response.status() === 200) {
-          const body = (await response.json()) as { display_name?: string; name?: string };
-          if (body.display_name ?? body.name) {
-            me = body;
-            break;
+      if (LAB_MODE) {
+        await test.step(`sign in through the lab's mock-IdP form as ${HOME_LOGIN_SUBJECT}`, async () => {
+          // The shared signIn helper (e2e/tests/helpers.ts) navigates
+          // relative to the playwright config's baseURL (E2E_BASE_URL,
+          // e2e/tests/env.ts), so a lab run must point that base at the
+          // same target the rest of the suite reads. The helper fills the
+          // IdP's interactive form (no real credentials) and waits for the
+          // signed-in badge itself.
+          const configBase = (process.env.E2E_BASE_URL ?? "http://localhost:28080").replace(
+            /\/+$/,
+            "",
+          );
+          if (configBase !== HOME_BASE_URL.replace(/\/+$/, "")) {
+            throw new Error(
+              `E2E_HOME_LOGIN_SUBJECT=${HOME_LOGIN_SUBJECT} needs E2E_BASE_URL to match ` +
+                `the target (${HOME_BASE_URL}): the shared signIn helper resolves ` +
+                `relative navigation against the config's baseURL`,
+            );
           }
-        }
-        if (Date.now() >= meDeadline) break;
-        if (await providerLink.isVisible().catch(() => false)) {
-          await page
-            .goto(`${HOME_BASE_URL}/login`, { waitUntil: "domcontentloaded" })
-            .catch(() => {});
-          await providerLink.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
-          if (await providerLink.isVisible().catch(() => false)) {
-            await providerLink.click();
+          // Exactly as m5-inbox.spec.ts: the seeded subject plus the derived
+          // email claim — no invented name claim.
+          await signIn(page, HOME_LOGIN_SUBJECT, { email: `${HOME_LOGIN_SUBJECT}@example.test` });
+          await expect(page.getByTestId("user-badge")).toHaveText(HOME_LOGIN_SUBJECT);
+          displayName = HOME_LOGIN_SUBJECT;
+          console.log(`signed in as: ${displayName} (via ${HOME_BASE_URL}, lab mock OIDC)`);
+        });
+      } else {
+        await test.step("follow the login redirects until /api/v1/me answers 200", async () => {
+          // The browser on this tailnet machine is already signed in to tsidp, so
+          // the OIDC redirect chain closes on its own — no password, no form.
+          // /api/v1/me is the session's own fact; the display name is read from
+          // the served /me body, and tokens/cookies are never read or stored.
+          await page.goto(`${HOME_BASE_URL}/`, { waitUntil: "domcontentloaded" }).catch(() => {});
+          // The app may land on /login with the provider link instead of the
+          // signed-in badge: click it and let the redirect chain close. The
+          // browser on this tailnet machine is already signed in to tsidp, so no
+          // password or form is ever filled. Loop: /me decides; the link is
+          // re-clicked only when the flow failed and /login shows it again.
+          const providerLink = page.getByRole("link", {
+            name: /Sign in with your organization identity provider/,
+          });
+          const meDeadline = Date.now() + 120_000;
+          let me: { display_name?: string; name?: string } | undefined;
+          for (;;) {
+            const response = await context.request
+              .get(`${HOME_BASE_URL}/api/v1/me`)
+              .catch(() => null);
+            if (response && response.status() === 200) {
+              const body = (await response.json()) as { display_name?: string; name?: string };
+              if (body.display_name ?? body.name) {
+                me = body;
+                break;
+              }
+            }
+            if (Date.now() >= meDeadline) break;
+            if (await providerLink.isVisible().catch(() => false)) {
+              await page
+                .goto(`${HOME_BASE_URL}/login`, { waitUntil: "domcontentloaded" })
+                .catch(() => {});
+              await providerLink.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
+              if (await providerLink.isVisible().catch(() => false)) {
+                await providerLink.click();
+              }
+              // The OIDC round trip closes on its own; give it room before the
+              // next /me probe so a mid-flight 401 never triggers a re-click.
+              await new Promise((resolve) => setTimeout(resolve, 15_000));
+              continue;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
           }
-          // The OIDC round trip closes on its own; give it room before the
-          // next /me probe so a mid-flight 401 never triggers a re-click.
-          await new Promise((resolve) => setTimeout(resolve, 15_000));
-          continue;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+          expect(me, "the signed-in /api/v1/me body after the provider redirect").toBeDefined();
+          displayName = me!.display_name ?? me!.name ?? "";
+          expect(displayName, "the signed-in /me body must carry a display name").not.toBe("");
+          console.log(`signed in as: ${displayName} (via ${HOME_BASE_URL}, tsidp OIDC)`);
+        });
       }
-      expect(me, "the signed-in /api/v1/me body after the provider redirect").toBeDefined();
-      displayName = me!.display_name ?? me!.name ?? "";
-      expect(displayName, "the signed-in /me body must carry a display name").not.toBe("");
-      console.log(`signed in as: ${displayName} (via ${HOME_BASE_URL}, tsidp OIDC)`);
-    });
-    await test.step("the app shows the signed-in badge", async () => {
-      await gotoApp(page, "/");
-      await expect(page.getByTestId("user-badge")).toBeVisible({ timeout: 60_000 });
-      await shot(page, "home-00-signed-in");
-    });
-  });
+      await test.step("the app shows the signed-in badge", async () => {
+        await gotoApp(page, "/");
+        await expect(page.getByTestId("user-badge")).toBeVisible({ timeout: 60_000 });
+        await shot(page, "home-00-signed-in");
+      });
+    },
+  );
 
   test("step 2 — create the project (or reuse it) and add the repository", async () => {
+    // Sign-in (step 1) traffic is already excluded by isRefusedWriteResponse;
+    // still start from a clean record so only this step's writes are judged.
+    refusedWrites.length = 0;
     await test.step("an earlier run's same-named project is reused, never duplicated", async () => {
       await gotoApp(page, "/");
-      // A fresh cluster has the empty message instead of the list; wait for
-      // whichever the served state is.
+      // A fresh target (or account) has the empty message instead of the
+      // list; wait for whichever the served state is.
       await expect(
         page.getByTestId("project-list").or(page.getByTestId("project-list-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
@@ -519,7 +606,11 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       await expect(
         rowFor(page, REPO_BINDING).or(page.getByTestId("repo-list-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
-      if (await rowFor(page, REPO_BINDING).isVisible().catch(() => false)) {
+      if (
+        await rowFor(page, REPO_BINDING)
+          .isVisible()
+          .catch(() => false)
+      ) {
         console.log(`repository binding already present: ${REPO_BINDING}`);
       } else {
         await addRepository(page, `${HOME_BASE_URL}${projectPath}`, REPO_BINDING, REPO_URL);
@@ -531,6 +622,7 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
   });
 
   test("step 3 — Plan with approval: validate, publish r1, assign", async () => {
+    refusedWrites.length = 0;
     // A re-run must not re-POST a definition under an already-used slug (the
     // server 409s the duplicate): a same-slug pipeline row is reused instead,
     // and when its r1 is already published the Validate/Publish steps are
@@ -649,9 +741,9 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
   }
 
   /** GET the pipeline's stored revisions (route 13) behind a /library path. */
-  async function pipelineRevisions(path: string): Promise<
-    { revision_number: number; revision_digest: string; status: string }[]
-  > {
+  async function pipelineRevisions(
+    path: string,
+  ): Promise<{ revision_number: number; revision_digest: string; status: string }[]> {
     const pipelineId = path.slice("/library/".length);
     const body = await getJson<{
       revisions: { revision_number: number; revision_digest: string; status: string }[];
@@ -714,7 +806,8 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
    * The § 5(c) reads that pin a run's attempts to a named worker: the attempt
    * view carries NO worker id by construction, so the identity travels through
    * the checkpoint row's worker_id, which must name a worker GET /api/v1/
-   * workers serves (its `name` is the pod name — COMMUNICATION_WORKER_NAME).
+   * workers serves (its `name` is COMMUNICATION_WORKER_NAME: the pod name
+   * on the cluster, the lab's own worker name on the local lab).
    * Returns the worker names the run's checkpoints pin.
    */
   async function workerNamesForRun(runId: string): Promise<string[]> {
@@ -736,8 +829,11 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
   /** Print and record § 5(c)'s worker evidence for one run. */
   async function recordWorkerEvidence(label: string, runId: string): Promise<void> {
     const names = await workerNamesForRun(runId);
-    expect(names.length, `${label}: the run's checkpoints must pin at least one worker`).toBeGreaterThan(0);
-    console.log(`${label} ran on cluster worker(s): ${names.join(", ")}`);
+    expect(
+      names.length,
+      `${label}: the run's checkpoints must pin at least one worker`,
+    ).toBeGreaterThan(0);
+    console.log(`${label} ran on worker(s) of ${HOME_BASE_URL}: ${names.join(", ")}`);
     evidence.push(`${label} checkpoints -> worker(s): ${names.join(", ")}`);
     const workers = (await getJson<WorkerList>(context, `/api/v1/workers`)).items;
     const online = workers.filter((worker) => worker.status === "online").map((w) => w.name);
@@ -793,16 +889,22 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
     const failed = nodes.node_executions.filter((n) => n.status === "failed");
     if (failed.length === 0) return false;
     for (const node of failed) {
-      const detail = await getJson<NodeExecutionDetailView>(ctx, `/api/v1/runs/${runId}/nodes/${node.id}`);
+      const detail = await getJson<NodeExecutionDetailView>(
+        ctx,
+        `/api/v1/runs/${runId}/nodes/${node.id}`,
+      );
       const newest = [...detail.attempts].sort((a, b) => b.attempt_number - a.attempt_number)[0];
-      const text = [node.error_class, newest?.error_class, newest?.detail].filter(Boolean).join(" ");
+      const text = [node.error_class, newest?.error_class, newest?.detail]
+        .filter(Boolean)
+        .join(" ");
       console.log(`  ${node.node_id} (${node.kind}): ${text}`);
       if (!TRANSIENT_MODEL_FAILURE.test(text)) return false;
     }
     return true;
   }
 
-  test("step 4 — start the run, approve the gate, terminal, cluster-worker proof", async () => {
+  test(`step 4 — start the run, approve the gate, terminal, ${TARGET_TITLE.toLowerCase()}-worker proof`, async () => {
+    refusedWrites.length = 0;
     await test.step("New run: the revision's inputs (goal + the repository binding)", async () => {
       await gotoApp(page, `${projectPath}/runs`);
       await expect(page.getByTestId("project-runs")).toBeVisible();
@@ -878,22 +980,19 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
         continue;
       }
       // waiting_human — the gate parks the run; approve it as the owner.
-      await test.step(
-        `approve the gate in the UI as the owner [${retry ? `retry ${retry}` : "first attempt"}]`,
-        async () => {
-          await page.getByTestId("run-stage-cell-approve").click();
-          await expect(page.getByTestId("approval-state")).toHaveText("needs your decision", {
-            timeout: 30_000,
-          });
-          await expect(page.getByTestId("approval-node")).toContainText("approve");
-          await page.getByTestId("approval-comment").fill("Home cluster proof — approved.");
-          await page.getByTestId("approval-approve").click();
-          await expect(page.getByTestId("approval-decided")).toBeVisible({
-            timeout: DECISION_TIMEOUT_MS,
-          });
-          await shot(page, "home-07-approved");
-        },
-      );
+      await test.step(`approve the gate in the UI as the owner [${retry ? `retry ${retry}` : "first attempt"}]`, async () => {
+        await page.getByTestId("run-stage-cell-approve").click();
+        await expect(page.getByTestId("approval-state")).toHaveText("needs your decision", {
+          timeout: 30_000,
+        });
+        await expect(page.getByTestId("approval-node")).toContainText("approve");
+        await page.getByTestId("approval-comment").fill(`${TARGET_TITLE} proof — approved.`);
+        await page.getByTestId("approval-approve").click();
+        await expect(page.getByTestId("approval-decided")).toBeVisible({
+          timeout: DECISION_TIMEOUT_MS,
+        });
+        await shot(page, "home-07-approved");
+      });
       afterGate = true;
       await shot(page, "home-06-gate");
     }
@@ -924,12 +1023,13 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       assertNoRefusedWrites("step 4 — run approval and completion");
       await shot(page, "home-08-completed");
     });
-    await test.step("§ 5(c): the checkpoints pin the attempts to the cluster worker", async () => {
+    await test.step("§ 5(c): the checkpoints pin the attempts to a named worker", async () => {
       await recordWorkerEvidence("plan run", planRunId);
     });
   });
 
   test("step 5 — one agent.acp node on the claude launcher profile", async () => {
+    refusedWrites.length = 0;
     await test.step("the claude-launcher profile exists (created on /agents when absent)", async () => {
       await gotoApp(page, "/agents");
       await expect(page.getByTestId("agents-page")).toBeVisible();
@@ -965,10 +1065,7 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
       await gotoApp(page, "/library");
       await expect(page.getByTestId("library-page")).toBeVisible();
       await expect(
-        page
-          .getByTestId("pipeline-library")
-          .or(page.getByTestId("pipeline-library-empty"))
-          .first(),
+        page.getByTestId("pipeline-library").or(page.getByTestId("pipeline-library-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
       const existing = page.getByTestId(`pipeline-name-${CLAUDE_SLUG}`);
       if (await existing.isVisible().catch(() => false)) {
@@ -1082,9 +1179,7 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
             context,
             `/api/v1/runs/${claudeRunId}/nodes/${node?.id}`,
           );
-          const attempts = [...detail.attempts].sort(
-            (a, b) => b.attempt_number - a.attempt_number,
-          );
+          const attempts = [...detail.attempts].sort((a, b) => b.attempt_number - a.attempt_number);
           const attempt = attempts[0];
           expect(attempt.status, "the newest attempt must have succeeded").toBe("succeeded");
           const outputs = (attempt.outputs ?? {}) as { summary?: unknown };
@@ -1122,7 +1217,10 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
           const runPath = `/projects/${projectId}/runs/${claudeRunId}`;
           await gotoApp(page, runPath);
           await page.getByTestId("run-tab-timeline").click();
-          const timelineText = await page.getByTestId("run-timeline").innerText().catch(() => "");
+          const timelineText = await page
+            .getByTestId("run-timeline")
+            .innerText()
+            .catch(() => "");
           const unattended =
             timelineText.includes("ask_unattended") || detailText.includes("ask_unattended");
           if (unattended) {
@@ -1151,8 +1249,13 @@ test.describe("Home cluster proof — § 2 click path, § 5 read-only verify", (
 
   test("final summary — run ids and the § 5 check results", async () => {
     const lines = [
-      "================ HOME-CLUSTER PROOF ================",
-      `signed in as: ${displayName} (tsidp OIDC, no credentials read or stored)`,
+      `================ ${TARGET_TITLE.toUpperCase().replace(" ", "-")} PROOF ================`,
+      `target: ${HOME_BASE_URL}`,
+      `signed in as: ${displayName} (${
+        LAB_MODE
+          ? `lab mock OIDC subject ${HOME_LOGIN_SUBJECT}, no credentials read or stored`
+          : "tsidp OIDC, no credentials read or stored"
+      })`,
       ...evidence,
       finding ? finding : "finding: none recorded",
       "====================================================",
