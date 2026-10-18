@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"text/tabwriter"
@@ -61,6 +62,9 @@ var doctorChecks = []struct {
 	{"landlock-lsm", landlockCheck},
 	{"tools", toolsCheck},
 	{"sandbox:nono", sandboxCheck},
+	{"sandbox:nono-tcp-reachability", func(ctx context.Context) []CheckResult {
+		return []CheckResult{tcpReachabilityCheck(ctx)}
+	}},
 }
 
 // stringListFlag collects a repeatable and/or comma-separated flag value.
@@ -210,8 +214,10 @@ func firstNonEmpty(candidates ...string) string {
 const nonoIsolationVerdict = "verified=false (probe only — enforcement proven by " +
 	"sandbox_integration tests, see docs/compatibility/SANDBOX.md)"
 
-// sandboxCheck probes the nono backend. It never launches anything under a
-// sandbox and never claims more than the probe observed.
+// sandboxCheck probes the nono backend. The probe half never claims more
+// than it observed; the TCP-reachability half does launch one child under
+// the agent profile (tcpReachabilityCheck) because the worker's startup gate
+// proves enforcement by running a child, and doctor reports the same gate.
 func sandboxCheck(ctx context.Context) []CheckResult {
 	const name = "sandbox:nono"
 	caps, err := (&nono.Launcher{}).Probe(ctx)
@@ -225,7 +231,50 @@ func sandboxCheck(ctx context.Context) []CheckResult {
 	if notes := strings.Join(caps.Notes, "; "); notes != "" {
 		detail += "; " + notes
 	}
-	return []CheckResult{{Name: name, Status: statusOK, Detail: detail}}
+	results := []CheckResult{{Name: name, Status: statusOK, Detail: detail}}
+	return results
+}
+
+// tcpReachabilityCheck is its own doctor check — a separate name, separate
+// line — so the probe-only contract of sandboxCheck (one `sandbox:nono` row,
+// verified=false, no stronger claim) is untouched: this row is the worker's
+// startup gate reported by the same name, and where it reports ok it has
+// actually observed enforcement of one connect, which sandbox:nono must not
+// claim.
+
+// tcpReachabilityCheck runs the worker's own agent-turn TCP probe (the same
+// classification, the same remediation sentence) and reports it.
+func tcpReachabilityCheck(ctx context.Context) CheckResult {
+	// Scratch lives under os.TempDir, outside $HOME: nono's state root derives
+	// from HOME, and the launcher's HOME is a sibling of the scratch so no
+	// grant overlaps it (probe C-H1).
+	const name = "sandbox:nono-tcp-reachability"
+	if _, err := exec.LookPath("nono"); err != nil {
+		return CheckResult{Name: name, Status: statusMissing, Detail: "no nono binary on PATH: the agent-turn TCP probe cannot be run"}
+	}
+	base, err := os.MkdirTemp(os.TempDir(), "communication-doctor-nonotcp-")
+	if err != nil {
+		return CheckResult{Name: name, Status: statusError, Detail: fmt.Sprintf("scratch under %s: %v", os.TempDir(), err)}
+	}
+	defer func() { _ = os.RemoveAll(base) }()
+	launcherHome := filepath.Join(base, "launcher-home")
+	scratch := filepath.Join(base, "scratch")
+	for _, d := range []string{launcherHome, scratch} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return CheckResult{Name: name, Status: statusError, Detail: fmt.Sprintf("scratch %s: %v", d, err)}
+		}
+	}
+	res, err := (&nono.Launcher{Home: launcherHome}).TCPConnectSelfTest(ctx, scratch, 30*time.Second)
+	if err != nil {
+		return CheckResult{Name: name, Status: statusError, Detail: fmt.Sprintf("probe could not be run: %v", err)}
+	}
+	detail := fmt.Sprintf("agent profile af_unix_mediation=pathname; classification=%s; kernel.yama.ptrace_scope=%s", res.Classification, ptraceScopeValue())
+	status := statusOK
+	if !res.OK {
+		status = statusError
+		detail += "; " + afUnixRemediation
+	}
+	return CheckResult{Name: name, Status: status, Detail: detail + "; " + res.Detail}
 }
 
 func runtimeCheck(_ context.Context) []CheckResult {

@@ -527,3 +527,18 @@ profile is again an SQL insert, so it has no `agent.profile.created` event. The
 concurrent `sandbox.egress_observed` rows quoted above belong to other runs
 (`worker-a`, same digest); they are cited as the mechanic working where it is
 wired, not as this conversation's evidence.
+
+## Addendum (2026-11-20): Talos node measurement — `af_unix_mediation=pathname` fails every TCP connect under `ptrace_scope=2` (FAIL on that host)
+
+**Row: FAIL on the live home cluster (Talos v1.13.6, kernel 6.18.38-talos, Landlock V6, nono 0.80.0; pod runs uid 10001, caps drop ALL, seccomp RuntimeDefault, allowPrivilegeEscalation false; `/proc/sys/kernel/yama/ptrace_scope = 2`. The lab worker: ptrace_scope 1, works.)**
+
+Evidence, verbatim from the pod, run under `nono run --profile /sandbox-policy/communication-agent.json --allow-cwd -- node -e …`:
+
+* connect to nono's own proxy (`HTTPS_PROXY=127.0.0.1:<port>`) → `EPERM`; fetch `https://api.anthropic.com/v1/messages` → `fetch failed EPERM`
+* direct `1.1.1.1:443` → `EPERM`; same with the network member removed (open) → `EPERM`; command profile + `--open-port` → `EPERM`
+* outside nono: closed local port → `ECONNREFUSED`, `1.1.1.1:443` → `OK`
+* SAME agent profile with ONLY `"af_unix_mediation": "pathname"` removed from `linux`: fetch anthropic → `405` (through the proxy), direct `1.1.1.1:443` → `EACCES` (Landlock) — exactly the lab's measured behaviour (SANDBOX.md rows 8a/8b).
+
+So with pathname AF_UNIX mediation (seccomp-notify on connect) every TCP connect fails `EPERM` on this host — likely the supervisor cannot inspect the child's sockaddr under Yama `ptrace_scope=2`. Consequence in product: a real `claude-agent-acp` turn retried for ~4 minutes, then `agent session failed mid-turn: … Unable to connect to API (EPERM)` (error_class infra). nono's audit had 0 `network_events`.
+
+**Detection.** The filesystem self-test cannot see this (its two legs pass), so the worker's startup gate now runs a second probe under the exact agent-turn profile a turn launches (`nono run -s --profile communication-agent.json … --open-port <port>` against a 127.0.0.1 listener owned by the worker process, child is the image's own `node`, `internal/sandbox/nono/tcpselftest.go`): connect → `ok`; child errors `EPERM` → `seccomp-notify-connect-mediation-unavailable`; anything else → reported verbatim. On a non-`ok` result the worker logs one ERROR line naming `af_unix_mediation=pathname`, the errno, the node's `kernel.yama.ptrace_scope` (read from `/proc` when readable) and the remediation "set kernel.yama.ptrace_scope<=1 on the node, or an operator-approved AF_UNIX mediation fallback (not yet available, ADR pending)", and withholds the `agent.acp` executor — `process.exec`, `model.chat` and `artifact.publish` keep running. `doctor` reports the same classification as `sandbox:nono-tcp-reachability`. The probe only withholds a claim; it weakens nothing, and no fallback that weakens the sandbox exists or is added here.

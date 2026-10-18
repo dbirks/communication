@@ -555,7 +555,17 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid checkpoint restore wiring", slog.String("error", err.Error()))
 		return 2
 	}
-	attemptExecs := newAttemptExecutors(chain, procExec, agentTurn, artifactPublish, modelChat)
+	// The startup TCP probe may have found the agent-turn sandbox cannot
+	// complete any TCP connect on this host (EPERM under
+	// af_unix_mediation=pathname); agent.acp is then left unregistered — the
+	// honest refusal model.chat gets with no endpoint — while process.exec,
+	// model.chat and artifact.publish keep running (contract § 0: an
+	// unclaimed kind is refused, never faked).
+	agentExec := worker.AttemptExecutor(agentTurn)
+	if !sandboxFacts.AgentTurnsAvailable {
+		agentExec = nil
+	}
+	attemptExecs := newAttemptExecutors(chain, procExec, agentExec, artifactPublish, modelChat)
 	attemptLoop, err := worker.NewAttemptLoop(
 		worker.AttemptConfig{Capacity: opts.attemptCapacity},
 		attemptStore,
@@ -915,6 +925,22 @@ func newAgentTurn(opts workerOptions, pool *pgxpool.Pool, units *worker.UnitServ
 	}
 }
 
+// afUnixRemediation is the remediation sentence the EPERM finding names, and
+// it is the one a runbook can act on: no fallback exists, so the only options
+// are the kernel knob or an operator-approved ADR the owner has not decided.
+const afUnixRemediation = "set kernel.yama.ptrace_scope<=1 on the node, or an operator-approved AF_UNIX mediation fallback (not yet available, ADR pending)"
+
+// ptraceScopeValue reads /proc/sys/kernel/yama/ptrace_scope when readable. The
+// EPERM finding is a kernel fact, and the log line names it so an operator on
+// the node can confirm the cause in one command.
+func ptraceScopeValue() string {
+	data, err := os.ReadFile("/proc/sys/kernel/yama/ptrace_scope")
+	if err != nil {
+		return "unreadable"
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // sandboxRegistration is what this worker can honestly write into the
 // workers.sandbox_* columns after its startup gate. The zero value ("none",
 // unverified) is the honest default for a mode that probed nothing.
@@ -924,6 +950,19 @@ type sandboxRegistration struct {
 	Enforcement string
 	Verified    bool
 	Notes       []string
+	// TCPReachability is the agent-turn TCP-reachability probe's
+	// classification (nono.TCPProbeOK / TCPProbeEperm / TCPProbeOther) and
+	// TCPDetail its verbatim child report; both are empty when the probe did
+	// not run (modes that do not launch the agent profile).
+	TCPReachability string
+	TCPDetail       string
+	// AgentTurnsAvailable is false when the startup probe found that the
+	// agent-turn sandbox cannot complete ANY TCP connect on this host
+	// (EPERM under af_unix_mediation=pathname — seccomp-notify connect
+	// mediation the kernel cannot inspect). runWorker then leaves the
+	// agent.acp executor unregistered: an honest refusal beats a turn that
+	// dies "Unable to connect to API (EPERM)" and journals an infra error.
+	AgentTurnsAvailable bool
 }
 
 // newUnitService assembles the M3 execution-unit service from worker options
@@ -1002,7 +1041,61 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 		facts = sandboxRegistration{
 			Backend: observed.Backend, Version: observed.Version,
 			Enforcement: string(opts.sandboxEnforcement), Verified: true,
-			Notes: caps.Notes,
+			Notes: caps.Notes, AgentTurnsAvailable: true,
+		}
+		// The second startup gate, for the same class of silent failure the
+		// filesystem self-test cannot see: a host where Landlock is fully
+		// enforced yet the agent profile's AF_UNIX mediation (af_unix_
+		// mediation = "pathname", seccomp-notify on connect) cannot inspect
+		// the child's sockaddr, so every TCP connect from the child — even a
+		// localhost one nono explicitly opened with --open-port — fails
+		// EPERM. Measured on a live Talos node with
+		// kernel.yama.ptrace_scope = 2 (docs/compatibility/SANDBOX.md): a
+		// real agent turn retried for ~4 minutes, then failed "Unable to
+		// connect to API (EPERM)" with 0 network_events in nono's audit. The
+		// probe under the exact agent profile a turn launches only WITHHOLDS
+		// a claim — it weakens nothing.
+		tcp, perr := nano.TCPConnectSelfTest(context.Background(), selfRoot, 30*time.Second)
+		switch {
+		case perr != nil:
+			facts.AgentTurnsAvailable = false
+			facts.TCPReachability = nono.TCPProbeOther
+			facts.TCPDetail = perr.Error()
+			log.Error("agent turns withheld: the agent-turn TCP-reachability probe could not be run",
+				slog.String("af_unix_mediation", "pathname"),
+				slog.String("kernel.yama.ptrace_scope", ptraceScopeValue()),
+				slog.String("error", perr.Error()),
+				slog.String("remediation", "make the probe runnable (nono and node on the worker image, scratch outside HOME) and restart; agent.acp stays unclaimed until it reports ok"),
+			)
+		case !tcp.OK && tcp.Classification == nono.TCPProbeEperm:
+			facts.AgentTurnsAvailable = false
+			facts.TCPReachability = tcp.Classification
+			facts.TCPDetail = tcp.Detail
+			log.Error("agent turns withheld: the agent-turn sandbox cannot complete ANY TCP connect (seccomp-notify connect mediation unavailable)",
+				slog.String("af_unix_mediation", "pathname"),
+				slog.String("errno", tcp.Errno),
+				slog.String("kernel.yama.ptrace_scope", ptraceScopeValue()),
+				slog.String("detail", tcp.Detail),
+				slog.String("remediation", afUnixRemediation),
+			)
+		case !tcp.OK:
+			facts.AgentTurnsAvailable = false
+			facts.TCPReachability = tcp.Classification
+			facts.TCPDetail = tcp.Detail
+			log.Error("agent turns withheld: the agent-turn TCP-reachability probe reported an unmeasured shape",
+				slog.String("af_unix_mediation", "pathname"),
+				slog.String("classification", tcp.Classification),
+				slog.String("errno", tcp.Errno),
+				slog.String("kernel.yama.ptrace_scope", ptraceScopeValue()),
+				slog.String("detail", tcp.Detail),
+				slog.String("remediation", "the measured outcomes are ok or EPERM (docs/compatibility/SANDBOX.md); report the verbatim detail before deciding anything"),
+			)
+		default:
+			facts.TCPReachability = tcp.Classification
+			log.Info("agent-turn TCP reachability observed before serving turns",
+				slog.Int("port", tcp.Port),
+				slog.String("profile_digest", tcp.ProfileDigest),
+			)
 		}
 	}
 	// The M3 seams: secrets resolve and materialize through the store-owned
@@ -1307,8 +1400,14 @@ func newBoundaryResolver(pool *pgxpool.Pool) worker.BoundaryResolver {
 func newAttemptExecutors(chain attemptChain, procExec, agentTurn, artifactPublish, modelChat worker.AttemptExecutor) worker.AttemptExecutors {
 	execs := worker.AttemptExecutors{
 		worker.NodeKindProcessExec:     chain.wrap(procExec),
-		worker.NodeKindAgentACP:        chain.wrap(agentTurn),
 		worker.NodeKindArtifactPublish: chain.wrap(artifactPublish),
+	}
+	// agent.acp registers only when the worker's startup gate passed its
+	// agent-turn TCP-reachability probe; a nil agentTurn leaves the kind
+	// unregistered and refusalExecutor honest about it (the EPERM case,
+	// docs/compatibility/SANDBOX.md) — same shape as model.chat.
+	if agentTurn != nil {
+		execs[worker.NodeKindAgentACP] = chain.wrap(agentTurn)
 	}
 	if modelChat != nil {
 		execs[worker.NodeKindModelChat] = chain.wrap(modelChat)
