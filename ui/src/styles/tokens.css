@@ -30,7 +30,12 @@
   --color-ink: #1e1d1a;
   --color-ink-2: #3a3833;
   --color-muted: #6b675e;
-  --color-faint: #8f8a80;
+  /* WCAG 2 AA: faint is darkened from #8f8a80 (2.93:1 on the lightest row
+     fills) to #6e6a62 — 4.60:1 on fill #efede7 and line-soft #f0ede6, 4.77:1
+     on disabled-bg #f3f1ec, 5.02:1 on paper, 5.38:1 on surface — while still
+     sitting visibly lighter than muted (#6b675e, 4.82/4.82/4.99/5.26/5.63 on
+     the same backgrounds). */
+  --color-faint: #6e6a62;
   --color-line-strong: #cfcac0;
   --color-line: #e6e2d9;
   --color-line-soft: #f0ede6;
@@ -198,6 +203,13 @@
   }
   a:hover {
     color: var(--color-ink);
+  }
+  /* WCAG 1.4.1 Use of color: an inline link inside running text must not be
+     distinguished from the surrounding words by color alone. Links that ARE
+     the whole control (sub-nav rows, button-styled links, list rows) are not
+     inside <p> and keep their existing treatment. */
+  p a {
+    text-decoration: underline;
   }
 }
 

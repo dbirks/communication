@@ -29,9 +29,12 @@ const GROUPS: { label: string; change: "added" | "removed" | "changed" | "moved"
   { label: "Moved", change: "moved" },
 ];
 
+// Text on the light surface/fill rows must use the tag fg tokens: the
+// *-strong-fg tokens are white (fg *for* the strong bars) and would render
+// at ~1:1 here (WCAG 1.4.3).
 const CHANGE_WORD_COLOR: Record<string, string> = {
-  added: "text-st-done-strong-fg",
-  removed: "text-st-failed-strong-fg",
+  added: "text-st-done-tag-fg",
+  removed: "text-st-failed-tag-fg",
   changed: "text-ink",
   moved: "text-ink-2",
 };
@@ -105,9 +108,9 @@ function FieldRow({ field }: { field: FieldChange }) {
               data-testid="diff-line"
               className={
                 entry.type === "del"
-                  ? "text-st-failed-strong-fg"
+                  ? "text-st-failed-tag-fg"
                   : entry.type === "add"
-                    ? "text-st-done-strong-fg"
+                    ? "text-st-done-tag-fg"
                     : "text-faint"
               }
             >
@@ -163,7 +166,7 @@ export function DiffPanel({ baseDocument, text, className = "" }: DiffPanelProps
       </div>
 
       {!parsed.ok ? (
-        <p data-testid="diff-invalid" className="p-[10px] text-[12.5px] text-st-failed-strong-fg">
+        <p data-testid="diff-invalid" className="p-[10px] text-[12.5px] text-st-failed-tag-fg">
           Fix the YAML errors to see the diff
         </p>
       ) : baseDocument == null ? (

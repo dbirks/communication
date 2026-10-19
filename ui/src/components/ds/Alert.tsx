@@ -70,7 +70,7 @@ export function Alert({
         <span aria-hidden="true">
           {barTone === "neutral" ? (label ?? spec.word) : `${spec.glyph} ${label ?? spec.bar}`}
         </span>
-        {meta !== undefined ? <span className="ml-auto font-normal opacity-75">{meta}</span> : null}
+        {meta !== undefined ? <span className="ml-auto font-normal">{meta}</span> : null}
       </div>
       <div className="flex items-center gap-[10px] px-[10px] py-[7px] text-body">
         <div className="min-w-0 flex-1">{children}</div>

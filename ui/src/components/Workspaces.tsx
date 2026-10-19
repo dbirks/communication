@@ -282,5 +282,12 @@ export function WorkspaceWidget({ projectId, conversationId }: WorkspaceWidgetPr
       </p>
     );
   }
-  return <WorkspaceCard workspace={latest} />;
+  // WorkspaceCard is an <li>; the widget's host is a plain <div>, so it must
+  // arrive wrapped in a list (an <li> without a <ul>/<ol> parent is an
+  // a11y violation).
+  return (
+    <ul className="m-0 p-0" role="list">
+      <WorkspaceCard workspace={latest} />
+    </ul>
+  );
 }
