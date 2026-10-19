@@ -8,7 +8,7 @@
  * version-checked draft contract unchanged. Below 1024px the canvas gives
  * way to the StepOutline fallback (§9).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useMe } from "../api/queries";
 import {
@@ -117,24 +117,7 @@ export function StudioPage() {
   const newestSummary = pipeline.data?.revisions?.[0] ?? null;
   const newestRevision = useRevision(newestSummary?.revision_digest ?? "");
 
-  const [selectedIds, setSelectedIdsRaw] = useState<string[]>([]);
-  const setSelectedIds = (updater: SetStateAction<string[]>) => {
-    const next =
-      typeof updater === "function"
-        ? (updater as (c: string[]) => string[])(selectedIds)
-        : (updater as string[]);
-    if (JSON.stringify(next) !== JSON.stringify(selectedIds)) {
-      console.warn(
-        "DBG-PAGE-SETSEL " +
-          JSON.stringify(selectedIds) +
-          " -> " +
-          JSON.stringify(next) +
-          "\n" +
-          (new Error().stack ?? "").split("\n").slice(1, 5).join("\n"),
-      );
-    }
-    setSelectedIdsRaw(updater as never);
-  };
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   /** Single selection (the inspector's node) — null with multi/none. */
   const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
   const [view, setView] = useState<StudioView>("canvas");

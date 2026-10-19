@@ -409,17 +409,40 @@ function CanvasInner({
     [onDelete],
   );
 
-  // The page's selection is the single source of truth for `selected`. It is
-  // Rebuild the React Flow graph when the model, the layout or any
+  // The page's current selection, read (through a ref) only by the
+  // structural-rebuild path below — deliberately NOT an effect dependency:
+  // making the rebuild depend on the selection would re-push the node array
+  // on every selection change, the page→store path that used to ping-pong
+  // the store into "Maximum update depth exceeded".
+  const pageSelRef = useRef<string[]>([]);
+  pageSelRef.current =
+    selectedIds !== undefined && selectedIds.length > 0
+      ? selectedIds
+      : selectedId !== null
+        ? [selectedId]
+        : [];
+  const lastBaseRef = useRef(base);
+
   // Rebuild the React Flow graph when the model, the layout, or a
-  // presentation input changes — the canvas owns no other node state. The
-  // selection is carried forward from the local nodes' current `selected`
-  // flags — which mirror the store's own selection (every store change is
-  // applied through `onNodesChange` below) — so a structural rebuild never
-  // wipes it. The rebuild NEVER writes the page's `selectedIds` into the
-  // flags: that page→store path plus the store→page mirror is a two-step
-  // echo that never converges ("Maximum update depth exceeded").
+  // presentation input changes — the canvas owns no other node state.
+  // Two rebuild flavors, two selection rules:
+  //  • structural (the `base` graph changed — an op or a YAML edit): the old
+  //    flow ids are stale (a wrap re-qualifies its children as
+  //    until/process, …), so carry-forward would silently DROP the
+  //    selection; the cleared store selection would then echo back through
+  //    the mirror and clobber the page's post-op selection (e.g. the new
+  //    scope after a wrap). A structural rebuild therefore adopts the
+  //    page's current selection (the post-op state), filtered to ids that
+  //    still exist in the new graph.
+  //  • non-structural (preview/highlight/stale churn): carry the local
+  //    nodes' current `selected` flags forward — they mirror the store's own
+  //    gesture selection — so a rebuild never wipes or changes it.
   useEffect(() => {
+    const structural = lastBaseRef.current !== base;
+    lastBaseRef.current = base;
+    const aliveSelection = structural
+      ? new Set(pageSelRef.current.filter((id) => base.nodes.some((n) => n.data.nodeId === id)))
+      : null;
     const prevSelected = new Map(nodes.map((n) => [n.id, n.selected === true]));
     const rfNodes: Node[] = base.nodes.map((b) => {
       const scope = b.data;
@@ -457,10 +480,11 @@ function CanvasInner({
         position: b.position,
         data,
         style: { width: b.width, height: b.height },
-        // Carry the current selection across the rebuild (the apply effect is
-        // the only writer of `selected` from page state, so this never fights
-        // it).
-        selected: prevSelected.get(b.id) ?? false,
+        // Structural: the page's (post-op) selection; otherwise the store's
+        // own current selection, carried across unchanged.
+        selected: aliveSelection
+          ? aliveSelection.has(scope.nodeId)
+          : (prevSelected.get(b.id) ?? false),
       };
       if (b.type === "scope") {
         node.zIndex = 0;
