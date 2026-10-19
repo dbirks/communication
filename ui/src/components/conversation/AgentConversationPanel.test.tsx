@@ -26,6 +26,7 @@ import {
   meFixture,
   projectFixture,
   mockFetch,
+  turnId,
   type RouteStub,
 } from "../../test/fakes";
 import type { Conversation } from "../../api/types";
@@ -135,5 +136,55 @@ describe("AgentConversationPanel (dock)", () => {
       "Only the controller (Dana Observer) can send prompts.",
     );
     expect(explainer.textContent).toContain("Take control to drive.");
+  });
+
+  it("shows the whole conversation, marking the attempt's turn and the human turns", async () => {
+    // A takeover cancels the attempt's turn and opens a NEW turn in the same
+    // conversation — the dock must keep the first turn AND show the human's
+    // prompt and the reply, with markers at each boundary.
+    const humanTurnId = "01987a99-0000-7000-8000-abcdef012346";
+    renderPanel(dock({ attemptTurnId: turnId }), routes(conversationFixture));
+    const source = FakeEventSource.last();
+    act(() => {
+      // The attempt's own (factory) turn: agent work, no user message.
+      source.emit(
+        conversationEvent("conversation.message.agent", { text: "Working on it.", final: true }),
+      );
+      // A human takes over and prompts — a new turn in the same conversation.
+      source.emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: humanTurnId,
+          submitted_by: meFixture.id,
+          text: "New direction: keep the diff minimal",
+        }),
+      );
+      source.emit(
+        conversationEvent("conversation.message.agent", {
+          turn_id: humanTurnId,
+          text: "Understood — minimal diff.",
+          final: true,
+        }),
+      );
+    });
+
+    const transcript = await screen.findByTestId("transcript");
+    const items = within(transcript).getAllByTestId("transcript-item");
+    // 3 journal rows plus 2 marker rows — nothing is hidden.
+    expect(items).toHaveLength(5);
+    expect(transcript.textContent).toContain("Working on it.");
+    expect(transcript.textContent).toContain("New direction: keep the diff minimal");
+    expect(transcript.textContent).toContain("Understood — minimal diff.");
+    // The marker before the attempt's first frame names that turn…
+    const attemptMarker = items.find((item) =>
+      item.textContent?.includes("this attempt's turn starts here"),
+    );
+    expect(attemptMarker).toBeDefined();
+    expect(items.indexOf(attemptMarker as HTMLElement)).toBe(0);
+    // …and the marker before the human's turn names the person.
+    const humanMarker = items.find((item) =>
+      item.textContent?.includes("human turn — prompted by Ada Lovelace"),
+    );
+    expect(humanMarker).toBeDefined();
+    expect(items.indexOf(humanMarker as HTMLElement)).toBe(2);
   });
 });

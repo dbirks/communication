@@ -37,12 +37,14 @@ vi.mock("../conversation/AgentConversationPanel", () => ({
   AgentConversationPanel: (props: {
     conversationId: string;
     turnFilter?: string;
+    attemptTurnId?: string;
     variant?: string;
   }) => (
     <div
       data-testid="mock-agent-conversation"
       data-conversation-id={props.conversationId}
       data-turn-filter={props.turnFilter ?? ""}
+      data-attempt-turn-id={props.attemptTurnId ?? ""}
       data-variant={props.variant ?? ""}
     />
   ),
@@ -146,7 +148,10 @@ describe("WorkbenchDock", () => {
 
     const panel = await screen.findByTestId("mock-agent-conversation");
     expect(panel.getAttribute("data-conversation-id")).toBe(conversationId);
-    expect(panel.getAttribute("data-turn-filter")).toBe(turnId);
+    // The dock shows the WHOLE conversation (a takeover opens a new turn in
+    // the same one) and only marks where this attempt's turn starts.
+    expect(panel.getAttribute("data-turn-filter")).toBe("");
+    expect(panel.getAttribute("data-attempt-turn-id")).toBe(turnId);
     expect(panel.getAttribute("data-variant")).toBe("dock");
     expect(panel.closest('[data-testid="dock-conversation"]')).toBeTruthy();
   });

@@ -367,7 +367,13 @@ function AgentDock({ attempt, projectId }: { attempt: AttemptView | null; projec
         conversationId={conversationId}
         projectId={projectId}
         variant="dock"
-        turnFilter={attempt.turn_id ?? undefined}
+        // No `turnFilter`: the dock is the live surface, and a takeover opens a
+        // NEW turn in the same conversation. Scoping to the attempt's original
+        // turn hid the human's prompt and the agent's reply — the transcript
+        // must stay in sync with the whole conversation, not just the first turn.
+        // `attemptTurnId` marks where this attempt's turn begins (and which
+        // turns were human) without hiding anything.
+        attemptTurnId={attempt.turn_id ?? undefined}
         ids={{
           controlBanner: "dock-control-banner",
           stream: "dock-work-stream",
@@ -383,7 +389,7 @@ function AgentDock({ attempt, projectId }: { attempt: AttemptView | null; projec
         watching
         empty={{
           testid: "dock-work-empty",
-          copy: "No journal frames for this turn yet — the agent has not answered.",
+          copy: "No journal frames yet — the agent has not answered.",
         }}
         errorFallback="The agent's conversation for this attempt could not be read."
         composer={{

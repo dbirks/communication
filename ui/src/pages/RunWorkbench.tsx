@@ -655,24 +655,26 @@ export default function RunWorkbench() {
           />
         ) : null}
 
-        <div className="flex gap-1 py-3" role="tablist" aria-label="Workbench views">
-          {WORKBENCH_TABS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={view === item.id}
-              data-testid={`workbench-tab-${item.id}`}
-              onClick={() => setView(item.id)}
-              className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
-                view === item.id
-                  ? "border-ink bg-ink text-paper"
-                  : "border-line text-muted hover:border-line-strong hover:text-ink"
-              } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
-            >
-              {item.label}
-            </button>
-          ))}
+        <div className="flex gap-1 py-3">
+          <div role="tablist" aria-label="Workbench views" className="flex gap-1">
+            {WORKBENCH_TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={view === item.id}
+                data-testid={`workbench-tab-${item.id}`}
+                onClick={() => setView(item.id)}
+                className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
+                  view === item.id
+                    ? "border-ink bg-ink text-paper"
+                    : "border-line text-muted hover:border-line-strong hover:text-ink"
+                } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           {!narrow ? (
             <button
               type="button"

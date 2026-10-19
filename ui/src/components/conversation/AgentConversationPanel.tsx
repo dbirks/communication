@@ -31,6 +31,7 @@ import { Textarea } from "../ds/Field";
 import Transcript from "../Transcript";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
 import type { ConversationControl } from "../../api/types";
+import type { TranscriptItem } from "../../api/transcript";
 
 /**
  * Copy for the controller badge — ownership is always written in words.
@@ -344,6 +345,14 @@ export interface AgentConversationPanelProps {
   session?: ConversationSession;
   /** Show only the transcript items of this turn (the attempt pane). */
   turnFilter?: string;
+  /**
+   * The turn this surface's attempt ran (the Run Workbench dock). The
+   * transcript still shows the WHOLE conversation — a takeover opens a new
+   * turn in the same conversation — but a marker row is inserted where that
+   * turn begins, and every turn a human started (a user message) is marked
+   * with the person's name. `null` items keep journal order.
+   */
+  attemptTurnId?: string;
   /** Compact dock header content, next to "Open full conversation". */
   header?: ReactNode;
   /** Dock: the "Open full conversation" target (defaults to the page). */
@@ -365,6 +374,53 @@ export interface AgentConversationPanelProps {
     rows: number;
     nonControllerPlaceholder: string;
   };
+}
+
+/**
+ * The whole-conversation transcript for a surface bound to one attempt turn.
+ *
+ * A takeover cancels the attempt's turn and opens a NEW one in the same
+ * conversation, so the dock shows every turn; this inserts a marker row
+ * before the first frame of (a) the attempt's own turn and (b) each turn a
+ * human started — the journal only ever records `conversation.message.user`
+ * for real members, so a user message is proof a human took over and
+ * prompted. Markers are plain system rows, so they render through the same
+ * journal styling as everything the stream itself wrote.
+ */
+function markTurns(
+  items: TranscriptItem[],
+  attemptTurnId: string | undefined,
+  nameOf: (userId: string) => string,
+): TranscriptItem[] {
+  if (!attemptTurnId) return items;
+  const authorByTurn = new Map<string, string>();
+  for (const item of items) {
+    if (item.kind === "user" && item.turnId) {
+      authorByTurn.set(item.turnId, item.authorUserId);
+    }
+  }
+  const out: TranscriptItem[] = [];
+  let lastTurn: string | null = null;
+  for (const item of items) {
+    const turn = "turnId" in item ? item.turnId : null;
+    if (turn !== null && turn !== lastTurn) {
+      lastTurn = turn;
+      const author = authorByTurn.get(turn);
+      const labels: string[] = [];
+      if (author) labels.push(`human turn — prompted by ${nameOf(author)}`);
+      if (turn === attemptTurnId) labels.push("this attempt's turn starts here");
+      if (labels.length > 0) {
+        out.push({
+          kind: "system",
+          id: `mark-turn-${turn}`,
+          text: labels.join(" · "),
+          at: "at" in item ? item.at : "",
+        });
+      }
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 /**
@@ -390,6 +446,7 @@ function PanelInner({
   variant,
   session,
   turnFilter,
+  attemptTurnId,
   header,
   openFullHref,
   ids,
@@ -430,7 +487,7 @@ function PanelInner({
   // turn the conversation ever ran.
   const items = turnFilter
     ? session.transcript.items.filter((item) => "turnId" in item && item.turnId === turnFilter)
-    : session.transcript.items;
+    : markTurns(session.transcript.items, attemptTurnId, session.nameOf);
 
   const transcriptBlock =
     empty && items.length === 0 ? (
