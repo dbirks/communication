@@ -100,6 +100,9 @@ describe("/projects/:projectId conversations", () => {
       await screen.findByTestId("conversation-row-refactor-billing", undefined, {
         timeout: READ_MS,
       });
+      // The create form is the shared dialog now: open it from the section button.
+      fireEvent.click(screen.getByTestId("conversations-new-open"));
+      await screen.findByTestId("new-conversation-dialog", undefined, { timeout: READ_MS });
       fireEvent.change(screen.getByTestId("conversation-new-title"), {
         target: { value: "Tighten the query layer" },
       });
@@ -146,6 +149,9 @@ describe("/projects/:projectId conversations", () => {
       await screen.findByTestId("conversation-row-refactor-billing", undefined, {
         timeout: READ_MS,
       });
+      // The create form is the shared dialog now: open it from the section button.
+      fireEvent.click(screen.getByTestId("conversations-new-open"));
+      await screen.findByTestId("new-conversation-dialog", undefined, { timeout: READ_MS });
       fireEvent.change(screen.getByTestId("conversation-new-title"), {
         target: { value: "Plan" },
       });

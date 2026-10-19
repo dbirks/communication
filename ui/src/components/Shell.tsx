@@ -5,13 +5,14 @@ import { useReplicaName } from "../api/replica";
 import { problemOf } from "../api/client";
 import { AppBar, InitialsBox } from "./ds/AppBar";
 import CommandPalette from "./CommandPalette";
+import NewMenu from "./NewMenu";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
 const NAV_ITEMS = [
   { to: "/inbox", label: "Inbox" },
   { to: "/", label: "Projects", end: true },
-  { to: "/library", label: "Library" },
+  { to: "/library", label: "Workflows" },
   { to: "/agents", label: "Agents" },
   { to: "/ops", label: "Operations" },
 ];
@@ -55,23 +56,26 @@ export default function Shell({ children }: ShellProps) {
         items={NAV_ITEMS}
         ask={<CommandPalette context={sectionOf(location.pathname)} />}
         right={
-          me.data ? (
-            <>
-              <span className="hidden text-[12.5px] text-muted sm:inline">
-                Signed in as{" "}
-                <strong data-testid="user-badge" className="font-semibold text-ink">
-                  {me.data.display_name}
-                </strong>
-                {me.data.organization ? ` · ${me.data.organization.name}` : ""}
-              </span>
-              <InitialsBox name={me.data.display_name} />
-              <Button variant="secondaryPlain" data-testid="sign-out" onClick={onSignOut}>
-                Sign out
-              </Button>
-            </>
-          ) : (
-            <span className="font-mono text-[11px] text-faint">not signed in</span>
-          )
+          <>
+            <NewMenu />
+            {me.data ? (
+              <>
+                <span className="hidden text-[12.5px] text-muted sm:inline">
+                  Signed in as{" "}
+                  <strong data-testid="user-badge" className="font-semibold text-ink">
+                    {me.data.display_name}
+                  </strong>
+                  {me.data.organization ? ` · ${me.data.organization.name}` : ""}
+                </span>
+                <InitialsBox name={me.data.display_name} />
+                <Button variant="secondaryPlain" data-testid="sign-out" onClick={onSignOut}>
+                  Sign out
+                </Button>
+              </>
+            ) : (
+              <span className="font-mono text-[11px] text-faint">not signed in</span>
+            )}
+          </>
         }
       />
       {logoutError ? (

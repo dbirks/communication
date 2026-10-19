@@ -1,10 +1,9 @@
-import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
-import { useAgentProfiles, useConversations, useCreateConversation } from "../api/queries";
+import { useState } from "react";
+import { useAgentProfiles, useConversations } from "../api/queries";
 import type { ConversationSummary, Project } from "../api/types";
-import { FormError, ProblemBanner, Spinner } from "./Feedback";
+import { ProblemBanner, Spinner } from "./Feedback";
+import NewConversationDialog from "./NewConversationDialog";
 import { Button } from "./ds/Button";
-import { Field, Input, Select, Textarea } from "./ds/Field";
 import { Panel } from "./ds/Panel";
 import { Row, StatusChip } from "./ds/Row";
 import { CONVERSATION_STATE, stateOf } from "./ds/states";
@@ -40,32 +39,8 @@ export interface ConversationsProps {
 export default function Conversations({ project }: ConversationsProps) {
   const conversations = useConversations(project.id);
   const profiles = useAgentProfiles();
-  const create = useCreateConversation(project.id);
-  const navigate = useNavigate();
-  const [title, setTitle] = useState("");
-  const [profileId, setProfileId] = useState("");
-  const [prompt, setPrompt] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(false);
   const canStart = project.my_role === "maintainer" || project.my_role === "contributor";
-
-  const onSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle || !profileId) return;
-    create.mutate(
-      {
-        agent_profile_id: profileId,
-        title: trimmedTitle,
-        ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
-      },
-      {
-        onSuccess: (conversation) => {
-          setTitle("");
-          setPrompt("");
-          navigate(`/projects/${project.id}/conversations/${conversation.id}`);
-        },
-      },
-    );
-  };
 
   const profileName = (conversation: ConversationSummary) => {
     // The list row carries only `agent_profile_id`; the name comes from the
@@ -129,83 +104,24 @@ export default function Conversations({ project }: ConversationsProps) {
         ) : null}
 
         {canStart ? (
-          <form
-            onSubmit={onSubmit}
-            aria-labelledby="new-conversation-heading"
-            className="space-y-3"
+          <Button
+            variant="secondary"
+            data-testid="conversations-new-open"
+            onClick={() => setDialogOpen(true)}
           >
-            <h3
-              id="new-conversation-heading"
-              className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-            >
-              New conversation
-            </h3>
-            <Field id="conversation-title" label="Title">
-              <Input
-                id="conversation-title"
-                data-testid="conversation-new-title"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                required
-              />
-            </Field>
-            <Field
-              id="conversation-profile"
-              label="Agent profile"
-              hint={
-                <>
-                  {profiles.isPending ? <Spinner label="Loading agent profiles" /> : null}
-                  {profiles.error ? (
-                    <ProblemBanner
-                      error={profiles.error}
-                      fallback="Agent profiles could not be loaded."
-                    />
-                  ) : null}
-                </>
-              }
-            >
-              <Select
-                id="conversation-profile"
-                data-testid="conversation-new-profile"
-                value={profileId}
-                onChange={(event) => setProfileId(event.target.value)}
-                required
-              >
-                <option value="">Select a profile…</option>
-                {profiles.data
-                  ? profiles.data.items.map((profile) => (
-                      <option key={profile.id} value={profile.id}>
-                        {profile.name} ({profile.launcher_id}, {profile.permission_mode})
-                      </option>
-                    ))
-                  : null}
-              </Select>
-            </Field>
-            <Field id="conversation-prompt" label="First prompt (optional)">
-              <Textarea
-                id="conversation-prompt"
-                data-testid="conversation-new-prompt"
-                rows={3}
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                placeholder="Read the repo and propose a plan."
-              />
-            </Field>
-            <Button
-              type="submit"
-              variant="primary"
-              data-testid="conversation-new-submit"
-              disabled={create.isPending || !title.trim() || !profileId}
-            >
-              {create.isPending ? "Starting…" : "Start conversation"}
-            </Button>
-            <FormError error={create.error} />
-          </form>
+            New conversation
+          </Button>
         ) : (
           <p className="text-[12.5px] text-muted">
             Only project contributors and maintainers can start conversations.
           </p>
         )}
+        <NewConversationDialog
+          open={dialogOpen}
+          onClose={() => setDialogOpen(false)}
+          projectId={project.id}
+          project={project}
+        />
       </div>
     </Panel>
   );

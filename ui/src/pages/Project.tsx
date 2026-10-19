@@ -30,10 +30,11 @@ import type { MemberRole, Project } from "../api/types";
 import ActivityFeed from "../components/ActivityFeed";
 import { ArtifactsPanel } from "../components/Artifacts";
 import Conversations from "../components/Conversations";
-import ProjectSectionNav from "../components/ProjectSectionNav";
+import ProjectSectionNav, { projectSectionHref } from "../components/ProjectSectionNav";
+import NewConversationDialog from "../components/NewConversationDialog";
 import { WorkspacesPanel } from "../components/Workspaces";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
-import { Button } from "../components/ds/Button";
+import { Button, VARIANT_CLASS } from "../components/ds/Button";
 import { Field, Input, Select } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
@@ -558,6 +559,7 @@ export default function Project() {
   const { projectId } = useParams<{ projectId: string }>();
   const id = projectId ?? "";
   const project = useProject(id);
+  const [conversationDialogOpen, setConversationDialogOpen] = useState(false);
 
   if (project.isPending) return <Spinner label="Loading project" />;
 
@@ -606,6 +608,26 @@ export default function Project() {
           {projectData.description ? (
             <p className="max-w-[60ch] text-[12.5px] text-muted">{projectData.description}</p>
           ) : null}
+          {projectData.my_role === "maintainer" || projectData.my_role === "contributor" ? (
+            // The two ways into the project's work: a one-off conversation
+            // (shared dialog, project fixed) and a run (started from the
+            // project's Runs page, where NewRunForm opens).
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                data-testid="project-new-conversation"
+                onClick={() => setConversationDialogOpen(true)}
+              >
+                New conversation
+              </Button>
+              <Link
+                to={projectSectionHref(projectData.id, "runs")}
+                className={`ds-btn ${VARIANT_CLASS["secondary"]}`}
+                data-testid="project-start-run"
+              >
+                Start run
+              </Link>
+            </div>
+          ) : null}
         </header>
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
           <div className="min-w-0 space-y-4">
@@ -622,6 +644,12 @@ export default function Project() {
         </div>
         <ActivityFeed projectId={projectData.id} />
       </div>
+      <NewConversationDialog
+        open={conversationDialogOpen}
+        onClose={() => setConversationDialogOpen(false)}
+        projectId={projectData.id}
+        project={projectData}
+      />
     </div>
   );
 }
