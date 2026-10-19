@@ -21,6 +21,7 @@
  * home-cluster worker with no `agent.acp` node, and neither is scheduled —
  * cron/timer triggers are M6, so a run starts by hand.
  */
+import { parseGraph } from "./graphDoc";
 import planWithApprovalYaml from "./templates/plan-with-approval.yaml.txt?raw";
 import securityReviewYaml from "./templates/security-review.yaml.txt?raw";
 
@@ -60,6 +61,13 @@ export interface PipelineTemplate {
    * get its first draft through the UI.
    */
   documentYaml: string;
+  /**
+   * How many nodes the document renders on the Studio canvas — computed with
+   * the same `parseGraph` the canvas parses with, so the number the library
+   * advertises is the number Studio draws. `null` when the document does not
+   * parse; the list never invents a count.
+   */
+  stepCount: number | null;
 }
 
 export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
@@ -69,6 +77,7 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
     description: "skeleton draft — the top-level shape and one node, then write the YAML yourself",
     source: "skeleton",
     documentYaml: BLANK_SKELETON_YAML,
+    stepCount: stepCountOf(BLANK_SKELETON_YAML),
   },
   {
     id: "plan-with-approval",
@@ -77,6 +86,7 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
       "inputs goal, repository: survey the checkout, plan with a chat model, hold behind a maintainer approval, publish plan.md",
     source: "docs/samples/home",
     documentYaml: planWithApprovalYaml,
+    stepCount: stepCountOf(planWithApprovalYaml),
   },
   {
     id: "security-review",
@@ -85,11 +95,18 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
       "input repository: sweep the checkout for credential-shaped literals and dangerous exec patterns, grade findings by severity, publish security-review.md",
     source: "docs/samples/home",
     documentYaml: securityReviewYaml,
+    stepCount: stepCountOf(securityReviewYaml),
   },
 ];
 
 export function templateById(id: string): PipelineTemplate | undefined {
   return PIPELINE_TEMPLATES.find((template) => template.id === id);
+}
+
+/** Node count of a template document as the Studio canvas would draw it. */
+function stepCountOf(document: string): number | null {
+  const parsed = parseGraph(document);
+  return parsed.ok ? parsed.model.nodes.length : null;
 }
 
 /**

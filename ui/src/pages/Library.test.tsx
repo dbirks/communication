@@ -316,23 +316,25 @@ describe("/library", () => {
           ),
         settled,
       );
-      // Each row says which verb is missing, not just the panel.
+      // Each row says which verb is missing, not just the panel — and no
+      // "Use template" button is offered to a role that cannot create.
       expect(
         within(list).getByTestId("library-template-plan-with-approval-needs-role").textContent,
       ).toContain("needs the library role to create");
+      expect(within(list).queryAllByTestId(/^template-.*-use$/)).toHaveLength(0);
       // Reading the list is not authoring: no form, and no write attempted.
       expect(screen.queryByTestId("library-new-pipeline")).toBeNull();
       expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
     });
 
-    it("points an admin at the picker rather than repeating a refusal they do not need", async () => {
+    it("reads as starter workflows: one line each, the canvas step count, and a Use template action", async () => {
       mount("/library");
 
       const list = await screen.findByTestId("library-templates");
       await waitFor(
         () =>
           expect(screen.getByTestId("library-templates-note").textContent).toContain(
-            "New pipeline above",
+            'starter workflows — "Use template"',
           ),
         settled,
       );
@@ -342,8 +344,80 @@ describe("/library", () => {
       expect(within(list).getAllByTestId(/^library-template-/)).toHaveLength(
         PIPELINE_TEMPLATES.length,
       );
+      // Each row advertises the step count the Studio canvas will draw, and
+      // the action that creates the pipeline and its first draft from it.
+      for (const template of PIPELINE_TEMPLATES) {
+        expect(
+          within(list)
+            .getByTestId(`template-${template.id}-steps`)
+            .textContent?.includes(`${template.stepCount}`),
+        ).toBe(true);
+        expect(within(list).getByTestId(`template-${template.id}-use`)).toBeTruthy();
+      }
       // Blank names its own source: the inlined skeleton, not a sample.
       expect(within(list).getByTestId("library-template-blank").textContent).toContain("skeleton");
+      // The advertised counts are the sample documents' own node counts.
+      expect(within(list).getByTestId("template-plan-with-approval-steps").textContent).toBe(
+        "4 steps",
+      );
+      expect(within(list).getByTestId("template-security-review-steps").textContent).toBe(
+        "3 steps",
+      );
+      expect(within(list).getByTestId("template-blank-steps").textContent).toBe("1 step");
+    });
+
+    it("Use template creates the pipeline and its first draft, and lands on Studio", async () => {
+      const plan = PIPELINE_TEMPLATES.find((template) => template.id === "plan-with-approval");
+      const seededDraft: Draft = { ...wireDraft("draft"), document_yaml: plan?.documentYaml ?? "" };
+      const { requests } = mount("/library", [
+        { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+        { path: draftsPath, method: "POST", status: 201, body: seededDraft },
+        { path: draftPath, body: seededDraft },
+      ]);
+      await screen.findByTestId("template-plan-with-approval-use", undefined, settled);
+      fireEvent.click(screen.getByTestId("template-plan-with-approval-use"));
+
+      await waitFor(
+        () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
+        settled,
+      );
+      const pipelinePost = requests.find(
+        (request) => request.method === "POST" && request.url === "/api/v1/pipelines",
+      );
+      // The slug is the template id: a clone keeps the starter's name.
+      expect(pipelinePost?.body).toContain("plan-with-approval");
+      // The template's own document, `name:` rewritten to that slug — and the
+      // page that lands is the Studio route with the new draft, not a form.
+      await waitFor(
+        () => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1),
+        settled,
+      );
+      const draftPost = requests.find(
+        (request) => request.method === "POST" && request.url === draftsPath,
+      );
+      const body = JSON.parse(draftPost?.body ?? "{}") as { document_yaml?: string };
+      expect(metadataName(body.document_yaml ?? "")).toBe("name: plan-with-approval");
+      expect((await screen.findByTestId("studio-route", undefined, settled)).textContent).toContain(
+        WIRE_DRAFT_ID,
+      );
+    });
+
+    it("a Use template on a slug the org already has is a 409 the banner names, and no draft is posted", async () => {
+      const { requests } = mount("/library", [
+        {
+          path: "/api/v1/pipelines",
+          method: "POST",
+          status: 409,
+          body: { title: "conflict", status: 409, detail: "slug already exists" },
+        },
+      ]);
+      fireEvent.click(
+        await screen.findByTestId("template-security-review-use", undefined, settled),
+      );
+      const banner = await screen.findByTestId("template-use-pipeline-failure", undefined, settled);
+      expect(banner.textContent).toContain("slug already exists");
+      expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
+      expect(screen.queryByTestId("studio-route")).toBeNull();
     });
   });
 });
@@ -379,6 +453,22 @@ describe("/library/:pipelineId", () => {
       "apiVersion: communication.dev/v1alpha1",
     );
     // A created draft lands on the Studio route.
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
+  });
+
+  it("Customize creates a draft from the newest revision and lands on Studio", async () => {
+    const { requests } = mount(detail, [
+      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
+      { path: draftsPath, body: { drafts: [] } },
+    ]);
+    // The published pipeline's own page offers the issue #2 route by name.
+    const customize = await screen.findByTestId("pipeline-customize");
+    expect(customize.textContent).toBe("Customize");
+    fireEvent.click(customize);
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1));
+    expect(requestsTo(requests, draftsPath, "POST")[0].body).toContain(
+      "apiVersion: communication.dev/v1alpha1",
+    );
     expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 

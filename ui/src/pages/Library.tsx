@@ -64,6 +64,7 @@ import {
   PIPELINE_TEMPLATES,
   templateById,
   withMetadataName,
+  type PipelineTemplate,
   type TemplateId,
 } from "../lib/pipeline/templates";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
@@ -304,32 +305,75 @@ function NewPipelineForm() {
 }
 
 /**
- * The vetted starting points, shown read-only.
+ * The starter workflows, shown as a list: the same vetted starting points the
+ * "start from" select inside `NewPipelineForm` offers, readable at a glance —
+ * name, one-line description, the number of steps the Studio canvas will
+ * draw (`stepCount`, from the same parser the canvas uses), and for the
+ * library role a "Use template" button. That button runs the same two writes
+ * the form runs — `POST /pipelines` with the template id as the slug, then
+ * `POST /pipelines/{id}/drafts` with the template's document, `name:`
+ * rewritten to that slug — and lands on the Studio route: a usable graph,
+ * no YAML textarea in between.
  *
- * Before this panel the only place a template was mentioned was the "start
- * from" select inside `NewPipelineForm`, which is rendered for the library
- * role alone — so an org member looking at `/library` had no way to learn that
- * two working samples exist, and no way to name where they came from. The list
- * is the same `PIPELINE_TEMPLATES` the authoring form offers (one source of the
- * truth, one drift risk removed), and the same authoring predicate decides
- * whether it is an introduction or a dead end: `canCreate` says pick one above,
- * everyone else is told creating from one needs the library role.
- *
- * Nothing here writes. A template is a document waiting to be posted into a
- * draft (`07` "Sample pipelines"); the two YAMLs are the byte-identical copies
- * of `docs/samples/home/` that Go compiles in CI, which is what makes them
- * worth naming.
+ * The slug is the template id, so a second "Use template" in the same org
+ * is a `409` the server already knows how to say; the banner names it and
+ * points at the form above, where a different slug goes. A draft-post
+ * failure is retried by the explicit button only, never by a re-render —
+ * the same `run`-counted one-shot as `NewPipelineForm`.
  */
 function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
+  const navigate = useNavigate();
+  const createPipeline = useCreatePipeline();
+  const [pipelineFailure, setPipelineFailure] = useState<unknown>(null);
+  const [seed, setSeed] = useState<{
+    pipelineId: string;
+    templateId: TemplateId;
+    documentYaml: string;
+    run: number;
+  } | null>(null);
+  const [seedFailure, setSeedFailure] = useState<unknown>(null);
+  const createDraft = useCreateDraft(seed?.pipelineId ?? "");
+  /** The last attempt this render has already fired; see `run` above. */
+  const startedRun = useRef(0);
+  useEffect(() => {
+    if (!seed || startedRun.current === seed.run) return;
+    startedRun.current = seed.run;
+    createDraft
+      .mutateAsync({ document_yaml: seed.documentYaml })
+      .then((draft) => navigate(`/library/${seed.pipelineId}/drafts/${draft.id}`))
+      .catch((error: unknown) => setSeedFailure(error));
+  }, [seed, createDraft, navigate]);
+
+  async function startTemplate(template: PipelineTemplate) {
+    setPipelineFailure(null);
+    setSeedFailure(null);
+    try {
+      const pipeline = await createPipeline.mutateAsync({
+        slug: template.id,
+        display_name: template.label,
+      });
+      setSeed({
+        pipelineId: pipeline.id,
+        templateId: template.id,
+        documentYaml: withMetadataName(template.documentYaml, template.id),
+        run: startedRun.current + 1,
+      });
+    } catch (error) {
+      // A slug the organization already has is a `409` — the form above is
+      // where a different slug goes; the banner says so below.
+      setPipelineFailure(error);
+    }
+  }
+
   return (
     <Panel
-      title="PIPELINE TEMPLATES"
+      title="STARTER WORKFLOWS"
       headingId="library-templates-heading"
       headingLevel={2}
       meta={
         <span className="font-mono text-[10px] font-normal" data-testid="library-templates-note">
           {canCreate
-            ? "New pipeline above starts a draft from one of these"
+            ? 'starter workflows — "Use template" creates the pipeline and its first draft, then opens the Studio canvas'
             : `read-only — creating a pipeline from one needs ${LIBRARY_ROLE_LABEL}`}
         </span>
       }
@@ -346,18 +390,67 @@ function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
               <span className="font-mono text-[10px] text-faint">{template.source}</span>
             </span>
             <span className="block text-[12px] text-muted">{template.description}</span>
-            {canCreate ? null : (
-              // The exact verb that is missing, on the row it would apply to.
-              <span
-                className="block font-mono text-[10px]"
-                data-testid={`library-template-${template.id}-needs-role`}
-              >
-                needs {LIBRARY_ROLE_LABEL} to create
-              </span>
-            )}
+            <span className="mt-[6px] flex flex-wrap items-center gap-[8px]">
+              {template.stepCount === null ? null : (
+                <span
+                  className="font-mono text-[10px] text-faint"
+                  data-testid={`template-${template.id}-steps`}
+                >
+                  {template.stepCount} {template.stepCount === 1 ? "step" : "steps"}
+                </span>
+              )}
+              {canCreate ? (
+                <Button
+                  variant="secondary"
+                  compact
+                  onClick={() => void startTemplate(template)}
+                  disabled={createPipeline.isPending || seed !== null || seedFailure !== null}
+                  data-testid={`template-${template.id}-use`}
+                >
+                  {seed?.templateId === template.id ? "Creating…" : "Use template"}
+                </Button>
+              ) : null}
+              {canCreate ? null : (
+                // The exact verb that is missing, on the row it would apply to.
+                <span
+                  className="font-mono text-[10px]"
+                  data-testid={`library-template-${template.id}-needs-role`}
+                >
+                  needs {LIBRARY_ROLE_LABEL} to create
+                </span>
+              )}
+            </span>
           </li>
         ))}
       </ul>
+      {pipelineFailure ? (
+        <p
+          className="px-[10px] pb-[8px] font-mono text-[10.5px] text-muted"
+          data-testid="template-use-pipeline-failure"
+        >
+          {problemOf(pipelineFailure).detail || problemOf(pipelineFailure).title} — a different slug
+          goes in the form above
+        </p>
+      ) : null}
+      {seedFailure ? (
+        <div className="flex flex-wrap items-center gap-[8px] px-[10px] pb-[10px]">
+          <ProblemBanner
+            error={seedFailure}
+            fallback="The pipeline was created, but its template draft was not."
+            testid="template-use-draft-failure"
+          />
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setSeedFailure(null);
+              setSeed((current) => (current ? { ...current, run: current.run + 1 } : current));
+            }}
+            data-testid="template-use-draft-retry"
+          >
+            Retry the template draft
+          </Button>
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -514,6 +607,26 @@ export function PipelinePage() {
               ? "1 revision"
               : `${pipeline.data?.revision_count ?? 0} revisions`}
           </p>
+          {canAuthor ? (
+            // "Customize": new draft from the newest revision, straight to
+            // the Studio canvas — the issue #2 route for an existing
+            // published pipeline. The DRAFTS panel keeps its own New draft
+            // control; this one is the one a visitor sees first.
+            <Button
+              variant="secondary"
+              compact
+              className="mt-[6px]"
+              onClick={() => {
+                setFailure(null);
+                setDraftCreating(true);
+              }}
+              disabled={createDraft.isPending || draftCreating}
+              data-testid="pipeline-customize"
+              title="New draft from the newest revision — opens the Studio canvas"
+            >
+              {createDraft.isPending || draftCreating ? "Customizing…" : "Customize"}
+            </Button>
+          ) : null}
         </div>
         <Panel title="REVISIONS" headingId="pipeline-revisions-heading" headingLevel={2}>
           {revisions.isPending ? <Spinner label="Loading revisions" /> : null}
