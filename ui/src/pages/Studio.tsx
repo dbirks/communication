@@ -144,9 +144,16 @@ export function StudioPage() {
     setProposalSummary(next.summary);
   }
 
-  function onProposalApply() {
-    setProposalSummary(null);
-    void studio.save();
+  async function onProposalApply() {
+    // A successful save lands the previewed bytes: clear the highlight so the
+    // canvas stops ringing and the box drops back to the plain form. A failed
+    // save keeps the preview (the save-error / conflict surface shows why) so
+    // the same proposal can be applied again once it succeeds.
+    const saved = await studio.save();
+    if (saved) {
+      setHighlight([]);
+      setProposalSummary(null);
+    }
   }
 
   function onProposalDiscard() {

@@ -32,12 +32,14 @@ vi.mock("../components/studio/StudioCanvas", () => ({
     staleMessage?: string;
     readOnly?: boolean;
     selectedId?: string | null;
+    highlight?: string[];
   }) => (
     <div
       data-testid="studio-canvas"
       data-stale={props.stale ? "true" : "false"}
       data-read-only={props.readOnly ? "true" : "false"}
       data-selected={props.selectedId ?? ""}
+      data-highlight-count={props.highlight ? props.highlight.length : 0}
     >
       {props.stale ? props.staleMessage : "canvas"}
     </div>
@@ -311,5 +313,95 @@ spec:
     expect((await screen.findByTestId("studio-diff-drawer")).textContent).toContain(
       "nothing to compare",
     );
+  });
+});
+
+describe("the assistant proposal lifecycle", () => {
+  const proposalPath = "/api/v1/assistant/draft-proposals";
+  // insert_after against the terminal root step of the parseable fixture —
+  // the same shape the ADR-0044 closed set carries and proposalOps.test.ts
+  // proves applies cleanly.
+  const proposalOp = {
+    op: "insert_after",
+    after: "publish_needs_attention",
+    kind: "agent.acp",
+    id: "assistant_note",
+    config: { profile: "m4-reviewer", prompt: "Summarise the approved plan for the log." },
+  };
+
+  /** Mount, ask the assistant, and land on the preview (highlight + caption). */
+  async function mountPreviewing(overrides: RouteStub[] = []) {
+    const { requests } = mount(studioPath, [
+      // `overrides` lead: the methodless GET draft stub in `routes()` would
+      // otherwise shadow a PUT-specific stub (mockFetch's first match wins).
+      ...overrides,
+      { path: draftPath, body: parseableDraft() },
+      {
+        path: proposalPath,
+        method: "POST",
+        body: {
+          op: proposalOp,
+          node_ids: ["assistant_note"],
+          summary: "inserted assistant_note after publish_needs_attention",
+          version: 12,
+        },
+      },
+    ]);
+    await screen.findByTestId("studio-header");
+    fireEvent.change(screen.getByTestId("assistant-proposal-input"), {
+      target: { value: "Add a note agent at the end" },
+    });
+    fireEvent.click(screen.getByTestId("assistant-proposal-submit"));
+    await screen.findByTestId("assistant-proposal-caption");
+    // The preview rings the proposed node on the canvas and shows the page's
+    // review caption.
+    const canvas = screen.getByTestId("studio-canvas");
+    expect(canvas.getAttribute("data-highlight-count")).toBe("1");
+    expect(screen.getByTestId("studio-proposal-caption")).toBeTruthy();
+    return { requests };
+  }
+
+  it("clears the highlight and the preview when Apply saves", async () => {
+    const { requests } = await mountPreviewing();
+    fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
+    // The adopted text went out through the version-checked PUT.
+    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT").length).toBe(1));
+    // No reload, no error: the highlight is gone and the box is back to the
+    // plain form (no caption, input present again).
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
+    expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
+    expect(screen.queryByTestId("studio-proposal-caption")).toBeNull();
+    expect(screen.queryByTestId("assistant-proposal-apply")).toBeNull();
+    expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
+  });
+
+  it("keeps the preview and shows the error when the Apply save fails", async () => {
+    await mountPreviewing([
+      {
+        path: draftPath,
+        method: "PUT",
+        status: 500,
+        body: { type: "server_error", title: "Internal server error", detail: "boom" },
+      },
+    ]);
+    fireEvent.click(screen.getByTestId("assistant-proposal-apply"));
+    // The save failed, so the banner explains it and the proposal is still on
+    // the canvas, still apply-able.
+    expect(await screen.findByTestId("studio-save-error")).toBeTruthy();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("1");
+    expect(screen.getByTestId("assistant-proposal-caption")).toBeTruthy();
+    expect(screen.getByTestId("studio-proposal-caption")).toBeTruthy();
+    expect(screen.getByTestId("assistant-proposal-apply")).toBeTruthy();
+  });
+
+  it("clears the highlight and the preview when the proposal is discarded", async () => {
+    await mountPreviewing();
+    fireEvent.click(screen.getByTestId("assistant-proposal-discard"));
+    // Undo lands: the highlight is cleared and the box is back to the plain
+    // form. Nothing was saved.
+    expect(screen.queryByTestId("assistant-proposal-caption")).toBeNull();
+    expect(screen.queryByTestId("studio-proposal-caption")).toBeNull();
+    expect(screen.getByTestId("studio-canvas").getAttribute("data-highlight-count")).toBe("0");
+    expect(screen.getByTestId("assistant-proposal-input")).toBeTruthy();
   });
 });
