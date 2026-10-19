@@ -309,6 +309,12 @@ func TestProposalFakeModelRoundTrip(t *testing.T) {
 			http.Error(w, "expected exactly one system+user turn", http.StatusBadRequest)
 			return
 		}
+		// The proposal turn must switch the thinking budget off.
+		kwargs, _ := body["chat_template_kwargs"].(map[string]any)
+		if len(kwargs) != 1 || kwargs["enable_thinking"] != false {
+			http.Error(w, "expected chat_template_kwargs {\"enable_thinking\":false}, got "+toAnyString(body["chat_template_kwargs"]), http.StatusBadRequest)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"message":       map[string]any{"role": "assistant", "content": answer},
@@ -347,6 +353,42 @@ func TestProposalFakeModelRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCompleteTextRequestBodies pins the wire split between the two request
+// shapes: the proposal turn carries chat_template_kwargs with
+// enable_thinking=false, and the /ask tool-loop request (loop.go's shape)
+// marshals byte-identically to before the field existed.
+func TestCompleteTextRequestBodies(t *testing.T) {
+	messages := []chatMessage{{Role: "system", Content: text("s")}, {Role: "user", Content: text("q")}}
+
+	proposal, err := json.Marshal(chatRequest{
+		Model:              "m",
+		Messages:           messages,
+		ChatTemplateKwargs: map[string]any{"enable_thinking": false},
+	})
+	if err != nil {
+		t.Fatalf("marshal proposal: %v", err)
+	}
+	var proposalBody map[string]any
+	if err := json.Unmarshal(proposal, &proposalBody); err != nil {
+		t.Fatalf("unmarshal proposal: %v", err)
+	}
+	kwargs, _ := proposalBody["chat_template_kwargs"].(map[string]any)
+	if len(kwargs) != 1 || kwargs["enable_thinking"] != false {
+		t.Fatalf("proposal body %s: chat_template_kwargs = %v", proposal, proposalBody["chat_template_kwargs"])
+	}
+
+	// The /ask loop's exact construction (loop.go: Model + Messages +
+	// ToolChoice): the new field must stay out of that body entirely.
+	ask, err := json.Marshal(chatRequest{Model: "m", Messages: messages, ToolChoice: "auto"})
+	if err != nil {
+		t.Fatalf("marshal ask: %v", err)
+	}
+	golden := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"q"}],"tool_choice":"auto"}`
+	if string(ask) != golden {
+		t.Fatalf("ask body is not byte-identical to the pre-change shape:\n got %s\nwant %s", ask, golden)
+	}
+}
+
 // storeForProposals satisfies the broker's Store with the caller's own reads;
 // the proposal turn makes no tool calls at all, so every method is a stand-in
 // that must never be reached.
@@ -375,6 +417,11 @@ func (staticStore) ListAgentProfiles(context.Context, Caller) (json.RawMessage, 
 }
 
 func storeForProposals(t *testing.T) staticStore { return staticStore{} }
+
+func toAnyString(v any) string {
+	s, _ := json.Marshal(v)
+	return string(s)
+}
 
 // LoadDraftDocForTest is the small escape hatch for the synthetic edge docs.
 func LoadDraftDocForTest(t *testing.T, yaml string) *Doc {

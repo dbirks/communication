@@ -443,7 +443,8 @@ func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string)
 {"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"insert_on_edge","from":"<existing node id>","to":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"update_prompt","node":"<existing node id>","prompt":"<the new prompt text>","summary":"<one short sentence>"}
-Rules: kind is one of agent.acp, model.chat, process.exec, condition, human.approval, until, for_each, pipeline.invoke, artifact.publish. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope. insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.`
+Rules: kind is one of agent.acp, model.chat, process.exec, condition, human.approval, until, for_each, pipeline.invoke, artifact.publish. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.
+Worked example: the draft has nodes tests and review, where review depends on tests. Instruction \"insert a code reviewer after tests\" => the target node already has a dependent, so the answer is {\"op\":\"insert_on_edge\",\"from\":\"tests\",\"to\":\"review\",\"kind\":\"agent.acp\",\"id\":\"code_reviewer\",\"config\":{\"profile\":\"m4-reviewer\",\"prompt\":\"Review the code.\"},\"summary\":\"Insert a code reviewer between tests and review\"} — NOT insert_after.`
 	user := "Draft nodes (id, kind, scope, depends_on, when guard, prompt preview, profile):\n"
 	user += string(summariesJSON)
 	if len(profiles) > 0 {
@@ -458,12 +459,16 @@ Rules: kind is one of agent.acp, model.chat, process.exec, condition, human.appr
 // (503 unreachable / 504 timeout / 502 malformed), so the proposals route
 // and the ask route degrade identically.
 func (b *Broker) CompleteText(ctx context.Context, system, user string) (string, *Failure) {
+	// enable_thinking=false: the proposal turn is one-shot extraction from a
+	// closed op set, not reasoning, and a thinking model spends minutes in
+	// the thinking budget before it ever emits the JSON the route needs.
 	ans, fail := b.complete(ctx, chatRequest{
 		Model: b.cfg.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: text(system)},
 			{Role: "user", Content: text(user)},
 		},
+		ChatTemplateKwargs: map[string]any{"enable_thinking": false},
 	})
 	if fail != nil {
 		return "", fail

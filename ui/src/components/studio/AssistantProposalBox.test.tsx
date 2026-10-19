@@ -41,7 +41,7 @@ spec:
 `;
 
 interface MockState {
-  outcome: "ok" | "invalid422";
+  outcome: "ok" | "invalid422" | "timeout504";
   mutate: ReturnType<typeof vi.fn>;
 }
 
@@ -101,9 +101,20 @@ beforeEach(() => {
         instruction: "add a reviewer",
       });
       if (state.outcome === "ok") callbacks.onSuccess(proposalResponse());
-      else
+      else if (state.outcome === "invalid422")
         callbacks.onError(
           new ApiError(problem(422, "assistant_proposal_invalid", "node id not in draft"), null),
+        );
+      else
+        callbacks.onError(
+          new ApiError(
+            problem(
+              504,
+              "model_timeout",
+              "no completion from llm-collective.e-gineering.com within 30s",
+            ),
+            null,
+          ),
         );
     },
   );
@@ -158,6 +169,59 @@ describe("AssistantProposalBox", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error(parsed.error);
     expect(findNode(parsed.model, "review_new")?.dependsOn).toEqual(["tests"]);
+  });
+
+  it("applies the real wire shape (nested op with server-echoed members) from a live 200", () => {
+    // The route answers {op: <the validated op — the model's extra members
+    // like `summary` ride along>, node_ids, summary, version}; the box must
+    // treat `data.op` as the op and preview from `data.node_ids`.
+    const live = "ok";
+    state.outcome = live;
+    const wireOp: DraftProposalResponse = {
+      op: {
+        op: "insert_on_edge",
+        from: "build",
+        to: "tests",
+        kind: "agent.acp",
+        id: "code_reviewer",
+        config: { profile: "m4-reviewer", prompt: "Review the code." },
+        summary: "Insert an m4-reviewer agent between build and tests.",
+      } as DraftProposalResponse["op"],
+      node_ids: ["code_reviewer", "build", "tests"],
+      summary: "Insert an m4-reviewer agent between build and tests.",
+      version: 4,
+    };
+    state.mutate.mockImplementation(
+      (
+        _input: DraftProposalInput,
+        callbacks: {
+          onSuccess: (data: DraftProposalResponse) => void;
+          onError: (error: ApiError) => void;
+        },
+      ) => callbacks.onSuccess(wireOp),
+    );
+    const { onPreview } = renderBox();
+    propose();
+    expect(onPreview).toHaveBeenCalledTimes(1);
+    const preview = onPreview.mock.calls[0][0];
+    expect(preview.nodeIds).toEqual(["code_reviewer", "build", "tests"]);
+    expect(preview.text).toContain("id: code_reviewer");
+    const parsed = parseGraph(preview.text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.error);
+    // The edge really was split: tests now depends on the inserted node.
+    expect(findNode(parsed.model, "code_reviewer")?.dependsOn).toEqual(["build"]);
+    expect(findNode(parsed.model, "tests")?.dependsOn).toEqual(["code_reviewer"]);
+  });
+
+  it("shows the 504 model-timeout detail and does not preview", () => {
+    state.outcome = "timeout504";
+    const { onPreview } = renderBox();
+    propose();
+    expect(onPreview).not.toHaveBeenCalled();
+    expect(screen.getByTestId("assistant-proposal-error").textContent).toBe(
+      "no completion from llm-collective.e-gineering.com within 30s",
+    );
   });
 
   it("shows the 422 detail and does not preview", () => {

@@ -59,6 +59,13 @@ type chatRequest struct {
 	Temperature    *float64       `json:"temperature,omitempty"`
 	MaxTokens      *int           `json:"max_tokens,omitempty"`
 	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	// ChatTemplateKwargs is passed through verbatim to vLLM-style
+	// `chat_template_kwargs`. The draft-proposal turn sets
+	// {"enable_thinking": false} so a reasoning model answers in under a
+	// second instead of spending its budget thinking (the proposals route
+	// would otherwise die on the broker timeout). The /ask path never sets
+	// it, so that request body is byte-identical to before this field.
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 // reply is the subset of a completion this broker reads. `error` is the shape
