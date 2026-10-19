@@ -1901,6 +1901,27 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/assistant/draft-proposals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Propose one structural draft change from the assistant
+     * @description ADR-0044's single drafting move. The caller names the draft, the draft version the editor is viewing, and asks in plain words for exactly one change from the closed op set (`insert_after`, `insert_on_edge`, `update_prompt`). The server makes ONE completion through the ADR-0034 broker with a compact node summary — never a config value or a secret — and validates the model's answer against the draft itself; anything that fails the structural check is `422` `assistant_proposal_invalid` with the reason named in `detail`, and the model is not re-asked.
+     *     The server NEVER writes the draft: the response is the validated op, the node ids to highlight, and the draft version the proposal was checked against, and the human applies it with the ordinary version-checked `PUT /drafts/{id}` echoing that version — so a proposal widens no authorization boundary and can never publish. Insert ops may only carry an executable node kind: the schema's validate-only kinds (`parallel`, `join`, `gate`, `git.commit`, `git.publish`, `integration.query`, `integration.action`) are not proposed. `draft_id` travels in the body, not a path parameter — the draft is the caller's own read, never something a path could probe.
+     */
+    post: operations["proposeDraftChange"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4043,6 +4064,129 @@ export interface components {
     AssistantProblem: components["schemas"]["Problem"] & {
       /** @description Stable cause: `assistant_not_configured`, `model_unreachable`, `model_timeout`, `malformed_completion`, `model_call_cap_exceeded`, `tool_cap_exceeded` or `secret_in_request`. */
       degraded: string;
+    };
+    /**
+     * AssistantDraftProposalRequest
+     * @description Request body for `proposeDraftChange` (ADR-0044 § 2). `draft_id` travels in the body — the route is not a resource route and the draft is the caller's own read, never a path parameter a stranger could probe. `version` is the draft version the editor is viewing; a mismatch is the SAME `409` `stale_draft_version` the draft PUT answers, so an applied proposal and a keystroke PUT share one stale-draft story.
+     */
+    AssistantDraftProposalRequest: {
+      /**
+       * Format: uuid
+       * @description The draft to propose on.
+       */
+      draft_id: string;
+      /** @description The draft version the caller is editing; the server CAS on it. */
+      version: number;
+      /** @description What the human asked for, in plain words. Secret-scanned like the ask route's question. */
+      instruction: string;
+    };
+    /**
+     * AssistantDraftProposal
+     * @description Response of `proposeDraftChange`: exactly ONE validated op — extra fields the model added were dropped by the typed decode — the node ids the UI highlights, the model's one-line summary, and the draft version the proposal was checked against (the Apply PUT must echo it). The server wrote nothing: this is a read of the draft plus one model call, and the human applies it through the ordinary version-checked `PUT /drafts/{id}`.
+     */
+    AssistantDraftProposal: {
+      op: components["schemas"]["AssistantDraftProposalOp"];
+      /** @description The node ids the op moves or creates: the new node plus the endpoints of the edge it rewrites (`[id, after]` for `insert_after`, `[id, from, to]` for `insert_on_edge`, `[node]` for `update_prompt`). The Studio canvas highlights them. */
+      node_ids: string[];
+      /** @description The model's one-line summary of the change (the preview caption). */
+      summary: string;
+      /** @description The draft version the proposal was validated against. The Apply PUT must echo it; a concurrent writer in between answers `409` `stale_draft_version` with the winner's version. */
+      version: number;
+    };
+    /**
+     * AssistantDraftProposalOp
+     * @description One member of ADR-0044's closed operation set — the model's answer is untrusted input: exactly one of these shapes, or a `422` `assistant_proposal_invalid`. `kind` on the insert ops is an EXECUTABLE node kind only: the schema's validate-only kinds (`parallel`, `join`, `gate`, `git.commit`, `git.publish`, `integration.query`, `integration.action`) are not proposed, because a proposal the run would refuse to execute is not a proposal.
+     */
+    AssistantDraftProposalOp:
+      | components["schemas"]["AssistantProposalInsertAfter"]
+      | components["schemas"]["AssistantProposalInsertOnEdge"]
+      | components["schemas"]["AssistantProposalUpdatePrompt"];
+    /**
+     * AssistantProposalInsertAfter
+     * @description Insert a new node after `after`, depending on it. Refused when the target has dependents already (`target_has_dependents`), is not in the draft (`unknown_node`), or the new id breaks the identifier pattern (`bad_id`) or collides with an existing node (`id_taken`).
+     */
+    AssistantProposalInsertAfter: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      op: "insert_after";
+      /** @description The draft node the new node depends on. */
+      after: string;
+      kind: components["schemas"]["AssistantProposalKind"];
+      id: components["schemas"]["AssistantProposalNodeId"];
+      config?: components["schemas"]["AssistantProposalConfig"];
+    };
+    /**
+     * AssistantProposalInsertOnEdge
+     * @description Splice a new node into an existing `from` → `to` dependsOn edge (the new node depends on `from`; `to` then depends on the new node). Refused when no such edge exists (`no_edge`), the pair is split across scopes (`scope_mismatch`), the target carries a `when` guard (`guarded_target`), the source is a condition node (`condition_source`), the edge is an `onFailure.errorRoute` (`error_route`), or the target's guard/config reads `nodes.<from>.*` (`edge_guarded`).
+     */
+    AssistantProposalInsertOnEdge: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      op: "insert_on_edge";
+      /** @description The edge source: the node the new node depends on. */
+      from: string;
+      /** @description The edge target: the node that then depends on the new node. */
+      to: string;
+      kind: components["schemas"]["AssistantProposalKind"];
+      id: components["schemas"]["AssistantProposalNodeId"];
+      config?: components["schemas"]["AssistantProposalConfig"];
+    };
+    /**
+     * AssistantProposalUpdatePrompt
+     * @description Replace the prompt text of an `agent.acp` node. Refused on any other kind (`wrong_kind`), on a `model.chat` node (`prompt_kind_not_supported`), or with no prompt text (`empty_prompt`).
+     */
+    AssistantProposalUpdatePrompt: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      op: "update_prompt";
+      /** @description The draft node whose prompt text is replaced. */
+      node: string;
+      /** @description The new prompt text (trimmed; empty is refused). */
+      prompt: string;
+    };
+    /**
+     * AssistantProposalKind
+     * @description The executable node kinds a proposal may insert. The schema's validate-only kinds are deliberately absent — the same list the draft's `kind` catalog names as runnable today.
+     * @enum {string}
+     */
+    AssistantProposalKind:
+      | "agent.acp"
+      | "model.chat"
+      | "process.exec"
+      | "condition"
+      | "human.approval"
+      | "until"
+      | "for_each"
+      | "pipeline.invoke"
+      | "artifact.publish";
+    /**
+     * AssistantProposalNodeId
+     * @description The new node's id — the schema's `identifier` pattern verbatim (pipeline-v1alpha1.schema.json `$defs/identifier`) — it deliberately excludes `-` and `.` so every id is a legal single CEL selector.
+     */
+    AssistantProposalNodeId: string;
+    /**
+     * AssistantProposalConfig
+     * @description The validated node config the op carries. `secretRefs` stay refs, never values — the draft's own bytes are the source of secrets, and the config text never travels to the model.
+     */
+    AssistantProposalConfig: {
+      [key: string]: unknown;
+    };
+    /**
+     * AssistantProposalProblem
+     * @description The `422` the draft proposal route answers: the `Problem` shape plus the stable `code` the UI branches on (`assistant_proposal_invalid`). `detail` carries the typed reason (and the node it names) verbatim; the model is not re-asked.
+     */
+    AssistantProposalProblem: components["schemas"]["Problem"] & {
+      /**
+       * @description The stable reason class, identical to the one in the `type` URI's last segment; the typed reason (e.g. `bad_id`, `no_edge`, `wrong_kind`) lives in `detail`.
+       * @enum {string}
+       */
+      code: "assistant_proposal_invalid";
     };
     /**
      * Communication durable event envelope
@@ -7080,6 +7224,71 @@ export interface operations {
         };
       };
       /** @description The endpoint did not answer within its arm (`degraded` is `model_timeout`). */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
+    };
+  };
+  proposeDraftChange: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AssistantDraftProposalRequest"];
+      };
+    };
+    responses: {
+      /** @description One validated op (extra model fields were dropped by the typed decode), the node ids the op moves or creates (the Studio canvas highlights them), the model's one-line summary, and the draft version the proposal was checked against (the Apply PUT must echo it). The draft row was only READ: version and bytes are exactly as found. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AssistantDraftProposal"];
+        };
+      };
+      /** @description Missing `draft_id` or `instruction`, an `instruction` over 2000 characters, a `version` below 1, or a malformed body. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["Problem"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["DraftConflict"];
+      /** @description `assistant_proposal_invalid`: the model's output was not one of the closed ops as applied to THIS draft. `detail` names the reason (`unknown_op`, `unknown_kind`, `bad_id`, `id_taken`, `unknown_node`, `target_has_dependents`, `no_edge`, `scope_mismatch`, `guarded_target`, `condition_source`, `error_route`, `edge_guarded`, `wrong_kind`, `prompt_kind_not_supported`, `empty_prompt`) and the node it names; the model is not re-asked. */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProposalProblem"];
+        };
+      };
+      /** @description `assistant_not_configured` (the feature is absent on this deployment — the same honest 503 the ask route answers; no second configuration exists), `model_unreachable`, or a cap hit. The UI keeps the draft editor on screen with one inline line. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
+      /** @description The assistant endpoint did not answer within its arm (`degraded` is `model_timeout`). */
       504: {
         headers: {
           [name: string]: unknown;

@@ -3880,6 +3880,103 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/AssistantProblem"
+  /api/v1/assistant/draft-proposals:
+    post:
+      operationId: proposeDraftChange
+      tags: [assistant]
+      summary: Propose one structural draft change from the assistant
+      description: >
+        ADR-0044's single drafting move. The caller names the draft, the
+        draft version the editor is viewing, and asks in plain words for
+        exactly one change from the closed op set (`insert_after`,
+        `insert_on_edge`, `update_prompt`). The server makes ONE completion
+        through the ADR-0034 broker with a compact node summary — never a
+        config value or a secret — and validates the model's answer against
+        the draft itself; anything that fails the structural check is `422`
+        `assistant_proposal_invalid` with the reason named in `detail`, and
+        the model is not re-asked.
+
+        The server NEVER writes the draft: the response is the validated op,
+        the node ids to highlight, and the draft version the proposal was
+        checked against, and the human applies it with the ordinary
+        version-checked `PUT /drafts/{id}` echoing that version — so a
+        proposal widens no authorization boundary and can never publish.
+        Insert ops may only carry an executable node kind: the schema's
+        validate-only kinds (`parallel`, `join`, `gate`, `git.commit`,
+        `git.publish`, `integration.query`, `integration.action`) are not
+        proposed. `draft_id` travels in the body, not a path parameter — the
+        draft is the caller's own read, never something a path could probe.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantDraftProposalRequest"
+      responses:
+        "200":
+          description: >
+            One validated op (extra model fields were dropped by the typed
+            decode), the node ids the op moves or creates (the Studio canvas
+            highlights them), the model's one-line summary, and the draft
+            version the proposal was checked against (the Apply PUT must
+            echo it). The draft row was only READ: version and bytes are
+            exactly as found.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantDraftProposal"
+        "400":
+          description: >
+            Missing `draft_id` or `instruction`, an `instruction` over
+            2000 characters, a `version` below 1, or a malformed body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/DraftConflict"
+        "422":
+          description: >
+            `assistant_proposal_invalid`: the model's output was not one of
+            the closed ops as applied to THIS draft. `detail` names the
+            reason (`unknown_op`, `unknown_kind`, `bad_id`, `id_taken`,
+            `unknown_node`, `target_has_dependents`, `no_edge`,
+            `scope_mismatch`, `guarded_target`, `condition_source`,
+            `error_route`, `edge_guarded`, `wrong_kind`,
+            `prompt_kind_not_supported`, `empty_prompt`) and the node it
+            names; the model is not re-asked.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProposalProblem"
+        "503":
+          description: >
+            `assistant_not_configured` (the feature is absent on this
+            deployment — the same honest 503 the ask route answers; no
+            second configuration exists), `model_unreachable`, or a cap hit.
+            The UI keeps the draft editor on screen with one inline line.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "504":
+          description: "The assistant endpoint did not answer within its arm (`degraded` is `model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
 
 components:
   securitySchemes:
@@ -5379,9 +5476,9 @@ components:
           description: >
             The run node that opened this conversation — the newest attempt
             that references it — or null when `origin` is `manual`.
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/ConversationRunLink"
-          nullable: true
+            - type: "null"
     ConversationSummary:
       title: ConversationSummary
       description: >
@@ -5436,9 +5533,9 @@ components:
           description: >
             The run node that opened this conversation — the newest attempt
             that references it — or null when `origin` is `manual`.
-          allOf:
+          anyOf:
             - $ref: "#/components/schemas/ConversationRunLink"
-          nullable: true
+            - type: "null"
     ConversationSummaryList:
       title: ConversationSummaryList
       type: object
@@ -8257,3 +8354,204 @@ components:
                 `model_timeout`, `malformed_completion`,
                 `model_call_cap_exceeded`, `tool_cap_exceeded` or
                 `secret_in_request`.
+    AssistantDraftProposalRequest:
+      title: AssistantDraftProposalRequest
+      description: >
+        Request body for `proposeDraftChange` (ADR-0044 § 2). `draft_id`
+        travels in the body — the route is not a resource route and the
+        draft is the caller's own read, never a path parameter a stranger
+        could probe. `version` is the draft version the editor is viewing;
+        a mismatch is the SAME `409` `stale_draft_version` the draft PUT
+        answers, so an applied proposal and a keystroke PUT share one
+        stale-draft story.
+      type: object
+      required: [draft_id, version, instruction]
+      additionalProperties: false
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+          description: The draft to propose on.
+        version:
+          type: integer
+          minimum: 1
+          description: The draft version the caller is editing; the server CAS on it.
+        instruction:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: What the human asked for, in plain words. Secret-scanned like the ask route's question.
+    AssistantDraftProposal:
+      title: AssistantDraftProposal
+      description: >
+        Response of `proposeDraftChange`: exactly ONE validated op — extra
+        fields the model added were dropped by the typed decode — the node
+        ids the UI highlights, the model's one-line summary, and the draft
+        version the proposal was checked against (the Apply PUT must echo
+        it). The server wrote nothing: this is a read of the draft plus one
+        model call, and the human applies it through the ordinary
+        version-checked `PUT /drafts/{id}`.
+      type: object
+      required: [op, node_ids, summary, version]
+      additionalProperties: false
+      properties:
+        op:
+          $ref: "#/components/schemas/AssistantDraftProposalOp"
+        node_ids:
+          type: array
+          items:
+            type: string
+          description: >
+            The node ids the op moves or creates: the new node plus the
+            endpoints of the edge it rewrites (`[id, after]` for
+            `insert_after`, `[id, from, to]` for `insert_on_edge`,
+            `[node]` for `update_prompt`). The Studio canvas highlights
+            them.
+        summary:
+          type: string
+          description: The model's one-line summary of the change (the preview caption).
+        version:
+          type: integer
+          minimum: 1
+          description: >
+            The draft version the proposal was validated against. The Apply
+            PUT must echo it; a concurrent writer in between answers `409`
+            `stale_draft_version` with the winner's version.
+    AssistantDraftProposalOp:
+      title: AssistantDraftProposalOp
+      description: >
+        One member of ADR-0044's closed operation set — the model's answer
+        is untrusted input: exactly one of these shapes, or a `422`
+        `assistant_proposal_invalid`. `kind` on the insert ops is an
+        EXECUTABLE node kind only: the schema's validate-only kinds
+        (`parallel`, `join`, `gate`, `git.commit`, `git.publish`,
+        `integration.query`, `integration.action`) are not proposed, because
+        a proposal the run would refuse to execute is not a proposal.
+      oneOf:
+        - $ref: "#/components/schemas/AssistantProposalInsertAfter"
+        - $ref: "#/components/schemas/AssistantProposalInsertOnEdge"
+        - $ref: "#/components/schemas/AssistantProposalUpdatePrompt"
+      discriminator:
+        propertyName: op
+        mapping:
+          insert_after: "#/components/schemas/AssistantProposalInsertAfter"
+          insert_on_edge: "#/components/schemas/AssistantProposalInsertOnEdge"
+          update_prompt: "#/components/schemas/AssistantProposalUpdatePrompt"
+    AssistantProposalInsertAfter:
+      title: AssistantProposalInsertAfter
+      description: >
+        Insert a new node after `after`, depending on it. Refused when the
+        target has dependents already (`target_has_dependents`), is not in
+        the draft (`unknown_node`), or the new id breaks the identifier
+        pattern (`bad_id`) or collides with an existing node (`id_taken`).
+      type: object
+      required: [op, after, kind, id]
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [insert_after]
+        after:
+          type: string
+          description: The draft node the new node depends on.
+        kind:
+          $ref: "#/components/schemas/AssistantProposalKind"
+        id:
+          $ref: "#/components/schemas/AssistantProposalNodeId"
+        config:
+          $ref: "#/components/schemas/AssistantProposalConfig"
+    AssistantProposalInsertOnEdge:
+      title: AssistantProposalInsertOnEdge
+      description: >
+        Splice a new node into an existing `from` → `to` dependsOn edge
+        (the new node depends on `from`; `to` then depends on the new node).
+        Refused when no such edge exists (`no_edge`), the pair is split
+        across scopes (`scope_mismatch`), the target carries a `when`
+        guard (`guarded_target`), the source is a condition node
+        (`condition_source`), the edge is an `onFailure.errorRoute`
+        (`error_route`), or the target's guard/config reads `nodes.<from>.*`
+        (`edge_guarded`).
+      type: object
+      required: [op, from, to, kind, id]
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [insert_on_edge]
+        from:
+          type: string
+          description: "The edge source: the node the new node depends on."
+        to:
+          type: string
+          description: "The edge target: the node that then depends on the new node."
+        kind:
+          $ref: "#/components/schemas/AssistantProposalKind"
+        id:
+          $ref: "#/components/schemas/AssistantProposalNodeId"
+        config:
+          $ref: "#/components/schemas/AssistantProposalConfig"
+    AssistantProposalUpdatePrompt:
+      title: AssistantProposalUpdatePrompt
+      description: >
+        Replace the prompt text of an `agent.acp` node. Refused on any other
+        kind (`wrong_kind`), on a `model.chat` node
+        (`prompt_kind_not_supported`), or with no prompt text
+        (`empty_prompt`).
+      type: object
+      required: [op, node, prompt]
+      additionalProperties: false
+      properties:
+        op:
+          type: string
+          enum: [update_prompt]
+        node:
+          type: string
+          description: The draft node whose prompt text is replaced.
+        prompt:
+          type: string
+          minLength: 1
+          description: The new prompt text (trimmed; empty is refused).
+    AssistantProposalKind:
+      title: AssistantProposalKind
+      description: >
+        The executable node kinds a proposal may insert. The schema's
+        validate-only kinds are deliberately absent — the same list the
+        draft's `kind` catalog names as runnable today.
+      type: string
+      enum: [agent.acp, model.chat, process.exec, condition, human.approval, until, for_each,
+        pipeline.invoke, artifact.publish]
+    AssistantProposalNodeId:
+      title: AssistantProposalNodeId
+      description: >
+        The new node's id — the schema's `identifier` pattern verbatim
+        (pipeline-v1alpha1.schema.json `$defs/identifier`) — it deliberately
+        excludes `-` and `.` so every id is a legal single CEL selector.
+      type: string
+      pattern: "^[a-z][a-z0-9_]{0,62}$"
+    AssistantProposalConfig:
+      title: AssistantProposalConfig
+      description: >
+        The validated node config the op carries. `secretRefs` stay refs,
+        never values — the draft's own bytes are the source of secrets, and
+        the config text never travels to the model.
+      type: object
+      additionalProperties: true
+    AssistantProposalProblem:
+      title: AssistantProposalProblem
+      description: >
+        The `422` the draft proposal route answers: the `Problem` shape
+        plus the stable `code` the UI branches on
+        (`assistant_proposal_invalid`). `detail` carries the typed reason
+        (and the node it names) verbatim; the model is not re-asked.
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [code]
+          properties:
+            code:
+              type: string
+              enum: [assistant_proposal_invalid]
+              description: >
+                The stable reason class, identical to the one in the `type`
+                URI's last segment; the typed reason (e.g. `bad_id`,
+                `no_edge`, `wrong_kind`) lives in `detail`.

@@ -18,9 +18,11 @@
  *    re-asked.
  *  - `503` `assistant_not_configured` — no assistant broker on this server.
  *
- * The request/response types are hand-written here on purpose: the endpoint
- * is written in parallel and `schema.d.ts` may not carry it yet; the shapes
- * mirror ADR-0044 §2 verbatim.
+ * The request/response types are hand-written here on purpose: the canvas
+ * applies the op through `lib/pipeline/proposalOps`' `ProposalOp` (which
+ * keeps `config` required on the insert ops), and `api/openapi.yaml`
+ * documents the same wire contract (ADR-0044 §2) as
+ * `AssistantDraftProposalRequest` / `AssistantDraftProposal`.
  */
 import { useMutation } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
