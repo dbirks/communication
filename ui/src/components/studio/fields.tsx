@@ -301,6 +301,7 @@ export function ListField({
               className="flex-1 font-mono"
               disabled={readOnly}
               value={row}
+              aria-label={`${label} row ${i + 1}`}
               data-testid={`insp-${id}-row-${i}`}
               onChange={(e) => commit(rows.map((r, j) => (j === i ? e.target.value : r)))}
             />
@@ -486,6 +487,7 @@ export function KvField({
               className="w-[40%] shrink-0 font-mono"
               disabled={readOnly}
               value={key}
+              aria-label={`${label} key, row ${i + 1}`}
               data-testid={`insp-${id}-key-${i}`}
               onChange={(e) =>
                 commit(rows.map(([k, vv], j) => (j === i ? [e.target.value, vv] : [k, vv])))
@@ -495,6 +497,9 @@ export function KvField({
               className="flex-1 font-mono"
               disabled={readOnly}
               value={show(v)}
+              aria-label={
+                key.trim() !== "" ? `${label} value for ${key}` : `${label} value, row ${i + 1}`
+              }
               data-testid={`insp-${id}-val-${i}`}
               onChange={(e) =>
                 commit(rows.map(([k, vv], j) => (j === i ? [k, e.target.value] : [k, vv])))
