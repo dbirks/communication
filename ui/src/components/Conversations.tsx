@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 import { useAgentProfiles, useConversations } from "../api/queries";
 import type { ConversationSummary, Project } from "../api/types";
 import { ProblemBanner, Spinner } from "./Feedback";
@@ -62,22 +62,40 @@ export interface OriginBadgeProps {
  * attempt that opened it. The run says its title when the run stored one,
  * its short id otherwise; the node says its definition id, its instance-key
  * leaf otherwise.
+ *
+ * The badge is a span with link semantics, not an anchor: in the
+ * conversations list the row itself is the anchor, and an `<a>` nested in an
+ * `<a>` is invalid HTML (React logs a hydration error for it). `stopPropagation`
+ * keeps the deep link from also following the row's own conversation href.
  */
 export function OriginBadge({ conversation, projectId }: OriginBadgeProps) {
+  const navigate = useNavigate();
   const link = conversation.run_link;
   if (conversation.origin === "run" && link) {
+    const href = conversationRunHref(projectId, link);
     return (
-      <Link
-        to={conversationRunHref(projectId, link)}
+      <span
+        role="link"
+        tabIndex={0}
+        onClick={(event) => {
+          event.stopPropagation();
+          navigate(href);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.stopPropagation();
+            navigate(href);
+          }
+        }}
         data-testid="conversation-origin-run"
-        title={conversationRunHref(projectId, link)}
-        className="inline-flex max-w-[220px] items-center gap-1 rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-accent-text hover:bg-paper hover:text-ink"
+        title={href}
+        className="inline-flex max-w-[220px] cursor-pointer items-center gap-1 rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-accent-text hover:bg-paper hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         <span className="truncate">
           From run · {link.run_title || shortId(link.run_id)} ·{" "}
           {link.node_id || instanceLeaf(link.node_instance_key)}
         </span>
-      </Link>
+      </span>
     );
   }
   if (conversation.origin === "run") {

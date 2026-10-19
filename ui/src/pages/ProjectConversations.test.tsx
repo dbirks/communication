@@ -389,8 +389,11 @@ describe("the list says where each conversation was opened", () => {
 
     const badge = await screen.findByTestId("conversation-origin-run");
     expect(badge.textContent).toContain("From run · Ship billing · review");
-    // The badge itself is the workbench deep link: node, instance and attempt.
-    expect(badge.getAttribute("href")).toBe(
+    // The badge itself is the workbench deep link: node, instance and
+    // attempt. It carries link semantics (role + title) rather than an
+    // anchor because the row is itself an anchor.
+    expect(badge.getAttribute("role")).toBe("link");
+    expect(badge.getAttribute("title")).toBe(
       `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
     );
   });

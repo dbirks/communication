@@ -278,7 +278,11 @@ describe("/inbox", () => {
     const row = await screen.findByTestId(`inbox-conversation-${testidOf(conversationId)}`);
     const badge = within(row).getByTestId("conversation-origin-run");
     expect(badge.textContent).toContain("From run · Ship billing · review");
-    expect(badge.getAttribute("href")).toBe(
+    // The badge carries link semantics (role + title) rather than a nested
+    // anchor: the conversations-list row is itself an anchor and an <a> in an
+    // <a> is invalid HTML.
+    expect(badge.getAttribute("role")).toBe("link");
+    expect(badge.getAttribute("title")).toBe(
       `/projects/${wireProjectId}/runs/01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c?node=review&instance=01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d&attempt=2`,
     );
   });
