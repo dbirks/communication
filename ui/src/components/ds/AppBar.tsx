@@ -14,6 +14,12 @@ import { Mark } from "./Mark";
  * So the row wraps and the track wraps with it (`min-h-[52px]` + `flex-wrap`,
  * with `sm:` restoring the single 52px line), and nothing in it may force the
  * page wider: every shrinkable child carries `min-w-0`.
+ *
+ * The row is `max-w-6xl` (64px wider than the page content's `max-w-5xl`):
+ * five section names + the 240px Ask box + the signed-in user + sign out
+ * do not fit in 1024px, and the bar must stay one line from 1024 up. Below
+ * 1280px the "Signed in as …" text is hidden (see Shell), which keeps the
+ * 1024-wide row single-line there.
  */
 
 export interface AppBarNavItem {
@@ -33,7 +39,7 @@ export interface AppBarProps {
 export function AppBar({ items, left, ask, right }: AppBarProps) {
   return (
     <header className="sticky top-0 z-20 border-b border-ink bg-surface">
-      <div className="mx-auto flex min-h-[52px] w-full max-w-5xl flex-wrap items-center gap-x-[14px] gap-y-[6px] px-4 py-[6px] sm:h-[52px] sm:flex-nowrap sm:py-0">
+      <div className="mx-auto flex min-h-[52px] w-full max-w-6xl flex-wrap items-center gap-x-[8px] gap-y-[6px] px-4 py-[6px] sm:h-[52px] sm:flex-nowrap sm:py-0">
         <Mark size={28} />
         {left}
         <nav
@@ -52,9 +58,10 @@ export function AppBar({ items, left, ask, right }: AppBarProps) {
           ))}
         </nav>
         {ask ? <div className="ml-auto flex min-w-0 justify-end">{ask}</div> : null}
-        <div
-          className={`flex min-w-0 flex-wrap items-center gap-3 ${ask ? "shrink-0" : "ml-auto"}`}
-        >
+        {/* No shrink-0: at phone width this slot wraps (and its `min-w-0`
+            span must be able to) instead of forcing the page wider. At
+            ≥1024 the row is wide enough that it never wraps. */}
+        <div className={`flex min-w-0 flex-wrap items-center gap-3 ${ask ? "" : "ml-auto"}`}>
           {right}
         </div>
       </div>

@@ -69,12 +69,13 @@ export default function NewMenu() {
   return (
     <>
       <div className="relative">
-        // A plain button (not the ds `Button`): the menu needs to hold a ref // to the trigger so
-        Escape can return focus to it.
+        {/* A plain button (not the ds `Button`): the menu needs to hold a ref to the
+            trigger so Escape can return focus to it. Compact (26px) so the chip
+            fits the bar's one-line rhythm. */}
         <button
           ref={triggerRef}
           type="button"
-          className={`ds-btn ${VARIANT_CLASS["secondary"]}`}
+          className={`ds-btn ds-btn--compact ${VARIANT_CLASS["secondary"]}`}
           data-testid="new-menu"
           aria-haspopup="menu"
           aria-expanded={open}

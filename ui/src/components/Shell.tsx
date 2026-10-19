@@ -19,6 +19,9 @@ const NAV_ITEMS = [
 
 export interface ShellProps {
   children: ReactNode;
+  /** Routes that own the whole viewport (the Run Workbench) drop the
+   * content column's width cap and padding; they pad themselves. */
+  fullBleed?: boolean;
 }
 
 /** The Ask box's context chip: the section the current path belongs to. A nav
@@ -34,7 +37,7 @@ export function sectionOf(pathname: string): string {
 
 /** App shell: NAV-I app bar (C mark, section track, signed-in user, sign
  * out), main content on paper, mono replica footer. */
-export default function Shell({ children }: ShellProps) {
+export default function Shell({ children, fullBleed = false }: ShellProps) {
   const replica = useReplicaName();
   const me = useMe();
   const logout = useLogout();
@@ -61,7 +64,10 @@ export default function Shell({ children }: ShellProps) {
               <>
                 {/* The New menu starts things; signed-out visitors have nothing to start. */}
                 <NewMenu />
-                <span className="hidden text-[12.5px] text-muted sm:inline">
+                {/* The "Signed in as …" line is hidden until xl: the bar is a
+                    single line from 1024 up, and that text only fits in the
+                    wider (max-w-6xl) row from 1280 up. */}
+                <span className="hidden min-w-0 text-[12.5px] text-muted xl:inline">
                   Signed in as{" "}
                   <strong data-testid="user-badge" className="font-semibold text-ink">
                     {me.data.display_name}
@@ -87,7 +93,7 @@ export default function Shell({ children }: ShellProps) {
           × {logoutError}
         </p>
       ) : null}
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6">
+      <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
         {/* Keyed by the path: navigating clears a caught render error instead
             of leaving the crash banner on every later page. */}
         <RouteErrorBoundary key={location.pathname}>{children}</RouteErrorBoundary>
