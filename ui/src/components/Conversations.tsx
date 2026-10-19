@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router";
 import { useAgentProfiles, useConversations } from "../api/queries";
 import type { ConversationSummary, Project } from "../api/types";
 import { ProblemBanner, Spinner } from "./Feedback";
@@ -28,19 +29,113 @@ function controllerName(conversation: ConversationSummary): string {
   return conversation.control.display_name ?? "a member";
 }
 
+/** The leaf of an instance key like `/review` or `/loop/body/scan`. */
+export function instanceLeaf(key: string): string {
+  const parts = key.split("/").filter((part) => part.length > 0);
+  return parts.at(-1) ?? key;
+}
+
+/** The `run_link` a run-origin conversation deep-links from. */
+type RunLink = NonNullable<ConversationSummary["run_link"]>;
+
+/**
+ * The Run Workbench deep link for a run-linked conversation (ADR-0043): the
+ * workbench reads `node`/`instance`/`attempt` from the URL. `node` is the
+ * definition node id and is omitted when the node execution did not store one.
+ */
+export function conversationRunHref(projectId: string, link: RunLink): string {
+  const params = new URLSearchParams();
+  if (link.node_id) params.set("node", link.node_id);
+  params.set("instance", link.node_execution_id);
+  params.set("attempt", String(link.attempt_number));
+  return `/projects/${projectId}/runs/${link.run_id}?${params.toString()}`;
+}
+
+export interface OriginBadgeProps {
+  conversation: Pick<ConversationSummary, "origin" | "run_link">;
+  projectId: string;
+}
+
+/**
+ * Where a conversation was opened: a plain "Manual" tag, or a "From run" tag
+ * that deep-links into the Run Workbench at the run, node execution and
+ * attempt that opened it. The run says its title when the run stored one,
+ * its short id otherwise; the node says its definition id, its instance-key
+ * leaf otherwise.
+ */
+export function OriginBadge({ conversation, projectId }: OriginBadgeProps) {
+  const link = conversation.run_link;
+  if (conversation.origin === "run" && link) {
+    return (
+      <Link
+        to={conversationRunHref(projectId, link)}
+        data-testid="conversation-origin-run"
+        title={conversationRunHref(projectId, link)}
+        className="inline-flex max-w-[220px] items-center gap-1 rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-accent-text hover:bg-paper hover:text-ink"
+      >
+        <span className="truncate">
+          From run · {link.run_title || shortId(link.run_id)} ·{" "}
+          {link.node_id || instanceLeaf(link.node_instance_key)}
+        </span>
+      </Link>
+    );
+  }
+  if (conversation.origin === "run") {
+    return (
+      <span
+        data-testid="conversation-origin-run"
+        className="inline-flex items-center rounded-[2px] border border-line-strong bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
+      >
+        From run
+      </span>
+    );
+  }
+  return (
+    <span
+      data-testid="conversation-origin-manual"
+      className="inline-flex items-center rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
+    >
+      Manual
+    </span>
+  );
+}
+
+const ORIGIN_FILTERS = [
+  { value: "all", label: "All", testid: "conversation-filter-all" },
+  { value: "manual", label: "Manual", testid: "conversation-filter-manual" },
+  { value: "run", label: "From runs", testid: "conversation-filter-run" },
+] as const;
+
+type OriginFilter = (typeof ORIGIN_FILTERS)[number]["value"];
+
 export interface ConversationsProps {
   project: Project;
 }
 
 /**
  * A project's conversations (J2: "three conversations" in one glance). Each row
- * says who is driving, because ownership is the thing a supervising team reads.
+ * says where it was opened and who is driving, because that is what a
+ * supervising team reads. The search box and the All/Manual/From-runs filter
+ * both travel to the list route (`q` and `origin`, ADR-0043); the search is
+ * debounced so a title is not re-fetched per keystroke.
  */
 export default function Conversations({ project }: ConversationsProps) {
-  const conversations = useConversations(project.id);
-  const profiles = useAgentProfiles();
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const canStart = project.my_role === "maintainer" || project.my_role === "contributor";
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const conversations = useConversations(project.id, {
+    origin: originFilter === "all" ? undefined : originFilter,
+    q: debouncedQuery,
+  });
+  const profiles = useAgentProfiles();
 
   const profileName = (conversation: ConversationSummary) => {
     // The list row carries only `agent_profile_id`; the name comes from the
@@ -51,6 +146,10 @@ export default function Conversations({ project }: ConversationsProps) {
     return profile ? profile.name : conversation.agent_profile_id;
   };
 
+  // An active filter or search narrows an empty answer to "nothing matches";
+  // only an unfiltered empty list may say the project has none yet.
+  const filtered = debouncedQuery.trim() !== "" || originFilter !== "all";
+
   return (
     <Panel
       id="conversations"
@@ -60,6 +159,39 @@ export default function Conversations({ project }: ConversationsProps) {
       meta={conversations.data ? `${conversations.data.items.length} total` : undefined}
     >
       <div className="space-y-3 p-[10px]">
+        <div
+          role="group"
+          aria-label="Conversation filters"
+          className="flex flex-wrap items-center gap-[5px]"
+          data-testid="conversation-filters"
+        >
+          {ORIGIN_FILTERS.map((filter) => (
+            <button
+              key={filter.value}
+              type="button"
+              aria-pressed={originFilter === filter.value}
+              aria-label={`show ${filter.label} conversations`}
+              data-testid={filter.testid}
+              onClick={() => setOriginFilter(filter.value)}
+              className={`rounded-[2px] border px-[7px] py-[2px] font-mono text-[10.5px] ${
+                originFilter === filter.value
+                  ? "border-ink bg-ink text-paper"
+                  : "border-line-strong bg-surface text-muted hover:text-ink"
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+          <input
+            type="search"
+            aria-label="Search conversations by title"
+            placeholder="search title"
+            value={query}
+            data-testid="conversation-search"
+            onChange={(event) => setQuery(event.target.value)}
+            className="ml-auto w-[11rem] rounded-[2px] border border-line-strong bg-surface px-[6px] py-[2px] font-mono text-[10.5px] text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          />
+        </div>
         {conversations.isPending ? <Spinner label="Loading conversations" /> : null}
         {conversations.error ? (
           <ProblemBanner
@@ -69,9 +201,15 @@ export default function Conversations({ project }: ConversationsProps) {
         ) : null}
         {conversations.data ? (
           conversations.data.items.length === 0 ? (
-            <p className="text-[12.5px] text-muted" data-testid="conversation-list-empty">
-              No conversations yet.
-            </p>
+            filtered ? (
+              <p className="text-[12.5px] text-muted" data-testid="conversation-list-nomatch">
+                No conversations match
+              </p>
+            ) : (
+              <p className="text-[12.5px] text-muted" data-testid="conversation-list-empty">
+                No conversations yet.
+              </p>
+            )
           ) : (
             <ul className="space-y-[4px]" data-testid="conversation-list">
               {conversations.data.items.map((conversation) => (
@@ -84,6 +222,7 @@ export default function Conversations({ project }: ConversationsProps) {
                       state={stateOf(CONVERSATION_STATE[conversation.status])}
                       label={conversation.status}
                     />
+                    <OriginBadge conversation={conversation} projectId={project.id} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12.5px] font-semibold">
                         {conversation.title}

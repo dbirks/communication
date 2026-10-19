@@ -259,6 +259,42 @@ describe("/inbox", () => {
     expect((await screen.findByTestId("inbox-summary")).textContent).toContain("1 conversation");
   });
 
+  it("badges where a conversation was opened and deep-links a run one into the workbench", async () => {
+    const runLinked = {
+      ...conversationSummaryFixture,
+      origin: "run" as const,
+      run_link: {
+        run_id: "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+        run_title: "Ship billing",
+        node_execution_id: "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d",
+        node_instance_key: "/review",
+        node_id: "review",
+        attempt_id: "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e",
+        attempt_number: 2,
+      },
+    };
+    mountInbox({ approvals: [] }, { runs: [] }, [], { items: [runLinked] });
+
+    const row = await screen.findByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    const badge = within(row).getByTestId("conversation-origin-run");
+    expect(badge.textContent).toContain("From run · Ship billing · review");
+    expect(badge.getAttribute("href")).toBe(
+      `/projects/${wireProjectId}/runs/01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c?node=review&instance=01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d&attempt=2`,
+    );
+  });
+
+  it("labels a manual conversation in the row and never deep-links it", async () => {
+    mountInbox({ approvals: [] }, { runs: [] }, [], {
+      items: [conversationSummaryFixture],
+    });
+
+    const row = await screen.findByTestId(`inbox-conversation-${testidOf(conversationId)}`);
+    const badge = within(row).getByTestId("conversation-origin-manual");
+    expect(badge.textContent).toBe("Manual");
+    expect(badge.getAttribute("href")).toBeNull();
+    expect(within(row).queryByTestId("conversation-origin-run")).toBeNull();
+  });
+
   it("says so when nothing needs you", async () => {
     mountInbox({ approvals: [] }, { runs: [] });
     expect((await screen.findByTestId("inbox-empty")).textContent).toContain("Nothing needs you.");

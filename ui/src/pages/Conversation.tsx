@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useTurnSandbox } from "../api/queries";
 import { interruptedCopy, runLinkOf, turnStatusText } from "../api/transcript";
+import { conversationRunHref, instanceLeaf } from "../components/Conversations";
 import { shortId } from "../api/names";
 import type { TurnSandbox } from "../api/types";
 import {
@@ -61,6 +62,10 @@ export default function ConversationPage() {
   // "Part of" is read off the journal's own correlation columns (M4 contract
   // § 3): a conversation whose rows name no run shows no run link.
   const runLink = useMemo(() => runLinkOf(session.events), [session.events]);
+  // The API's own answer (ADR-0043) outranks the journal read: it names the
+  // node execution and attempt number the workbench deep link needs, which
+  // the journal's correlation columns do not carry.
+  const apiRunLink = data?.run_link ?? null;
 
   // The unit whose enforcement record is worth showing: the API's active turn if
   // there is one, else the newest turn the journal reported. The read is issued
@@ -154,6 +159,14 @@ export default function ConversationPage() {
                 labelProps={{ "data-testid": "turn-status" }}
               />
             </span>
+            {data.origin === "manual" ? (
+              <span
+                className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
+                data-testid="conversation-manual-label"
+              >
+                Manual conversation
+              </span>
+            ) : null}
             {data.agent_session ? (
               <>
                 <span className="px-2" aria-hidden="true">
@@ -193,7 +206,27 @@ export default function ConversationPage() {
       </div>
 
       <aside className="min-w-0 space-y-3" aria-label="Conversation context">
-        {runLink ? (
+        {/* Where this transcript was opened (ADR-0043): a manual conversation
+            never carries a run or graph link, and a run conversation deep-links
+            into the Run Workbench — the API's run_link first, the journal's
+            own correlation columns as the fallback the older rows rely on. */}
+        {data.origin !== "manual" && apiRunLink ? (
+          <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
+            <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
+              <Link
+                to={conversationRunHref(projectId, apiRunLink)}
+                className="text-accent-text hover:text-ink"
+                data-testid="part-of-run-link"
+              >
+                run {apiRunLink.run_title || shortId(apiRunLink.run_id)}
+              </Link>
+              <span className="block text-faint" data-testid="part-of-node">
+                node {apiRunLink.node_id || instanceLeaf(apiRunLink.node_instance_key)} · execution{" "}
+                {shortId(apiRunLink.node_execution_id)} · attempt {apiRunLink.attempt_number}
+              </span>
+            </div>
+          </Panel>
+        ) : data.origin !== "manual" && runLink ? (
           <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
             <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
               <Link

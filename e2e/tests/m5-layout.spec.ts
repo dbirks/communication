@@ -564,6 +564,9 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
     await page.waitForURL(/\/conversations\//, { timeout: 30_000 });
     return new URL(page.url()).pathname;
   }
+  // The create form lives in a dialog; open it before the fields exist.
+  await page.getByTestId("conversations-new-open").click();
+  await page.getByTestId("new-conversation-dialog").waitFor();
   await page.getByTestId("conversation-new-title").fill(`m5-layout-${STAMP}`);
   await pickFirstOption(page, "conversation-new-profile");
   await page.getByTestId("conversation-new-submit").click();

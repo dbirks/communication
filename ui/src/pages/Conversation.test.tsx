@@ -613,6 +613,7 @@ describe("the conversation page is a transcript column with a context rail", () 
   it("names the run the transcript belongs to from the ids the journal carried", async () => {
     const factoryRun: Conversation = {
       ...conversationFixture,
+      origin: "run",
       control: { kind: "run_attempt", version: 3 },
     };
     renderApp({ path, routes: routes(factoryRun) });
@@ -709,6 +710,7 @@ describe("the PART OF panel says which run this transcript belongs to", () => {
   it("renders the attempt's short id, with no expression left unrendered", async () => {
     const runControlled: Conversation = {
       ...conversationFixture,
+      origin: "run",
       control: { kind: "run_attempt", version: 3 },
     };
     renderApp({ path, routes: routes(runControlled) });
@@ -790,6 +792,77 @@ describe("the PART OF panel says which run this transcript belongs to", () => {
 
     await screen.findByTestId("sandbox-verdict-panel");
     expect(document.body.textContent).not.toContain("No sandbox verdict recorded");
+  });
+});
+
+/* ADR-0043: where the conversation was opened — the run panel deep-links into
+   the Run Workbench, and a manual conversation never carries a run link. */
+describe("the page says where the conversation was opened", () => {
+  it("links a run conversation into the workbench from the api's run_link", async () => {
+    const runLinked: Conversation = {
+      ...conversationFixture,
+      origin: "run",
+      run_link: {
+        run_id: RUN_ID,
+        run_title: "Ship the billing refactor",
+        node_execution_id: NODE_EXECUTION_ID,
+        node_instance_key: "/review",
+        node_id: "review",
+        attempt_id: ATTEMPT_ID,
+        attempt_number: 2,
+      },
+    };
+    renderApp({ path, routes: routes(runLinked) });
+    const link = await screen.findByTestId("part-of-run-link");
+    expect(link.getAttribute("href")).toBe(
+      `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
+    );
+    expect(link.textContent).toContain("Ship the billing refactor");
+    expect(screen.getByTestId("part-of-node").textContent).toContain("node review");
+    expect(screen.getByTestId("part-of-node").textContent).toContain("attempt 2");
+    expect(screen.queryByTestId("conversation-manual-label")).toBeNull();
+  });
+
+  it("uses the instance-key leaf and the run's short id when the api stored no names", async () => {
+    const unlinked: Conversation = {
+      ...conversationFixture,
+      origin: "run",
+      run_link: {
+        run_id: RUN_ID,
+        run_title: null,
+        node_execution_id: NODE_EXECUTION_ID,
+        node_instance_key: "/loop/body/scan",
+        node_id: null,
+        attempt_id: ATTEMPT_ID,
+        attempt_number: 1,
+      },
+    };
+    renderApp({ path, routes: routes(unlinked) });
+    const link = await screen.findByTestId("part-of-run-link");
+    // No definition node id was stored, so the workbench link omits `node`.
+    expect(link.getAttribute("href")).toBe(
+      `/projects/${projectFixture.id}/runs/${RUN_ID}?instance=${NODE_EXECUTION_ID}&attempt=1`,
+    );
+    expect(link.textContent).toContain(shortId(RUN_ID));
+    expect(screen.getByTestId("part-of-node").textContent).toContain("node scan");
+  });
+
+  it("labels a manual conversation and never offers a run link, even when the journal names one", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+    expect(await screen.findByTestId("conversation-manual-label")).toBeTruthy();
+    expect(screen.getByTestId("conversation-manual-label").textContent).toBe("Manual conversation");
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent(
+          "conversation.turn.started",
+          { worker_id: workerId, fencing_token: 41, session_origin: "new" },
+          { run_id: RUN_ID, node_execution_id: NODE_EXECUTION_ID, attempt_id: ATTEMPT_ID },
+        ),
+      );
+    });
+    await screen.findByTestId("transcript");
+    expect(screen.queryByTestId("part-of-run-link")).toBeNull();
   });
 });
 

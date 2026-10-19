@@ -39,6 +39,7 @@ import { usePipelines } from "../api/pipelines";
 import { useRetryRun, runConflictOf } from "../api/runs";
 import { useMe, useProjects } from "../api/queries";
 import type { Approval, ConversationSummary, Project, RunSummary } from "../api/types";
+import { OriginBadge } from "../components/Conversations";
 import { formatAge, shortId, testidOf } from "../lib/format";
 import {
   useProjectAttention,
@@ -373,7 +374,8 @@ function ConversationRow({ item }: { item: ConversationItem }) {
             {title}
           </p>
           <p className="font-mono text-[10.5px] text-muted">
-            {project.name} · controller {controllerName(conversation)} · {conversation.status}
+            <OriginBadge conversation={conversation} projectId={project.id} /> {project.name} ·
+            controller {controllerName(conversation)} · {conversation.status}
             {conversation.has_active_turn ? " · turn open" : ""}
           </p>
         </div>

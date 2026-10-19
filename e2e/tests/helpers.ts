@@ -122,6 +122,9 @@ export async function startConversation(
   options: { title: string; profile: string; prompt: string },
 ): Promise<string> {
   await page.goto(projectUrl);
+  // The create form lives in a dialog; open it before the fields exist.
+  await page.getByTestId("conversations-new-open").click();
+  await page.getByTestId("new-conversation-dialog").waitFor();
   await page.getByTestId("conversation-new-title").fill(options.title);
   await selectByOptionText(page, "conversation-new-profile", options.profile);
   await page.getByTestId("conversation-new-prompt").fill(options.prompt);

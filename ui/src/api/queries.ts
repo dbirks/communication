@@ -62,7 +62,8 @@ export const queryKeys = {
   repos: (projectId: string) => ["project", projectId, "repos"] as const,
   members: (projectId: string) => ["project", projectId, "members"] as const,
   agentProfiles: ["agent-profiles"] as const,
-  conversations: (projectId: string) => ["project", projectId, "conversations"] as const,
+  conversations: (projectId: string, origin?: "manual" | "run", q?: string) =>
+    ["project", projectId, "conversations", origin ?? null, q ?? null] as const,
   conversation: (conversationId: string) => ["conversation", conversationId] as const,
   health: ["system", "health"] as const,
   readiness: ["system", "readiness"] as const,
@@ -221,10 +222,26 @@ export function usePatchAgentProfile(profileId: string) {
   });
 }
 
-export function useConversations(projectId: string) {
+/** List filters (ADR-0043): where the conversation was opened and a case-
+ * insensitive title substring. Both travel as `origin`/`q` query params. */
+export interface ConversationListFilters {
+  origin?: "manual" | "run";
+  q?: string;
+}
+
+export function useConversations(projectId: string, filters: ConversationListFilters = {}) {
+  const origin = filters.origin;
+  const q = filters.q?.trim() ? filters.q.trim() : undefined;
+  const search = new URLSearchParams();
+  if (origin) search.set("origin", origin);
+  if (q) search.set("q", q);
+  const query = search.toString();
   return useQuery({
-    queryKey: queryKeys.conversations(projectId),
-    queryFn: () => apiFetch<ConversationSummaryList>(`/api/v1/projects/${projectId}/conversations`),
+    queryKey: queryKeys.conversations(projectId, origin, q),
+    queryFn: () =>
+      apiFetch<ConversationSummaryList>(
+        `/api/v1/projects/${projectId}/conversations${query ? `?${query}` : ""}`,
+      ),
     enabled: projectId.length > 0,
   });
 }
@@ -528,7 +545,8 @@ export function invalidateConversation(
 ) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId) });
   if (projectId) {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(projectId) });
+    // The prefix key invalidates every filtered list of this project too.
+    void queryClient.invalidateQueries({ queryKey: ["project", projectId, "conversations"] });
   }
 }
 
@@ -585,7 +603,8 @@ export function useCreateConversation(projectId: string) {
       // The caller holds control from this response on (`control.version` 1),
       // so the cached row already carries a usable CAS token.
       cacheConversation(queryClient, conversation);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.conversations(projectId) });
+      // The prefix key invalidates every filtered list of this project too.
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId, "conversations"] });
     },
   });
 }

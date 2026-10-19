@@ -57,9 +57,10 @@ export default function Shell({ children }: ShellProps) {
         ask={<CommandPalette context={sectionOf(location.pathname)} />}
         right={
           <>
-            <NewMenu />
             {me.data ? (
               <>
+                {/* The New menu starts things; signed-out visitors have nothing to start. */}
+                <NewMenu />
                 <span className="hidden text-[12.5px] text-muted sm:inline">
                   Signed in as{" "}
                   <strong data-testid="user-badge" className="font-semibold text-ink">

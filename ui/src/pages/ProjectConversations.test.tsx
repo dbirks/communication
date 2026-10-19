@@ -2,8 +2,8 @@
  * The project page's Conversations section (`10-ui-design-handoff.md` J2: a
  * member sees their conversations and who is driving each one).
  */
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import {
   claudeProfile,
   codexProfile,
@@ -15,6 +15,7 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import { renderApp } from "../test/render";
+import type { ConversationSummary } from "../api/types";
 
 /**
  * Wait budget for one real async boundary: the row these tests await exists
@@ -329,6 +330,157 @@ describe("/projects/:projectId/conversations", () => {
       expect((await screen.findAllByRole("alert"))[0].textContent).toContain(
         "Internal Server Error",
       );
+    },
+    TEST_TIMEOUT,
+  );
+});
+
+/* ADR-0043: where a conversation was opened — manual vs run-linked rows,
+ * the All/Manual/From-runs filter and the debounced title search. */
+
+const RUN_ID = "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c";
+const NODE_EXECUTION_ID = "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d";
+const ATTEMPT_ID = "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e";
+
+const runLinkedSummary: ConversationSummary = {
+  ...conversationSummaryFixture,
+  id: "01987a64-2222-7000-8000-abcdef012346",
+  title: "Watch the retry",
+  origin: "run",
+  run_link: {
+    run_id: RUN_ID,
+    run_title: "Ship billing",
+    node_execution_id: NODE_EXECUTION_ID,
+    node_instance_key: "/review",
+    node_id: "review",
+    attempt_id: ATTEMPT_ID,
+    attempt_number: 2,
+  },
+};
+
+describe("the list says where each conversation was opened", () => {
+  /** The route table strips query strings from recorded requests, so the wire
+   * itself is spied on for the `origin`/`q` params: capture every fetch
+   * target, then hand it to the mock the app mounted under. */
+  function watchFetchTargets(): string[] {
+    const seen: string[] = [];
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(String(input));
+      return inner(input, init);
+    });
+    return seen;
+  }
+
+  it("badges a manual row and deep-links a run-linked row into the workbench", async () => {
+    renderApp({
+      path: `/projects/${projectFixture.id}/conversations`,
+      routes: routes([
+        {
+          path: conversationsPath,
+          method: "GET",
+          body: { items: [conversationSummaryFixture, runLinkedSummary] },
+        },
+      ]),
+    });
+
+    expect(await screen.findByTestId("conversation-origin-manual")).toBeTruthy();
+    expect(screen.getByTestId("conversation-origin-manual").textContent).toBe("Manual");
+
+    const badge = await screen.findByTestId("conversation-origin-run");
+    expect(badge.textContent).toContain("From run · Ship billing · review");
+    // The badge itself is the workbench deep link: node, instance and attempt.
+    expect(badge.getAttribute("href")).toBe(
+      `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
+    );
+  });
+
+  it(
+    "sends the All/Manual/From-runs filter as origin",
+    async () => {
+      const { requests } = renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes(),
+      });
+      const seen = watchFetchTargets();
+      await screen.findByTestId("conversation-filter-run", undefined, { timeout: READ_MS });
+
+      fireEvent.click(screen.getByTestId("conversation-filter-run"));
+      await waitFor(
+        () => {
+          expect(seen).toContain(`${conversationsPath}?origin=run`);
+        },
+        { timeout: READ_MS },
+      );
+
+      fireEvent.click(screen.getByTestId("conversation-filter-manual"));
+      await waitFor(
+        () => {
+          expect(seen).toContain(`${conversationsPath}?origin=manual`);
+        },
+        { timeout: READ_MS },
+      );
+      // The unfiltered read stayed the default: no param on either side.
+      expect(requestsTo(requests, conversationsPath, "GET").length).toBeGreaterThan(0);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "debounces the search box and sends it as q",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        renderApp({
+          path: `/projects/${projectFixture.id}/conversations`,
+          routes: routes(),
+        });
+        // Let the mount's reads land while every clock is fake.
+        for (let i = 0; i < 5; i += 1) {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(100);
+          });
+        }
+        const seen = watchFetchTargets();
+        const search = screen.getByTestId("conversation-search");
+
+        fireEvent.change(search, { target: { value: "Refactor" } });
+        // Before the debounce elapses no filtered read is issued.
+        expect(seen).not.toContain(`${conversationsPath}?q=Refactor`);
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(250);
+        });
+        expect(seen).toContain(`${conversationsPath}?q=Refactor`);
+        // Flush the mocked answer so the filtered list can paint.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(0);
+        });
+        // The mocked filtered list answers with the one matching row.
+        expect(screen.getByTestId("conversation-row-refactor-billing")).toBeTruthy();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "says no conversations match when the filter finds nothing",
+    async () => {
+      renderApp({
+        path: `/projects/${projectFixture.id}/conversations`,
+        routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
+      });
+      await screen.findByTestId("conversation-filter-run", undefined, { timeout: READ_MS });
+
+      fireEvent.click(screen.getByTestId("conversation-filter-run"));
+      const nomatch = await screen.findByTestId("conversation-list-nomatch", undefined, {
+        timeout: READ_MS,
+      });
+      expect(nomatch.textContent).toBe("No conversations match");
+      // The unfiltered "no conversations yet" is a different state.
+      expect(screen.queryByTestId("conversation-list-empty")).toBeNull();
     },
     TEST_TIMEOUT,
   );
