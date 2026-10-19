@@ -25,7 +25,13 @@ import path from "node:path";
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { expectTurnStatus, openProjectBySlug, selectByOptionText, signIn } from "./helpers.js";
+import {
+  expectTurnStatus,
+  gotoApp,
+  openProjectBySlug,
+  selectByOptionText,
+  signIn,
+} from "./helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
@@ -67,9 +73,38 @@ function agentItem(page: Page, text: string): Locator {
     .filter({ hasText: text });
 }
 
-/** The workbench node button the graph has selected, if any. */
-function selectedGraphNode(page: Page): Locator {
-  return page.locator('button[data-testid^="definition-graph-node-"][aria-pressed="true"]');
+/**
+ * The workbench draws its pinned revision on the shared Studio canvas
+ * (React Flow): every node is a `.react-flow__node[data-id="<def id>"]` inside
+ * `workbench-graph-frame`. The workbench's selection comes from the URL's `node`
+ * param (RunWorkbench draws the accent ring itself; it does not rely on React
+ * Flow's internal selection state), so the selected node is looked up by its
+ * definition id.
+ */
+function canvasNode(page: Page, defId: string): Locator {
+  return page.locator(
+    `[data-testid="workbench-graph-frame"] .react-flow__node[data-id="${defId}"]`,
+  );
+}
+
+/** The `?node=` param of the current URL — the workbench's selected node. */
+function nodeFromUrl(page: Page): string | null {
+  return new URL(page.url()).searchParams.get("node");
+}
+
+/**
+ * A sign-in variant that does NOT rely on the `user-badge` span: that span is
+ * `hidden xl:inline` in the app bar, so at the 390px viewport it is
+ * `display:none` and the shared `signIn`'s visibility wait would time out. The
+ * `sign-out` button stays visible at every width, so it is the right
+ * "signed in" signal at phone width.
+ */
+async function signInNarrow(page: Page, subject: string): Promise<void> {
+  await gotoApp(page, "/");
+  await page.getByTestId("sign-in").click();
+  await page.getByPlaceholder("Enter any user/subject").fill(subject);
+  await page.getByRole("button", { name: "Sign-in" }).click();
+  await expect(page.getByTestId("sign-out")).toBeVisible();
 }
 
 test.describe("issue2 conversations (A7 + run link-backs)", () => {
@@ -194,7 +229,11 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
         { timeout: 15_000 },
       )
       .toBe(true);
-    const badge = page.locator('a[data-testid="conversation-origin-run"]').first();
+    // The run-origin badge is a `role=link` span, not an <a>: the row itself is
+    // the anchor and a nested <a> is invalid HTML. Only badges backed by a
+    // stored run link are deep links, and their target lives in `title`, not
+    // `href`.
+    const badge = page.locator('[data-testid="conversation-origin-run"][role="link"]').first();
     if (
       await page
         .getByTestId("conversation-list-nomatch")
@@ -208,7 +247,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       return;
     }
     await expect(badge).toBeVisible({ timeout: 15_000 });
-    const badgeHref = (await badge.getAttribute("href")) ?? "";
+    const badgeHref = (await badge.getAttribute("title")) ?? "";
     expect(badgeHref).toMatch(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
     expect(new URL(badgeHref, "http://x").searchParams.get("node")).not.toBeNull();
     await checkA11y(page, "conversations list (run-linked)");
@@ -221,8 +260,10 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     // --- Badge click: the workbench opens with that node selected. ---
     await badge.click();
     await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
+    const selectedDef = nodeFromUrl(page);
+    expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
-    await expect(selectedGraphNode(page).first()).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
+    await expect(canvasNode(page, selectedDef!)).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
     await expect(page.getByTestId("dock-conversation")).toBeVisible({
       timeout: WORKBENCH_TIMEOUT_MS,
     });
@@ -230,7 +271,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     // --- From the conversation page, part-of-run-link goes to the SAME place. ---
     await page.goBack();
     await expect(page.getByTestId("conversation-filter-run")).toBeVisible({ timeout: 15_000 });
-    const badgeAgain = page.locator('a[data-testid="conversation-origin-run"]').first();
+    const badgeAgain = page.locator('[data-testid="conversation-origin-run"][role="link"]').first();
     await expect(badgeAgain).toBeVisible({ timeout: 15_000 });
     // The badge sits inside the row link: read the row's own href to open the
     // conversation page without racing a click on the nested badge anchor.
@@ -254,8 +295,10 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     );
     await partOfRun.first().click();
     await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
+    const selectedDef2 = nodeFromUrl(page);
+    expect(selectedDef2, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
-    await expect(selectedGraphNode(page).first()).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
+    await expect(canvasNode(page, selectedDef2!)).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
     await expect(page.getByTestId("dock-conversation")).toBeVisible({
       timeout: WORKBENCH_TIMEOUT_MS,
     });
@@ -270,7 +313,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
     test("the new-conversation dialog fits without horizontal scroll", async ({ page }) => {
-      await signIn(page, "alice");
+      await signInNarrow(page, "alice");
       await openProjectBySlug(page, PROJECT_SLUG);
       await page.getByTestId("project-new-conversation").click();
       const dialog = page.getByTestId("new-conversation-dialog");
