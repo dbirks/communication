@@ -1,0 +1,272 @@
+/**
+ * The graph-first Run Workbench at `/projects/:projectId/runs/:runId`
+ * (ADR-0043). React Flow in jsdom needs ResizeObserver/DOMMatrix stubs —
+ * the same doubles StudioCanvas.test.tsx installs.
+ */
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountRunPage } from "../test/inspectorMount";
+import {
+  FakeEventSource,
+  meFixture,
+  projectFixture,
+  requestsTo,
+  type RouteStub,
+} from "../test/fakes";
+import RunWorkbench from "./RunWorkbench";
+import type { NodeExecution } from "../api/types";
+import {
+  WIRE_NODE_IMPLEMENT,
+  WIRE_NODE_PLAN,
+  WIRE_PIPELINE_ID,
+  WIRE_REVISION_ID,
+  WIRE_RUN_ID,
+  wireApproval,
+  wireApprovalList,
+  wireNodeDetail,
+  wireNodeList,
+  wirePipeline,
+  wirePipelineList,
+  wireProjectId,
+  wireRevision,
+  wireRun,
+  wireRunEvent,
+  wireRunList,
+  wireTree,
+} from "../test/fixtures/m4/wire";
+
+const RUN_PATH = `/api/v1/runs/${WIRE_RUN_ID}`;
+const WIRE_NODE_APPROVE = "01987b24-0009-7000-8000-abcdef012345";
+
+class ResizeObserverStub {
+  private readonly callback: (
+    entries: { target: Element; contentRect: { width: number; height: number } }[],
+  ) => void;
+  constructor(
+    callback: (
+      entries: { target: Element; contentRect: { width: number; height: number } }[],
+    ) => void,
+  ) {
+    this.callback = callback;
+  }
+  observe(target: Element): void {
+    queueMicrotask(() => this.callback([{ target, contentRect: { width: 1200, height: 800 } }]));
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
+class DOMMatrixStub {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+  m22 = 1;
+  multiplySelf(): this {
+    return this;
+  }
+  translateSelf(): this {
+    return this;
+  }
+  scaleSelf(): this {
+    return this;
+  }
+}
+
+const offsetPatch: { offsetWidth: PropertyDescriptor; offsetHeight: PropertyDescriptor } = {
+  offsetWidth: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth")!,
+  offsetHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight")!,
+};
+
+beforeEach(() => {
+  // jsdom doubles (StudioCanvas.test.tsx): React Flow measures via
+  // ResizeObserver and offsetWidth/offsetHeight, which jsdom reports 0 for.
+  vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+  vi.stubGlobal("DOMMatrix", DOMMatrixStub);
+  vi.stubGlobal("DOMMatrixReadOnly", DOMMatrixStub);
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get: () => 208,
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get: () => 96,
+  });
+});
+
+afterEach(() => {
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", offsetPatch.offsetWidth);
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetPatch.offsetHeight);
+  cleanup();
+});
+
+/** The same run held at its gate: `approve` waits for a human and nothing
+ * else has started — the auto-select rule's other half. */
+const wireWaitingNodes: NodeExecution[] = [
+  {
+    ...wireNodeList.node_executions[0],
+    id: WIRE_NODE_APPROVE,
+    node_id: "approve",
+    kind: "human.approval",
+    node_instance_key: "/approve",
+    status: "waiting",
+    waiting_reason: "approval",
+    finished_at: null,
+  },
+  ...wireNodeList.node_executions,
+];
+
+function routes(extra: RouteStub[] = []): RouteStub[] {
+  return [
+    ...extra,
+    { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/users", body: { items: [meFixture] } },
+    { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
+    { path: "/api/v1/pipelines", body: wirePipelineList },
+    { path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}`, body: wirePipeline },
+    {
+      path: `/api/v1/pipelines/${WIRE_PIPELINE_ID}/revisions`,
+      body: { revisions: wirePipeline.revisions },
+    },
+    {
+      path: `/api/v1/projects/${wireProjectId}/approvals`,
+      body: { ...wireApprovalList, approvals: [] },
+    },
+    { path: `/api/v1/projects/${wireProjectId}/runs`, body: wireRunList },
+    { path: RUN_PATH, body: wireRun },
+    { path: `${RUN_PATH}/nodes`, body: wireNodeList },
+    { path: `${RUN_PATH}/tree`, body: wireTree },
+    { path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: wireNodeDetail },
+    { path: `${RUN_PATH}/nodes/${WIRE_NODE_IMPLEMENT}`, body: wireNodeDetail },
+    { path: `/api/v1/revisions/${wireRun.revision_digest}`, body: wireRevision },
+    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: wireRevision },
+  ];
+}
+
+function mount(search = "", extra: RouteStub[] = []): ReturnType<typeof mountRunPage> {
+  return mountRunPage({
+    path: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}${search}`,
+    routes: routes(extra),
+    element: <RunWorkbench />,
+  });
+}
+
+/** The canvas's step rows land after React Flow's measurement microtask; give
+ * them the room a loaded machine needs. */
+const stepRow = (id: string) => screen.findByTestId(id, undefined, { timeout: 5000 });
+
+describe("the Run Workbench", () => {
+  it("opens on the Graph tab with the pinned revision's canvas", async () => {
+    const { requests } = mount();
+
+    // The title is the run's own goal input, not "Run #<id>".
+    const title = await screen.findByTestId("run-title");
+    expect(title.textContent).toContain("ship M4");
+
+    // Graph is the default view: selected, and the canvas comes from the
+    // pinned revision's document, not the library's newest.
+    expect(screen.getByTestId("workbench-tab-graph").getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByTestId("workbench-graph-view")).toBeTruthy();
+    expect(await screen.findByTestId("studio-canvas")).toBeTruthy();
+    expect(requestsTo(requests, `/api/v1/revisions/${wireRun.pipeline_revision_id}`)).toHaveLength(
+      1,
+    );
+    // The run's state lands on the canvas as overlays, not as extra nodes.
+    expect(await stepRow("canvas-step-row-plan")).toBeTruthy();
+  });
+
+  it("auto-selects the gate the run is waiting on before the reader clicks", async () => {
+    mount("", [
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [{ ...wireApproval, node_execution_id: WIRE_NODE_APPROVE }],
+        },
+      },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`, body: wireNodeDetail },
+    ]);
+
+    // The reader lands on the thing they owe an answer to: no click first.
+    // The card can only exist after a real sequential chain: run + nodes
+    // fetches → the auto-select effect rewrites the URL → the dock's own
+    // node-detail fetch. Each round resolves in microtasks, but under the
+    // full suite their wall time outruns the default 1000 ms findBy window
+    // (observed ~1270 ms), so the intermediate state is awaited explicitly
+    // and the final find gets the same justified room as `stepRow`.
+    await stepRow("canvas-step-row-approve");
+    const summary = await screen.findByTestId("approval-summary", undefined, {
+      timeout: 5000,
+    });
+    expect(summary.closest('[data-testid="workbench-dock"]')).toBeTruthy();
+    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    // The graph agrees: the gate is the raised node.
+    expect((await stepRow("canvas-step-row-approve")).className).toContain("bg-accent-wash");
+  });
+
+  it("never moves a user's selection again, even when events shift the attention", async () => {
+    const { requests } = mount();
+    await screen.findByTestId("studio-canvas");
+
+    // The reader's own pick, after the auto-select has already fired.
+    fireEvent.click(await stepRow("canvas-step-row-plan"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`)).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("canvas-step-row-plan").className).toContain("bg-accent-wash"),
+    );
+
+    // A failure lands on the node the run was in flight in — the old rule
+    // would have yanked the selection to it.
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "node.attempt.failed",
+          {
+            node_instance_key: "/build_until_verified[1]/implement",
+            attempt_number: 1,
+            error_class: "agent_error",
+            detail: "agent exited 1",
+          },
+          { node_execution_id: WIRE_NODE_IMPLEMENT, global_seq: 9601 },
+        ),
+      );
+    });
+
+    await screen.findByTestId("dock-title");
+    await waitFor(() => {
+      expect(screen.getByTestId("canvas-step-row-plan").className).toContain("bg-accent-wash");
+      expect(screen.getByTestId("canvas-step-row-implement").className).not.toContain(
+        "bg-accent-wash",
+      );
+    });
+    // The dock still reads the node the reader picked.
+    expect(screen.getByTestId("dock-title").textContent).toContain("/plan");
+  });
+
+  it("renders the timeline for ?view=timeline", async () => {
+    mount("?view=timeline");
+
+    await screen.findByTestId("run-title");
+    expect(screen.getByTestId("workbench-tab-timeline").getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByTestId("workbench-graph-view")).toBeNull();
+    expect(await screen.findByTestId("run-timeline-empty")).toBeTruthy();
+  });
+
+  it("maps the old inspector link ?tab=execution to the tree view", async () => {
+    mount("?tab=execution");
+
+    await screen.findByTestId("run-title");
+    // The rewrite happens on first data — then the tree view is what renders.
+    await waitFor(() =>
+      expect(screen.getByTestId("workbench-tab-tree").getAttribute("aria-selected")).toBe("true"),
+    );
+    expect(await screen.findByTestId("run-tree")).toBeTruthy();
+    expect(screen.queryByTestId("workbench-graph-view")).toBeNull();
+  });
+});
