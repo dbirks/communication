@@ -100,6 +100,11 @@ Annotations
 
 ## 3. `/projects/:projectId/runs/:runId` — Run Inspector (execution mode)
 
+> **Superseded in part by [`docs/design/studio-workbench.md`](studio-workbench.md) (issue #2)**:
+> the Run Workbench is now graph-first by default — a live definition graph with journal status
+> overlays and a shared conversation dock — with this screen's views preserved as the
+> Timeline / Execution tree / Diagnostics tabs (ADR-0043).
+
 The defining screen of M5. Two named modes; the default is the compact one, per J5.
 
 ```
@@ -251,6 +256,12 @@ M5 adds the right rail and the run link without moving anything.
 ---
 
 ## 6. `/drafts/:draftId` — Pipeline Editor
+
+> **Superseded in part by [`docs/design/studio-workbench.md`](studio-workbench.md) (issue #2)**:
+> the editor is now the Workflow Studio at `/library/:pipelineId/drafts/:draftId` (old draft
+> URLs redirect there) — palette, React Flow canvas and schema-driven inspector with
+> text→text `graphDoc` edits, plus the §4 ambiguity rules and assistant draft proposals
+> (ADR-0042, ADR-0044).
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
