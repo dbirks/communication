@@ -304,13 +304,14 @@ interface Placement {
 /**
  * Spacing sets for `layoutDefinition`. The defaults are the existing
  * DefinitionGraph metrics and must stay untouched; `dense` is the canvas
- * (Studio / Workbench) cut — a graph drawn into a pane that is far wider
- * than it is tall, where the fit-to-pane zoom is width-bound and the
- * generous rank gap the edge labels need at 1:1 is what keeps the same
- * graph at zoom 0.6. The edge labels still keep their own clear space:
- * the gap between two ranks is `ranksep`, and a guarded edge's short
- * route label is drawn at the segment midpoint, so `dense.ranksep`
- * floors at twice the widest label box (≈ 44px) it must host.
+ * (Studio / Workbench) cut — a graph drawn into a pane that is only a few
+ * hundred pixels of fit space, so the fit-to-pane zoom is bound by the
+ * graph's own extent and the generous default rank gap and box floors are
+ * what keep the same graph at zoom ≈ 0.8. Edge labels do not rely on the
+ * rank gap for their clear space: the canvas anchors each label against
+ * every box and slides/spirals it clear, so `dense.ranksep` floors at the
+ * pill height it may share the gap with (≈ 24px) instead of twice the
+ * widest label box.
  */
 export const LAYOUT_SPACING = {
   /** The DefinitionGraph default: unchanged. `edgesep` stays unset so dagre
@@ -326,20 +327,23 @@ export const LAYOUT_SPACING = {
     /** The floor every node box gets. */
     nodeMin: { width: NODE_SIZE.width, height: NODE_SIZE.height },
   },
-  /** The canvas (Studio / Workbench) cut — dense. The graph fills a pane that
-   * is far wider than it is tall, so the fit-to-pane zoom is what the
-   * generous default rank gap and box floors spent; the floors shrink to
-   * the content the box really holds (id line + kind line), and the rank
-   * gap floors at the clear space the guarded-edge label box needs.
+  /** The canvas (Studio / Workbench) cut — dense. The graph fills a pane
+   * whose fit space is small in BOTH dimensions, so every pixel of the
+   * default rank gap and box floor spent the fit-to-pane zoom: the floors
+   * shrink to the content the box really holds (id line + kind line) and
+   * the rank gap floors at the collision-checked label pill's height.
+   * Tuned so the feature-development twin fits the 1500×950 Studio at
+   * zoom ≥ 1.0 and the Workbench run at zoom ≥ 0.85 with zero
+   * node/label overlaps (e2e/.canvas-check.mjs).
    */
   dense: {
     nodesep: 14,
-    ranksep: 52,
+    ranksep: 24,
     edgesep: 12,
     margin: 8,
-    groupPad: 8,
-    groupGap: 8,
-    groupFoot: 10,
+    groupPad: 6,
+    groupGap: 6,
+    groupFoot: 6,
     nodeMin: { width: 96, height: 54 },
   },
 } as const;

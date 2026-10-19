@@ -99,6 +99,7 @@ export function StudioPalette({
                     role="button"
                     tabIndex={interactive ? 0 : -1}
                     draggable={interactive}
+                    aria-disabled={!item.runnable || undefined}
                     aria-label={`${item.label} (${item.kind})${item.runnable ? "" : " — not runnable yet"}`}
                     data-testid={`palette-item-${item.kind}`}
                     className={[

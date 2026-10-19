@@ -121,14 +121,18 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         </div>
         {data.status && (
           <div
-            className="flex items-start gap-1 text-[11px] leading-tight text-ink-2"
+            className="flex min-w-0 items-start gap-1 text-[11px] leading-tight text-ink-2"
             aria-label={`status: ${data.status.label}`}
             data-testid={`step-status-${data.id}`}
+            title={data.status.label}
           >
             <span aria-hidden="true" className="shrink-0">
               {statusGlyph(data.status.state)}
             </span>
-            <span className="break-words">{data.status.label}</span>
+            {/* Single line: the layout box reserves no room for a wrapped
+                second line — wrapping pushed the rendered node below its
+                dagre box and the neighbour edge labels grazed it. */}
+            <span className="min-w-0 truncate">{data.status.label}</span>
           </div>
         )}
         <div className="flex items-center gap-1.5">
@@ -151,6 +155,10 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
             data-testid={`add-after-${data.id}`}
             aria-label={`Add a step after ${data.id}`}
             className="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong bg-surface text-xs leading-none text-ink-2 hover:border-accent hover:text-accent"
+            // The "+" opens the picker and NOTHING else: without the
+            // pointerdown guard the gesture reaches the node and the step
+            // gets selected on the same click that opens the picker.
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               setPickerOpen(true);
@@ -243,7 +251,14 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
               type="button"
               data-testid={`add-inside-${data.id}`}
               className="rounded-md border border-dashed border-line-strong bg-surface px-2.5 py-1 text-[12px] text-ink-2 hover:border-accent hover:text-accent"
-              onClick={() => setPickerOpen(true)}
+              // Same "+" contract as the edge/terminal affordances: the
+              // pointerdown must not reach the scope node, or the click that
+              // opens the picker also selects the scope.
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                setPickerOpen(true);
+              }}
             >
               + Add step inside
             </button>

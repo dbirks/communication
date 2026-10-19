@@ -175,6 +175,12 @@ function CanvasInner({
   const [refused, setRefused] = useState<string | null>(null);
   const [canvasPickerOpen, setCanvasPickerOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(true);
+  // The minimap is opt-in: at fit-zoom it paints a solid rectangle over the
+  // graph content (it covered `publish_needs_attention` in the Workbench),
+  // so it stays hidden until the user asks for it from the controls — and
+  // never renders below 1280px wide, where the pane is too small for it to
+  // add anything.
+  const [miniMapOpen, setMiniMapOpen] = useState(false);
 
   // The page's callbacks are NOT stable (the page re-creates `handleAddAfter`
   // and the inline `onInsertOnEdge` arrow on every render). The rebuild effect
@@ -506,6 +512,11 @@ function CanvasInner({
         labelAnchor: b.labelX !== null && b.labelY !== null ? { x: b.labelX, y: b.labelY } : null,
         preview: preview?.edgeId === b.id ? preview.label : null,
         onInsert: (kind: string) => onInsertOnEdgeRef.current?.(b.data.edge, kind),
+        // The routing geometry: the edge draws `routeEdge(sourceBox, targetBox,
+        // axis)` — the same path the label anchor was checked against.
+        sourceBox: b.sourceBox,
+        targetBox: b.targetBox,
+        axis: b.axis,
       };
       return { id: b.id, source: b.source, target: b.target, type: b.type, data };
     });
@@ -596,7 +607,25 @@ function CanvasInner({
         >
           <Background />
           <Controls position="bottom-right" />
-          <MiniMap position="bottom-left" className="hidden min-[1024px]:block" pannable zoomable />
+          {/* The "+"-less controls column is React Flow's; this small toggle
+           * sits directly above it and owns the (hidden-by-default) minimap. */}
+          <button
+            type="button"
+            data-testid="canvas-minimap-toggle"
+            aria-pressed={miniMapOpen}
+            onClick={() => setMiniMapOpen((open) => !open)}
+            className="absolute bottom-[108px] right-2 z-10 rounded border border-line-strong bg-surface px-1.5 py-0.5 text-[11px] leading-tight text-ink-2 shadow-sm hover:border-accent hover:text-accent"
+          >
+            Map
+          </button>
+          {miniMapOpen && (
+            <MiniMap
+              position="bottom-left"
+              className="hidden min-[1280px]:block"
+              pannable
+              zoomable
+            />
+          )}
         </ReactFlow>
         {stale && (
           <div

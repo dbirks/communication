@@ -106,12 +106,94 @@ export interface FlowEdgeBase {
    */
   labelX: number | null;
   labelY: number | null;
+  /** The absolute flow boxes of both endpoints (layout overrides applied);
+   * `null` when the endpoint has no dagre box to measure. */
+  sourceBox: EdgeBox | null;
+  targetBox: EdgeBox | null;
+  /** The routing axis (see `edgeAxis`) the renderer and anchor both use. */
+  axis: EdgeAxis;
   data: { edge: GraphEdge };
 }
 
 export interface FlowModel {
   nodes: FlowNodeBase[];
   edges: FlowEdgeBase[];
+}
+
+/** An absolute flow-coordinate box (a node or a scope group). */
+export interface EdgeBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The routing axis an edge is drawn on:
+ * `"v"` exits the source bottom-centre and enters the target top-centre;
+ * `"h"` exits/enters the facing side centres (the short connector between
+ * two adjacent boxes). */
+export type EdgeAxis = "h" | "v";
+
+/**
+ * The edge path for a given routing axis, from the endpoint boxes — the
+ * same geometry both the edge renderer and the label anchor use, so the
+ * label always sits on the path it labels. `v` is the smooth-step S-curve
+ * bottom→top (edges entering a scope box attach at the scope's TOP, leaving
+ * at the BOTTOM); `h` is the single-bend connector between the facing sides
+ * — a short hop between siblings laid out side by side in a scope body, not
+ * a loop that crosses the group border.
+ */
+export function routeEdge(
+  source: EdgeBox,
+  target: EdgeBox,
+  axis: EdgeAxis,
+): { path: string; x: number; y: number } {
+  if (axis === "v") {
+    const [path, x, y] = getSmoothStepPath({
+      sourceX: source.x + source.width / 2,
+      sourceY: source.y + source.height,
+      sourcePosition: "bottom" as never,
+      targetX: target.x + target.width / 2,
+      targetY: target.y,
+      targetPosition: "top" as never,
+      borderRadius: 6,
+    });
+    return { path, x, y };
+  }
+  const toRight = target.x + target.width / 2 >= source.x + source.width / 2;
+  const [path, x, y] = getSmoothStepPath({
+    sourceX: toRight ? source.x + source.width : source.x,
+    sourceY: source.y + source.height / 2,
+    sourcePosition: (toRight ? "right" : "left") as never,
+    targetX: toRight ? target.x : target.x + target.width,
+    targetY: target.y + target.height / 2,
+    targetPosition: (toRight ? "left" : "right") as never,
+    borderRadius: 6,
+  });
+  return { path, x, y };
+}
+
+/**
+ * Which axis an edge routes on. An edge that touches a scope GROUP box
+ * (enters or leaves the scope) always attaches at the scope's top/bottom for
+ * a top-to-bottom canvas (or left/right for a left-to-right one) — the
+ * group border is where the connection belongs. A step-to-step edge takes
+ * the axis its endpoints actually sit on: siblings side by side in a scope
+ * body (the layout lays scope bodies out OPPOSITE to the graph) are
+ * horizontal neighbours, and a horizontal smooth-step between adjacent
+ * boxes is a short single-bend connector, not the downward loop a
+ * bottom→top cut would draw around the group.
+ */
+export function edgeAxis(
+  source: EdgeBox,
+  target: EdgeBox,
+  touchesScope: boolean,
+  direction: "LR" | "TB",
+): EdgeAxis {
+  if (touchesScope) return direction === "TB" ? "v" : "h";
+  const dx = Math.abs(target.x + target.width / 2 - (source.x + source.width / 2));
+  const dy = Math.abs(target.y + target.height / 2 - (source.y + source.height / 2));
+  return dx > dy ? "h" : "v";
 }
 
 /** `${scope}/id` — the flow's node ids are scope-qualified so two scopes may
@@ -166,7 +248,7 @@ const scopeScopeKey = (n: GraphNode): string => JSON.stringify(n.scope);
 /** The pill the edge label draws: 10px mono text, `px-1.5` each side, one row.
  * Over-estimated on purpose — the anchor clears more room than the pill needs,
  * and an under-clearance is exactly the overlap the check exists to forbid. */
-const EDGE_LABEL_PX = { height: 18, padX: 12 };
+const EDGE_LABEL_PX = { height: 24, padX: 12 };
 
 function labelBoxSize(label: string): { width: number; height: number } {
   return {
@@ -202,6 +284,7 @@ export function clearLabelAnchor(
   target: AnchorBox,
   boxes: AnchorBox[],
   direction: "LR" | "TB" = "TB",
+  axis: EdgeAxis | "auto" = "auto",
 ): { x: number; y: number } | null {
   const size = labelBoxSize(label);
   // Every box counts, the edge's own endpoints included: the pill is opaque
@@ -221,48 +304,57 @@ export function clearLabelAnchor(
           box,
         ),
     );
-  // The pill is drawn at the SMOOTH-STEP PATH's label point (edges.tsx asks
-  // `getSmoothStepPath` for it), not at the box centres — for a short edge
-  // into a scope box those differ by the whole pill, which is exactly where
-  // the overlap crept in. Reproduce that point here, from the same handles
-  // (source `out`, target `in`) the edges pin to.
+  // The pill is drawn at the ROUTED PATH's label point (edges.tsx draws the
+  // same `routeEdge` path), not at the box centres — for a short edge into a
+  // scope box those differ by the whole pill, which is exactly where the
+  // overlap crept in. Reproduce that point here, from the same endpoint
+  // geometry the renderer routes with.
+  const a: EdgeAxis = axis === "auto" ? (direction === "TB" ? "v" : "h") : axis;
   const s =
-    direction === "TB"
+    a === "v"
       ? { x: source.x + source.width / 2, y: source.y + source.height }
-      : { x: source.x + source.width, y: source.y + source.height / 2 };
+      : {
+          x:
+            target.x + target.width / 2 >= source.x + source.width / 2
+              ? source.x + source.width
+              : source.x,
+          y: source.y + source.height / 2,
+        };
   const t =
-    direction === "TB"
+    a === "v"
       ? { x: target.x + target.width / 2, y: target.y }
-      : { x: target.x, y: target.y + target.height / 2 };
-  const [, lx, ly] = getSmoothStepPath({
-    sourceX: s.x,
-    sourceY: s.y,
-    sourcePosition: (direction === "TB" ? "bottom" : "right") as never,
-    targetX: t.x,
-    targetY: t.y,
-    targetPosition: (direction === "TB" ? "top" : "left") as never,
-    borderRadius: 6,
-  });
-  const pathLabel = { x: lx, y: ly };
+      : {
+          x:
+            target.x + target.width / 2 >= source.x + source.width / 2
+              ? target.x
+              : target.x + target.width,
+          y: target.y + target.height / 2,
+        };
+  const routed = routeEdge(source, target, a);
+  const pathLabel = { x: routed.x, y: routed.y };
   if (clears(pathLabel)) return null;
-  // Slide along the handle line, closest-to-path-point first: the pill
+  // Slide along the endpoint line, closest-to-path-point first: the pill
   // follows the edge it labels instead of jumping to a perpendicular spot.
-  for (const k of [0.25, -0.25, 0.125, -0.125, 0.375, -0.375]) {
+  for (const k of [0.25, -0.25, 0.125, -0.125, 0.375, -0.375, 0.5, -0.5, 0.75, -0.75]) {
     const candidate = {
       x: (s.x + t.x) / 2 + (t.x - s.x) * k,
       y: (s.y + t.y) / 2 + (t.y - s.y) * k,
     };
     if (clears(candidate)) return candidate;
   }
-  // The edge is too short to slide along (boxes nearly touching, e.g. the
-  // `fan_out` scope hugging `emit_items`): step the pill sideways,
-  // perpendicular to the edge axis, until it clears every box.
-  for (const off of [20, -20, 40, -40, 60, -60, 80, -80, 100, -100, 120, -120]) {
-    const candidate =
-      direction === "TB"
-        ? { x: pathLabel.x + off, y: pathLabel.y }
-        : { x: pathLabel.x, y: pathLabel.y + off };
-    if (clears(candidate)) return candidate;
+  // The edge is too short to slide along, or the whole endpoint corridor is
+  // blocked (boxes stacked against a neighbour scope): spiral out from the
+  // path point in both axes until the pill clears every box.
+  for (const m of [16, 24, 32, 48, 64, 80, 96, 128, 160, 200, 256, 320]) {
+    const candidates = [
+      { x: pathLabel.x + m, y: pathLabel.y },
+      { x: pathLabel.x - m, y: pathLabel.y },
+      { x: pathLabel.x, y: pathLabel.y + m },
+      { x: pathLabel.x, y: pathLabel.y - m },
+    ];
+    for (const candidate of candidates) {
+      if (clears(candidate)) return candidate;
+    }
   }
   return null;
 }
@@ -473,12 +565,23 @@ export function toFlow(
     // or the default resolution changes.
     const guardedWhen = edge.kind === "guarded" ? (edgeWhen(model, edge) ?? null) : null;
     const label = edge.kind === "error" ? "on error" : guardedWhen ? routeLabel(guardedWhen) : null;
-    // The anchor is computed here, where the whole graph's absolute boxes are
+    // The boxes are computed here, where the whole graph's absolute boxes are
     // in one map; the edge renderer only draws. A node a draft override has
-    // moved has no fresh box in `abs` — anchors read the dagre box, which is
-    // the honest fallback (the label was anchored to the laid-out graph).
-    const sourceBox = abs.get(flowId(edge.scope, edge.from));
-    const targetBox = abs.get(flowId(edge.scope, edge.to));
+    // moved is re-boxed at the override's position (the override replaces
+    // the dagre position in `nodes` above, so routing follows the move).
+    const boxOf = (fid: string, nodeId: string): EdgeBox | null => {
+      const e = abs.get(fid);
+      if (!e) return null;
+      const o = overridden(nodeId);
+      return o ? { x: o.x, y: o.y, width: e.width, height: e.height } : e;
+    };
+    const sourceBox = boxOf(flowId(edge.scope, edge.from), edge.from);
+    const targetBox = boxOf(flowId(edge.scope, edge.to), edge.to);
+    const touchesScope =
+      (abs.get(flowId(edge.scope, edge.from))?.node.isScope ?? false) ||
+      (abs.get(flowId(edge.scope, edge.to))?.node.isScope ?? false);
+    const axis: EdgeAxis =
+      sourceBox && targetBox ? edgeAxis(sourceBox, targetBox, touchesScope, direction) : "v";
     let labelX: number | null = null;
     let labelY: number | null = null;
     if (label && sourceBox && targetBox) {
@@ -488,6 +591,7 @@ export function toFlow(
         targetBox,
         [...abs.values()].map((box) => box),
         direction,
+        axis,
       );
       if (anchor) {
         labelX = anchor.x;
@@ -506,6 +610,9 @@ export function toFlow(
       labelTitle: edge.kind === "error" ? null : guardedWhen,
       labelX,
       labelY,
+      sourceBox,
+      targetBox,
+      axis,
       data: { edge },
     } as FlowEdgeBase;
   });
