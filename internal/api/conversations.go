@@ -167,6 +167,21 @@ type PermissionRequestView struct {
 	DecidedAt        *time.Time `json:"decided_at"`
 }
 
+// ConversationRunLinkView is the ConversationRunLink schema: the run node a
+// run-linked conversation was opened for, taken from the NEWEST attempt that
+// references the conversation (ADR-0043). RunTitle is nullable because the
+// runs table has no title column yet; NodeID is the definition node id when
+// node_executions.node_id carries one.
+type ConversationRunLinkView struct {
+	RunID           string  `json:"run_id"`
+	RunTitle        *string `json:"run_title"`
+	NodeExecutionID string  `json:"node_execution_id"`
+	NodeInstanceKey string  `json:"node_instance_key"`
+	NodeID          *string `json:"node_id"`
+	AttemptID       string  `json:"attempt_id"`
+	AttemptNumber   int     `json:"attempt_number"`
+}
+
 // ConversationView is the Conversation schema.
 type ConversationView struct {
 	ID                 string                   `json:"id"`
@@ -184,6 +199,10 @@ type ConversationView struct {
 	ActiveTurn         *ConversationTurnView    `json:"active_turn"`
 	AgentSession       *AgentSessionBindingView `json:"agent_session"`
 	PendingPermissions []PermissionRequestView  `json:"pending_permissions"`
+	// Origin is "manual" or "run": run iff an attempt references the
+	// conversation; RunLink names that attempt's node for deep-linking.
+	Origin  string                   `json:"origin"`
+	RunLink *ConversationRunLinkView `json:"run_link"`
 }
 
 // ConversationSummaryView is the ConversationSummary schema: the project
@@ -202,6 +221,10 @@ type ConversationSummaryView struct {
 	Control          ConversationControlView `json:"control"`
 	HasActiveTurn    bool                    `json:"has_active_turn"`
 	AgentConnected   bool                    `json:"agent_connected"`
+	// Origin and RunLink as on ConversationView (ADR-0043): a list row must
+	// say whether it is manual or run-linked without the detail route's joins.
+	Origin  string                   `json:"origin"`
+	RunLink *ConversationRunLinkView `json:"run_link"`
 }
 
 // --- the store interfaces handlers call ---------------------------------
@@ -213,7 +236,10 @@ type ConversationSummaryView struct {
 // ErrConversationValidation or *ConversationConflict for the cases named in
 // api/openapi.yaml.
 type ConversationStore interface {
-	ListConversations(ctx context.Context, c Caller, projectID string) ([]ConversationSummaryView, error)
+	// ListConversations returns the project's conversations; origin ("" | "manual" | "run")
+	// and query (case-insensitive title substring, "" = off) are the ADR-0043
+	// filters and are validated by the handler before they reach the store.
+	ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error)
 	CreateConversation(ctx context.Context, c Caller, projectID, agentProfileID, title, prompt string) (ConversationView, error)
 	GetConversation(ctx context.Context, c Caller, conversationID string) (ConversationView, error)
 	PostMessage(ctx context.Context, c Caller, conversationID, prompt string) (ConversationTurnView, error)
@@ -351,7 +377,22 @@ func (h *cnvHandlers) listConversations(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	projectID := r.PathValue("projectId")
-	items, err := h.store.ListConversations(r.Context(), c, projectID)
+	// ADR-0043 list filters. Both are optional; an invalid value is a 400 in
+	// the file's usual problem shape before any store call, so a bad request
+	// cannot even probe visibility.
+	origin := r.URL.Query().Get("origin")
+	if origin != "" && origin != "manual" && origin != "run" {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_origin: origin must be 'manual' or 'run'.")
+		return
+	}
+	query := r.URL.Query().Get("q")
+	if len(query) > 200 {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_query: q must be at most 200 characters.")
+		return
+	}
+	items, err := h.store.ListConversations(r.Context(), c, projectID, origin, query)
 	if err != nil {
 		h.fail(w, r, c, cnvAtProject("conversation.list", projectID), err)
 		return

@@ -522,6 +522,7 @@ export interface paths {
     /**
      * List a project's conversations
      * @description Newest first (`created_at` descending). Visibility is project membership: a caller who is not a member — and is not an organization admin — gets `404`, the same answer every other project-scoped route gives, and no list. M2 has no pagination; the list is capped at 100 items ordered by `created_at DESC, id DESC`.
+     *     Two optional filters (ADR-0043): `origin` keeps only conversations opened by a person (`manual`) or by a pipeline run (`run`), and `q` keeps only conversations whose title contains the text, case insensitively, with LIKE metacharacters matching literally. Both are validated before any lookup: another `origin` value is `400` `invalid_origin`, and a `q` over 200 characters is `400` `invalid_query`.
      */
     get: operations["listConversations"];
     put?: never;
@@ -2353,6 +2354,25 @@ export interface components {
       finished_at?: string | null;
     };
     /**
+     * ConversationRunLink
+     * @description Deep-link target for a run-linked conversation (ADR-0043): the run, node execution and attempt that opened it, taken from the NEWEST `attempts` row that references the conversation (`attempts.conversation_id`).
+     */
+    ConversationRunLink: {
+      /** Format: uuid */
+      run_id: string;
+      /** @description The run's goal/title when stored; null today — the runs table has no title column, and the field exists so a future column needs no schema change. */
+      run_title?: string | null;
+      /** Format: uuid */
+      node_execution_id: string;
+      /** @description The node's instance key within the run's plan (e.g. `/review`). */
+      node_instance_key: string;
+      /** @description The definition node id (`node_executions.node_id`), null when not stored on the node execution. */
+      node_id?: string | null;
+      /** Format: uuid */
+      attempt_id: string;
+      attempt_number: number;
+    };
+    /**
      * Conversation
      * @description A durable, project-scoped agent conversation. The agent process is not part of this identity: `status` describes the conversation, the (nullable) `agent_session` describes what is attached right now.
      */
@@ -2387,6 +2407,13 @@ export interface components {
       agent_session?: components["schemas"]["AgentSessionBinding"];
       /** @description Prompts awaiting a decision (`permission_requests` rows in `pending`), oldest first. Only the current controller may answer. */
       pending_permissions?: components["schemas"]["PermissionRequest"][];
+      /**
+       * @description Where this conversation was opened (ADR-0043): `manual` = a person started it directly, `run` = a pipeline run opened it (some `attempts` row references it).
+       * @enum {string}
+       */
+      origin: "manual" | "run";
+      /** @description The run node that opened this conversation — the newest attempt that references it — or null when `origin` is `manual`. */
+      run_link: components["schemas"]["ConversationRunLink"] | null;
     };
     /**
      * ConversationSummary
@@ -2414,6 +2441,13 @@ export interface components {
       has_active_turn?: boolean;
       /** @description Whether a live ACP session is attached to this conversation. */
       agent_connected?: boolean;
+      /**
+       * @description Where this conversation was opened (ADR-0043); see `Conversation`.
+       * @enum {string}
+       */
+      origin: "manual" | "run";
+      /** @description The run node that opened this conversation — the newest attempt that references it — or null when `origin` is `manual`. */
+      run_link: components["schemas"]["ConversationRunLink"] | null;
     };
     /** ConversationSummaryList */
     ConversationSummaryList: {
@@ -4432,6 +4466,10 @@ export interface components {
     LastEventId: number;
     /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
     After: number;
+    /** @description Filter the conversation list by where it was opened (ADR-0043): `manual` = a person started it, `run` = a pipeline run started it (some attempt row references it). Omitted = no filter. Any other value is `400` `invalid_origin`. */
+    ConversationOriginFilter: "manual" | "run";
+    /** @description Case-insensitive substring on the conversation title (ADR-0043). The LIKE metacharacters (`%`, `_`, `\`) match literally, so `0%` finds only titles containing `0%`. At most 200 characters; a longer value is `400` `invalid_query`. */
+    ConversationTitleQuery: string;
     /** @description A `secret_metadata` id. Resolved through the project in the path: a secret belonging to another project is `404`, identical byte-for-byte to a random uuid (`09`: existence is project-scoped information). */
     SecretId: string;
     /** @description A `secret_mounts` declaration id, scoped to the project in the path. */
@@ -5042,7 +5080,12 @@ export interface operations {
   };
   listConversations: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description Filter the conversation list by where it was opened (ADR-0043): `manual` = a person started it, `run` = a pipeline run started it (some attempt row references it). Omitted = no filter. Any other value is `400` `invalid_origin`. */
+        origin?: components["parameters"]["ConversationOriginFilter"];
+        /** @description Case-insensitive substring on the conversation title (ADR-0043). The LIKE metacharacters (`%`, `_`, `\`) match literally, so `0%` finds only titles containing `0%`. At most 200 characters; a longer value is `400` `invalid_query`. */
+        q?: components["parameters"]["ConversationTitleQuery"];
+      };
       header?: never;
       path: {
         /** @description Project id (`uuid`). Project-scoped access is checked server-side on every request; a non-member who is not an organization admin receives `404`. */
@@ -5062,6 +5105,7 @@ export interface operations {
           "application/json": components["schemas"]["ConversationSummaryList"];
         };
       };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
     };

@@ -270,6 +270,8 @@ export const conversationFixture: Conversation = {
     previous_user_id: null,
     version: 1,
   },
+  origin: "manual",
+  run_link: null,
   pending_permissions: [],
 };
 
@@ -298,6 +300,8 @@ export const conversationSummaryFixture: ConversationSummary = {
   control: conversationFixture.control,
   has_active_turn: false,
   agent_connected: true,
+  origin: "manual",
+  run_link: null,
 };
 
 export const permissionRequestFixture: PermissionRequest = {

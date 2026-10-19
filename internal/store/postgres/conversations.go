@@ -184,6 +184,21 @@ type CnvPermission struct {
 	DecidedAt        *time.Time
 }
 
+// CnvRunLink is the run node a run-linked conversation was opened for: the
+// newest attempt that references the conversation (ADR-0043). NodeID is the
+// definition node id node_executions.node_id carries. RunTitle is nil today:
+// runs has no title column, and the field exists so the column can be filled
+// without another additive schema change.
+type CnvRunLink struct {
+	RunID           string
+	RunTitle        *string
+	NodeExecutionID string
+	NodeInstanceKey string
+	NodeID          *string
+	AttemptID       string
+	AttemptNumber   int
+}
+
 // CnvConversation is a conversation with its control row, live binding, active
 // turn and pending prompts. MyRole is the *caller's* project role, kept so the
 // store can be the second authorization gate rather than the only one.
@@ -205,6 +220,10 @@ type CnvConversation struct {
 	ActiveTurn         *CnvTurn
 	Binding            *CnvBinding
 	PendingPermissions []CnvPermission
+	// Origin is "manual" or "run": run iff an attempt references the
+	// conversation; RunLink names that attempt's node for deep-linking.
+	Origin  string
+	RunLink *CnvRunLink
 }
 
 // CnvSummary is a list row: enough for a project timeline (who is driving, is
@@ -222,6 +241,10 @@ type CnvSummary struct {
 	Control          CnvControl
 	HasActiveTurn    bool
 	AgentConnected   bool
+	// Origin and RunLink as on CnvConversation (ADR-0043): a list row must say
+	// whether it is manual or run-linked without the detail route's joins.
+	Origin  string
+	RunLink *CnvRunLink
 }
 
 // CnvStore is the conversation face of the store. Like ProjectStore it is
@@ -386,7 +409,51 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 		return CnvConversation{}, err
 	}
 	cv.PendingPermissions = pending
+	cv.Origin, cv.RunLink, err = cnvConversationRunLink(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
 	return cv, nil
+}
+
+// cnvRunLinkByConversationSQL is the single-conversation read of the list's
+// LATERAL run link: the newest attempt that references the conversation
+// (ADR-0043), with the node it executed.
+const cnvRunLinkByConversationSQL = `
+	SELECT COALESCE(a.run_id::text, ''), COALESCE(a.id::text, ''), a.attempt_number,
+	       COALESCE(ne.id::text, ''), COALESCE(ne.node_instance_key, ''), COALESCE(ne.node_id, '')
+	FROM attempts a
+	JOIN node_executions ne ON ne.id = a.node_execution_id
+	WHERE a.conversation_id = $1::uuid
+	ORDER BY a.created_at DESC, a.id DESC
+	LIMIT 1`
+
+// cnvConversationRunLink answers the origin question for one conversation:
+// "manual" with a nil link when no attempt references it, "run" with the
+// newest attempt's run/node otherwise.
+func cnvConversationRunLink(ctx context.Context, q prjQuerier, conversationID string) (string, *CnvRunLink, error) {
+	var runID, attemptID, nodeExecID, nodeKey, nodeID string
+	var attemptNumber int
+	err := q.QueryRow(ctx, cnvRunLinkByConversationSQL, conversationID).
+		Scan(&runID, &attemptID, &attemptNumber, &nodeExecID, &nodeKey, &nodeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "manual", nil, nil
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("postgres: conversation run link: %w", err)
+	}
+	var nodeIDPtr *string
+	if nodeID != "" {
+		nodeIDPtr = &nodeID
+	}
+	return "run", &CnvRunLink{
+		RunID:           runID,
+		NodeExecutionID: nodeExecID,
+		NodeInstanceKey: nodeKey,
+		NodeID:          nodeIDPtr,
+		AttemptID:       attemptID,
+		AttemptNumber:   attemptNumber,
+	}, nil
 }
 
 // cnvActiveTurnSQL selects the conversation's non-terminal turn. The partial
@@ -560,11 +627,40 @@ func cnvParseOptions(raw []byte) ([]events.PermissionOption, error) {
 	return out, nil
 }
 
+// cnvRunLinkSubquery selects the newest attempt that references a
+// conversation (created_at DESC, id DESC as tie-break) with its node
+// execution, for the origin/run_link columns (ADR-0043). The attempts row is
+// the only proof a conversation is run-linked: the worker writes it when it
+// opens the session (attempts_agent_turn_pair).
+const cnvRunLinkSubquery = `
+		LEFT JOIN LATERAL (
+		    SELECT a.run_id, a.id AS attempt_id, a.attempt_number,
+		           ne.id AS node_execution_id, ne.node_instance_key, ne.node_id
+		    FROM attempts a
+		    JOIN node_executions ne ON ne.id = a.node_execution_id
+		    WHERE a.conversation_id = c.id
+		    ORDER BY a.created_at DESC, a.id DESC
+		    LIMIT 1
+		) la ON true`
+
+// cnvListFilters renders the optional list filters. Both are ” = off, so a
+// plain list costs one equality-free clause; the q pattern escapes the three
+// characters that would otherwise widen it (%, _, and the escape character
+// itself), which is why "0%" matches only a title that contains 0%.
+func cnvListFilters() string {
+	return `
+		  AND ($2::text = '' OR (la.attempt_id IS NOT NULL) = ($2::text = 'run'))
+		  AND ($3::text = '' OR c.title ILIKE '%' || replace(replace(replace($3::text, '\', '\\'), '%', '\%'), '_', '\_') || '%')`
+}
+
 // ListConversations returns a project's conversations newest first, capped at
 // 100 (api/openapi.yaml listConversations: no pagination in M2). A project the
 // caller may not see is ErrConversationNotFound — the same 404 the rest of the
 // project surface gives, so a conversation list cannot probe project existence.
-func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID string) ([]CnvSummary, error) {
+// origin ("" | "manual" | "run") and query (case-insensitive title substring,
+// "" = off) are the ADR-0043 filters; the join only ever narrows the list, so
+// visibility is exactly the caller's project scope as before.
+func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]CnvSummary, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return nil, err
 	}
@@ -585,14 +681,18 @@ func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID st
 		       EXISTS (
 		           SELECT 1 FROM acp_session_bindings b
 		           WHERE b.conversation_id = c.id AND b.status = 'connected'
-		       )
+		       ),
+		       COALESCE(la.run_id::text, ''), COALESCE(la.node_execution_id::text, ''),
+		       COALESCE(la.node_instance_key, ''), COALESCE(la.node_id, ''),
+		       COALESCE(la.attempt_id::text, ''), COALESCE(la.attempt_number, 0)
 		FROM conversations c
 		JOIN conversation_control ctl ON ctl.conversation_id = c.id
 		LEFT JOIN users cb ON cb.id = c.created_by
-		LEFT JOIN users ctr ON ctr.id = ctl.controller_user_id
-		WHERE c.project_id = $1::uuid
+		LEFT JOIN users ctr ON ctr.id = ctl.controller_user_id`+
+		cnvRunLinkSubquery+`
+		WHERE c.project_id = $1::uuid`+cnvListFilters()+`
 		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT 100`, projectID)
+		LIMIT 100`, projectID, origin, query)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list conversations: %w", err)
 	}
@@ -601,16 +701,42 @@ func (s *CnvStore) ListConversations(ctx context.Context, c Caller, projectID st
 	out := make([]CnvSummary, 0, 8)
 	for rows.Next() {
 		var cv CnvSummary
+		// The LATERAL join leaves every run-link column NULL for a manual
+		// conversation, so they are COALESCEd to ''/0 in the query; an empty
+		// attempt id is the "no link" sentinel (pgx v5 scans NULL only into a
+		// pointer to a plain type, and this file's style is COALESCE + value).
+		var (
+			laRunID, laNodeExec, laNodeKey, laNodeID, laAttemptID string
+			laAttemptNumber                                       int
+		)
 		if err := rows.Scan(&cv.ID, &cv.ProjectID, &cv.AgentProfileID, &cv.Title, &cv.Status,
 			&cv.CreatedBy, &cv.CreatedByDisplay, &cv.CreatedAt, &cv.UpdatedAt,
 			&cv.Control.Kind, &cv.Control.UserID, &cv.Control.DisplayName,
 			&cv.Control.PreviousUserID, &cv.Control.Version,
-			&cv.HasActiveTurn, &cv.AgentConnected); err != nil {
+			&cv.HasActiveTurn, &cv.AgentConnected,
+			&laRunID, &laNodeExec, &laNodeKey, &laNodeID, &laAttemptID, &laAttemptNumber); err != nil {
 			return nil, fmt.Errorf("postgres: scan conversation: %w", err)
 		}
 		cv.Control.ConversationID = cv.ID
 		cv.CreatedAt = cv.CreatedAt.UTC()
 		cv.UpdatedAt = cv.UpdatedAt.UTC()
+		if laAttemptID != "" {
+			var laNodeIDPtr *string
+			if laNodeID != "" {
+				laNodeIDPtr = &laNodeID
+			}
+			cv.RunLink = &CnvRunLink{
+				RunID:           laRunID,
+				NodeExecutionID: laNodeExec,
+				NodeInstanceKey: laNodeKey,
+				NodeID:          laNodeIDPtr,
+				AttemptID:       laAttemptID,
+				AttemptNumber:   laAttemptNumber,
+			}
+			cv.Origin = "run"
+		} else {
+			cv.Origin = "manual"
+		}
 		out = append(out, cv)
 	}
 	if err := rows.Err(); err != nil {
@@ -1777,13 +1903,14 @@ func (a APIConversationStore) ListAgentProfiles(ctx context.Context, c api.Calle
 	return out, nil
 }
 
-// ListConversations implements api.ConversationStore.
-func (a APIConversationStore) ListConversations(ctx context.Context, c api.Caller, projectID string) ([]api.ConversationSummaryView, error) {
+// ListConversations implements api.ConversationStore, forwarding the
+// ADR-0043 origin and q filters unchanged.
+func (a APIConversationStore) ListConversations(ctx context.Context, c api.Caller, projectID, origin, query string) ([]api.ConversationSummaryView, error) {
 	s, err := a.store()
 	if err != nil {
 		return nil, err
 	}
-	chats, err := s.ListConversations(ctx, prjAPICaller(c), projectID)
+	chats, err := s.ListConversations(ctx, prjAPICaller(c), projectID, origin, query)
 	if err != nil {
 		return nil, cnvAPIErr(err)
 	}
@@ -1802,6 +1929,8 @@ func (a APIConversationStore) ListConversations(ctx context.Context, c api.Calle
 			Control:          cnvAPIControl(cv.Control),
 			HasActiveTurn:    cv.HasActiveTurn,
 			AgentConnected:   cv.AgentConnected,
+			Origin:           cv.Origin,
+			RunLink:          cnvAPIRunLink(cv.RunLink),
 		})
 	}
 	return out, nil
@@ -2110,6 +2239,25 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		ActiveTurn:         cnvAPITurnPtr(cv.ActiveTurn, true),
 		AgentSession:       cnvAPIBinding(cv.Binding),
 		PendingPermissions: pending,
+		Origin:             cv.Origin,
+		RunLink:            cnvAPIRunLink(cv.RunLink),
+	}
+}
+
+// cnvAPIRunLink turns the store's run link into the ConversationRunLink
+// schema. RunTitle stays nil: runs has no title column (ADR-0043 left it
+// nullable on purpose), and an empty string would read as a real title.
+func cnvAPIRunLink(l *CnvRunLink) *api.ConversationRunLinkView {
+	if l == nil {
+		return nil
+	}
+	return &api.ConversationRunLinkView{
+		RunID:           l.RunID,
+		NodeExecutionID: l.NodeExecutionID,
+		NodeInstanceKey: l.NodeInstanceKey,
+		NodeID:          l.NodeID,
+		AttemptID:       l.AttemptID,
+		AttemptNumber:   l.AttemptNumber,
 	}
 }
 

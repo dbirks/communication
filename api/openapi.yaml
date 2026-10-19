@@ -992,10 +992,20 @@ paths:
         admin — gets `404`, the same answer every other project-scoped route
         gives, and no list. M2 has no pagination; the list is capped at 100
         items ordered by `created_at DESC, id DESC`.
+
+        Two optional filters (ADR-0043): `origin` keeps only conversations
+        opened by a person (`manual`) or by a pipeline run (`run`), and `q`
+        keeps only conversations whose title contains the text, case
+        insensitively, with LIKE metacharacters matching literally. Both are
+        validated before any lookup: another `origin` value is `400`
+        `invalid_origin`, and a `q` over 200 characters is `400`
+        `invalid_query`.
       security:
         - sessionCookie: []
       parameters:
         - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/ConversationOriginFilter"
+        - $ref: "#/components/parameters/ConversationTitleQuery"
       responses:
         "200":
           description: Conversations in this project.
@@ -1006,6 +1016,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConversationSummaryList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -3984,6 +3996,30 @@ components:
         type: integer
         format: int64
         minimum: 0
+    ConversationOriginFilter:
+      name: origin
+      in: query
+      required: false
+      description: >
+        Filter the conversation list by where it was opened (ADR-0043):
+        `manual` = a person started it, `run` = a pipeline run started it
+        (some attempt row references it). Omitted = no filter. Any other
+        value is `400` `invalid_origin`.
+      schema:
+        type: string
+        enum: [manual, run]
+    ConversationTitleQuery:
+      name: q
+      in: query
+      required: false
+      description: >
+        Case-insensitive substring on the conversation title (ADR-0043). The
+        LIKE metacharacters (`%`, `_`, `\`) match literally, so `0%` finds
+        only titles containing `0%`. At most 200 characters; a longer value is
+        `400` `invalid_query`.
+      schema:
+        type: string
+        maxLength: 200
     SecretId:
       name: secretId
       in: path
@@ -5230,6 +5266,42 @@ components:
         finished_at:
           type: ["string", "null"]
           format: date-time
+    ConversationRunLink:
+      title: ConversationRunLink
+      description: >
+        Deep-link target for a run-linked conversation (ADR-0043): the run,
+        node execution and attempt that opened it, taken from the NEWEST
+        `attempts` row that references the conversation
+        (`attempts.conversation_id`).
+      type: object
+      required: [run_id, node_execution_id, node_instance_key, attempt_id, attempt_number]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        run_title:
+          type: ["string", "null"]
+          description: >
+            The run's goal/title when stored; null today — the runs table has
+            no title column, and the field exists so a future column needs no
+            schema change.
+        node_execution_id:
+          type: string
+          format: uuid
+        node_instance_key:
+          type: string
+          description: The node's instance key within the run's plan (e.g. `/review`).
+        node_id:
+          type: ["string", "null"]
+          description: >
+            The definition node id (`node_executions.node_id`), null when not
+            stored on the node execution.
+        attempt_id:
+          type: string
+          format: uuid
+        attempt_number:
+          type: integer
+          minimum: 1
     Conversation:
       title: Conversation
       description: >
@@ -5237,7 +5309,7 @@ components:
         part of this identity: `status` describes the conversation, the (nullable)
         `agent_session` describes what is attached right now.
       type: object
-      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control]
+      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control, origin, run_link]
       properties:
         id:
           type: string
@@ -5296,6 +5368,20 @@ components:
             `pending`), oldest first. Only the current controller may answer.
           items:
             $ref: "#/components/schemas/PermissionRequest"
+        origin:
+          type: string
+          enum: [manual, run]
+          description: >
+            Where this conversation was opened (ADR-0043): `manual` = a
+            person started it directly, `run` = a pipeline run opened it
+            (some `attempts` row references it).
+        run_link:
+          description: >
+            The run node that opened this conversation — the newest attempt
+            that references it — or null when `origin` is `manual`.
+          allOf:
+            - $ref: "#/components/schemas/ConversationRunLink"
+          nullable: true
     ConversationSummary:
       title: ConversationSummary
       description: >
@@ -5303,7 +5389,7 @@ components:
         timeline shows who is driving) but not the transcript, binding or
         pending prompts — fetch the conversation for those.
       type: object
-      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control]
+      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control, origin, run_link]
       properties:
         id:
           type: string
@@ -5341,6 +5427,18 @@ components:
         agent_connected:
           type: boolean
           description: Whether a live ACP session is attached to this conversation.
+        origin:
+          type: string
+          enum: [manual, run]
+          description: >
+            Where this conversation was opened (ADR-0043); see `Conversation`.
+        run_link:
+          description: >
+            The run node that opened this conversation — the newest attempt
+            that references it — or null when `origin` is `manual`.
+          allOf:
+            - $ref: "#/components/schemas/ConversationRunLink"
+          nullable: true
     ConversationSummaryList:
       title: ConversationSummaryList
       type: object

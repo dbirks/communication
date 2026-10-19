@@ -65,6 +65,11 @@ type cnvFakeStore struct {
 	// a second write.
 	decideConflict bool
 	eventsRead     int
+	// lastListOrigin and lastListQuery are the ADR-0043 filters the handler
+	// forwarded, so a test can prove the query string reached the store
+	// unchanged.
+	lastListOrigin string
+	lastListQuery  string
 }
 
 type cnvCreateCall struct{ projectID, profileID, title, prompt string }
@@ -177,19 +182,21 @@ func (f *cnvFakeStore) ListAgentProfiles(context.Context, Caller) ([]AgentProfil
 	return f.profiles, nil
 }
 
-func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID string) ([]ConversationSummaryView, error) {
+func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error) {
 	if !f.visible(c) {
 		return nil, ErrConversationNotFound
 	}
 	if projectID != cnvTProject {
 		return nil, ErrConversationNotFound
 	}
+	f.lastListOrigin = origin
+	f.lastListQuery = query
 	f.syncControl()
 	return []ConversationSummaryView{{
 		ID: cnvTConv, ProjectID: cnvTProject, AgentProfileID: cnvTProfile,
 		Title: f.chat.Title, Status: f.chat.Status, CreatedBy: f.chat.CreatedBy,
 		CreatedAt: f.chat.CreatedAt, UpdatedAt: f.chat.UpdatedAt,
-		Control: f.chat.Control,
+		Control: f.chat.Control, Origin: f.chat.Origin, RunLink: f.chat.RunLink,
 	}}, nil
 }
 
@@ -472,6 +479,86 @@ func TestListAgentProfiles(t *testing.T) {
 	if _, ok := out.Items[0]["version"]; ok {
 		t.Errorf("profile exposed a version field: %v", out.Items[0])
 	}
+}
+
+// TestListConversationsOriginAndQuery pins the ADR-0043 list filters: the
+// handler validates them with a 400 in the file's problem shape before any
+// store call, and forwards valid values unchanged.
+func TestListConversationsOriginAndQuery(t *testing.T) {
+	listTarget := "http://localhost:8080/api/v1/projects/" + cnvTProject + "/conversations"
+
+	t.Run("invalid origin is 400 and never reaches the store", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget+"?origin=bogus", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET ?origin=bogus = %d (%s), want 400", rec.Code, rec.Body)
+		}
+		if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "invalid_origin") {
+			t.Errorf("detail = %q, want it to name invalid_origin", prob.Detail)
+		}
+		if store.lastListOrigin != "" {
+			t.Errorf("store called with origin %q for an invalid origin", store.lastListOrigin)
+		}
+	})
+
+	t.Run("q longer than 200 characters is 400 invalid_query", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		long := strings.Repeat("a", 201)
+		rec := do(t, s, request(http.MethodGet, listTarget+"?q="+long, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("GET ?q=<201 chars> = %d (%s), want 400", rec.Code, rec.Body)
+		}
+		if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "invalid_query") {
+			t.Errorf("detail = %q, want it to name invalid_query", prob.Detail)
+		}
+		if store.lastListQuery != "" {
+			t.Errorf("store called with query %q for an oversized q", store.lastListQuery)
+		}
+	})
+
+	t.Run("valid filters are forwarded to the store and echoed in the rows", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		link := &ConversationRunLinkView{
+			RunID: "run-1", NodeExecutionID: "ne-1", NodeInstanceKey: "a",
+			AttemptID: "att-1", AttemptNumber: 2,
+		}
+		store.chat.Origin = "run"
+		store.chat.RunLink = link
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget+"?origin=run&q=Fix%20the%20flaky%20test", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET ?origin=run&q=... = %d (%s), want 200", rec.Code, rec.Body)
+		}
+		if store.lastListOrigin != "run" || store.lastListQuery != "Fix the flaky test" {
+			t.Errorf("store saw origin=%q query=%q, want run / Fix the flaky test",
+				store.lastListOrigin, store.lastListQuery)
+		}
+		var out struct {
+			Items []struct {
+				Origin  string                   `json:"origin"`
+				RunLink *ConversationRunLinkView `json:"run_link"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, rec.Body)
+		}
+		if len(out.Items) != 1 || out.Items[0].Origin != "run" || out.Items[0].RunLink == nil ||
+			out.Items[0].RunLink.AttemptNumber != 2 {
+			t.Errorf("items = %s, want one run-linked row carrying its run_link", rec.Body)
+		}
+	})
+
+	t.Run("no filters is still a plain list", func(t *testing.T) {
+		store := cnvNewFakeStore()
+		s := cnvMount(t, store, nil, cnvCaller(cnvTUserA))
+		rec := do(t, s, request(http.MethodGet, listTarget, nil))
+		if rec.Code != http.StatusOK || store.lastListOrigin != "" || store.lastListQuery != "" {
+			t.Fatalf("GET list = %d (origin=%q query=%q), want a plain list", rec.Code,
+				store.lastListOrigin, store.lastListQuery)
+		}
+	})
 }
 
 func TestCreateConversation(t *testing.T) {

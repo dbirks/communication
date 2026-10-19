@@ -1,64 +1,22 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo } from "react";
 import { Link, useParams } from "react-router";
-import { useActorNames, mergeLookups, nameLookup } from "../api/actors";
 import { ApiError } from "../api/client";
-import { useConversationEvents } from "../api/events";
-import {
-  useConversation,
-  useTurnSandbox,
-  useCancelConversationTurn,
-  useDecideConversationPermission,
-  useMe,
-  useProject,
-  useReturnConversationControl,
-  useTakeConversationControl,
-  usePostConversationMessage,
-} from "../api/queries";
-import {
-  describeTurn,
-  interruptedCopy,
-  projectTranscript,
-  runLinkOf,
-  turnStatusText,
-} from "../api/transcript";
+import { useTurnSandbox } from "../api/queries";
+import { interruptedCopy, runLinkOf, turnStatusText } from "../api/transcript";
 import { shortId } from "../api/names";
-import type { ConversationControl, PermissionOption, TurnSandbox } from "../api/types";
-import Transcript from "../components/Transcript";
+import type { TurnSandbox } from "../api/types";
+import {
+  AgentConversationPanel,
+  AgentConversationControls,
+} from "../components/conversation/AgentConversationPanel";
+import { useConversationSession } from "../components/conversation/useConversationSession";
 import { WorkspaceWidget } from "../components/Workspaces";
 import { TurnSandboxPanel } from "../components/Sandbox";
-import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
+import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
-import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
-import { Textarea } from "../components/ds/Field";
 import { StatusChip } from "../components/ds/Row";
 import { STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
-
-/**
- * Copy for the controller badge — ownership is always written in words.
- *
- * `control.display_name` is server-resolved and usually present, but the API may
- * omit it (an older replica, a member the projection did not name). The page
- * already holds an actor directory, so a named member is named; "another member"
- * is the last resort, and a uuid is never offered as a label.
- */
-export function controllerCopy(
-  control: ConversationControl,
-  isController: boolean,
-  nameOf?: (userId: string) => string,
-): string {
-  if (isController) return "You are in control";
-  if (control.kind === "run_attempt") return "Controlled by a pipeline run";
-  if (control.kind === "human") {
-    const named = control.display_name ?? (control.user_id ? nameOf?.(control.user_id) : undefined);
-    // `nameOf` degrades to "someone (abc12345)", which is not a label a badge
-    // should wear — the directory either knows this person or says it does not.
-    return named && !named.startsWith("someone (")
-      ? `Controlled by ${named}`
-      : "Controlled by another member";
-  }
-  return "No controller — take control to drive";
-}
 
 /**
  * Whether what the wire returned is a verdict at all.
@@ -94,54 +52,15 @@ export default function ConversationPage() {
     projectId: string;
     conversationId: string;
   }>();
-  const conversation = useConversation(conversationId);
-  const me = useMe();
-  const { events, status } = useConversationEvents(conversationId);
-  const sendMessage = usePostConversationMessage(conversationId);
-  const takeControl = useTakeConversationControl(conversationId);
-  const returnControl = useReturnConversationControl(conversationId);
-  const cancelTurn = useCancelConversationTurn(conversationId);
-  const decide = useDecideConversationPermission(conversationId);
-  const [prompt, setPrompt] = useState("");
-  const [decidingRequestId, setDecidingRequestId] = useState<string | null>(null);
+  // One session for the whole page: the transcript/composer surface below and
+  // the controller line in the rail read the same hooks, and the SSE stream is
+  // opened exactly once.
+  const session = useConversationSession(conversationId, projectId);
+  const { conversation, data, activeTurn, transcript, status, described } = session;
 
-  const data = conversation.data;
-  const activeTurn = data?.active_turn;
-  const isController = Boolean(
-    data && me.data && data.control.kind === "human" && data.control.user_id === me.data.id,
-  );
-  // Conversation routes do not report the caller's project role, so ask the
-  // project (already cached by the page this one was reached from): a viewer may
-  // watch but may not take control (`06`, ADR-0016 §8).
-  const project = useProject(projectId);
-  // While the role is still loading the button renders disabled rather than
-  // appearing and vanishing; a viewer never gets an enabled one.
-  const roleKnown = project.data !== undefined;
-  const canRequestControl = roleKnown ? project.data.my_role !== "viewer" : true;
-
-  // Names come from the shared actor directory (me, users, members) merged
-  // with the hints this page holds locally (creator, controller). The last
-  // resort is "someone (short-id)", never a bare uuid.
-  const actors = useActorNames(projectId);
-  const nameOf = useMemo(() => {
-    const local = nameLookup([
-      ...(data?.created_by_display_name
-        ? ([[data.created_by, data.created_by_display_name]] as const)
-        : []),
-      ...(data?.control.display_name && data.control.user_id
-        ? ([[data.control.user_id, data.control.display_name]] as const)
-        : []),
-    ]);
-    const merged = mergeLookups(local, actors.lookup);
-    return (userId: string) => merged(userId) ?? actors.nameOf(userId);
-  }, [actors, data]);
-
-  // The fold names the people it mentions, so it re-projects when the actor
-  // directory lands — an id in a sentence nobody can act on is not information.
-  const transcript = useMemo(() => projectTranscript(events, nameOf), [events, nameOf]);
   // "Part of" is read off the journal's own correlation columns (M4 contract
   // § 3): a conversation whose rows name no run shows no run link.
-  const runLink = useMemo(() => runLinkOf(events), [events]);
+  const runLink = useMemo(() => runLinkOf(session.events), [session.events]);
 
   // The unit whose enforcement record is worth showing: the API's active turn if
   // there is one, else the newest turn the journal reported. The read is issued
@@ -151,29 +70,6 @@ export default function ConversationPage() {
   // The same cached read the rail's panel makes: the page asks it only to tell
   // an honest "nothing was recorded" apart from an unverified launch.
   const turnSandbox = useTurnSandbox(latestTurnId);
-
-  const onSend = (event: FormEvent) => {
-    event.preventDefault();
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-    sendMessage.mutate(
-      { prompt: trimmed },
-      { onSuccess: () => setPrompt("") }, // the reply arrives on the stream, not here
-    );
-  };
-
-  const onDecide = (requestId: string, option: PermissionOption) => {
-    setDecidingRequestId(requestId);
-    decide.mutate(
-      { requestId, body: { option_id: option.option_id } },
-      {
-        // The transcript card closes when `conversation.permission.decided`
-        // arrives; keeping the id lets a failure name the prompt it belongs to.
-        onSuccess: () => setDecidingRequestId(null),
-        onError: () => setDecidingRequestId(null),
-      },
-    );
-  };
 
   if (conversation.isPending) return <Spinner label="Loading conversation" />;
 
@@ -207,18 +103,10 @@ export default function ConversationPage() {
     );
   }
 
-  const control = data.control;
-  const badgeText = controllerCopy(control, isController, nameOf);
   // One description of the turn drives the status line, the interrupted notice
   // and whether the composer may accept a prompt.
-  const described = describeTurn(transcript.turns, activeTurn);
   const turnStatus = turnStatusText(transcript.turns, activeTurn);
   const interrupted = described.status === "interrupted";
-  // `active` is set only while nobody has proved the turn is over: a terminal
-  // journal record clears it immediately (the DB would refuse a competing
-  // prompt anyway — one active turn per conversation, migration 00003).
-  const turnInProgress = Boolean(described.active);
-  const controlError = takeControl.error ?? returnControl.error ?? null;
 
   return (
     <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -289,85 +177,19 @@ export default function ConversationPage() {
           </Alert>
         ) : null}
 
-        <Transcript
-          items={transcript.items}
-          agentName={data.agent_profile_name ?? "agent"}
-          canDecide={isController}
-          controllerName={
-            control.display_name ?? (control.user_id ? nameOf(control.user_id) : null)
-          }
-          nameOf={nameOf}
-          onDecide={onDecide}
-          decidingRequestId={decidingRequestId}
-          decisionError={decide.error}
-          decisionErrorRequestId={decide.isError ? (decide.variables?.requestId ?? null) : null}
+        {/* The shared surface: the transcript (permission cards included) and
+            the composer. The controller line stays in the rail below. */}
+        <AgentConversationPanel
+          conversationId={conversationId}
+          projectId={projectId}
+          variant="page"
+          session={session}
+          composer={{
+            inputId: "conversation-prompt",
+            rows: 3,
+            nonControllerPlaceholder: "Only the controller can prompt.",
+          }}
         />
-
-        <section aria-labelledby="composer-heading" className="space-y-2">
-          <h2
-            id="composer-heading"
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-          >
-            Prompt
-          </h2>
-          <form onSubmit={onSend} className="space-y-2">
-            <label className="sr-only" htmlFor="conversation-prompt">
-              Prompt for the agent
-            </label>
-            <Textarea
-              id="conversation-prompt"
-              data-testid="composer-input"
-              rows={3}
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              disabled={!isController}
-              aria-describedby={turnInProgress || !isController ? "composer-explainer" : undefined}
-              placeholder={
-                isController ? "Ask the agent for something…" : "Only the controller can prompt."
-              }
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              data-testid="composer-send"
-              // Enabled for the controller only, and never while a turn is open:
-              // the API refuses a second prompt into a running turn (01 invariant,
-              // 06 "do not send competing prompts"), so we say so instead of failing.
-              disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
-            >
-              {sendMessage.isPending ? "Sending…" : "Send"}
-            </Button>
-          </form>
-          {!isController ? (
-            <p
-              id="composer-explainer"
-              className="text-[12.5px] text-muted"
-              data-testid="composer-explainer"
-            >
-              {!canRequestControl
-                ? "You can watch this conversation. Prompting and taking control need a project contributor role."
-                : control.kind === "human"
-                  ? `Only the controller (${control.display_name ?? nameOf(control.user_id ?? "")}) can send prompts. Take control to drive.`
-                  : "Nobody is driving. Take control to send a prompt."}
-            </p>
-          ) : turnInProgress ? (
-            <p
-              id="composer-explainer"
-              className="text-[12.5px] text-muted"
-              data-testid="composer-explainer"
-            >
-              A turn is already open (status: {activeTurn?.status}). Wait for it to finish, or press
-              Stop — a second prompt into the same turn is refused.
-            </p>
-          ) : null}
-          {sendMessage.error ? (
-            <FormError error={sendMessage.error} />
-          ) : (
-            <p className="sr-only" aria-live="polite">
-              {sendMessage.isSuccess ? "Prompt queued." : ""}
-            </p>
-          )}
-        </section>
       </div>
 
       <aside className="min-w-0 space-y-3" aria-label="Conversation context">
@@ -442,7 +264,8 @@ export default function ConversationPage() {
           )}
         </section>
         {/* The controller line, in words: who is driving, the version the CAS
-            token is at, and the only control acts on the page. */}
+            token is at, and the only control acts on the page. The shared
+            controls read the page's own session. */}
         <section aria-labelledby="controller-rail-heading" className="space-y-2">
           <h2
             id="controller-rail-heading"
@@ -450,62 +273,17 @@ export default function ConversationPage() {
           >
             Controller
           </h2>
-          <span
-            data-testid="controller-badge"
-            className="inline-flex h-[22px] items-center rounded-[3px] border border-line-strong bg-surface px-2 font-mono text-[10.5px] font-medium text-ink-2"
-          >
-            {badgeText}
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            {isController ? (
-              <>
-                <Button
-                  variant="secondaryPlain"
-                  data-testid="return-control"
-                  disabled={returnControl.isPending || control.kind !== "human"}
-                  onClick={() => returnControl.mutate({ version: control.version })}
-                >
-                  {returnControl.isPending ? "Returning…" : "Return control"}
-                </Button>
-                {turnInProgress ? (
-                  <Button
-                    variant="danger"
-                    data-testid="stop-turn"
-                    disabled={cancelTurn.isPending || Boolean(activeTurn?.cancel_requested_at)}
-                    onClick={() => cancelTurn.mutate()}
-                  >
-                    {cancelTurn.isPending
-                      ? "Stopping…"
-                      : activeTurn?.cancel_requested_at
-                        ? "Stop requested"
-                        : "Stop"}
-                  </Button>
-                ) : null}
-              </>
-            ) : (
-              canRequestControl && (
-                <Button
-                  variant="primary"
-                  data-testid="take-control"
-                  disabled={takeControl.isPending || !roleKnown}
-                  // The version we last read; a stale one is a 409 we adopt (§9).
-                  onClick={() => takeControl.mutate({ version: control.version })}
-                >
-                  {takeControl.isPending ? "Taking…" : "Take control"}
-                </Button>
-              )
-            )}
-            <span className="font-mono text-[11px] text-faint">
-              control version: {control.version}
-            </span>
-          </div>
-          {controlError ? <FormError error={controlError} /> : null}
-          {cancelTurn.error ? <FormError error={cancelTurn.error} /> : null}
-          {isController && takeControl.isSuccess ? (
-            <p className="text-[12.5px] text-muted" role="status">
-              You are driving this conversation.
-            </p>
-          ) : null}
+          <AgentConversationControls
+            session={session}
+            ids={{
+              badge: "controller-badge",
+              takeControl: "take-control",
+              returnControl: "return-control",
+              stopTurn: "stop-turn",
+            }}
+            showVersionLine
+            showDrivingNote
+          />
         </section>
       </aside>
     </div>

@@ -486,7 +486,7 @@ func TestConversationNonMemberCannotSeeIt(t *testing.T) {
 	}
 
 	// Listing is scoped the same way: the outsider's project list has no rows.
-	items, err := f.store.ListConversations(ctx, f.caller(f.outsider), f.project)
+	items, err := f.store.ListConversations(ctx, f.caller(f.outsider), f.project, "", "")
 	if !errors.Is(err, ErrConversationNotFound) {
 		t.Fatalf("list = %v, want the project itself to be invisible", err)
 	}
@@ -494,7 +494,7 @@ func TestConversationNonMemberCannotSeeIt(t *testing.T) {
 		t.Errorf("list returned %d rows for a caller who may not see the project", len(items))
 	}
 	// The member's list sees it.
-	items, err = f.store.ListConversations(ctx, f.caller(f.bob), f.project)
+	items, err = f.store.ListConversations(ctx, f.caller(f.bob), f.project, "", "")
 	if err != nil || len(items) != 1 || items[0].ID != chat.ID {
 		t.Fatalf("member list = %v / %v", items, err)
 	}
@@ -541,7 +541,7 @@ func TestViewerMayReadButNeverWrite(t *testing.T) {
 	if _, err := f.store.GetConversation(ctx, carl, chat.ID); err != nil {
 		t.Fatalf("viewer read = %v, want 200-equivalent", err)
 	}
-	if _, err := f.store.ListConversations(ctx, carl, f.project); err != nil {
+	if _, err := f.store.ListConversations(ctx, carl, f.project, "", ""); err != nil {
 		t.Fatalf("viewer list = %v", err)
 	}
 
@@ -991,4 +991,200 @@ func TestConversationAppendPersistsScopeIsTheObligation(t *testing.T) {
 	if after != 2 {
 		t.Errorf("journal rows after a rejected append = %d, want the 2 the create wrote", after)
 	}
+}
+
+// --- ADR-0043: origin and run_link ---------------------------------------
+
+// TestConversationListOriginAndRunLink proves the ADR-0043 contract against a
+// real database: a conversation no attempt references is "manual" with a null
+// link; the moment an attempt names it, the list and the single read both say
+// "run" and point at the NEWEST referencing attempt's run/node. The origin
+// filter narrows the list, and q is a case-insensitive substring that treats
+// the LIKE metacharacters as literals.
+func TestConversationListOriginAndRunLink(t *testing.T) {
+	f := cnvSetup(t)
+	m := m4Setup(t)
+	ctx := f.ctx()
+
+	manual := f.cnvCreate(t, f.alice, "Manual chat", "")
+	// The % is deliberate: q must match it literally, so the title carries one.
+	runChat := f.cnvCreate(t, f.alice, "Release % please", "")
+
+	// A real run of a published revision in the conversation's own project:
+	// the run table has no title column, so run_title stays null end to end.
+	token := migFixtureToken(t)
+	pipe, err := m.pipelines.CreatePipeline(ctx, f.orgID, f.alice, "cnv-run-pipe-"+token, "Run pipe", "")
+	if err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	// Publish a revision on OUR pipeline, not m.pipelineID: the m4 fixture's
+	// cleanup deletes its own pipeline by that id and a swapped pointer would
+	// leave the original pipeline behind, breaking the shared fixture's users
+	// teardown.
+	revDigest := m4Digest("cnv-run/" + token)
+	doc := "apiVersion: communication.dev/v1alpha1\nkind: Pipeline\n# " + revDigest + "\n"
+	canonical := json.RawMessage(fmt.Sprintf(
+		`{"apiVersion":"communication.dev/v1alpha1","kind":"Pipeline","marker":%q}`, revDigest))
+	draft, err := m.pipelines.CreateDraft(ctx, NewDraft{
+		PipelineID: pipe.ID, DocumentText: doc, SourceKind: "manual",
+		SourceSHA256: m4Hex("src/" + revDigest), EditedBy: f.alice,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := m.pipelines.RecordValidation(ctx, draft.ID, "valid", DraftValidation{
+		CanonicalDocument: canonical, RevisionDigest: revDigest,
+		CompiledPlan: json.RawMessage(`{"nodes":[]}`),
+		PlanDigest:   m4Digest("plan-of/" + revDigest),
+		Validation:   json.RawMessage(`[]`),
+	}); err != nil {
+		t.Fatalf("RecordValidation: %v", err)
+	}
+	rev, err := m.pipelines.PublishDraft(ctx, draft.ID, NewRevision{
+		VersionLabel: "1.0.0", DocumentText: doc,
+		SchemaDigest: m4Digest("schema"), CelEnvDigest: m4Digest("celenv"),
+		PublishedBy: f.alice, ExpectedDraftVersion: draft.Version,
+	})
+	if err != nil {
+		t.Fatalf("PublishDraft: %v", err)
+	}
+	revID := rev.ID
+	run, _, err := m.runs.CreateRun(ctx, NewRun{
+		OrganizationID: f.orgID, ProjectID: f.project, PipelineID: pipe.ID,
+		PipelineRevisionID: revID, RevisionDigest: m.digest, PlanDigest: m.planDigest,
+		PlanSnapshot: json.RawMessage(`{"nodes":[]}`), PoliciesSnapshot: json.RawMessage(`{}`),
+		TriggeredBy: f.alice,
+	})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	node, attempt1 := m.m4WorkerNode(t, ctx, run.ID, "/review")
+	if _, err := m.runs.QueueAttempt(ctx, NewAttempt{NodeExecutionID: node, AttemptNumber: 2}); err != nil {
+		t.Fatalf("QueueAttempt 2: %v", err)
+	}
+	// attempts_agent_turn_pair requires both halves: each attempt is stamped
+	// with the run chat's conversation AND one of its turns, the way the
+	// worker's ConversationFor seam writes the pair.
+	stamp := func(attemptID string) {
+		var turnID string
+		f.queryRow(t, `
+			INSERT INTO conversation_turns (conversation_id, prompt, submitted_by)
+			VALUES ($1, 'run pair turn', $2) RETURNING id::text`, runChat.ID, f.alice).into(t, &turnID)
+		f.exec(t, `UPDATE attempts SET conversation_id = $1::uuid, turn_id = $2::uuid
+			WHERE id = $3::uuid`, runChat.ID, turnID, attemptID)
+		f.exec(t, `UPDATE conversation_turns SET node_attempt_id = $1::uuid
+			WHERE id = $2::uuid`, attemptID, turnID)
+		// The one-active-turn index: finish the turn so the next pair can
+		// queue a fresh one in the same conversation.
+		f.exec(t, `UPDATE conversation_turns SET status = 'completed', stop_reason = 'end_turn',
+			started_at = now(), finished_at = now() WHERE id = $1::uuid`, turnID)
+	}
+	stamp(attempt1)
+	var attempt2 string
+	f.queryRow(t, `SELECT id::text FROM attempts WHERE node_execution_id = $1::uuid AND attempt_number = 2`, node).into(t, &attempt2)
+	stamp(attempt2)
+
+	// The runs this test made belong to f.project, which the cnv fixture
+	// deletes; this cleanup (registered last, so it runs first) clears the
+	// reference chain before the conversations themselves go.
+	t.Cleanup(func() {
+		bg := context.Background()
+		runsSub := `(SELECT id FROM runs WHERE project_id = $1)`
+		steps := []struct {
+			sql  string
+			args []any
+		}{
+			{`UPDATE conversation_turns SET node_attempt_id = NULL WHERE conversation_id = $1`, []any{runChat.ID}},
+			{`DELETE FROM outbox WHERE global_seq IN
+				(SELECT global_seq FROM domain_events WHERE run_id IN ` + runsSub + `)`, []any{f.project}},
+			{`DELETE FROM domain_events WHERE run_id IN ` + runsSub, []any{f.project}},
+			{`DELETE FROM run_checkpoints WHERE run_id IN ` + runsSub, []any{f.project}},
+			{`DELETE FROM attempts WHERE run_id IN ` + runsSub, []any{f.project}},
+			{`DELETE FROM node_executions WHERE run_id IN ` + runsSub, []any{f.project}},
+			{`DELETE FROM runs WHERE project_id = $1`, []any{f.project}},
+			{`UPDATE pipeline_drafts SET published_revision_id = NULL WHERE pipeline_id = $1`, []any{pipe.ID}},
+			{`DELETE FROM pipeline_revisions WHERE pipeline_id = $1`, []any{pipe.ID}},
+			{`DELETE FROM pipeline_drafts WHERE pipeline_id = $1`, []any{pipe.ID}},
+			{`DELETE FROM pipelines WHERE id = $1`, []any{pipe.ID}},
+		}
+		for _, step := range steps {
+			if _, err := m.pool.Exec(bg, step.sql, step.args...); err != nil {
+				f.t.Errorf("cleanup %q: %v", step.sql, err)
+			}
+		}
+	})
+
+	assertLink := func(got *CnvRunLink, where string) {
+		t.Helper()
+		if got == nil {
+			t.Fatalf("%s: run_link is nil, want the newest attempt's run/node", where)
+		}
+		if got.RunID != run.ID || got.NodeExecutionID != node ||
+			got.NodeInstanceKey != "/review" || got.NodeID == nil || *got.NodeID != "review" ||
+			got.AttemptID != attempt2 || got.AttemptNumber != 2 {
+			t.Errorf("%s: run_link = %+v, want run %s node %s attempt 2 (%s)",
+				where, got, run.ID, node, attempt2)
+		}
+		if got.RunTitle != nil {
+			t.Errorf("%s: run_title = %q, want null (runs has no title column)", where, *got.RunTitle)
+		}
+	}
+
+	list := func(origin, query string) map[string]CnvSummary {
+		t.Helper()
+		items, err := f.store.ListConversations(ctx, f.caller(f.bob), f.project, origin, query)
+		if err != nil {
+			t.Fatalf("list(origin=%q, q=%q) = %v", origin, query, err)
+		}
+		out := make(map[string]CnvSummary, len(items))
+		for _, item := range items {
+			out[item.ID] = item
+		}
+		return out
+	}
+
+	// Unfiltered: both rows, and each says the right thing.
+	both := list("", "")
+	if len(both) != 2 {
+		t.Fatalf("list = %d rows, want the two created conversations", len(both))
+	}
+	if got := both[manual.ID]; got.Origin != "manual" || got.RunLink != nil {
+		t.Errorf("manual conversation: origin=%q run_link=%+v, want manual/nil", got.Origin, got.RunLink)
+	}
+	if got := both[runChat.ID]; got.Origin != "run" {
+		t.Errorf("run-linked conversation: origin = %q, want run", got.Origin)
+	} else {
+		assertLink(got.RunLink, "list")
+	}
+
+	// origin filter: each side of the split sees exactly its own rows.
+	if got := list("manual", ""); len(got) != 1 || got[manual.ID].Origin != "manual" {
+		t.Errorf("origin=manual = %+v, want only the manual conversation", got)
+	}
+	if got := list("run", ""); len(got) != 1 || got[runChat.ID].Origin != "run" {
+		t.Errorf("origin=run = %+v, want only the run-linked conversation", got)
+	}
+
+	// q is case-insensitive and literal: uppercase + the % must match; a
+	// literal underscore must not act as a wildcard.
+	if got := list("", "RELEASE % PLEASE"); len(got) != 1 || got[runChat.ID].ID != runChat.ID {
+		t.Errorf(`q="RELEASE %% PLEASE" = %+v, want the run-linked row`, got)
+	}
+	if got := list("", "p_lease"); len(got) != 0 {
+		t.Errorf(`q="p_lease" = %+v, want no row: _ is escaped, not a wildcard`, got)
+	}
+	if got := list("", "manual chat"); len(got) != 1 || got[manual.ID].ID != manual.ID {
+		t.Errorf(`q="manual chat" = %+v, want the manual conversation`, got)
+	}
+
+	// The single-conversation read agrees with the list.
+	got, err := f.store.GetConversation(ctx, f.caller(f.bob), manual.ID)
+	if err != nil || got.Origin != "manual" || got.RunLink != nil {
+		t.Errorf("GetConversation(manual) = %+v / %v, want manual with a nil link", got, err)
+	}
+	got, err = f.store.GetConversation(ctx, f.caller(f.bob), runChat.ID)
+	if err != nil || got.Origin != "run" {
+		t.Fatalf("GetConversation(run) = %+v / %v, want run", got, err)
+	}
+	assertLink(got.RunLink, "single read")
 }

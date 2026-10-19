@@ -15,25 +15,9 @@
  * modified-paths artifact, and the volume id. Paths are never shown because the
  * API never serves them (route 27).
  */
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { useActorNames } from "../../api/actors";
-import { useConversationEvents } from "../../api/events";
-import {
-  useConversation,
-  useDecideConversationPermission,
-  useMe,
-  usePostConversationMessage,
-  useProject,
-  useReturnConversationControl,
-  useTakeConversationControl,
-} from "../../api/queries";
-import { describeTurn, projectTranscript } from "../../api/transcript";
-import type { PermissionOption } from "../../api/types";
-import Transcript from "../Transcript";
-import { controllerCopy } from "../../pages/Conversation";
-import { FormError, ProblemBanner } from "../Feedback";
-import { Button } from "../ds/Button";
-import { Textarea } from "../ds/Field";
+import { useState, type ReactNode } from "react";
+import { AgentConversationPanel } from "../conversation/AgentConversationPanel";
+import { useConversationSession } from "../conversation/useConversationSession";
 import type {
   AttemptDetail as Attempt,
   NodeExecutionSummary,
@@ -721,27 +705,17 @@ export function AttemptAgentWork({ attempt, projectId, node = null }: AttemptAge
 
 /** The conversation-backed half, one attempt's turn. Split out because the
  * reads below only make sense for a conversation that exists — a gate on the
- * hooks would be a conditional hook call. */
+ * hooks would be a conditional hook call. The surface itself is the shared
+ * `AgentConversationPanel` (dock variant), wearing this pane's historical
+ * `attempt-*` testids. */
 function AttemptConversationWork({
   attempt,
   projectId,
   node,
 }: Required<Omit<AttemptAgentWorkProps, "node">> & { node: NodeExecutionSummary | null }) {
   const conversationId = attempt.conversation_id ?? "";
-  const conversation = useConversation(conversationId);
-  const me = useMe();
-  const project = useProject(projectId);
-  const actors = useActorNames(projectId);
-  const { events, status } = useConversationEvents(conversationId);
-  const sendMessage = usePostConversationMessage(conversationId);
-  const takeControl = useTakeConversationControl(conversationId);
-  const returnControl = useReturnConversationControl(conversationId);
-  const decide = useDecideConversationPermission(conversationId);
-  const [prompt, setPrompt] = useState("");
-  const [decidingRequestId, setDecidingRequestId] = useState<string | null>(null);
-
-  const data = conversation.data;
-  const control = data?.control;
+  const session = useConversationSession(conversationId, projectId);
+  const data = session.data;
   // The visible title says this node and this attempt already; the server's
   // generated conversation name is dropped rather than repeated (see
   // `conversationTitleOf`), so the line never reads
@@ -749,158 +723,62 @@ function AttemptConversationWork({
   const title = data
     ? conversationTitleOf(data.title, node?.node_instance_key ?? null, attempt.attempt_number)
     : null;
-  const isController = Boolean(
-    data && me.data && data.control.kind === "human" && data.control.user_id === me.data.id,
-  );
-  // A viewer may watch but may not take control (`06`, ADR-0016 § 8); while the
-  // role is unread the button stays disabled rather than flickering in.
-  const roleKnown = project.data !== undefined;
-  const canRequestControl = roleKnown ? project.data.my_role !== "viewer" : true;
-
-  // Fold the conversation journal, then keep only this attempt's turn — the
-  // attempt pane shows the attempt, not every turn the conversation ever ran.
-  const transcript = useMemo(() => projectTranscript(events, actors.nameOf), [events, actors]);
-  // A journal `system` row carries no turn id, so it cannot be attributed to
-  // this attempt and is not shown here — the conversation page is where it
-  // belongs.
-  const items = attempt.turn_id
-    ? transcript.items.filter((item) => "turnId" in item && item.turnId === attempt.turn_id)
-    : transcript.items;
-  const described = describeTurn(transcript.turns, data?.active_turn);
-  const turnInProgress = Boolean(described.active);
-
-  const onSend = (event: FormEvent) => {
-    event.preventDefault();
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-    sendMessage.mutate({ prompt: trimmed }, { onSuccess: () => setPrompt("") });
-  };
-
-  const onDecide = (requestId: string, option: PermissionOption) => {
-    setDecidingRequestId(requestId);
-    decide.mutate(
-      { requestId, body: { option_id: option.option_id } },
-      { onSuccess: () => setDecidingRequestId(null), onError: () => setDecidingRequestId(null) },
-    );
-  };
-
-  if (conversation.isPending) {
-    return (
-      <p className="font-mono text-[11px] text-muted" data-testid="attempt-work-pending">
-        Reading the agent&apos;s turn…
-      </p>
-    );
-  }
-  if (!data || !control) {
-    return (
-      <ProblemBanner
-        error={conversation.error}
-        fallback="The agent's conversation for this attempt could not be read."
-      />
-    );
-  }
 
   return (
     <section className="space-y-[8px]" aria-label="Agent work" data-testid="attempt-agent-work">
-      <p className="truncate font-mono text-[10.5px] text-muted" data-testid="attempt-work-title">
-        {node ? `${node.node_instance_key} · ` : ""}attempt {attempt.attempt_number}
-        {title ? ` · ${title}` : ""}
-      </p>
-
-      <div
-        className="flex flex-wrap items-center justify-between gap-2 rounded-[3px] border border-line-strong bg-surface px-[8px] py-[6px]"
-        data-testid="attempt-control-banner"
-      >
-        <span className="text-[12px] font-semibold" data-testid="attempt-controller">
-          {controllerCopy(control, isController, actors.nameOf)}
-          <span className="ml-1 font-normal text-muted">· you are watching</span>
-        </span>
-        <span className="flex items-center gap-2">
-          <span className="font-mono text-[10.5px] text-faint" data-testid="attempt-work-stream">
-            {status}
-          </span>
-          {isController ? (
-            <Button
-              variant="secondaryPlain"
-              data-testid="attempt-return-control"
-              disabled={returnControl.isPending}
-              onClick={() => returnControl.mutate({ version: control.version })}
-            >
-              {returnControl.isPending ? "Returning…" : "Return control"}
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              data-testid="attempt-take-control"
-              disabled={takeControl.isPending || !roleKnown}
-              onClick={() => takeControl.mutate({ version: control.version })}
-            >
-              {takeControl.isPending ? "Taking…" : "Take control"}
-            </Button>
-          )}
-        </span>
-      </div>
-
-      {takeControl.error || returnControl.error ? (
-        <FormError error={takeControl.error ?? returnControl.error} />
-      ) : null}
-
-      {items.length === 0 ? (
-        <p className="text-[12px] text-muted" data-testid="attempt-work-empty">
-          No journal frames for this turn yet — the agent has not answered.
+      {session.conversation.isPending ? (
+        <p className="font-mono text-[11px] text-muted" data-testid="attempt-work-pending">
+          Reading the agent&apos;s turn…
         </p>
       ) : (
-        <Transcript
-          items={items}
-          canDecide={isController}
-          controllerName={
-            control.display_name ?? (control.user_id ? actors.nameOf(control.user_id) : null)
-          }
-          nameOf={actors.nameOf}
-          onDecide={onDecide}
-          decidingRequestId={decidingRequestId}
-          decisionError={decide.error}
-          decisionErrorRequestId={decide.isError ? (decide.variables?.requestId ?? null) : null}
-        />
+        <>
+          {data ? (
+            <p
+              className="truncate font-mono text-[10.5px] text-muted"
+              data-testid="attempt-work-title"
+            >
+              {node ? `${node.node_instance_key} · ` : ""}attempt {attempt.attempt_number}
+              {title ? ` · ${title}` : ""}
+            </p>
+          ) : null}
+          <AgentConversationPanel
+            conversationId={conversationId}
+            projectId={projectId}
+            variant="dock"
+            session={session}
+            turnFilter={attempt.turn_id ?? undefined}
+            // The pane keeps every test id it has always worn —
+            // data-testid="attempt-control-banner", data-testid="attempt-work-stream",
+            // data-testid="attempt-controller", data-testid="attempt-take-control",
+            // data-testid="attempt-return-control", data-testid="attempt-stop-turn",
+            // data-testid="attempt-composer", data-testid="attempt-composer-input",
+            // data-testid="attempt-composer-send", data-testid="attempt-composer-explainer".
+            ids={{
+              controlBanner: "attempt-control-banner",
+              stream: "attempt-work-stream",
+              badge: "attempt-controller",
+              takeControl: "attempt-take-control",
+              returnControl: "attempt-return-control",
+              stopTurn: "attempt-stop-turn",
+              composerForm: "attempt-composer",
+              composerInput: "attempt-composer-input",
+              composerSend: "attempt-composer-send",
+              composerExplainer: "attempt-composer-explainer",
+            }}
+            watching
+            empty={{
+              testid: "attempt-work-empty",
+              copy: "No journal frames for this turn yet — the agent has not answered.",
+            }}
+            errorFallback="The agent's conversation for this attempt could not be read."
+            composer={{
+              inputId: `attempt-prompt-${attempt.id}`,
+              rows: 2,
+              nonControllerPlaceholder: "Take control to prompt this agent",
+            }}
+          />
+        </>
       )}
-
-      <form className="space-y-[4px]" onSubmit={onSend} data-testid="attempt-composer">
-        <label className="sr-only" htmlFor={`attempt-prompt-${attempt.id}`}>
-          Prompt for the agent
-        </label>
-        <Textarea
-          id={`attempt-prompt-${attempt.id}`}
-          data-testid="attempt-composer-input"
-          rows={2}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          disabled={!isController}
-          placeholder={
-            isController ? "Ask the agent for something…" : "Take control to prompt this agent"
-          }
-        />
-        <div className="flex items-center gap-2">
-          <Button
-            type="submit"
-            variant="primary"
-            data-testid="attempt-composer-send"
-            disabled={!isController || turnInProgress || sendMessage.isPending || !prompt.trim()}
-          >
-            {sendMessage.isPending ? "Sending…" : "Send"}
-          </Button>
-          {!isController && canRequestControl ? (
-            <span className="text-[11.5px] text-muted" data-testid="attempt-composer-explainer">
-              Only the controller can prompt. Take control to drive.
-            </span>
-          ) : null}
-          {turnInProgress && isController ? (
-            <span className="text-[11.5px] text-muted" data-testid="attempt-composer-explainer">
-              A turn is open (status: {described.status}) — a second prompt into it is refused.
-            </span>
-          ) : null}
-        </div>
-        {sendMessage.error ? <FormError error={sendMessage.error} /> : null}
-      </form>
     </section>
   );
 }
