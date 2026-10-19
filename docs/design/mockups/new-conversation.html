@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>New conversation — Billing project (mockup)</title>
+<style>
+/* Tokens — copied from ui/src/styles/tokens.css (light theme) */
+:root{
+  --font-ui:"Red Hat Text",ui-sans-serif,system-ui,sans-serif;
+  --font-mono:"Red Hat Mono",ui-monospace,"SF Mono",monospace;
+  --color-paper:#f8f7f3;--color-surface:#ffffff;--color-ink:#1e1d1a;--color-ink-2:#3a3833;
+  --color-muted:#6b675e;--color-faint:#8f8a80;--color-line-strong:#cfcac0;--color-line:#e6e2d9;
+  --color-line-soft:#f0ede6;--color-fill:#efede7;--color-fill-edge:#cfc9bd;
+  --color-disabled-bg:#f3f1ec;--color-disabled-fg:#b3ada2;
+  --color-accent:#2f4bd6;--color-accent-edge:#2238a8;--color-accent-shadow:#1a2d8f;
+  --color-accent-text:#2a43b8;--color-accent-mid:#8fa0e6;--color-accent-tint:#eef0fc;
+  --color-accent-wash:#f6f7fe;--color-accent-ring:#dfe4fa;
+  --color-st-running-tag:#d9eefa;--color-st-running-tag-fg:#0f5e96;
+  --color-st-waiting-tag:#ffecc2;--color-st-waiting-tag-fg:#7a4a00;
+  --color-st-failed-tag:#fdd8d2;--color-st-failed-tag-fg:#b0281a;
+  --color-st-done-tag:#d9f0de;--color-st-done-tag-fg:#1f6b37;
+  --color-st-queued-tag:#eeece6;--color-st-queued-tag-fg:#5e5a52;
+  --radius-tag:2px;--radius-panel:3px;--radius-btn:4px;
+  --shadow-raised:2px 2px 0 var(--color-ink);
+  --text-body:13.5px;--text-ui:13px;--text-small:12.5px;--text-meta:11px;--text-label:10.5px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--color-line);font-family:var(--font-ui);font-size:var(--text-body);color:var(--color-ink)}
+.stage{width:1440px;height:900px;background:var(--color-paper);position:relative;overflow:hidden;
+  border:1px solid var(--color-line-strong);margin:0 auto}
+.hd{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--color-surface);border-bottom:1px solid var(--color-line-strong)}
+.crumb{font-size:var(--text-meta);color:var(--color-faint);text-transform:uppercase;letter-spacing:.08em}
+.hd .name{font-size:19px;font-weight:600}
+.btn{font-family:var(--font-ui);font-size:var(--text-ui);font-weight:500;border:1px solid var(--color-ink);background:var(--color-surface);
+  color:var(--color-ink);border-radius:var(--radius-btn);padding:5px 12px;box-shadow:var(--shadow-raised);cursor:pointer;white-space:nowrap}
+.btn:active{transform:translate(2px,2px);box-shadow:none}
+.btn.primary{background:var(--color-accent);color:#fff;border-color:var(--color-accent-edge);box-shadow:2px 2px 0 var(--color-accent-shadow)}
+.btn.outline{border-color:var(--color-fill-edge);box-shadow:none}
+.btn.sm{padding:4px 10px;font-size:12px}
+.sp{flex:1}
+/* global New menu */
+.menu-wrap{position:relative}
+.menu{position:absolute;right:0;top:calc(100% + 6px);width:230px;background:var(--color-surface);border:1px solid var(--color-ink);
+  box-shadow:var(--shadow-raised);border-radius:var(--radius-panel);z-index:30;overflow:hidden}
+.menu .mh{padding:7px 12px;font-size:var(--text-label);text-transform:uppercase;letter-spacing:.08em;color:var(--color-faint);border-bottom:1px solid var(--color-line-soft)}
+.menu a{display:flex;justify-content:space-between;padding:8px 12px;font-size:var(--text-ui);color:var(--color-ink-2);text-decoration:none}
+.menu a .hint{font-size:10px;color:var(--color-faint);font-family:var(--font-mono)}
+.menu a.on{background:var(--color-accent-tint);color:var(--color-accent-text);font-weight:600}
+/* project page */
+.page{padding:14px 16px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--color-line-strong);margin-bottom:12px;background:var(--color-surface)}
+.tabs a{font-size:var(--text-ui);color:var(--color-muted);text-decoration:none;padding:7px 13px;border-bottom:2px solid transparent;font-weight:500}
+.tabs a.on{color:var(--color-ink);border-bottom-color:var(--color-ink)}
+.listcard{background:var(--color-surface);border:1px solid var(--color-line-strong);border-radius:var(--radius-panel);overflow:hidden;max-width:1000px}
+.listcard .lh{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--color-line)}
+.listcard .lh b{font-size:14px}
+.listcard .lh input{flex:1;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);padding:5px 9px;font:inherit;font-size:var(--text-small);background:var(--color-surface);color:var(--color-ink)}
+.row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--color-line-soft);cursor:pointer}
+.row:last-child{border-bottom:0}
+.row .tt{font-size:var(--text-ui);font-weight:600}
+.row .sn{font-size:11.5px;color:var(--color-muted);max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .mt{margin-left:auto;font-size:10.5px;color:var(--color-faint);font-family:var(--font-mono);white-space:nowrap}
+.badge{border-radius:var(--radius-tag);font-size:10.5px;font-weight:600;padding:2px 7px;white-space:nowrap}
+.badge.manual{background:var(--color-accent-tint);color:var(--color-accent-text);border:1px solid var(--color-accent-mid)}
+.badge.run{background:var(--color-st-running-tag);color:var(--color-st-running-tag-fg);border:1px solid var(--color-st-running-tag-fg)}
+/* dialog */
+.scrim{position:absolute;inset:0;background:rgba(30,29,26,.38);z-index:40}
+.dialog{position:absolute;left:470px;top:150px;width:500px;background:var(--color-surface);border:1px solid var(--color-ink);
+  border-radius:var(--radius-panel);box-shadow:var(--shadow-raised);z-index:50}
+.dialog .dh{padding:13px 16px;border-bottom:1px solid var(--color-line-strong);display:flex;justify-content:space-between;align-items:center}
+.dialog .dh b{font-size:17px}
+.dialog .dh .x{color:var(--color-muted);cursor:pointer;font-size:14px}
+.dialog .db{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.dialog .fl{font-size:var(--text-label);text-transform:uppercase;letter-spacing:.07em;color:var(--color-muted);margin-bottom:4px}
+.dialog select,.dialog input,.dialog textarea{width:100%;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);background:var(--color-surface);
+  font:inherit;font-size:var(--text-small);padding:6px 9px;color:var(--color-ink)}
+.dialog textarea{height:74px;resize:none;line-height:1.5}
+.dialog .helper{font-size:11.5px;color:var(--color-muted);line-height:1.5;background:var(--color-accent-wash);border:1px dashed var(--color-accent-mid);
+  border-radius:var(--radius-panel);padding:7px 9px}
+.dialog .df{padding:11px 16px;border-top:1px solid var(--color-line-strong);display:flex;justify-content:flex-end;gap:8px;background:var(--color-fill)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="hd">
+    <span class="crumb">Projects / Billing</span>
+    <span class="name">Billing</span>
+    <div class="sp"></div>
+    <button class="btn">Start run</button>
+    <button class="btn">New conversation</button>
+    <div class="menu-wrap">
+      <button class="btn primary">New ▾</button>
+      <div class="menu">
+        <div class="mh">Create</div>
+        <a class="on" href="#">New conversation <span class="hint">acp</span></a>
+        <a href="#">New run <span class="hint">pipeline</span></a>
+        <a href="#">New draft <span class="hint">library</span></a>
+        <a href="#">New project</a>
+      </div>
+    </div>
+  </div>
+  <div class="page">
+    <div class="tabs">
+      <a href="#">Overview</a><a href="#">Runs</a><a class="on" href="#">Conversations</a><a href="#">Settings</a>
+    </div>
+    <div class="listcard">
+      <div class="lh"><b>Conversations</b><input type="text" placeholder="Search conversations…"></div>
+      <div class="row">
+        <span class="badge manual">Manual</span>
+        <span class="tt">Refactor tenant scoping in the ledger</span>
+        <span class="sn">Trace how a tenant's invoice entries flow through the ledger…</span>
+        <span class="mt">claude · 12m</span>
+      </div>
+      <div class="row">
+        <span class="badge run">From run · Split billing by tenant · implement</span>
+        <span class="tt">Iteration 2 — ledger tenant isolation</span>
+        <span class="sn">Starting iteration 2. The iteration-1 review rejected the ledger change…</span>
+        <span class="mt">claude · 3h</span>
+      </div>
+      <div class="row">
+        <span class="badge manual">Manual</span>
+        <span class="tt">Explain ledger invariants</span>
+        <span class="sn">What invariants does the ledger module assume about tenant scope…</span>
+        <span class="mt">claude · 1d</span>
+      </div>
+      <div class="row">
+        <span class="badge run">From run · Split billing by tenant · code review</span>
+        <span class="tt">Review iteration-1 diff</span>
+        <span class="sn">Rejected: debit path missing tenant scoping — 2 findings.</span>
+        <span class="mt">claude · 5h</span>
+      </div>
+      <div class="row">
+        <span class="badge manual">Manual</span>
+        <span class="tt">Debug the duplicate invoice</span>
+        <span class="sn">Reproduce the duplicate invoice from the staging trace…</span>
+        <span class="mt">claude · 2d</span>
+      </div>
+    </div>
+  </div>
+  <div class="scrim"></div>
+  <div class="dialog" role="dialog" aria-label="New conversation">
+    <div class="dh"><b>New conversation</b><span class="x">✕</span></div>
+    <div class="db">
+      <div><div class="fl">Project</div><select><option>Billing</option></select></div>
+      <div><div class="fl">Agent profile</div><select><option>Claude Code · claude</option></select></div>
+      <div><div class="fl">Title</div><input type="text" value="Refactor tenant scoping in the ledger"></div>
+      <div><div class="fl">First prompt</div>
+        <textarea>Trace how a tenant's invoice entries flow through the ledger, and list every place where tenant isolation is missing before I change it.</textarea>
+      </div>
+      <div class="helper">A one-off agent conversation in a project workspace — no workflow needed.</div>
+    </div>
+    <div class="df">
+      <button class="btn outline">Cancel</button>
+      <button class="btn primary">Start conversation</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

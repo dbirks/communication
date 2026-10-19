@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Workflow Studio — feature-development draft v7 (mockup)</title>
+<style>
+/* Tokens — copied from ui/src/styles/tokens.css (light theme) */
+:root{
+  --font-ui:"Red Hat Text",ui-sans-serif,system-ui,sans-serif;
+  --font-mono:"Red Hat Mono",ui-monospace,"SF Mono",monospace;
+  --color-paper:#f8f7f3;--color-surface:#ffffff;--color-ink:#1e1d1a;--color-ink-2:#3a3833;
+  --color-muted:#6b675e;--color-faint:#8f8a80;--color-line-strong:#cfcac0;--color-line:#e6e2d9;
+  --color-line-soft:#f0ede6;--color-fill:#efede7;--color-fill-edge:#cfc9bd;
+  --color-disabled-bg:#f3f1ec;--color-disabled-fg:#b3ada2;
+  --color-accent:#2f4bd6;--color-accent-edge:#2238a8;--color-accent-shadow:#1a2d8f;
+  --color-accent-text:#2a43b8;--color-accent-mid:#8fa0e6;--color-accent-tint:#eef0fc;
+  --color-accent-wash:#f6f7fe;--color-accent-ring:#dfe4fa;
+  --color-st-running-tag:#d9eefa;--color-st-running-tag-fg:#0f5e96;
+  --color-st-waiting-tag:#ffecc2;--color-st-waiting-tag-fg:#7a4a00;
+  --color-st-failed-tag:#fdd8d2;--color-st-failed-tag-fg:#b0281a;
+  --color-st-done-tag:#d9f0de;--color-st-done-tag-fg:#1f6b37;
+  --color-st-queued-tag:#eeece6;--color-st-queued-tag-fg:#5e5a52;
+  --radius-tag:2px;--radius-panel:3px;--radius-btn:4px;
+  --shadow-raised:2px 2px 0 var(--color-ink);
+  --text-body:13.5px;--text-ui:13px;--text-small:12.5px;--text-meta:11px;--text-label:10.5px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--color-line);font-family:var(--font-ui);font-size:var(--text-body);color:var(--color-ink)}
+.stage{width:1440px;height:900px;background:var(--color-surface);display:flex;flex-direction:column;
+  border:1px solid var(--color-line-strong);margin:0 auto;overflow:hidden}
+/* header */
+.hd{display:flex;flex-direction:column;gap:7px;padding:9px 14px;border-bottom:1px solid var(--color-line-strong);background:var(--color-surface)}
+.hd .hdrow{display:flex;align-items:center;gap:10px}
+.crumb{font-size:var(--text-meta);color:var(--color-faint);text-transform:uppercase;letter-spacing:.08em}
+.hd .name{font-size:19px;font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--color-line-strong);background:var(--color-surface);
+  border-radius:var(--radius-tag);padding:2px 7px;font-size:var(--text-meta);color:var(--color-ink-2)}
+.chip.warn{background:var(--color-st-waiting-tag);border-color:var(--color-st-waiting-tag-fg);color:var(--color-st-waiting-tag-fg);font-weight:500}
+.chip.accent{background:var(--color-accent-tint);border-color:var(--color-accent-mid);color:var(--color-accent-text);font-weight:500}
+.chip.mono{font-family:var(--font-mono);font-size:10.5px}
+.btn{font-family:var(--font-ui);font-size:var(--text-ui);font-weight:500;border:1px solid var(--color-ink);
+  background:var(--color-surface);color:var(--color-ink);border-radius:var(--radius-btn);padding:5px 12px;
+  box-shadow:var(--shadow-raised);cursor:pointer;white-space:nowrap}
+.btn:active{transform:translate(2px,2px);box-shadow:none}
+.btn.primary{background:var(--color-accent);color:#fff;border-color:var(--color-accent-edge);box-shadow:2px 2px 0 var(--color-accent-shadow)}
+.btn.outline{border-color:var(--color-fill-edge);box-shadow:none;background:var(--color-surface)}
+.btn.off{background:var(--color-disabled-bg);color:var(--color-disabled-fg);border-color:var(--color-line-strong);box-shadow:none;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);overflow:hidden;background:var(--color-surface)}
+.seg span{padding:4px 12px;font-size:var(--text-ui);font-weight:500;cursor:pointer}
+.seg span.on{background:var(--color-ink);color:#fff}
+.sp{flex:1}
+/* palette */
+.cols{display:flex;flex:1;min-height:0}
+.pal{width:190px;border-right:1px solid var(--color-line-strong);background:var(--color-surface);display:flex;flex-direction:column}
+.pal .ph{padding:10px 10px 8px;border-bottom:1px solid var(--color-line-soft)}
+.pal .ph h2{font-size:var(--text-label);text-transform:uppercase;letter-spacing:.08em;color:var(--color-muted);margin-bottom:7px}
+.pal input{width:100%;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);padding:5px 8px;font:inherit;font-size:var(--text-small);background:var(--color-surface);color:var(--color-ink)}
+.pal ul{list-style:none;overflow-y:auto}
+.pal li{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--color-line-soft);cursor:grab}
+.pal li .lbl{font-size:var(--text-ui);font-weight:500}
+.pal li .kind{font-family:var(--font-mono);font-size:10px;color:var(--color-faint);white-space:nowrap}
+.pal li.grab{background:var(--color-accent-tint);outline:2px solid var(--color-accent-mid)}
+.pal .grp{padding:8px 10px 4px;font-size:var(--text-label);color:var(--color-faint);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--color-line-soft)}
+.pal li.off{opacity:.45;cursor:not-allowed}
+/* canvas */
+.cv{flex:1;position:relative;overflow:hidden;background:var(--color-canvas-bg,#f8f7f3);background:var(--color-paper);
+  background-image:radial-gradient(var(--color-line-soft) 1px,transparent 1px);background-size:22px 22px}
+.nv{position:absolute;width:130px;min-height:58px;background:var(--color-surface);border:1px solid var(--color-line-strong);
+  border-radius:var(--radius-panel);padding:7px 9px;box-shadow:var(--shadow-raised)}
+.nv .t{font-size:var(--text-ui);font-weight:600;line-height:1.25}
+.nv .k{font-family:var(--font-mono);font-size:10px;color:var(--color-faint);margin-top:2px}
+.nv .p{font-size:10.5px;color:var(--color-muted);margin-top:2px}
+.nv.sel{border:2px solid var(--color-ink);outline:3px solid var(--color-accent-ring);outline-offset:2px}
+.nv .newchip{position:absolute;top:-9px;right:8px;background:var(--color-accent);color:#fff;font-size:9.5px;font-weight:600;
+  padding:1px 6px;border-radius:var(--radius-tag);letter-spacing:.05em}
+.scope{position:absolute;border:1.5px dashed var(--color-accent-mid);background:var(--color-accent-wash);border-radius:6px}
+.scope .st{position:absolute;top:7px;left:10px;font-size:var(--text-small);font-weight:600;color:var(--color-accent-text)}
+.scope .ss{position:absolute;top:9px;left:26px;font-family:var(--font-mono);font-size:10px;color:var(--color-faint)}
+.plus{position:absolute;width:20px;height:20px;border-radius:50%;background:var(--color-surface);border:1px solid var(--color-accent-mid);
+  color:var(--color-accent-text);font-size:13px;line-height:18px;text-align:center;cursor:pointer;box-shadow:var(--shadow-raised)}
+.ghost{position:absolute;background:var(--color-ink);color:#fff;font-size:11px;padding:4px 8px;border-radius:var(--radius-btn);
+  box-shadow:3px 3px 0 rgba(30,29,26,.3);transform:rotate(-2deg)}
+.ghost::after{content:'';position:absolute;left:50%;bottom:-5px;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--color-ink)}
+.zoom{position:absolute;right:12px;bottom:12px;display:flex;flex-direction:column;border:1px solid var(--color-line-strong);
+  background:var(--color-surface);border-radius:var(--radius-btn);overflow:hidden}
+.zoom button{width:28px;height:26px;border:0;border-bottom:1px solid var(--color-line-soft);background:var(--color-surface);cursor:pointer;font-size:14px;color:var(--color-ink-2)}
+.zoom button:last-child{border-bottom:0;font-size:10px}
+.mm{position:absolute;right:50px;bottom:12px;width:140px;height:90px;border:1px solid var(--color-line-strong);background:var(--color-surface);border-radius:var(--radius-panel)}
+.mm .vp{position:absolute;left:18px;top:14px;width:96px;height:58px;outline:1.5px solid var(--color-accent);outline-offset:1px}
+.mini{position:absolute;background:var(--color-line-strong);border-radius:1px}
+.mini.acc{background:var(--color-accent-mid)}
+.mini.scp{outline:1px dashed var(--color-accent-mid)}
+/* inspector */
+.ins{width:300px;border-left:1px solid var(--color-line-strong);background:var(--color-surface);overflow-y:auto;padding:12px 14px}
+.ins h2{font-size:16px;font-weight:600;display:flex;align-items:center;gap:7px}
+.ins .kk{font-family:var(--font-mono);font-size:10.5px;color:var(--color-faint);margin-top:2px}
+.ins .sec{margin-top:14px}
+.ins .sec h3{font-size:var(--text-label);text-transform:uppercase;letter-spacing:.07em;color:var(--color-muted);margin-bottom:6px}
+.ins .fl{font-size:10.5px;color:var(--color-muted);margin-bottom:3px}
+.ins select,.ins input[type=text]{width:100%;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);background:var(--color-surface);
+  font:inherit;font-size:var(--text-small);padding:5px 7px;color:var(--color-ink)}
+.ins textarea,.ins .code{width:100%;border:1px solid var(--color-line-strong);border-radius:var(--radius-btn);background:var(--color-surface);
+  font:11.5px/1.5 var(--font-mono);padding:7px 8px;color:var(--color-ink-2);resize:none;height:118px;white-space:pre;overflow:auto}
+.ins .bind{background:var(--color-accent-tint);color:var(--color-accent-text);border-bottom:1px dashed var(--color-accent-mid);padding:0 3px}
+.ins a{color:var(--color-accent-text);font-size:var(--text-small);text-decoration:none}
+.ins .row{display:flex;gap:8px}
+.ins .row>div{flex:1}
+.ins .json{font:10.5px/1.55 var(--font-mono);background:var(--color-fill);border:1px solid var(--color-line-soft);border-radius:var(--radius-panel);
+  padding:7px 9px;color:var(--color-ink-2)}
+.note{font-size:10.5px;color:var(--color-faint);margin-top:5px}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="hd">
+    <div class="hdrow">
+      <span class="crumb">Workflows / Drafts</span>
+      <span class="name">feature-development</span>
+      <span class="chip warn">draft v7 · unsaved changes</span>
+      <span class="chip mono">1 finding</span>
+      <div class="sp"></div>
+      <div class="seg"><span class="on">Canvas</span><span>YAML</span></div>
+    </div>
+    <div class="hdrow">
+      <button class="btn outline">Undo</button>
+      <button class="btn outline off">Redo</button>
+      <button class="btn">Save</button>
+      <button class="btn">Validate</button>
+      <button class="btn">Diff</button>
+      <button class="btn off" title="Publish is blocked — validate first">Publish</button>
+      <span class="note">disabled — validate first</span>
+      <div class="sp"></div>
+      <span class="note" style="font-family:var(--font-mono)">revision 4c9d07… · edited 6m ago</span>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="pal">
+      <div class="ph"><h2>Steps</h2><input type="text" placeholder="Search steps…" value=""></div>
+      <ul>
+        <li class="grab"><span class="lbl">Coding agent</span><span class="kind">agent.acp</span></li>
+        <li><span class="lbl">Ask a model</span><span class="kind">model.chat</span></li>
+        <li><span class="lbl">Run command / tests</span><span class="kind">process.exec</span></li>
+        <li><span class="lbl">Human approval</span><span class="kind">human.approval</span></li>
+        <li><span class="lbl">Condition</span><span class="kind">condition</span></li>
+        <li><span class="lbl">Repeat until</span><span class="kind">until</span></li>
+        <li><span class="lbl">For each</span><span class="kind">for_each</span></li>
+        <li><span class="lbl">Call pipeline</span><span class="kind">pipeline.invoke</span></li>
+        <li><span class="lbl">Publish artifact</span><span class="kind">artifact.publish</span></li>
+        <div class="grp">Not runnable yet</div>
+        <li class="off"><span class="lbl">Parallel</span><span class="kind">parallel</span></li>
+        <li class="off"><span class="lbl">Gate</span><span class="kind">gate</span></li>
+        <li class="off"><span class="lbl">Git commit</span><span class="kind">git.commit</span></li>
+      </ul>
+    </div>
+    <div class="cv" id="cv">
+      <svg width="950" height="742" style="position:absolute;left:0;top:0;overflow:visible">
+        <!-- plan -> approve (highlighted, drag target) -->
+        <line x1="160" y1="262" x2="288" y2="262" stroke="#2f4bd6" stroke-width="3"/>
+        <polygon points="288,257 298,262 288,267" fill="#2f4bd6"/>
+        <!-- approve -> scope box -->
+        <line x1="430" y1="262" x2="466" y2="262" stroke="#cfcac0" stroke-width="1.5"/>
+        <polygon points="466,257 476,262 466,267" fill="#cfcac0"/>
+        <!-- implement -> run tests -->
+        <line x1="605" y1="262" x2="638" y2="262" stroke="#cfcac0" stroke-width="1.5"/>
+        <polygon points="638,257 648,262 638,267" fill="#cfcac0"/>
+        <!-- run tests -> code review -->
+        <line x1="750" y1="262" x2="783" y2="262" stroke="#cfcac0" stroke-width="1.5"/>
+        <polygon points="783,257 793,262 783,267" fill="#cfcac0"/>
+        <!-- recurrence arrow (UI illustration only) -->
+        <path d="M 840 300 C 840 352, 550 352, 550 302" fill="none" stroke="#8fa0e6" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <polygon points="545,308 550,296 555,308" fill="#8fa0e6"/>
+        <!-- scope box -> verdict -->
+        <path d="M 690 390 L 690 424 L 640 424 L 640 458" fill="none" stroke="#cfcac0" stroke-width="1.5"/>
+        <polygon points="635,458 640,468 645,458" fill="#cfcac0"/>
+        <!-- verdict -> publish verified (guarded) -->
+        <path d="M 710 486 C 756 486, 750 468, 788 468" fill="none" stroke="#1f6b37" stroke-width="2"/>
+        <polygon points="788,463 798,468 788,473" fill="#1f6b37"/>
+        <!-- verdict -> publish needs attention (guarded) -->
+        <path d="M 710 508 C 756 508, 750 592, 788 592" fill="none" stroke="#b0281a" stroke-width="2"/>
+        <polygon points="788,587 798,592 788,597" fill="#b0281a"/>
+      </svg>
+      <!-- row 1 nodes -->
+      <div class="nv" style="left:30px;top:233px"><div class="t">Plan</div><div class="k">agent.acp</div><div class="p">m4-planner · claude</div></div>
+      <div class="nv" style="left:298px;top:233px"><div class="t">Approve plan</div><div class="k">human.approval</div><div class="p">approver: lead</div></div>
+      <div class="scope" style="left:476px;top:140px;width:434px;height:250px">
+        <span class="st">Repeat until · tests pass and review approves</span><span class="ss" style="left:auto;right:10px">max 4 iterations</span>
+        <div class="nv" style="left:19px;top:90px;width:110px;min-height:58px"><div class="t">Implement</div><div class="k">agent.acp</div></div>
+        <div class="nv" style="left:164px;top:90px;width:110px;min-height:58px"><div class="t">Run tests</div><div class="k">process.exec</div></div>
+        <div class="nv sel" style="left:309px;top:90px;width:110px;min-height:58px">
+          <span class="newchip">NEW</span><div class="t">Code review</div><div class="k">agent.acp</div>
+        </div>
+        <div style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none"></div>
+      </div>
+      <span style="position:absolute;left:648px;top:336px;font-size:10px;color:#2a43b8;font-family:var(--font-mono);background:var(--color-surface);padding:0 4px">repeat if not met</span>
+      <!-- row 2 nodes -->
+      <div class="nv" style="left:570px;top:468px"><div class="t">Verdict</div><div class="k">condition</div><div class="p">route: verified | needs_attention</div></div>
+      <div class="nv" style="left:798px;top:439px;width:140px"><div class="t">Publish evidence</div><div class="k">artifact.publish</div><div class="p">when: route == 'verified'</div></div>
+      <div class="nv" style="left:798px;top:563px;width:140px"><div class="t">Publish evidence</div><div class="k">artifact.publish</div><div class="p">when: route == 'needs_attention'</div></div>
+      <!-- edge labels -->
+      <span class="chip" style="position:absolute;left:736px;top:444px;background:#d9f0de;color:#1f6b37;border-color:#b9d3bf">verified</span>
+      <span class="chip" style="position:absolute;left:726px;top:540px;background:#fdd8d2;color:#b0281a;border-color:#e5b2a8">needs attention</span>
+      <!-- + affordances -->
+      <div class="plus" style="left:762px;top:252px" title="Insert on edge: Run tests → Code review">+</div>
+      <div class="plus" style="left:853px;top:500px" title="Add step after terminal step">+</div>
+      <div class="plus" style="left:853px;top:624px" title="Add step after terminal step">+</div>
+      <!-- drag ghost over edge Plan -> Approve -->
+      <div class="ghost" style="left:178px;top:196px">Insert Coding agent here</div>
+      <div style="position:absolute;left:196px;top:250px;width:104px;height:24px;border:1.5px dashed #2f4bd6;border-radius:4px;background:#eef0fc"></div>
+      <!-- zoom + minimap -->
+      <div class="mm">
+        <div class="mini" style="left:22px;top:20px;width:14px;height:9px"></div>
+        <div class="mini" style="left:42px;top:20px;width:14px;height:9px"></div>
+        <div class="mini scp" style="left:62px;top:12px;width:62px;height:24px"></div>
+        <div class="mini acc" style="left:110px;top:56px;width:14px;height:9px"></div>
+        <div class="mini" style="left:110px;top:66px;width:14px;height:5px"></div>
+        <div class="vp"></div>
+      </div>
+      <div class="zoom"><button>+</button><button>−</button><button>fit</button></div>
+    </div>
+    <div class="ins">
+      <h2>Code review <span class="chip accent">NEW</span></h2>
+      <div class="kk">agent.acp · inserted on edge: Run tests → Code review</div>
+
+      <div class="sec">
+        <h3>Profile</h3>
+        <div class="fl">Agent profile</div>
+        <select><option>m4-reviewer · claude · apm acme/review-skills@1.4.0</option></select>
+        <div style="margin-top:6px"><a href="#">Edit profile ↗</a> <span class="note">reusable profile, not a one-off override</span></div>
+      </div>
+
+      <div class="sec">
+        <h3>Prompt</h3>
+        <div class="code">Review the diff produced by the implement step
+against the approved plan.
+
+Focus on:
+- test summary: <span class="bind">${{ nodes.test.outputs.summary }}</span>
+- plan conformance: <span class="bind">${{ nodes.plan.outputs.summary }}</span>
+
+Set approved: true only if tests pass and the plan is followed.</div>
+      </div>
+
+      <div class="sec">
+        <h3>Execution</h3>
+        <div class="row">
+          <div><div class="fl">Session mode</div><select><option>new session each iteration</option></select></div>
+          <div><div class="fl">Timeout</div><select><option>15 min</option></select></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div><div class="fl">Retries</div><select><option>0</option></select></div>
+          <div><div class="fl">On failure</div><select><option>route: needs_attention</option></select></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Outputs</h3>
+        <div class="json">{&#10;  "approved": { "type": "boolean" },&#10;  "review_notes": { "type": "string" }&#10;}</div>
+        <div class="note">verdict routes on <span style="font-family:var(--font-mono)">approved == true</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
