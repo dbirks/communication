@@ -30,6 +30,10 @@ RUN pnpm --dir ui install --frozen-lockfile
 # build context even though no Go code lives there (ADR-0007).
 COPY ui/ ./ui/
 COPY api/openapi.yaml ./api/openapi.yaml
+# The UI imports the pipeline JSON Schema from internal/ (single source of
+# truth shared with the Go compiler), so the asset must exist in the build
+# context too.
+COPY internal/pipelines/schema/assets/ ./internal/pipelines/schema/assets/
 RUN pnpm --dir ui build
 
 # ---------------------------------------------------------------- Go binary
