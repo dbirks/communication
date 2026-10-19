@@ -66,6 +66,17 @@ type (
 	assistantProfileReader interface {
 		ListAgentProfiles(ctx context.Context, c Caller) ([]AgentProfileView, error)
 	}
+	// assistantDraftAccess is the gate the draft-proposals route applies:
+	// the caller's own read of the draft row. The write predicate the store
+	// applies to PUT /drafts/{id} today IS this org-visibility check (see
+	// APIPipelineStore.ReplaceDraft: a draft of another organization answers
+	// the not-found sentinel), so no wider read is granted — a caller who
+	// cannot see the draft gets the not-found sentinel (404, existence
+	// hidden) and a store that later splits read and write answers
+	// ErrDraftForbidden, which the route maps to 403.
+	assistantDraftAccess interface {
+		GetDraft(ctx context.Context, c Caller, draftID string) (DraftView, error)
+	}
 )
 
 // RegisterAssistant mounts POST /api/v1/assistant/ask. With no base URL the
@@ -98,12 +109,28 @@ func RegisterAssistant(s *Server, deps AssistantDeps) {
 			h.broker = broker
 		}
 	}
+	// ADR-0044's proposals route reuses this deps member when it ALSO
+	// implements assistantDraftAccess (the concrete store adapter does:
+	// the draft read is the store call GET /drafts/{id} makes, so the
+	// proposal can never widen that boundary).
+	if dr, ok := deps.Pipelines.(assistantDraftAccess); ok {
+		h.drafts = dr
+	}
+	if pr, ok := deps.Profiles.(assistantProfileReader); ok {
+		h.profiles = pr
+	}
 	s.HandleAuthed("POST /api/v1/assistant/ask", http.HandlerFunc(h.ask))
+	// ADR-0044: one bounded drafting proposal per request, read-only on the
+	// server side (the human applies it through the normal version-checked
+	// PUT). Mounted beside ask: same session + CSRF contract, same broker.
+	s.HandleAuthed("POST /api/v1/assistant/draft-proposals", http.HandlerFunc(h.proposals))
 }
 
 type asstHandlers struct {
-	srv    *Server
-	broker *assistant.Broker
+	srv      *Server
+	broker   *assistant.Broker
+	drafts   assistantDraftAccess
+	profiles assistantProfileReader
 }
 
 // AssistantAskBody is POST /api/v1/assistant/ask's request document.
