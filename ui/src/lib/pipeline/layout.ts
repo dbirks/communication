@@ -232,17 +232,26 @@ const NODE_BINDING_CHIP = 26;
  * The result is still a pure function of the document, which is what ADR-0025
  * rule 5's determinism needs: same document, same pixels, same edges.
  */
-export function nodeBoxFor(id: string, bindings: number): { width: number; height: number } {
+export function nodeBoxFor(
+  id: string,
+  bindings: number,
+  extraLines = 0,
+  min: { width: number; height: number } = NODE_SIZE,
+): { width: number; height: number } {
   const chip = bindings > 0 ? NODE_BINDING_CHIP : 0;
   const text = measureText(id, NODE_ID_PX, "ui");
-  const width = Math.round(
-    Math.min(NODE_MAX_WIDTH, Math.max(NODE_SIZE.width, text + chip + NODE_PAD_X)),
-  );
+  const width = Math.round(Math.min(NODE_MAX_WIDTH, Math.max(min.width, text + chip + NODE_PAD_X)));
   const room = Math.max(48, width - chip - NODE_PAD_X);
   const lines = Math.max(1, Math.ceil(text / room));
+  // `extraLines` is the content the id does not drive — the one-row `when`
+  // guard the canvas renders — reserved the same way or the card overflows
+  // the box dagre spaced around it.
   const height = Math.max(
-    NODE_SIZE.height,
-    NODE_PAD_Y + lines * (NODE_ID_LINE + NODE_LINE_GAP) - NODE_LINE_GAP + NODE_KIND_LINE,
+    min.height,
+    NODE_PAD_Y +
+      (lines + extraLines) * (NODE_ID_LINE + NODE_LINE_GAP) -
+      NODE_LINE_GAP +
+      NODE_KIND_LINE,
   );
   return { width, height };
 }
@@ -270,10 +279,10 @@ export function scopeHeaderHeight(label: string, innerWidth: number): number {
 }
 
 /** Foot height under the children for the "↻ …" line, on the same rule. */
-export function scopeFootHeight(note: string, innerWidth: number): number {
+export function scopeFootHeight(note: string, innerWidth: number, base = GROUP_FOOT): number {
   if (note.length === 0) return 0;
   const rows = wrappedLineCount(note, innerWidth, GROUP_LABEL_PX, "mono");
-  return GROUP_FOOT + Math.max(0, rows - 1) * GROUP_LABEL_LINE;
+  return base + Math.max(0, rows - 1) * GROUP_LABEL_LINE;
 }
 
 interface Placement {
@@ -292,12 +301,73 @@ interface Placement {
  * pipeline" — a draft that has not validated yet is allowed to be shapeless,
  * and the caller shows the YAML rather than a graph it invented.
  */
+/**
+ * Spacing sets for `layoutDefinition`. The defaults are the existing
+ * DefinitionGraph metrics and must stay untouched; `dense` is the canvas
+ * (Studio / Workbench) cut — a graph drawn into a pane that is far wider
+ * than it is tall, where the fit-to-pane zoom is width-bound and the
+ * generous rank gap the edge labels need at 1:1 is what keeps the same
+ * graph at zoom 0.6. The edge labels still keep their own clear space:
+ * the gap between two ranks is `ranksep`, and a guarded edge's short
+ * route label is drawn at the segment midpoint, so `dense.ranksep`
+ * floors at twice the widest label box (≈ 44px) it must host.
+ */
+export const LAYOUT_SPACING = {
+  /** The DefinitionGraph default: unchanged. `edgesep` stays unset so dagre
+   * keeps the exact default the existing graph has always rendered with. */
+  standard: {
+    nodesep: 24,
+    ranksep: 84,
+    edgesep: undefined,
+    margin: 12,
+    groupPad: GROUP_PAD,
+    groupGap: GROUP_GAP,
+    groupFoot: GROUP_FOOT,
+    /** The floor every node box gets. */
+    nodeMin: { width: NODE_SIZE.width, height: NODE_SIZE.height },
+  },
+  /** The canvas (Studio / Workbench) cut — dense. The graph fills a pane that
+   * is far wider than it is tall, so the fit-to-pane zoom is what the
+   * generous default rank gap and box floors spent; the floors shrink to
+   * the content the box really holds (id line + kind line), and the rank
+   * gap floors at the clear space the guarded-edge label box needs.
+   */
+  dense: {
+    nodesep: 14,
+    ranksep: 52,
+    edgesep: 12,
+    margin: 8,
+    groupPad: 8,
+    groupGap: 8,
+    groupFoot: 10,
+    nodeMin: { width: 96, height: 54 },
+  },
+} as const;
+
+export type LayoutSpacingName = keyof typeof LAYOUT_SPACING;
+
+type Spacing = (typeof LAYOUT_SPACING)[LayoutSpacingName];
+
 export function layoutDefinition(
   document: DefinitionDocument,
-  options: { rankdir?: "LR" | "TB" } = {},
+  options: {
+    rankdir?: "LR" | "TB";
+    spacing?: LayoutSpacingName;
+    /**
+     * Lay each scope cluster's body in the opposite direction to the graph.
+     * A scope's body is a chain, so in a `TB` graph the cluster becomes a
+     * short wide box instead of a tall narrow one — the one move that keeps
+     * the graph's total height from stacking every loop body vertically.
+     * dagre 3.1.1 lays a cluster out as its own subgraph when the cluster
+     * node carries its own `rankdir`; observed, not assumed.
+     */
+    subgraphRankdir?: "opposite";
+  } = {},
 ): DefinitionGraphLayout | null {
   const roots = document.spec?.nodes;
   if (!Array.isArray(roots) || roots.length === 0) return null;
+
+  const s: Spacing = LAYOUT_SPACING[options.spacing ?? "standard"];
 
   // 1. Placement tree: every scope node owns a group holding its body.
   const byKey = new Map<string, Placement>();
@@ -356,12 +426,17 @@ export function layoutDefinition(
 
   // 2. Graph: a scope node contributes its cluster and nothing else.
   const graph = new Graph({ compound: true });
+  const rankdir = options.rankdir ?? "LR";
   graph.setGraph({
-    rankdir: options.rankdir ?? "LR",
-    nodesep: 24,
-    ranksep: 34,
-    marginx: 12,
-    marginy: 12,
+    rankdir,
+    nodesep: s.nodesep,
+    ...(s.edgesep !== undefined ? { edgesep: s.edgesep } : {}),
+    // The gap ranks keep for edge labels: a guarded edge draws its short
+    // route value at the segment midpoint, and that label box must have
+    // clear space of its own — it never rides on top of a node box.
+    ranksep: s.ranksep,
+    marginx: s.margin,
+    marginy: s.margin,
     acyclicer: "greedy",
     ranker: "network-simplex",
   });
@@ -370,15 +445,30 @@ export function layoutDefinition(
   for (const placement of all) {
     if (placement.clusterKey) {
       // Measured from its children; zero size keeps dagre from reserving room
-      // for the box itself, which is what the observed behaviour wants.
-      graph.setNode(placement.clusterKey, { width: 0, height: 0 });
+      // for the box itself, which is what the observed behaviour wants. A
+      // cluster's own `rankdir` makes dagre lay its body out as a subgraph in
+      // that direction (ADR-0025: edges never point at the cluster id itself,
+      // which is the one configuration that crashes the library).
+      const attrs: { width: number; height: number; rankdir?: "LR" | "TB" } = {
+        width: 0,
+        height: 0,
+      };
+      if (options.subgraphRankdir === "opposite") {
+        attrs.rankdir = rankdir === "TB" ? "LR" : "TB";
+      }
+      graph.setNode(placement.clusterKey, attrs);
       if (placement.groupKey) graph.setParent(placement.clusterKey, placement.groupKey);
       continue;
     }
     // A box sized to its own id: dagre spaces ranks by the width it is given,
     // so edges, group boxes and the canvas total all follow the same number the
     // renderer draws with.
-    const size = nodeBoxFor(placement.node.id, nodeBindings(placement.node).length);
+    const size = nodeBoxFor(
+      placement.node.id,
+      nodeBindings(placement.node).length,
+      typeof placement.node.when === "string" ? 1 : 0,
+      s.nodeMin,
+    );
     sizes.set(placement.key, size);
     graph.setNode(placement.key, size);
     if (placement.groupKey) graph.setParent(placement.key, placement.groupKey);
@@ -467,23 +557,23 @@ export function layoutDefinition(
     const word = kindWord(placement.node.kind);
     const boundLabel = scopeBoundLabel(placement.node);
     const loopNote = scopeLoopNote(placement.node);
-    const width = box.width + GROUP_PAD * 2;
+    const width = box.width + s.groupPad * 2;
     // The label and the foot wrap inside the box, so the rows they need are the
     // box's own width less the bar's left/right inset.
     const inner = width - GROUP_LABEL_INSET * 2;
     const headerText = scopeHeaderLabel({ word, ownerId: placement.node.id, boundLabel });
     const header = scopeHeaderHeight(headerText, inner);
-    const foot = scopeFootHeight(loopNote, inner);
+    const foot = scopeFootHeight(loopNote, inner, s.groupFoot);
     const view: GraphGroupView = {
       key: placement.clusterKey as string,
       ownerId: placement.node.id,
       pointer: placement.pointer,
       kind: placement.node.kind,
       boundLabel,
-      x: box.x - GROUP_PAD,
-      y: box.y - GROUP_PAD - header,
+      x: box.x - s.groupPad,
+      y: box.y - s.groupPad - header,
       width,
-      height: box.height + GROUP_PAD * 2 + header + foot,
+      height: box.height + s.groupPad * 2 + header + foot,
       depth: placement.depth,
       word,
       loopNote,
@@ -502,8 +592,8 @@ export function layoutDefinition(
   // its children, so a first-rank scope can spill past the canvas's top/left
   // edge — the one place a scroll container cannot reach. Slide the whole graph
   // back inside its margins instead of clipping the box.
-  const marginX = graph.graph().marginx ?? 12;
-  const marginY = graph.graph().marginy ?? 12;
+  const marginX = graph.graph().marginx ?? s.margin;
+  const marginY = graph.graph().marginy ?? s.margin;
   const shiftX = Math.max(
     0,
     marginX - Math.min(...nodes.map((node) => node.x), ...groups.map((group) => group.x)),
@@ -527,7 +617,7 @@ export function layoutDefinition(
   // box's foot over the next box's label (`for each` over `until` in the
   // feature-development revision), so push siblings apart, deepest descendants
   // riding along with the box they live in.
-  const moved = separateSiblingGroups(groups, nodes);
+  const moved = separateSiblingGroups(groups, nodes, s.groupGap);
   const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
 
   const edges: GraphEdgeView[] = graph.edges().map((edge) => {
@@ -547,7 +637,7 @@ export function layoutDefinition(
       // one routing rule for both cases beats a mix of two. An unrouted
       // polyline only needs the graph-wide slide the group padding forced.
       points: moved
-        ? routePoints(nodeByKey, edge.v, edge.w)
+        ? routePoints(nodeByKey, edge.v, edge.w, options.rankdir ?? "LR")
         : (label?.points ?? []).map((point) => ({
             x: (point.x ?? 0) + shiftX,
             y: (point.y ?? 0) + shiftY,
@@ -567,8 +657,8 @@ export function layoutDefinition(
   );
 
   return {
-    width: Math.max(graph.graph().width ?? 0, right + (graph.graph().marginx ?? 12)),
-    height: Math.max(graph.graph().height ?? 0, bottom + (graph.graph().marginy ?? 12)),
+    width: Math.max(graph.graph().width ?? 0, right + s.margin),
+    height: Math.max(graph.graph().height ?? 0, bottom + s.margin),
     nodes,
     groups,
     edges,
@@ -688,7 +778,11 @@ function overlaps(a: Box, b: Box, gap: number): boolean {
  * dagre produced on a real revision, and a fixture that happens to reproduce a
  * library's ranking is not a proof of the rule.
  */
-export function separateSiblingGroups(groups: GraphGroupView[], nodes: GraphNodeView[]): boolean {
+export function separateSiblingGroups(
+  groups: GraphGroupView[],
+  nodes: GraphNodeView[],
+  gap = GROUP_GAP,
+): boolean {
   const shift = (path: string, dy: number) => {
     for (const group of groups) {
       const own = groupPath(group.key);
@@ -714,9 +808,9 @@ export function separateSiblingGroups(groups: GraphGroupView[], nodes: GraphNode
           const upper = list[i];
           const lower = list[j];
           // Sorted by y: once a box clears the gap, everything after it does.
-          if (lower.y >= upper.y + upper.height + GROUP_GAP) break;
-          if (!overlaps(upper, lower, GROUP_GAP)) continue;
-          const dy = upper.y + upper.height + GROUP_GAP - lower.y;
+          if (lower.y >= upper.y + upper.height + gap) break;
+          if (!overlaps(upper, lower, gap)) continue;
+          const dy = upper.y + upper.height + gap - lower.y;
           if (dy <= 0) continue;
           shift(groupPath(lower.key), dy);
           changed = true;
@@ -733,16 +827,32 @@ export function separateSiblingGroups(groups: GraphGroupView[], nodes: GraphNode
  * A three-segment elbow between two placed boxes. Used once any group has moved
  * (dagre's own polyline would no longer end on its node); the back-edge case —
  * a loop that returns to an earlier node — leaves to the right and comes back in
- * from the right rather than cutting through the boxes between them.
+ * from the right rather than cutting through the boxes between them. In a
+ * `TB` layout the same rule runs vertically: out of the source's bottom-centre
+ * into the target's top-centre.
  */
 function routePoints(
   nodes: Map<string, GraphNodeView>,
   from: string,
   to: string,
+  rankdir: "LR" | "TB" = "LR",
 ): { x: number; y: number }[] {
   const source = nodes.get(from);
   const target = nodes.get(to);
   if (!source || !target) return [];
+  if (rankdir === "TB") {
+    const x1 = source.x + source.width / 2;
+    const y1 = source.y + source.height;
+    const x2 = target.x + target.width / 2;
+    const y2 = target.y;
+    const mid = y2 > y1 + 16 ? (y1 + y2) / 2 : Math.max(y1, target.y + target.height) + 14;
+    return [
+      { x: x1, y: y1 },
+      { x: x1, y: mid },
+      { x: x2, y: mid },
+      { x: x2, y: y2 },
+    ];
+  }
   const x1 = source.x + source.width;
   const y1 = source.y + source.height / 2;
   const x2 = target.x;

@@ -40,7 +40,8 @@ Neither is required by the spec; both are project-owner choices and this ADR is 
    Nodes are React components wrapping the existing m4 node rendering; edges render from
    `dependsOn` (edge `A→B` exists iff `B.dependsOn` contains `A`). dagre remains the layout
    engine: the ADR-0025 compound layout (edges to leaf nodes, scope boxes) feeds
-   initial/automatic positions; user moves override per-node in `ui_layout` only.
+   initial/automatic positions; user moves override per-node in the document's
+   `metadata.ui` only (ADR-0042 §3).
    **The library never runs anything**: no node types execute, no store derives pipeline
    semantics, no graph state is sent to the server.
 2. **Graph ops are pure functions `YAML text → YAML text` in `ui/src/lib/pipeline/graphDoc.ts`**
@@ -48,10 +49,15 @@ Neither is required by the spec; both are project-owner choices and this ADR is 
    mutates a `yaml` Document node tree and re-serializes, so comments and untouched regions
    survive. The rendered graph is always derived from the text — the library's internal state
    is never the source of truth.
-3. **Node positions and viewport are saved in the draft's `ui_layout`**
-   (`{nodes: {<scopePath/id>: {x,y}}}`) — the non-semantic layout metadata that
-   ADR-0021's digest excludes. A non-semantic move changes no execution behaviour and no
-   revision digest.
+3. **Node positions and viewport are saved in the document's `metadata.ui` block**
+   (shape `{nodes: {<scopePath/id>: {x,y}}}`) — the non-semantic layout metadata that
+   ADR-0021's digest excludes. A non-semantic move changes the draft text but no
+   execution behaviour and no revision digest. **The draft's `ui_layout` column/field is
+   not used by the Studio**: the draft PUT body is exactly `{document_yaml, version}` and
+   the live server never fills `ui_layout` from it (the pipeline store is built without
+   an `ExtractUI` hook, `cmd/communication/serve.go`), so the client keeps the layout in
+   the canonical document instead and re-reads it out with `uiLayoutOfText` when the
+   served `ui_layout` is empty.
 4. **The ambiguity rules of `studio-workbench.md` §4 are enforced in `graphDoc.ts`, not in
    the rendering layer.** `insertOnEdge(A→B, NEW)` is safe only when: same scope; `B` has no
    `when`; `A` is not a `condition` node; the edge is not an `errorRoute`; and `B`'s config
@@ -61,7 +67,9 @@ Neither is required by the spec; both are project-owner choices and this ADR is 
    tested against YAML fixtures.
 5. **Invalid-YAML policy**: ops are applied to text; a parse failure keeps the user's text,
    shows the diagnostic, and the canvas renders the last good graph greyed (graph editing
-   paused). Undo/redo is a stack of `{text, ui_layout}` snapshots.
+   paused). Undo/redo is a stack of `{text, ui_layout}` snapshots, where the layout is the
+   in-memory view of the document's `metadata.ui` (it is always derivable from the text,
+   so the stack is in-memory per session).
 
 ## Consequences
 
@@ -72,9 +80,14 @@ Neither is required by the spec; both are project-owner choices and this ADR is 
 - `graphDoc.ts` is the single place where YAML is mutated by the UI; every edit is reviewable
   as text→text (the Diff tab shows the exact delta), which makes the §4 rules auditable in
   tests without a browser.
-- The digest-excluded `ui_layout` now carries real data (positions). Digest stability is
-  pinned by a test: setting `ui_layout` and re-saving a draft must not change the publish
-  digest of unchanged YAML.
+- The digest-excluded `metadata.ui` now carries real data (positions). Digest stability
+  is pinned by a test: saving a move-only change to `metadata.ui` must not change the
+  `revision_digest` Validate reports for unchanged spec content. Observable proof in the
+  lab (probe in `/tmp/pi-logs/adr42/probe.py` against the m4 stack, 2026-10-19): validate →
+  `sha256:64433c7aedc981697fa2b8112644e0dd819a64919dd68cddf92e32b261132dda`; move node
+  `plan` (`x: 12` → `x: 52`) and save; validate again → the same digest.
+- The `ui_layout` column stays empty for Studio-authored drafts; anything that does
+  populate it (a future `ExtractUI` wiring) must remain digest-excluded and non-semantic.
 - `@xyflow/react` ships its own CSS; it is imported once at the Studio/Workbench entry and
   scoped under the existing tokens (no new colour names — `check:tokens` still passes).
 - The run page (ADR-0043) renders the *same* React Flow surface in read-only mode with status
@@ -100,4 +113,5 @@ Neither is required by the spec; both are project-owner choices and this ADR is 
 - Browser pass (ADR-0006, recorded under `~/.cache/communication-lab/issue2/`): insert a node
   on an edge in Studio, save, publish; reopen the draft and the graph matches. A stale-draft
   (409) banner path is exercised.
-- Digest test: a save that only changes `ui_layout` leaves the revision digest unchanged.
+- Digest test: a save that only changes the document's `metadata.ui` leaves the
+  `revision_digest` unchanged (observed in the lab — see Consequences).

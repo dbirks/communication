@@ -188,10 +188,14 @@ No gesture ever writes YAML the compiler would interpret differently than the co
   diagnostic, and the canvas renders the **last good graph greyed** with the banner:
   *"YAML has errors — the canvas shows the last valid version; graph editing is paused."*
   No work is discarded; graph editing is paused, not lost.
-- **Positions** live in the draft's `ui_layout` (`{nodes: {<scopePath/id>: {x,y}}}`) —
-  `metadata.ui`-style layout metadata **excluded from the revision digest** (ADR-0042 §2).
-  Saving a position never changes execution semantics.
-- **Undo/redo** = a stack of `{text, ui_layout}` snapshots; the stack is in-memory per session.
+- **Positions** live in the document's `metadata.ui` block (`{nodes: {<scopePath/id>: {x,y}}}`) —
+  non-semantic layout metadata **excluded from the revision digest** (ADR-0042 §3).
+  Saving a position never changes execution semantics, and the lab confirms it: moving a
+  node and saving leaves `revision_digest` from Validate unchanged. The draft's `ui_layout`
+  column/field is **not used** by the Studio (the PUT body is `{document_yaml, version}`
+  and the live server never fills `ui_layout`); the layout is read back out of the text.
+- **Undo/redo** = a stack of `{text, ui_layout}` snapshots; the layout is the in-memory view
+  of the document's `metadata.ui` (always derivable from the text); the stack is in-memory per session.
 - **Stale draft (HTTP 409 `stale_draft_version`)** → banner with **Reload theirs** /
   **Keep mine and overwrite** (re-PUT with the new version). Never silent, never "restored"
   claims about edits the server never saw.

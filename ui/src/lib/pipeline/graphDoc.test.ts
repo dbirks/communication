@@ -365,6 +365,35 @@ describe("addNode", () => {
     expect(nodeOf(result.text, "b")?.dependsOn).toEqual(["a"]);
   });
 
+  it("with `after`, follows the after node into its own scope when the caller passed the root", () => {
+    const text = `kind: Pipeline
+spec:
+  nodes:
+    - id: loop
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: "true"
+        body:
+          nodes:
+            - id: inner
+              kind: process.exec
+              config:
+                executable: sh
+                args: []
+`;
+    // The palette passes the root scope for whatever node is selected; a
+    // selected node inside a loop body must not pull the new node to the root.
+    const result = addNode(text, { kind: "process.exec", id: "c", scope: [], after: "inner" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const reparse = parseGraph(result.text);
+    if (!reparse.ok) return;
+    const n = reparse.model.nodes.find((x) => x.id === "c");
+    expect(n?.scope).toEqual(["loop"]);
+    expect(n?.dependsOn).toEqual(["inner"]);
+  });
+
   it("adds into an empty until body", () => {
     const text = `kind: Pipeline
 spec:

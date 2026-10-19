@@ -8,7 +8,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
 import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
@@ -90,11 +90,20 @@ function mount(path: string, overrides: RouteStub[] = []) {
         <Routes>
           <Route path="/library" element={<LibraryPage />} />
           <Route path="/library/:pipelineId" element={<PipelinePage />} />
+          {/* The Studio route itself is tested in pages/Studio.test.tsx; the
+              library only has to land the navigation there. */}
+          <Route path="/library/:pipelineId/drafts/:draftId" element={<StudioRouteStub />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
   return { fetchMock, requests };
+}
+
+/** Names where a draft navigation landed, in place of the real Studio page. */
+function StudioRouteStub() {
+  const { pipelineId = "", draftId = "" } = useParams();
+  return <div data-testid="studio-route">{`${pipelineId} / ${draftId}`}</div>;
 }
 
 afterEach(cleanup);
@@ -203,14 +212,11 @@ describe("/library", () => {
     expect(metadataName(document)).toBe("name: nightly-sweep");
     expect(document).not.toContain("name: plan-with-approval");
 
-    // And the library opens that draft, not an empty revision view.
-    expect(await screen.findByTestId("pipeline-page", undefined, settled)).toBeTruthy();
-    const box = (await screen.findByTestId(
-      "draft-editor-input",
-      undefined,
-      settled,
-    )) as HTMLTextAreaElement;
-    expect(box.value).toContain("kind: model.chat");
+    // And the library lands on the Studio route with that draft, not an
+    // empty revision view.
+    expect((await screen.findByTestId("studio-route", undefined, settled)).textContent).toContain(
+      WIRE_DRAFT_ID,
+    );
   });
 
   it("keeps a pipeline that exists when only the template draft fails, and retries the draft", async () => {
@@ -275,14 +281,11 @@ describe("/library", () => {
     // …with `metadata.name` rewritten to the new pipeline's slug.
     expect(metadataName(document)).toBe("name: hand-written");
 
-    // And the library opens that draft, not an empty page the draft never reached.
-    expect(await screen.findByTestId("pipeline-page", undefined, settled)).toBeTruthy();
-    const box = (await screen.findByTestId(
-      "draft-editor-input",
-      undefined,
-      settled,
-    )) as HTMLTextAreaElement | null;
-    expect(box?.value).toContain("kind: process.exec");
+    // And the library lands on the Studio route with that draft, not an
+    // empty page the draft never reached.
+    expect((await screen.findByTestId("studio-route", undefined, settled)).textContent).toContain(
+      WIRE_DRAFT_ID,
+    );
   });
 
   // M5 QA (`lib | polish`): the only place a template was ever mentioned was
@@ -358,38 +361,11 @@ describe("/library/:pipelineId", () => {
     expect(await screen.findByTestId("definition-graph")).toBeTruthy();
   });
 
-  it("opens the draft editor with the served document when a draft is selected", async () => {
+  it("selecting a draft leaves for the Studio route instead of an inline editor", async () => {
     mount(detail);
     const row = await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`);
     fireEvent.click(within(row).getByRole("button"));
-    const box = await screen.findByTestId("draft-editor-input");
-    expect((box as HTMLTextAreaElement).value).toContain("apiVersion: communication.dev/v1alpha1");
-    // The verdict line is the served validation, not a client-side guess.
-    expect((await screen.findByTestId("draft-editor-verdict")).textContent).toContain("findings");
-  });
-
-  it("disables Publish while the server says the draft is not valid", async () => {
-    mount(detail);
-    fireEvent.click(
-      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
-    );
-    const publish = await screen.findByTestId("draft-editor-publish");
-    expect((publish as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("enables Publish only when the server's draft status is valid", async () => {
-    mount(detail, [
-      {
-        path: draftPath,
-        body: wireDraft("valid", validValidation as ValidateResponse),
-      },
-    ]);
-    fireEvent.click(
-      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
-    );
-    const publish = await screen.findByTestId("draft-editor-publish");
-    await waitFor(() => expect((publish as HTMLButtonElement).disabled).toBe(false));
-    expect((await screen.findByTestId("draft-editor-verdict")).textContent).toContain("valid");
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 
   it("seeds a new draft from the newest revision's document", async () => {
@@ -402,7 +378,8 @@ describe("/library/:pipelineId", () => {
     expect(requestsTo(requests, draftsPath, "POST")[0].body).toContain(
       "apiVersion: communication.dev/v1alpha1",
     );
-    expect(await screen.findByTestId("draft-editor-input")).toBeTruthy();
+    // A created draft lands on the Studio route.
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 
   it("seeds a zero-revision pipeline's new draft from the blank skeleton, named for the slug", async () => {
@@ -424,7 +401,7 @@ describe("/library/:pipelineId", () => {
     expect(document).toContain("kind: process.exec");
     // Named for this pipeline's own slug, like the Blank template's post.
     expect(metadataName(document)).toBe("name: feature-development");
-    expect(await screen.findByTestId("draft-editor-input")).toBeTruthy();
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 
   it("collapses a flooded drafts list to the newest five, with age and editor name", async () => {
@@ -453,70 +430,56 @@ describe("/library/:pipelineId", () => {
     expect(within(list).getAllByTestId(/^draft-row-/)).toHaveLength(8);
   });
 
-  it("renders the server's findings when Validate runs", async () => {
-    const { requests } = mount(detail, [
-      { path: draftPath, body: wireDraft("invalid") },
-      { path: validatePath, method: "POST", body: w8Validation },
-      {
-        path: `/api/v1/drafts/${WIRE_DRAFT_ID}`,
-        method: "PUT",
-        body: wireDraft("invalid", w8Validation as ValidateResponse),
-      },
+  // The validate POST and the rendered findings are the Studio route's job
+  // now (pages/Studio.test.tsx). What the library still does: carry the
+  // server's verdict on the draft row and hand the draft to Studio.
+  it("carries the server's verdict on the draft row, and hands the draft to Studio", async () => {
+    mount(detail, [
+      { path: draftPath, body: wireDraft("invalid", w8Validation as ValidateResponse) },
     ]);
-    fireEvent.click(
-      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
+    const row = await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`);
+    // The verdict the server attached to the draft read is on the rail.
+    expect((await screen.findByTestId(`draft-status-${WIRE_DRAFT_ID}`)).textContent).toContain(
+      "draft v12",
     );
-    fireEvent.click(await screen.findByTestId("draft-editor-validate"));
-    const problems = await screen.findAllByTestId(/^draft-editor-problem-/);
-    expect(problems.length).toBeGreaterThan(0);
-    expect(problems[0].textContent).toContain("duplicate_key");
-    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
+    expect(within(row).getByText("invalid")).toBeTruthy();
+    // The row itself is the navigation — Studio renders the findings.
+    fireEvent.click(within(row).getByRole("button"));
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 
-  // The left column reads `GET /pipelines/{id}/drafts`; if a write does not
-  // invalidate that key it keeps printing the version and status the editor has
-  // already moved past ("draft v1 / draft" beside an editor saying v2 / valid).
-  it("refetches the drafts list after the editor saves", async () => {
+  // The left column reads `GET /pipelines/{id}/drafts`. The write that
+  // used to invalidate it happens on the Studio route now (Studio.test.tsx
+  // asserts the versioned PUT); what the library still does is show the list
+  // and hand the draft over.
+  it("keeps the drafts list live and leaves the save to the Studio route", async () => {
     const { requests } = mount(detail, [
       { path: draftPath, method: "PUT", body: wireDraft("draft") },
     ]);
-    fireEvent.click(
-      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
-    );
-    const box = (await screen.findByTestId("draft-editor-input")) as HTMLTextAreaElement;
-    fireEvent.change(box, { target: { value: `${box.value}\n` } });
-    fireEvent.click(await screen.findByTestId("draft-editor-save"));
-    await waitFor(() => expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(1));
-    // Once on mount, once more because the save invalidated the list.
-    await waitFor(() =>
-      expect(requestsTo(requests, draftsPath, "GET").length).toBeGreaterThanOrEqual(2),
-    );
-    const putIndex = requests.findIndex(
-      (request) => request.method === "PUT" && request.url === draftPath,
-    );
-    expect(
-      requests.some(
-        (request, index) =>
-          index > putIndex && request.method === "GET" && request.url === draftsPath,
-      ),
-    ).toBe(true);
+    const row = await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`);
+    // The list reads once on mount…
+    await waitFor(() => expect(requestsTo(requests, draftsPath, "GET")).toHaveLength(1));
+    // … and a row click leaves for the Studio route, where the editor lives.
+    fireEvent.click(within(row).getByRole("button"));
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
+    // No draft write ever leaves the library page itself.
+    expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(0);
   });
 
-  it("refetches the drafts list after the editor validates", async () => {
+  it("shows the verdict the server attached to a valid draft, and leaves validation to Studio", async () => {
     const { requests } = mount(detail, [
       { path: draftPath, body: wireDraft("valid", validValidation as ValidateResponse) },
+      {
+        path: draftsPath,
+        body: { drafts: [{ ...wireDraftSummaries.drafts[0], status: "valid" }] },
+      },
     ]);
-    fireEvent.click(
-      within(await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`)).getByRole("button"),
-    );
-    await screen.findByTestId("draft-editor-input");
-    fireEvent.click(await screen.findByTestId("draft-editor-validate"));
-    await waitFor(() => expect(requestsTo(requests, validatePath, "POST")).toHaveLength(1));
-    // The validate response carries no pipeline id: the hook recovers it from
-    // the cached draft, and the list still rolls.
-    await waitFor(() =>
-      expect(requestsTo(requests, draftsPath, "GET").length).toBeGreaterThanOrEqual(2),
-    );
+    const row = await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`);
+    expect(within(row).getByText("valid")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button"));
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
+    // The validate POST is a Studio action; the library never fires it.
+    expect(requestsTo(requests, validatePath, "POST")).toHaveLength(0);
   });
 
   // "Assign to a project" — after a revision is PUBLISHED the org library
@@ -806,36 +769,34 @@ describe("/library/:pipelineId without the library role", () => {
   const detail = `/library/${WIRE_PIPELINE_ID}`;
   const member: Me = { ...meFixture, is_org_admin: false };
 
-  it("states the reason in the rail and holds the draft editor read-only", async () => {
-    const { requests } = mount(`${detail}?draft=${WIRE_DRAFT_ID}`, [
-      { path: "/api/v1/me", body: member },
-    ]);
+  it("states the reason in the rail, and still hands a draft to the Studio route", async () => {
+    const { requests } = mount(detail, [{ path: "/api/v1/me", body: member }]);
     // The rail: no New draft button, and the reason in its place.
     expect(await screen.findByTestId("draft-list")).toBeTruthy();
     expect(screen.queryByTestId("pipeline-new-draft")).toBeNull();
     expect(screen.getByText("authoring needs the library role")).toBeTruthy();
-    // The pane: the same answer, in the same words.
-    const box = await screen.findByTestId("draft-editor-input");
-    expect((box as HTMLTextAreaElement).hasAttribute("readonly")).toBe(true);
-    expect((await screen.findByTestId("draft-editor-save")).hasAttribute("disabled")).toBe(true);
-    expect((await screen.findByTestId("draft-editor-publish")).hasAttribute("disabled")).toBe(true);
-    expect((await screen.findByTestId("draft-editor-read-only")).textContent).toContain(
-      "library role",
-    );
-    // Every node field is disabled too, so the form cannot write into a document
-    // this caller may not edit.
-    const field = await screen.findByTestId("draft-editor-field-profile");
-    expect(field.hasAttribute("disabled")).toBe(true);
-    // And no draft write left the browser.
+    // The rail stays a read surface: a row still leaves for Studio…
+    const row = await screen.findByTestId(`draft-row-${WIRE_DRAFT_ID}`);
+    fireEvent.click(within(row).getByRole("button"));
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
+    // … and no draft write left the library page itself.
     expect(requestsTo(requests, draftPath, "PUT")).toHaveLength(0);
   });
 
   it("keeps reading the draft, its verdict and its revisions for a member", async () => {
-    mount(`${detail}?draft=${WIRE_DRAFT_ID}`, [{ path: "/api/v1/me", body: member }]);
-    const box = (await screen.findByTestId("draft-editor-input")) as HTMLTextAreaElement;
-    expect(box.value).toContain("apiVersion: communication.dev/v1alpha1");
-    expect((await screen.findByTestId("draft-editor-verdict")).textContent).toContain("findings");
-    fireEvent.click(await screen.findByTestId("draft-editor-validate"));
-    expect((await screen.findAllByTestId(/^draft-editor-problem-/)).length).toBeGreaterThan(0);
+    mount(detail, [{ path: "/api/v1/me", body: member }]);
+    // Revisions and drafts stay readable: the header, the revision list, and
+    // the verdict the server attached to the draft row.
+    expect(await screen.findByTestId("revision-list")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("pipeline-header-meta").textContent).toContain("7 revisions"),
+    );
+    expect((await screen.findByTestId(`draft-status-${WIRE_DRAFT_ID}`)).textContent).toContain(
+      "draft v12",
+    );
+    // The row's navigation is the Studio route, where the draft opens.
+    const row = screen.getByTestId(`draft-row-${WIRE_DRAFT_ID}`);
+    fireEvent.click(within(row).getByRole("button"));
+    expect((await screen.findByTestId("studio-route")).textContent).toContain(WIRE_DRAFT_ID);
   });
 });

@@ -461,7 +461,10 @@ function withDoc(text: string, fn: (doc: Document) => string[]): OpResult {
 
 /**
  * Append a node to the scope's node list. With `after`, the new node gets
- * dependsOn: [after] (no other node is rewired).
+ * dependsOn: [after] (no other node is rewired). The `after` node's own
+ * scope wins over `opts.scope`: callers such as the palette pass the root
+ * scope for whatever node is selected, and a selected node may live inside
+ * a scope body — appending it to the root list instead would be wrong.
  */
 export function addNode(
   text: string,
@@ -474,14 +477,20 @@ export function addNode(
     const id = opts.id ?? uniqueId(model, base);
     if (!isValidId(id)) throw new OpError(ID_MESSAGE);
     if (model.nodes.some((n) => n.id === id)) throw new OpError(`node id ${id} is already used`);
-    const at = listAt(doc, opts.scope);
+    let scope = opts.scope;
+    if (opts.after) {
+      const afters = model.nodes.filter((n) => n.id === opts.after);
+      if (afters.length === 0) throw new OpError(`no node with id ${opts.after}`);
+      if (afters.length > 1)
+        throw new AmbiguousOp([`node id ${opts.after} is not unique in the document`]);
+      scope = afters[0].scope;
+    }
+    const at = listAt(doc, scope);
     if ("error" in at) throw new OpError(at.error);
     if (opts.after) {
       const exists = at.list.items.some((item) => isMap(item) && item.get("id") === opts.after);
       if (!exists)
-        throw new OpError(
-          `node ${opts.after} not found in scope ${scopeKey(opts.scope) || "(root)"}`,
-        );
+        throw new OpError(`node ${opts.after} not found in scope ${scopeKey(scope) || "(root)"}`);
     }
     const node: Record<string, unknown> = { id, kind: opts.kind };
     if (opts.after) node.dependsOn = [opts.after];

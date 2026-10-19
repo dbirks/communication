@@ -5,9 +5,10 @@
  * fan_out{child}).
  */
 import { describe, expect, it } from "vitest";
-import type { NodeExecutionSummary } from "./contract";
+import type { NodeExecutionSummary, RunTreeChild, RunTreeRoot } from "./contract";
 import {
   attentionNode,
+  childRunOf,
   definitionIdOfKey,
   instancesOfNode,
   overlays,
@@ -466,5 +467,55 @@ describe("workbench URL state", () => {
       workbenchSearch({ node: null, instance: null, attempt: null, view: "graph", scopes: {} }),
     ).toBe("");
     expect(parseWorkbenchUrl(new URLSearchParams(workbenchSearch(state)))).toEqual(state);
+  });
+});
+
+describe("childRunOf", () => {
+  const child = (key: string | null, runId: string, children: RunTreeChild[] = []) => ({
+    node_instance_key: key,
+    child_run_id: runId,
+    pipeline_slug: "issue-implementation",
+    revision_digest: "sha256:ab",
+    depth: 1,
+    wait_policy: "completion" as const,
+    status: "running" as const,
+    created_at: "2026-01-01T12:00:00Z",
+    started_at: null,
+    finished_at: null,
+    children,
+  });
+
+  it("finds the tree row keyed by the invocation's own instance key", () => {
+    const tree: RunTreeRoot = {
+      run_id: "run-1",
+      status: "running",
+      depth: 0,
+      children: [child("/fan_out[1]/invoke", "child-1"), child("/fan_out[13]/invoke", "child-13")],
+    };
+    expect(childRunOf(tree, "/fan_out[13]/invoke")?.child_run_id).toBe("child-13");
+    expect(childRunOf(tree, "/fan_out[1]/invoke")?.child_run_id).toBe("child-1");
+  });
+
+  it("returns null for a key the tree does not carry and for a null tree", () => {
+    const tree: RunTreeRoot = {
+      run_id: "run-1",
+      status: "running",
+      depth: 0,
+      children: [child("/fan_out[1]/invoke", "child-1")],
+    };
+    expect(childRunOf(tree, "/fan_out[2]/invoke")).toBeNull();
+    expect(childRunOf(null, "/fan_out[1]/invoke")).toBeNull();
+  });
+
+  it("walks nested levels for a grandchild invocation", () => {
+    const tree: RunTreeRoot = {
+      run_id: "run-1",
+      status: "running",
+      depth: 0,
+      children: [
+        child("/fan_out[1]/invoke", "child-1", [child("/loop[1]/invoke", "grandchild-1")]),
+      ],
+    };
+    expect(childRunOf(tree, "/loop[1]/invoke")?.child_run_id).toBe("grandchild-1");
   });
 });

@@ -5,9 +5,20 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseDocument } from "yaml";
-import { parseGraph } from "../../lib/pipeline/graphDoc";
-import { layoutDefinition } from "../../lib/pipeline/layout";
-import { flowId, nearestEdge, pointSegmentDistance, toFlow, type FlowNodeBase } from "./flowModel";
+import { parseGraph, wrapInScope } from "../../lib/pipeline/graphDoc";
+import {
+  canvasLayout,
+  canvasDirection,
+  chooseCanvasOrientation,
+  clearLabelAnchor,
+  edgeLabelAnchor,
+  flowId,
+  nearestEdge,
+  pointSegmentDistance,
+  routeLabel,
+  toFlow,
+  type FlowNodeBase,
+} from "./flowModel";
 
 /**
  * `node:fs` / `node:path` are reached by a runtime-resolved dynamic import and
@@ -71,13 +82,9 @@ describe("toFlow", () => {
     expect(group.data.headerText).toBeTruthy();
     expect(group.data.headerText).toContain("build_until_verified");
 
-    const laid = layoutDefinition(probeDocument as never);
-    const abs = new Map(
-      (laid as { nodes: { pointer: string; x: number; y: number }[] }).nodes.map((n) => [
-        n.pointer,
-        n,
-      ]),
-    );
+    const laid = canvasLayout(probeDocument)?.laid ?? null;
+    if (!laid) throw new Error("canvas layout for the probe document not found");
+    const abs = new Map(laid.nodes.map((n) => [n.pointer, n]));
     for (const childId of ["implement", "test", "review"]) {
       const child = node(`build_until_verified/${childId}`);
       expect(child.parentId).toBe("build_until_verified");
@@ -92,6 +99,89 @@ describe("toFlow", () => {
       const absoluteY = child.position.y + group.position.y;
       expect(absoluteX).toBeCloseTo(layoutNode.x);
       expect(absoluteY).toBeCloseTo(layoutNode.y);
+    }
+  });
+
+  it("emits every scope group before the nodes that parent to it", () => {
+    const flow = toFlow(model, probeDocument);
+    const index = (id: string): number => {
+      const i = flow.nodes.findIndex((n) => n.id === id);
+      if (i < 0) throw new Error(`flow node ${id} not found`);
+      return i;
+    };
+    expect(index("build_until_verified")).toBeLessThan(index("build_until_verified/implement"));
+    expect(index("build_until_verified")).toBeLessThan(index("build_until_verified/review"));
+    expect(index("fan_out")).toBeLessThan(index("fan_out/invoke"));
+    // The general property: no node may precede its own parent group —
+    // React Flow needs the parent in front of the child in the `nodes`
+    // array or the child is dropped ("Parent node … not found") and the
+    // canvas can blank out.
+    for (const n of flow.nodes) {
+      if (n.parentId === null) continue;
+      expect(index(n.parentId)).toBeLessThan(index(n.id));
+    }
+  });
+
+  it("keeps parents before children after wrapInScope nests a fresh scope", () => {
+    const doc = `kind: Pipeline
+spec:
+  nodes:
+    - id: start
+      kind: process.exec
+      config:
+        executable: sh
+        args: []
+    - id: a
+      kind: process.exec
+      dependsOn:
+        - start
+      config:
+        executable: sh
+        args: []
+    - id: b
+      kind: process.exec
+      dependsOn:
+        - a
+      config:
+        executable: sh
+        args: []
+    - id: outer
+      kind: until
+      config:
+        maxIterations: 3
+        passWhen: "true"
+        body:
+          nodes:
+            - id: inner
+              kind: for_each
+              config:
+                items: \"\${{ [] }}\"
+                body:
+                  nodes:
+                    - id: work
+                      kind: process.exec
+                      config:
+                        executable: sh
+                        args: []`;
+    const wrapped = wrapInScope(doc, ["a", "b"], { kind: "until", id: "loop" });
+    if (!wrapped.ok) throw new Error("wrap must succeed");
+    const parsed = parseGraph(wrapped.text);
+    if (!parsed.ok) throw new Error(`wrapped doc must parse: ${parsed.error}`);
+    const flow = toFlow(parsed.model, parseDocument(wrapped.text).toJS());
+    const index = (id: string): number => {
+      const i = flow.nodes.findIndex((n) => n.id === id);
+      if (i < 0) throw new Error(`flow node ${id} not found`);
+      return i;
+    };
+    // The fresh scope precedes the steps just wrapped into it.
+    expect(index("loop")).toBeLessThan(index("loop/a"));
+    expect(index("loop/a")).toBeLessThan(index("loop/b"));
+    // Pre-existing nested scopes keep the property at every depth.
+    expect(index("outer")).toBeLessThan(index("outer/inner"));
+    expect(index("outer/inner")).toBeLessThan(index("outer/inner/work"));
+    for (const n of flow.nodes) {
+      if (n.parentId === null) continue;
+      expect(index(n.parentId)).toBeLessThan(index(n.id));
     }
   });
 
@@ -121,19 +211,31 @@ describe("toFlow", () => {
     expect(isTerminal("build_until_verified")).toBe(false);
   });
 
-  it("labels guarded edges with the short when text and error routes with 'on error'", () => {
+  it("labels guarded edges with the short route value and error routes with 'on error'", () => {
     const flow = toFlow(model, probeDocument);
     const guarded = flow.edges.find(
       (e) => e.data.edge.from === "emit_items" && e.data.edge.to === "fan_out",
     );
     expect(guarded?.type).toBe("insertable");
-    expect(guarded?.label).toBe("inputs.fanout == true");
+    // The label carries the few words ("fanout"), the full expression the tooltip.
+    expect(guarded?.label).toBe("fanout");
+    expect(guarded?.labelTitle).toBe("inputs.fanout == true");
     const plain = flow.edges.find(
       (e) => e.data.edge.from === "plan" && e.data.edge.to === "approve",
     );
     expect(plain?.label).toBeNull();
+    expect(plain?.labelTitle).toBeNull();
     // The probe declares no error routes; none may be invented.
     expect(flow.edges.filter((e) => e.type === "error")).toHaveLength(0);
+  });
+
+  it("reduces a guarded when expression to its route value", () => {
+    expect(routeLabel("nodes.verdict.outputs.route == 'verified'")).toBe("verified");
+    expect(routeLabel("inputs.fanout == true")).toBe("fanout");
+    expect(routeLabel("nodes.a.state == 'ready' && inputs.gate == true")).toBe("ready");
+    expect(routeLabel("nodes.x.done == true")).toBe("true");
+    // An unreadable guard still renders something, not nothing.
+    expect(routeLabel("1 + 1").length).toBeGreaterThan(0);
   });
 });
 
@@ -172,5 +274,79 @@ describe("nearestEdge", () => {
     // 40px from the segment midpoint but 93px from either endpoint.
     expect(pointSegmentDistance({ x: 150, y: -40 }, { x: 100, y: 30 }, { x: 200, y: 30 })).toBe(70);
     expect(pointSegmentDistance({ x: 150, y: 100 }, { x: 100, y: 30 }, { x: 200, y: 30 })).toBe(70);
+  });
+});
+
+describe("chooseCanvasOrientation", () => {
+  const box = (width: number, height: number) =>
+    ({ width, height, nodes: [], groups: [], edges: [] }) as never;
+
+  it("picks TB when its box fits the canvas panes better than the wide LR one", () => {
+    // The twin graph's two cuts, roughly: LR wide and squat, TB near square.
+    expect(chooseCanvasOrientation({ LR: box(900, 300), TB: box(520, 520) })).toBe("TB");
+  });
+
+  it("stays left-to-right when the LR box already fits better", () => {
+    expect(chooseCanvasOrientation({ LR: box(500, 400), TB: box(1400, 600) })).toBe("LR");
+  });
+
+  it("keeps LR on a tie", () => {
+    expect(chooseCanvasOrientation({ LR: box(610, 1020), TB: box(610, 1020) })).toBe("LR");
+  });
+});
+
+describe("toFlow direction", () => {
+  it("carries the canvas layout's direction on every node", () => {
+    const flow = toFlow(model, probeDocument);
+    expect(flow.nodes.length).toBeGreaterThan(0);
+    expect(flow.nodes.every((n) => n.data.direction === canvasDirection())).toBe(true);
+  });
+});
+
+describe("clearLabelAnchor", () => {
+  // Vertical edge: source box on top, target below, one rank gap between.
+  const src = { x: 100, y: 0, width: 100, height: 60 };
+  const dst = { x: 100, y: 150, width: 100, height: 60 };
+
+  it("keeps the path midpoint when it is clear of every box", () => {
+    // The pill is drawn at the smooth-step path's label point (edges.tsx
+    // resolves it from the same handles); when that point clears every box
+    // the anchor stays null and the edges keep the path midpoint.
+    expect(clearLabelAnchor("verified", src, dst, [src, dst])).toBeNull();
+  });
+
+  it("shifts off a neighbour box sitting at the path label point", () => {
+    // The `fanout` ∩ `fan_out` case: the S-curve's label point lands on a
+    // neighbouring scope box, so the pill must slide along the edge line.
+    const wall = { x: 90, y: 88, width: 120, height: 24 };
+    const anchor = clearLabelAnchor("fanout", src, dst, [src, dst, wall]);
+    expect(anchor).not.toBeNull();
+    expect(anchor!.x).toBeCloseTo(150, 0); // still on the edge's vertical line
+    const halfW = 50,
+      halfH = 12; // ≥ the pill's half-size
+    const overlaps = (box: typeof wall) =>
+      anchor!.x - halfW < box.x + box.width &&
+      box.x < anchor!.x + halfW &&
+      anchor!.y - halfH < box.y + box.height &&
+      box.y < anchor!.y + halfH;
+    expect(overlaps(wall)).toBe(false);
+    expect(overlaps(src)).toBe(false);
+    expect(overlaps(dst)).toBe(false);
+  });
+
+  it("falls back to the path midpoint when no candidate clears", () => {
+    const wall = { x: -500, y: -500, width: 1500, height: 1500 };
+    expect(clearLabelAnchor("verified", src, dst, [src, dst, wall])).toBeNull();
+  });
+
+  it("publishes the shifted anchor for the renderer", () => {
+    const flow = toFlow(model, probeDocument);
+    const shifted = flow.edges.filter((e) => e.labelX !== null);
+    for (const e of shifted) {
+      expect(edgeLabelAnchor(e.id)).toEqual({ x: e.labelX, y: e.labelY });
+    }
+    // The twin draft's guarded edges need a shift in the dense top-to-bottom
+    // cut (the regression this exists for).
+    expect(shifted.length).toBeGreaterThan(0);
   });
 });

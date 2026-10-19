@@ -1,8 +1,9 @@
 /**
- * The run inspector as a real route (`/projects/:id/runs/:runId`): header
- * verbs, the Definition | Execution | Timeline panes, and a node selection
- * that lives in `?node=` so a pane is linkable. Served by the fake fetch and
- * the fake EventSource — the same doubles that prove `/__m4-preview?source=live`.
+ * The run inspector, mounted on its route (`/projects/:id/runs/:runId`) outside
+ * the Run Workbench that now owns that route: header verbs, the Definition |
+ * Execution | Timeline panes, and a node selection that lives in `?node=` so a
+ * pane is linkable. Served by the fake fetch and the fake EventSource — the
+ * same doubles that prove `/__m4-preview?source=live`.
  */
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
@@ -20,8 +21,8 @@ import {
   turnId,
   type RouteStub,
 } from "../test/fakes";
-import { renderApp } from "../test/render";
-import { attentionNodeId, retryVerdict } from "./RunInspector";
+import { mountRunPage } from "../test/inspectorMount";
+import RunInspector, { attentionNodeId, retryVerdict } from "./RunInspector";
 import type { NodeExecution } from "../api/types";
 import type { NodeExecutionSummary } from "../lib/pipeline/contract";
 import { viewNodeExecution } from "../api/m4view";
@@ -136,10 +137,11 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   ];
 }
 
-function mountRun(search = "", extra: RouteStub[] = []): ReturnType<typeof renderApp> {
-  return renderApp({
+function mountRun(search = "", extra: RouteStub[] = []): ReturnType<typeof mountRunPage> {
+  return mountRunPage({
     path: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}${search}`,
     routes: routes(extra),
+    element: <RunInspector />,
   });
 }
 
@@ -639,7 +641,7 @@ describe(`/projects/:projectId/runs/:runId`, () => {
   });
 
   it("renders a run that answers 404 as a 404", async () => {
-    renderApp({
+    mountRunPage({
       path: `/projects/${wireProjectId}/runs/01987b11-dead-dead-dead-deaddeaddead`,
       routes: routes([
         {
@@ -648,6 +650,7 @@ describe(`/projects/:projectId/runs/:runId`, () => {
           body: { type: "about:blank", title: "Not Found", status: 404 },
         },
       ]),
+      element: <RunInspector />,
     });
     expect(await screen.findByTestId("run-not-found")).toBeTruthy();
     expect(screen.queryByTestId("run-stage-strip")).toBeNull();

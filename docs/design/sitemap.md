@@ -70,10 +70,10 @@ Preserved UI conventions, from the existing code, treated as design rules from n
 /projects/:projectId                    Project ▸ Overview        [tab]
 /projects/:projectId/work               Work / Queue              [tab]  (later: external refs, M6 — see note)
 /projects/:projectId/runs               Runs list                 [tab]
-/projects/:projectId/runs/:runId        Run Inspector             (deep)
+/projects/:projectId/runs/:runId        Run Workbench             (deep; tabs Graph · Timeline · Execution tree · Diagnostics — see URL-state note)
 /projects/:projectId/runs/:runId/nodes/:nodeExecutionId          Node Execution detail
 /projects/:projectId/runs/:runId/attempts/:attemptId             Attempt detail (evidence)
-/projects/:projectId/conversations      Conversations             [tab] (component exists)
+/projects/:projectId/conversations      Conversations             [tab] (component exists; list takes ?q=<text> & origin=manual|run)
 /projects/:projectId/conversations/:conversationId                Conversation (unchanged URL)
 /projects/:projectId/repositories       Repositories + workspaces [tab]
 /projects/:projectId/pipelines          Pipelines: assignments     [tab]
@@ -82,7 +82,7 @@ Preserved UI conventions, from the existing code, treated as design rules from n
 /pipelines                              Pipeline Library            (org-owned: definitions, revisions, drafts)
 /pipelines/:pipelineId                  Definition ▸ revisions list
 /pipelines/:pipelineId/revisions/:digest Revision viewer (immutable)
-/drafts/:draftId                        Pipeline Editor  (canvas | inspector | params | yaml | diff | validations)
+/drafts/:draftId                        ~~Pipeline Editor~~ — **replaced by Workflow Studio** (below); the URL shape still works and redirects
 /templates                              Node template library
 /profiles                               Agent profile library
 /assistant/history                      Assistant action trace (durable list of past turns/actions)
@@ -94,6 +94,30 @@ Preserved UI conventions, from the existing code, treated as design rules from n
 /approvals/:approvalId                  Approval detail (durable human gate; gap G7)
 *                                       NotFound (existing)
 ```
+
+### Issue #2 additions (shipped — Studio, Workbench, New menu)
+
+The table above is the M5 plan; these routes are what `ui/src/App.tsx` actually registers
+after issue #2 (design checkpoint `studio-workbench.md`; ADR-0042/0043/0044). Top nav
+relabels `/library` as **Workflows** (`Shell.tsx`) and carries a global **`New ▾` menu**
+(`components/NewMenu.tsx`, testids `new-menu`, `new-menu-list`, `new-menu-conversation` /
+`new-menu-workflow` / `new-menu-run`): *New conversation* (shared
+`NewConversationDialog`, project picker required), *New workflow* (→ `/library` new-draft
+flow), *Start run*. The project header repeats the two relevant entries — `project-new-conversation`
+and `project-start-run` (`Project.tsx`).
+
+| Route / state | Purpose |
+|---|---|
+| `/library/:pipelineId/drafts/:draftId` | **Workflow Studio** (lazy route, `StudioPage`): palette · React Flow canvas · schema-driven inspector · YAML view · diff · validations · save/validate/publish; header testids `studio-header`, `studio-title`, `studio-draft-version`, `studio-save`, `studio-validate`, `studio-diff`, `studio-publish`, views `studio-view-canvas` / `studio-view-yaml` |
+| `/library/:pipelineId?draft=<draftId>` and the old `/drafts/:draftId` shape | **Redirect only**: replace-navigates to the Studio route, then the query string is dropped (`Library.tsx`); deep links written before issue #2 keep working |
+| `/projects/:projectId/runs/:runId?view=…` | **Run Workbench** tabs, URL state `?view=graph|timeline|tree|diagnostics` · `node=<definitionNodeId>` · `instance=<nodeExecutionId>` · `attempt=<n>` · `scopes=<defKey>=<n>[,…]` (ADR-0043 §6; `?view` derives the tab, so selection is a shareable permalink). Legacy `?tab=definition|execution|timeline` links map onto `graph|tree|timeline` (`readWorkbenchView`); tab testids `run-tab-*` |
+| `/projects/:projectId/conversations?q=…&origin=…` | Conversation list search + Manual / From-runs filter travel in the query string, so a filtered list is linkable; origin badges `conversation-origin-manual` / `conversation-origin-run`, filters `conversation-filter-manual` / `conversation-filter-run`, search `conversation-search` |
+
+Navigation rules these additions must not break: the Studio canvas is the *only* editor
+surface — the old inline YAML draft editor (`DraftEditor`) is gone, and the Workbench graph
+is strictly read-only (editing from a run goes through `run-new-draft`, a *new* draft in the
+Studio, never a mutation of the pinned revision). The old inspector's content is preserved
+as the Workbench's `Diagnostics` tab (ADR-0043 §5); no testid was removed.
 
 Tabs are real routes (not local state): a stalled run must be linkable into Slack/a PR comment and
 reopen in the same shape, and `06` requires that "who changed this and why" is answerable from a

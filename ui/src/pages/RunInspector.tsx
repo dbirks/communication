@@ -91,7 +91,15 @@ const TABS: readonly { id: Tab; label: string }[] = [
   { id: "timeline", label: "Timeline" },
 ];
 
-export default function RunInspector() {
+export default function RunInspector({
+  embedded = false,
+}: {
+  /** The Run Workbench's Diagnostics tab hosts the inspector whole, under the
+   * workbench's own header — `embedded` hides the page's header (and the
+   * revision notice that rides under it, since the workbench header shows the
+   * same one). Behaviour is otherwise unchanged. */
+  embedded?: boolean;
+}) {
   const { projectId = "", runId = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = readTab(params.get("tab"));
@@ -329,32 +337,34 @@ export default function RunInspector() {
       </aside>
 
       <main className="min-w-0 px-4 py-3">
-        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line pb-3">
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-mono text-[11px] text-muted">
-              {slug} · pinned {shortDigest(run.revision_digest)} · {stream.events.length} frames
-              folded
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-[19px] font-bold" data-testid="run-title">
-                Run #{shortId(run.id)}
-              </h1>
-              <RunStatusChip status={run.status} testid="run-header-status" />
-              {!run.placement.scheduled &&
-              run.placement.reason === "volume_affinity_unsatisfied" ? (
-                <span className="text-[11.5px] text-muted" data-testid="run-waiting-for-worker">
-                  waiting for its worker
+        {embedded ? null : (
+          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line pb-3">
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-mono text-[11px] text-muted">
+                {slug} · pinned {shortDigest(run.revision_digest)} · {stream.events.length} frames
+                folded
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-[19px] font-bold" data-testid="run-title">
+                  Run #{shortId(run.id)}
+                </h1>
+                <RunStatusChip status={run.status} testid="run-header-status" />
+                {!run.placement.scheduled &&
+                run.placement.reason === "volume_affinity_unsatisfied" ? (
+                  <span className="text-[11.5px] text-muted" data-testid="run-waiting-for-worker">
+                    waiting for its worker
+                  </span>
+                ) : null}
+                <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">
+                  {stream.status}
                 </span>
-              ) : null}
-              <span className="font-mono text-[11px] text-faint" data-testid="run-stream-status">
-                {stream.status}
-              </span>
+              </div>
             </div>
-          </div>
-          <RunActions runId={runId} status={run.status} nodes={projection.nodes} />
-        </header>
+            <RunActions runId={runId} status={run.status} nodes={projection.nodes} />
+          </header>
+        )}
 
-        {revisionNotice ? (
+        {!embedded && revisionNotice ? (
           <div className="pt-3">
             <Alert
               state="info"
@@ -533,7 +543,7 @@ export function retryVerdict(status: string, nodes: readonly NodeExecutionSummar
   };
 }
 
-function RunActions({
+export function RunActions({
   runId,
   status,
   nodes,
@@ -664,7 +674,7 @@ function RunDefinitionTab({
 
 /* -------------------------------------------------------- execution tab */
 
-function RunExecutionTab({
+export function RunExecutionTab({
   projectId,
   nodes,
   tree,
@@ -839,7 +849,7 @@ function leafOf(key: string | null): string | null {
   return leaf.replace(/\[\d+\]$/, "");
 }
 
-function RunTimelineTab({
+export function RunTimelineTab({
   runId,
   projectId,
   events,

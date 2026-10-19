@@ -98,6 +98,10 @@ contract forbids it) and never shows a skill list implying tenant isolation (D-0
 *Selects sample Plan→Approve→Implement→Review; changes agent profiles/inputs; adds a bounded review
 loop; validates; previews YAML/diff; publishes a new revision; promotes it to one Project only.*
 
+> Issue #2 note: the canvas steps below now live in the **Workflow Studio**
+> (`/library/:pipelineId/drafts/:draftId`) — the full authoring journey is J10; J3 keeps the
+> publish/promote contract, which is unchanged.
+
 ```mermaid
 flowchart TD
   A["/pipelines ▸ Starter gallery<br/>'Feature Delivery' (07's example #1)"] --> B["Clone to organization ▸ draft<br/>⟨gap G1: needs a clone/create-draft route⟩"]
@@ -259,6 +263,91 @@ flowchart TD
   H --> I["✓ 'What remains unmerged' is a listed state:<br/>'Draft PR #412 open · 2 checks pending · not merged'"]
   C -->|worker died mid-action| J["Attempt interrupted + intent still open:<br/>'Unconfirmed external action — will reconcile'<br/>(never claims success from exit status alone,<br/>cf. ADR-0019's post-commit ref read)"]
   B -->|no publication node configured| K["Says so plainly:<br/>'This revision has no publication step. Changes live<br/>in the run workspace only.'"]
+```
+
+---
+
+## J10–J13 — Issue #2 walkthroughs (Studio, Workbench, conversations, assistant proposals)
+
+These four are issue #2's acceptance journeys (design checkpoint `studio-workbench.md`;
+ADR-0042/0043/0044), in the same notation as J1–J9. `⟨T:…⟩` names a shipped `data-testid`.
+
+### J10 — Author a workflow visually (Workflow Studio)
+
+*Opens a draft, inserts a step on an edge, configures it, wraps a node in a Repeat-until scope,
+validates, reads the diff, publishes.*
+
+```mermaid
+flowchart TD
+  A["Open draft ▸ /library/:pipelineId/drafts/:draftId<br/>⟨T:studio-page⟩ · old shapes redirect here"] --> B["Palette: search + kind list ⟨T:studio-palette⟩<br/>click adds after the selected step<br/>⟨T:palette-item-<kind>⟩"]
+  B --> C["Insert on an edge: + button on the edge<br/>⟨T:edge-add-<from>-<to>⟩ ▸ StepPicker<br/>⟨T:step-picker⟩ · ⟨T:step-picker-item-<kind>⟩"]
+  C -->|guarded / condition / error-route edge| C1["⟨T:studio-ambiguity-dialog⟩: the §4 reasons, verbatim<br/>[Insert anyway] keeps the target's guard + bindings<br/>[Cancel] — never a silent rewrite of `when`"]
+  C --> D["Configure the node in the Inspector<br/>⟨T:insp-node⟩ · fields ⟨T:insp-<field>⟩, schema-driven<br/>validate-only kinds show 'not runnable yet' ⟨T:insp-deferred⟩"]
+  D --> E["Wrap in Repeat until: scope box on the canvas<br/>⟨T:canvas-scope-<id>⟩ · add inside ⟨T:add-inside-<id>⟩<br/>bound (maxIterations) visible, not in a tooltip"]
+  E --> F["Validate ⟨T:studio-validate⟩<br/>⟨T:studio-validate-drawer⟩ · verdict + findings<br/>each finding jumps to its node ⟨T:studio-goto-node-<i>⟩"]
+  F --> G["Diff vs source revision ⟨T:studio-diff⟩<br/>⟨T:diff-panel⟩ · per-node rows ⟨T:diff-node-<id>⟩<br/>unparseable YAML ⇒ ⟨T:diff-invalid⟩, publish gated"]
+  G --> H["Save = version-checked PUT /drafts/:id<br/>⟨T:studio-save⟩; 409 ⇒ conflict banner, reload or overwrite<br/>⟨T:studio-conflict-banner⟩ — never a silent clobber"]
+  H --> I["Publish ⟨T:studio-publish⟩; disabled reason in text<br/>⟨T:studio-publish-reason⟩ · same contract as J3<br/>⟨server⟩ immutable revision, assignments unchanged"]
+  B --> J["Undo/redo ⟨T:studio-undo⟩ / ⟨T:studio-redo⟩ never cross<br/>the saved version — unsaved edits marked ⟨T:studio-dirty⟩"]
+```
+
+Error/abort paths designed: invalid YAML keeps the last-good graph and greys the canvas
+(⟨T:canvas-stale-banner⟩ + `staleMessage`); a refused connection names the reason
+(⟨T:connect-refused⟩); leaving with unsaved edits asks first (⟨T:studio-leave-guard⟩).
+
+### J11 — Watch a run and intervene (Run Workbench)
+
+*Opens the run, the default view is the live graph; selects the ACP node, reads its real
+conversation beside the graph, takes control, prompts, returns to the factory.*
+
+```mermaid
+flowchart TD
+  A["/projects/:projectId/runs/:runId<br/>default ?view=graph · tabs ⟨T:run-tab-graph|timeline|tree|diagnostics⟩"] --> B["Live graph = pinned definition topology with status overlays<br/>⟨T:run-pinned-revision⟩ in the header — editing is impossible by design"]
+  B --> C["Select the ACP node ⟨T:canvas-step-<id>⟩<br/>instance chosen through selectors, never extra graph nodes:<br/>⟨T:instance-picker-<scopeId>⟩ (iteration chips / paged items) ·<br/>attempt tabs ⟨T:dock-attempt-<n>⟩"]
+  C --> D["Right dock: AgentConversationPanel for agent.acp<br/>⟨T:workbench-dock⟩ · ⟨T:dock-conversation⟩ — the same panel<br/>the Conversation page renders, not a fork"]
+  D --> E["Take control ⟨T:take-control⟩ ⟨version⟩"]
+  E -->|409 with live control row| E1["Adopt the returned control, re-label<br/>(J6 rule — never retried over.)"]
+  E -->|200| F["Prompt in the composer ⟨T:composer-input⟩ /<br/>⟨T:composer-send⟩; one active turn, Stop ⟨T:stop-turn⟩"]
+  F --> G["Return to factory ⟨T:return-control⟩<br/>badge back to 'Controlled by a pipeline run'<br/>⟨T:controller-badge⟩ · stream ⟨T:run-stream-status⟩"]
+  D -->|viewer, no write access| H["No composer, no Take control — disabled + explained<br/>⟨T:composer-explainer⟩ (ADR-0016 controller lock, never widened)"]
+  D -->|process.exec / human.approval / failure| I["Dock is kind-keyed: stdout tail · ApprovalCard ·<br/>error + attempt n of m + retry verdict ⟨T:dock-failure⟩"]
+```
+
+Rule: the view never moves the user's selection — SSE updates badges and counts only
+(ADR-0043 §4); the full journal tree stays one tab away (`?view=tree`).
+
+### J12 — Start a one-off conversation
+
+*No pipeline involved: three entries open the same dialog, and the result is labelled Manual.*
+
+```mermaid
+flowchart TD
+  A["Global New ▾ ⟨T:new-menu⟩ ⟨T:new-menu-conversation⟩<br/>project header ⟨T:project-new-conversation⟩<br/>Conversations tab ⟨T:conversations-new-open⟩"] --> B["NewConversationDialog ⟨T:new-conversation-dialog⟩<br/>project picker (fixed when opened from a project)<br/>⟨T:new-conversation-dialog-project⟩"]
+  B -->|no project yet| B1["⛔ 'Create a project first' ⟨T:new-conversation-dialog-need-project⟩ —<br/>a one-off conversation still needs a project (01)"]
+  B --> C["Title · profile · first prompt<br/>⟨T:conversation-new-title⟩ / -profile / -prompt<br/>⟨T:conversation-new-submit⟩"]
+  C --> D["⟨server⟩ conversation created, origin=manual"]
+  D --> E["List shows the badge: 'Manual' ⟨T:conversation-origin-manual⟩<br/>vs 'From run' ⟨T:conversation-origin-run⟩ (deep-link to the run);<br/>filter All/Manual/From-runs + search ride ?q= & origin="]
+  C -->|no launchable profile| F["Disabled + explained (G18): 'No agent profile<br/>you can launch. Ask an admin to register one.'"]
+```
+
+### J13 — Assistant proposes a draft change
+
+*In the Studio, the human asks in words; the assistant returns one reviewable op; applying it is
+the normal version-checked PUT — the assistant never publishes (ADR-0044).*
+
+```mermaid
+flowchart TD
+  A["Studio header: 'Ask to change this draft…'<br/>⟨T:assistant-proposal-box⟩"] --> B["Type the instruction ⟨T:assistant-proposal-input⟩<br/>⟨T:assistant-proposal-submit⟩"]
+  B --> C["POST /api/v1/assistant/draft-proposals<br/>{draft_id, version, instruction}<br/>authorization = 'may PUT this draft' — no wider"]
+  C -->|wrong version / no write access| C1["409 / 403 — same problem+json as the draft PUT;<br/>no proposal, nothing to review"]
+  C -->|structurally invalid / guarded edge| C2["422 assistant_proposal_invalid — refused, not re-asked;<br/>⟨T:assistant-proposal-error⟩ names it"]
+  C --> D["Exactly one op from the closed set:<br/>insert_after · insert_on_edge · update_prompt"]
+  D --> E["Canvas rings the touched nodes + caption<br/>⟨T:assistant-proposal-caption⟩ — same code path a human<br/>gesture uses (graphDoc ops)"]
+  E --> F{"Apply or discard"}
+  F -->|Apply ⟨T:assistant-proposal-apply⟩| G["Adopt the previewed text and Save with the<br/>normal version-checked PUT — same 409 rules as J10"]
+  F -->|Discard ⟨T:assistant-proposal-discard⟩| H["Restore the pre-proposal text, clear the highlight;<br/>nothing was ever written server-side"]
+  E -->|unsaved human edits present| I["Blocked with the reason ⟨T:assistant-proposal-reason⟩:<br/>applying to saved text would lose them"]
+  G --> J["✓ Publish is still a separate human decision —<br/>the assistant only proposed; no autonomous publish (08)"]
 ```
 
 ---

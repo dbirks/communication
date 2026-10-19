@@ -23,6 +23,7 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/library$`),
 	regexp.MustCompile(`^/agents$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/artifacts$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/runs$`),

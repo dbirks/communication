@@ -416,48 +416,57 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
-      // seeded, at /library/:id?draft=:draftId.
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
-      pipelinePath = new URL(admin.url()).pathname;
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(new RegExp(SLUG));
+      // seeded's Workflow Studio, at /library/:id/drafts/:draftId.
+      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      pipelinePath = `/library/${new URL(admin.url()).pathname.split("/")[2]}`;
+      // The Studio's YAML view is the same authoring surface the old editor
+      // exposed as its textarea.
+      await admin.getByTestId("studio-view-yaml").click();
+      const yaml = admin.getByTestId("studio-yaml");
+      await expect(yaml).toHaveValue(new RegExp(SLUG));
       // The sample as shipped — the node the journey must later replace.
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/kind: model\.chat/);
+      await expect(yaml).toHaveValue(/kind: model\.chat/);
       await shot(admin, "m5-01-template-draft");
     });
   });
 
   test("step 2 — customize the draft, validate it, publish r1", async () => {
     await test.step("make it the process.exec twin (no model endpoint on this lab)", async () => {
-      await admin
-        .getByTestId("draft-editor-input")
-        .fill(DETERMINISTIC_TWIN.replace("__SLUG__", SLUG));
+      await admin.getByTestId("studio-yaml").fill(DETERMINISTIC_TWIN.replace("__SLUG__", SLUG));
       // The sample's model node is gone as a *node*: nothing here needs
       // credentials (the header comment still names the kind it replaced).
-      await expect(admin.getByTestId("draft-editor-input")).not.toHaveValue(/kind: model\.chat/);
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/kind: process\.exec/);
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/kind: human\.approval/);
+      await expect(admin.getByTestId("studio-yaml")).not.toHaveValue(/kind: model\.chat/);
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: process\.exec/);
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: human\.approval/);
     });
     await test.step("the step form changes one field: the survey node's timeout", async () => {
-      await admin.getByTestId("draft-editor-node-0").click();
-      const timeout = admin.getByTestId("draft-editor-field-timeoutSeconds");
+      await admin.getByTestId("studio-view-canvas").click();
+      // The canvas steps are addressed by node id: the survey node's timeout.
+      await admin.getByTestId("canvas-step-survey").click();
+      await expect(admin.getByTestId("insp-node")).toBeVisible();
+      const timeout = admin.getByTestId("insp-timeoutSeconds");
       await expect(timeout).toHaveValue("300");
       await timeout.fill("420");
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/timeoutSeconds: 420/);
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveText("unsaved changes");
+      // Number fields commit on blur/Enter; the write lands on the document,
+      // which the YAML view then shows.
+      await timeout.press("Enter");
+      await admin.getByTestId("studio-view-yaml").click();
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/timeoutSeconds: 420/);
+      await expect(admin.getByTestId("studio-dirty")).toHaveText("unsaved");
     });
     await test.step("Save → Validate → the server says valid", async () => {
-      await admin.getByTestId("draft-editor-save").click();
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("draft-editor-validate").click();
+      await admin.getByTestId("studio-save").click();
+      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("studio-validate").click();
       // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
         timeout: 30_000,
       });
-      await expect(admin.getByTestId("draft-editor-publish")).toBeEnabled();
+      await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
     await test.step("Publish → r1 is immutable and listed", async () => {
-      await admin.getByTestId("draft-editor-publish").click();
-      await expect(admin.getByTestId("draft-editor-published")).toContainText("published r1", {
+      await admin.getByTestId("studio-publish").click();
+      await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
       await gotoApp(admin, pipelinePath);
@@ -781,18 +790,17 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await admin.getByTestId("library-new-name-input").fill(GATE_SLUG);
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
-      await admin
-        .getByTestId("draft-editor-input")
-        .fill(GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG));
-      await admin.getByTestId("draft-editor-save").click();
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("draft-editor-validate").click();
-      await expect(admin.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await admin.getByTestId("studio-view-yaml").click();
+      await admin.getByTestId("studio-yaml").fill(GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG));
+      await admin.getByTestId("studio-save").click();
+      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("studio-validate").click();
+      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
         timeout: 30_000,
       });
-      await admin.getByTestId("draft-editor-publish").click();
-      await expect(admin.getByTestId("draft-editor-published")).toContainText("published r1", {
+      await admin.getByTestId("studio-publish").click();
+      await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
       await shot(admin, "m5-08-scratch-gate-published");

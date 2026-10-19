@@ -13,8 +13,9 @@
  */
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { renderApp } from "../test/render";
+import { mountRunPage } from "../test/inspectorMount";
 import { FakeEventSource, meFixture, projectFixture, type RouteStub } from "../test/fakes";
+import RunInspector from "./RunInspector";
 import type { Attempt, NodeExecution } from "../api/types";
 import {
   WIRE_ATTEMPT_1,
@@ -129,7 +130,7 @@ function w5Journal(): ReturnType<typeof wireRunEvent>[] {
 
 function mountW5(search = `?node=${WIRE_NODE_IMPLEMENT}`, extra: RouteStub[] = []) {
   const nodeDetail = { ...wireNodeDetail, attempts: [interruptedAttempt, replacementAttempt] };
-  return renderApp({
+  return mountRunPage({
     path: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}${search}`,
     routes: [
       ...extra,
@@ -158,6 +159,7 @@ function mountW5(search = `?node=${WIRE_NODE_IMPLEMENT}`, extra: RouteStub[] = [
       { path: `/api/v1/revisions/${wireRun.revision_digest}`, body: wireRevision },
       { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, body: wireRevision },
     ],
+    element: <RunInspector />,
   });
 }
 

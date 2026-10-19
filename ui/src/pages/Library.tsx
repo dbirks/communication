@@ -27,7 +27,6 @@ import { Field, Input, Select } from "../components/ds/Field";
 import { DRAFT_STATE, REVISION_STATE, stateOf } from "../components/ds/states";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
-import { DraftEditor } from "../components/m4/DraftEditor";
 import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
 import { apiFetch, problemOf } from "../api/client";
@@ -177,7 +176,7 @@ function NewPipelineForm() {
     startedRun.current = seed.run;
     createDraft
       .mutateAsync({ document_yaml: seed.documentYaml })
-      .then((draft) => navigate(`/library/${seed.pipelineId}?draft=${draft.id}`))
+      .then((draft) => navigate(`/library/${seed.pipelineId}/drafts/${draft.id}`))
       .catch((error: unknown) => setSeedFailure(error));
   }, [seed, createDraft, navigate]);
 
@@ -367,18 +366,24 @@ function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
 
 /**
  * One pipeline: its revisions (read-only, immutable) and its drafts (mutable,
- * the only authoring surface M5 has). Selecting a revision reads its regenerated
- * canonical document + `canonical_document` (ADR-0021 § 5 — what the author
- * typed is not stored on a revision); selecting a draft opens `DraftEditor`,
- * whose Publish gate is the server's `status`, never this page's opinion.
+ * the only authoring surface). Selecting a draft, or creating a new one,
+ * navigates to the Workflow Studio route (`/library/:pipelineId/drafts/:draftId`)
+ * — the page that owns the editor since issue #2; a revision read stays here
+ * (regenerated canonical document + definition graph).
  */
 export function PipelinePage() {
   const { pipelineId = "" } = useParams();
-  // A template draft is opened by id: the library form creates the first draft
-  // after the definition POST and lands on `/library/:id?draft=<id>` with it
-  // selected. Read at mount only — the page owns selection from then on, and
-  // the link stays reloadable.
+  // The old URL shape stays valid: `/library/:id?draft=<id>` replace-navigates
+  // to the Studio route, which now owns the editor (issue #2). Read at mount
+  // only — after the replace the query string is gone.
   const [draftParams] = useSearchParams();
+  const navigate = useNavigate();
+  const redirectDraft = draftParams.get("draft");
+  useEffect(() => {
+    if (redirectDraft) {
+      navigate(`/library/${pipelineId}/drafts/${redirectDraft}`, { replace: true });
+    }
+  }, [redirectDraft, pipelineId, navigate]);
   const me = useMe();
   const actors = useActorNames();
   // Same bleed as `pages/RunInspector.tsx`: the shell's centred reading
@@ -419,7 +424,6 @@ export function PipelinePage() {
   const canAuthor = hasLibraryRole(me.data);
 
   const [revisionKey, setRevisionKey] = useState<string | null>(null);
-  const [draftId, setDraftId] = useState<string | null>(draftParams.get("draft"));
   const [draftCreating, setDraftCreating] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
 
@@ -466,7 +470,7 @@ export function PipelinePage() {
       cloneDocument ?? withMetadataName(BLANK_SKELETON_YAML, pipeline.data?.slug ?? pipelineId);
     createDraft
       .mutateAsync({ document_yaml: documentYaml })
-      .then((draft) => setDraftId(draft.id))
+      .then((draft) => navigate(`/library/${pipelineId}/drafts/${draft.id}`))
       .catch((error: unknown) => setFailure(error))
       .finally(() => {
         creating.current = false;
@@ -480,6 +484,7 @@ export function PipelinePage() {
     revisionRows.length,
     pipelineId,
     createDraft,
+    navigate,
   ]);
 
   const summary = pipeline.data ? viewPipelineSummary(pipeline.data) : null;
@@ -534,10 +539,7 @@ export function PipelinePage() {
                   <button
                     type="button"
                     className="flex flex-1 flex-wrap items-center gap-[6px] text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    onClick={() => {
-                      setRevisionKey(row.id);
-                      setDraftId(null);
-                    }}
+                    onClick={() => setRevisionKey(row.id)}
                   >
                     <StatusChip
                       state={stateOf(REVISION_STATE[row.status])}
@@ -596,14 +598,13 @@ export function PipelinePage() {
             {visibleDrafts.map((row) => (
               <li key={row.id}>
                 <Row
-                  selected={draftId === row.id}
                   className="h-auto flex-wrap cursor-pointer border-0 rounded-none px-[10px] py-[8px]"
                   data-testid={`draft-row-${row.id}`}
                 >
                   <button
                     type="button"
                     className="flex flex-1 flex-wrap items-center gap-[6px] text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    onClick={() => setDraftId(row.id)}
+                    onClick={() => navigate(`/library/${pipelineId}/drafts/${row.id}`)}
                   >
                     <StatusChip
                       state={stateOf(DRAFT_STATE[row.status])}
@@ -650,21 +651,13 @@ export function PipelinePage() {
             testid="pipeline-page-failure"
           />
         ) : null}
-        {draftId ? (
-          <DraftEditor
-            pipelineId={pipelineId}
-            draftId={draftId}
-            canAuthor={canAuthor}
-            headingId="pipeline-draft-editor-heading"
-          />
-        ) : null}
-        {!draftId && revision.isError ? (
+        {revision.isError ? (
           <ProblemBanner
             error={revision.error}
             fallback="The selected revision could not be read."
           />
         ) : null}
-        {!draftId && revision.data ? (
+        {revision.data ? (
           <>
             <YamlView
               text={revisionDocument.data ?? revision.data.document_text}
@@ -678,10 +671,10 @@ export function PipelinePage() {
             />
           </>
         ) : null}
-        {!draftId && revision.isPending && selectedRevisionKey ? (
+        {revision.isPending && selectedRevisionKey ? (
           <Spinner label="Loading the revision document" />
         ) : null}
-        {!draftId && newestPublished ? (
+        {newestPublished ? (
           <AssignToProjectPanel
             pipelineId={pipelineId}
             newestPublishedDigest={newestPublished.revision_digest}

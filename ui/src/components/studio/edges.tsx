@@ -20,10 +20,16 @@ export type InsertableEdgeRender = {
   edge: GraphEdge;
   readOnly: boolean;
   stale: boolean;
-  /** The short `when` text for a guarded edge (null for plain depends). */
+  /** The short route value for a guarded edge (null for plain depends). */
   label: string | null;
+  /** The full `when` expression for the label's title tooltip. */
+  labelTitle: string | null;
   /** Label of the kind being dragged over this edge ("Insert … here"). */
   preview: string | null;
+  /** The collision-checked label anchor in absolute flow coordinates; null
+   * keeps the raw path midpoint (flowModel only shifts a label that would
+   * otherwise sit on a neighbour node/scope box). */
+  labelAnchor: { x: number; y: number } | null;
   /** The picked kind — present only when the canvas can insert here. */
   onInsert: (kind: string) => void;
 };
@@ -31,6 +37,8 @@ export type InsertableEdgeRender = {
 export type ErrorEdgeRender = {
   edge: GraphEdge;
   label: string | null;
+  /** The collision-checked label anchor (see `InsertableEdgeRender`). */
+  labelAnchor: { x: number; y: number } | null;
 };
 
 const addButton =
@@ -58,7 +66,11 @@ function smoothPath(props: {
 export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
   const { id, data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [path] = smoothPath(props);
+  const [path, pathLabelX, pathLabelY] = smoothPath(props);
+  // The collision-checked anchor overrides the raw path midpoint: in the dense
+  // top-to-bottom cut the midpoint can sit on a neighbour scope's box.
+  const labelX = data?.labelAnchor?.x ?? pathLabelX;
+  const labelY = data?.labelAnchor?.y ?? pathLabelY;
   if (!data) return null;
   const interactive = !data.readOnly && !data.stale;
   const preview = data.preview;
@@ -75,7 +87,10 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
         }}
       />
       <EdgeLabelRenderer>
-        <div className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2">
+        <div
+          className="pointer-events-none absolute"
+          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+        >
           <div className="flex flex-col items-center gap-1">
             {interactive && !preview && (
               <button
@@ -94,10 +109,11 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
             {label && (
               <span
                 data-testid={preview ? "insert-preview" : undefined}
+                title={preview ? undefined : (data.labelTitle ?? label)}
                 className={
                   preview
                     ? "pointer-events-none rounded-full border border-accent bg-surface px-2 py-0.5 text-[10px] font-semibold text-accent"
-                    : "rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-muted"
+                    : "pointer-events-none max-w-[76px] overflow-hidden rounded-full border border-line bg-surface px-1.5 py-0.5 text-ellipsis text-[10px] text-ink-2"
                 }
               >
                 {label}
@@ -124,7 +140,9 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
 
 export function ErrorEdge(props: EdgeProps<Edge<ErrorEdgeRender>>) {
   const { id, data } = props;
-  const [path] = smoothPath(props);
+  const [path, pathLabelX, pathLabelY] = smoothPath(props);
+  const labelX = data?.labelAnchor?.x ?? pathLabelX;
+  const labelY = data?.labelAnchor?.y ?? pathLabelY;
   if (!data) return null;
   return (
     <>
@@ -139,7 +157,8 @@ export function ErrorEdge(props: EdgeProps<Edge<ErrorEdgeRender>>) {
       />
       <EdgeLabelRenderer>
         <span
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-st-failed-pale-fg"
+          className="pointer-events-none absolute rounded-full bg-surface px-1.5 py-0.5 text-[10px] text-st-failed-pale-fg"
+          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           aria-label={`Error route from ${data.edge.from} to ${data.edge.to}`}
         >
           {data.label ?? "on error"}

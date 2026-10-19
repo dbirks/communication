@@ -7,6 +7,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { useState } from "react";
+import { canvasDirection } from "./flowModel";
 import { StepPicker } from "./StepPicker";
 
 export type StepNodeRender = {
@@ -21,6 +22,8 @@ export type StepNodeRender = {
   stale: boolean;
   highlight: boolean;
   status: { state: string; label: string } | null;
+  /** Layout direction for the handle positions; falls back to the canvas's last layout. */
+  direction?: "LR" | "TB";
   onSelect: () => void;
   /** Present only on terminal steps: opens the picker, then adds after this. */
   onAddAfter: ((kind: string) => void) | null;
@@ -34,6 +37,10 @@ export type ScopeNodeRender = {
   emptyBody: boolean;
   readOnly: boolean;
   stale: boolean;
+  /** Run Workbench overlay ("iteration 2 of 4", "14 items: …"). */
+  status: { state: string; label: string } | null;
+  /** Layout direction for the handle positions; falls back to the canvas's last layout. */
+  direction?: "LR" | "TB";
   /** Present only when the body is empty: opens the picker, then adds inside. */
   onAddInside: ((kind: string) => void) | null;
 };
@@ -58,10 +65,25 @@ function statusGlyph(state: string): string {
 const chip =
   "rounded-full border border-line bg-fill px-1.5 py-0.5 text-[10px] leading-4 text-muted";
 
+/** Handles stay in the DOM in every mode — a read-only canvas still needs
+ * them for edge geometry (an edge with no resolvable handle is dropped) —
+ * but they are invisible and inert when they cannot be dragged. */
+const handleClass = (interactive: boolean): string =>
+  interactive
+    ? "!h-2 !w-2 !border-line-strong !bg-surface"
+    : "!h-2 !w-2 !border-transparent !bg-transparent opacity-0 !pointer-events-none";
+
 export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   const { data, selected } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
+  // The layout's direction picks where the edges attach: left/right for a
+  // left-to-right graph, top/bottom for a top-to-bottom one. Edges resolve
+  // against these handle positions, so handles that do not match the layout
+  // would connect the wrong corners.
+  const direction = data.direction ?? canvasDirection();
+  const inPosition = direction === "TB" ? Position.Top : Position.Left;
+  const outPosition = direction === "TB" ? Position.Bottom : Position.Right;
 
   const pick = (event: KeyboardEvent) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -76,22 +98,8 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
       data-highlight={data.highlight ? "assistant-proposed" : undefined}
       data-testid={`canvas-step-${data.id}`}
     >
-      {interactive && (
-        <>
-          <Handle
-            id="in"
-            type="target"
-            position={Position.Top}
-            className="!h-2 !w-2 !border-line-strong !bg-surface"
-          />
-          <Handle
-            id="out"
-            type="source"
-            position={Position.Bottom}
-            className="!h-2 !w-2 !border-line-strong !bg-surface"
-          />
-        </>
-      )}
+      <Handle id="in" type="target" position={inPosition} className={handleClass(interactive)} />
+      <Handle id="out" type="source" position={outPosition} className={handleClass(interactive)} />
       <div
         role="button"
         tabIndex={interactive ? 0 : -1}
@@ -99,29 +107,37 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         onClick={() => data.onSelect()}
         onKeyDown={pick}
         className={[
-          "flex h-full flex-col gap-0.5 rounded-md border bg-surface px-2.5 py-2 text-left outline-none",
+          "flex h-full flex-col rounded-md border bg-surface px-2.5 text-left outline-none",
+          data.status ? "gap-[2px] py-1" : "gap-0.5 py-2",
           selected ? "border-accent shadow-[0_0_0_2px_var(--color-accent-ring)]" : "border-line",
           data.stale ? "opacity-70" : "",
         ].join(" ")}
       >
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-semibold text-ink">{data.label}</span>
-          {data.status && (
-            <span
-              className="shrink-0 text-[10px] leading-none text-ink-2"
-              aria-label={`status: ${data.status.label}`}
-              data-testid={`step-status-${data.id}`}
-            >
-              <span aria-hidden="true">{statusGlyph(data.status.state)}</span> {data.status.label}
-            </span>
-          )}
+        <div
+          className="truncate text-[13px] font-semibold leading-none text-ink"
+          title={`${data.label} (${data.id})`}
+        >
+          {data.id}
         </div>
-        <div className="truncate font-mono text-[11px] text-ink-2">{data.id}</div>
+        {data.status && (
+          <div
+            className="flex items-start gap-1 text-[11px] leading-tight text-ink-2"
+            aria-label={`status: ${data.status.label}`}
+            data-testid={`step-status-${data.id}`}
+          >
+            <span aria-hidden="true" className="shrink-0">
+              {statusGlyph(data.status.state)}
+            </span>
+            <span className="break-words">{data.status.label}</span>
+          </div>
+        )}
         <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-muted">{data.kind}</span>
+          <span className="truncate text-[11px] leading-none text-ink-2" title={data.label}>
+            {data.kindWord}
+          </span>
           {data.deferred && <span className={chip}>{data.deferred}</span>}
         </div>
-        {data.when && (
+        {data.when && !data.status && (
           <div className="truncate text-[10px] italic text-faint" title={data.when}>
             when {data.when}
           </div>
@@ -186,6 +202,9 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const { data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
+  const direction = data.direction ?? canvasDirection();
+  const inPosition = direction === "TB" ? Position.Top : Position.Left;
+  const outPosition = direction === "TB" ? Position.Bottom : Position.Right;
 
   const style: CSSProperties = {
     // The dagre group box already reserves the header bar; the border just
@@ -197,10 +216,24 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
 
   return (
     <div className="relative h-full w-full" data-testid={`canvas-scope-${data.id}`} style={style}>
+      {/* Scope boxes are edge endpoints (a scope is a node in the graph), so
+       * they need the handles the edges resolve against — never draggable. */}
+      <Handle id="in" type="target" position={inPosition} className={handleClass(false)} />
+      <Handle id="out" type="source" position={outPosition} className={handleClass(false)} />
       <div className="flex items-center gap-1.5 rounded-t-lg border-b border-line-strong bg-fill px-2.5 py-1">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-2">
+        <span className="truncate text-[11px] font-semibold uppercase tracking-wide text-ink-2">
           {data.headerText}
         </span>
+        {data.status && (
+          <span
+            className="ml-auto shrink-0 text-[11px] font-semibold leading-none text-ink"
+            aria-label={`status: ${data.status.label}`}
+            data-testid={`scope-status-${data.id}`}
+            title={data.status.label}
+          >
+            <span aria-hidden="true">{statusGlyph(data.status.state)}</span> {data.status.label}
+          </span>
+        )}
       </div>
       <RecurrenceArrow />
       {data.emptyBody && (

@@ -661,30 +661,34 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         await selectByOptionText(page, "library-new-template-select", "Plan with approval");
         await page.getByTestId("library-new-submit").click();
         // A template is not a revision: the click path lands on the seeded
-        // draft at /library/:id?draft=:draftId. A 422 (e.g. an illegal slug)
-        // never navigates and fails the wait with the API's status and body.
+        // draft's Workflow Studio, at /library/:id/drafts/:draftId. A 422
+        // (e.g. an illegal slug) never navigates and fails the wait with
+        // the API's status and body.
         await waitForNavAfterWrite(
           page,
-          /\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/,
+          /\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
           "create the plan pipeline",
         );
-        planPipelinePath = new URL(page.url()).pathname;
-        await expect(page.getByTestId("draft-editor-input")).toHaveValue(new RegExp(PLAN_SLUG));
+        planPipelinePath = `/library/${new URL(page.url()).pathname.split("/")[2]}`;
+        // The Studio's YAML view is the same authoring surface the old
+        // editor exposed as its textarea.
+        await page.getByTestId("studio-view-yaml").click();
+        await expect(page.getByTestId("studio-yaml")).toHaveValue(new RegExp(PLAN_SLUG));
         await shot(page, "home-02-template-draft");
       }
     });
     if (!publishedAlready) {
       await test.step("Validate → the server's stored verdict is valid", async () => {
-        await page.getByTestId("draft-editor-validate").click();
+        await page.getByTestId("studio-validate").click();
         // Publish is gated on the stored verdict, so the verdict is the gate.
-        await expect(page.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+        await expect(page.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
           timeout: 30_000,
         });
-        await expect(page.getByTestId("draft-editor-publish")).toBeEnabled();
+        await expect(page.getByTestId("studio-publish")).toBeEnabled();
       });
       await test.step("Publish → r1 carries the revision digest", async () => {
-        await page.getByTestId("draft-editor-publish").click();
-        await expect(page.getByTestId("draft-editor-published")).toContainText("published r1", {
+        await page.getByTestId("studio-publish").click();
+        await expect(page.getByTestId("studio-published")).toContainText("published as r1", {
           timeout: 30_000,
         });
         const revisions = await pipelineRevisions(planPipelinePath);
@@ -752,52 +756,58 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   }
 
   /**
-   * Open a draft editor on the pipeline page already under the cursor and
-   * take the one-node claude document through fill → save → validate →
-   * publish r1. The draft is the page's own state: an existing `draft-row-*`
-   * is selected when the page lists one (the resume of an interrupted run),
-   * otherwise the page's "New draft" control (`pipeline-new-draft`) is the
-   * click — with zero published revisions it posts the blank skeleton named
-   * for the slug, so the control is enabled by construction. Every wait is
+   * Take the one-node claude document through the Workflow Studio's YAML
+   * view: fill → save → validate → publish r1. The caller is either already
+   * on the Studio route `/library/:pipelineId/drafts/:draftId` (the Blank
+   * create navigates straight there) or on the pipeline page, where the
+   * draft is the page's own state: an existing `draft-row-*` is selected
+   * when the page lists one (the resume of an interrupted run), otherwise
+   * the page's "New draft" control (`pipeline-new-draft`) is the click —
+   * with zero published revisions it posts the blank skeleton named for
+   * the slug, so the control is enabled by construction. Every wait is
    * bounded; the only failure left is the page's own query settling on
    * neither a row nor an enabled control.
    */
   async function authorFirstRevision(slug: string): Promise<void> {
-    const editor = page.getByTestId("draft-editor-input");
-    if (!(await editor.isVisible().catch(() => false))) {
+    if (!/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/.test(page.url())) {
       const draftRow = page.getByTestId(/^draft-row-.+$/).first();
       // Settle the drafts list first: it shows either a row or its own
       // `drafts-empty` line, and the decision below must not race the query.
       await expect(draftRow.or(page.getByTestId("drafts-empty")).first()).toBeVisible({
         timeout: 30_000,
       });
-      const newDraft = page.getByTestId("pipeline-new-draft");
       if (await draftRow.isVisible()) {
         // An interrupted run left the draft: select it and finish the
         // publish from wherever it stopped.
         await draftRow.click();
       } else {
         // No row: "New draft" posts the skeleton (nothing to clone at zero
-        // revisions) and the editor opens on the page we are already on.
+        // revisions) and the Studio route opens.
+        const newDraft = page.getByTestId("pipeline-new-draft");
         await expect(newDraft).toBeEnabled({ timeout: 30_000 });
         await newDraft.click();
       }
+      await page.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
+        timeout: 30_000,
+      });
     }
+    await page.getByTestId("studio-view-yaml").click();
+    const editor = page.getByTestId("studio-yaml");
     await expect(editor).toBeVisible({ timeout: 30_000 });
     const document = CLAUDE_PIPELINE.replace("__SLUG__", slug)
       .replace("__PROFILE__", PROFILE_NAME)
       .replace("__PROMPT__", CLAUDE_PROMPT_BLOCK);
     await editor.fill(document);
-    await page.getByTestId("draft-editor-save").click();
-    await expect(page.getByTestId("draft-editor-dirty")).toHaveCount(0, {
+    await page.getByTestId("studio-save").click();
+    await expect(page.getByTestId("studio-dirty")).toHaveCount(0, {
       timeout: 30_000,
     });
-    await page.getByTestId("draft-editor-validate").click();
-    await expect(page.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+    await page.getByTestId("studio-validate").click();
+    await expect(page.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
       timeout: 30_000,
     });
-    await page.getByTestId("draft-editor-publish").click();
-    await expect(page.getByTestId("draft-editor-published")).toContainText("published r1", {
+    await page.getByTestId("studio-publish").click();
+    await expect(page.getByTestId("studio-published")).toContainText("published as r1", {
       timeout: 30_000,
     });
   }
@@ -1106,7 +1116,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await selectByOptionText(page, "library-new-template-select", "Blank");
       const created = waitForNavAfterWrite(
         page,
-        /\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/,
+        /\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
         "create the claude pipeline",
       );
       await page.getByTestId("library-new-submit").click();

@@ -18,7 +18,7 @@
 import { NODE_EXECUTION_STATE, STATES, type StateName } from "../../components/ds/states";
 import { branchesOf } from "./branches";
 import { definitionKeyOf } from "./runView";
-import type { NodeExecutionSummary } from "./contract";
+import type { NodeExecutionSummary, RunTreeChild, RunTreeRoot } from "./contract";
 
 /**
  * Which instance of each scope the dock and the overlays resolve to.
@@ -488,6 +488,24 @@ export function attentionNode(
   for (const ancestor of scopeAncestors(pick.node_instance_key))
     selection[ancestor.defKey] = ancestor.index;
   return { definitionNodeId: pick.node_id, executionId: pick.id, selection };
+}
+
+/**
+ * The child run one invoking execution produced, through the run tree: the
+ * row whose `node_instance_key` is the invocation's own key. The tree is a
+ * recursive row list, so the search walks it; `null` until the invocation
+ * has actually produced a child run (the dock says so instead of guessing).
+ */
+export function childRunOf(tree: RunTreeRoot | null, nodeInstanceKey: string): RunTreeChild | null {
+  const find = (children: readonly RunTreeChild[]): RunTreeChild | null => {
+    for (const child of children) {
+      if (child.node_instance_key === nodeInstanceKey) return child;
+      const deeper = find(child.children ?? []);
+      if (deeper !== null) return deeper;
+    }
+    return null;
+  };
+  return tree ? find(tree.children) : null;
 }
 
 /** `?node=…&instance=…&attempt=…&view=…&scope=/a:2,/b/c:14` → state. */

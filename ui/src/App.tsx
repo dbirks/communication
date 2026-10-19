@@ -15,7 +15,7 @@ import Operations from "./pages/Operations";
 import Project from "./pages/Project";
 import ProjectPipelines from "./pages/ProjectRunsPipelines";
 import ProjectRuns from "./pages/ProjectRuns";
-import RunInspector from "./pages/RunInspector";
+import RunWorkbench from "./pages/RunWorkbench";
 import ProjectSettings from "./pages/ProjectSettings";
 import Projects from "./pages/Projects";
 
@@ -24,9 +24,19 @@ import Projects from "./pages/Projects";
 // import — the fixtures, the blocks, everything — never becomes a chunk. An
 // unauthenticated M4 surface must not exist in what ships, not even as bytes.
 const M4PreviewPage = import.meta.env.DEV ? lazy(() => import("./pages/M4Preview")) : null;
+// The Studio pulls in React Flow + the inspector schema — keep it out of the
+// initial chunk; the route is lazy like the preview page.
+const StudioPage = lazy(() => import("./pages/Studio"));
 
 export default function App() {
   const { pathname, search } = useLocation();
+
+  // The Run Workbench and the Workflow Studio own the whole viewport: no
+  // 1000px content column around them — the studio's palette | canvas |
+  // inspector runs edge to edge, canvas-sized to the viewport height.
+  const workbenchBleed =
+    /^\/projects\/[^/]+\/runs\/[^/]+$/.test(pathname) ||
+    /^\/library\/[^/]+\/drafts\/[^/]+$/.test(pathname);
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not a
@@ -50,7 +60,7 @@ export default function App() {
   }
 
   return (
-    <Shell>
+    <Shell fullBleed={workbenchBleed}>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route
@@ -94,6 +104,16 @@ export default function App() {
           }
         />
         <Route
+          path="/library/:pipelineId/drafts/:draftId"
+          element={
+            <RequireAuth>
+              <Suspense fallback={null}>
+                <StudioPage />
+              </Suspense>
+            </RequireAuth>
+          }
+        />
+        <Route
           path="/projects/:projectId"
           element={
             <RequireAuth>
@@ -121,7 +141,7 @@ export default function App() {
           path="/projects/:projectId/runs/:runId"
           element={
             <RequireAuth>
-              <RunInspector />
+              <RunWorkbench />
             </RequireAuth>
           }
         />

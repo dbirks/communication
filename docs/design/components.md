@@ -279,7 +279,140 @@ waiting_human/lease-expired), `CompatibilityTable` (evidence-only, never prefill
 (`actor.kind`/`action`/`outcome`/ids), `DoctorSummary` (kernel/nono verdict surfaced from
 `communication doctor` output — read-only).
 
-## H. Accessibility conformance floor
+## H. Issue #2 — Studio, Workbench, entry points (shipped)
+
+Issue #2 ("graph-first Workflow Studio, live Run Workbench, integrated agent conversations"; design
+checkpoint `studio-workbench.md`, ADR-0042/0043/0044) shipped these surfaces in
+`ui/src/components/studio/`, `components/workbench/` and `components/conversation/`. They are the
+shipped form of section D's planned items: `StudioCanvas` / `StudioPalette` / `StudioInspector` /
+`DiffPanel` are the `GraphCanvas` / `NodePalette` / `NodeInspector` / `RevisionDiff` that landed,
+and the shipped `studio-*` / `insp-*` / `diff-*` testids below supersede the `editor-*` proposals in
+section J (the M4 `YamlView` reuse is `studio-yaml`). The Workbench reads the pinned revision only
+(ADR-0043 §5) and its dock renders the shared conversation panel — never a fork.
+
+### `StudioCanvas` *(shipped, `components/studio/StudioCanvas.tsx`)*
+The single authoring surface for a draft: a React Flow graph over the canonical YAML (ADR-0042).
+Props: `model: GraphModel` (derived from the parsed document), `document`, `layout: UiLayout` (the
+non-semantic `metadata.ui` positions), `selectedId`, `readOnly`, `stale` / `staleMessage` (invalid
+YAML greys the canvas and keeps the last-good graph), `highlight?` (assistant-proposed ring via
+`data-highlight="assistant-proposed"`), `statusOverlay?` (run-state badges — the same canvas renders
+the Workbench live graph read-only), callbacks `onSelect · onMove · onInsertOnEdge · onAddAfter ·
+onConnect · onDelete · canConnect`. Testids: `canvas-step-<id>` · `canvas-step-row-<id>` (the
+`StepOutline` list, the keyboard mirror of the canvas) · `canvas-scope-<id>` + `add-inside-<id>`
+(scope boxes, bound visible inline) · `edge-add-<from>-<to>` (+ button on an edge) · `add-after-<id>`
+· `step-status-<id>` · `canvas-stale-banner`. Keyboard: steps focusable, `Enter` selects; every
+canvas gesture is reachable through the `StepOutline` list, so nothing is canvas-only (`10`
+Accessibility).
+
+### `StudioPalette` *(shipped)*
+Left rail: search (`palette-search` · `palette-empty`) over the grouped step library; each entry
+shows an approachable name, a mono kind label and one-line semantics (`palette-item-<kind>`).
+Clicking adds after the selected step (root on an empty canvas); entries are also drag-able onto the
+canvas (the kind travels through `setPaletteDragKind`). Validate-only kinds keep their "not runnable
+yet" mark; `readOnly` / `stale` disable adding with a stated reason.
+
+### `StepPicker` *(shipped)*
+The popover opened by an edge's + button: a searchable, keyboard-navigable (↑/↓, `Enter`) list.
+Props: `items?` (defaults to the full `STEP_LIBRARY`), `title` (the context line, "Insert a step
+between A and B"), `onPick(kind)`, `onClose`. Testids `step-picker` · `step-picker-search` ·
+`step-picker-list` · `step-picker-item-<kind>` · `step-picker-empty`.
+
+### `StudioInspector` *(shipped)*
+Schema-driven form for the selected node (the shipped `NodeInspector`): identity + kind, profile +
+APM package, prompt with the `${{ … }}` binding picker, `sessionMode`, timeout/retry, failure
+route, declared outputs. Props: `model`, `nodeId`, `document` (fallback when `text` does not
+parse), `text`, `readOnly`, `apply(op)` — edits are text→text ops over the YAML (ADR-0042), never a
+parallel graph state. Testids `insp-node`, fields `insp-<field>` (list fields add `-row-<i>` /
+`-val-<i>` / `-del`), `insp-deferred` for the "not runnable yet" note. An invalid combination
+surfaces as `aria-invalid` + a validation finding, never a silent clamp.
+
+### `DiffPanel` *(shipped)*
+Draft-vs-source-revision diff (the shipped `RevisionDiff`): node-level Added / Removed / Changed /
+Moved rows with before/after YAML (`diff-node-<id>`), digest delta in the header. Props:
+`baseDocument` (the newest published revision's `canonical_document`, or `null`), `text` (the
+draft's YAML). Unparseable YAML renders `diff-invalid` and gates Publish (J10); `diff-empty` is the
+honest "no changes" state.
+
+### `AmbiguityDialog` *(shipped)*
+Inserting onto a guarded / condition / error-route edge never silently rewrites `when` (J10): the
+dialog lists the §4 reasons verbatim from the edge's model. Props: `title` (the context line),
+`reasons: string[]`, `onInsertAnyway` (insert; the target keeps its guard and bindings),
+`onCancel`. Testids `studio-ambiguity-dialog` · `studio-ambiguity-title` ·
+`studio-ambiguity-reasons` · `studio-ambiguity-reason-<i>` · `studio-ambiguity-insert` ·
+`studio-ambiguity-cancel`.
+
+### `AssistantProposalBox` *(shipped)*
+The Studio header's "Ask to change this draft…" (J13): `POST /api/v1/assistant/draft-proposals`
+`{draft_id, version, instruction}`; the answer is exactly one op from the closed set
+(`insert_after` · `insert_on_edge` · `update_prompt`), previewed by ringing the touched nodes on
+the canvas with a caption. Props: `draftId`, `version` (the saved version proposals are made
+against), `text` (the saved YAML), `readOnly` (no write access — asking would 403), `dirty`
+(unsaved human edits — applying to saved text would lose them, so it is blocked with a reason),
+`previewing`, `onPreview / onApply / onDiscard`. Apply adopts the previewed text and saves with the
+normal version-checked PUT — the assistant never publishes (ADR-0044). Testids
+`assistant-proposal-box` · `-input` · `-submit` · `-error` · `-caption` · `-apply` · `-discard` ·
+`-reason`.
+
+### `AgentConversationPanel` *(shipped, `components/conversation/`)*
+The single conversation surface: `pages/Conversation.tsx`'s rail and the Workbench dock both
+render it — controller badge, take/return/stop controls, composer, and the streaming transcript
+(`Transcript` fold over `useConversationSession`). `ConversationPanelIds` is the only testid
+injection seam: `badge`, `takeControl`, `returnControl`, `stopTurn`, `composerInput`,
+`composerSend`, `composerExplainer` (+ optional `controlBanner`, `stream`, `composerForm`). The
+page passes the shipped `controller-badge`, `take-control`, `return-control`, `stop-turn`,
+`composer-input`, `composer-send`, `composer-explainer`; the dock passes its `dock-*` equivalents.
+A viewer gets disabled controls plus the explainer, never their absence (global rule 4,
+ADR-0016's controller lock).
+
+### `WorkbenchDock` *(shipped)*
+The right dock for the selected graph step, keyed by kind: `agent.acp` →
+`AgentConversationPanel` (`dock-conversation`, attempt tabs `dock-attempt-<n>` +
+`dock-attempt-count`); `process.exec` → stdout tail; `human.approval` → `ApprovalCard`
+(`dock-no-approval` while none is open); failure → error class, cause and the retry verdict
+(`dock-failure` · `dock-error-class` · `dock-failed-cause` · `dock-retry-verdict`). Props: `run`,
+`projectId`, `definitionNode`, `execution` (the URL's `instance=`), `attemptNumber` (the URL's
+1-based `attempt=`, null = newest), `onAttemptChange`, `nodes` + `frames` — the retry verdict is
+read off these, never guessed. Resizable (`workbench-dock-resizer`), collapsible
+(`workbench-dock-collapse` / `-back`); nothing selected renders `workbench-dock-empty`.
+
+### `InstancePicker` *(shipped)*
+The per-scope instance selector (J11): selection travels in the URL (`instance=` / `scopes=`),
+never as extra graph nodes. Props: `scopeId` (the testid key), `defKey` (the `/scope[/inner]`
+definition key), `kind: "until" | "for_each"` (`until`: iteration chips; `for_each`: a paged item
+list with a state filter and live counts), `instances`, `selected` — null means latest/aggregate,
+and picking a chip again selects null, a first-class act. Testids `instance-picker-<scopeId>`,
+rows `instance-…`, plus the `dock-instance-line` summary in the dock.
+
+### `RunHeader` *(shipped)*
+The run page's top: title (`run-title`), breadcrumb (`run-breadcrumb`), pinned revision number +
+digest (`run-pinned-revision`, linking to the revision — the graph is read-only by design and the
+only edit exit is `run-new-draft`, a *new* draft in the Studio), stream status (`run-stream-status`),
+run actions (`run-pause` · `run-resume` · `run-cancel` · `run-retry` + `run-retry-reason`), the
+newest-vs-pinned notice (`NewRevisionNotice` · `run-new-revision-link`) and `run-open-workflow`
+(open the pinned definition read-only in the Studio). Props: `projectId`, `run`, `goal` (the run's
+`goal` input, null when none is served), `slug`, `streamStatus`, `revision`, `notice`, `nodes`.
+
+### `NewMenu` *(shipped, `components/NewMenu.tsx`)*
+The global header `New ▾` (`new-menu` · `new-menu-list`, items `role="menuitem"`):
+`new-menu-conversation` (opens `NewConversationDialog`), `new-menu-workflow` (→ the `/library`
+new-draft flow), `new-menu-run` (Start run). `Esc` closes and focus returns to the trigger. The
+project header repeats the two relevant entries as `project-new-conversation` and
+`project-start-run` (`pages/Project.tsx`); a project-scoped opener fixes the project so the dialog
+skips the picker.
+
+### `NewConversationDialog` *(shipped)*
+The one-off conversation opener shared by all three entries (J12). Props: `open`, `onClose`,
+`projectId?` (fixes the project — the field shows a fixed label instead of the picker), `project?`
+(the caller's own already-loaded `Project`, so it can display and start without a list fetch).
+Fields: title · profile picker · first prompt. A one-off conversation still needs a project
+(`new-conversation-dialog-need-project`), and no launchable profile disables submit with the
+stated reason (G18). Testids `new-conversation-dialog` · `-project` · `-need-project`; fields
+`conversation-new-title` / `-profile` / `-prompt` · `conversation-new-submit`. The result lands in
+the conversations list with the `conversation-origin-manual` badge.
+
+---
+
+## I. Accessibility conformance floor
 
 | Requirement | Implementation rule |
 |---|---|
@@ -292,7 +425,7 @@ waiting_human/lease-expired), `CompatibilityTable` (evidence-only, never prefill
 | Target size | ≥ 24×24 CSS px for icon buttons, ≥ 44px row height in lists |
 | Reading order | DOM order equals the wireframe's visual priority order (attention first, config last) |
 
-## I. New `data-testid`s this brief proposes
+## J. New `data-testid`s this brief proposes
 
 Names follow the shipped style (`kebab-case`, verb-object for controls, `<entity>-list/-row-*` for
 collections):

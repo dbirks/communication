@@ -70,10 +70,11 @@ export default function Inbox() {
   );
 
   if (projects.isPending) {
+    // A div, not a p element: the Spinner renders a <p> itself.
     return (
-      <p data-testid="inbox-loading">
+      <div data-testid="inbox-loading">
         <Spinner label="Reading your projects" />
-      </p>
+      </div>
     );
   }
   if (projects.isError) {

@@ -430,3 +430,41 @@ describe("separateSiblingGroups", () => {
     expect(groups[1].y).toBe(112);
   });
 });
+
+describe("canvas (dense) spacing", () => {
+  it("leaves the standard cut untouched — default and explicit standard agree", () => {
+    expect(layoutDefinition(samplePipelineDocument)).toEqual(
+      layoutDefinition(samplePipelineDocument, { spacing: "standard" }),
+    );
+  });
+
+  it("packs the dense cut tighter than the standard one in both directions", () => {
+    const stdLR = layoutDefinition(samplePipelineDocument, {
+      spacing: "standard",
+      rankdir: "LR",
+    })!;
+    const denseLR = layoutDefinition(samplePipelineDocument, {
+      spacing: "dense",
+      rankdir: "LR",
+    })!;
+    expect(denseLR.width).toBeLessThan(stdLR.width);
+    expect(denseLR.height).toBeLessThan(stdLR.height);
+  });
+
+  it("lays a scope body sideways when the graph runs top-to-bottom", () => {
+    const tb = layoutDefinition(samplePipelineDocument, { spacing: "dense", rankdir: "TB" })!;
+    const tbOpp = layoutDefinition(samplePipelineDocument, {
+      spacing: "dense",
+      rankdir: "TB",
+      subgraphRankdir: "opposite",
+    })!;
+    const group = (laid: typeof tb) =>
+      laid.groups.find((g) => g.ownerId === "build_until_verified")!;
+    // Without the flip the until body stacks vertically: a tall narrow box.
+    expect(group(tb).height).toBeGreaterThan(group(tb).width);
+    // With it the chain runs sideways inside the group: a short wide box,
+    // and the whole graph ends up shorter to boot.
+    expect(group(tbOpp).width).toBeGreaterThan(group(tbOpp).height);
+    expect(tbOpp.height).toBeLessThan(tb.height);
+  });
+});

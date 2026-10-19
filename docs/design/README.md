@@ -24,6 +24,8 @@ Roadmap exit being designed for:
 | 6 | [`data-dependencies.md`](data-dependencies.md) | Screen → exact API routes, SSE scope, invalidation and optimistic-state rules |
 | 7 | [`assistant-flow.md`](assistant-flow.md) | Annotated assistant "navigate, edit, ask question, apply" choreography |
 | 8 | [`acceptance-checklist.md`](acceptance-checklist.md) | Pass/fail UX acceptance tied to the consulting-team scenario and M5's exit |
+| 9 | [`studio-workbench.md`](studio-workbench.md) | Issue #2 design checkpoint: graph-first Workflow Studio, live Run Workbench, integrated agent conversations (ADR-0042/0043/0044) — the source of the J10–J13 journeys in `flows.md` and section H of `components.md` |
+| 10 | [`mockups/`](mockups/README.md) | Static 1440×900 issue #2 mockups (Studio, active Run Workbench, one-off conversation) — inline SVG/CSS only, tokens from `ui/src/styles/tokens.css` |
 
 Authoritative inputs, in the order consulted: `communication-spec/10-ui-design-handoff.md` (the
 brief), `DESIGN_AGENT_BRIEF.md`, `00` (personas, F-requirements), `01` (entities, state machines,

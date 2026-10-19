@@ -268,28 +268,29 @@ test.describe("W3 start a run from a GitHub issue", () => {
       await admin.getByTestId("library-new-name-input").fill(SLUG);
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
-      pipelinePath = new URL(admin.url()).pathname;
-      await admin
-        .getByTestId("draft-editor-input")
-        .fill(ISSUE_PIPELINE_YAML.replace("__SLUG__", SLUG));
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/issue_number/);
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/kind: process\.exec/);
+      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      pipelinePath = `/library/${new URL(admin.url()).pathname.split("/")[2]}`;
+      // The Studio's YAML view is the same authoring surface the old editor
+      // exposed as its textarea.
+      await admin.getByTestId("studio-view-yaml").click();
+      await admin.getByTestId("studio-yaml").fill(ISSUE_PIPELINE_YAML.replace("__SLUG__", SLUG));
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/issue_number/);
+      await expect(admin.getByTestId("studio-yaml")).toHaveValue(/kind: process\.exec/);
       await shot(admin, "m5w3-01-issue-draft");
     });
     await test.step("Save → Validate → the server says valid", async () => {
-      await admin.getByTestId("draft-editor-save").click();
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await admin.getByTestId("draft-editor-validate").click();
+      await admin.getByTestId("studio-save").click();
+      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("studio-validate").click();
       // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
         timeout: 30_000,
       });
-      await expect(admin.getByTestId("draft-editor-publish")).toBeEnabled();
+      await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
     await test.step("Publish → r1 is immutable and listed", async () => {
-      await admin.getByTestId("draft-editor-publish").click();
-      await expect(admin.getByTestId("draft-editor-published")).toContainText("published r1", {
+      await admin.getByTestId("studio-publish").click();
+      await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
       await gotoApp(admin, pipelinePath);

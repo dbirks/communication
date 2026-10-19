@@ -40,8 +40,7 @@ const EDIT_TIMEOUT_MS = Number(process.env.E2E_W4_EDIT_TIMEOUT_MS ?? 120_000);
 
 const ADMIN = { subject: "admin", name: "admin" };
 const TEMPLATE_LABEL = "Plan with approval";
-const stamp =
-  process.env.E2E_W4_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
+const stamp = process.env.E2E_W4_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `w4-prompt-${stamp}`;
 
 /** The prompt the rewritten node ships with, BEFORE the step form edits it. */
@@ -51,8 +50,7 @@ const SENTINEL = `W4 prompt edit ${stamp}: summarize the repository README.`;
 const AGENT_PROFILE = "claude-code";
 
 /** A regex that matches `value` literally (the sentinels hold `.` and `:`). */
-const literal = (value: string): RegExp =>
-  new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+const literal = (value: string): RegExp => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 
 /**
  * The session's double-submit CSRF token (internal/api/middleware.go
@@ -145,14 +143,20 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       await selectByOptionText(admin, "library-new-template-select", TEMPLATE_LABEL);
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
-      // seeded, at /library/:id?draft=:draftId (m5-journey step 1).
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\?draft=[0-9a-f-]{36}$/);
-      pipelinePath = new URL(admin.url()).pathname;
-      draftId = new URL(admin.url()).searchParams.get("draft") ?? "";
+      // seeded's Workflow Studio, at /library/:id/drafts/:draftId
+      // (m5-journey step 1).
+      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      const cloneUrl = new URL(admin.url());
+      pipelinePath = `/library/${cloneUrl.pathname.split("/")[2]}`;
+      draftId = cloneUrl.pathname.split("/").at(-1) ?? "";
       expect(draftId).toMatch(/^[0-9a-f-]{36}$/);
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(new RegExp(SLUG));
+      // The Studio's YAML view is the same authoring surface the old editor
+      // exposed as its textarea.
+      await admin.getByTestId("studio-view-yaml").click();
+      const yaml = admin.getByTestId("studio-yaml");
+      await expect(yaml).toHaveValue(new RegExp(SLUG));
       // The sample as shipped: the node this suite must rewrite in step 2.
-      await expect(admin.getByTestId("draft-editor-input")).toHaveValue(/kind: model\.chat/);
+      await expect(yaml).toHaveValue(/kind: model\.chat/);
       await shot(admin, "w4-01-template-draft");
     });
   });
@@ -182,7 +186,7 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       templateDigest = body.revision_digest as string;
     });
     await test.step("the textarea rewrite turns the plan node into an agent.acp step", async () => {
-      const input = admin.getByTestId("draft-editor-input");
+      const input = admin.getByTestId("studio-yaml");
       const doc = await input.inputValue();
       const start = doc.indexOf("\n  - id: plan\n");
       const end = doc.indexOf("\n  - id: approve\n");
@@ -201,45 +205,50 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
 
   test("step 3 — the step form's Prompt field writes the sentinel", async () => {
     await test.step("open the agent step's per-step form (W4's field set)", async () => {
-      // The nodes render in document order: survey 0, plan 1, approve 2,
-      // publish_plan 3 — the rewritten node is the editor's second row.
-      await admin.getByTestId("draft-editor-node-1").click();
-      await expect(admin.getByTestId("draft-editor-node-form")).toBeVisible();
-      await expect(admin.getByTestId("draft-editor-node-kind")).toContainText("agent.acp");
+      // The canvas steps are addressed by node id (survey, plan, approve,
+      // publish_plan), so the rewritten node is `canvas-step-plan`.
+      await admin.getByTestId("studio-view-canvas").click();
+      await admin.getByTestId("canvas-step-plan").click();
+      await expect(admin.getByTestId("insp-node")).toBeVisible();
+      await expect(admin.getByTestId("insp-kind-chip")).toContainText("agent.acp");
     });
     await test.step("replace the prompt and watch the YAML line change", async () => {
-      const prompt = admin.getByTestId("draft-editor-field-prompt");
+      const prompt = admin.getByTestId("insp-config-prompt");
       // The form reads the document, not a shadow model: it shows exactly
       // what the rewrite put at config.prompt.
       await expect(prompt).toHaveValue(PLACEHOLDER_PROMPT);
       await prompt.fill(SENTINEL);
-      // The field write lands on the one line its JSON pointer names
-      // (nodeFields), so the textarea now carries the sentinel verbatim.
-      const input = admin.getByTestId("draft-editor-input");
+      // The inspector's textarea fields commit on blur only, so move the
+      // focus off the field to land the edit on the document.
+      await prompt.press("Tab");
+      // The field write lands on the one line its JSON pointer names, so
+      // the Studio's YAML view now carries the sentinel verbatim.
+      await admin.getByTestId("studio-view-yaml").click();
+      const input = admin.getByTestId("studio-yaml");
       await expect(input).toHaveValue(literal(SENTINEL));
       await expect(input).not.toHaveValue(literal(PLACEHOLDER_PROMPT));
       await expect(input).toHaveValue(/kind: agent\.acp/);
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveText("unsaved changes");
+      await expect(admin.getByTestId("studio-dirty")).toHaveText("unsaved");
       await shot(admin, "w4-03-prompt-edited");
     });
   });
 
   test("step 4 — save, validate, publish r1", async () => {
     await test.step("Save → the dirty flag clears; Validate → the server says valid", async () => {
-      await admin.getByTestId("draft-editor-save").click();
-      await expect(admin.getByTestId("draft-editor-dirty")).toHaveCount(0, {
+      await admin.getByTestId("studio-save").click();
+      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, {
         timeout: 30_000,
       });
-      await admin.getByTestId("draft-editor-validate").click();
+      await admin.getByTestId("studio-validate").click();
       // Publish is gated on the stored verdict, so the verdict is the gate.
-      await expect(admin.getByTestId("draft-editor-verdict")).toHaveText("valid", {
+      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
         timeout: 30_000,
       });
-      await expect(admin.getByTestId("draft-editor-publish")).toBeEnabled();
+      await expect(admin.getByTestId("studio-publish")).toBeEnabled();
     });
     await test.step("Publish → r1 is immutable and listed", async () => {
-      await admin.getByTestId("draft-editor-publish").click();
-      await expect(admin.getByTestId("draft-editor-published")).toContainText("published r1", {
+      await admin.getByTestId("studio-publish").click();
+      await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
       await gotoApp(admin, pipelinePath);
@@ -264,9 +273,7 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       const r1 = list.revisions.find((row) => row.revision_number === 1);
       expect(r1, `revisions: ${JSON.stringify(list.revisions)}`).toBeDefined();
       expect(r1?.revision_digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-      expect(r1?.revision_digest, "the prompt edit must move the digest").not.toBe(
-        templateDigest,
-      );
+      expect(r1?.revision_digest, "the prompt edit must move the digest").not.toBe(templateDigest);
       r1Digest = r1?.revision_digest ?? "";
     });
     await test.step("the revision's YAML carries the sentinel on the agent step", async () => {
