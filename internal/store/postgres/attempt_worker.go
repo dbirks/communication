@@ -404,9 +404,15 @@ func (p *planShape) find(scope, id string) *planShapeNode {
 
 // configRelPath maps a plan pointer like /spec/nodes/3/config/argv/0 to the
 // config-relative path argv/0. A pointer that never entered "config" is not
-// this node's config.
+// this node's config. The LAST occurrence is the boundary: a body node's
+// pointer embeds the enclosing composite's own "/config/" prefix
+// ("/spec/nodes/0/config/body/nodes/0/config/prompt"), and the path inside
+// THIS node's config starts at the final one — the same rule the runtime's
+// ConfigTree applies (internal/pipelines/runtime configSegments). Taking the
+// first occurrence nests the body node's config under body.nodes[i].config
+// in the claim, and the worker sees a config with no prompt.
 func configRelPath(pointer string) (string, bool) {
-	i := strings.Index(pointer, "/config/")
+	i := strings.LastIndex(pointer, "/config/")
 	if i < 0 {
 		return "", false
 	}
