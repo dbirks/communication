@@ -138,11 +138,15 @@ function scopeRowOf(key: string): string {
   return key.replace(/\[\d+\]$/, "");
 }
 
-/** `run.*` terminal/lifecycle arms — the run machine, `01`, event-for-column. */
+/** `run.*` terminal/lifecycle arms — the run machine, `01`, event-for-column.
+ * `run.resumed` is deliberately absent: the frame names the park it clears in
+ * its `paused_reason` member, and the destination state differs by park — a
+ * gate's park ends `waiting_human → running` while a manual pause ends
+ * `paused → queued`. The fold's own arm for the frame reads that member.
+ */
 const RUN_STATUS_BY_TYPE: Partial<Record<RunEventType, RunStatus>> = {
   "run.started": "running",
   "run.paused": "paused",
-  "run.resumed": "queued",
   "run.waiting_human": "waiting_human",
   "run.completed": "completed",
   "run.failed": "failed",
@@ -155,10 +159,13 @@ const RUN_STATUS_BY_TYPE: Partial<Record<RunEventType, RunStatus>> = {
  * § 5.3). Deciding, denying, expiring or cancelling a gate is the *only* thing
  * the journal records for the run leaving `waiting_human`: the decide path
  * flips `runs.status` in the same commit as `approval.decided` and lets the
- * advancer re-derive readiness, and `run.resumed` is reserved for the manual
- * pause/resume and retry arms — it is never written for a gate decision.
- * Folding a gate's end as "no longer parked on a human" is therefore what the
- * stream actually says, and it is what keeps the run header honest.
+ * advancer re-derive readiness, and the advancer itself moves the run
+ * `waiting_human → running` and journals a `run.resumed` whose
+ * `paused_reason` is `waiting_human` when the last pending gate ends
+ * (`runtime`'s `resumeIfNoGates`). The manual pause/resume and retry arms
+ * journal the same type for `paused → queued`. Folding a gate's end as
+ * "no longer parked on a human" is therefore what the stream actually says,
+ * and it is what keeps the run header honest.
  */
 const GATE_ENDED_TYPES: ReadonlySet<RunEventType> = new Set<RunEventType>([
   "approval.decided",
@@ -258,7 +265,18 @@ export function projectRun(baseline: RunBaseline, events: readonly EventEnvelope
         if (reason === "manual" || reason === "human_takeover" || reason === "worker_unavailable")
           patch.paused_reason = reason;
       }
-      if (type === "run.resumed") patch.paused_reason = null;
+      if (type === "run.resumed") {
+        // One type, two destinations: the member names the park the frame
+        // clears. A gate's park (the advancer leaves `waiting_human` for the
+        // run's next work) must not read "queued" in the header while the API
+        // row says `running` — and the fold replays the journal's whole tail
+        // over every refetched baseline, so a wrong mapping on the last
+        // lifecycle frame would win forever.
+        const reason = str(payload, "paused_reason");
+        patch.status =
+          reason === "waiting_human" || run.status === "waiting_human" ? "running" : "queued";
+        patch.paused_reason = null;
+      }
       // `cancel_requested_at` is the request, not the stop — the run stays in
       // its live state until `run.cancelled` proves otherwise.
       if (type === "run.cancel_requested") patch.cancel_requested_at = event.occurred_at;

@@ -326,3 +326,61 @@ describe("the Run Workbench", () => {
     expect(screen.queryByTestId("workbench-graph-view")).toBeNull();
   });
 });
+
+/* -------------------------------------------------- the header stays honest */
+
+describe("the run header follows the stream", () => {
+  it("reads running after the gate is decided — the advancer's run.resumed names the cleared gate park", async () => {
+    mount("", [
+      {
+        path: RUN_PATH,
+        body: { ...wireRun, status: "waiting_human", paused_reason: null },
+      },
+      { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
+    ]);
+
+    const chip = await screen.findByTestId("run-header-status");
+    expect(chip.textContent).toContain("waiting human");
+
+    // The real journal tail for an approved gate (`01` row 5 + the decide
+    // commit): the decision row, then the advancer's move
+    // `waiting_human → running` with its own `run.resumed` naming the park it
+    // cleared. The chip must leave the gate for `running` — never `queued`.
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "approval.decided",
+          { approval_id: wireApproval.id, decision: "approved", version: 2 },
+          { node_execution_id: WIRE_NODE_APPROVE, global_seq: 9301 },
+        ),
+      );
+      FakeEventSource.last().emit(
+        wireRunEvent("run.resumed", { paused_reason: "waiting_human" }, { global_seq: 9302 }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("run-header-status").textContent).toContain("running"),
+    );
+    expect(screen.getByTestId("run-header-status").textContent).not.toContain("queued");
+  });
+
+  it("reads queued when a manual pause is cleared — the same frame type, the other park", async () => {
+    mount("", [
+      { path: RUN_PATH, body: { ...wireRun, status: "paused", paused_reason: "manual" } },
+    ]);
+
+    const chip = await screen.findByTestId("run-header-status");
+    expect(chip.textContent).toContain("paused");
+
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent("run.resumed", { paused_reason: "manual" }, { global_seq: 9401 }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("run-header-status").textContent).toContain("queued"),
+    );
+  });
+});
