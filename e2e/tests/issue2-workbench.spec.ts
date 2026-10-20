@@ -57,6 +57,12 @@ const CAROL = { subject: "carol", name: "Carol" };
 const NODE_STEP_TIMEOUT_MS = Number(process.env.E2E_NODE_STEP_TIMEOUT_MS ?? 420_000);
 /** fanout_count=14 child runs with 20 s holds; bounded, never open-ended. */
 const TERMINAL_TIMEOUT_MS = Number(process.env.E2E_TERMINAL_TIMEOUT_MS ?? 1_800_000);
+/** The returned takeover's re-queue: the retried agent attempt's claim waits
+ * (bounded, while it holds its lease) for the conversation's human turn to
+ * reach its terminal before its stamp lands, so attempt 2's row can appear
+ * minutes after the return click (observed 1–2 min). The ledger wait that
+ * covers that window; the dock tab then has the UI wait. */
+const TAKEOVER_RETURN_TIMEOUT_MS = Number(process.env.E2E_TAKEOVER_RETURN_TIMEOUT_MS ?? 900_000);
 
 /** One piece of journey evidence: a screenshot plus a single log line. */
 async function evidence(page: Page, name: string, what: string): Promise<void> {
@@ -374,6 +380,52 @@ async function expectAttemptCountAtLeast(
       { timeout: timeoutMs },
     )
     .toBeTruthy();
+}
+
+/**
+ * Poll the node-detail API until the execution named by `instanceKey` has an
+ * attempt row numbered `n` — the ledger's word that the factory re-queued the
+ * node after a returned takeover. Returns the row's status as it first
+ * appears. The returned takeover's re-queue claim WAITS (bounded, while it
+ * holds its lease) for the conversation's human turn to finish (ADR-0016 § 5
+ * forbids cancelling it), so this is the wait that covers that window — the
+ * dock's attempt tab is the UI's word for the same row and follows it.
+ */
+async function expectAttemptQueued(
+  page: Page,
+  runId: string,
+  instanceKey: string,
+  n: number,
+  timeoutMs: number,
+): Promise<string> {
+  let last = "";
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const body = (await (await page.request.get(`/api/v1/runs/${runId}/nodes`)).json()) as {
+        node_executions: Array<{ id: string; node_instance_key: string }>;
+      };
+      const row_ = body.node_executions.find((node) => node.node_instance_key === instanceKey);
+      if (row_) {
+        const detail = (await (
+          await page.request.get(`/api/v1/runs/${runId}/nodes/${row_.id}`)
+        ).json()) as { attempts?: Array<{ attempt_number: number; status: string }> };
+        const target = (detail.attempts ?? []).find((attempt) => attempt.attempt_number === n);
+        if (target) return target.status;
+        last = `${instanceKey} attempt ${n}: not queued yet`;
+      } else {
+        last = `no execution ${instanceKey} yet`;
+      }
+    } catch (error) {
+      last = `poll error: ${error}`;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `attempt ${n} of ${instanceKey} never queued within ${timeoutMs}ms (last: ${last})`,
+      );
+    }
+    await page.waitForTimeout(3_000);
+  }
 }
 
 /**
@@ -807,6 +859,12 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // control row back to the run — controller_kind='run_attempt', repointed
     // at the newly queued attempt. The SAME conversation carries on: a
     // re-run of the node execution rides the conversation attempt 1 opened.
+    // The retried attempt's claim WAITS (bounded, while it holds its lease)
+    // for the human's turn to reach its terminal before its stamp lands, so
+    // attempt 2's row can appear minutes after the return click (observed
+    // 1–2 min). Wait on the ledger first, with a timeout that covers that
+    // window; the dock's attempt tab is the UI's word for the same row and
+    // gets its own (shorter) wait after it.
     const back = bob.getByTestId("dock-return-control");
     await expect(back).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await back.click();
@@ -816,6 +874,18 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // stamp lands in the claim's transaction — so the badge assertion reads
     // the attempt 1 tab: the conversation bob actually drove, whose control
     // row the return just handed back to the run.
+    const requeued = await expectAttemptQueued(
+      bob,
+      runId,
+      runningKey,
+      2,
+      TAKEOVER_RETURN_TIMEOUT_MS,
+    );
+    console.log(
+      `WORKBENCH A5: attempt 2 of ${runningKey} queued (${requeued}) at ${new Date()
+        .toISOString()
+        .slice(11, 19)}`,
+    );
     await expect(bob.getByTestId("dock-attempt-2")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });

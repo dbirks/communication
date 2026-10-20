@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { viewNodeExecution, viewRun } from "../../api/m4view";
+import { queryKeys } from "../../api/queries";
 import {
   conversationId,
   meFixture,
@@ -72,7 +73,7 @@ function renderDock(
   over: Partial<Pick<WorkbenchDockProps, "attemptNumber" | "onAttemptChange" | "tree">> = {},
 ) {
   const onAttemptChange = vi.fn();
-  const { requests } = mockFetch([
+  const { fetchMock, requests } = mockFetch([
     ...extra,
     { path: "/api/v1/me", body: meFixture },
     { path: `/api/v1/projects/${wireProjectId}`, body: projectFixture },
@@ -97,7 +98,7 @@ function renderDock(
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  return { requests, onAttemptChange };
+  return { fetchMock, requests, queryClient, onAttemptChange };
 }
 
 const row = (over: Partial<NodeExecution>): NodeExecutionSummary =>
@@ -174,6 +175,71 @@ describe("WorkbenchDock", () => {
     expect(panel.getAttribute("data-conversation-id")).toBe(conversationId);
     expect(panel.closest('[data-testid="dock-conversation"]')).toBeTruthy();
     expect(screen.queryByTestId("dock-no-conversation")).toBeNull();
+  });
+
+  it("grows the attempt tabs from one to two when the node detail refetches with the takeover's re-queue", async () => {
+    // Returned takeover: the return transaction re-queues attempt 2 of the
+    // SAME execution BEFORE the worker claims it (the claim itself can wait,
+    // bounded, for the human's turn to finish), so the ledger already names
+    // the row when the run's frames land. The dock's node detail learns of
+    // it only when a run frame invalidates the run subtree and the detail
+    // refetches — the attempt tabs must grow on that refetch, not stay the
+    // first fetch's one-attempt snapshot.
+    const interrupted: Attempt = {
+      ...wireAttempt,
+      id: "01987b25-000c-7000-8000-abcdef012345",
+      attempt_number: 1,
+      status: "interrupted",
+      error_class: "interrupted",
+      conversation_id: conversationId,
+      turn_id: turnId,
+    };
+    const rerun: Attempt = {
+      ...wireAttempt,
+      id: "01987b25-000e-7000-8000-abcdef012345",
+      attempt_number: 2,
+      status: "queued",
+      retry_context: {
+        human_takeover: { turns: [], turn_count: 0, returned_by: "u1", reason: "human_takeover" },
+      },
+      conversation_id: null,
+      turn_id: null,
+    };
+    const oneAttempt = { ...wireNodeDetail, attempts: [interrupted], checkpoint: null };
+    const twoAttempts = { ...wireNodeDetail, attempts: [interrupted, rerun], checkpoint: null };
+
+    const { fetchMock, queryClient } = renderDock(
+      row({ attempt_count: 1, status: "interrupted" }),
+      [{ path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: oneAttempt }],
+    );
+    // One attempt: the dock reads it straight (the conversation it opened is
+    // the main content) and draws no tab list at all.
+    await screen.findByTestId("dock-conversation");
+    expect(screen.queryByTestId("dock-attempt-1")).toBeNull();
+    // The run frame (run.resumed / node.attempt.started) invalidates the run
+    // subtree — the same call useRunEvents makes per frame; the dock's node
+    // detail is the read that refetches, and the second attempt's row
+    // answers it.
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(twoAttempts), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-communication-replica": "replica-a",
+          },
+        }),
+      ),
+    );
+    void queryClient.invalidateQueries({ queryKey: queryKeys.run(WIRE_RUN_ID) });
+    await screen.findByTestId("dock-attempt-2");
+    expect(screen.getByTestId("dock-attempt-1")).toBeTruthy();
+    // The newest attempt leads the dock: attempt 2 is queued and unstamped,
+    // so the shared-conversation note says the factory took the
+    // conversation back and the panel keeps attempt 1's conversation.
+    const note = await screen.findByTestId("dock-attempt-restarting");
+    expect(note.textContent).toContain("Attempt 2 is starting");
+    expect(note.textContent).toContain("the factory took the conversation back");
   });
 
   it("renders the conversation panel for an agent.acp attempt, as the main content", async () => {
