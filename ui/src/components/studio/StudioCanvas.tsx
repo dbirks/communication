@@ -73,6 +73,10 @@ export interface StudioCanvasProps {
   onInsertOnEdge?(edge: GraphEdge, kind: string): void;
   /** + after terminal step / empty canvas / empty scope body. */
   onAddAfter?(afterId: string | null, scope: ScopePath, kind: string): void;
+  /** A definition node id to centre in view once it is on the canvas
+   * (the Workbench deep link's `?node=`); the canvas honours it until the
+   * reader pans/zooms, then the reader's viewport wins. */
+  focusNodeId?: string | null;
   onConnect?(from: string, to: string): void;
   onDelete?(ids: string[]): void;
   canConnect?(from: string, to: string): { ok: true } | { ok: false; reason: string };
@@ -143,6 +147,128 @@ const edgeTypes = {
  * 24px the doc names for a straight edge. */
 const DROP_EDGE_RADIUS_PX = 48;
 
+/* ------------------------------------------------------------------ the
+ * viewport-fit guards.
+ *
+ * The live Workbench went blank mid-run (issue #2): nodes sat in the DOM
+ * while the pane showed nothing. Two failure modes were proven from the
+ * acceptance trace:
+ *   1. a fit ran while nodes were still unmeasured / the pane was
+ *      transiently 0×0 — React Flow's `getViewportForBounds` divides by
+ *      zero bounds and the resulting wrong (or NaN) transform sticks, and
+ *      nothing refits afterwards;
+ *   2. React Flow's internal diff machinery (the fitView queue flush, the
+ *      "Fit View" control) reports `add`/`remove` changes through
+ *      onNodesChange/onEdgesChange; applying them shrank the canvas's
+ *      controlled mirror until 16 of 17 nodes were gone.
+ * The helpers below make both safe and are unit-tested directly. */
+
+/** Smallest pane (CSS px) a fit or centre will run against. */
+export const MIN_FIT_PANE_PX = 48;
+
+function isPositiveFinite(n: number | undefined): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0;
+}
+
+/** Fit the graph's boxes into the pane. Returns the viewport to apply,
+ * or null when the fit must NOT run: a zero/transient pane, degenerate
+ * boxes, or any non-finite result (a fit against unmeasured/zero-size
+ * inputs is exactly what blanked the canvas). */
+export function computeFitViewport(
+  boxes: { x: number; y: number; width: number; height: number }[],
+  paneWidth: number,
+  paneHeight: number,
+  minZoom = 0.4,
+  maxZoom = 1.25,
+  padding = 0.08,
+): { x: number; y: number; zoom: number } | null {
+  if (!isPositiveFinite(paneWidth) || !isPositiveFinite(paneHeight)) return null;
+  if (paneWidth < MIN_FIT_PANE_PX || paneHeight < MIN_FIT_PANE_PX) return null;
+  if (boxes.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const box of boxes) {
+    if (
+      !Number.isFinite(box.x) ||
+      !Number.isFinite(box.y) ||
+      !isPositiveFinite(box.width) ||
+      !isPositiveFinite(box.height)
+    ) {
+      return null; // an unmeasured/degenerate box: refuse rather than fit wrong
+    }
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  }
+  const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  const p = padding;
+  const xZoom = (paneWidth - p * 2 * paneWidth) / bounds.width;
+  const yZoom = (paneHeight - p * 2 * paneHeight) / bounds.height;
+  const zoom = Math.min(xZoom, yZoom);
+  const clampedZoom = Number.isFinite(zoom) ? Math.min(Math.max(zoom, minZoom), maxZoom) : NaN;
+  const x = paneWidth / 2 - (bounds.x + bounds.width / 2) * clampedZoom;
+  const y = paneHeight / 2 - (bounds.y + bounds.height / 2) * clampedZoom;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(clampedZoom)) return null;
+  return { x, y, zoom: clampedZoom };
+}
+
+/** Centre `box` in the pane at `zoom` (the user's current zoom, clamped
+ * into the 0.4→1.25 band). Null when inputs are degenerate. */
+export function centerOnBox(
+  box: { x: number; y: number; width: number; height: number },
+  paneWidth: number,
+  paneHeight: number,
+  zoom: number,
+  minZoom = 0.4,
+  maxZoom = 1.25,
+): { x: number; y: number; zoom: number } | null {
+  if (!isPositiveFinite(paneWidth) || !isPositiveFinite(paneHeight)) return null;
+  if (paneWidth < MIN_FIT_PANE_PX || paneHeight < MIN_FIT_PANE_PX) return null;
+  if (!Number.isFinite(box.x) || !Number.isFinite(box.y)) return null;
+  if (!isPositiveFinite(box.width) || !isPositiveFinite(box.height)) return null;
+  const z = Number.isFinite(zoom) && zoom > 0 ? Math.min(Math.max(zoom, minZoom), maxZoom) : 1;
+  const x = paneWidth / 2 - (box.x + box.width / 2) * z;
+  const y = paneHeight / 2 - (box.y + box.height / 2) * z;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y, zoom: z };
+}
+
+/** Parse a rendered `.react-flow__viewport` transform. Null when absent or
+ * non-finite — React Flow writes NaN straight into the style when a fit
+ * ran against a zero-size pane, and a corrupt store leaves interaction
+ * dead even when the browser kept a stale style value. */
+export function parseViewportTransform(
+  style: string | null | undefined,
+): { x: number; y: number; zoom: number } | null {
+  if (!style) return null;
+  const m = /translate\(([-\d.]+)px,\s*([\d.-]+)px\)\s*scale\(([-\d.]+)\)/.exec(style);
+  if (!m) return null;
+  const x = Number(m[1]);
+  const y = Number(m[2]);
+  const zoom = Number(m[3]);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return null;
+  return { x, y, zoom };
+}
+
+/** The canvas OWNS the element set: the structural rebuild (the page's
+ * model changed) is the only thing that may add or remove nodes/edges.
+ * React Flow's internal diff machinery reports `add`/`remove` changes
+ * through onNodesChange/onEdgesChange (its fitView queue flush, the
+ * "Fit View" control) — applying them is how nodes silently vanished from
+ * the live Workbench. Deletions the page intends arrive through the model
+ * (`onDelete` → structural rebuild), so the mirror swallows add/remove and
+ * keeps every other change (position, dimensions, select, replace). */
+export function mirrorOwnedChanges<T extends { type: string }>(changes: readonly T[]): T[] {
+  return changes.filter((change) => change.type !== "add" && change.type !== "remove");
+}
+
+function isMeasuredBox(box: { width: number | undefined; height: number | undefined }): boolean {
+  return isPositiveFinite(box.width) && isPositiveFinite(box.height);
+}
+
 function CanvasInner({
   model,
   document,
@@ -162,8 +288,9 @@ function CanvasInner({
   onConnect,
   onDelete,
   canConnect,
+  focusNodeId,
 }: StudioCanvasProps) {
-  const { fitView } = useReactFlow();
+  const { setViewport } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The pane the graph fills — observed so a dock drag/collapse refits. */
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -280,20 +407,18 @@ function CanvasInner({
   // pushed once through the apply effect — not re-derived here, which is what
   // used to ping-pong the store into "Maximum update depth exceeded".
   // Apply every change React Flow reports (position, dimensions, and
-  // `select`) so the local `nodes` array mirrors the store exactly.
-  // Selection is owned by React Flow's internal store; the page's
-  // `selectedIds` is a one-way mirror of it (via `onSelectionChange` below)
-  // and never writes selection flags back into the canvas. A page→store
-  // selection writer is what ping-ponged the store into "Maximum update
-  // depth exceeded": the page's mirror lagged the store by one push, every
-  // re-apply re-pushed a stale selection, and the store and the page chased
-  // each other until React aborted the update chain.
+  // `select`) so the local `nodes` array mirrors the store exactly —
+  // EXCEPT `add`/`remove`: the canvas owns the element set (see
+  // mirrorOwnedChanges), and the store's diff machinery reporting removals
+  // is what emptied the live Workbench's canvas mid-run.
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => setNodes((current) => applyNodeChanges(changes, current)),
+    (changes: NodeChange[]) =>
+      setNodes((current) => applyNodeChanges(mirrorOwnedChanges(changes), current)),
     [],
   );
   const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)),
+    (changes: EdgeChange[]) =>
+      setEdges((current) => applyEdgeChanges(mirrorOwnedChanges(changes), current)),
     [],
   );
 
@@ -450,6 +575,15 @@ function CanvasInner({
       ? new Set(pageSelRef.current.filter((id) => base.nodes.some((n) => n.data.nodeId === id)))
       : null;
     const prevSelected = new Map(nodes.map((n) => [n.id, n.selected === true]));
+    // Carry each node's measured size across the rebuild. A rebuilt node
+    // object without `measured` makes React Flow's adoptUserNodes reset the
+    // store's measurement, and React Flow renders unmeasured nodes with
+    // `visibility: hidden` — the node elements keep their size, so their
+    // ResizeObserver never re-fires and the canvas would go BLANK for the
+    // rest of the run (observed live: mid-run rebuilds left 17/17 nodes
+    // hidden; a fresh open re-measured and recovered). Fresh nodes (not in
+    // `prevMeasured`) start unmeasured and get measured on first paint.
+    const prevMeasured = new Map(nodes.map((n) => [n.id, n.measured]));
     const rfNodes: Node[] = base.nodes.map((b) => {
       const scope = b.data;
       const data: StepNodeRender & Partial<ScopeNodeRender> = {
@@ -486,6 +620,7 @@ function CanvasInner({
         position: b.position,
         data,
         style: { width: b.width, height: b.height },
+        measured: prevMeasured.get(b.id),
         // Structural: the page's (post-op) selection; otherwise the store's
         // own current selection, carried across unchanged.
         selected: aliveSelection
@@ -524,34 +659,218 @@ function CanvasInner({
     setEdges(rfEdges);
   }, [base, readOnly, stale, highlight, statusOverlay, preview]);
 
-  // Fit once when the first batch of nodes lands, and re-fit whenever the
-  // pane itself resizes (a dock drag or collapse changes the space the
-  // graph has to fill). padding 0.08 + the 0.4→1.25 zoom band keep the graph
-  // filling the pane while staying readable at first render.
-  const fit = useCallback(
-    () => fitView({ padding: 0.08, duration: 0, minZoom: 0.4, maxZoom: 1.25 }),
-    [fitView],
+  /* --------------------------------------------- viewport fitting & repair
+   * The canvas owns its own fit — React Flow's mount-time `fitView` prop is
+   * gone: it resolves while nodes are still unmeasured and the pane may be
+   * transiently 0×0, and the resulting wrong (or NaN) transform then
+   * sticks (this is how the live Workbench went blank mid-run). Instead
+   * the fit is computed from the layout's absolute boxes into the pane's
+   * REAL current size, refused outright when either is degenerate
+   * (computeFitViewport), and applied only when finite.
+   *
+   * Refit triggers (nothing else — a manual user pan/zoom is never
+   * clobbered afterwards):
+   *   • the graph's node set changes (structural rebuild, first fit),
+   *   • the pane transitions from zero to a real size.
+   * A MutationObserver sentinel repairs anything that still ends up blank
+   * or non-finite: restore the last good transform, or re-fit when every
+   * node sits outside the pane and the reader has not moved the view. */
+  const nodeSetKey = useMemo(() => base.nodes.map((n) => n.id).join("\u0000"), [base]);
+  const baseRef = useRef(base);
+  baseRef.current = base;
+  const nodeBoxesRef = useRef(nodeBoxes);
+  nodeBoxesRef.current = nodeBoxes;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const allMeasured =
+    base.nodes.length > 0 &&
+    nodes.length === base.nodes.length &&
+    nodes.every(
+      (n) =>
+        n.measured !== undefined &&
+        isMeasuredBox({ width: n.measured.width, height: n.measured.height }),
+    );
+  const allMeasuredRef = useRef(allMeasured);
+  allMeasuredRef.current = allMeasured;
+  const userMovedRef = useRef(false);
+  const lastGoodRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  const lastFittedSetRef = useRef<string | null>(null);
+  const paneSizeRef = useRef({ w: 0, h: 0 });
+  const pendingRealSizeRef = useRef(false);
+  const focusedRef = useRef<string | null>(null);
+  const [paneReal, setPaneReal] = useState(0); // tick: zero → real size
+
+  const viewportEl = useCallback(
+    () => canvasRef.current?.querySelector<HTMLElement>(".react-flow__viewport") ?? null,
+    [],
   );
-  const fitted = useRef(false);
+
+  /** Fit the graph into the pane. Returns false when the guard refused
+   * (zero-size pane, unmeasured boxes) — the caller retries on the next
+   * trigger; a non-finite viewport is never applied. */
+  const safeFit = useCallback(() => {
+    const pane = paneRef.current;
+    if (!pane) return false;
+    const rect = pane.getBoundingClientRect();
+    // Fit with the MEASURED sizes when known (React Flow's own fit uses the
+    // same inputs), falling back to the layout's estimates. Both `nodeBoxes`
+    // and the local `nodes` state are keyed by the same flow id.
+    const measuredById = new Map(nodesRef.current.map((n) => [n.id, n.measured]));
+    const boxes = Object.entries(nodeBoxesRef.current).map(([id, box]) => {
+      const mw = measuredById.get(id)?.width;
+      const mh = measuredById.get(id)?.height;
+      const w = mw !== undefined && Number.isFinite(mw) && mw > 0 ? mw : box.width;
+      const h = mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : box.height;
+      return { x: box.x, y: box.y, width: w, height: h };
+    });
+    const vp = computeFitViewport(boxes, rect.width, rect.height);
+    if (vp === null) return false;
+    setViewport(vp, { duration: 0 });
+    lastGoodRef.current = vp;
+    return true;
+  }, [setViewport]);
+  const safeFitRef = useRef(safeFit);
+  safeFitRef.current = safeFit;
+
+  // Structural (first) fit + the pane's zero→real transition.
   useEffect(() => {
-    if (fitted.current || base.nodes.length === 0) return;
-    fitted.current = true;
-    requestAnimationFrame(fit);
-  }, [base, fit]);
+    if (base.nodes.length === 0) return;
+    if (!allMeasured) return; // unmeasured nodes: fit later, never wrong
+    const structural = lastFittedSetRef.current !== nodeSetKey;
+    const realSizeJustArrived = pendingRealSizeRef.current;
+    if (!structural && !realSizeJustArrived) return;
+    pendingRealSizeRef.current = false;
+    if (safeFit()) lastFittedSetRef.current = nodeSetKey;
+  }, [nodeSetKey, allMeasured, paneReal, base.nodes.length, safeFit]);
+
+  // The pane's size: detect the zero→real transition only (ordinary
+  // resizes keep the reader's current zoom/pan).
   useEffect(() => {
     const pane = paneRef.current;
     if (!pane || typeof ResizeObserver === "undefined") return;
-    let frame = 0;
     const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(fit);
+      const r = pane.getBoundingClientRect();
+      const wasZero =
+        paneSizeRef.current.w < MIN_FIT_PANE_PX || paneSizeRef.current.h < MIN_FIT_PANE_PX;
+      paneSizeRef.current = { w: r.width, h: r.height };
+      if (wasZero && r.width >= MIN_FIT_PANE_PX && r.height >= MIN_FIT_PANE_PX) {
+        pendingRealSizeRef.current = true;
+        setPaneReal((tick) => tick + 1);
+      }
     });
     observer.observe(pane);
     return () => {
       observer.disconnect();
-      cancelAnimationFrame(frame);
     };
-  }, [fit]);
+  }, []);
+
+  // A wheel over the canvas is a manual zoom (zoomOnScroll) — mark the view
+  // reader-owned so the sentinel never refits over it.
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = () => {
+      console.log("[vp-debug] wheel fired");
+      userMovedRef.current = true;
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+
+  // The sentinel: watch the rendered transform. A non-finite one (a NaN
+  // fit) is repaired to the last good transform; a finite one that leaves
+  // every node outside the pane — while the reader has not moved the view
+  // and everything is measured — is re-fit.
+  useEffect(() => {
+    const el = viewportEl();
+    if (!el || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(() => {
+      const t = parseViewportTransform(el.style.transform);
+      if (t === null) {
+        if (lastGoodRef.current) setViewport(lastGoodRef.current, { duration: 0 });
+        return;
+      }
+      lastGoodRef.current = t;
+      if (userMovedRef.current) return;
+      if (baseRef.current.nodes.length === 0 || !allMeasuredRef.current) return;
+      const pane = paneRef.current?.getBoundingClientRect();
+      if (!pane || pane.width < MIN_FIT_PANE_PX || pane.height < MIN_FIT_PANE_PX) return;
+      const anyInside = [...el.querySelectorAll<HTMLElement>(".react-flow__node")].some((n) => {
+        const r = n.getBoundingClientRect();
+        return (
+          r.left < pane.left + pane.width &&
+          r.right > pane.left &&
+          r.top < pane.top + pane.height &&
+          r.bottom > pane.top
+        );
+      });
+      if (anyInside) return;
+      // Blank canvas: re-fit one frame later (the transform may still be
+      // mid-update), but only if it is still blank and nothing moved.
+      requestAnimationFrame(() => {
+        if (userMovedRef.current) return;
+        const still = parseViewportTransform(viewportEl()?.style.transform ?? null);
+        if (still === null) return;
+        const paneNow = paneRef.current?.getBoundingClientRect();
+        if (!paneNow || paneNow.width < MIN_FIT_PANE_PX) return;
+        const stillBlank = [
+          ...(viewportEl()?.querySelectorAll<HTMLElement>(".react-flow__node") ?? []),
+        ].every((n) => {
+          const r = n.getBoundingClientRect();
+          return !(
+            r.left < paneNow.left + paneNow.width &&
+            r.right > paneNow.left &&
+            r.top < paneNow.top + paneNow.height &&
+            r.bottom > paneNow.top
+          );
+        });
+        if (stillBlank) safeFitRef.current();
+      });
+    });
+    observer.observe(el, { attributes: true, attributeFilter: ["style"] });
+    return () => {
+      observer.disconnect();
+    };
+  }, [setViewport, viewportEl]);
+
+  // The deep link's node: centre it once it is on the canvas and measured —
+  // until the reader pans/zooms (userMovedRef), after which their viewport
+  // wins and the canvas never moves it again.
+  useEffect(() => {
+    const defNode = base.nodes.find((n) => n.data.nodeId === focusNodeId);
+    const box = defNode ? nodeBoxes[defNode.id] : null;
+    const pane = paneRef.current?.getBoundingClientRect();
+    console.log("[vp-debug] focus-effect", {
+      focusNodeId,
+      userMoved: userMovedRef.current,
+      focusedAlready: focusedRef.current,
+      allMeasured,
+      defFound: !!defNode,
+      defId: defNode?.id,
+      boxId: defNode?.id ? nodeBoxes[defNode.id] != null : null,
+      pane: pane ? [Math.round(pane.width), Math.round(pane.height)] : null,
+      baseNodeIds: base.nodes.map((n) => n.data.nodeId),
+    });
+    if (!focusNodeId || userMovedRef.current) return;
+    if (focusedRef.current === focusNodeId) return;
+    if (!allMeasured) return;
+    if (!box) return;
+    if (!pane || pane.width < MIN_FIT_PANE_PX || pane.height < MIN_FIT_PANE_PX) return;
+    focusedRef.current = focusNodeId;
+    const current = parseViewportTransform(viewportEl()?.style.transform ?? null) ?? {
+      x: 0,
+      y: 0,
+      zoom: 1,
+    };
+    const vp = centerOnBox(box, pane.width, pane.height, current.zoom);
+    console.log("[vp-debug] center", { current, vp });
+    if (vp) {
+      setViewport(vp, { duration: 0 });
+      lastGoodRef.current = vp;
+    }
+  }, [focusNodeId, allMeasured, nodeSetKey, base, nodeBoxes, paneReal, setViewport, viewportEl]);
 
   const deleteKeys = readOnly ? null : ["Backspace", "Delete"];
 
@@ -582,7 +901,6 @@ function CanvasInner({
           edges={edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          fitView
           minZoom={0.4}
           maxZoom={1.25}
           onlyRenderVisibleElements={false}
@@ -590,6 +908,14 @@ function CanvasInner({
           onEdgesChange={onEdgesChange}
           onNodeDragStop={onNodeDragStop}
           onConnect={handleConnect}
+          onMoveStart={() => {
+            console.log("[vp-debug] onMoveStart fired");
+            userMovedRef.current = true;
+          }}
+          onMove={() => {
+            console.log("[vp-debug] onMove fired");
+            userMovedRef.current = true;
+          }}
           // Multi-selection: Shift+click adds a step to the selection (the
           // store's default multiSelectionKeyCode is Control — without this a
           // Shift+click just replaces the selection). The Shift+drag selection

@@ -273,6 +273,11 @@ export default function RunWorkbench() {
   const userSelected = useRef(false);
   const autoDone = useRef(false);
   const remapped = useRef(false);
+  // A `?node=` that was in the URL when the page loaded is a deep link (the
+  // reader asked to see that node): the canvas centres it once, then a
+  // manual pan/zoom takes over. A node selected later (auto-select, a
+  // click) must NOT move the viewport — only the dock follows it.
+  const deepLinkNodeRef = useRef<string | null>(params.get("node"));
 
   const setView = (next: View) =>
     setParams(
@@ -596,6 +601,7 @@ export default function RunWorkbench() {
             stale={false}
             statusOverlay={statusOverlay}
             onSelect={selectDefinition}
+            focusNodeId={deepLinkNodeRef.current ?? undefined}
           />
         </div>
       ) : (

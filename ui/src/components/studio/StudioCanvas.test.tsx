@@ -8,7 +8,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { parseGraph } from "../../lib/pipeline/graphDoc";
-import { evaluateConnect, StudioCanvas, type StudioCanvasProps } from "./StudioCanvas";
+import {
+  centerOnBox,
+  computeFitViewport,
+  evaluateConnect,
+  mirrorOwnedChanges,
+  parseViewportTransform,
+  StudioCanvas,
+  type StudioCanvasProps,
+} from "./StudioCanvas";
 
 class ResizeObserverStub {
   private readonly callback: (
@@ -249,6 +257,107 @@ spec:
     expect(screen.getByTestId("scope-status-build_until_verified").textContent).toContain(
       "iteration 2 of 4",
     );
+  });
+});
+
+describe("viewport fit guards (issue #2 blank canvas)", () => {
+  const boxes = [
+    { x: 0, y: 0, width: 200, height: 60 },
+    { x: 240, y: 0, width: 200, height: 60 },
+    { x: 120, y: 120, width: 200, height: 60 },
+  ];
+
+  it("fits a real graph into a real pane within the zoom band", () => {
+    const vp = computeFitViewport(boxes, 1000, 600);
+    expect(vp).not.toBeNull();
+    const { x, y, zoom } = vp!;
+    expect(Number.isFinite(x)).toBe(true);
+    expect(Number.isFinite(y)).toBe(true);
+    expect(zoom).toBeGreaterThanOrEqual(0.4);
+    expect(zoom).toBeLessThanOrEqual(1.25);
+  });
+
+  it("refuses a zero-sized or sub-minimum pane (the 0×0 mid-run case)", () => {
+    expect(computeFitViewport(boxes, 0, 600)).toBeNull();
+    expect(computeFitViewport(boxes, 1000, 0)).toBeNull();
+    expect(computeFitViewport(boxes, 1000, 47)).toBeNull();
+    expect(computeFitViewport(boxes, -5, 600)).toBeNull();
+  });
+
+  it("refuses NaN / non-finite pane dimensions", () => {
+    expect(computeFitViewport(boxes, Number.NaN, 600)).toBeNull();
+    expect(computeFitViewport(boxes, 1000, Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it("refuses unmeasured (zero-area) or non-finite boxes instead of fitting wrong", () => {
+    expect(computeFitViewport([{ x: 0, y: 0, width: 0, height: 0 }], 1000, 600)).toBeNull();
+    expect(
+      computeFitViewport([{ x: Number.NaN, y: 0, width: 20, height: 20 }], 1000, 600),
+    ).toBeNull();
+    expect(computeFitViewport([], 1000, 600)).toBeNull();
+  });
+
+  it("keeps the graph's centre on the pane's centre when it fits", () => {
+    const vp = computeFitViewport(boxes, 1000, 600)!;
+    const boundsW = 440; // 0..440
+    const boundsH = 180; // 0..180
+    const cx = 0 + boundsW / 2;
+    const cy = 0 + boundsH / 2;
+    const zoom = Math.min((1000 - 0.16 * 1000) / boundsW, (600 - 0.16 * 600) / boundsH);
+    if (zoom >= 0.4 && zoom <= 1.25) {
+      expect(vp.x + cx * vp.zoom).toBeCloseTo(500, 1);
+      expect(vp.y + cy * vp.zoom).toBeCloseTo(300, 1);
+    }
+  });
+});
+
+describe("mirrorOwnedChanges (canvas owns the element set)", () => {
+  it("swallows add/remove but keeps position/select/dimensions/replace", () => {
+    const changes = [
+      { id: "a", type: "select", selected: true },
+      { id: "a", type: "position", position: { x: 1, y: 2 } },
+      { id: "a", type: "dimensions", measured: { width: 5, height: 5 } },
+      { id: "b", type: "remove" },
+      { id: "c", type: "add", item: {}, index: 0 },
+    ] as const;
+    const kept = mirrorOwnedChanges(changes.map((c) => ({ ...c })));
+    expect(kept.map((c) => c.type)).toEqual(["select", "position", "dimensions"]);
+  });
+
+  it("keeps an empty / all-removal batch empty", () => {
+    expect(mirrorOwnedChanges([])).toEqual([]);
+    expect(mirrorOwnedChanges([{ id: "a", type: "remove" }])).toEqual([]);
+  });
+});
+
+describe("parseViewportTransform", () => {
+  it("parses a finite rendered transform", () => {
+    expect(parseViewportTransform("translate(69.3822px, 13.6008px) scale(1.1749)")).toEqual({
+      x: 69.3822,
+      y: 13.6008,
+      zoom: 1.1749,
+    });
+  });
+
+  it("returns null for a non-finite (NaN) or missing transform", () => {
+    expect(parseViewportTransform("")).toBeNull();
+    expect(parseViewportTransform(null)).toBeNull();
+    expect(parseViewportTransform("translate(69px, 13px) scale(NaN)")).toBeNull();
+    expect(parseViewportTransform("scale(1)")).toBeNull();
+  });
+});
+
+describe("centerOnBox", () => {
+  it("centres the box in the pane at the current zoom", () => {
+    const vp = centerOnBox({ x: 100, y: 50, width: 100, height: 40 }, 1000, 600, 1);
+    expect(vp).not.toBeNull();
+    expect(vp!.x + (100 + 50) * vp!.zoom).toBeCloseTo(500, 1);
+    expect(vp!.y + (50 + 20) * vp!.zoom).toBeCloseTo(300, 1);
+  });
+
+  it("refuses a zero pane and a non-finite box", () => {
+    expect(centerOnBox({ x: 0, y: 0, width: 10, height: 10 }, 0, 600, 1)).toBeNull();
+    expect(centerOnBox({ x: Number.NaN, y: 0, width: 10, height: 10 }, 1000, 600, 1)).toBeNull();
   });
 });
 
