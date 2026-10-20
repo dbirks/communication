@@ -75,16 +75,14 @@ function agentItem(page: Page, text: string): Locator {
 
 /**
  * The workbench draws its pinned revision on the shared Studio canvas
- * (React Flow): every node is a `.react-flow__node[data-id="<def id>"]` inside
- * `workbench-graph-frame`. The workbench's selection comes from the URL's `node`
- * param (RunWorkbench draws the accent ring itself; it does not rely on React
- * Flow's internal selection state), so the selected node is looked up by its
- * definition id.
+ * (React Flow) inside `workbench-graph-frame`. Scoped nodes carry a
+ * QUALIFIED React Flow id (`build_until_verified/code_review`), so an exact
+ * `data-id="<def id>"` match never lands for them; the canvas node box's
+ * own `canvas-step-<definition id>` testid (plain definition id, the same
+ * id the URL's `node` param names) is the stable selector.
  */
 function canvasNode(page: Page, defId: string): Locator {
-  return page.locator(
-    `[data-testid="workbench-graph-frame"] .react-flow__node[data-id="${defId}"]`,
-  );
+  return page.locator(`[data-testid="workbench-graph-frame"] [data-testid="canvas-step-${defId}"]`);
 }
 
 /** The `?node=` param of the current URL — the workbench's selected node. */
@@ -115,6 +113,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("A7: one-off conversation from the header and the global New menu", async ({ page }) => {
+    test.setTimeout(300_000); // one real agent turn plus four axe passes, bounded
     await signIn(page, "alice");
     const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
 
@@ -208,6 +207,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   });
 
   test("run-linked conversation: the badge deep-links into the Run Workbench", async ({ page }) => {
+    test.setTimeout(300_000); // the workbench deep-link waits are WORKBENCH_TIMEOUT_MS each
     await signIn(page, "alice");
     await openProjectBySlug(page, PROJECT_SLUG);
 

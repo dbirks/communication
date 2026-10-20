@@ -226,8 +226,22 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // rename LAST — the rename commit drops the node selection (the inspector
     // falls back to the pipeline level), so no further field may follow it.
     await page.getByTestId("insp-profile").selectOption("m4-reviewer");
+    // A DETERMINISTIC long turn: the A5 takeover journey takes control WHILE a
+    // code_review attempt is running, and a turn that settles in ~20 s is
+    // already over by the time bob signs in and clicks — racing the window
+    // fails. m4-reviewer runs preapproved_within_sandbox, so an explicit wait
+    // runs without a permission prompt. A plain `sleep 90` is BLOCKED by the
+    // sandbox's Bash guardrail ("Blocked: standalone sleep 90 … do not chain
+    // shorter sleeps"), and the agent then either skips it (turn ~20 s) or
+    // backgrounds it (turn ~10 s, INVALID_OUTPUT). The guardrail's own
+    // sanctioned wait is a foreground Monitor until-loop (`until <check>; do
+    // sleep 2; done`), so the prompt uses exactly that: a time-bounded until
+    // loop that blocks the turn for ~90 s. Every code_review turn therefore
+    // stays in flight for at least 90 s, and A5's poll (ledger, not wall
+    // clock) plus bob's select + Take control land comfortably inside the
+    // window instead of racing the turn's remaining seconds.
     const prompt =
-      'Review the diff for the add() fix and answer JSON {"approved": true|false, "evidence": "…"}';
+      'First wait about 90 seconds before you review, so this turn stays open: run this exact shell command in the FOREGROUND and wait for it to finish — end=$(( $(date +%s) + 90 )); until [ $(date +%s) -ge $end ]; do sleep 2; done — this is the allowed Monitor until-loop (a standalone `sleep 90` is blocked, so do not use one and do not run the loop in the background). Once it completes, review the diff for the add() fix and answer JSON {"approved": true|false, "evidence": "…"}';
     await page.getByTestId("insp-config-prompt").fill(prompt);
     await page.getByTestId("insp-config-prompt").blur();
     // The "following route" is configurable: on failure → continue.

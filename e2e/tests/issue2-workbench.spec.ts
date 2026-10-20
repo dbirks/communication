@@ -154,8 +154,13 @@ async function findAcpSlug(page: Page): Promise<string | null> {
     const candidate = candidates.nth(i);
     const testid = (await candidate.getAttribute("data-testid")) ?? "";
     if (testid === "canvas-step-list" || testid.startsWith("canvas-step-row-")) continue;
-    const label =
-      (await candidate.locator('div[role="button"]').first().getAttribute("aria-label")) ?? "";
+    // Guard with count() first: getAttribute auto-waits for the element, and a
+    // box without its inner button would otherwise hang the read for the full
+    // action timeout (observed: ~3 min of 30 s hangs once, which ate both
+    // code_review windows of the takeover journey).
+    const button = candidate.locator('div[role="button"]');
+    if ((await button.count()) === 0) continue;
+    const label = (await button.first().getAttribute("aria-label")) ?? "";
     if (!/^Coding agent step /i.test(label)) continue;
     const slug = testid.replace(/^canvas-step-/, "");
     if (slug) slugs.push(slug);
@@ -199,6 +204,176 @@ async function selectNode(page: Page, id: string, timeoutMs: number): Promise<vo
     if (Date.now() >= deadline) throw new Error(`node ${id} never resolved to an execution`);
     await page.waitForTimeout(5_000);
   }
+}
+
+/** The run id embedded in the journey's run URL. */
+function runIdOf(runUrl: string): string {
+  return runUrl.split("/").pop() ?? "";
+}
+
+/**
+ * The ledger's in-flight vocabulary: a node execution whose attempt is
+ * executing on a worker reports `leased` (its row only goes `running` when
+ * the attempt reports in), so `leased` and `running` are BOTH "in flight".
+ * The takeover journey keys off the ATTEMPT (the thing that gets interrupted),
+ * not the node row's status field, so it is the attempt's own status that is
+ * authoritative here.
+ */
+const IN_FLIGHT_ATTEMPT_STATUSES = new Set(["leased", "running"]);
+/** Terminal node rows have no in-flight attempt to find. */
+const TERMINAL_NODE_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "skipped",
+  "cancelled",
+  "interrupted",
+]);
+
+/**
+ * Poll `GET /api/v1/runs/:id/nodes` (+ the per-execution detail route) until
+ * an execution of `nodeId` has an ATTEMPT that is `leased`/`running` WITH A
+ * LIVE `conversation_id`, and return that execution's `node_instance_key`.
+ * The takeover journey must take control while an attempt is ACTUALLY running
+ * — a takeover after the turn settled changes no run row (no
+ * `run.paused`/`human_takeover`), so this poll is what keeps the A5 journey
+ * honest. The until scope runs the node in two iterations, so the poll scans
+ * every non-terminal execution and accepts whichever attempt is live. The
+ * conversation is what makes the dock's Take control button exist at all (a
+ * leased-but-pre-session attempt renders "The agent has not started yet"),
+ * so a running attempt without one is not yet takeable. The list row's
+ * identity is its `id` (the detail route's `{nodeExecutionId}` path param) —
+ * rows carry no separate `node_execution_id` field. `page.request` shares
+ * the signed-in session (GET needs no CSRF token).
+ */
+async function expectRunningExecution(
+  page: Page,
+  runId: string,
+  nodeId: string,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  const stamp = () => new Date().toISOString().slice(11, 19);
+  console.log(`WORKBENCH poll start: ${nodeId} on run ${runId.slice(0, 8)} at ${stamp()}`);
+  let last = `no ${nodeId} execution yet`;
+  let lastLogged = "";
+  for (;;) {
+    const response = await page.request.get(`/api/v1/runs/${runId}/nodes`);
+    if (!response.ok())
+      throw new Error(`nodes API answered ${response.status()} — ${await response.text()}`);
+    const body = (await response.json()) as {
+      node_executions: Array<{
+        id: string;
+        node_id: string;
+        node_instance_key: string;
+        status: string;
+        attempt_count: number;
+      }>;
+    };
+    const rows = body.node_executions.filter(
+      (node) => node.node_id === nodeId && !TERMINAL_NODE_STATUSES.has(node.status),
+    );
+    const summary = () =>
+      body.node_executions
+        .filter((node) => node.node_id === nodeId)
+        .map((node) => `${node.node_instance_key}:${node.status}`)
+        .join(" ") || "none";
+    last = summary();
+    // Log each distinct ledger state (deduped) so the run's log shows the
+    // poll's live view of the node's rows without one line per 3 s tick.
+    if (last !== lastLogged) {
+      console.log(`WORKBENCH poll ${stamp()}: ${last} (non-terminal: ${rows.length})`);
+      lastLogged = last;
+    }
+    let liveKey: string | null = null;
+    let liveNote = "";
+    for (const row of rows) {
+      const detailResponse = await page.request.get(`/api/v1/runs/${runId}/nodes/${row.id}`);
+      if (!detailResponse.ok()) {
+        last += ` | ${row.node_instance_key} detail ${detailResponse.status()}`;
+        continue;
+      }
+      const detail = (await detailResponse.json()) as {
+        attempts?: Array<{ status: string; conversation_id: string | null }>;
+      };
+      const attempts = detail.attempts ?? [];
+      const note = attempts
+        .map((attempt) => `${attempt.status}${attempt.conversation_id ? "+conv" : ""}`)
+        .join(", ");
+      last += ` | ${row.node_instance_key}[${row.status}] attempts: ${note}`;
+      const live = attempts.some(
+        (attempt) =>
+          IN_FLIGHT_ATTEMPT_STATUSES.has(attempt.status) && attempt.conversation_id != null,
+      );
+      if (live) {
+        liveKey = row.node_instance_key;
+        liveNote = note;
+        break;
+      }
+    }
+    if (liveKey) {
+      console.log(`WORKBENCH: ${nodeId} in flight at ${liveKey} (attempt rows: ${liveNote})`);
+      return liveKey;
+    }
+    if (Date.now() >= deadline)
+      throw new Error(
+        `no ${nodeId} execution went in flight with a live conversation within ${timeoutMs}ms ` +
+          `(ledger: ${last})`,
+      );
+    await page.waitForTimeout(3_000);
+  }
+}
+
+/**
+ * Poll `GET /api/v1/runs/:id` until the run is `paused` for `reason` — the
+ * ledger's word that the takeover interrupted an in-flight attempt (the
+ * attempt closes `interrupted{human_takeover}` and the run pauses for that
+ * reason, contract § 5.3). A takeover on a settled attempt never writes it.
+ */
+async function expectPausedFor(
+  page: Page,
+  runId: string,
+  reason: string,
+  timeoutMs: number,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const body = (await (await page.request.get(`/api/v1/runs/${runId}`)).json()) as {
+          status?: string;
+          paused_reason?: string | null;
+        };
+        return body.status === "paused" && body.paused_reason === reason;
+      },
+      { timeout: timeoutMs },
+    )
+    .toBeTruthy();
+}
+
+/**
+ * Poll the nodes API until some execution of `nodeId` has `attempt_count >= n`
+ * — the factory's re-run of the node after a returned takeover (attempt 2 of
+ * the same node execution, its `retry_context` the recorded intervention).
+ */
+async function expectAttemptCountAtLeast(
+  page: Page,
+  runId: string,
+  nodeId: string,
+  n: number,
+  timeoutMs: number,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const body = (await (await page.request.get(`/api/v1/runs/${runId}/nodes`)).json()) as {
+          node_executions: Array<{ node_id: string; attempt_count: number }>;
+        };
+        return body.node_executions.some(
+          (node) => node.node_id === nodeId && node.attempt_count >= n,
+        );
+      },
+      { timeout: timeoutMs },
+    )
+    .toBeTruthy();
 }
 
 /**
@@ -325,7 +500,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   }) => {
     test.setTimeout(1_200_000); // gate wait + one real agent turn, both bounded
     await signIn(page, ADMIN);
-    const status = await openRun(page, state.runUrl);
+    await openRun(page, state.runUrl);
 
     // The run page names the pinned revision — it must be the studio-published
     // one (the repin's proof), not the older revision without code_review.
@@ -376,13 +551,16 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       "wb-a4-approval",
       "the approve human gate was selected in the graph and approved from the dock's approval card",
     );
-    await expect(status).toContainText(/running|waiting|completed|failed/i, {
-      timeout: NODE_STEP_TIMEOUT_MS,
-    });
-
     // The ACP step: the agent.acp the studio spec inserted (or any agent.acp
-    // the revision has) runs live in the dock's conversation.
+    // the revision has) runs live in the dock's conversation. Resolve the
+    // slug NOW — before the poll — because the poll must start the moment the
+    // gate clears: the code_review turn's running window is the only time A5's
+    // takeover can interrupt a live attempt, and every second spent on
+    // unrelated waits before the poll burns that window.
     state.acpSlug = (await findAcpSlug(page)) ?? "";
+    console.log(
+      `WORKBENCH A4: acpSlug=${state.acpSlug} at ${new Date().toISOString().slice(11, 19)}`,
+    );
     if (!state.acpSlug) {
       throw new Error(
         "WORKBENCH A4: no agent.acp node in the run's graph — the run is not pinned to the studio-published revision (which inserts the agent.acp code_review step). Re-pin the assignment in setup; run issue2-studio.spec.ts first.",
@@ -393,22 +571,43 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
         `WORKBENCH A4: the studio-inserted code_review agent.acp step is absent from the run's graph (found ${state.acpSlug}) — the run is not pinned to the studio-published revision. Re-pin the assignment in setup.`,
       );
     }
+    // Select the node only once its attempt is actually RUNNING. A click while
+    // the attempt is still queued resolves to the dock's "agent has not started
+    // yet" (the attempt has no conversation_id yet), and the node-detail query
+    // refetches only on an SSE invalidation — so a queued pick can block until
+    // the run moves on. Waiting on the ledger for a `running` attempt guarantees
+    // the dock opens on the LIVE conversation (A4's transcript populates fast),
+    // and — crucially for A5 — leaves the turn's running window open for the
+    // takeover instead of A4 consuming it to completion.
+    await expectRunningExecution(page, runIdOf(state.runUrl), state.acpSlug, NODE_STEP_TIMEOUT_MS);
+    // NO assertion on the run-header status chip here: it is known-stale
+    // (stuck on "queued" while the run is live; another worker is fixing it)
+    // and waiting on it burned the code_review in-flight window the A5
+    // takeover needs — the ledger's expectRunningExecution above is the
+    // authoritative "in flight" signal.
     // The `code_review` row is journaled when the loop schedules it; a pick
     // before that resolves to an empty dock, so selectNode re-clicks.
+    const tMark = (what: string) =>
+      console.log(`WORKBENCH A4 step ${what} at ${new Date().toISOString().slice(11, 19)}`);
+    tMark("before selectNode");
     await selectNode(page, state.acpSlug, NODE_STEP_TIMEOUT_MS);
     const dockConversation = page.getByTestId("dock-conversation");
     await expect(dockConversation).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    tMark("dock visible, before transcript poll");
     await expect
       .poll(async () => dockConversation.locator('[data-testid="transcript-item"]').count(), {
         timeout: NODE_STEP_TIMEOUT_MS,
       })
       .toBeGreaterThan(0);
+    tMark("transcript populated");
     await evidence(
       page,
       "wb-a4-acp-live",
       `the agent.acp node ${state.acpSlug} is selected and the dock shows its live conversation transcript (agent messages / tool events)`,
     );
+    tMark("before a11y");
     await checkA11y(page, "workbench ACP dock");
+    tMark("a11y done");
   });
 
   test("A5: bob takes control, carol read-only, factory takes back, timeline", async ({
@@ -417,21 +616,24 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   }) => {
     test.setTimeout(1_500_000); // one real agent turn behind the takeover, bounded
     test.skip(!state.acpSlug, "no agent.acp node in this revision — ACP handoff journey skipped");
+    const runId = runIdOf(state.runUrl);
 
-    // admin keeps the run open (also warms the ACP selection), while bob and
-    // carol sign in their own contexts.
-    await signIn(page, ADMIN);
-    await openRun(page, state.runUrl);
-
+    // bob (contributor) is the one who takes control, so his sign-in +
+    // open-run + poll run FIRST: the poll starts the moment bob's page is up,
+    // not after admin/carol overhead. A code_review attempt is `running` for
+    // the length of a real agent turn, so the poll waits for one that is
+    // actually running (the ledger, not the wall clock) and only then does bob
+    // select the node and take control immediately.
     const bobContext = await browser.newContext();
     const bob = await bobContext.newPage();
     await signIn(bob, BOB.subject, { name: BOB.name, email: `${BOB.subject}@lab.example` });
-    const carolContext = await browser.newContext();
-    const carol = await carolContext.newPage();
-    await signIn(carol, CAROL.subject, { name: CAROL.name, email: `${CAROL.subject}@lab.example` });
-
-    // bob (contributor): open the same run, select the ACP node, take control.
     await openRun(bob, state.runUrl);
+    const runningKey = await expectRunningExecution(
+      bob,
+      runId,
+      state.acpSlug,
+      NODE_STEP_TIMEOUT_MS,
+    );
     await selectNode(bob, state.acpSlug, NODE_STEP_TIMEOUT_MS);
     const bobDock = bob.getByTestId("dock-conversation");
     await expect(bobDock).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
@@ -443,14 +645,24 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect(bob.getByTestId("dock-controller")).toContainText(/you are in control/i, {
       timeout: NODE_STEP_TIMEOUT_MS,
     });
+    // The takeover interrupted the in-flight attempt: it closed
+    // interrupted{human_takeover} and the run paused for exactly that reason
+    // (contract § 5.3) — a takeover on a settled attempt would never pause.
+    await expectPausedFor(bob, runId, "human_takeover", NODE_STEP_TIMEOUT_MS);
+    // (No run-header-status chip assertion: the chip is known-stale while the
+    // run is live — the ledger's paused_reason above and the timeline's
+    // run.paused below are the authoritative words for the pause.)
     await evidence(
       bob,
       "wb-a5-bob-control",
-      `bob (contributor) took control of the ACP conversation — the dock's controller badge reads "You are in control"`,
+      `bob (contributor) took control while ${runningKey} was running — the badge reads "You are in control" and the run is paused for human_takeover (the attempt was interrupted)`,
     );
 
     // carol (viewer): the same dock shows Take control disabled and no
     // enabled composer.
+    const carolContext = await browser.newContext();
+    const carol = await carolContext.newPage();
+    await signIn(carol, CAROL.subject, { name: CAROL.name, email: `${CAROL.subject}@lab.example` });
     await openRun(carol, state.runUrl);
     await clickNodeBox(carol, state.acpSlug);
     await expect(carol.getByTestId("dock-conversation")).toBeVisible({
@@ -471,9 +683,12 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await checkA11y(carol, "workbench viewer (carol)");
 
     // bob prompts the agent; his message lands in the shared transcript, and
-    // the turn is driven to completion: the dock's Stop button is rendered
-    // exactly while a turn is in flight, so the reply has landed when it is
-    // gone (a real agent turn is 15–120 s, bounded by AGENT_TURN_TIMEOUT_MS).
+    // the turn is driven to completion: the takeover cancelled the attempt's
+    // own turn (the dock shows its Stop button exactly while a turn is in
+    // flight), so bob's composer enables once that turn has closed — then his
+    // prompt starts the human's turn, and the Stop button's removal is the
+    // word that the reply has landed (a real agent turn is 15–120 s, bounded
+    // by AGENT_TURN_TIMEOUT_MS).
     const bobInput = bob.getByTestId("dock-composer-input");
     await expect(bobInput).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await bobInput.fill("Please also check the README mentions add()");
@@ -481,39 +696,61 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect
       .poll(async () => (await bobDock.textContent()) ?? "", { timeout: AGENT_TURN_TIMEOUT_MS })
       .toContain("Please also check the README mentions add()");
+    // Count the transcript once bob's own prompt item is in: the reply is
+    // whatever new item the agent appends after that (a real turn, not an
+    // echo of the prompt).
+    const transcriptAfterPrompt = await bob.getByTestId("transcript-item").count();
     await bob
       .getByTestId("dock-stop-turn")
       .waitFor({ state: "detached", timeout: AGENT_TURN_TIMEOUT_MS });
+    // The agent's reply landed as a new transcript item in the shared dock.
+    await expect
+      .poll(async () => bob.getByTestId("transcript-item").count(), {
+        timeout: AGENT_TURN_TIMEOUT_MS,
+      })
+      .toBeGreaterThan(transcriptAfterPrompt);
 
-    // Return control to the factory; the run is not left paused.
+    // Return control to the factory. The return does the run's leg of the
+    // handoff (contract § 5.3 / ADR-0016 § 5): it resumes the paused run
+    // (run.resumed, clearing the human_takeover reason), schedules attempt 2
+    // of the same node execution with the recorded intervention as its
+    // retry_context, and points the conversation's controller at the run —
+    // so the badge settles on the pipeline run, not on "No controller".
     const back = bob.getByTestId("dock-return-control");
     await expect(back).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await back.click();
-    // Shipped semantics (ADR-0016 §2, design gap G8): for a pipeline-owned
-    // conversation `return-control` hands back to the previous USER and
-    // otherwise lands on `none` — the `run_attempt` controller kind is
-    // reserved but no M4 transition re-sets it. The badge therefore settles
-    // on the shipped "No controller" state; the return-to-factory itself is
-    // proven by the run resuming (not paused) and the timeline's
-    // run.paused/run.resumed asserted below.
     await expect(bob.getByTestId("dock-controller")).toContainText(
-      /No controller — take control to drive/i,
+      /controlled by a pipeline run/i,
       {
         timeout: NODE_STEP_TIMEOUT_MS,
       },
     );
-    await expect(bob.getByTestId("run-header-status")).not.toHaveText(/paused/i, {
+    // (No run-header-status chip assertion after the return either — same
+    // stale-chip reason; run.resumed lands in the timeline read below and the
+    // run's resumption is proven by attempt 2 going in flight.)
+    // The factory re-runs the node: the same execution gains attempt 2 (the
+    // dock's attempt tabs read it straight off the node detail) and that
+    // attempt goes running through the worker.
+    await expect(bob.getByTestId("dock-attempt-1")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
+    await expect(bob.getByTestId("dock-attempt-2")).toBeVisible({
+      timeout: NODE_STEP_TIMEOUT_MS,
+    });
+    await expectAttemptCountAtLeast(bob, runId, state.acpSlug, 2, NODE_STEP_TIMEOUT_MS);
+    await expectRunningExecution(bob, runId, state.acpSlug, NODE_STEP_TIMEOUT_MS);
     await evidence(
       bob,
       "wb-a5-returned",
-      `bob returned control to the factory — the badge settles on the shipped "No controller" state (G8: no M4 transition restores the run_attempt controller) and the run resumed, not paused`,
+      `bob returned control to the factory — the badge names the pipeline run, the run resumed (not paused), and a NEW attempt (attempt 2) of ${state.acpSlug} started and is running (attempt tabs: 1 + 2)`,
     );
 
     // The event timeline lists the takeover and the return: the takeover
-    // pauses the run (run.paused, actor bob) and the return resumes it
-    // (run.resumed) — the journal's words for the handoffs.
+    // paused the run (run.paused, paused_reason human_takeover, actor bob)
+    // and the return resumed it (run.resumed) — the journal's words for the
+    // handoffs. admin keeps the run open on the main page for the read.
+    await signIn(page, ADMIN);
+    await openRun(page, state.runUrl);
     await page.getByTestId("workbench-tab-timeline").click();
     const feed = page.getByTestId("run-timeline");
     await expect(feed).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
@@ -523,7 +760,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await evidence(
       page,
       "wb-a5-timeline",
-      "the workbench timeline lists the control handoffs — run.paused and run.resumed with bob as actor",
+      "the workbench timeline lists the control handoffs — run.paused (human_takeover) and run.resumed with bob as actor",
     );
 
     await bobContext.close();
