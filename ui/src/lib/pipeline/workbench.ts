@@ -566,3 +566,23 @@ export function workbenchSearch(state: WorkbenchUrlState): string {
   if (scopeParts.length > 0) parts.push(`scope=${scopeParts.join(",")}`);
   return parts.join("&");
 }
+
+/**
+ * The accent ring for the URL's selected node. React Flow draws a definition
+ * node's `data-id` as its FLOW id: the plain id at the root, and
+ * `scopeKey/id` for a scope's children (the canvas qualifies ids so two
+ * scopes may share one). A selector on the plain id alone therefore never
+ * rings a selected scope child (e.g. `implement` inside a scope) even though
+ * the dock and the step list say it is selected — the ring targets both the
+ * exact root id and the `/id` scope-child suffix (the flow id always ends
+ * with `/<id>`; the id charset is validated before it is written into CSS).
+ */
+export function graphRingStyle(selectedDefId: string | null): string | null {
+  if (!selectedDefId || !/^[A-Za-z0-9_-]+$/.test(selectedDefId)) return null;
+  const paint =
+    "border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-accent-ring);";
+  return (
+    `[data-testid="workbench-graph-frame"] .react-flow__node[data-id="${selectedDefId}"] div[role="button"], ` +
+    `[data-testid="workbench-graph-frame"] .react-flow__node[data-id$="/${selectedDefId}"] div[role="button"] { ${paint} }`
+  );
+}

@@ -181,6 +181,75 @@ spec:
     fireEvent.click(screen.getByTestId("step-picker-item-agent.acp"));
     expect(onAddAfter).toHaveBeenCalledWith(null, [], "agent.acp");
   });
+
+  it("keeps every node on the canvas when a scope child is selected and overlays are on", () => {
+    // The Run Workbench hands the shared canvas a URL-selected definition node
+    // (a scope child: `implement` inside the until scope) plus a per-node
+    // status overlay map. The canvas must still draw the whole definition —
+    // scope group and every body node — with the overlay on the child.
+    const scoped = `apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: studio-test-scoped
+  description: run view over a scope
+spec:
+  policies:
+    maxConcurrentNodes: 1
+  nodes:
+    - id: plan
+      kind: model.chat
+      config:
+        model: m
+        messages:
+          - { role: user, content: hi }
+    - id: build_until_verified
+      kind: until
+      dependsOn: [plan]
+      config:
+        maxIterations: 4
+        passWhen: "true"
+        body:
+          nodes:
+            - id: implement
+              kind: process.exec
+              config:
+                executable: sh
+                args: []
+            - id: test
+              kind: process.exec
+              dependsOn: [implement]
+              config:
+                executable: sh
+                args: []
+`;
+    const parsed = parseGraph(scoped);
+    if (!parsed.ok) throw new Error(`scoped fixture must parse: ${parsed.error}`);
+    const { container } = renderCanvas({
+      model: parsed.model,
+      document: parse(scoped),
+      selectedId: "implement",
+      readOnly: true,
+      statusOverlay: {
+        plan: { state: "succeeded", label: "succeeded" },
+        build_until_verified: { state: "running", label: "iteration 2 of 4" },
+        implement: { state: "running", label: "running" },
+        test: { state: "queued", label: "not started" },
+      },
+    });
+    // One React Flow node per definition node — nothing dropped: selecting
+    // the scope child and painting the overlays leave the graph intact.
+    const flowNodes = container.querySelectorAll(".react-flow__node");
+    expect(flowNodes.length).toBe(4);
+    expect(screen.getByTestId("canvas-step-plan")).toBeTruthy();
+    expect(screen.getByTestId("canvas-scope-build_until_verified")).toBeTruthy();
+    expect(screen.getByTestId("canvas-step-implement")).toBeTruthy();
+    expect(screen.getByTestId("canvas-step-test")).toBeTruthy();
+    // The overlay lands on the scoped child by its definition id.
+    expect(screen.getByTestId("step-status-implement").textContent).toContain("running");
+    expect(screen.getByTestId("scope-status-build_until_verified").textContent).toContain(
+      "iteration 2 of 4",
+    );
+  });
 });
 
 describe("evaluateConnect", () => {

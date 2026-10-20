@@ -10,6 +10,7 @@ import {
   attentionNode,
   childRunOf,
   definitionIdOfKey,
+  graphRingStyle,
   instancesOfNode,
   overlays,
   parseWorkbenchUrl,
@@ -616,5 +617,62 @@ describe("childRunOf", () => {
       ],
     };
     expect(childRunOf(tree, "/loop[1]/invoke")?.child_run_id).toBe("grandchild-1");
+  });
+});
+
+/**
+ * `graphRingStyle`: the accent ring for the URL's selected node. React Flow
+ * draws a definition node's `data-id` as its FLOW id — the plain id at the
+ * root, `scope/id` for a scope's children. The ring must reach a selected
+ * scope child there, not only the exact root id (the pre-fix selector was
+ * the exact id alone, so a selected scope child never lit up).
+ */
+describe("graphRingStyle", () => {
+  /** Apply the CSS the helper emits to a set of rendered `data-id`s. */
+  const ringed = (css: string | null, ids: string[]): string[] => {
+    if (css === null) return [];
+    const exact = [...css.matchAll(/\[data-id="([^"]+)"\]/g)].map((m) => m[1]);
+    const suffix = [...css.matchAll(/\[data-id\$\s*=\s*"\/([^"]+)"\]/g)].map((m) => m[1]);
+    return ids.filter(
+      (id) => exact.includes(id) || suffix.some((s) => id.endsWith(`/${s}`) && id.includes("/")),
+    );
+  };
+
+  const canvasIds = [
+    "plan",
+    "approve",
+    "build_until_verified",
+    "build_until_verified/implement",
+    "build_until_verified/implementer",
+    "until",
+    "until/implement",
+    "fan_out",
+    "fan_out/invoke",
+  ];
+
+  it("rings a selected scope child by its qualified flow id", () => {
+    const hit = ringed(graphRingStyle("implement"), canvasIds);
+    // The root id (if one carried it) and every scope child named `implement`.
+    expect(hit).toContain("build_until_verified/implement");
+    expect(hit).toContain("until/implement");
+    // Not a prefix graze: `implementer` inside a scope is a different node.
+    expect(hit).not.toContain("build_until_verified/implementer");
+    expect(hit).not.toContain("plan");
+    expect(hit).not.toContain("fan_out/invoke");
+  });
+
+  it("rings a selected root node by its exact id", () => {
+    const hit = ringed(graphRingStyle("approve"), canvasIds);
+    expect(hit).toEqual(["approve"]);
+  });
+
+  it("returns null for an id the CSS must not carry", () => {
+    expect(graphRingStyle(null)).toBeNull();
+    expect(graphRingStyle("")).toBeNull();
+    // The id is written into a CSS selector: anything outside the safe
+    // charset must be refused, never injected.
+    expect(graphRingStyle("a b")).toBeNull();
+    expect(graphRingStyle("impl/ent")).toBeNull();
+    expect(graphRingStyle("100%")).toBeNull();
   });
 });

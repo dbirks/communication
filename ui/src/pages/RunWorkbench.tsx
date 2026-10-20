@@ -33,6 +33,7 @@ import {
   type DefinitionNode,
 } from "../lib/pipeline/definition";
 import {
+  graphRingStyle,
   overlays,
   parseWorkbenchUrl,
   workbenchSearch,
@@ -158,6 +159,14 @@ function branchTargetNode(
 const DOCK_MIN = 320;
 const DOCK_MAX = 720;
 const clampDock = (width: number) => Math.min(DOCK_MAX, Math.max(DOCK_MIN, Math.round(width)));
+
+/**
+ * A stable object for a revision with no saved `ui_layout`. A fresh `{}` on
+ * every render would give the canvas a new `layout` identity per render,
+ * re-running `toFlow` and a structural node rebuild on every SSE frame — the
+ * churn this page's rebuild path must not pay for no reason.
+ */
+const NO_UI_LAYOUT = {} as UiLayout;
 
 function useNarrow(): boolean {
   const [narrow, setNarrow] = useState(
@@ -545,16 +554,14 @@ export default function RunWorkbench() {
   const slug = slugsById.get(run.pipeline_id) ?? run.pipeline_id;
   const revisionNumber = revisionRecord.data?.revision_number ?? null;
   const definitionNode = selectedDefId ? (definitionNodes.get(selectedDefId) ?? null) : null;
-  const uiLayout = (revisionRecord.data?.ui_layout ?? {}) as unknown as UiLayout;
+  const uiLayout = (revisionRecord.data?.ui_layout ?? NO_UI_LAYOUT) as unknown as UiLayout;
 
   /* The canvas clears React Flow's internal selection whenever its inputs
    * rebuild (shared component; the Studio rebuilds too), so the ring for the
    * URL's selected node is drawn here, with the tokens' accent variables —
-   * the same visual as a clicked node. */
-  const ringStyle =
-    selectedDefId && /^[A-Za-z0-9_-]+$/.test(selectedDefId)
-      ? `[data-testid="workbench-graph-frame"] .react-flow__node[data-id="${selectedDefId}"] > div[role="button"] { border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-accent-ring); }`
-      : null;
+   * the same visual as a clicked node. Scope children carry a qualified
+   * flow id (`scope/id`), so the ring must reach them there too. */
+  const ringStyle = graphRingStyle(selectedDefId);
 
   /* ------------------------------------------------------------- the views */
   const graphView = (
