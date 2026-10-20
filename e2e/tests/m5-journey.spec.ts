@@ -680,17 +680,21 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await shot(alice, "m5-06-retried");
     });
     await test.step("the run page offers the same way back, and it is armed", async () => {
-      // On the Run Workbench the old header's Retry button lives in the
-      // embedded inspector, whose header `embedded` hides; the run page's way
-      // back is the dock's failure block on the failed node. It reads route
-      // 31's OWN target set — the shared `retryVerdict` the old button armed
-      // on — and arms it the same way: `/verify` is `failed`, so the verdict
-      // names the node a retry would re-run, with no refusal line. The
-      // control that performs it is the Inbox's stalled row, which the
-      // previous step already drove. The rejected-gate case is the opposite
-      // arm below: nothing failed, so the page says why Retry has no target
-      // instead of 409ing.
+      // The workbench header renders `RunActions` (components/workbench/
+      // RunHeader.tsx → pages/RunInspector.tsx), the same Retry control the
+      // old run page had: `/verify` is `failed`, so route 31 has a target and
+      // the button is live (no reason line). The dock's failure block below
+      // is the page's other arm of the same shared `retryVerdict`, naming the
+      // node a retry would re-run, with no refusal line. The control that
+      // performs it is the Inbox's stalled row, which the previous step
+      // already drove. The rejected-gate case is the opposite arm below:
+      // nothing failed, so the page says why Retry has no target instead of
+      // 409ing.
       await gotoApp(alice, runPath);
+      await expect(alice.getByTestId("run-retry")).toBeVisible();
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/verify/);
+      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
       await canvasNode(alice, "verify").click();
       await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
       await expect(alice.getByTestId("dock-error-class")).toContainText("invalid_output");
@@ -914,10 +918,16 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
 
     await test.step("route 31 names the gate as its target, so the page arms Retry", async () => {
       await gotoApp(alice, gatePath);
+      // Header arm: the workbench's `RunActions` button reads `retryVerdict`'
+      // target set off `/runs/{id}/nodes` — the expired gate's node execution
+      // is `failed`, so the button is live and names the node it will re-run,
+      // with no reason line.
+      await expect(alice.getByTestId("run-retry")).toBeVisible();
+      await expect(alice.getByTestId("run-retry")).toBeEnabled();
+      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/approve/);
+      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
       // The workbench's own arm: the dock's failure block on the gate reads
-      // `retryVerdict`'s target set off `/runs/{id}/nodes` — the expired
-      // gate's node execution is `failed`, so the verdict is live and names
-      // the node a retry re-runs, with no refusal line. The gate is a
+      // the same target set and arms the same way. The gate is a
       // control-plane failure, so the block carries no worker attempt.
       await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
@@ -1040,13 +1050,18 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   });
 
   test("the run page itself offers a Retry control, and explains when it cannot", async () => {
-    // The workbench keeps `retryVerdict`'s target logic where the node is
-    // read: the dock's failure block on the failed node either names the
-    // nodes a retry would re-run or says why it has no target — a rejected
-    // gate is a business outcome, so nothing failed and there is nothing to
-    // retry. Proven per-arm in `ui/src/pages/RunInspector.test.tsx`; this is
-    // the live arm for a run with a genuinely failed node.
+    // The workbench header renders the same `RunActions` control the old run
+    // page had — it reads route 31's own target set and either arms the
+    // button or disables it with the reason (`run-retry-reason`). The dock's
+    // failure block below keeps `retryVerdict`'s target logic where the node
+    // is read: it either names the nodes a retry would re-run or says why it
+    // has no target — a rejected gate is a business outcome, so nothing
+    // failed and there is nothing to retry. Proven per-arm in
+    // `ui/src/pages/RunInspector.test.tsx`; this is the live arm for a run
+    // with a genuinely failed node.
     await gotoApp(alice, runPath);
+    await expect(alice.getByTestId("run-retry")).toBeVisible();
+    await expect(alice.getByTestId("run-retry")).toBeEnabled();
     await canvasNode(alice, "verify").click();
     await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
     await expect(alice.getByTestId("dock-retry-verdict")).toContainText("Re-runs 1 node");
