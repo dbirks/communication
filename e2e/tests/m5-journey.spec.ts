@@ -71,23 +71,36 @@ const GATE_SLUG = `m5-gate-${stamp}`;
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
 /**
- * One attempt's own panel. Since f010fe2 the node detail renders EVERY attempt
- * of the node (`ui/src/pages/RunInspector.tsx` — `attemptViews.map` into
- * `AttemptDetail`), each a `Panel` whose heading id is
- * `run-attempt-heading-<attempt_number>`. `Panel` renders a `<section
- * aria-labelledby=…>`, so that attribute is the only handle on the page that
- * names ONE attempt rather than "whichever attempt the pane drew" — every
- * attempt owns an `attempt-process-facts` / `attempt-exit-code` / `attempt-*`
- * block, so an unscoped locator is now a strict-mode violation, not evidence.
+ * The Run Workbench's dock opens ONE attempt of the selected node at a time
+ * (`ui/src/components/workbench/WorkbenchDock.tsx`): the `AttemptDetail`
+ * panel's heading id is `workbench-attempt-heading-<attempt_number>` for the
+ * attempt the dock is serving, and every attempt the node ran is a
+ * `dock-attempt-<n>` tab that switches which panel the dock draws. The crumb
+ * above the panel (`node-pane-crumb`) names the attempt the dock serves, so
+ * the pane is still scoped to ONE attempt rather than "whichever the dock
+ * happened to draw" — the same claim the old node pane made.
  */
 function attemptPane(page: Page, attemptNumber: number): Locator {
-  return page.locator(`section[aria-labelledby="run-attempt-heading-${attemptNumber}"]`);
+  return page.locator(`section[aria-labelledby="workbench-attempt-heading-${attemptNumber}"]`);
 }
 
-/** Every attempt panel the selected node's pane lists (the gate card is
- * `run-approval-heading-*`, so it never joins this set). */
-function attemptPanes(page: Page): Locator {
-  return page.locator('section[aria-labelledby^="run-attempt-heading-"]');
+/** The dock's attempt tabs: one button per attempt the selected node ran —
+ * the dock draws them only from a second attempt on, so a one-attempt node
+ * has none and the served panel is the whole record. */
+function dockAttemptTabs(page: Page): Locator {
+  return page.locator('button[role="tab"][data-testid^="dock-attempt-"]');
+}
+
+/**
+ * The workbench draws its pinned revision on the shared Studio canvas: the
+ * definition node is `canvas-step-<def id>` and its inner
+ * `div[role="button"]` is what the page's single-select listens for —
+ * clicking it puts the node in the URL (`?node=&instance=`) and opens it in
+ * the dock, replacing the old stage strip's cell as the way a reader picks a
+ * node.
+ */
+function canvasNode(page: Page, defId: string): Locator {
+  return page.locator(`[data-testid="canvas-step-${defId}"]`).locator('div[role="button"]').first();
 }
 
 /**
@@ -564,7 +577,12 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     });
     await test.step("the gate card carries a plan a person can read", async () => {
       await gotoApp(alice, runPath);
-      await alice.getByTestId("run-stage-cell-approve").click();
+      // The workbench's graph IS the run page: the approve node wears the
+      // waiting overlay on the canvas itself, and selecting it opens the gate
+      // in the dock, which leads a `human.approval` with the gate card.
+      await expect(canvasNode(alice, "approve")).toBeVisible({ timeout: 30_000 });
+      await expect(alice.getByTestId("step-status-approve")).toBeVisible({ timeout: 30_000 });
+      await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
       });
@@ -637,35 +655,47 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         timeout: DECISION_TIMEOUT_MS,
       });
       await gotoApp(alice, runPath);
-      await alice.getByTestId("run-tab-timeline").click();
+      await alice.getByTestId("workbench-tab-timeline").click();
       await expect(alice.getByTestId("run-timeline")).toContainText("run.retried", {
         timeout: DECISION_TIMEOUT_MS,
       });
       // The retried node grew a real second attempt — maxAttempts is 1, so no
-      // automatic retry could have produced it.
-      await alice.getByTestId("run-stage-cell-verify").click();
+      // automatic retry could have produced it. On the workbench the node is
+      // picked on its own graph and the dock serves the attempt the crumb
+      // names; BOTH attempts are the dock's tabs, so the crumb's `attempt 2`
+      // is which one is served, and the tabs are the count, not a
+      // replacement. Step 7 reads what each one says.
+      await alice.getByTestId("workbench-tab-graph").click();
+      await canvasNode(alice, "verify").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("verify", {
         timeout: DECISION_TIMEOUT_MS,
       });
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("attempt 2", {
         timeout: DECISION_TIMEOUT_MS,
       });
-      // The pane lists BOTH attempts (f010fe2): the failed one stays on the
-      // page next to the retry it earned, so the crumb's `attempt 2` is a
-      // count, not a replacement. Step 7 reads what each one says.
-      await expect(attemptPane(alice, 1)).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
+      await expect(dockAttemptTabs(alice)).toHaveCount(2);
       await expect(attemptPane(alice, 2)).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
+      await alice.getByTestId("dock-attempt-1").click();
+      await expect(attemptPane(alice, 1)).toBeVisible();
       await shot(alice, "m5-06-retried");
     });
     await test.step("the run page offers the same way back, and it is armed", async () => {
-      // `/verify` is `failed`, so route 31 has a target and the button is live
-      // (no reason line). The rejected-gate case is the opposite arm: nothing
-      // failed, so the page says why Retry is disabled instead of 409ing.
+      // On the Run Workbench the old header's Retry button lives in the
+      // embedded inspector, whose header `embedded` hides; the run page's way
+      // back is the dock's failure block on the failed node. It reads route
+      // 31's OWN target set — the shared `retryVerdict` the old button armed
+      // on — and arms it the same way: `/verify` is `failed`, so the verdict
+      // names the node a retry would re-run, with no refusal line. The
+      // control that performs it is the Inbox's stalled row, which the
+      // previous step already drove. The rejected-gate case is the opposite
+      // arm below: nothing failed, so the page says why Retry has no target
+      // instead of 409ing.
       await gotoApp(alice, runPath);
-      await expect(alice.getByTestId("run-retry")).toBeVisible();
-      await expect(alice.getByTestId("run-retry")).toBeEnabled();
-      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/verify/);
-      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
+      await canvasNode(alice, "verify").click();
+      await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
+      await expect(alice.getByTestId("dock-error-class")).toContainText("invalid_output");
+      await expect(alice.getByTestId("dock-retry-verdict")).toContainText("Re-runs 1 node");
+      await expect(alice.getByTestId("dock-retry-verdict")).toContainText("/verify");
       await shot(alice, "m5-06-run-page-retry");
     });
   });
@@ -673,7 +703,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   test("step 7 — view the evidence: the run's journal and the attempt's own record", async () => {
     await test.step("the Timeline tab renders journal rows", async () => {
       await gotoApp(alice, runPath);
-      await alice.getByTestId("run-tab-timeline").click();
+      await alice.getByTestId("workbench-tab-timeline").click();
       await expect(alice.getByTestId("run-timeline")).toBeVisible({ timeout: 30_000 });
       await expect(alice.locator('[data-testid^="run-timeline-item-"]').first()).toBeVisible();
       await expect(alice.getByTestId("run-timeline-count")).toBeVisible();
@@ -684,24 +714,28 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await shot(alice, "m5-07-timeline");
     });
     await test.step("the deterministic survey attempt reports what it actually ran", async () => {
-      await alice.getByTestId("run-stage-cell-survey").click();
+      // Back on the graph: the node is picked where it is drawn, and the
+      // dock serves its attempt.
+      await alice.getByTestId("workbench-tab-graph").click();
+      await canvasNode(alice, "survey").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("survey", {
         timeout: DECISION_TIMEOUT_MS,
       });
-      // Which attempt: the NEWEST one the crumb serves, scoped to its own panel.
-      // The newest is the attempt whose envelope the boundary accepted — the
-      // only attempt whose exit code can be a fact about this run — and
-      // `attempt-process-facts` is no longer unique now that the pane lists
-      // every attempt, so the number has to be read rather than assumed to be 1.
+      // Which attempt: the NEWEST one the crumb serves, scoped to its own
+      // panel. The newest is the attempt whose envelope the boundary
+      // accepted — the only attempt whose exit code can be a fact about this
+      // run — and the number has to be read rather than assumed to be 1.
       const newest = await newestAttemptNumber(alice, DECISION_TIMEOUT_MS);
       const att = attemptPane(alice, newest);
       await expect(att.getByTestId("attempt-process-facts")).toBeVisible({ timeout: 30_000 });
       await expect(att.getByTestId("attempt-exit-code")).toHaveText("0");
       await expect(att.getByTestId("attempt-stdout")).toContainText("== files ==");
       await expect(att.getByTestId("attempt-events")).toBeVisible();
-      // Panels are numbered 1..newest, each drawn once — that is what makes the
-      // scoping above a claim about attempts instead of a locator workaround.
-      await expect(attemptPanes(alice)).toHaveCount(newest);
+      // The dock names every attempt the node ran as a tab (one per attempt,
+      // each drawn once) and serves the newest by default — that is what
+      // makes the scoping above a claim about attempts instead of a locator
+      // workaround.
+      await expect(dockAttemptTabs(alice)).toHaveCount(newest > 1 ? newest : 0);
       await shot(alice, "m5-07-attempt-evidence");
     });
     await test.step("the retried verify node shows both attempts, the failure and the retry", async () => {
@@ -709,10 +743,17 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // number: attempt 1 is the one the boundary refused, attempt 2 is the
       // human retry step 6 asked for. A pane that kept only its newest row
       // would hide the failure the journal recorded (`10` J7's honesty rule).
-      await alice.getByTestId("run-stage-cell-verify").click();
+      // The dock serves one attempt at a time, so each is selected before
+      // what it says is read.
+      await alice.getByTestId("workbench-tab-graph").click();
+      await canvasNode(alice, "verify").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("verify", {
         timeout: DECISION_TIMEOUT_MS,
       });
+      // Both attempts are real tabs — the count, not a replacement.
+      await expect(dockAttemptTabs(alice)).toHaveCount(2);
+      await alice.getByTestId("dock-attempt-1").click();
+      await expect(alice.getByTestId("node-pane-crumb")).toContainText("attempt 1");
       const first = attemptPane(alice, 1);
       await expect(first.getByTestId("attempt-status")).toContainText("failed", {
         timeout: DECISION_TIMEOUT_MS,
@@ -729,13 +770,14 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // Attempt 2 — the same deterministic command, run again because a person
       // asked. Its verdict is only a fact once the worker closes it, so this
       // wait is the run's budget, not the advancer's.
+      await alice.getByTestId("dock-attempt-2").click();
+      await expect(alice.getByTestId("node-pane-crumb")).toContainText("attempt 2");
       const second = attemptPane(alice, 2);
       await expect(second.getByTestId("error-class-invalid_output")).toBeVisible({
         timeout: RUN_TIMEOUT_MS,
       });
       await expect(second.getByTestId("attempt-output-errors")).toBeVisible();
       await expect(second.getByTestId("attempt-exit-code")).toHaveText("not served");
-      await expect(attemptPanes(alice)).toHaveCount(2);
       await shot(alice, "m5-07-both-attempts");
     });
     await test.step("the artifact the approved plan published renders", async () => {
@@ -830,7 +872,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // This wait starts the 60s clock, so it is the only budget the deadline
       // itself needs.
       await expectRunStatus(alice, /waiting human/, RUN_TIMEOUT_MS);
-      await alice.getByTestId("run-stage-cell-approve").click();
+      await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: 30_000,
       });
@@ -855,7 +897,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // driver's own tick (~5s, internal/store/postgres/m4driver.go) is what
       // reads the deadline, so expiry lands seconds after it, not a cadence away.
       await expectRunStatus(alice, /failed/, RUN_TIMEOUT_MS);
-      await alice.getByTestId("run-stage-cell-approve").click();
+      await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("expired", {
         timeout: DECISION_TIMEOUT_MS,
       });
@@ -872,13 +914,18 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
 
     await test.step("route 31 names the gate as its target, so the page arms Retry", async () => {
       await gotoApp(alice, gatePath);
-      await expect(alice.getByTestId("run-retry")).toBeVisible();
-      await expect(alice.getByTestId("run-retry")).toBeEnabled();
-      // `retryVerdict` (ui/src/pages/RunInspector.tsx) reads the target set off
-      // `/runs/{id}/nodes`: the expired gate's node execution is `failed`, so
-      // the button is live and names the node it will re-run — no reason line.
-      await expect(alice.getByTestId("run-retry")).toHaveAttribute("title", /\/approve/);
-      await expect(alice.getByTestId("run-retry-reason")).toHaveCount(0);
+      // The workbench's own arm: the dock's failure block on the gate reads
+      // `retryVerdict`'s target set off `/runs/{id}/nodes` — the expired
+      // gate's node execution is `failed`, so the verdict is live and names
+      // the node a retry re-runs, with no refusal line. The gate is a
+      // control-plane failure, so the block carries no worker attempt.
+      await canvasNode(alice, "approve").click();
+      await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
+      await expect(alice.getByTestId("dock-no-attempt")).toBeVisible();
+      // The gate's own row is a target — the interrupted `/after_gate` may
+      // join the verdict (its dependency died), exactly as the old button's
+      // title named `/approve` among whatever else route 31 targeted.
+      await expect(alice.getByTestId("dock-retry-verdict")).toContainText("/approve");
       await shot(alice, "m5-08-retry-armed-on-a-gate");
     });
 
@@ -909,7 +956,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("the gate card is live again: the same ask, re-armed", async () => {
       await gotoApp(alice, gatePath);
       await expectRunStatus(alice, /waiting human/, DECISION_TIMEOUT_MS);
-      await alice.getByTestId("run-stage-cell-approve").click();
+      await canvasNode(alice, "approve").click();
       await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
         timeout: DECISION_TIMEOUT_MS,
       });
@@ -938,7 +985,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // what carried the run to `completed`. That attempt is worker work, so
       // the wait is the run's budget rather than the advancer's.
       await expectRunStatus(alice, /completed/, RUN_TIMEOUT_MS);
-      await alice.getByTestId("run-stage-cell-after_gate").click();
+      await canvasNode(alice, "after_gate").click();
       await expect(alice.getByTestId("node-pane-crumb")).toContainText("after_gate", {
         timeout: DECISION_TIMEOUT_MS,
       });
@@ -948,7 +995,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       });
       // The journal tells the whole arc in one pane: asked, expired, retried,
       // asked again.
-      await alice.getByTestId("run-tab-timeline").click();
+      await alice.getByTestId("workbench-tab-timeline").click();
       for (const type of ["approval.requested", "approval.expired", "run.retried"]) {
         await expect(alice.getByTestId("run-timeline")).toContainText(type, {
           timeout: DECISION_TIMEOUT_MS,
@@ -993,14 +1040,16 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   });
 
   test("the run page itself offers a Retry control, and explains when it cannot", async () => {
-    // The gap is closed: `RunActions` (ui/src/pages/RunInspector.tsx) now reads
-    // route 31's own target set off `/runs/{id}/nodes` and either arms the
-    // button or disables it with the reason (`run-retry-reason`) — a rejected
+    // The workbench keeps `retryVerdict`'s target logic where the node is
+    // read: the dock's failure block on the failed node either names the
+    // nodes a retry would re-run or says why it has no target — a rejected
     // gate is a business outcome, so nothing failed and there is nothing to
-    // retry. Proven per-arm in `ui/src/pages/RunInspector.test.tsx`; this is the
-    // live arm for a run with a genuinely failed node.
+    // retry. Proven per-arm in `ui/src/pages/RunInspector.test.tsx`; this is
+    // the live arm for a run with a genuinely failed node.
     await gotoApp(alice, runPath);
-    await expect(alice.getByTestId("run-retry")).toBeVisible();
-    await expect(alice.getByTestId("run-retry")).toBeEnabled();
+    await canvasNode(alice, "verify").click();
+    await expect(alice.getByTestId("dock-failure")).toBeVisible({ timeout: 30_000 });
+    await expect(alice.getByTestId("dock-retry-verdict")).toContainText("Re-runs 1 node");
+    await expect(alice.getByTestId("dock-retry-verdict")).toContainText("/verify");
   });
 });

@@ -152,8 +152,8 @@ const screens: Screen[] = [
     label: "run page",
     viewer: "alice",
     path: (lab) => lab.runPath,
-    anchor: "run-inspector",
-    why: "the screen QA found overflowing at 390px (e609b00)",
+    anchor: "workbench",
+    why: "the screen QA found overflowing at 390px (e609b00), now the graph-first Run Workbench",
   },
   {
     label: "/library",
