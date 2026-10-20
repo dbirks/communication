@@ -76,6 +76,59 @@ async function openRun(page: Page, runUrl: string): Promise<Locator> {
 }
 
 /**
+ * Select the New-run assignment whose option text starts with "<slug> · "
+ * (the form renders "<pipelineSlug> · <versionLabel> · max N concurrent").
+ * Matching the slug as the WHOLE first token keeps "feature-development" from
+ * shadowing "feature-development-deterministic", and matching by the rendered
+ * text — not a guessed value — keeps the pick in sync with what the form
+ * really offers. It logs every option's text and value, re-asserts the pick
+ * while the controlled select snaps back to its default (first) assignment
+ * during its re-render, and fails fast — with the full option list — if the
+ * goal input never appears.
+ */
+async function selectPipelineAssignment(page: Page, slug: string): Promise<void> {
+  const select = page.getByTestId("new-run-assignment");
+  await expect(select).toBeAttached({ timeout: NODE_STEP_TIMEOUT_MS });
+  const optionRows = async (): Promise<string[]> => {
+    const options = await select.locator("option").all();
+    const rows: string[] = [];
+    for (const option of options)
+      rows.push(
+        `value=${(await option.getAttribute("value")) ?? "?"} ` +
+          `text=${JSON.stringify((await option.textContent()) ?? "")}`,
+      );
+    return rows;
+  };
+  const rows = await optionRows();
+  console.log(`WORKBENCH setup: assignment options — ${rows.join(" | ")}`);
+  const target = rows.find((row) => row.includes(`text="${slug} · `));
+  if (!target)
+    throw new Error(
+      `WORKBENCH setup: no assignment option for pipeline ${slug} (options: ${rows.join(" | ")})`,
+    );
+  const targetValue = target.match(/^value=([^ ]+)/)?.[1] ?? "";
+  const goal = page.getByTestId("new-run-input-goal");
+  const deadline = Date.now() + 60_000; // fail fast, with the option list, not on the test timeout
+  for (;;) {
+    const selected = await select.inputValue();
+    if (selected !== targetValue) {
+      // The select is controlled: a re-render racing the change can snap it
+      // back to the default (first) assignment — re-assert the pick.
+      await select.selectOption(targetValue);
+    } else if (await goal.isVisible()) {
+      console.log(`WORKBENCH setup: assignment for ${slug} selected (value ${targetValue})`);
+      return;
+    }
+    if (Date.now() >= deadline)
+      throw new Error(
+        `WORKBENCH setup: the ${slug} assignment is selected (value ${targetValue}) but the ` +
+          `goal input never appeared (options: ${(await optionRows()).join(" | ")})`,
+      );
+    await page.waitForTimeout(2_000);
+  }
+}
+
+/**
  * The id of the revision's agent.acp node, if it has one (the studio spec
  * inserts `code_review` on the test → review edge inside the until scope and
  * wraps a trailing until scope that ends in an `agent` step; the seeded
@@ -89,15 +142,21 @@ async function openRun(page: Page, runUrl: string): Promise<Locator> {
  * "Coding agent".
  */
 async function findAcpSlug(page: Page): Promise<string | null> {
-  const boxes = page.locator('[data-testid^="canvas-step-"]');
-  const count = await boxes.count();
+  // The `^canvas-step-` prefix ALSO matches the collapsed definition table's
+  // `canvas-step-list` section and its `canvas-step-row-<id>` buttons
+  // (StudioCanvas) — only the flow's node boxes carry the clickable inner
+  // div[role="button"], so a non-box match would hang the aria-label read
+  // forever; skip the table matches.
+  const candidates = page.locator('[data-testid^="canvas-step-"]');
+  const count = await candidates.count();
   const slugs: string[] = [];
   for (let i = 0; i < count; i += 1) {
-    const box = boxes.nth(i);
+    const candidate = candidates.nth(i);
+    const testid = (await candidate.getAttribute("data-testid")) ?? "";
+    if (testid === "canvas-step-list" || testid.startsWith("canvas-step-row-")) continue;
     const label =
-      (await box.locator('div[role="button"]').first().getAttribute("aria-label")) ?? "";
+      (await candidate.locator('div[role="button"]').first().getAttribute("aria-label")) ?? "";
     if (!/^Coding agent step /i.test(label)) continue;
-    const testid = (await box.getAttribute("data-testid")) ?? "";
     const slug = testid.replace(/^canvas-step-/, "");
     if (slug) slugs.push(slug);
   }
@@ -110,6 +169,22 @@ function nodeButton(page: Page, id: string): Locator {
 }
 
 /**
+ * Click a node box through the canvas's own viewport: the live run's graph
+ * can drift off-viewport (the canvas refits on mount and pane resize only —
+ * observed live: a blank canvas, every node box off-pan, after minutes with
+ * the run page open). An off-viewport box never becomes actionable, so a
+ * bare click waits until the test deadline. Fitting with the React Flow
+ * "Fit View" control is the canvas's own user affordance for exactly this
+ * state — every functional assertion after the click is unchanged.
+ */
+async function clickNodeBox(page: Page, id: string): Promise<void> {
+  const fit = page.getByRole("button", { name: "Fit View" });
+  if ((await fit.count()) > 0) await fit.click().catch(() => undefined);
+  await page.waitForTimeout(300); // the fit settles (duration 0 in the canvas)
+  await nodeButton(page, id).click();
+}
+
+/**
  * Click a node box and re-click until its row has been journaled: a box
  * clicked before its execution row exists resolves to an empty dock, and
  * the URL's `instance=` is what the dock reads, so the pick is retried on
@@ -119,7 +194,7 @@ async function selectNode(page: Page, id: string, timeoutMs: number): Promise<vo
   const dockEmpty = page.getByTestId("workbench-dock-empty");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    await nodeButton(page, id).click();
+    await clickNodeBox(page, id);
     if ((await dockEmpty.count()) === 0) return;
     if (Date.now() >= deadline) throw new Error(`node ${id} never resolved to an execution`);
     await page.waitForTimeout(5_000);
@@ -222,15 +297,12 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await setMember(page, projectPath, BOB.name, "contributor");
     await setMember(page, projectPath, CAROL.name, "viewer");
 
-    // Start the run from the project's New run flow.
+    // Start the run from the project's New run flow. The form defaults to its
+    // FIRST assignment, so the studio-pinned one must be picked explicitly —
+    // robustly, and proven by the goal input the deterministic revision shows.
     await page.goto(`${projectPath}/runs`);
     await page.getByTestId("runs-new").click();
-    const assignment = page.getByTestId("new-run-assignment");
-    if ((await assignment.count()) > 0) {
-      const option = assignment.locator("option", { hasText: state.pipelineSlug }).first();
-      await expect(option).toBeAttached({ timeout: NODE_STEP_TIMEOUT_MS });
-      await assignment.selectOption((await option.getAttribute("value")) ?? "");
-    }
+    await selectPipelineAssignment(page, state.pipelineSlug);
     await page.getByTestId("new-run-input-goal").fill(`issue2 acceptance ${STAMP}`);
     const repo = page.getByTestId("new-run-input-repository");
     const repoChoice = repo.locator("option").nth(1);
@@ -294,7 +366,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     );
     await checkA11y(page, "workbench graph view");
 
-    await nodeButton(page, "approve").click();
+    await clickNodeBox(page, "approve");
     const decision = page.getByTestId("approval-decision-form");
     await expect(decision).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     await page.getByTestId("approval-approve").click();
@@ -380,7 +452,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // carol (viewer): the same dock shows Take control disabled and no
     // enabled composer.
     await openRun(carol, state.runUrl);
-    await nodeButton(carol, state.acpSlug).click();
+    await clickNodeBox(carol, state.acpSlug);
     await expect(carol.getByTestId("dock-conversation")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
@@ -417,8 +489,15 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     const back = bob.getByTestId("dock-return-control");
     await expect(back).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await back.click();
+    // Shipped semantics (ADR-0016 §2, design gap G8): for a pipeline-owned
+    // conversation `return-control` hands back to the previous USER and
+    // otherwise lands on `none` — the `run_attempt` controller kind is
+    // reserved but no M4 transition re-sets it. The badge therefore settles
+    // on the shipped "No controller" state; the return-to-factory itself is
+    // proven by the run resuming (not paused) and the timeline's
+    // run.paused/run.resumed asserted below.
     await expect(bob.getByTestId("dock-controller")).toContainText(
-      /controlled by a pipeline run/i,
+      /No controller — take control to drive/i,
       {
         timeout: NODE_STEP_TIMEOUT_MS,
       },
@@ -429,7 +508,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await evidence(
       bob,
       "wb-a5-returned",
-      `bob returned control to the factory — the badge reads "Controlled by a pipeline run" and the run is not paused`,
+      `bob returned control to the factory — the badge settles on the shipped "No controller" state (G8: no M4 transition restores the run_attempt controller) and the run resumed, not paused`,
     );
 
     // The event timeline lists the takeover and the return: the takeover
@@ -467,7 +546,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
 
     // Reload mid-run: the selection from the URL is restored and the stream
     // is live again.
-    await nodeButton(page, "approve").click();
+    await clickNodeBox(page, "approve");
     expect(new URL(page.url()).searchParams.get("node")).toBe("approve");
     await page.reload();
     await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
@@ -481,7 +560,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     console.log("WORKBENCH A6: mid-run reload restored the approve selection and a live stream");
 
     // A process.exec node: the dock shows its exit code and captured output.
-    await nodeButton(page, "test").click();
+    await clickNodeBox(page, "test");
     await expect(page.getByTestId("attempt-exit-code")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
@@ -492,7 +571,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     );
 
     // The approval node: the decision the card records after A4's approve.
-    await nodeButton(page, "approve").click();
+    await clickNodeBox(page, "approve");
     await expect(page.getByTestId("approval-summary")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
@@ -501,7 +580,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     // iterations (the journal keys them [1], [2] — until iterations are
     // 1-based, ADR-0023 § 1); picking iteration 1 vs iteration 2 changes the
     // dock, which must be on an in-scope node to follow the pick.
-    await nodeButton(page, "test").click();
+    await clickNodeBox(page, "test");
     const untilPicker = page.getByTestId("instance-picker-build_until_verified");
     await expect(untilPicker).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     const untilChips = untilPicker.locator("button", { hasText: /^Iteration \d+ ·/ });
@@ -548,7 +627,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
         .filter({ hasText: new RegExp(`^Item ${item} ·`) })
         .first()
         .click();
-      await nodeButton(page, "invoke").click();
+      await clickNodeBox(page, "invoke");
       await expect
         .poll(async () => (await fanLine()) ?? "", { timeout: NODE_STEP_TIMEOUT_MS })
         .toContain(`iteration ${item}`);
@@ -573,7 +652,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       .filter({ hasText: /^Item 12 ·/ })
       .first()
       .click();
-    await nodeButton(page, "invoke").click();
+    await clickNodeBox(page, "invoke");
     const childLink = page.getByTestId("dock-child-run-link");
     await expect(childLink).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     await childLink.click();

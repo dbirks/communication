@@ -267,9 +267,17 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
           // the button would navigate to.
           await gotoApp(alice, href);
         }
-        // The destination is the served href and the app served it to the
-        // signed-in session — and it is not the app's "Not found" page.
-        await expect(alice).toHaveURL(new URL(href, BASE_URL).href);
+        // The destination is the served href's PATH and the app served it to
+        // the signed-in session — and it is not the app's "Not found" page.
+        // The Workbench appends ?node=…&instance=… on auto-select, so the
+        // full URL never equals the served href (the other M5 specs compare
+        // the path the same way).
+        const expectedPath = new URL(href, BASE_URL).pathname;
+        await expect
+          .poll(() => new URL(alice.url()).pathname, {
+            message: `landed on ${new URL(alice.url()).pathname}, not the served href ${href}`,
+          })
+          .toBe(expectedPath);
         await expect(alice.getByTestId("user-badge")).toBeVisible();
         await expect(alice.getByText(NOT_FOUND_TEXT)).toHaveCount(0);
         await shot(alice, `m5-assistant-02-link-${i + 1}`);
