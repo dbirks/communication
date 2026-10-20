@@ -4,7 +4,7 @@ Final acceptance record for `gh issue view 2` ("Definition of done — demonstra
 walkthrough"). This replaces the earlier draft, which still carried a pending final-run line.
 Every checkbox below is **PASS**, proven by the acceptance specs in
 `e2e/tests/issue2-{studio,workbench,conversations}.spec.ts` run against the live lab built from
-**HEAD `d8e66b7`** — the production embedded UI (built from that tree), real Claude coding agents
+**HEAD `bd89502`** — the production embedded UI (built from that tree), real Claude coding agents
 for the ACP turns, and the lab's real collective model for the assistant. Labels A1–A10 follow the
 spec test names; each section cites the spec test, the screenshot files and the `EVIDENCE` line(s)
 from the final run.
@@ -13,12 +13,12 @@ from the final run.
 
 | Suite | Result | Run |
 |---|---|---|
-| `issue2-studio.spec.ts` | **7/7 PASS** | `final5` and `final5b` |
-| `issue2-workbench.spec.ts` | **5/5 PASS** | `final5b` (an earlier `final5` run failed at the dock attempt-2 check — see Known limitations) |
-| `issue2-conversations.spec.ts` | **3/3 PASS** | `final5` |
-| M5 regression (`m5-*.spec.ts`) | **53 PASS, 1 pre-existing fixme** | `final5`, freshly reset lab (recorded in `m5.out`) |
+| `issue2-studio.spec.ts` | **7/7 PASS** | `final6` (one consolidated run, `issue2-studio.out`) |
+| `issue2-workbench.spec.ts` | **5/5 PASS** | `final6` (`issue2-workbench.out`) |
+| `issue2-conversations.spec.ts` | **3/3 PASS** | `final6` (`issue2-conversations.out`) |
+| M5 regression (`m5-*.spec.ts`) | **53 PASS, 1 pre-existing fixme** | `final6`, freshly reset lab (`lab-reset-m5.out`, recorded in `m5.out`) |
 | a11y | **13 axe checks, 0 serious/critical violations** | across the runs above (`A11Y` lines in `evidence.txt`) |
-| unit / CI | **983 UI tests green and the full Go race suite green at `d8e66b7`** | CI |
+| unit / CI | **991 UI tests green and the full Go race suite green at `bd89502`** | CI |
 
 ## Evidence
 
@@ -193,12 +193,12 @@ COMMUNICATION_E2E_M5=1 E2E_BASE_URL=http://<lab-ui> \
 - **Evidence:**
   > `EVIDENCE conv-a7-dialog: New conversation dialog opened from the m4-exit overview header with the project pinned, profile m4-implementer and the first prompt filled — no pipeline field exists`
   > `EVIDENCE conv-a7-global-menu: the global New menu (new-menu → new-menu-conversation) opened the same dialog with a working project picker set to M4 Exit`
-  > `EVIDENCE conv-a7-reply: conversation "issue2 one-off final5" landed on its page and the m4-implementer turn completed with an agent reply containing "pong"`
+  > `EVIDENCE conv-a7-reply: conversation "issue2 one-off final6" landed on its page and the m4-implementer turn completed with an agent reply containing "pong"`
   > `EVIDENCE conv-a7-list-manual: searching "issue2 one-off" lists the row with the Manual badge (conversation-origin-manual)`
   > `EVIDENCE conv-a7-manual-label: the conversation page shows the "Manual conversation" label and has no part-of-run-link or node reference`
   > `EVIDENCE conv-a7-filter-run-hides-manual: filtering the list to "From runs" hides the manual conversation`
-  > `EVIDENCE conv-run-badge: a run-linked conversation row's "From run" badge is a deep link into the Run Workbench with a ?node= parameter (…/runs/01a15983-076a-780d-b7fa-a1fb4aa782e1?node=code_review&instance=e11fd386-4e3c-5850-8442-09a2531c747b&attempt=1)`
-  > `EVIDENCE conv-run-conversation-page: the conversation page's part-of-run-link points at the same workbench deep link as the list badge`
+  > `EVIDENCE conv-run-badge: a run-linked conversation row's "From run" badge is a deep link into the Run Workbench with a ?node= parameter (…/runs/01a159b5-4139-7544-99a6-89d02b4d07c7?node=code_review&instance=d2f69e5f-12c7-56d9-be72-ef480dd5dbd9&attempt=1)`
+  > `EVIDENCE conv-run-conversation-page: the conversation page's part-of-run-link points at the same workbench deep link as the list badge (/projects/01a159b4-4629-7b16-bf65-932bc69ea578/runs/01a159b5-4139-7544-99a6-89d02b4d07c7?node=code_review&instance=d2f69e5f-12c7-56d9-be72-ef480dd5dbd9&attempt=1)`
   > `EVIDENCE conv-run-linkback: the part-of-run link landed on the Run Workbench with the source node selected in the graph and the conversation open in the dock`
   > `EVIDENCE conv-narrow-dialog: at 390x844 the new-conversation dialog sits inside the viewport and the document does not scroll horizontally`
 - **Implementing work:** shared New conversation dialog with no workflow field (`c8f0768`);
@@ -231,15 +231,15 @@ COMMUNICATION_E2E_M5=1 E2E_BASE_URL=http://<lab-ui> \
 > event journal, and workflow compiler semantics. Tests include unit/contract tests, realistic
 > browser journeys at desktop and narrow widths, accessibility checks, and recorded screenshots.
 
-- **Preserved:** no Go scheduler/schema/compiler changes in `d25c788..d8e66b7` (UI-only plus the
+- **Preserved:** no Go scheduler/schema/compiler changes in `d25c788..bd89502` (UI-only plus the
   one documented assistant API, ADR-0044). `/library` and `/projects/:p/runs/:r` URLs unchanged;
   `?draft=` → Studio redirect and legacy `?tab=` → `?view=` mapping (`78ec5be`, `13f5a07`);
   the old RunInspector is preserved whole as the Workbench **Diagnostics** tab; M5 specs were
   migrated to the Studio/Workbench (`78ec5be`); no `data-testid` removed (enforced by
   `pnpm check:testids`).
-- **M5 regression:** `m5.out` — **53 passed, 1 pre-existing fixme** (final5, freshly reset lab),
+- **M5 regression:** `m5.out` — **53 passed, 1 pre-existing fixme** (final6, freshly reset lab),
   including `m5-layout.spec.ts`'s no-horizontal-scroll matrix at 1500x950 and 390x844.
-- **Unit/CI:** 983 UI tests and the full Go race suite green at `d8e66b7` (CI), on top of the
+- **Unit/CI:** 991 UI tests and the full Go race suite green at `bd89502` (CI), on top of the
   `graphDoc` (60 tests), `Studio`, `RunWorkbench` and `AssistantProposalBox` suites.
 - **Accessibility:** all 13 `A11Y` lines in `evidence.txt` report **0 violations** (wcag2a +
   wcag2aa, failing only on serious/critical): studio desktop/inspector (agent.acp and
@@ -264,11 +264,11 @@ COMMUNICATION_E2E_M5=1 E2E_BASE_URL=http://<lab-ui> \
   graph-first, with the addendum on return-to-factory while a human turn is running) and ADR-0044
   (assistant draft proposals) each carry a one-line evidence pointer to this document.
 - **Not mockups or read-only:** every journey above ran against the production embedded UI of a
-  live lab with the real backend, real Claude agents and a real assistant model (`d8e66b7`).
+  live lab with the real backend, real Claude agents and a real assistant model (`bd89502`).
 
 ## Bugs found and fixed BY the acceptance journeys
 
-All commits in the issue-#2 range `d25c788..d8e66b7`:
+All commits in the issue-#2 range `d25c788..bd89502`:
 
 | Commit | Bug found by the acceptance runs | Fix |
 |---|---|---|
@@ -280,16 +280,11 @@ All commits in the issue-#2 range `d25c788..d8e66b7`:
 | `4aaa7af` | Status colours missed WCAG AA (running 3.68:1, interrupted 2.96:1, done 3.53:1; chips at 75% opacity over strong bars 3.48:1), exposed by the live takeover journey's interrupted attempt panel | strong bars at 5.30–5.85:1 with white text, chips no longer blended; axe sweep of 18 screens zero serious/critical |
 | `cf6a533` | A pointer click on the run-origin badge opened the conversation instead of the Workbench — the row anchor's default navigation won before `navigate` | `preventDefault` before navigate; unit test proven red before the fix |
 | `136529c` | "Assign to a project" on the pipeline page had drifted below the fold (mounted only after the revisions query resolved), so the M5 journey raced app boot | the panel now sits in the rail beside Customize and the journey waits for whichever assign arm it offers |
+| `5674a45` | The workbench takeover journey intermittently failed the dock attempt-2 tab check — since `d8e66b7` the retried attempt's claim legitimately waits for the human's turn to finish (1–2+ min), which the tab assertion raced | the spec now waits on the ledger for attempt 2 before asserting its dock tab, and a new unit test proves the dock itself grows its attempt tabs on refetch — the `final6` workbench run passed 5/5 and `wb-a5-returned.png` + its `EVIDENCE` line show attempt tabs 1 + 2 |
+| `bd89502` | The run header could still read "queued" after a takeover return — a manual resume's journal frame pinned the folded status over a running run (follow-up to `2afa9fd`) | a journal frame may only move the folded run status forward from the refetched baseline (mirroring the server's run state machine); gate-resume mapping kept — live: paused(human_takeover) → running on every sample → completed, 0 mismatches |
 
 ## Known limitations
 
-- **Intermittent attempt-2 dock check (being fixed):** one earlier `final5` workbench run failed
-  at the dock-attempt-2 check (the resumed attempt's tab not yet present when the assertion ran);
-  the `final5b` run passed 5/5 and `wb-a5-returned.png` + its `EVIDENCE` line prove attempt 2
-  succeeded. Intermittent; a fix is in progress.
-- **Header "queued" after a takeover return (being fixed):** after a human returns control, the
-  header fold can still read "queued" for the resumed run until a later frame; follow-up to
-  `2afa9fd`.
 - **Lab authorization is single-tenant:** the Workbench spec provisions bob (contributor) and
   carol (viewer) directly on the seeded project; A5's read-only refusal and A8's proposal authz
   are proven against that lab membership (same-org users may request proposals, consistent with
@@ -314,6 +309,7 @@ All commits in the issue-#2 range `d25c788..d8e66b7`:
 - **ADR-0044** (`docs/adr/ADR-0044-assistant-draft-proposals.md`) — **Accepted.** Closed op set,
   apply through the normal version-checked PUT, never auto-publishes. Evidence: this document (A8).
 
-**Final acceptance run: PASSED** — issue2-studio 7/7 (final5, final5b), issue2-workbench 5/5
-(final5b), issue2-conversations 3/3 (final5), M5 regression 53 + 1 pre-existing fixme (final5),
-13/13 axe checks clean, 983 UI tests and the Go race suite green at HEAD `d8e66b7`.
+**Final acceptance run: PASSED** — one consolidated pass (`final6`) on the lab built from HEAD
+`bd89502`: issue2-studio 7/7, issue2-workbench 5/5, issue2-conversations 3/3, M5 regression 53
++ 1 pre-existing fixme on a freshly reset lab, 13/13 axe checks clean, 991 UI tests and the Go
+race suite green at HEAD `bd89502`.
