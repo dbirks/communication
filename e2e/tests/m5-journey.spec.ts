@@ -491,8 +491,32 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   test("step 3 — assign r1 to a project alice maintains", async () => {
     await test.step("the library's Assign to a project panel", async () => {
       await gotoApp(admin, pipelinePath);
+      // The panel mounts in the rail only once the pipeline's revisions read
+      // resolves (it pins the newest PUBLISHED revision), so right after this
+      // `page.goto` neither arm is in the DOM yet — and WHICH arm renders
+      // depends on the viewer's memberships (a viewer who maintains a project
+      // gets the form, not the dead end). Wait for whichever arm the panel
+      // actually offers instead of snapshotting the page at t0: the old
+      // immediate `isVisible()` lost that race, and its else-arm then waited
+      // on the dead end for a viewer who could never see it.
       const assign = admin.getByTestId("assign-open");
-      if (await assign.isVisible().catch(() => false)) {
+      const deadEnd = admin.getByTestId("assign-no-maintainer");
+      const arm = await Promise.race([
+        assign
+          .waitFor({ state: "visible", timeout: 15_000 })
+          .then(() => "maintainer" as const)
+          .catch(() => null),
+        deadEnd
+          .waitFor({ state: "visible", timeout: 15_000 })
+          .then(() => "dead-end" as const)
+          .catch(() => null),
+      ]);
+      if (arm !== "maintainer" && arm !== "dead-end") {
+        throw new Error(
+          "no assign arm rendered on the pipeline page — neither assign-open nor assign-no-maintainer within 15 s",
+        );
+      }
+      if (arm === "maintainer") {
         // The happy path: the viewer maintains a project, so the library can
         // pin the revision and hand straight over to a run.
         await assign.click();
@@ -510,7 +534,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         // The lab's arm: `admin` is the org admin with no project membership,
         // so the panel says so honestly and the maintainer does the pinning —
         // `01`: assignment.create is Maintainer+.
-        await expect(admin.getByTestId("assign-no-maintainer")).toBeVisible();
+        await expect(deadEnd).toBeVisible();
         projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
         await gotoApp(alice, `${projectPath}/pipelines`);
         await expect(alice.getByTestId("project-pipelines")).toBeVisible();

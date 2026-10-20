@@ -755,6 +755,17 @@ export function PipelinePage() {
             </button>
           ) : null}
         </Panel>
+        {/* In the rail, next to Customize, not under the YAML + graph: the
+            one-click path to a runnable project is the page's next action and
+            used to sit at the bottom of the reading column, below the fold,
+            which is where the M5 journey stopped seeing it. It still mounts
+            only once a PUBLISHED revision exists to pin. */}
+        {newestPublished ? (
+          <AssignToProjectPanel
+            pipelineId={pipelineId}
+            newestPublishedDigest={newestPublished.revision_digest}
+          />
+        ) : null}
       </aside>
       <div className="min-w-0 space-y-4 px-4 py-4">
         {failure ? (
@@ -786,12 +797,6 @@ export function PipelinePage() {
         ) : null}
         {revision.isPending && selectedRevisionKey ? (
           <Spinner label="Loading the revision document" />
-        ) : null}
-        {newestPublished ? (
-          <AssignToProjectPanel
-            pipelineId={pipelineId}
-            newestPublishedDigest={newestPublished.revision_digest}
-          />
         ) : null}
       </div>
     </div>
