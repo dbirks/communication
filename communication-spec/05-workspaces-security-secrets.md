@@ -17,6 +17,7 @@ run-482/
 - Treat repo mirrors (`/var/lib/communication/repos`) as worker-managed; linked worktrees require shared Git common metadata—**a copied worktree alone is not portable**.
 - The workspace root is always resolved/normalized server-side. Reject traversal, symlink escape, relative paths used as ACL proof. Agent's working directory and additional repo paths are logical configuration, not security enforcement.
 - Configurable workspace creation from branch/ref + per-repo policy. Do not automatically push/merge changes.
+  - Amended by ADR-0045 (2026-10-20): an agent authorized for a GitHub token via its profile may push a work branch and open a draft PR itself; merging remains a human act.
 - Test data / generated artifacts go under scratch or dedicated paths, not silently into tracked repositories.
 
 ## Checkpoint/recovery policy
@@ -43,6 +44,7 @@ Three independent concepts:
 
 1. **User identity (OIDC)** — who uses Communication.
 2. **Project/organization integration credentials** — GitHub Apps/PATs/SSH deploy keys, external APIs, DB secrets, etc.
+   - Amended by ADR-0045 (2026-10-20): a GitHub token of concept 2 may be delivered to an agent's sandbox only when that agent profile is named in the secret's `allowed_agent_profiles`.
 3. **Harness authentication** — credentials needed to start Claude/Codex/etc. under organization-approved terms. These can be sensitive directory trees, not necessarily a single environment variable.
 
 **SecretRef:** `scope (project|org)`, `secret_id`, `version`, `allowed_agent_profiles`, `allowed_node_templates`, `purpose`, `delivery_mode (env|file|integration_broker)`, audit policy. Store encrypted at rest with envelope KMS/provider key when available; local dev fallback with explicit master key outside DB. Avoid UI view-raw-secret endpoint and never log secrets.
@@ -64,10 +66,12 @@ secret_mounts:
 **Contract**: only allow relative paths under an authorized workspace checkout; validate after resolving symlinks; ensure required file mode (0600), owner-only readable, atomic creation; refuse overwriting a tracked file by default; verify `git ls-files` and check ignore/exclude rules; remove at attempt completion; exclude materialized paths from Git staging/checkpoints/artifacts/diff previews; rotate/revoke and rematerialize on retry. Do not claim secure deletion on SSD/copy-on-write filesystems. If a file must live in a tracked path, require an explicit policy exception, not a silent overwrite. Never include generated `.env` content in conversation logs or artifacts.
 
 **Threat-model clarification**: an agent granted read access to `.env` can copy/exfiltrate its contents over any allowed channel. Secret scoping and network egress control matter more than file permissions alone. For third-party credentials prefer a restricted broker/token over long-lived raw secrets where feasible. Treat redaction as a defense-in-depth best effort, not absolute secrecy after an agent has seen a value.
+- Amended by ADR-0045 (2026-10-20): a fine-grained, repo-scoped GitHub token held by the agent is accepted as the restricted-token form for push/PR; a GitHub App broker remains the intended later replacement.
 
 ## Publish / merge responsibilities
 
 A workspace's successful implementation result is a candidate change. Configure separate commands/nodes for commit, push, draft PR, human review and merge. Gas Town's Refinery design motivates an optional *merge queue with verification and batch bisection*; it does not force auto-merge into the core executor. External publication operations need idempotent tokens and post-crash reconciliation.
+- Amended by ADR-0045 (2026-10-20): the `git.publish` node stays in the catalogue (unrunnable until M6) but is left out of the Studio step picker; agent-driven push/PR relies on git's own per-ref idempotency instead of platform publish reconciliation.
 
 ## First security acceptance gate
 

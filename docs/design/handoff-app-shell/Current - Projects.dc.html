@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Red+Hat+Mono:wght@400;500;600&family=Red+Hat+Text:wght@400;500;600;700&family=Kaisei+Opti:wght@500&display=swap">
+<style>
+body{margin:0;background:#f8f7f3;color:#1e1d1a;font-family:'Red Hat Text',ui-sans-serif,system-ui,sans-serif;font-size:13.5px;-webkit-font-smoothing:antialiased}
+a{color:#2a43b8;text-decoration:none}a:hover{color:#1e1d1a}
+*{box-sizing:border-box}
+</style>
+</helmet>
+<div style="display:flex;min-height:100vh;flex-direction:column;background:#f8f7f3;color:#1e1d1a">
+  <header style="position:sticky;top:0;z-index:20;border-bottom:1px solid #1e1d1a;background:#fff">
+    <div style="margin:0 auto;display:flex;height:52px;width:100%;max-width:1152px;align-items:center;gap:8px;padding:0 16px">
+      <div style="position:relative;width:28px;height:28px;flex-shrink:0">
+        <div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Kaisei Opti',serif;font-size:17px;line-height:1;color:#1e1d1a">C</div>
+      </div>
+      <nav style="display:flex;align-items:center;gap:2px;border-radius:4px;background:#efede7;padding:3px;font-size:12.5px">
+        <a href="#" style="border-radius:3px;border:1px solid transparent;padding:4px 10px;font-weight:500;color:#6b675e">Inbox</a>
+        <a href="#" style="border-radius:3px;border:1px solid #cfc9bd;background:#fff;padding:4px 10px;font-weight:600;color:#1e1d1a">Projects</a>
+        <a href="#" style="border-radius:3px;border:1px solid transparent;padding:4px 10px;font-weight:500;color:#6b675e">Workflows</a>
+        <a href="#" style="border-radius:3px;border:1px solid transparent;padding:4px 10px;font-weight:500;color:#6b675e">Agents</a>
+        <a href="#" style="border-radius:3px;border:1px solid transparent;padding:4px 10px;font-weight:500;color:#6b675e">Operations</a>
+      </nav>
+      <div style="margin-left:auto;display:flex;justify-content:flex-end">
+        <button style="display:flex;height:30px;width:240px;align-items:center;gap:6px;border-radius:4px;border:1px solid #cfcac0;background:#fff;padding:0 8px;text-align:left;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#6e6a62;cursor:pointer">
+          <span style="flex-shrink:0;border-radius:3px;background:#eef0fc;padding:1px 5px;font-size:10px;color:#2a43b8">projects</span>
+          <span>Ask…</span>
+          <span style="margin-left:auto;letter-spacing:.04em">Ctrl K</span>
+        </button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <button style="display:inline-flex;align-items:center;height:26px;padding:0 10px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;color:#1e1d1a;box-shadow:2px 2px 0 #cfc9bd;font-family:'Red Hat Text',sans-serif;font-size:13px;font-weight:600;cursor:pointer">New</button>
+        <span style="font-size:12.5px;color:#6b675e;white-space:nowrap">Signed in as <strong style="font-weight:600;color:#1e1d1a">David Birks</strong> · default</span>
+        <span style="display:grid;place-items:center;height:28px;width:28px;border-radius:3px;border:1px solid #1e1d1a;background:#fff;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:500">DB</span>
+        <button style="display:inline-flex;align-items:center;height:30px;padding:0 13px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;color:#1e1d1a;box-shadow:2px 2px 0 #cfc9bd;font-family:'Red Hat Text',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer">Sign out</button>
+      </div>
+    </div>
+  </header>
+  <main style="margin:0 auto;width:100%;max-width:1024px;flex:1;padding:24px 16px">
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <header style="display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:8px 14px">
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <h1 style="margin:0;font-size:22px;line-height:28px;font-weight:600">Your projects</h1>
+          <p style="margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-family:'Red Hat Mono',monospace;font-size:10.5px">
+            <span style="color:#7a4a00">! 1 decisions</span>
+            <span style="color:#b0281a">× 1 stalled</span>
+            <span style="color:#0f5e96">● 2 conversations</span>
+            <span style="color:#6e6a62">▸ 3 running fine</span>
+          </p>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="display:flex;align-items:center;gap:8px;font-family:'Red Hat Mono',monospace;font-size:10.5px">
+            <span style="color:#1e1d1a;text-decoration:underline;text-decoration-color:#cfcac0;text-underline-offset:4px">needs me first</span>
+            <span style="color:#6e6a62;text-decoration:underline;text-decoration-color:#cfcac0;text-underline-offset:4px">a–z</span>
+          </span>
+          <button style="display:inline-flex;align-items:center;height:30px;padding:0 13px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-family:'Red Hat Text',sans-serif;font-size:12.5px;font-weight:600;cursor:pointer">New project</button>
+        </div>
+      </header>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));align-items:start;gap:12px">
+        <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+          <article style="display:flex;flex-direction:column;overflow:hidden;border-radius:3px;border:1px solid #cfcac0;background:#fff">
+            <div style="display:flex;align-items:flex-start;gap:10px;border-bottom:1px solid #e6e2d9;padding:10px 12px">
+              <span style="display:grid;place-items:center;height:28px;width:28px;flex-shrink:0;border-radius:3px;border:1px solid #1e1d1a;background:#fff;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:500">{{ p.initials }}</span>
+              <span style="min-width:0;flex:1">
+                <span style="display:block;font-size:13.5px;font-weight:600">{{ p.name }}</span>
+                <span style="display:block;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">role: {{ p.role }}</span>
+                <span style="margin-top:2px;display:block;font-size:12.5px;color:#6b675e">{{ p.desc }}</span>
+              </span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;border-bottom:1px solid #e6e2d9;padding:7px 12px;font-family:'Red Hat Mono',monospace;font-size:10.5px">
+              <span style="color:{{ p.c1 }}">! {{ p.decisions }}</span>
+              <span style="color:{{ p.c2 }}">× {{ p.stalled }}</span>
+              <span style="color:{{ p.c3 }}">● {{ p.conversations }}</span>
+              <span style="color:{{ p.c4 }}">▸ {{ p.running }}</span>
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;gap:8px;padding:10px 12px">
+              <sc-for list="{{ p.items }}" as="it" hint-placeholder-count="1">
+                <a href="#" style="display:block;border-radius:3px;border:1px solid #e6e2d9;background:#f8f7f3;padding:7px 9px;color:#1e1d1a">
+                  <span style="display:inline-flex;height:18px;align-items:center;gap:6px;border-radius:3px;padding:0 6px;font-family:'Red Hat Mono',monospace;font-size:9.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;background:{{ it.bg }};color:{{ it.fg }}"><span>{{ it.glyph }}</span><span>{{ it.tag }}</span></span>
+                  <span style="margin-top:3px;display:block;font-size:12.5px;font-weight:600;line-height:17px">{{ it.title }}</span>
+                  <span style="margin-top:2px;display:block;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6e6a62">{{ it.meta }}</span>
+                </a>
+              </sc-for>
+            </div>
+            <div style="border-top:1px solid #e6e2d9;padding:8px 12px">
+              <a href="#" style="display:inline-flex;height:26px;align-items:center;border-radius:4px;padding:0 10px;border:1px solid #cfc9bd;background:#efede7;color:#1e1d1a;box-shadow:2px 2px 0 #cfc9bd;font-size:12.5px;font-weight:600">Open project</a>
+            </div>
+          </article>
+        </sc-for>
+      </div>
+    </div>
+  </main>
+  <footer style="border-top:1px solid #e6e2d9;padding:8px 16px">
+    <span style="font-family:'Red Hat Mono',monospace;font-size:11px;color:#6e6a62">replica: api-a</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const ST = { waiting: ['#ffecc2', '#7a4a00', '!'], failed: ['#fdd8d2', '#b0281a', '×'], running: ['#d9eefa', '#0f5e96', '●'] };
+    const it = (st, tag, title, meta) => ({ bg: ST[st][0], fg: ST[st][1], glyph: ST[st][2], tag, title, meta });
+    const col = (v, c) => (v > 0 ? c : '#6e6a62');
+    const p = (name, initials, role, desc, d, s, c, r, items) => ({
+      name, initials, role, desc, decisions: d, stalled: s, conversations: c, running: r, items,
+      c1: col(d, '#7a4a00'), c2: col(s, '#b0281a'), c3: col(c, '#0f5e96'), c4: col(r, '#5e5a52'),
+    });
+    return {
+      projects: [
+        p('Acme Portal', 'AP', 'maintainer', 'Customer portal — web + API', 1, 0, 1, 2, [
+          it('waiting', 'approval', 'Approve plan: rate limiter for /v2/search', '2h · run 9c1e…'),
+          it('running', 'active', 'Why is CI slow on acme-api?', '12m · conversation'),
+        ]),
+        p('Northwind', 'NO', 'contributor', 'Ops dashboard rebuild', 0, 1, 0, 0, [
+          it('failed', 'failed', 'Run 31bd… — node test failed', '41m · run 31bd…'),
+        ]),
+        p('Personal', 'PE', 'maintainer', 'My own repositories', 0, 0, 1, 1, [
+          it('running', 'active', 'Refactor auth middleware', '1h · conversation'),
+        ]),
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

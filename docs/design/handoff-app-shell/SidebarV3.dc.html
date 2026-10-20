@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<aside style="width:240px;height:100%;background:#fff;border-right:1px solid #1e1d1a;display:flex;flex-direction:column;gap:12px;padding:12px 10px;overflow:hidden;font-family:'Red Hat Text',ui-sans-serif,system-ui,sans-serif;color:#1e1d1a;box-sizing:border-box">
+  <div style="display:flex;align-items:center;gap:9px;padding:0 4px">
+    <div style="position:relative;width:26px;height:26px;flex-shrink:0"><div style="position:absolute;top:3px;left:3px;right:-3px;bottom:-3px;border-radius:3px;background:repeating-linear-gradient(135deg,#2f4bd6 0 1px,transparent 1px 3px)"></div><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:1px solid #1e1d1a;border-radius:3px;background:#fff;font-family:'Kaisei Opti',serif;font-size:16px;line-height:1">C</div></div>
+    <span style="font-size:13.5px;font-weight:600">Communication</span>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button style="white-space:nowrap;flex:1;height:30px;border-radius:4px;border:1px solid #2238a8;background:#2f4bd6;color:#fff;box-shadow:2px 2px 0 #1a2d8f;font-family:inherit;font-size:12.5px;font-weight:600">New</button>
+    <button style="white-space:nowrap;flex-shrink:0;height:30px;padding:0 9px;border-radius:4px;border:1px solid #cfc9bd;background:#fff;color:#1e1d1a;box-shadow:2px 2px 0 #cfc9bd;font-family:'Red Hat Mono',monospace;font-size:11px">Ask ⌘K</button>
+  </div>
+  <nav style="display:flex;flex-direction:column;gap:2px;font-size:13px">
+    <sc-for list="{{ main }}" as="m" hint-placeholder-count="4">
+      <a href="#" style="white-space:nowrap;display:flex;align-items:center;padding:5px 8px;border-radius:3px;border:{{ m.border }};background-color:#fff;background-image:{{ m.tex }};font-weight:{{ m.weight }};color:{{ m.color }};text-decoration:none">{{ m.label }}<span style="margin-left:auto;white-space:nowrap;flex-shrink:0;font-family:'Red Hat Mono',monospace;font-size:10.5px;font-weight:600;color:{{ m.flagFg }}">{{ m.flag }}</span></a>
+    </sc-for>
+  </nav>
+  <div style="height:1px;background:#e6e2d9;margin:0 4px"></div>
+  <sc-if value="{{ isSwitcher }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex;flex-direction:column;gap:4px">
+      <span style="padding:0 8px 2px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECT</span>
+      <div style="display:flex;align-items:center;gap:8px;height:36px;padding:0 8px;border-radius:4px;border:1px solid #cfc9bd;background:#efede7;box-shadow:2px 2px 0 #cfc9bd;font-size:13px;font-weight:600"><span style="display:grid;place-items:center;height:22px;width:22px;flex-shrink:0;border-radius:3px;border:1px solid #1e1d1a;background:#fff;font-family:'Red Hat Mono',monospace;font-size:9.5px;font-weight:500">AP</span><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Acme Portal</span><span style="font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;color:#b0281a">× 1</span><svg width="14" height="14" viewBox="0 0 12 12" style="flex-shrink:0"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#1e1d1a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></div>
+      <sc-for list="{{ repos }}" as="rp" hint-placeholder-count="2">
+        <a href="#" style="white-space:nowrap;display:flex;align-items:center;padding:4px 8px 4px 12px;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833;text-decoration:none">{{ rp.name }}<span style="margin-left:auto;white-space:nowrap;flex-shrink:0;font-size:10px;color:{{ rp.fg }}">{{ rp.live }}</span></a>
+      </sc-for>
+    </div>
+  </sc-if>
+  <sc-if value="{{ isTree }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;flex-direction:column;gap:1px">
+      <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">PROJECTS</span>
+      <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column">
+          <a href="#" style="white-space:nowrap;display:flex;align-items:center;gap:4px;padding:4px 6px;font-size:12.5px;font-weight:600;color:#1e1d1a;text-decoration:none">
+            <sc-if value="{{ p.open }}" hint-placeholder-val="{{ false }}"><svg width="16" height="16" viewBox="0 0 12 12" style="flex-shrink:0"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></sc-if>
+            <sc-if value="{{ p.closed }}" hint-placeholder-val="{{ true }}"><svg width="16" height="16" viewBox="0 0 12 12" style="flex-shrink:0"><path d="M4.5 3l3 3-3 3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></sc-if>
+            {{ p.name }}<span style="margin-left:auto;white-space:nowrap;flex-shrink:0;font-family:'Red Hat Mono',monospace;font-size:10px;font-weight:600;color:{{ p.flagFg }}">{{ p.flag }}</span></a>
+          <sc-if value="{{ p.open }}" hint-placeholder-val="{{ false }}">
+            <sc-for list="{{ p.repos }}" as="rp" hint-placeholder-count="2">
+              <a href="#" style="white-space:nowrap;display:flex;align-items:center;margin-left:14px;padding:3px 8px;border-left:1px solid #e6e2d9;font-family:'Red Hat Mono',monospace;font-size:11.5px;color:#3a3833;text-decoration:none">{{ rp.name }}<span style="margin-left:auto;white-space:nowrap;flex-shrink:0;font-size:10px;color:{{ rp.fg }}">{{ rp.live }}</span></a>
+            </sc-for>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <div style="display:flex;flex-direction:column;gap:1px;min-height:0">
+    <span style="padding:0 8px 4px;font-family:'Red Hat Mono',monospace;font-size:10px;letter-spacing:.06em;color:#6e6a62">LIBRARY</span>
+    <a href="#" style="white-space:nowrap;display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:3px;border:{{ wfHead.border }};background-color:#fff;background-image:{{ wfHead.tex }};font-size:12.5px;font-weight:{{ wfHead.weight }};color:#1e1d1a;text-decoration:none"><svg width="16" height="16" viewBox="0 0 12 12" style="flex-shrink:0"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>Workflows<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">4</span></a>
+    <sc-for list="{{ folders }}" as="f" hint-placeholder-count="3">
+      <a href="#" style="white-space:nowrap;display:flex;align-items:center;gap:6px;margin-left:14px;padding:3px 8px;border-left:1px solid #e6e2d9;font-size:12px;color:#3a3833;text-decoration:none">{{ f.name }}<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10px;color:#6b675e">{{ f.count }}</span></a>
+    </sc-for>
+    <sc-for list="{{ lib }}" as="l" hint-placeholder-count="2">
+      <a href="#" style="white-space:nowrap;display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:3px;border:{{ l.border }};background-color:#fff;background-image:{{ l.tex }};font-size:12.5px;font-weight:{{ l.weight }};color:#1e1d1a;text-decoration:none"><span style="width:16px"></span>{{ l.label }}<span style="margin-left:auto;font-family:'Red Hat Mono',monospace;font-size:10.5px;color:#6b675e">{{ l.count }}</span></a>
+    </sc-for>
+  </div>
+  <div style="margin-top:auto;display:flex;align-items:center;gap:8px;padding:8px 4px 0;border-top:1px solid #e6e2d9">
+    <span style="display:grid;place-items:center;height:26px;width:26px;border-radius:3px;border:1px solid #1e1d1a;font-family:'Red Hat Mono',monospace;font-size:10px">DB</span>
+    <span style="font-size:12.5px;color:#3a3833">David Birks</span>
+    <a href="#" style="margin-left:auto;font-size:12px;color:#6b675e;text-decoration:none">Settings</a>
+  </div>
+</aside>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:240,&quot;height&quot;:800},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;inbox&quot;,&quot;board&quot;,&quot;threads&quot;,&quot;workflows&quot;,&quot;steps&quot;,&quot;profiles&quot;,&quot;none&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;tree&quot;,&quot;switcher&quot;],&quot;default&quot;:&quot;tree&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const active = this.props.active ?? 'home';
+    const mode = this.props.mode ?? 'tree';
+    const TEX = 'repeating-linear-gradient(0deg,#e4e8fa 0 1px,transparent 1px 4px),repeating-linear-gradient(90deg,#e4e8fa 0 1px,transparent 1px 4px)';
+    const st = (on) => on
+      ? { border: '1px solid #1e1d1a', tex: TEX, weight: 600, color: '#1e1d1a' }
+      : { border: '1px solid transparent', tex: 'none', weight: 400, color: '#6b675e' };
+    const main = [
+      { key: 'home', label: 'Home', flag: '', flagFg: '#6b675e' },
+      { key: 'inbox', label: 'Inbox', flag: '! 2', flagFg: '#7a4a00' },
+      { key: 'board', label: 'Board', flag: '● 4', flagFg: '#0f5e96' },
+      { key: 'threads', label: 'Threads', flag: '3', flagFg: '#6b675e' },
+    ].map((m) => ({ ...m, ...st(m.key === active) }));
+    const projects = [
+      { name: 'Acme Portal', open: true, flag: '', flagFg: '#6b675e', repos: [
+        { name: 'acme-web', live: '● 1', fg: '#0f5e96' }, { name: 'acme-api', live: '! 1', fg: '#7a4a00' }] },
+      { name: 'Northwind', open: false, flag: '× 1', flagFg: '#b0281a', repos: [] },
+      { name: 'Personal', open: true, flag: '', flagFg: '#0f5e96', repos: [
+        { name: 'communication', live: '● 1', fg: '#0f5e96' }, { name: 'dotfiles', live: '', fg: '#6b675e' }] },
+    ].map((p) => ({ ...p, closed: !p.open }));
+    const folders = [{ name: 'Delivery', count: '2' }, { name: 'Maintenance', count: '2' }, { name: 'Drafts', count: '1' }];
+    const lib = [
+      { key: 'steps', label: 'Steps', count: '9' },
+      { key: 'profiles', label: 'Agent profiles', count: '5' },
+    ].map((l) => ({ ...l, ...st(l.key === active) }));
+    return { main, projects, folders, lib, isSwitcher: mode === 'switcher', isTree: mode === 'tree', repos: projects[0].repos, wfHead: st(active === 'workflows') };
+  }
+}
+</script>
+</body>
+</html>
