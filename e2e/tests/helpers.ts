@@ -115,6 +115,86 @@ export async function addMember(
   await expect(page.getByTestId(`member-row-${displayName}`)).toContainText(`role: ${role}`);
 }
 
+/**
+ * Open the overview's collapsed add-form, retrying the toggle. Under heavy
+ * live churn (workspace rows updating, parallel members saving) the toggle
+ * click can land on a re-rendering header and be lost, leaving the form
+ * closed. The reveal is therefore retried — bounded, and each retry re-reads
+ * the page — before giving up.
+ */
+export async function revealAddFormRetrying(
+  page: Page,
+  toggleTestid: string,
+  firstField: Locator,
+  attempts = 4,
+): Promise<void> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (await firstField.isVisible().catch(() => false)) return;
+    const toggle = page.getByTestId(toggleTestid);
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    const opened = await firstField
+      .waitFor({ state: "visible", timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (opened) return;
+    // The click was lost: reload the overview and try the toggle again.
+    await page.reload();
+  }
+  throw new Error(`the ${toggleTestid} form never opened after ${attempts} attempts`);
+}
+
+/** `addMember`, but the form reveal survives a lost toggle click. */
+export async function addMemberRetrying(
+  page: Page,
+  projectUrl: string,
+  displayName: string,
+  role: string,
+): Promise<void> {
+  await page.goto(projectUrl);
+  await revealAddFormRetrying(page, "member-add-toggle", page.getByTestId("member-user"));
+  await selectByOptionText(page, "member-user", displayName);
+  await page.getByTestId("member-role").selectOption(role);
+  await page.getByTestId("member-submit").click();
+  await expect(page.getByTestId(`member-row-${displayName}`)).toContainText(`role: ${role}`);
+}
+
+/**
+ * Idempotent member setup. The overview's add form is collapsed behind the
+ * "Add member" toggle, and a single click can lose a race with the panel's
+ * live re-render — the toggle's click lands but the field never mounts, so the
+ * shared `revealAddForm`'s one-shot click times out. This helper first takes
+ * the fast path (the row already carries the target role — true once a prior
+ * run added the member) and only otherwise opens the form, RE-CLICKING the
+ * toggle in a bounded loop until the user select is actually present. The add
+ * flow is add-OR-update (PUT), so a seeded role is corrected through it.
+ */
+export async function setMember(
+  page: Page,
+  projectUrl: string,
+  displayName: string,
+  role: string,
+): Promise<void> {
+  await page.goto(projectUrl);
+  const row = page.getByTestId(`member-row-${displayName}`);
+  if ((await row.count()) > 0 && ((await row.textContent()) ?? "").includes(`role: ${role}`)) {
+    return;
+  }
+  const toggle = page.getByTestId("member-add-toggle");
+  const field = page.getByTestId("member-user");
+  await expect(toggle).toBeVisible({ timeout: 30_000 });
+  for (let attempt = 0; attempt < 6 && (await field.count()) === 0; attempt += 1) {
+    if (!(await toggle.isVisible().catch(() => false))) continue;
+    await toggle.click();
+    await field.waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
+  }
+  await expect(field).toBeVisible();
+  await selectByOptionText(page, "member-user", displayName);
+  await page.getByTestId("member-role").selectOption(role);
+  await page.getByTestId("member-submit").click();
+  await expect(row).toContainText(`role: ${role}`);
+}
+
 /** Start a conversation from the project page; resolves to its app path. */
 export async function startConversation(
   page: Page,
@@ -230,6 +310,51 @@ export function testidOf(id: string): string {
 /** The tail an id is *shown* by (`shortId` in the same file): last 8 characters. */
 export function shortRefOf(id: string): string {
   return id.slice(-8);
+}
+
+/**
+ * Pin a project's pipeline assignment to an exact published revision so that
+ * NEW runs start from that revision (re-pinning is effective at new-run
+ * creation only; running runs keep their snapshot). A SETUP call — the journey
+ * that follows starts the run through the UI. `page.request` shares the
+ * signed-in browser session, and the CSRF token is echoed exactly the way the
+ * app's `apiFetch` does it (from `GET /api/v1/me`).
+ *
+ * Creates the assignment when the pipeline has none yet, otherwise re-pins the
+ * existing row. Resolves the revision's uuid from its `sha256:…` digest (route
+ * 13 accepts a digest as its id, ADR-0021 § 5).
+ */
+export async function repinAssignment(
+  page: Page,
+  projectId: string,
+  pipelineId: string,
+  revisionDigest: string,
+): Promise<void> {
+  const me = (await (await page.request.get("/api/v1/me")).json()) as { csrf_token: string };
+  const headers = { "x-csrf-token": me.csrf_token };
+  const revision = (await (
+    await page.request.get(`/api/v1/revisions/${revisionDigest}`)
+  ).json()) as { id: string };
+  const list = (await (
+    await page.request.get(`/api/v1/projects/${projectId}/assignments`)
+  ).json()) as { assignments: { id: string; pipeline_id: string }[] };
+  const existing = (list.assignments ?? []).find((entry) => entry.pipeline_id === pipelineId);
+  if (existing) {
+    const response = await page.request.patch(`/api/v1/assignments/${existing.id}`, {
+      data: { pinned_revision_id: revision.id },
+      headers,
+    });
+    if (!response.ok())
+      throw new Error(`re-pin failed (${response.status()}): ${await response.text()}`);
+    return;
+  }
+  const response = await page.request.post(`/api/v1/projects/${projectId}/assignments`, {
+    data: { pipeline_id: pipelineId, pinned_revision_id: revision.id },
+    headers,
+  });
+  if (!response.ok()) {
+    throw new Error(`create assignment failed (${response.status()}): ${await response.text()}`);
+  }
 }
 
 /**

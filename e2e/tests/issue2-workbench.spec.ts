@@ -10,7 +10,7 @@
 //
 // It runs against the M4 lab ONLY when COMMUNICATION_E2E_ISSUE2=1 — skipped
 // everywhere else, the same env-gate idiom as the sibling issue2 specs:
-//   COMMUNICATION_E2E_ISSUE2=1 E2E_BASE_URL=http://localhost:18091 \
+//   COMMUNICATION_E2E_ISSUE2=1 E2E_BASE_URL=http://localhost:15173 \
 //     pnpm exec playwright test tests/issue2-workbench.spec.ts
 // The run starts from the revision issue2-studio.spec.ts published (recorded
 // in ${EVIDENCE_DIR}/published.json); if that file is absent the spec FAILS
@@ -33,7 +33,13 @@ import path from "node:path";
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { checkA11y } from "./a11y.js";
 import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
-import { addMember, expectRunStatus, openProjectBySlug, signIn } from "./helpers.js";
+import {
+  expectRunStatus,
+  openProjectBySlug,
+  repinAssignment,
+  setMember,
+  signIn,
+} from "./helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
@@ -70,47 +76,76 @@ async function openRun(page: Page, runUrl: string): Promise<Locator> {
 }
 
 /**
- * The graph test-id suffix of the revision's agent.acp node, if it has one
- * (the studio spec inserts `code_review` on the test → review edge; the
- * seeded deterministic twin has none). Suffix = keySlug: `/` → `-`.
+ * The id of the revision's agent.acp node, if it has one (the studio spec
+ * inserts `code_review` on the test → review edge inside the until scope and
+ * wraps a trailing until scope that ends in an `agent` step; the seeded
+ * deterministic twin has neither). The studio insertion is preferred so the
+ * journey drives the node it actually edited; any other agent.acp the
+ * revision has is the fallback.
+ *
+ * The workbench canvas is the Studio canvas: a node box is
+ * `canvas-step-<id>` (the definition node id) and its `div[role="button"]`
+ * carries `aria-label="<kind label> step <id>"` — `agent.acp` boxes read
+ * "Coding agent".
  */
 async function findAcpSlug(page: Page): Promise<string | null> {
-  const chips = page.locator('[data-testid^="definition-graph-node-kind-"]');
-  const count = await chips.count();
-  for (let i = 0; i < count; i++) {
-    const chip = chips.nth(i);
-    // The box shows the kind's short word ("agent"); the catalogue name
-    // (`agent.acp`) travels in the `title` attribute.
-    const texts = [(await chip.textContent()) ?? "", (await chip.getAttribute("title")) ?? ""].join(
-      " ",
-    );
-    if (texts.includes("agent.acp")) {
-      const testid = await chip.getAttribute("data-testid");
-      return testid?.replace(/^definition-graph-node-kind-/, "") ?? null;
-    }
+  const boxes = page.locator('[data-testid^="canvas-step-"]');
+  const count = await boxes.count();
+  const slugs: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const box = boxes.nth(i);
+    const label =
+      (await box.locator('div[role="button"]').first().getAttribute("aria-label")) ?? "";
+    if (!/^Coding agent step /i.test(label)) continue;
+    const testid = (await box.getAttribute("data-testid")) ?? "";
+    const slug = testid.replace(/^canvas-step-/, "");
+    if (slug) slugs.push(slug);
   }
-  return null;
+  return slugs.find((slug) => slug === "code_review") ?? slugs[0] ?? null;
 }
 
-/** The `definition-graph-node-*` buttons on the canvas, by node key slug. */
-function nodeButton(page: Page, slug: string): Locator {
-  return page.getByTestId(`definition-graph-node-${slug}`);
+/** The workbench's node box for a definition node id, and its clickable inner button. */
+function nodeButton(page: Page, id: string): Locator {
+  return page.locator(`[data-testid="canvas-step-${id}"]`).locator('div[role="button"]').first();
+}
+
+/**
+ * Click a node box and re-click until its row has been journaled: a box
+ * clicked before its execution row exists resolves to an empty dock, and
+ * the URL's `instance=` is what the dock reads, so the pick is retried on
+ * the node box itself (never left on `workbench-dock-empty`).
+ */
+async function selectNode(page: Page, id: string, timeoutMs: number): Promise<void> {
+  const dockEmpty = page.getByTestId("workbench-dock-empty");
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await nodeButton(page, id).click();
+    if ((await dockEmpty.count()) === 0) return;
+    if (Date.now() >= deadline) throw new Error(`node ${id} never resolved to an execution`);
+    await page.waitForTimeout(5_000);
+  }
 }
 
 /**
  * State shared across the serial journey steps: which pipeline the run's
- * revision belongs to and where the run lives.
+ * revision belongs to, where the run lives, and the ACP node's flow id.
  */
-const state: { pipelineSlug: string; runUrl: string; acpSlug: string } = {
+const state: {
+  pipelineSlug: string;
+  runUrl: string;
+  acpSlug: string;
+  revisionDigest: string;
+} = {
   pipelineSlug: FALLBACK_SLUG,
   runUrl: "",
   acpSlug: "",
+  revisionDigest: "",
 };
 
 test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   test.skip(
     !ISSUE2_ENABLED,
-    "requires the M4 lab (COMMUNICATION_E2E_ISSUE2=1, E2E_BASE_URL=http://localhost:18091)",
+    "requires the M4 lab (COMMUNICATION_E2E_ISSUE2=1, E2E_BASE_URL=http://localhost:15173)",
   );
   test.use({ viewport: { width: 1500, height: 950 } });
 
@@ -118,23 +153,34 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     page,
     browser,
   }) => {
+    test.setTimeout(600_000); // assignment pin + member forms + run start, all bounded waits
     console.log(`issue2-workbench: run stamp ${STAMP}`);
     await signIn(page, ADMIN);
 
     // The studio spec's published revision — the acceptance run always runs
     // studio first and its publish step records it.
-    let published: { pipelineId?: string; revisionId?: string; pipelineSlug?: string };
+    let published: {
+      pipelineId?: string;
+      revisionId?: string;
+      revisionDigest?: string;
+      pipelineSlug?: string;
+    };
     try {
       published = JSON.parse(await readFile(PUBLISHED_PATH, "utf8"));
     } catch {
       published = {};
     }
-    if (published.pipelineId && published.revisionId) {
+    // The studio spec records { pipelineId, revisionDigest, pipelineSlug };
+    // an older shape recorded revisionId. Either names the studio revision —
+    // the assignment flow below pins the newest published one either way.
+    const revisionRef = published.revisionDigest ?? published.revisionId ?? null;
+    if (published.pipelineId && revisionRef) {
       state.pipelineSlug = published.pipelineSlug ?? FALLBACK_SLUG;
-      console.log(`WORKBENCH setup: using studio-published revision ${published.revisionId}`);
+      state.revisionDigest = published.revisionDigest ?? "";
+      console.log(`WORKBENCH setup: using studio-published revision ${revisionRef}`);
     } else {
       throw new Error(
-        `WORKBENCH setup: ${PUBLISHED_PATH} is absent — run issue2-studio.spec.ts first (it publishes the pipeline with the agent.acp code_review step)`,
+        `WORKBENCH setup: ${PUBLISHED_PATH} is absent or incomplete — run issue2-studio.spec.ts first (it publishes the pipeline with the agent.acp code_review step)`,
       );
     }
 
@@ -152,26 +198,29 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     }
 
     const projectPath = await openProjectBySlug(page, PROJECT_SLUG);
+    const projectId = projectPath.split("/")[2];
 
-    // Assignment: the assign form pins the newest published revision, which
-    // is the one the studio spec published.
+    // The run must start from the studio-published revision. The project's
+    // existing assignment is pinned to an OLDER revision (r1, which has no
+    // agent.acp code_review step), so new runs would start there and the whole
+    // ACP journey would hang on a node that never exists. Re-pin the assignment
+    // to the exact published revision. This is a SETUP call: the run itself is
+    // started through the UI below, so this is preparation, not the journey.
+    // `page.request` shares the signed-in session and echoes the CSRF token the
+    // app's apiFetch does (from GET /api/v1/me).
+    await repinAssignment(page, projectId, published.pipelineId as string, state.revisionDigest);
+
+    // The assignment's "when to run" block proves the row is live on the tab.
     await page.goto(`${projectPath}/pipelines`);
     await expect(page.getByTestId("project-pipelines")).toBeVisible();
-    const assignOpen = page.getByTestId(`assign-open-${state.pipelineSlug}`);
-    if ((await assignOpen.count()) > 0 && (await assignOpen.isVisible())) {
-      await assignOpen.click();
-      const pinning = page.getByTestId(`assign-pinning-${state.pipelineSlug}`);
-      await expect(pinning).toContainText(/id [0-9a-f]{8}/, { timeout: NODE_STEP_TIMEOUT_MS });
-      await page.getByTestId(`assign-confirm-${state.pipelineSlug}`).click();
-    }
     await expect(page.getByTestId(`schedules-block-${state.pipelineSlug}`)).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
 
-    // Members: bob as contributor, carol as viewer (the form is add-OR-update,
-    // so a seeded role is corrected through the same flow).
-    await addMember(page, projectPath, BOB.name, "contributor");
-    await addMember(page, projectPath, CAROL.name, "viewer");
+    // Members: bob as contributor, carol as viewer (idempotent add-OR-update,
+    // with a bounded re-click on the collapsed add form).
+    await setMember(page, projectPath, BOB.name, "contributor");
+    await setMember(page, projectPath, CAROL.name, "viewer");
 
     // Start the run from the project's New run flow.
     await page.goto(`${projectPath}/runs`);
@@ -202,8 +251,21 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   test("A4: graph-first run page, dock on the active node, approval, live ACP", async ({
     page,
   }) => {
+    test.setTimeout(1_200_000); // gate wait + one real agent turn, both bounded
     await signIn(page, ADMIN);
     const status = await openRun(page, state.runUrl);
+
+    // The run page names the pinned revision — it must be the studio-published
+    // one (the repin's proof), not the older revision without code_review.
+    if (state.revisionDigest) {
+      const digestShort = state.revisionDigest.startsWith("sha256:")
+        ? state.revisionDigest.slice(7, 19)
+        : state.revisionDigest.slice(0, 12);
+      await expect(page.getByTestId("run-pinned-revision")).toContainText(digestShort, {
+        timeout: NODE_STEP_TIMEOUT_MS,
+      });
+      console.log(`WORKBENCH A4: run pinned to the studio-published revision ${digestShort}`);
+    }
 
     // The DEFAULT view is the graph: tab selected, canvas present, and the
     // definition table (the collapsed step list) is not the surface.
@@ -232,8 +294,6 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     );
     await checkA11y(page, "workbench graph view");
 
-    // Approve the human gate when it appears: select it in the graph, the
-    // dock shows the approval card, approve from the card.
     await nodeButton(page, "approve").click();
     const decision = page.getByTestId("approval-decision-form");
     await expect(decision).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
@@ -253,10 +313,17 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     state.acpSlug = (await findAcpSlug(page)) ?? "";
     if (!state.acpSlug) {
       throw new Error(
-        "WORKBENCH A4: no agent.acp node in this revision — run issue2-studio.spec.ts first (it publishes the pipeline with the agent.acp code_review step)",
+        "WORKBENCH A4: no agent.acp node in the run's graph — the run is not pinned to the studio-published revision (which inserts the agent.acp code_review step). Re-pin the assignment in setup; run issue2-studio.spec.ts first.",
       );
     }
-    await nodeButton(page, state.acpSlug).click();
+    if (state.acpSlug !== "code_review") {
+      throw new Error(
+        `WORKBENCH A4: the studio-inserted code_review agent.acp step is absent from the run's graph (found ${state.acpSlug}) — the run is not pinned to the studio-published revision. Re-pin the assignment in setup.`,
+      );
+    }
+    // The `code_review` row is journaled when the loop schedules it; a pick
+    // before that resolves to an empty dock, so selectNode re-clicks.
+    await selectNode(page, state.acpSlug, NODE_STEP_TIMEOUT_MS);
     const dockConversation = page.getByTestId("dock-conversation");
     await expect(dockConversation).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     await expect
@@ -276,6 +343,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     page,
     browser,
   }) => {
+    test.setTimeout(1_500_000); // one real agent turn behind the takeover, bounded
     test.skip(!state.acpSlug, "no agent.acp node in this revision — ACP handoff journey skipped");
 
     // admin keeps the run open (also warms the ACP selection), while bob and
@@ -292,19 +360,21 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
 
     // bob (contributor): open the same run, select the ACP node, take control.
     await openRun(bob, state.runUrl);
-    await nodeButton(bob, state.acpSlug).click();
+    await selectNode(bob, state.acpSlug, NODE_STEP_TIMEOUT_MS);
     const bobDock = bob.getByTestId("dock-conversation");
     await expect(bobDock).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     const take = bob.getByTestId("dock-take-control");
     await expect(take).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await take.click();
-    await expect(bob.getByTestId("dock-controller")).toContainText(BOB.name, {
+    // The badge is written in words: on bob's own page it reads "You are in
+    // control" (the name "Controlled by Bob" is what OTHER pages show).
+    await expect(bob.getByTestId("dock-controller")).toContainText(/you are in control/i, {
       timeout: NODE_STEP_TIMEOUT_MS,
     });
     await evidence(
       bob,
       "wb-a5-bob-control",
-      `bob (contributor) took control of the ACP conversation — the dock's controller badge names ${BOB.name}`,
+      `bob (contributor) took control of the ACP conversation — the dock's controller badge reads "You are in control"`,
     );
 
     // carol (viewer): the same dock shows Take control disabled and no
@@ -328,7 +398,10 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     );
     await checkA11y(carol, "workbench viewer (carol)");
 
-    // bob prompts the agent; his message lands in the shared transcript.
+    // bob prompts the agent; his message lands in the shared transcript, and
+    // the turn is driven to completion: the dock's Stop button is rendered
+    // exactly while a turn is in flight, so the reply has landed when it is
+    // gone (a real agent turn is 15–120 s, bounded by AGENT_TURN_TIMEOUT_MS).
     const bobInput = bob.getByTestId("dock-composer-input");
     await expect(bobInput).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await bobInput.fill("Please also check the README mentions add()");
@@ -336,33 +409,42 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect
       .poll(async () => (await bobDock.textContent()) ?? "", { timeout: AGENT_TURN_TIMEOUT_MS })
       .toContain("Please also check the README mentions add()");
+    await bob
+      .getByTestId("dock-stop-turn")
+      .waitFor({ state: "detached", timeout: AGENT_TURN_TIMEOUT_MS });
 
     // Return control to the factory; the run is not left paused.
     const back = bob.getByTestId("dock-return-control");
     await expect(back).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
     await back.click();
-    await expect(bob.getByTestId("dock-controller")).not.toContainText(BOB.name, {
-      timeout: NODE_STEP_TIMEOUT_MS,
-    });
+    await expect(bob.getByTestId("dock-controller")).toContainText(
+      /controlled by a pipeline run/i,
+      {
+        timeout: NODE_STEP_TIMEOUT_MS,
+      },
+    );
     await expect(bob.getByTestId("run-header-status")).not.toHaveText(/paused/i, {
       timeout: NODE_STEP_TIMEOUT_MS,
     });
     await evidence(
       bob,
       "wb-a5-returned",
-      `bob returned control to the factory — the badge no longer names ${BOB.name} and the run is not paused`,
+      `bob returned control to the factory — the badge reads "Controlled by a pipeline run" and the run is not paused`,
     );
 
-    // The event timeline lists the takeover and the return.
+    // The event timeline lists the takeover and the return: the takeover
+    // pauses the run (run.paused, actor bob) and the return resumes it
+    // (run.resumed) — the journal's words for the handoffs.
     await page.getByTestId("workbench-tab-timeline").click();
-    const feed = page.getByTestId("activity-feed");
-    await expect(feed).toBeVisible();
-    await expect(feed).toContainText(/control/i, { timeout: NODE_STEP_TIMEOUT_MS });
+    const feed = page.getByTestId("run-timeline");
+    await expect(feed).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await expect(feed).toContainText("run.paused", { timeout: NODE_STEP_TIMEOUT_MS });
+    await expect(feed).toContainText("run.resumed", { timeout: NODE_STEP_TIMEOUT_MS });
     await expect(feed).toContainText(new RegExp(BOB.name, "i"), { timeout: NODE_STEP_TIMEOUT_MS });
     await evidence(
       page,
       "wb-a5-timeline",
-      "the workbench timeline lists the control handoffs (bob's takeover and return)",
+      "the workbench timeline lists the control handoffs — run.paused and run.resumed with bob as actor",
     );
 
     await bobContext.close();
@@ -372,6 +454,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   test("A6: exec details, approval decision, until instances, fan-out, attempts", async ({
     page,
   }) => {
+    test.setTimeout(2_400_000); // the terminal wait dominates (bounded, never open-ended)
     await signIn(page, ADMIN);
     await openRun(page, state.runUrl);
     await expect(page.locator(".react-flow").first()).toBeVisible({
@@ -398,7 +481,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     console.log("WORKBENCH A6: mid-run reload restored the approve selection and a live stream");
 
     // A process.exec node: the dock shows its exit code and captured output.
-    await nodeButton(page, "build_until_verified-test").click();
+    await nodeButton(page, "test").click();
     await expect(page.getByTestId("attempt-exit-code")).toBeVisible({
       timeout: NODE_STEP_TIMEOUT_MS,
     });
@@ -415,7 +498,10 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     });
 
     // The until scope's instance picker: at least the two deterministic
-    // iterations; picking iteration 1 vs iteration 0 changes the dock.
+    // iterations (the journal keys them [1], [2] — until iterations are
+    // 1-based, ADR-0023 § 1); picking iteration 1 vs iteration 2 changes the
+    // dock, which must be on an in-scope node to follow the pick.
+    await nodeButton(page, "test").click();
     const untilPicker = page.getByTestId("instance-picker-build_until_verified");
     await expect(untilPicker).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     const untilChips = untilPicker.locator("button", { hasText: /^Iteration \d+ ·/ });
@@ -427,18 +513,28 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
       .filter({ hasText: /^Iteration 1 ·/ })
       .first()
       .click();
-    await expect(page.getByTestId("dock-title")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await expect
+      .poll(async () => (await instanceLine()) ?? "", { timeout: NODE_STEP_TIMEOUT_MS })
+      .toContain("iteration 1");
     const line1 = (await instanceLine()) ?? "";
     await evidence(page, "wb-a6-iter1", `the until scope's picker selects iteration 1 — ${line1}`);
     await untilChips
-      .filter({ hasText: /^Iteration 0 ·/ })
+      .filter({ hasText: /^Iteration 2 ·/ })
       .first()
       .click();
-    const line0 = (await instanceLine()) ?? "";
-    expect(line0, "the dock must change between iterations").not.toBe(line1);
-    await evidence(page, "wb-a6-iter2", `the until scope's picker selects iteration 0 — ${line0}`);
+    await expect
+      .poll(async () => (await instanceLine()) ?? "", { timeout: NODE_STEP_TIMEOUT_MS })
+      .not.toContain("iteration 1");
+    const line2 = (await instanceLine()) ?? "";
+    expect(line2, "the dock must change between iterations").not.toBe(line1);
+    await evidence(page, "wb-a6-iter2", `the until scope's picker selects iteration 2 — ${line2}`);
 
     // The for_each fan-out: 14 items with per-state counts; select several.
+    // The journal keys the items 0-based (`/fan_out[0]` … `/fan_out[13]`),
+    // and the picker's chips read the raw index: chips 1–13 are the live
+    // items (chip 14 is the declared slot). A pick alone does not move the
+    // dock away from another scope's node — the in-scope node box (`invoke`)
+    // is what resolves the picked item into the dock.
     const fanPicker = page.getByTestId("instance-picker-fan_out");
     await expect(fanPicker).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     await expect(fanPicker).toContainText(/14 items/);
@@ -446,23 +542,17 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect
       .poll(async () => fanChips.count(), { timeout: NODE_STEP_TIMEOUT_MS })
       .toBeGreaterThanOrEqual(14);
-    await fanChips
-      .filter({ hasText: /^Item 0 ·/ })
-      .first()
-      .click();
-    await expect(page.getByTestId("dock-title")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
-    await fanChips
-      .filter({ hasText: /^Item 1 ·/ })
-      .first()
-      .click();
-    await fanChips
-      .filter({ hasText: /^Item 2 ·/ })
-      .first()
-      .click();
-    await fanChips
-      .filter({ hasText: /^Item 3 ·/ })
-      .first()
-      .click();
+    const fanLine = () => page.getByTestId("dock-instance-line").textContent();
+    for (const item of [1, 2, 3, 4]) {
+      await fanChips
+        .filter({ hasText: new RegExp(`^Item ${item} ·`) })
+        .first()
+        .click();
+      await nodeButton(page, "invoke").click();
+      await expect
+        .poll(async () => (await fanLine()) ?? "", { timeout: NODE_STEP_TIMEOUT_MS })
+        .toContain(`iteration ${item}`);
+    }
     const fanPage = fanPicker.getByTestId("instance-fan_out-page");
     if ((await fanPage.count()) > 0) {
       expect(await fanPage.textContent()).toContain(" of ");
@@ -470,15 +560,25 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await evidence(
       page,
       "wb-a6-fanout",
-      "the for_each scope shows 14 items with per-state counts; items 0-3 were selected and the dock followed the picks",
+      "the for_each scope shows 14 items with per-state counts; items 1-4 were selected and the dock followed the picks",
     );
 
-    // Item 13 (index 12) is the child that exits 1: it retried, so the dock
+    // Item 13 (journal index 12, picker chip "Item 12") is the child that
+    // exits 1. The retry lives in the CHILD run — the child's implement step
+    // retries the infra failure (maxAttempts 2) — while the parent's invoke
+    // row is a control-plane decision ("attempt 0 of 1"). Follow the dock's
+    // "Open child run" link and read the attempts there: the child's step
     // shows attempt tabs or an "attempt k of m" greater than one attempt.
     await fanChips
       .filter({ hasText: /^Item 12 ·/ })
       .first()
       .click();
+    await nodeButton(page, "invoke").click();
+    const childLink = page.getByTestId("dock-child-run-link");
+    await expect(childLink).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await childLink.click();
+    await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await selectNode(page, "implement", NODE_STEP_TIMEOUT_MS);
     await expect
       .poll(
         async () => {
@@ -494,10 +594,15 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await evidence(
       page,
       "wb-a6-attempts",
-      "fan-out item 13 (the child that exits 1) shows more than one attempt — attempt tabs or 'attempt k of m' with m > 1",
+      "fan-out item 13 (the child that exits 1) — its child run's implement step shows more than one attempt — attempt tabs or 'attempt k of m' with m > 1",
     );
 
-    // The graph never grows extra definition nodes from run instances.
+    // Back to the run's own graph for the node-count guard: the graph never
+    // grows extra definition nodes from run instances.
+    await page.goto(state.runUrl);
+    await expect(page.locator(".react-flow").first()).toBeVisible({
+      timeout: NODE_STEP_TIMEOUT_MS,
+    });
     const after = await canvasNodes();
     expect(after, "the canvas's node count must not grow with run instances").toBe(before);
 
@@ -509,6 +614,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
   });
 
   test("narrow 390x844: graph then dock as a sheet, no horizontal scroll", async ({ page }) => {
+    test.setTimeout(300_000);
     await signIn(page, ADMIN);
     await page.setViewportSize({ width: 390, height: 844 });
     await openRun(page, state.runUrl);
