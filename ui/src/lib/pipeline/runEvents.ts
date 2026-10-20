@@ -180,6 +180,66 @@ const WORK_IN_FLIGHT_TYPES: ReadonlySet<RunEventType> = new Set<RunEventType>([
   "node.scope.started",
 ]);
 
+/** The run machine as the server enforces it (`runtime`'s `runTransitions`,
+ * `01`): which status may follow which — terminal rows go nowhere. The fold
+ * uses it, and only it, to judge a journal frame's destination against the
+ * refetched API row: a frame may move the run status only *forward* from the
+ * baseline it was folded onto, because a frame journaled before the fetch is
+ * already reflected in that row. `queued` in particular is reachable only
+ * from `paused` (or the retry arm off `interrupted`) — never from
+ * `running`, which is exactly how a stale takeover-return `run.resumed`
+ * (`paused → queued`, with no `run.*` frame for the run starting to execute
+ * again) would otherwise pin `queued` over a fresh API `running`. */
+const RUN_STATUS_FORWARD: Readonly<Record<RunStatus, ReadonlySet<RunStatus>>> = {
+  queued: new Set<RunStatus>([
+    "preparing",
+    "running",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  preparing: new Set<RunStatus>([
+    "running",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  running: new Set<RunStatus>([
+    "waiting_human",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  waiting_human: new Set<RunStatus>([
+    "running",
+    "waiting_human",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  paused: new Set<RunStatus>([
+    "queued",
+    "running",
+    "waiting_human",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ]),
+  interrupted: new Set<RunStatus>(["queued", "running", "failed", "cancelled"]),
+  completed: new Set<RunStatus>(),
+  failed: new Set<RunStatus>(),
+  cancelled: new Set<RunStatus>(),
+};
+
 const APPROVAL_STATE_BY_TYPE: Partial<Record<RunEventType, ApprovalState>> = {
   "approval.requested": "pending",
   "approval.decided": "decided",
@@ -373,6 +433,16 @@ export function projectRun(baseline: RunBaseline, events: readonly EventEnvelope
       });
     }
   }
+
+  // The fold replays the journal's whole tail over *every* refetched baseline
+  // (the buffer is not trimmed to frames since the fetch — the same frame
+  // may have arrived before or after it), so the final status is checked
+  // against the row the API served: a journal frame may only move the run
+  // status FORWARD from that baseline along the run machine. Anything else
+  // is a frame the fetch already saw committed, and the refetched row wins.
+  const base = baseline.run;
+  if (run && base && run.status !== base.status && !RUN_STATUS_FORWARD[base.status].has(run.status))
+    run = { ...run, status: base.status, paused_reason: base.paused_reason };
 
   return { frames, run, nodes, attempts, approvals };
 }

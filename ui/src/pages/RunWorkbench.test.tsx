@@ -383,4 +383,32 @@ describe("the run header follows the stream", () => {
       expect(screen.getByTestId("run-header-status").textContent).toContain("queued"),
     );
   });
+
+  it("stays running when a refetched baseline outruns the takeover's stale resume frame", async () => {
+    // The bug the fold used to draw (header-status2): the page opened during
+    // iteration 1, the takeover paused the run and the return journaled
+    // `run.resumed` (`paused → queued`); the run then leased and executed
+    // again with no further `run.*` frame. The refetched baseline says
+    // `running` — the replayed tail must not pin the header on `queued`.
+    mount("", [{ path: RUN_PATH, body: { ...wireRun, status: "running", paused_reason: null } }]);
+
+    const chip = await screen.findByTestId("run-header-status");
+    expect(chip.textContent).toContain("running");
+
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent("run.paused", { paused_reason: "human_takeover" }, { global_seq: 9701 }),
+      );
+      FakeEventSource.last().emit(
+        wireRunEvent("run.resumed", { paused_reason: "human_takeover" }, { global_seq: 9702 }),
+      );
+    });
+
+    // The chip keeps the refetched baseline's status; the invalidation's
+    // refetch (same `running` row) confirms it.
+    await waitFor(() =>
+      expect(screen.getByTestId("run-header-status").textContent).toContain("running"),
+    );
+    expect(screen.getByTestId("run-header-status").textContent).not.toContain("queued");
+  });
 });
