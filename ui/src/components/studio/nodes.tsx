@@ -58,7 +58,11 @@ function statusGlyph(state: string): string {
   )
     return "✓";
   if (s.includes("fail") || s.includes("cancel") || s.includes("error")) return "×";
-  if (s.includes("wait") || s.includes("pend") || s.includes("queue")) return "!";
+  // "!" is the waiting set's glyph — a person must answer it. Not-started
+  // work (queued/pending) carries the queued set's neutral dot instead
+  // (ds/states: queued is "·"), so an unstarted box never reads as urgent.
+  if (s.includes("wait")) return "!";
+  if (s.includes("pend") || s.includes("queue")) return "·";
   return "•";
 }
 

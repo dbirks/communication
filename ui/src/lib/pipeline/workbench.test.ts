@@ -169,6 +169,65 @@ function probeRun(): NodeExecutionSummary[] {
   return rows;
 }
 
+/** The issue #2 acceptance node set: plan succeeded, the approval gate
+ * waiting, and the two until scopes plus the for_each pending with no
+ * executions at all. */
+function acceptanceRun(): NodeExecutionSummary[] {
+  return [
+    row({
+      id: "ac-plan",
+      node_id: "plan",
+      node_instance_key: "/plan",
+      kind: "process.exec",
+      status: "succeeded",
+      finished_at: "2026-01-01T09:00:00Z",
+    }),
+    row({
+      id: "ac-approve",
+      node_id: "approve",
+      node_instance_key: "/approve",
+      kind: "human.approval",
+      status: "waiting",
+      waiting_reason: "approval",
+    }),
+    row({
+      id: "ac-buv",
+      node_id: "build_until_verified",
+      node_instance_key: "/build_until_verified",
+      kind: "until",
+      status: "pending",
+    }),
+    row({
+      id: "ac-until",
+      node_id: "until",
+      node_instance_key: "/until",
+      kind: "until",
+      status: "pending",
+    }),
+    row({
+      id: "ac-fan",
+      node_id: "fan_out",
+      node_instance_key: "/fan_out",
+      kind: "for_each",
+      status: "pending",
+    }),
+    row({
+      id: "ac-emit",
+      node_id: "emit_items",
+      node_instance_key: "/emit_items",
+      kind: "process.exec",
+      status: "pending",
+    }),
+    row({
+      id: "ac-verdict",
+      node_id: "verdict",
+      node_instance_key: "/verdict",
+      kind: "condition",
+      status: "pending",
+    }),
+  ];
+}
+
 describe("definitionIdOfKey", () => {
   it("takes the last path segment without its loop suffix", () => {
     expect(definitionIdOfKey("/plan")).toBe("plan");
@@ -253,6 +312,32 @@ describe("overlays", () => {
       state: "waiting",
       label: "waiting for approval",
       executionId: "ne-approve",
+    });
+  });
+
+  it("reads a not-started scope as not started, not a phantom iteration or an empty roll-up", () => {
+    const out = overlays(acceptanceRun(), {});
+    // The two pending until scopes and the pending for_each own no execution
+    // of their own: "iteration 1 of 1" / "0 items" would claim work the run
+    // never produced.
+    expect(out.build_until_verified).toEqual({
+      state: "queued",
+      label: "not started",
+      executionId: null,
+    });
+    expect(out.until).toEqual({ state: "queued", label: "not started", executionId: null });
+    expect(out.fan_out).toEqual({ state: "queued", label: "not started", executionId: null });
+    expect(out.emit_items).toEqual({
+      state: "queued",
+      label: "not started",
+      executionId: "ac-emit",
+    });
+    // The started work is untouched.
+    expect(out.plan).toEqual({ state: "done", label: "succeeded", executionId: "ac-plan" });
+    expect(out.approve).toEqual({
+      state: "waiting",
+      label: "waiting for approval",
+      executionId: "ac-approve",
     });
   });
 
@@ -391,6 +476,20 @@ describe("instancesOfNode", () => {
 });
 
 describe("attentionNode", () => {
+  it("picks the waiting gate on the acceptance node set", () => {
+    expect(attentionNode(acceptanceRun())).toEqual({
+      definitionNodeId: "approve",
+      executionId: "ac-approve",
+      selection: {},
+    });
+  });
+
+  it("returns nothing needing attention while the gate is not yet open", () => {
+    const gateNotOpen = acceptanceRun().map((row) =>
+      row.id === "ac-approve" ? { ...row, status: "pending" as const, waiting_reason: null } : row,
+    );
+    expect(attentionNode(gateNotOpen)).toBeNull();
+  });
   it("prefers the approval wait over failures and running work", () => {
     expect(attentionNode(probeRun())).toEqual({
       definitionNodeId: "approve",

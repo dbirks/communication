@@ -308,6 +308,14 @@ function scopeOverlay(
       context?.items ?? 0,
       ...children.map((row) => indexIn(row.node_instance_key, defKey) ?? 0),
     );
+    // A scope row with no execution of its own is not an empty roll-up:
+    // "0 items" would claim a fan-out nothing has produced.
+    if (
+      total === 0 &&
+      children.length === 0 &&
+      (context === null || stateOfRow(context) === "queued")
+    )
+      return { state: "queued", label: "not started", executionId: null };
     const chosen = selection[defKey];
     // An item selected: the box describes that item; nothing selected: the
     // box describes the whole for_each (counts, worst state).
@@ -326,6 +334,11 @@ function scopeOverlay(
     0,
     ...children.map((row) => indexIn(row.node_instance_key, defKey) ?? 0),
   );
+  // A scope with no execution must read "not started", not "iteration 1 of
+  // 1": an iteration no row ever produced is not an iteration, and the box
+  // must not carry the run's attention glyph.
+  if (observed === 0 && (context === null || stateOfRow(context) === "queued"))
+    return { state: "queued", label: "not started", executionId: null };
   const maxIterations = Math.max(context?.iterations ?? 0, observed);
   const index = selection[defKey] ?? (observed > 0 ? observed : 1);
   const place = placeIndex(index);

@@ -385,18 +385,35 @@ export default function RunWorkbench() {
     );
   };
 
-  /* ------------------------------------- auto-select, exactly once: on the
-   * first data, select what the run needs attention on. After the reader
-   * clicks anything, never again (ADR-0043 decision 4). */
+  /* ------------------------------------- auto-select: on the first data,
+   * select what the run needs attention on — and latch only once a node was
+   * actually selected. First data with nothing needing attention yet (the
+   * gate not open, the run still queuing) must leave the door open, or a
+   * run that parks at its gate after the page loaded sits on "select a node
+   * on the graph" forever. One follow-up move while the reader has not
+   * clicked: the run parking at an approval gate overrides the node
+   * auto-selected earlier — the dock points at the thing the reader owes an
+   * answer to. After the reader clicks anything, never again (ADR-0043
+   * decision 4). */
+  const autoSelectedId = useRef<string | null>(null);
   useEffect(() => {
-    if (autoDone.current || userSelected.current) return;
-    if (params.get("node") || params.get("instance")) return;
-    if (projection.nodes.length === 0) return;
-    autoDone.current = true;
+    if (userSelected.current || projection.nodes.length === 0) return;
     const id = attentionNodeId(projection.nodes);
     if (!id) return;
     const row = projection.nodes.find((node) => node.id === id);
     if (!row) return;
+    if (!autoDone.current) {
+      if (params.get("node") || params.get("instance")) return;
+      autoDone.current = true;
+      autoSelectedId.current = row.id;
+    } else {
+      // An approval gate the reader must answer moves the dock; anything
+      // else leaves the earlier auto-pick in place (the overlay still shows
+      // the state, and one click by the reader takes full control).
+      if (autoSelectedId.current === id) return;
+      if (!(row.status === "waiting" && row.waiting_reason === "approval")) return;
+      if (autoSelectedId.current !== params.get("instance")) return;
+    }
     setParams(
       (current) => {
         const state = parseWorkbenchUrl(current);

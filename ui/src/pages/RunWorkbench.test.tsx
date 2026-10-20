@@ -208,6 +208,62 @@ describe("the Run Workbench", () => {
     expect((await stepRow("canvas-step-row-approve")).className).toContain("bg-accent-wash");
   });
 
+  it("auto-selects the gate that opens after first data had nothing needing attention", async () => {
+    // The acceptance node set with the gate not yet open: plan succeeded,
+    // approve still pending, the scopes not started — the first data needs
+    // no attention, so the auto-select latch must stay open for the gate.
+    const wireGateNotOpen: NodeExecution[] = [
+      { ...wireWaitingNodes[0], status: "pending", waiting_reason: null },
+      wireNodeList.node_executions[0],
+    ];
+    const nodesRoute: RouteStub = {
+      path: `${RUN_PATH}/nodes`,
+      body: { node_executions: wireGateNotOpen },
+    };
+    const { requests } = mount("", [
+      nodesRoute,
+      {
+        path: `/api/v1/projects/${wireProjectId}/approvals`,
+        body: {
+          ...wireApprovalList,
+          approvals: [{ ...wireApproval, node_execution_id: WIRE_NODE_APPROVE }],
+        },
+      },
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_APPROVE}`, body: wireNodeDetail },
+    ]);
+
+    // First data: nothing needs attention — the dock asks for a pick and no
+    // box is raised.
+    await stepRow("canvas-step-row-plan");
+    expect(screen.getByTestId("workbench-dock-empty")).toBeTruthy();
+    expect(screen.getByTestId("canvas-step-row-plan").className).not.toContain("bg-accent-wash");
+
+    // The gate opens: the journal now carries the wait and the stream
+    // delivers the frame; the stream's invalidation refetches the nodes and
+    // the auto-select rule still has its door open.
+    nodesRoute.body = { node_executions: wireWaitingNodes };
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "approval.requested",
+          { node_instance_key: "/approve", approval_id: wireApproval.id },
+          { node_execution_id: WIRE_NODE_APPROVE, global_seq: 9701 },
+        ),
+      );
+    });
+
+    const summary = await screen.findByTestId("approval-summary", undefined, { timeout: 5000 });
+    expect(summary.closest('[data-testid="workbench-dock"]')).toBeTruthy();
+    expect(screen.getByTestId("approval-approve")).toBeTruthy();
+    expect(screen.getByTestId("approval-reject")).toBeTruthy();
+    // The graph agrees: the gate is the raised node.
+    await waitFor(() =>
+      expect(screen.getByTestId("canvas-step-row-approve").className).toContain("bg-accent-wash"),
+    );
+    // The refetch after the frame is what proved the wait.
+    expect(requestsTo(requests, `${RUN_PATH}/nodes`)).toHaveLength(2);
+  });
+
   it("never moves a user's selection again, even when events shift the attention", async () => {
     const { requests } = mount();
     await screen.findByTestId("studio-canvas");
