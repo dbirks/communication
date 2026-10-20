@@ -42,6 +42,13 @@ const (
 	agentExtractMax    = 1 << 20
 	agentAckGrace      = 10 * time.Second
 	agentPumpDrainWait = 2 * time.Second
+
+	// agentConversationBusyPoll is the retry cadence of the
+	// ErrAttemptConversationBusy wait: the conversation is a live agent the
+	// human is still driving, and its terminal arrives in seconds-to-minutes,
+	// so the poll is coarse — the lease renewal loop, not this timer, is what
+	// keeps the attempt honest.
+	agentConversationBusyPoll = time.Second
 )
 
 // The seams the agent.acp body needs beyond the attempt fence. Declared here,
@@ -57,6 +64,17 @@ type AttemptConversation struct {
 	ConversationID string
 	TurnID         string
 }
+
+// ErrAttemptConversationBusy is the claim's stamp seam reporting the
+// one-active-turn index (ADR-0016 § 5) refusing the attempt's turn row: the
+// conversation still carries a non-terminal turn. In the takeover journey
+// (docs/m4-contract.md § 5.3) that turn is the returning controller's own
+// human prompt, queued before return-control — not an attempt that owes a
+// close. It is a deferral, not a failure: the slot opens when that turn
+// reaches its terminal (its worker closes it, or the reconciler's lease arm
+// interrupts it), so the attempt waits for the slot with its lease renewing
+// instead of the claim failing the node on a writer nobody asked to stop.
+var ErrAttemptConversationBusy = errors.New("attempt conversation still carries a non-terminal turn")
 
 // AttemptSessionStore is the binding bookkeeping the session body performs on
 // the attempt's conversation: the stamped pair, the stored binding
@@ -197,6 +215,11 @@ type AgentTurn struct {
 	// Quiesce is how long trailing stream updates may still arrive after
 	// Prompt returns before the final text is read (DefaultQuiesce's rule).
 	Quiesce time.Duration
+	// ConversationBusyPoll is the retry cadence while the attempt's
+	// conversation still carries a non-terminal turn at stamp time
+	// (ErrAttemptConversationBusy's wait); zero takes
+	// agentConversationBusyPoll.
+	ConversationBusyPoll time.Duration
 	// Transcript bounds the attempt's transcript rows (chunk size, preview
 	// size, idle coalescing). Zero is M2's own cadence — the attempt path is
 	// not allowed a different one (§ 4 step 6).
@@ -244,6 +267,13 @@ func (a *AgentTurn) quiesce() time.Duration {
 		return a.Quiesce
 	}
 	return DefaultQuiesce
+}
+
+func (a *AgentTurn) busyPoll() time.Duration {
+	if a.ConversationBusyPoll > 0 {
+		return a.ConversationBusyPoll
+	}
+	return agentConversationBusyPoll
 }
 
 func (a *AgentTurn) askMode(launcherID string) string {
@@ -1048,8 +1078,49 @@ func redactPayload(redact func(string) (string, int), payload any) any {
 	return back
 }
 
-func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (AttemptConversation, *AttemptResult) {
+// conversationForReady stamps the attempt's conversation/turn pair, waiting
+// out the one-active-turn refusal. ADR-0016 § 5 is the rule this wait exists
+// for: "Nobody may send a second prompt before that terminal event, and the
+// DB will not allow one (one-active-turn index)" — and in the takeover
+// journey (m4-contract § 5.3) the turn holding the slot is the returning
+// controller's own human prompt, queued before return-control. The retry
+// claim therefore WAITS for the slot instead of failing the node: that turn
+// reaches its terminal on its own (its worker closes it, or the reconciler's
+// lease arm interrupts it), and every poll re-derives the whole stamp under
+// the attempt fence. The attempt lease keeps renewing under the wait — the
+// renewal statement touches zero turn rows until the stamp lands — and a stop
+// signal, a lost lease or a dead worker exits the wait the way the rest of
+// the attempt body exits: ctx done here, nothing fenced written, the
+// reconciler re-derives.
+func (a *AgentTurn) conversationForReady(ctx context.Context, c AttemptClaim) (AttemptConversation, bool, error) {
 	conv, ok, err := a.Sessions.ConversationFor(ctx, c)
+	if err == nil || !errors.Is(err, ErrAttemptConversationBusy) {
+		return conv, ok, err
+	}
+	a.logger().Info("attempt conversation still carries a non-terminal turn; the retry claim waits for its terminal",
+		slog.String("attempt_id", c.AttemptID),
+		slog.String("detail", a.redact(err.Error())))
+	for errors.Is(err, ErrAttemptConversationBusy) {
+		tick := time.After(a.busyPoll())
+		if a.Clock != nil {
+			tick = a.Clock.After(a.busyPoll())
+		}
+		select {
+		case <-ctx.Done():
+			return AttemptConversation{}, false,
+				fmt.Errorf("%w: the attempt stopped before the slot opened (%v)", ErrAttemptConversationBusy, ctx.Err())
+		case <-tick:
+		}
+		conv, ok, err = a.Sessions.ConversationFor(ctx, c)
+		if err != nil && !errors.Is(err, ErrAttemptConversationBusy) {
+			return AttemptConversation{}, false, err
+		}
+	}
+	return conv, ok, err
+}
+
+func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (AttemptConversation, *AttemptResult) {
+	conv, ok, err := a.conversationForReady(ctx, c)
 	if err != nil {
 		return AttemptConversation{}, ptrResult(failedResult(ErrorClassInfra, "read attempt conversation: "+a.redact(err.Error())))
 	}

@@ -210,7 +210,11 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 		// § 4 step 2). conversation_turns_one_active_idx is the backstop that a
 		// prior attempt left its turn open past its terminal: that refusal
 		// names the writer that owes the close, and this seam does not close a
-		// turn vocabulary it does not own.
+		// turn vocabulary it does not own. It is equally the backstop for the
+		// human's OWN turn a return-control raced past (m4-contract § 5.3's
+		// journey): the executor reads that refusal as
+		// worker.ErrAttemptConversationBusy and waits for the slot, because the
+		// close is that turn's worker's to write, never the claim's.
 		var turnID string
 		stampErr := tx.QueryRow(ctx, `
 			INSERT INTO conversation_turns
@@ -223,7 +227,7 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 			s.Runs.leaseTTL().Seconds(), st.AttemptID).Scan(&turnID)
 		if stampErr != nil {
 			if idnUniqueViolation(stampErr) {
-				return fmt.Errorf("postgres: conversation %s still carries a non-terminal turn from an earlier attempt: that attempt's terminal write owes conversation.turn.<terminal> before its retry enqueues another (contract § 4 step 12's pairing)", convID)
+				return fmt.Errorf("postgres: conversation %s still carries a non-terminal turn: its owner owes conversation.turn.<terminal> before this retry enqueues its own (one-active-turn index, ADR-0016 § 5; the holder is the human's own prompt when a return-control landed inside it): %w", convID, worker.ErrAttemptConversationBusy)
 			}
 			return fmt.Errorf("postgres: stamp attempt %s turn: %w", st.AttemptID, stampErr)
 		}
