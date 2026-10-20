@@ -131,6 +131,51 @@ describe("WorkbenchDock", () => {
     expect(screen.getByTestId("dock-title").textContent).toContain("/plan");
   });
 
+  it("rides the shared conversation when a takeover re-run is not stamped yet, and says the factory took the conversation back", async () => {
+    const prior: Attempt = {
+      ...wireAttempt,
+      id: "01987b25-000a-7000-8000-abcdef012345",
+      attempt_number: 1,
+      status: "interrupted",
+      error_class: "interrupted",
+      outputs: null,
+      outputs_digest: null,
+      conversation_id: conversationId,
+      turn_id: turnId,
+    };
+    const rerun: Attempt = {
+      ...wireAttempt,
+      id: "01987b25-000b-7000-8000-abcdef012345",
+      attempt_number: 2,
+      status: "queued",
+      retry_context: {
+        human_takeover: { turns: [], turn_count: 0, returned_by: "u1", reason: "human_takeover" },
+      },
+      conversation_id: null,
+      turn_id: null,
+    };
+    const detail = {
+      ...wireNodeDetail,
+      attempts: [prior, rerun],
+      checkpoint: null,
+    };
+    // The newest attempt (the re-run) leads the dock: it holds no
+    // conversation yet — stamped at claim time — but attempt 1's does.
+    renderDock(row({ attempt_count: 2, status: "running" }), [
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: detail },
+    ]);
+    const note = await screen.findByTestId("dock-attempt-restarting");
+    expect(note.textContent).toContain("Attempt 2 is starting");
+    expect(note.textContent).toContain("the factory took the conversation back");
+    expect(note.textContent).toContain("attempt 1 opened");
+    // The SAME conversation the interrupted attempt opened: its control
+    // badge is live on this pane, not an empty dock.
+    const panel = screen.getByTestId("mock-agent-conversation");
+    expect(panel.getAttribute("data-conversation-id")).toBe(conversationId);
+    expect(panel.closest('[data-testid="dock-conversation"]')).toBeTruthy();
+    expect(screen.queryByTestId("dock-no-conversation")).toBeNull();
+  });
+
   it("renders the conversation panel for an agent.acp attempt, as the main content", async () => {
     const detail = {
       ...wireNodeDetail,

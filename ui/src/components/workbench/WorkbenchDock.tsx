@@ -94,6 +94,21 @@ export function WorkbenchDock({
   );
   const selectedAttempt =
     attempts.find((attempt) => attempt.attempt_number === attemptNumber) ?? attempts.at(-1) ?? null;
+  // The selected attempt owes its conversation a stamp (stamped at claim
+  // time): when an earlier attempt of the same node execution already opened
+  // one, the re-run rides that same conversation — the dock reads it.
+  const sharedConversation = useMemo(() => {
+    if (!selectedAttempt || selectedAttempt.conversation_id) return null;
+    const prior = attempts.filter(
+      (attempt) => attempt.attempt_number < selectedAttempt.attempt_number,
+    );
+    for (let i = prior.length - 1; i >= 0; i -= 1) {
+      const row = prior[i];
+      if (row.conversation_id)
+        return { conversationId: row.conversation_id, attemptNumber: row.attempt_number };
+    }
+    return null;
+  }, [attempts, selectedAttempt]);
   const eventsByAttempt = useMemo(() => {
     const grouped = new Map<string, RunEvent[]>();
     for (const frame of frames) {
@@ -244,7 +259,9 @@ export function WorkbenchDock({
           The invocation has no child run yet — it has not answered.
         </p>
       ) : null}
-      {isAgent ? <AgentDock attempt={selectedAttempt} projectId={projectId} /> : null}
+      {isAgent ? (
+        <AgentDock attempt={selectedAttempt} fallback={sharedConversation} projectId={projectId} />
+      ) : null}
       {isGate ? (
         gate ? (
           <ApprovalCard
@@ -352,12 +369,73 @@ function DockTitle({
 }
 
 /** The `agent.acp` dock: the conversation is the main content. */
-function AgentDock({ attempt, projectId }: { attempt: AttemptView | null; projectId: string }) {
-  if (!attempt || !attempt.conversation_id) {
+function AgentDock({
+  attempt,
+  fallback,
+  projectId,
+}: {
+  attempt: AttemptView | null;
+  /** When the selected attempt has not been stamped with the conversation
+   * yet (a retry or a takeover re-run, stamped at claim time), the
+   * conversation its predecessor opened — the re-run rides that same row.
+   */
+  fallback: { conversationId: string; attemptNumber: number } | null;
+  projectId: string;
+}) {
+  if (!attempt) return null;
+  if (!attempt.conversation_id) {
+    if (!fallback) {
+      return (
+        <p className="text-[12px] text-muted" data-testid="dock-no-conversation">
+          The agent has not started yet.
+        </p>
+      );
+    }
+    // The factory re-ran this node while the dock selected the new attempt:
+    // its conversation is stamped on claim, so the row holds none for a few
+    // seconds. "The agent has not started yet" is wrong then — the node
+    // already spoke, and the re-run rides the SAME conversation (a retry of
+    // the same node execution rides the conversation its previous attempt
+    // opened). Show that conversation now: its control badge already names
+    // the pipeline run, and the new turn will continue in it.
+    const tookBack = (attempt.retry_context as { human_takeover?: unknown } | null)?.human_takeover;
     return (
-      <p className="text-[12px] text-muted" data-testid="dock-no-conversation">
-        The agent has not started yet.
-      </p>
+      <div className="space-y-[10px]" data-testid="dock-conversation">
+        <p className="text-[12px] text-muted" data-testid="dock-attempt-restarting">
+          {tookBack
+            ? `Attempt ${attempt.attempt_number} is starting — the factory took the conversation back; its new turn continues in the conversation attempt ${fallback.attemptNumber} opened.`
+            : `Attempt ${attempt.attempt_number} is starting — the factory re-ran this node; its new turn continues in the conversation attempt ${fallback.attemptNumber} opened.`}
+        </p>
+        <AgentConversationPanel
+          conversationId={fallback.conversationId}
+          projectId={projectId}
+          variant="dock"
+          attemptTurnId={undefined}
+          ids={{
+            controlBanner: "dock-control-banner",
+            stream: "dock-work-stream",
+            badge: "dock-controller",
+            takeControl: "dock-take-control",
+            returnControl: "dock-return-control",
+            stopTurn: "dock-stop-turn",
+            composerForm: "dock-composer",
+            composerInput: "dock-composer-input",
+            composerSend: "dock-composer-send",
+            composerExplainer: "dock-composer-explainer",
+          }}
+          watching
+          empty={{
+            testid: "dock-work-empty",
+            copy: "No journal frames yet — the agent has not answered.",
+          }}
+          errorFallback="The agent's conversation for this attempt could not be read."
+          composer={{
+            inputId: `workbench-prompt-${attempt.id}`,
+            rows: 3,
+            nonControllerPlaceholder: "Take control to prompt this agent",
+          }}
+        />
+      </div>
     );
   }
   const conversationId = attempt.conversation_id;
