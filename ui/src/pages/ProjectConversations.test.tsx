@@ -2,8 +2,11 @@
  * The project page's Conversations section (`10-ui-design-handoff.md` J2: a
  * member sees their conversations and who is driving each one).
  */
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { describe, expect, it, vi } from "vitest";
+import { OriginBadge } from "../components/Conversations";
+import { Row } from "../components/ds/Row";
 import {
   claudeProfile,
   codexProfile,
@@ -396,6 +399,42 @@ describe("the list says where each conversation was opened", () => {
     expect(badge.getAttribute("title")).toBe(
       `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
     );
+  });
+
+  it("a pointer click on the run badge navigates to the workbench, not the conversation", async () => {
+    // The row itself is the anchor and the badge lives inside it: a click on
+    // the badge must land on the workbench deep link, never on the row's own
+    // conversation href. A `useLocation` probe reports where the router is.
+    function Where() {
+      const location = useLocation();
+      return <div data-testid="badge-where">{`${location.pathname}${location.search}`}</div>;
+    }
+    const workbenchHref = `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`;
+    render(
+      <MemoryRouter
+        initialEntries={[`/projects/${projectFixture.id}/conversations/${runLinkedSummary.id}`]}
+      >
+        <Routes>
+          <Route path="*" element={<Where />} />
+        </Routes>
+        <Row
+          to={`/projects/${projectFixture.id}/conversations/${runLinkedSummary.id}`}
+          data-testid="conversation-row-badge-harness"
+        >
+          <OriginBadge conversation={runLinkedSummary} projectId={projectFixture.id} />
+        </Row>
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("badge-where").textContent).not.toContain(workbenchHref);
+    // Clicking the badge must prevent the default action — otherwise the row
+    // anchor's own conversation href wins the browser navigation in a real
+    // browser and only keyboard Enter reaches the workbench.
+    expect(fireEvent.click(screen.getByTestId("conversation-origin-run"))).toBe(false);
+    const where = screen.getByTestId("badge-where");
+    // The click opened the Run Workbench deep link…
+    expect(where.textContent).toBe(workbenchHref);
+    // …and not the row's own conversation URL.
+    expect(where.textContent).not.toContain(`/conversations/${runLinkedSummary.id}`);
   });
 
   it(

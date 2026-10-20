@@ -258,8 +258,16 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     );
 
     // --- Badge click: the workbench opens with that node selected. ---
+    // A real pointer click on the badge: its handler preventDefaults and
+    // stops the row anchor's default navigation, so the click itself takes
+    // the SPA deep link to the workbench instead of the row's conversation
+    // href. SPA navigation (react-router) fires no "load" event, so
+    // waitForURL would hang; toHaveURL polls the URL until the ?node= deep
+    // link lands.
     await badge.click();
-    await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
+    // SPA navigation (react-router) fires no "load" event, so waitForURL
+    // would hang; toHaveURL polls the URL until the ?node= deep link lands.
+    await expect(page).toHaveURL(/\/projects\/.+\/runs\/.+\?node=/);
     const selectedDef = nodeFromUrl(page);
     expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
@@ -294,7 +302,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       `the conversation page's part-of-run-link points at the same workbench deep link as the list badge (${linkHref})`,
     );
     await partOfRun.first().click();
-    await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
+    await expect(page).toHaveURL(/\/projects\/.+\/runs\/.+\?node=/);
     const selectedDef2 = nodeFromUrl(page);
     expect(selectedDef2, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });

@@ -65,8 +65,12 @@ export interface OriginBadgeProps {
  *
  * The badge is a span with link semantics, not an anchor: in the
  * conversations list the row itself is the anchor, and an `<a>` nested in an
- * `<a>` is invalid HTML (React logs a hydration error for it). `stopPropagation`
- * keeps the deep link from also following the row's own conversation href.
+ * `<a>` is invalid HTML (React logs a hydration error for it). The handler
+ * calls `stopPropagation` so the row's own Link handler never runs, and
+ * `preventDefault` so the wrapper anchor's default browser navigation never
+ * runs either — otherwise a pointer click would follow the row's conversation
+ * href and only keyboard Enter would reach the workbench. Both fire before
+ * `navigate(href)` takes the SPA deep link.
  */
 export function OriginBadge({ conversation, projectId }: OriginBadgeProps) {
   const navigate = useNavigate();
@@ -78,11 +82,13 @@ export function OriginBadge({ conversation, projectId }: OriginBadgeProps) {
         role="link"
         tabIndex={0}
         onClick={(event) => {
+          event.preventDefault();
           event.stopPropagation();
           navigate(href);
         }}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
+            event.preventDefault();
             event.stopPropagation();
             navigate(href);
           }
