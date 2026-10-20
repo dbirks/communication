@@ -61,9 +61,7 @@ export function Panel({
           {title}
         </Title>
         {meta !== undefined ? (
-          <span className={`ml-auto font-normal ${spec ? "opacity-75" : "text-faint"}`}>
-            {meta}
-          </span>
+          <span className={`ml-auto font-normal ${spec ? "" : "text-faint"}`}>{meta}</span>
         ) : null}
       </div>
       {children}

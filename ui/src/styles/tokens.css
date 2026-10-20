@@ -61,7 +61,7 @@
      carries meaning alone: the glyph and the word always come with it. */
   --color-st-running-tag: #d9eefa;
   --color-st-running-tag-fg: #0f5e96;
-  --color-st-running-strong: #2a8bd0;
+  --color-st-running-strong: #1a6da6; /* ≥4.5:1 vs --color-st-running-strong-fg (AA) */
   --color-st-running-strong-fg: #ffffff;
   --color-st-running-pale-bar: #cfe8f7;
   --color-st-running-pale-body: #f3f9fd;
@@ -79,7 +79,7 @@
 
   --color-st-failed-tag: #fdd8d2;
   --color-st-failed-tag-fg: #b0281a;
-  --color-st-failed-strong: #d0402f;
+  --color-st-failed-strong: #c02a1a; /* ≥4.5:1 as text on paper/surface and vs -strong-fg (AA) */
   --color-st-failed-strong-fg: #ffffff;
   --color-st-failed-pale-bar: #f3c4b9;
   --color-st-failed-pale-body: #fbefec;
@@ -90,7 +90,7 @@
 
   --color-st-interrupted-tag: #fde3d6;
   --color-st-interrupted-tag-fg: #a5431c;
-  --color-st-interrupted-strong: #e8763f;
+  --color-st-interrupted-strong: #b04810; /* ≥4.5:1 vs -strong-fg (AA) */
   --color-st-interrupted-strong-fg: #ffffff;
   --color-st-interrupted-pale-bar: #f2d6cc;
   --color-st-interrupted-pale-body: #faf2ef;
@@ -108,7 +108,7 @@
 
   --color-st-done-tag: #d9f0de;
   --color-st-done-tag-fg: #1f6b37;
-  --color-st-done-strong: #3a9a5b;
+  --color-st-done-strong: #2a7a44; /* ≥4.5:1 vs -strong-fg (AA) */
   --color-st-done-strong-fg: #ffffff;
   --color-st-done-pale-bar: #d3e9d9;
   --color-st-done-pale-body: #f1f7f2;
