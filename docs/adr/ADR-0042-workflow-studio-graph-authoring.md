@@ -1,6 +1,7 @@
 # ADR-0042 — Workflow Studio graph authoring: `@xyflow/react` for interaction, `yaml` for comment-preserving text→text edits
 
-- **Date:** 2026-10-19 · **Status:** Proposed · **Owners:** UI maintainer; pipeline schema maintainer
+- **Date:** 2026-10-19 · **Status:** Accepted · **Owners:** UI maintainer; pipeline schema maintainer
+- **Evidence:** issue #2 acceptance — [`docs/design/issue2-acceptance.md`](../design/issue2-acceptance.md) (A1–A3, A8)
 - **Related:** ADR-0005 (frontend toolchain), ADR-0021 (v1alpha1 schema, revision digests —
   `metadata.ui` excluded), ADR-0025 (dagre compound layout for the read-only definition graph),
   design checkpoint [`docs/design/studio-workbench.md`](../design/studio-workbench.md) (issue #2)

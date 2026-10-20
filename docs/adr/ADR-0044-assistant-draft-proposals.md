@@ -1,6 +1,7 @@
 # ADR-0044 — Assistant draft proposals: `POST /assistant/draft-proposals`, closed operation set, apply through the normal version-checked PUT
 
-- **Date:** 2026-10-19 · **Status:** Proposed · **Owners:** assistant maintainer; UI maintainer
+- **Date:** 2026-10-19 · **Status:** Accepted · **Owners:** assistant maintainer; UI maintainer
+- **Evidence:** issue #2 acceptance — [`docs/design/issue2-acceptance.md`](../design/issue2-acceptance.md) (A8)
 - **Related:** ADR-0034 (read-only assistant broker and its model egress), ADR-0042
   (`graphDoc.ts` ops and §4 ambiguity rules), ADR-0014 (HTTP/problem conventions), design
   checkpoint [`docs/design/studio-workbench.md`](../design/studio-workbench.md) §8 (issue #2)

@@ -1,6 +1,7 @@
 # ADR-0043 — Run Workbench: graph-first default, shared `AgentConversationPanel`, deep-linkable URL state
 
-- **Date:** 2026-10-19 · **Status:** Proposed · **Owners:** UI maintainer
+- **Date:** 2026-10-19 · **Status:** Accepted · **Owners:** UI maintainer
+- **Evidence:** issue #2 acceptance — [`docs/design/issue2-acceptance.md`](../design/issue2-acceptance.md) (A4–A6)
 - **Related:** ADR-0016 (conversations, controller lock, turn leases), ADR-0023 (runs, node
   executions and attempts), ADR-0025 (definition graph layout), ADR-0042 (graph authoring),
   design checkpoint [`docs/design/studio-workbench.md`](../design/studio-workbench.md) §6 (issue #2)
@@ -103,3 +104,14 @@ graph|timeline|tree|diagnostics`. Selection is derived from the URL on load, so
   and no `Take control`. `workbench-acp-conversation.png` and `workbench-for-each-children.png`
   are recorded, plus a narrow-width sheet shot.
 - `pnpm --dir ui check` green (including `check:testids` — no removed testids).
+
+## Addendum: return-to-factory while a human turn is running
+
+`d8e66b7` — surfaced by the issue #2 takeover journey (2 of 3 live runs failed) and recorded in
+`docs/design/issue2-acceptance.md` (A5, "Bugs found and fixed BY the acceptance journeys"). When a
+human takes control of a running agent attempt and then returns control to the factory **while the
+human's own turn is still active**, the retried agent attempt's claim no longer fails the run:
+the claim waits — bounded, while it holds its lease — for the conversation's active human turn to
+finish, instead of failing on the run-contract's one-active-turn pairing (contract § 4 step 12).
+ADR-0016 § 5 forbids cancelling the human's turn, and the contract defines no 409 for
+return-control, so waiting is the only semantics consistent with both.
