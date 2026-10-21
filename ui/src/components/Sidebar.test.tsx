@@ -153,6 +153,134 @@ describe("the sidebar switcher (a saved layout preference)", () => {
   });
 });
 
+describe("the sidebar workflow folders (ADR-0049 § 8)", () => {
+  /** The wire list with two rows filed under `Delivery` and one unfiled. */
+  const folderedList = {
+    pipelines: [
+      {
+        id: "p-1",
+        slug: "delivery-flow-a",
+        display_name: "Delivery A",
+        latest_revision_number: 1,
+        revision_count: 1,
+        archived: false,
+        folder: "Delivery",
+      },
+      {
+        id: "p-2",
+        slug: "delivery-flow-b",
+        display_name: "Delivery B",
+        latest_revision_number: 0,
+        revision_count: 0,
+        archived: false,
+        folder: "Delivery",
+      },
+      {
+        id: "p-3",
+        slug: "loose-flow",
+        display_name: "Loose flow",
+        latest_revision_number: 0,
+        revision_count: 0,
+        archived: false,
+        folder: null,
+      },
+    ],
+  };
+
+  function folderRoutes(
+    extra: RouteStub[] = [],
+    prefs: unknown = prefsDoc({ "library:workflows": true }),
+  ): RouteStub[] {
+    return [
+      { path: "/api/v1/me", body: meFixture },
+      { path: "/api/v1/projects", body: { items: [projectFixture] } },
+      { path: `/api/v1/projects/${P}/repos`, body: { items: [] } },
+      { path: `/api/v1/projects/${P}/approvals`, body: { approvals: [] } },
+      { path: `/api/v1/projects/${P}/runs`, body: { runs: [] } },
+      { path: `/api/v1/projects/${P}/conversations`, body: { items: [] } },
+      { path: "/api/v1/pipelines", body: folderedList },
+      { path: "/api/v1/agent-profiles", body: { items: [] } },
+      { path: PREFS_PATH, method: "GET", body: prefs },
+      ...extra,
+    ];
+  }
+
+  it("expands Workflows to its folders with the API's counts, Unfiled last", async () => {
+    renderApp({ path: "/", routes: folderRoutes() });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const scope = within(sidebar);
+    const toggle = await scope.findByTestId("sidebar-workflows-toggle");
+    // The preferences read settles before the chevron honours it.
+    await waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"), {
+      timeout: READ_MS,
+    });
+    const rows = scope.getByTestId("sidebar-workflow-folder-delivery");
+    const folderRows = scope.getAllByTestId(/^sidebar-workflow-folder-/);
+    expect(folderRows.map((row) => row.getAttribute("data-testid"))).toEqual([
+      "sidebar-workflow-folder-delivery",
+      "sidebar-workflow-folder-unfiled",
+    ]);
+    // The counts are the API's own rows; Unfiled carries the null-folder row.
+    expect(folderRows[0].textContent).toContain("2");
+    expect(folderRows[1].textContent).toContain("1");
+    expect(rows.getAttribute("href")).toBe("/workflows?folder=Delivery");
+    // The Workflows row keeps its own total.
+    expect(scope.getByTestId("sidebar-link-workflows").textContent).toContain("3");
+  });
+
+  it("persists the chevron through the saved `library:workflows` preference", async () => {
+    const { requests } = renderApp({
+      path: "/",
+      routes: folderRoutes(
+        [{ path: PREFS_PATH, method: "PATCH", body: prefsDoc({ "library:workflows": true }) }],
+        prefsDoc({}),
+      ),
+    });
+    const toggle = await screen.findByTestId("sidebar-workflows-toggle", undefined, {
+      timeout: READ_MS,
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("sidebar-workflow-folder-delivery")).toBeNull();
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(requestsTo(requests, PREFS_PATH, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, PREFS_PATH, "PATCH")[0].body ?? "{}") as {
+      layout: { expanded: Record<string, boolean> };
+    };
+    expect(sent.layout.expanded["library:workflows"]).toBe(true);
+    // The PATCH answer carries the expanded document: the folders appear.
+    await screen.findByTestId("sidebar-workflow-folder-delivery", undefined, {
+      timeout: READ_MS,
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps Workflows a plain link when show_workflow_folders is off", async () => {
+    renderApp({
+      path: "/",
+      routes: folderRoutes([], {
+        layout: {
+          projects_mode: "tree",
+          ask_placement: "sidebar",
+          show_workflow_folders: false,
+          expanded: {},
+        },
+        assistant: { trust_level: "ask_risky" },
+        updated_at: "2026-01-01T00:00:00Z",
+      }),
+    });
+    const sidebar = await screen.findByTestId("sidebar", undefined, { timeout: READ_MS });
+    const scope = within(sidebar);
+    // The preference read settles before the chevron disappears.
+    await waitFor(() => expect(scope.queryByTestId("sidebar-workflows-toggle")).toBeNull(), {
+      timeout: READ_MS,
+    });
+    expect(scope.queryAllByTestId(/^sidebar-workflow-folder-/)).toHaveLength(0);
+    expect(scope.getByTestId("sidebar-link-workflows").getAttribute("href")).toBe("/workflows");
+  });
+});
+
 describe("the sidebar flags read off the same reduction as Inbox", () => {
   it("shows the project's worst state and the Inbox row's count for a failed run", async () => {
     const failedRun = {

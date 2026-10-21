@@ -58,7 +58,7 @@ export function MessageList({
               >
                 <AnswerProse text={message.payload.answer_markdown} />
                 {message.payload.links.length > 0 ? (
-                  <div className="flex flex-col gap-[4px] pt-[2px]">
+                  <div data-testid="assistant-links" className="flex flex-col gap-[4px] pt-[2px]">
                     {message.payload.links.map((link, index) => (
                       <button
                         key={`${link.route}-${index}`}

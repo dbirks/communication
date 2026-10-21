@@ -555,3 +555,281 @@ func (s *AssistantConversationStore) UndoAll(ctx context.Context,
 	}
 	return out, nil
 }
+
+// GetMessage loads one transcript row the caller owns; a row that is not
+// the caller's (or the conversation's) is not found.
+func (s *AssistantConversationStore) GetMessage(ctx context.Context,
+	userID, conversationID, messageID string) (api.AssistantMessage, error) {
+	if s == nil || s.Pool == nil {
+		return api.AssistantMessage{}, errors.New("postgres: assistant conversation store has no pool")
+	}
+	var row api.AssistantMessage
+	err := s.Pool.QueryRow(ctx,
+		`SELECT m.id::text, m.kind, m.payload, m.created_at
+		 FROM assistant_messages m
+		 JOIN assistant_conversations c ON c.id = m.conversation_id
+		 WHERE m.id = $1::uuid AND c.id = $2::uuid AND c.user_id = $3::uuid`,
+		messageID, conversationID, userID).
+		Scan(&row.ID, &row.Kind, &row.Payload, &row.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.AssistantMessage{}, fmt.Errorf("%w: assistant message %s",
+			api.ErrAssistantMessageNotFound, messageID)
+	}
+	if err != nil {
+		return api.AssistantMessage{}, fmt.Errorf("postgres: load assistant message %s: %w", messageID, err)
+	}
+	return row, nil
+}
+
+// AppendTurn appends ONE turn's rows in ONE transaction (ADR-0050
+// decision 2): the user row first, then the assistant row, one `change`
+// message per recorded mutation (the change row's own id fills the
+// payload, which is why the message bodies are built here), then the
+// question row and the approval_request row — decision 3's order. The
+// first user message sets the title, and the caller's plain-text reply
+// stamps the newest unanswered question's answered_by in the SAME
+// transaction (decision 3's in-place update).
+func (s *AssistantConversationStore) AppendTurn(ctx context.Context,
+	userID, conversationID string, in api.AppendTurnInput) ([]api.AssistantMessage, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: assistant conversation store has no pool")
+	}
+	if in.User == nil {
+		return nil, errors.New("postgres: an assistant turn needs its user row")
+	}
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("postgres: begin assistant turn: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // a no-op after commit
+
+	var title *string
+	err = tx.QueryRow(ctx,
+		`SELECT title FROM assistant_conversations
+		 WHERE id = $1::uuid AND user_id = $2::uuid FOR UPDATE`,
+		conversationID, userID).Scan(&title)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: assistant conversation %s",
+			api.ErrAssistantConversationNotFound, conversationID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: lock assistant conversation %s: %w", conversationID, err)
+	}
+
+	var out []api.AssistantMessage
+	appendMsg := func(kind string, payload []byte) error {
+		var row api.AssistantMessage
+		err := tx.QueryRow(ctx,
+			`INSERT INTO assistant_messages (conversation_id, kind, payload)
+			 VALUES ($1::uuid, $2, $3)
+			 RETURNING id::text, kind, payload, created_at`,
+			conversationID, kind, payload).
+			Scan(&row.ID, &row.Kind, &row.Payload, &row.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("postgres: append assistant %s message: %w", kind, err)
+		}
+		out = append(out, row)
+		return nil
+	}
+
+	// The user row first: its id is the question's answered_by target.
+	if err := appendMsg(in.User.Kind, in.User.Payload); err != nil {
+		return nil, err
+	}
+	userIDRow := out[len(out)-1].ID
+	if title == nil {
+		var body struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(in.User.Payload, &body) == nil {
+			if t := assistant.TruncateTitle(body.Text); t != "" {
+				if _, err := tx.Exec(ctx,
+					`UPDATE assistant_conversations SET title = $1 WHERE id = $2::uuid`,
+					t, conversationID); err != nil {
+					return nil, fmt.Errorf("postgres: set assistant conversation title: %w", err)
+				}
+			}
+		}
+	}
+	// The caller's plain-text reply answers the newest unanswered
+	// question (decision 3: replies are always plain-text user messages,
+	// so the next turn's user row IS the answer).
+	if _, err := tx.Exec(ctx,
+		`UPDATE assistant_messages
+		 SET payload = jsonb_set(payload, '{answered_by}', to_jsonb($2::text))
+		 WHERE id = (SELECT id FROM assistant_messages
+		              WHERE conversation_id = $1::uuid AND kind = 'question'
+		        AND payload->>'answered_by' IS NULL
+		        ORDER BY created_at DESC, id DESC LIMIT 1)`,
+		conversationID, userIDRow); err != nil {
+		return nil, fmt.Errorf("postgres: stamp assistant question answered: %w", err)
+	}
+	if in.Assistant != nil {
+		if err := appendMsg(in.Assistant.Kind, in.Assistant.Payload); err != nil {
+			return nil, err
+		}
+	}
+	// The change rows (decision 5: written in the same transaction as the
+	// turn) and their transcript messages.
+	for i := range in.Changes {
+		var row api.AssistantChange
+		err := tx.QueryRow(ctx,
+			`INSERT INTO assistant_changes (conversation_id, user_id, project_id, kind,
+			                                target_ref, summary, undo_payload)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
+			 RETURNING id::text, kind, target_ref, summary,
+		           undo_payload IS NOT NULL, undone_at, created_at`,
+			conversationID, userID, in.Changes[i].ProjectID, in.Changes[i].Kind,
+			in.Changes[i].TargetRef, in.Changes[i].Summary, in.Changes[i].UndoPayload).
+			Scan(&row.ID, &row.Kind, &row.TargetRef, &row.Summary,
+				&row.Undoable, &row.UndoneAt, &row.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: insert assistant change: %w", err)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"kind":        "change",
+			"change_id":   row.ID,
+			"change_kind": row.Kind,
+			"target_ref":  row.TargetRef,
+			"summary":     row.Summary,
+			"undoable":    row.Undoable,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("postgres: build assistant change message: %w", err)
+		}
+		if err := appendMsg("change", payload); err != nil {
+			return nil, err
+		}
+	}
+	if in.Question != nil {
+		if err := appendMsg(in.Question.Kind, in.Question.Payload); err != nil {
+			return nil, err
+		}
+	}
+	if in.Approval != nil {
+		if err := appendMsg(in.Approval.Kind, in.Approval.Payload); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE assistant_conversations SET updated_at = now(), last_message_at = now()
+		 WHERE id = $1::uuid`, conversationID); err != nil {
+		return nil, fmt.Errorf("postgres: refresh assistant conversation %s: %w", conversationID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: commit assistant turn: %w", err)
+	}
+	return out, nil
+}
+
+// CompleteApproval resolves one approval_request row (ADR-0050 decision 2)
+// in ONE transaction: the row must exist in the caller's conversation and
+// be state=pending (else the approval_request_not_pending sentinel — an
+// unknown id answers the same 409 so a probe cannot enumerate request
+// ids), its state moves pending -> confirmed|dismissed (the in-place
+// update decision 1 allows), and the acknowledgement message plus the
+// change row the confirmed action logged are appended.
+func (s *AssistantConversationStore) CompleteApproval(ctx context.Context,
+	userID, conversationID, messageID, state string,
+	ack api.AssistantMessageInput, change *api.AssistantChangeInput) ([]api.AssistantMessage, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: assistant conversation store has no pool")
+	}
+	if state != "confirmed" && state != "dismissed" {
+		return nil, errors.New("postgres: unknown assistant approval state " + state)
+	}
+	notPending := func() error {
+		return fmt.Errorf("%w: assistant approval request %s",
+			api.ErrAssistantApprovalNotPending, messageID)
+	}
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("postgres: begin assistant approval: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // a no-op after commit
+
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM assistant_conversations
+		 WHERE id = $1::uuid AND user_id = $2::uuid FOR UPDATE`,
+		conversationID, userID).Scan(new(int)); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: assistant conversation %s",
+				api.ErrAssistantConversationNotFound, conversationID)
+		}
+		return nil, fmt.Errorf("postgres: lock assistant conversation %s: %w", conversationID, err)
+	}
+	var kind, msgState string
+	var payload []byte
+	err = tx.QueryRow(ctx,
+		`SELECT kind, payload->>'state', payload FROM assistant_messages
+		 WHERE id = $1::uuid AND conversation_id = $2::uuid FOR UPDATE`,
+		messageID, conversationID).Scan(&kind, &msgState, &payload)
+	if errors.Is(err, pgx.ErrNoRows) || kind != "approval_request" || msgState != "pending" {
+		return nil, notPending()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: lock assistant approval request %s: %w", messageID, err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE assistant_messages SET payload = jsonb_set(payload, '{state}', to_jsonb($2::text))
+		 WHERE id = $1::uuid`, messageID, state); err != nil {
+		return nil, fmt.Errorf("postgres: update assistant approval state: %w", err)
+	}
+	var out []api.AssistantMessage
+	appendMsg := func(m api.AssistantMessageInput) error {
+		var row api.AssistantMessage
+		err := tx.QueryRow(ctx,
+			`INSERT INTO assistant_messages (conversation_id, kind, payload)
+			 VALUES ($1::uuid, $2, $3)
+			 RETURNING id::text, kind, payload, created_at`,
+			conversationID, m.Kind, m.Payload).
+			Scan(&row.ID, &row.Kind, &row.Payload, &row.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("postgres: append assistant %s message: %w", m.Kind, err)
+		}
+		out = append(out, row)
+		return nil
+	}
+	if err := appendMsg(ack); err != nil {
+		return nil, err
+	}
+	if change != nil {
+		var row api.AssistantChange
+		err := tx.QueryRow(ctx,
+			`INSERT INTO assistant_changes (conversation_id, user_id, project_id, kind,
+			                                target_ref, summary, undo_payload)
+			 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7)
+			 RETURNING id::text, kind, target_ref, summary,
+		           undo_payload IS NOT NULL, undone_at, created_at`,
+			conversationID, userID, change.ProjectID, change.Kind,
+			change.TargetRef, change.Summary, change.UndoPayload).
+			Scan(&row.ID, &row.Kind, &row.TargetRef, &row.Summary,
+				&row.Undoable, &row.UndoneAt, &row.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: insert assistant change: %w", err)
+		}
+		payload, err := json.Marshal(map[string]any{
+			"kind":        "change",
+			"change_id":   row.ID,
+			"change_kind": row.Kind,
+			"target_ref":  row.TargetRef,
+			"summary":     row.Summary,
+			"undoable":    row.Undoable,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("postgres: build assistant change message: %w", err)
+		}
+		if err := appendMsg(api.AssistantMessageInput{Kind: "change", Payload: payload}); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE assistant_conversations SET updated_at = now(), last_message_at = now()
+		 WHERE id = $1::uuid`, conversationID); err != nil {
+		return nil, fmt.Errorf("postgres: refresh assistant conversation %s: %w", conversationID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: commit assistant approval: %w", err)
+	}
+	return out, nil
+}

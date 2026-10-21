@@ -180,11 +180,11 @@ describe("DecisionCallouts", () => {
     expect(body).toEqual({ decision: "approved", version: 3 });
   });
 
-  it("the Read plan link leaves for the run workbench", () => {
+  it("the Read plan link leaves for the gate's own detail page (ADR-0052)", () => {
     const { wrapper } = harness([]);
     render(<DecisionCallouts approvals={[approvalFixture]} runs={[]} />, { wrapper });
     expect(screen.getByTestId("home-read-plan-01987a9011117").getAttribute("href")).toBe(
-      `/runs/${approvalFixture.run_id}`,
+      `/approvals/${approvalFixture.id}`,
     );
   });
 });

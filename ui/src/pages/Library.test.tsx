@@ -579,6 +579,120 @@ describe("/workflows — the index (3a)", () => {
   });
 });
 
+/** One wire row is filed under `Delivery`; the other carries `null` (Unfiled). */
+const folderedList = {
+  pipelines: [
+    { ...wirePipelineList.pipelines[0], folder: "Delivery" },
+    { ...wirePipelineList.pipelines[1], folder: null },
+  ],
+};
+
+describe("/workflows — folders (ADR-0049 § 8)", () => {
+  it("groups rows under collapsible folder headers, Unfiled last, counts from the API", async () => {
+    mount("/workflows", [{ path: "/api/v1/pipelines", body: folderedList }]);
+    const list = await screen.findByTestId("workflows-list");
+    const headers = within(list).getAllByTestId(/^workflow-folder-header-/);
+    expect(headers.map((header) => header.getAttribute("data-testid"))).toEqual([
+      "workflow-folder-header-delivery",
+      "workflow-folder-header-unfiled",
+    ]);
+    // Each header carries its group's own count — nothing invented.
+    expect(headers[0].textContent).toContain("Delivery");
+    expect(headers[0].textContent).toContain("1");
+    expect(headers[1].textContent).toContain("Unfiled");
+    expect(headers[1].textContent).toContain("1");
+
+    // The collapse is real: the group's rows disappear and the button says so.
+    fireEvent.click(headers[0]);
+    expect(headers[0].getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("workflow-row-feature-development")).toBeNull();
+    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    fireEvent.click(headers[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+    });
+  });
+
+  it("honours `?folder=` and the folder select, back to `all folders` included", async () => {
+    mount("/workflows?folder=Delivery", [{ path: "/api/v1/pipelines", body: folderedList }]);
+    const list = await screen.findByTestId("workflows-list");
+    const select = screen.getByTestId("workflows-filter-folder") as HTMLSelectElement;
+    expect(select.value).toBe("Delivery");
+    expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
+    expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
+
+    fireEvent.change(select, { target: { value: "Unfiled" } });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+  });
+
+  it("Move to folder…: one PATCH of the row's folder, then the dialog closes", async () => {
+    const patchPath = `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}`;
+    const { requests } = mount("/workflows", [
+      { path: "/api/v1/pipelines", body: folderedList },
+      { path: patchPath, method: "PATCH", body: { ...childPipeline, folder: "Delivery" } },
+    ]);
+    await screen.findByTestId("workflows-list");
+    fireEvent.click(screen.getByTestId("workflow-move-folder-module-check"));
+    const input = (await screen.findByTestId("move-folder-input")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Delivery" } });
+    fireEvent.click(screen.getByTestId("move-folder-submit"));
+    await waitFor(() => {
+      expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, patchPath, "PATCH")[0].body ?? "{}") as {
+      folder: string | null;
+    };
+    expect(sent).toEqual({ folder: "Delivery" });
+    await waitFor(() => expect(screen.queryByTestId("move-folder-dialog")).toBeNull());
+  });
+
+  it("Move to folder… unfiles with an empty input (`folder: null`)", async () => {
+    const patchPath = `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}`;
+    const { requests } = mount("/workflows", [
+      { path: "/api/v1/pipelines", body: folderedList },
+      { path: patchPath, method: "PATCH", body: { ...childPipeline, folder: null } },
+    ]);
+    await screen.findByTestId("workflows-list");
+    fireEvent.click(screen.getByTestId("workflow-move-folder-module-check"));
+    await screen.findByTestId("move-folder-input");
+    fireEvent.click(screen.getByTestId("move-folder-submit"));
+    await waitFor(() => {
+      expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, patchPath, "PATCH")[0].body ?? "{}") as {
+      folder: string | null;
+    };
+    expect(sent).toEqual({ folder: null });
+  });
+
+  it("stays a flat list with no folder select when show_workflow_folders is off", async () => {
+    mount("/workflows", [
+      { path: "/api/v1/pipelines", body: folderedList },
+      {
+        path: "/api/v1/me/preferences",
+        body: {
+          layout: {
+            projects_mode: "tree",
+            ask_placement: "sidebar",
+            show_workflow_folders: false,
+            expanded: {},
+          },
+          assistant: { trust_level: "ask_risky" },
+          updated_at: null,
+        },
+      },
+    ]);
+    const list = await screen.findByTestId("workflows-list");
+    expect(within(list).queryAllByTestId(/^workflow-folder-header-/)).toHaveLength(0);
+    expect(screen.queryByTestId("workflows-filter-folder")).toBeNull();
+    expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
+  });
+});
+
 describe("/library/:pipelineId", () => {
   const detail = `/library/${WIRE_PIPELINE_ID}`;
 

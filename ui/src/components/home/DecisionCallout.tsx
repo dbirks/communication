@@ -118,7 +118,7 @@ function CalloutRow({ approval, runs }: { approval: Approval; runs: CrossProject
       </p>
       <div className="mt-[8px] flex flex-wrap items-center gap-2">
         <Link
-          to={routes.run(approval.run_id)}
+          to={routes.approval(approval.id)}
           className="ds-btn ds-btn--secondary ds-btn--compact inline-flex h-[26px] items-center rounded-[4px] px-3"
           data-testid={`home-read-plan-${testidOf(approval.id)}`}
         >

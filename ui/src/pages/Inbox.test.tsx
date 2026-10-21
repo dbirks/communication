@@ -21,6 +21,8 @@ import {
   conversationFixture,
   conversationId,
   conversationSummaryFixture,
+  envelopeFixture,
+  FakeEventSource,
   meFixture,
   mockFetch,
   permissionRequestFixture,
@@ -29,7 +31,8 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import { testidOf } from "../lib/format";
-import { INBOX_POLL_MS } from "./Inbox";
+import { attentionTitle } from "../lib/attention";
+import { INBOX_SAFETY_MS } from "./Inbox";
 
 const PROJECTS_PATH = "/api/v1/projects";
 const APPROVALS_PATH = `/api/v1/projects/${wireProjectId}/approvals`;
@@ -37,7 +40,20 @@ const RUNS_PATH = `/api/v1/projects/${wireProjectId}/runs`;
 const CONVERSATIONS_PATH = `/api/v1/projects/${wireProjectId}/conversations`;
 const CONVERSATION_PATH = `/api/v1/conversations/${conversationId}`;
 const DECIDE_PATH = `/api/v1/approvals/${WIRE_APPROVAL_ID}/decide`;
+const APPROVAL_PATH = `/api/v1/approvals/${WIRE_APPROVAL_ID}`;
+const SUMMARY_PATH = `/api/v1/approvals/${WIRE_APPROVAL_ID}/summary`;
 const RETRY_PATH = `/api/v1/runs/${WIRE_RUN_ID}/retry`;
+
+/** A model-written decider summary (ADR-0052) with two suggested actions. */
+const modelSummary = {
+  summary: "The plan is ready; approving starts the implementation loop.",
+  actions: [
+    { label: "Approve it", intent: "approve", risk: "proceed" },
+    { label: "Send it back", intent: "reject", risk: "refuse" },
+  ],
+  model: "test-model",
+  generated_at: "2026-10-14T18:00:00Z",
+};
 
 /** A second conversation, distinguishable by `testidOf` (first 13 hex). */
 const otherConversationId = "01987a70-3333-7000-8000-abcdef012345";
@@ -86,7 +102,7 @@ describe("/inbox", () => {
     );
   });
 
-  it("lists a pending gate under decisions and posts the row's version on approve", async () => {
+  it("lists a pending gate as a card and posts the row's version after the confirmed approve", async () => {
     const { requests } = mountInbox(wireApprovalList, { runs: [] }, [
       {
         path: DECIDE_PATH,
@@ -97,15 +113,43 @@ describe("/inbox", () => {
 
     const list = await screen.findByTestId("inbox-decisions");
     const row = await within(list).findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
-    // The gate text is the wire's `summary`; the run and node are the ids it serves.
+    // The model summary read 404s here, so the card shows the gate's own
+    // text and the static pair — its model actions would take their place
+    // when the server can serve one.
     expect(row.textContent).toContain("The plan is ready");
     expect(row.textContent).toContain("Widgets");
-    expect(row.textContent).toContain("/approve");
 
-    fireEvent.click(within(row).getByTestId(`inbox-approve-${testidOf(WIRE_APPROVAL_ID)}`));
+    // Tap the card's Approve: the confirm step must appear and NO decide
+    // call may go out before the human confirms it.
+    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-0`));
+    const confirm = await within(row).findByTestId(
+      `inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`,
+    );
+    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+
+    fireEvent.click(
+      within(confirm).getByTestId(`inbox-card-confirm-go-${testidOf(WIRE_APPROVAL_ID)}`),
+    );
     await waitFor(() => expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(1));
     const [request] = requestsTo(requests, DECIDE_PATH, "POST");
     expect(JSON.parse(request.body ?? "{}")).toEqual({ decision: "approved", version: 1 });
+  });
+
+  it("cancels the card's confirm step without deciding", async () => {
+    const { requests } = mountInbox(wireApprovalList, { runs: [] }, [
+      { path: DECIDE_PATH, method: "POST", body: { ...wireApproval } },
+    ]);
+
+    const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-0`));
+    await within(row).findByTestId(`inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`);
+    fireEvent.click(
+      within(row).getByTestId(`inbox-card-confirm-cancel-${testidOf(WIRE_APPROVAL_ID)}`),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId(`inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`)).toBeNull(),
+    );
+    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
   });
 
   it("drops the plan JSON a gate's summary carries from its row", async () => {
@@ -119,15 +163,15 @@ describe("/inbox", () => {
     const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
     expect(row.textContent).toContain("Plan for Document and fix add() in hello.py");
     expect(row.textContent).not.toContain('"acceptance"');
-    // Two lines on screen, the whole summary behind the tooltip.
-    const title = screen.getByTestId(`inbox-decision-title-${testidOf(WIRE_APPROVAL_ID)}`);
-    expect(title.className).toContain("line-clamp-2");
-    expect(title.getAttribute("title")).toBe(planGate.summary);
-    expect(title.textContent).toBe("Plan for Document and fix add() in hello.py");
+    // The card's title carries the stripped gate text (the raw plan JSON never reaches the screen).
+    const title = screen.getByTestId(`inbox-card-title-${testidOf(WIRE_APPROVAL_ID)}`);
+    expect(title.getAttribute("title")).toBe(attentionTitle(planGate.summary));
+    expect(title.textContent).toBe(attentionTitle(planGate.summary));
   });
 
   it("refuses a decision inline rather than silently, on 403", async () => {
     mountInbox(wireApprovalList, { runs: [] }, [
+      { path: SUMMARY_PATH, method: "POST", body: modelSummary },
       {
         path: DECIDE_PATH,
         method: "POST",
@@ -137,9 +181,53 @@ describe("/inbox", () => {
     ]);
 
     const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
-    fireEvent.click(within(row).getByTestId(`inbox-reject-${testidOf(WIRE_APPROVAL_ID)}`));
+    // The model's second action is the reject word: risk `refuse` → the
+    // danger button, and the confirm step records `rejected`.
+    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`));
+    const confirm = await within(row).findByTestId(
+      `inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`,
+    );
+    expect(confirm.textContent).toContain("rejected");
+    fireEvent.click(
+      within(confirm).getByTestId(`inbox-card-confirm-go-${testidOf(WIRE_APPROVAL_ID)}`),
+    );
     const error = await screen.findByTestId(`inbox-decision-error-${testidOf(WIRE_APPROVAL_ID)}`);
     expect(error.textContent).toContain("not an approver");
+  });
+
+  it("keeps the gate's own summary on a 503 model summary", async () => {
+    mountInbox(wireApprovalList, { runs: [] }, [
+      {
+        path: SUMMARY_PATH,
+        method: "POST",
+        status: 503,
+        body: {
+          type: "https://communication.dev/errors/assistant_not_configured",
+          title: "Assistant not configured",
+          status: 503,
+        },
+      },
+    ]);
+
+    const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    // No model text, no model label: the card is the static pair.
+    expect(row.textContent).toContain("The plan is ready");
+    expect(row.textContent).toContain("Approve");
+    expect(within(row).getByTestId(`inbox-card-read-${testidOf(WIRE_APPROVAL_ID)}`)).toBeTruthy();
+    expect(
+      within(row).queryByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`),
+    ).toBeNull();
+  });
+
+  it("opens the approval detail when the card body is tapped", async () => {
+    mountInbox(wireApprovalList, { runs: [] }, [
+      { path: APPROVAL_PATH, body: wireApproval },
+      { path: `/api/v1/projects/${wireProjectId}/artifacts`, body: { artifacts: [] } },
+    ]);
+
+    const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
+    fireEvent.click(within(row).getByTestId(`inbox-card-title-${testidOf(WIRE_APPROVAL_ID)}`));
+    await screen.findByTestId(`approval-detail-title-${testidOf(WIRE_APPROVAL_ID)}`);
   });
 
   it("lists a failed run under stalled and retries it from there", async () => {
@@ -308,16 +396,16 @@ describe("/inbox", () => {
 
 /**
  * The Inbox is left open, so a gate or a prompt that turns pending afterwards
- * has to arrive on the page's own timer rather than by reload. Each test mounts
- * under fake timers, lets the first fetch land, then changes what the server
- * answers and advances one `INBOX_POLL_MS` tick — and checks the node it drew
- * first is still the node on screen, i.e. the page refreshed in place.
+ * has to arrive on the org event stream (C4) rather than by reload. Each test
+ * mounts under fake timers, lets the first fetch land, opens the stream, then
+ * changes what the server answers and emits one frame for the project — and
+ * checks the frame (not a timer) drew the new node in place.
  */
 describe("/inbox live refresh", () => {
   afterEach(() => vi.useRealTimers());
 
   /** Let the mount's fetches settle while every clock is fake: each tick is a
-   * fraction of `INBOX_POLL_MS`, so no interval has fired by the end. */
+   * fraction of `INBOX_SAFETY_MS`, so the safety refetch has not fired. */
   async function settle() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await act(async () => {
@@ -326,37 +414,49 @@ describe("/inbox live refresh", () => {
     }
   }
 
-  it("draws a gate that turns pending while the page sits open", async () => {
+  /** The org-stream sockets the page opened; the shell's keyed route boundary
+   * may observe the page twice at mount, so the helper works on all of them. */
+  function orgStreams(): FakeEventSource[] {
+    return FakeEventSource.instances.filter((instance) => instance.url === "/api/v1/events");
+  }
+
+  it("re-reads a project when its org frame arrives, and stays put otherwise", async () => {
     vi.useFakeTimers();
-    const { requests } = mountInbox({ approvals: [] }, { runs: [] });
+    mountInbox({ approvals: [] }, { runs: [] });
     await settle();
 
-    // First paint: the wire asked for nothing, and the gates were read once.
-    // Under the full app shell the page's mount-time observers subscribe twice
-    // (the shell's keyed route boundary re-observes the page), so at most one
-    // extra read of the same list arrives at mount — a bounded one-off, never
-    // a per-project fan-out. The poll below still proves exactly one fresh
-    // read per tick.
+    // First paint: the wire asked for nothing, and the streams are still
+    // connecting, so the safety refetch is armed but has not had time to
+    // fire (the settle ticks are all far below INBOX_SAFETY_MS).
     expect(screen.getByTestId("inbox-empty").textContent).toContain("Nothing needs you.");
-    expect(requestsTo(requests, APPROVALS_PATH, "GET").length).toBeLessThanOrEqual(2);
     const greeting = screen.getByTestId("inbox-greeting");
+    for (const source of orgStreams()) act(() => source.open());
 
-    // A gate goes pending underneath the open page.
+    // A gate goes pending underneath the open page, and the stream says so.
     const poll = mockFetch(routes(wireApprovalList, { runs: [] }));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+    act(() => {
+      for (const source of orgStreams()) {
+        source.emit(
+          envelopeFixture({
+            type: "repository.added",
+            global_seq: 900_001,
+            project_id: projectFixture.id,
+          }),
+        );
+      }
     });
+    await settle();
 
     const row = screen.getByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
     expect(row.textContent).toContain("The plan is ready");
     expect(screen.getByTestId("inbox-summary").textContent).toContain("1 decision");
-    // Proven by a re-read, not a remount: one fresh approvals request, and the
+    // Proven by the frame, not by a timer: one fresh approvals read, and the
     // header element from the first paint is still the element on screen.
     expect(requestsTo(poll.requests, APPROVALS_PATH, "GET")).toHaveLength(1);
     expect(screen.getByTestId("inbox-greeting")).toBe(greeting);
   });
 
-  it("tags a permission prompt that appears on the detail re-read", async () => {
+  it("tags a permission prompt that arrives on the stream", async () => {
     vi.useFakeTimers();
     const withTurn = [{ ...conversationSummaryFixture, has_active_turn: true }];
     const { requests } = mountInbox(
@@ -370,11 +470,10 @@ describe("/inbox live refresh", () => {
     const testid = `inbox-conversation-tag-${testidOf(conversationId)}`;
     const row = screen.getByTestId(`inbox-conversation-${testidOf(conversationId)}`);
     expect(within(row).getByTestId(testid).textContent).toContain("active");
-    // The list row says a turn is open, so its detail is the one read that can
-    // answer a prompt — and the only detail read in flight. (As above, the
-    // shell's mount re-observation may add one bounded one-off read of the
-    // same detail; the per-poll assertion below stays exactly one.)
+    // The list row says a turn is open, so its detail is the one read that
+    // can answer a prompt — and the only detail read in flight.
     expect(requestsTo(requests, CONVERSATION_PATH, "GET").length).toBeLessThanOrEqual(2);
+    for (const source of orgStreams()) act(() => source.open());
 
     // The agent asks for permission while the page is open.
     const poll = mockFetch(
@@ -390,14 +489,42 @@ describe("/inbox live refresh", () => {
         { items: withTurn },
       ),
     );
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(INBOX_POLL_MS);
+    act(() => {
+      for (const source of orgStreams()) {
+        source.emit(
+          envelopeFixture({
+            type: "conversation.permission.requested",
+            global_seq: 900_002,
+            project_id: projectFixture.id,
+            conversation_id: conversationId,
+          }),
+        );
+      }
     });
+    await settle();
 
     expect(requestsTo(poll.requests, CONVERSATION_PATH, "GET")).toHaveLength(1);
     const tagged = screen.getByTestId(`inbox-conversation-${testidOf(conversationId)}`);
     expect(within(tagged).getByTestId(testid).textContent).toContain("permission");
     // Same row element, re-labelled in place.
     expect(tagged).toBe(row);
+  });
+
+  it("keeps a 60 s safety refetch while the stream never goes live", async () => {
+    vi.useFakeTimers();
+    mountInbox({ approvals: [] }, { runs: [] });
+    await settle();
+    expect(screen.getByTestId("inbox-empty").textContent).toContain("Nothing needs you.");
+
+    // The stream never opens (a server without `GET /api/v1/events` yet):
+    // the safety refetch is the only thing that may re-read the families.
+    const poll = mockFetch(routes(wireApprovalList, { runs: [] }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INBOX_SAFETY_MS);
+    });
+    await settle();
+
+    expect(screen.getByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`)).toBeTruthy();
+    expect(requestsTo(poll.requests, APPROVALS_PATH, "GET")).toHaveLength(1);
   });
 });

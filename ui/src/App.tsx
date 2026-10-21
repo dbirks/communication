@@ -13,6 +13,7 @@ import Home from "./pages/Home";
 import Login from "./pages/Login";
 import ArtifactPage from "./pages/Artifact";
 import Artifacts from "./pages/Artifacts";
+import ApprovalPage from "./pages/Approval";
 import ConversationPage from "./pages/Conversation";
 import ProjectConversations from "./pages/ProjectConversations";
 import Inbox from "./pages/Inbox";
@@ -326,6 +327,14 @@ export default function App() {
           element={
             <RequireAuth>
               <ArtifactPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/approvals/:approvalId"
+          element={
+            <RequireAuth>
+              <ApprovalPage />
             </RequireAuth>
           }
         />

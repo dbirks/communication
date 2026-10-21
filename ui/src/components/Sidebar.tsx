@@ -17,6 +17,7 @@
  * takes focus in on mount).
  */
 import {
+  useMemo,
   useLayoutEffect,
   useRef,
   useState,
@@ -26,7 +27,7 @@ import {
 import { Link, NavLink, useNavigate } from "react-router";
 import { problemOf } from "../api/client";
 import { useAgentProfiles, useLogout, useMe, useProjects, useRepositories } from "../api/queries";
-import { usePipelines } from "../api/pipelines";
+import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
 import { useReplicaName } from "../api/replica";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
@@ -354,13 +355,36 @@ function ProjectSwitcher() {
  * The LIBRARY block. Workflows and Agent profiles carry real counts (the
  * pipeline and profile reads); Steps carries none — there is no node-template
  * store behind a number yet, and an invented one is exactly what the column
- * must not do. Folders under Workflows don't exist either, so it is a link.
+ * must not do. Workflows expands to its folders (ADR-0049 § 8) when the
+ * `showWorkflowFolders` preference allows: the folders are the wire's own
+ * `folder` values with the list read's own counts (Unfiled last), the
+ * chevron state is the saved `expanded["library:workflows"]` preference, and
+ * each folder links the index filtered on it. With the preference off the
+ * row is a plain link again.
  */
 function LibrarySection() {
   const pipelines = usePipelines();
   const profiles = useAgentProfiles();
-  const workflows = pipelines.data?.pipelines.length;
+  const { prefs, update } = useLayoutPrefs();
+  const items = pipelines.data?.pipelines ?? [];
+  const workflows = items.length;
   const profileCount = profiles.data?.items.length;
+
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      const name = item.folder && item.folder.length > 0 ? item.folder : UNFILED_FOLDER;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => {
+      if (a[0] === UNFILED_FOLDER) return 1;
+      if (b[0] === UNFILED_FOLDER) return -1;
+      return a[0].localeCompare(b[0]);
+    });
+  }, [items]);
+
+  const showFolders = prefs.showWorkflowFolders;
+  const workflowsOpen = showFolders && prefs.expanded["library:workflows"] === true;
 
   const row = (to: string, label: string, testid: string, count: number | undefined) => (
     <NavLink
@@ -379,7 +403,69 @@ function LibrarySection() {
   return (
     <div className="flex min-h-0 flex-col gap-px">
       <span className={SECTION_LABEL}>LIBRARY</span>
-      {row(routes.workflows(), "Workflows", "sidebar-link-workflows", workflows)}
+      <div className="flex items-center gap-1">
+        {showFolders ? (
+          <button
+            type="button"
+            data-testid="sidebar-workflows-toggle"
+            aria-expanded={workflowsOpen}
+            aria-label={`${workflowsOpen ? "Hide" : "Show"} workflow folders`}
+            onClick={() =>
+              update({
+                expanded: {
+                  ...prefs.expanded,
+                  "library:workflows": !workflowsOpen,
+                },
+              })
+            }
+            className={`grid size-4 shrink-0 place-items-center rounded-[3px] p-0 text-ink-2 hover:bg-fill ${FOCUS_RING}`}
+          >
+            <Chevron open={workflowsOpen} size={14} />
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" aria-hidden="true" />
+        )}
+        <NavLink
+          to={routes.workflows()}
+          data-testid="sidebar-link-workflows"
+          className={({ isActive }) =>
+            `flex min-w-0 flex-1 items-center gap-2 rounded-[3px] border px-2 py-[4px] text-[12.5px] no-underline ${FOCUS_RING} ${
+              isActive ? ROW_ACTIVE : ROW_INACTIVE
+            }`
+          }
+        >
+          <span className="min-w-0 flex-1 truncate">Workflows</span>
+          {workflows !== undefined ? (
+            <span className="shrink-0 font-mono text-[10.5px] text-muted">{workflows}</span>
+          ) : null}
+        </NavLink>
+      </div>
+      {workflowsOpen && folderCounts.length > 0 ? (
+        <div className="ml-[14px] flex flex-col gap-px border-l border-line pl-[10px]">
+          {folderCounts.map(([name, count]) => {
+            const slug =
+              name
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "-")
+                .replace(/^-+|-+$/g, "") || "folder";
+            return (
+              <NavLink
+                key={name}
+                to={`${routes.workflows()}?folder=${encodeURIComponent(name)}`}
+                data-testid={`sidebar-workflow-folder-${slug}`}
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-[3px] px-2 py-[3px] font-mono text-[11.5px] no-underline ${FOCUS_RING} ${
+                    isActive ? "text-ink" : "text-ink-2 hover:underline"
+                  }`
+                }
+              >
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+                <span className="shrink-0 text-[10.5px] text-muted">{count}</span>
+              </NavLink>
+            );
+          })}
+        </div>
+      ) : null}
       {row(routes.steps(), "Steps", "sidebar-link-steps", undefined)}
       {row(routes.profiles(), "Agent profiles", "sidebar-link-profiles", profileCount)}
     </div>

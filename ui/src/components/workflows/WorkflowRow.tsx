@@ -21,9 +21,14 @@
  * - The open-draft line is the newest un-published draft with the real
  *   editor name — no "by assistant": the wire carries no assistant identity.
  */
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { StatusChip } from "../ds/Row";
 import { Button } from "../ds/Button";
+import { Field, Input } from "../ds/Field";
+import { FormError } from "../Feedback";
+import { UNFILED_FOLDER, useMovePipelineFolder } from "../../api/pipelines";
+
 import type { Assignment, DraftSummary, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { SCOPE_KINDS, kindWord, scopeBody } from "../../lib/pipeline/definition";
@@ -66,7 +71,7 @@ export interface WorkflowRowAssignment {
 }
 
 export interface WorkflowRowProps {
-  pipeline: { id: string; slug: string; display_name: string };
+  pipeline: { id: string; slug: string; display_name: string; folder?: string | null };
   /** The definition read has arrived (rows never claim DRAFT ONLY while it is still in flight). */
   definitionReady: boolean;
   /** The pipeline's revision summaries, newest first (may be empty). */
@@ -84,6 +89,8 @@ export interface WorkflowRowProps {
   duplicating: boolean;
   onDuplicate: () => void;
   onOpen: () => void;
+  /** Row action `Move to folder…` (ADR-0049 § 8); absent for readers. */
+  onMoveToFolder?: () => void;
 }
 
 export function WorkflowRow({
@@ -99,6 +106,7 @@ export function WorkflowRow({
   duplicating,
   onDuplicate,
   onOpen,
+  onMoveToFolder,
 }: WorkflowRowProps) {
   const latest = revisions[0] ?? null;
   const cells = stepChain(document);
@@ -233,6 +241,16 @@ export function WorkflowRow({
                 {duplicating ? "Duplicating…" : "Duplicate"}
               </Button>
             ) : null}
+            {canAuthor && onMoveToFolder ? (
+              <Button
+                variant="secondary"
+                compact
+                onClick={onMoveToFolder}
+                data-testid={`workflow-move-folder-${pipeline.slug}`}
+              >
+                Move to folder…
+              </Button>
+            ) : null}
             <Button
               variant="secondary"
               compact
@@ -245,5 +263,169 @@ export function WorkflowRow({
         </div>
       </div>
     </li>
+  );
+}
+
+/* ------------------------------------------------------- move to folder */
+
+/** Testid-safe name for a folder label (the dialog's quick-pick chips). */
+function folderSlug(folder: string): string {
+  const slug = folder
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "folder";
+}
+
+const DIALOG_FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * `Move to folder…` (ADR-0049 § 8): a small dialog that files the row under
+ * an existing folder (the chips), types a new name, or leaves the input
+ * empty to unfile. The only write is `PATCH /api/v1/pipelines/{id} { folder}`;
+ * the dialog renders the server's problem on a failed move and stays open.
+ *
+ * Accessible-modal contract (the ImportYamlDialog pattern): `role="dialog"`
+ * + `aria-modal`, labelled by its own title, focus trapped while open,
+ * Escape closes, focus returns to the opener.
+ */
+export interface MoveToFolderDialogProps {
+  /** The row being moved; its current group starts the input. */
+  pipeline: { id: string; slug: string; display_name: string; folder?: string | null };
+  /** The index's distinct existing folder names (the quick-pick chips). */
+  folders: string[];
+  onClose: () => void;
+}
+
+export function MoveToFolderDialog({ pipeline, folders, onClose }: MoveToFolderDialogProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<Element | null>(null);
+  const [value, setValue] = useState(pipeline.folder ?? "");
+  const move = useMovePipelineFolder(pipeline.id);
+
+  useLayoutEffect(() => {
+    openerRef.current = document.activeElement;
+    const first = containerRef.current?.querySelector<HTMLElement>("input, button");
+    first?.focus();
+    return () => {
+      const opener = openerRef.current;
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const container = containerRef.current;
+      if (!container) return;
+      const focusables = Array.from(container.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !container.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const name = value.trim();
+    move.mutate(name === "" ? null : name, { onSuccess: onClose });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="move-folder-title"
+        className="w-[360px] max-w-full rounded-[4px] border border-line bg-surface shadow-(--shadow-raised)"
+        data-testid="move-folder-dialog"
+      >
+        <h2
+          id="move-folder-title"
+          className="border-b border-line px-[14px] py-[10px] text-[13px] font-bold"
+        >
+          {`Move “${pipeline.display_name || pipeline.slug}” to a folder`}
+        </h2>
+        <form
+          className="space-y-[10px] px-[14px] py-[12px]"
+          onSubmit={submit}
+          data-testid="move-folder-form"
+        >
+          <div className="flex flex-wrap gap-[6px]">
+            {folders.map((folder) => (
+              <Button
+                key={folder}
+                type="button"
+                variant="secondary"
+                compact
+                onClick={() => setValue(folder)}
+                data-testid={`move-folder-option-${folderSlug(folder)}`}
+              >
+                {folder}
+              </Button>
+            ))}
+            <Button
+              type="button"
+              variant="secondary"
+              compact
+              onClick={() => setValue("")}
+              data-testid={`move-folder-option-${folderSlug(UNFILED_FOLDER)}`}
+            >
+              {UNFILED_FOLDER}
+            </Button>
+          </div>
+          <Field
+            id="move-folder-input"
+            label="Folder"
+            hint="pick an existing folder, type a new name, or leave it empty to unfile"
+          >
+            <Input
+              id="move-folder-input"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              maxLength={200}
+              data-testid="move-folder-input"
+            />
+          </Field>
+          {move.isError ? <FormError error={move.error} /> : null}
+          <div className="flex justify-end gap-[8px]">
+            <Button
+              type="button"
+              variant="secondary"
+              compact
+              onClick={onClose}
+              data-testid="move-folder-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              compact
+              disabled={move.isPending}
+              data-testid="move-folder-submit"
+            >
+              {move.isPending ? "Moving…" : "Move"}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

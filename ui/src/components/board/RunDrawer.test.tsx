@@ -199,8 +199,10 @@ describe("RunDrawer", () => {
     expect(summary.textContent).toContain("Merge the auth refactor before deploy.");
     expect(summary.textContent).toContain("from the workflow");
     expect(screen.queryByText(/written by the model/i)).toBeNull();
+    // The plan link opens the pending gate's own detail page (ADR-0052, 4g),
+    // not an artifact page — the plan artifact renders there.
     const plan = screen.getByTestId("run-drawer-plan-link");
-    expect(plan.getAttribute("href")).toBe("/artifacts/art-1");
+    expect(plan.getAttribute("href")).toBe(`/approvals/${approval().id}`);
   });
 
   it("lists the latest three events with a time and a one-line detail", () => {

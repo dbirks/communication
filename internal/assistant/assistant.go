@@ -105,6 +105,11 @@ type ToolCall struct {
 	Args   map[string]any `json:"args"`
 	OK     bool           `json:"ok"`
 	Reason string         `json:"reason,omitempty"`
+	// Summary is the short server-supplied sentence ADR-0050 names in
+	// tool_calls[].summary (what the call did or recorded); it is never
+	// raw tool output and stays empty for refused calls. v1's ask route
+	// leaves it unset, so its bodies are byte-identical.
+	Summary string `json:"summary,omitempty"`
 }
 
 // Answer is POST /api/v1/assistant/ask's 200 body.

@@ -74,15 +74,20 @@ type TurnRequest struct {
 	Text    string
 	Context TurnContext
 	History []HistoryMessage
+	// TrustLevel is the caller's assistant.trust_level as stored in
+	// user_preferences (ADR-0046/C2), read server-side at the start of the
+	// turn (ADR-0050 decision 4) and consulted by the tool loop only — it
+	// authorizes nothing. Empty normalizes to the default (ask_risky).
+	TrustLevel TrustLevel
 }
 
-// TurnRunner runs one assistant turn and reports the answer it appends.
+// TurnRunner runs one assistant turn and reports the rows it appends.
 // Part 1's implementation (BrokerTurnRunner) folds the transcript into
-// ADR-0034's one-shot broker; part 2's multi-turn tool-loop runner
-// (questions, trust gating, approval requests, change recording) replaces
-// it behind this same interface.
+// ADR-0034's one-shot broker and answers with its Answer alone; the
+// multi-turn tool-loop runner (ADR-0050 part 2: questions, trust gating,
+// approval requests, change recording) runs behind this same interface.
 type TurnRunner interface {
-	RunTurn(ctx context.Context, req TurnRequest) (*Answer, *Failure)
+	RunTurn(ctx context.Context, req TurnRequest) (*TurnResult, *Failure)
 }
 
 // Undoer applies one assistant change's recorded inverse op (ADR-0050
@@ -179,8 +184,9 @@ func NewBrokerTurnRunner(b *Broker) TurnRunner {
 
 // RunTurn runs the conversation turn. A message that is empty or oversized
 // is refused before any egress; a not-configured broker answers
-// assistant_not_configured like the ask route.
-func (r *BrokerTurnRunner) RunTurn(ctx context.Context, req TurnRequest) (*Answer, *Failure) {
+// assistant_not_configured like the ask route. Part 1 appends the assistant
+// row alone (the tool-loop rows land with the part-2 runner).
+func (r *BrokerTurnRunner) RunTurn(ctx context.Context, req TurnRequest) (*TurnResult, *Failure) {
 	if r == nil || r.broker == nil || !r.broker.Configured() {
 		return nil, failure("assistant_not_configured", ErrNotConfigured.Error(), 503)
 	}
@@ -188,10 +194,14 @@ func (r *BrokerTurnRunner) RunTurn(ctx context.Context, req TurnRequest) (*Answe
 	if bad != nil {
 		return nil, bad
 	}
-	return r.broker.Ask(ctx, req.Caller, q, QuestionContext{
+	ans, bad := r.broker.Ask(ctx, req.Caller, q, QuestionContext{
 		Route:     req.Context.Route,
 		ProjectID: req.Context.ProjectID,
 	})
+	if bad != nil {
+		return nil, bad
+	}
+	return &TurnResult{Answer: ans}, nil
 }
 
 // question assembles the broker's question string: the folded transcript

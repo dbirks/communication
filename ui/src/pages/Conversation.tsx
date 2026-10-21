@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useProject, useTurnSandbox } from "../api/queries";
@@ -6,7 +6,10 @@ import { interruptedCopy, runLinkOf, turnStatusText } from "../api/transcript";
 import { formatAge } from "../lib/format";
 import { conversationRunHref, instanceLeaf } from "../components/Conversations";
 import { shortId } from "../api/names";
+import { useRun } from "../api/runs";
 import type { TurnSandbox } from "../api/types";
+import type { components } from "../api/schema";
+import HandToWorkflowDialog from "../components/threads/HandToWorkflowDialog";
 import {
   AgentConversationPanel,
   AgentConversationControls,
@@ -19,7 +22,7 @@ import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
-import { STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
+import { RUN_STATE, STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
 import { routes } from "../lib/routes";
 
 /**
@@ -90,6 +93,33 @@ export default function ConversationPage({
   // The same cached read the rail's panel makes: the page asks it only to tell
   // an honest "nothing was recorded" apart from an unverified launch.
   const turnSandbox = useTurnSandbox(latestTurnId);
+  // The handoff dialog, the run it just started and the draft-PR confirmation
+  // are page-local: the durable reads are the conversation refetch (whose
+  // `linked_runs` is the run list) and the transcript, where the agent's reply
+  // to a draft-PR prompt — the only proof of a PR — appears.
+  const [handoffOpen, setHandoffOpen] = useState(false);
+  const [startedRunId, setStartedRunId] = useState<string | null>(null);
+  const [draftPrConfirm, setDraftPrConfirm] = useState(false);
+  const [draftPrError, setDraftPrError] = useState<string | null>(null);
+  const [draftPrSent, setDraftPrSent] = useState(false);
+
+  const sendDraftPrPrompt = () => {
+    setDraftPrError(null);
+    session.sendMessage.mutate(
+      { prompt: DRAFT_PR_PROMPT },
+      {
+        onSuccess: () => {
+          setDraftPrConfirm(false);
+          setDraftPrSent(true);
+        },
+        onError: (error) => {
+          setDraftPrConfirm(false);
+          setDraftPrSent(false);
+          setDraftPrError(error instanceof Error ? error.message : String(error));
+        },
+      },
+    );
+  };
 
   if (conversation.isPending) return <Spinner label="Loading conversation" />;
 
@@ -352,9 +382,9 @@ export default function ConversationPage({
             See the project's artifacts →
           </Link>
         </section>
-        {/* 4f NEXT: the only offered follow-up. "Hand to a workflow…" stays
-            disabled until the handoff backend lands; a draft-PR entry is not
-            rendered at all until push support exists (gaps/threads.md §5). */}
+        {/* 4f NEXT: the follow-ups a thread offers — handing it to a workflow
+            (ADR-0053), the runs it already started, and (for the controller)
+            asking the agent to open a draft PR (ADR-0045). */}
         <section aria-labelledby="next-rail-heading" className="space-y-2">
           <h2
             id="next-rail-heading"
@@ -362,14 +392,178 @@ export default function ConversationPage({
           >
             Next
           </h2>
-          <Button variant="primary" disabled data-testid="hand-to-workflow">
-            Hand to a workflow…
-          </Button>
-          <p className="font-mono text-[10.5px] text-faint" data-testid="hand-to-workflow-note">
-            coming in the next unit — the handoff API has not landed yet
-          </p>
+          <div className="space-y-2" data-testid="thread-next-handoff">
+            <Button
+              variant="primary"
+              onClick={() => setHandoffOpen(true)}
+              data-testid="hand-to-workflow"
+            >
+              Hand to a workflow…
+            </Button>
+            <p className="font-mono text-[10.5px] text-faint" data-testid="hand-to-workflow-note">
+              Starts a run from this thread's branch, fresh agent sessions — the thread stays open
+              and links to the run.
+            </p>
+            {startedRunId ? (
+              <p className="text-[12.5px] text-ink" role="status">
+                <Link
+                  to={routes.run(startedRunId)}
+                  className="text-accent-text hover:text-ink"
+                  data-testid="thread-handoff-started"
+                >
+                  Run #{shortId(startedRunId)} started
+                </Link>
+              </p>
+            ) : null}
+          </div>
+          {/* The runs this thread started, straight from the API's own list
+              (ADR-0053 `linked_runs`); the thread stays open, so this list
+              grows without the transcript changing. Hidden while empty — and
+              for an image of the API that predates the field, missing. */}
+          {(data.linked_runs ?? []).length > 0 ? (
+            <div className="space-y-1.5" data-testid="thread-linked-runs">
+              <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                Linked runs
+              </span>
+              {(data.linked_runs ?? []).map((linked, index) => (
+                <LinkedRunRow key={linked.run_id} index={index} run={linked} />
+              ))}
+            </div>
+          ) : null}
+          {/* ADR-0045: the platform has no push code — this only sends the
+              agent a prompt to push and open a draft PR with the token on its
+              profile. Only the controller may ask; a reply with a URL in the
+              transcript is the only proof a PR exists. */}
+          {session.isController ? (
+            <div className="space-y-2" data-testid="thread-draft-pr">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setDraftPrConfirm(true);
+                  setDraftPrError(null);
+                  setDraftPrSent(false);
+                }}
+                data-testid="thread-draft-pr-open"
+              >
+                Open a draft PR from this branch
+              </Button>
+              {draftPrConfirm ? (
+                <div
+                  className="space-y-2 rounded-[3px] border border-line p-3"
+                  data-testid="thread-draft-pr-confirm"
+                  aria-label="Confirm the draft-PR prompt"
+                >
+                  <p className="text-[12.5px] text-ink">
+                    This asks the agent to push its branch and open a draft PR with the GitHub token
+                    on its profile (ADR-0045). It only works if the profile's account holds a token
+                    and the worker's egress allows github.com.
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={() => setDraftPrConfirm(false)}
+                      data-testid="thread-draft-pr-cancel"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={sendDraftPrPrompt}
+                      disabled={session.sendMessage.isPending}
+                      data-testid="thread-draft-pr-send"
+                    >
+                      {session.sendMessage.isPending ? "Sending…" : "Send"}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+              {draftPrSent ? (
+                <p
+                  className="text-[12.5px] text-muted"
+                  role="status"
+                  data-testid="thread-draft-pr-sent"
+                >
+                  Prompt sent — the agent's reply appears in the transcript. A draft PR exists only
+                  if its URL shows up there.
+                </p>
+              ) : null}
+              {draftPrError ? (
+                <p
+                  className="text-[12.5px] text-st-failed-tag-fg"
+                  role="alert"
+                  data-testid="thread-draft-pr-error"
+                >
+                  The prompt was not sent: {draftPrError}
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-[12.5px] text-muted" data-testid="thread-draft-pr">
+              Open a draft PR from this branch — Take control to ask the agent.
+            </p>
+          )}
         </section>
+        <HandToWorkflowDialog
+          open={handoffOpen}
+          onClose={() => setHandoffOpen(false)}
+          conversation={{ id: conversationId, project_id: projectId, title: data.title }}
+          onStarted={(runId) => {
+            setStartedRunId(runId);
+            // The thread stays open; the refetch is where its `linked_runs`
+            // grows (ADR-0053), which is where the rail's list reads from.
+            void session.conversation.refetch();
+          }}
+        />
       </aside>
+    </div>
+  );
+}
+
+/**
+ * The exact prompt the "Open a draft PR" confirm card sends (ADR-0045):
+ * the platform has no push code, so the ask rides the ordinary message path
+ * and the only proof of a PR is a URL in the transcript.
+ */
+export const DRAFT_PR_PROMPT =
+  "Please push your current branch to origin and open a DRAFT pull request against the default branch using the GitHub CLI or API with your configured token. Reply with the PR URL, or explain exactly why you couldn't.";
+
+/**
+ * One row of the LINKED RUNS list (ADR-0053 `linked_runs`): the run's status
+ * read from `GET /runs/{id}` (the list row itself carries no status, only the
+ * handoff moment), its age from `created_at`, and the workbench link. A failed
+ * status read says so instead of guessing a colour.
+ */
+function LinkedRunRow({
+  index,
+  run,
+}: {
+  index: number;
+  run: components["schemas"]["ConversationLinkedRun"];
+}) {
+  const detail = useRun(run.run_id);
+  return (
+    <div className="flex flex-wrap items-center gap-2 font-mono text-[11.5px]">
+      {detail.data ? (
+        <StatusChip
+          state={stateOf(RUN_STATE[detail.data.status])}
+          label={detail.data.status}
+          labelProps={{ "data-testid": `thread-linked-run-status-${index}` }}
+        />
+      ) : detail.isError ? (
+        <span className="text-muted" data-testid={`thread-linked-run-status-${index}`}>
+          status unavailable
+        </span>
+      ) : (
+        <span className="text-faint">status…</span>
+      )}
+      <span className="text-faint">{formatAge(run.created_at)}</span>
+      <Link
+        to={routes.run(run.run_id)}
+        className="text-accent-text hover:text-ink"
+        data-testid={`thread-linked-run-link-${index}`}
+      >
+        run {shortId(run.run_id)}
+      </Link>
     </div>
   );
 }

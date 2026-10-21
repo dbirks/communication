@@ -6,6 +6,7 @@ import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import Sidebar, { openAsk } from "./Sidebar";
 import CommandPalette from "./CommandPalette";
+import AssistantPopover from "./assistant/AssistantPopover";
 
 /**
  * The sections the Ask box's context chip names, in the order the sidebar
@@ -141,6 +142,11 @@ export default function Shell({ children, fullBleed = false }: ShellProps) {
       <div className="fixed bottom-0 right-[248px] z-30 h-px w-px [&>button]:hidden">
         <CommandPalette context={sectionOf(location.pathname)} />
       </div>
+
+      {/* The assistant popover's engine (ADR-0050): it owns ⌘K, the sidebar's
+          `Ask ⌘K` row and the floating button all press it, and its state
+          lives here so a page change never loses the transcript. */}
+      <AssistantPopover />
 
       {/* Ask placement: a saved preference. `floating` parks the button at
           the content's bottom-right, above the palette engine. */}

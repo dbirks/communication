@@ -22,7 +22,6 @@ import { Link, useNavigate } from "react-router";
 import { assistantNotConfigured, useAssistantAsk, type AssistantAnswer } from "../../api/assistant";
 import { useDecideApproval, useProjectApprovals } from "../../api/approvals";
 import { problemOf } from "../../api/client";
-import { viewArtifactRefs } from "../../api/m4view";
 import { useCreateDraft } from "../../api/pipelines";
 import { useRunEvents } from "../../api/runEvents";
 import { useRun, useRunNodes, useRetryRun } from "../../api/runs";
@@ -179,14 +178,10 @@ export function RunDrawer({ runId, boardRun, onClose }: RunDrawerProps) {
   if (boardRun?.project_name) meta.push(boardRun.project_name);
   if (age) meta.push(startedIso ? `started ${age}` : `queued ${age}`);
 
-  // “Read the full plan” follows the gate's first artifact reference when it
-  // carries an id; otherwise the run itself is the honest destination.
-  const planArtifact = pendingApproval
-    ? viewArtifactRefs(pendingApproval.artifact_refs)[0]
-    : undefined;
-  const planHref = planArtifact
-    ? `/artifacts/${encodeURIComponent(planArtifact.id)}`
-    : routes.run(runId);
+  // “Read the full plan” opens the gate's own detail page (ADR-0052, 4g):
+  // the plan artifact is rendered there, beside the model summary and the
+  // decider rail. A waiting run with no pending gate is just the run.
+  const planHref = pendingApproval ? routes.approval(pendingApproval.id) : routes.run(runId);
 
   const latestEvents = useMemo(() => events.events.slice(-3).reverse(), [events.events]);
 

@@ -1,13 +1,14 @@
 /**
- * PALETTE-A — the app bar's Ask box and the quick-jump palette it opens.
+ * PALETTE-A — the quick-jump half of the app bar's Ask box (the ask half is
+ * the assistant popover, `assistant/AssistantPopover.tsx`, since ADR-0050).
  *
- * The jump half lists only surfaces the user can already see — the five
- * sections, projects and their sub-pages, library pipelines, recent runs, agent
- * profiles. The ask half (ADR-0034, `docs/design/assistant-v1.md`) posts one
- * question to the read-only broker and renders the answer over the same input:
- * prose, jump links, and a collapsed list of the tools it looked at. The footer
- * says what the assistant is in the same words on every open, so the box never
- * promises an action it cannot take.
+ * The jump list lists only surfaces the user can already see — the five
+ * sections, projects and their sub-pages, library pipelines, recent runs,
+ * agent profiles. The Ask row no longer posts to the v1 broker: it hands the
+ * question to the assistant popover (which carries it over and sends it) and
+ * gets out of the way. ⌘K belongs to the popover; the palette opens from
+ * `openPalette()` — the popover's ⌘K-while-open path and, on the phone,
+ * the sidebar.
  */
 import {
   Fragment,
@@ -17,16 +18,10 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { useQueries } from "@tanstack/react-query";
-import { Button } from "./ds/Button";
-import { apiFetch, problemOf } from "../api/client";
-import {
-  assistantNotConfigured,
-  useAssistantAsk,
-  type AssistantAnswer,
-  type AssistantToolCall,
-} from "../api/assistant";
+import { apiFetch } from "../api/client";
+import { openAssistantPopover } from "./assistant/AssistantPopover";
 import { queryKeys, useAgentProfiles, useProjects } from "../api/queries";
 import { usePipelines } from "../api/pipelines";
 import { shortId } from "../api/names";
@@ -191,6 +186,13 @@ export interface CommandPaletteProps {
   context: string;
 }
 
+/** The popover's ⌘K-while-open path opens the jump palette this way. */
+export const PALETTE_OPEN_EVENT = "communication:palette-open";
+
+export function openPalette(): void {
+  window.dispatchEvent(new CustomEvent(PALETTE_OPEN_EVENT));
+}
+
 /**
  * The outer half is the box and the ways out. The panel mounts *only while
  * open*, so the app bar costs a page no read of its own: the project list, the
@@ -211,16 +213,10 @@ export default function CommandPalette({ context }: CommandPaletteProps) {
   };
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        if (open) close();
-        else setOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+    const onOpen = () => setOpen(true);
+    window.addEventListener(PALETTE_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(PALETTE_OPEN_EVENT, onOpen);
+  }, []);
 
   // A press outside the box and the panel closes it.
   useEffect(() => {
@@ -273,9 +269,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const items = usePaletteItems();
-  const ask = useAssistantAsk();
 
   const needle = query.trim().toLowerCase();
   const results = useMemo(
@@ -284,12 +278,10 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
   );
 
   // A question exists as soon as there is text, so the Ask row leads the caret
-  // order from the first keystroke; a finished answer takes the panel body,
-  // which is why the rows below it are only counted while it has not landed.
+  // order from the first keystroke.
   const asking = needle.length > 0;
-  const answer = ask.isSuccess ? ask.data : null;
-  const offset = asking && !answer ? 1 : 0;
-  const rowCount = answer ? 0 : results.length + offset;
+  const offset = asking ? 1 : 0;
+  const rowCount = results.length + offset;
 
   // Opening means typing — the input takes focus, so the first keystroke is a
   // filter and not a scroll of the page behind it.
@@ -307,17 +299,11 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
     navigate(item.to);
   };
 
-  /** One turn, whole. The panel stays open and editable while it is in flight. */
-  const askQuestion = () => {
-    const question = query.trim();
-    if (question.length === 0 || ask.isPending) return;
-    ask.mutate({ question, route: pathname });
-  };
-
-  /** A link is a jump with a reason attached: go there and get out of the way. */
-  const jumpTo = (href: string) => {
+  /** One turn belongs to the assistant popover: hand the question over (it
+   * carries it into the popover and sends it) and get out of the way. */
+  const askAssistant = () => {
+    openAssistantPopover(needle);
     onClose();
-    navigate(href);
   };
 
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -328,16 +314,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
     }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
-      askQuestion();
-      return;
-    }
-    if (answer) {
-      // The reply replaced the list: Enter asks the next question, arrows have
-      // nothing to move over.
-      if (event.key === "Enter") {
-        event.preventDefault();
-        askQuestion();
-      }
+      askAssistant();
       return;
     }
     if (rowCount === 0) return;
@@ -357,7 +334,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (offset === 1 && active === 0) {
-        askQuestion();
+        askAssistant();
         return;
       }
       const item = results[active - offset];
@@ -388,7 +365,7 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
           type="text"
           role="combobox"
           aria-expanded="true"
-          aria-controls={answer ? undefined : "palette-listbox"}
+          aria-controls="palette-listbox"
           aria-autocomplete="list"
           aria-activedescendant={activeId}
           aria-label="Jump to"
@@ -397,212 +374,79 @@ function PalettePanel({ onClose }: { onClose: () => void }) {
           onChange={(event) => {
             setQuery(event.target.value);
             setActive(0);
-            // Editing after an answer means a new question, not a stale reply
-            // sitting over the list the keystrokes are filtering.
-            if (ask.isSuccess) ask.reset();
           }}
           onKeyDown={onInputKeyDown}
           className="w-full bg-transparent py-[10px] font-mono text-[12.5px] text-ink placeholder:text-faint focus:outline-none"
         />
       </div>
 
-      {answer ? (
-        <AnswerView answer={answer} onJump={jumpTo} />
-      ) : (
-        <>
-          <ul
-            id="palette-listbox"
-            role="listbox"
-            aria-label="Jump targets"
-            className="max-h-[320px] overflow-y-auto py-[4px]"
+      <ul
+        id="palette-listbox"
+        role="listbox"
+        aria-label="Jump targets"
+        className="max-h-[320px] overflow-y-auto py-[4px]"
+      >
+        {asking ? (
+          <li
+            id="palette-option-0"
+            role="option"
+            aria-selected={active === 0}
+            data-testid="palette-ask"
+            onMouseEnter={() => setActive(0)}
+            onClick={askAssistant}
+            className={`flex cursor-pointer items-baseline gap-[8px] px-[10px] py-[6px] hover:bg-fill ${
+              active === 0 ? "bg-accent-wash" : ""
+            }`}
           >
-            {asking ? (
+            <span className="truncate text-[13px] text-ink">Ask: {query.trim()}</span>
+            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-faint">Enter</span>
+          </li>
+        ) : null}
+        {groups.map((group) => (
+          <Fragment key={group.name}>
+            <li
+              role="presentation"
+              className="px-[10px] pb-[3px] pt-[6px] font-mono text-[10px] uppercase tracking-[.06em] text-faint"
+            >
+              {group.name}
+            </li>
+            {group.entries.map(({ item, index }) => (
               <li
-                id="palette-option-0"
+                key={item.id}
+                id={`palette-option-${index}`}
                 role="option"
-                aria-selected={active === 0}
-                data-testid="palette-ask"
-                onMouseEnter={() => setActive(0)}
-                onClick={askQuestion}
+                aria-selected={index === active}
+                onMouseEnter={() => setActive(index)}
+                onClick={() => go(item)}
                 className={`flex cursor-pointer items-baseline gap-[8px] px-[10px] py-[6px] hover:bg-fill ${
-                  active === 0 ? "bg-accent-wash" : ""
+                  index === active ? "bg-accent-wash" : ""
                 }`}
               >
-                <span className="truncate text-[13px] text-ink">Ask: {query.trim()}</span>
-                <span className="ml-auto shrink-0 font-mono text-[10.5px] text-faint">Enter</span>
+                <span className="truncate text-[13px] text-ink">{item.label}</span>
+                <span className="ml-auto shrink-0 truncate font-mono text-[10.5px] text-faint">
+                  {item.secondary}
+                </span>
               </li>
-            ) : null}
-            {groups.map((group) => (
-              <Fragment key={group.name}>
-                <li
-                  role="presentation"
-                  className="px-[10px] pb-[3px] pt-[6px] font-mono text-[10px] uppercase tracking-[.06em] text-faint"
-                >
-                  {group.name}
-                </li>
-                {group.entries.map(({ item, index }) => (
-                  <li
-                    key={item.id}
-                    id={`palette-option-${index}`}
-                    role="option"
-                    aria-selected={index === active}
-                    onMouseEnter={() => setActive(index)}
-                    onClick={() => go(item)}
-                    className={`flex cursor-pointer items-baseline gap-[8px] px-[10px] py-[6px] hover:bg-fill ${
-                      index === active ? "bg-accent-wash" : ""
-                    }`}
-                  >
-                    <span className="truncate text-[13px] text-ink">{item.label}</span>
-                    <span className="ml-auto shrink-0 truncate font-mono text-[10.5px] text-faint">
-                      {item.secondary}
-                    </span>
-                  </li>
-                ))}
-              </Fragment>
             ))}
-            {results.length === 0 ? (
-              <li
-                role="presentation"
-                data-testid="palette-empty"
-                className="px-[10px] py-[10px] font-mono text-[11px] text-faint"
-              >
-                Nothing to jump to for “{query}”.
-              </li>
-            ) : null}
-            {ask.isPending ? (
-              <li
-                role="presentation"
-                data-testid="assistant-thinking"
-                className="px-[10px] py-[6px] font-mono text-[11px] text-muted"
-              >
-                thinking…
-              </li>
-            ) : null}
-            {ask.isError ? (
-              <li
-                role="presentation"
-                data-testid="assistant-error"
-                className="px-[10px] py-[6px] font-mono text-[11px] text-muted"
-              >
-                {failureLine(ask.error)}
-              </li>
-            ) : null}
-          </ul>
-        </>
-      )}
+          </Fragment>
+        ))}
+        {results.length === 0 ? (
+          <li
+            role="presentation"
+            data-testid="palette-empty"
+            className="px-[10px] py-[10px] font-mono text-[11px] text-faint"
+          >
+            Nothing to jump to for “{query}”.
+          </li>
+        ) : null}
+      </ul>
 
       <p
         data-testid="palette-footer"
         className="border-t border-line bg-paper px-[10px] py-[6px] font-mono text-[10.5px] text-muted"
       >
-        Read-only assistant — it can look things up and link you there; it cannot act.
+        The Ask row opens the assistant popover · the list below is quick jumps.
       </p>
-    </div>
-  );
-}
-
-/**
- * The inline line a failed turn leaves behind (design: one line, no modal, and
- * the jump list survives underneath it).
- */
-function failureLine(error: unknown): string {
-  if (assistantNotConfigured(error)) return "The assistant isn't configured on this server.";
-  const problem = problemOf(error);
-  return problem.detail || problem.title;
-}
-
-/**
- * `answer_markdown` as prose without a markdown dependency: paragraphs split on
- * blank lines, `` `code` `` spans set in mono. The text is never turned into
- * HTML, so nothing the model wrote can render as the app's origin (ADR-0020).
- */
-function CodeSpans({ text }: { text: string }) {
-  return (
-    <>
-      {text.split(/`([^`]+)`/g).map((part, index) =>
-        index % 2 === 1 ? (
-          <code
-            key={index}
-            className="rounded-[3px] bg-fill px-[3px] py-[1px] font-mono text-[11.5px] text-ink"
-          >
-            {part}
-          </code>
-        ) : (
-          <Fragment key={index}>{part}</Fragment>
-        ),
-      )}
-    </>
-  );
-}
-
-function AnswerProse({ text }: { text: string }) {
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
-  return (
-    <div data-testid="assistant-answer" className="space-y-[6px] px-[10px] py-[8px]">
-      {paragraphs.map((paragraph, index) => (
-        <p key={index} className="whitespace-pre-wrap text-[13px] leading-[1.45] text-ink">
-          <CodeSpans text={paragraph} />
-        </p>
-      ))}
-    </div>
-  );
-}
-
-/** Transparency, not a replay log: what it looked at, collapsed by default. */
-function ToolCallList({ calls }: { calls: AssistantToolCall[] }) {
-  return (
-    <details data-testid="assistant-tools" className="border-t border-line px-[10px] py-[6px]">
-      <summary className="cursor-pointer font-mono text-[10.5px] text-faint">
-        {`used ${calls.length} tool${calls.length === 1 ? "" : "s"} ▸`}
-      </summary>
-      <ul className="mt-[4px] space-y-[2px]">
-        {calls.map((call, index) => (
-          <li
-            key={`${call.name}-${index}`}
-            className="flex items-baseline gap-[6px] font-mono text-[10.5px] text-muted"
-          >
-            <span className="truncate">{call.name}</span>
-            <span className={call.ok ? "text-accent-text" : "text-st-failed-tag-fg"}>
-              {call.ok ? "ok" : "failed"}
-            </span>
-            {call.reason ? <span className="truncate text-faint">{call.reason}</span> : null}
-          </li>
-        ))}
-      </ul>
-    </details>
-  );
-}
-
-/** The answer body: prose, the jumps it justified, and the tools behind them. */
-function AnswerView({
-  answer,
-  onJump,
-}: {
-  answer: AssistantAnswer;
-  onJump: (href: string) => void;
-}) {
-  return (
-    <div className="max-h-[320px] overflow-y-auto">
-      <AnswerProse text={answer.answer_markdown} />
-      {answer.links.length > 0 ? (
-        <div data-testid="assistant-links" className="flex flex-wrap gap-[6px] px-[10px] pb-[8px]">
-          {answer.links.map((link) => (
-            <Button
-              key={link.href}
-              variant="secondary"
-              compact
-              onClick={() => onJump(link.href)}
-              data-testid="assistant-link"
-            >
-              {link.label}
-            </Button>
-          ))}
-        </div>
-      ) : null}
-      {answer.tool_calls.length > 0 ? <ToolCallList calls={answer.tool_calls} /> : null}
     </div>
   );
 }

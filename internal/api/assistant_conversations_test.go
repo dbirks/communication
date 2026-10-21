@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -30,14 +31,34 @@ type fakeAssistantStore struct {
 }
 
 type fakeAssistantConv struct {
-	row     AssistantConversation
-	user    string
-	msgs    []AssistantMessage
-	changes []AssistantChange
+	row       AssistantConversation
+	user      string
+	msgs      []AssistantMessage
+	changes   []AssistantChange
+	approvals map[string]*AssistantMessage
+	nextID    int
 }
 
 func newFakeAssistantStore() *fakeAssistantStore {
 	return &fakeAssistantStore{conversations: map[string]fakeAssistantConv{}}
+}
+
+// seedApproval seeds one pending approval_request row GetMessage can find
+// (the confirm/dismiss tests).
+func (f *fakeAssistantStore) seedApproval(userID, convID, msgID, action string, args map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.conversations[convID]
+	payload, _ := json.Marshal(map[string]any{
+		"kind": "approval_request", "turn_id": "turn-1", "action": action,
+		"args": args, "summary": "summary of " + action, "risk": "risk line",
+		"state": "pending",
+	})
+	row := &AssistantMessage{ID: msgID, Kind: "approval_request", Payload: payload,
+		CreatedAt: time.Now().UTC()}
+	c.msgs = append(c.msgs, *row)
+	c.approvals[msgID] = row
+	f.conversations[convID] = c
 }
 
 func (f *fakeAssistantStore) seedConversation(userID, id, title string) {
@@ -49,7 +70,8 @@ func (f *fakeAssistantStore) seedConversation(userID, id, title string) {
 			Title:     assistantStrPtr(title),
 			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		},
-		user: userID,
+		user:      userID,
+		approvals: map[string]*AssistantMessage{},
 	}
 }
 
@@ -58,8 +80,9 @@ func (f *fakeAssistantStore) CreateConversation(ctx context.Context, userID stri
 	defer f.mu.Unlock()
 	id := "conv-" + string(rune('A'+len(f.conversations)))
 	f.conversations[id] = fakeAssistantConv{
-		row:  AssistantConversation{ID: id, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
-		user: userID,
+		row:       AssistantConversation{ID: id, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
+		user:      userID,
+		approvals: map[string]*AssistantMessage{},
 	}
 	return f.conversations[id].row, nil
 }
@@ -106,6 +129,145 @@ func (f *fakeAssistantStore) AddTurnMessages(ctx context.Context, userID, conver
 		}
 		out = append(out, row)
 		c.msgs = append(c.msgs, row)
+	}
+	f.conversations[conversationID] = c
+	return out, nil
+}
+
+// GetMessage is the confirm/dismiss read: the row must be in the
+// caller's conversation.
+func (f *fakeAssistantStore) GetMessage(ctx context.Context,
+	userID, conversationID, messageID string) (AssistantMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.conversations[conversationID]
+	if !ok || c.user != userID {
+		return AssistantMessage{}, fmt.Errorf("x: %w", ErrAssistantConversationNotFound)
+	}
+	// Approval rows update in place (the state moves); read the live row
+	// before the transcript copies.
+	if m, ok := c.approvals[messageID]; ok {
+		return *m, nil
+	}
+	for _, m := range c.msgs {
+		if m.ID == messageID {
+			return m, nil
+		}
+	}
+	return AssistantMessage{}, fmt.Errorf("x: %w", ErrAssistantMessageNotFound)
+}
+
+// AppendTurn is the part-2 append: user row first, then assistant, the
+// change rows + their `change` messages, the question and the
+// approval_request row — the store's decision-3 order.
+func (f *fakeAssistantStore) AppendTurn(ctx context.Context,
+	userID, conversationID string, in AppendTurnInput) ([]AssistantMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addTurnCalls++
+	c, ok := f.conversations[conversationID]
+	if !ok || c.user != userID {
+		return nil, fmt.Errorf("x: %w", ErrAssistantConversationNotFound)
+	}
+	next := func() string {
+		c.nextID++
+		return conversationID + "-n" + string(rune('0'+c.nextID))
+	}
+	appendMsg := func(kind string, payload []byte) AssistantMessage {
+		row := AssistantMessage{ID: next(), Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()}
+		c.msgs = append(c.msgs, row)
+		return row
+	}
+	var out []AssistantMessage
+	out = append(out, appendMsg(in.User.Kind, in.User.Payload))
+	if in.Assistant != nil {
+		out = append(out, appendMsg(in.Assistant.Kind, in.Assistant.Payload))
+	}
+	for i := range in.Changes {
+		id := next()
+		ch := AssistantChange{
+			ID:        id,
+			Kind:      in.Changes[i].Kind,
+			TargetRef: in.Changes[i].TargetRef,
+			Summary:   in.Changes[i].Summary,
+			Undoable:  in.Changes[i].UndoPayload != nil,
+			CreatedAt: time.Now().UTC(),
+		}
+		c.changes = append(c.changes, ch)
+		payload, _ := json.Marshal(map[string]any{
+			"kind": "change", "change_id": ch.ID, "change_kind": ch.Kind,
+			"target_ref": ch.TargetRef, "summary": ch.Summary, "undoable": ch.Undoable,
+		})
+		out = append(out, appendMsg("change", payload))
+	}
+	if in.Question != nil {
+		out = append(out, appendMsg(in.Question.Kind, in.Question.Payload))
+	}
+	if in.Approval != nil {
+		row := appendMsg(in.Approval.Kind, in.Approval.Payload)
+		if c.approvals == nil {
+			c.approvals = map[string]*AssistantMessage{}
+		}
+		m := row
+		c.approvals[row.ID] = &m
+		out = append(out, row)
+	}
+	f.conversations[conversationID] = c
+	return out, nil
+}
+
+// CompleteApproval resolves one pending approval_request: the state
+// moves, the acknowledgement and the change row are appended.
+func (f *fakeAssistantStore) CompleteApproval(ctx context.Context,
+	userID, conversationID, messageID, state string,
+	ack AssistantMessageInput, change *AssistantChangeInput) ([]AssistantMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if state != "confirmed" && state != "dismissed" {
+		return nil, fmt.Errorf("x: unknown assistant approval state %s", state)
+	}
+	c, ok := f.conversations[conversationID]
+	if !ok || c.user != userID {
+		return nil, fmt.Errorf("x: %w", ErrAssistantConversationNotFound)
+	}
+	m, ok := c.approvals[messageID]
+	if !ok || m.Kind != "approval_request" {
+		return nil, fmt.Errorf("x: %w", ErrAssistantApprovalNotPending)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(m.Payload, &doc); err != nil || doc["state"] != "pending" {
+		return nil, fmt.Errorf("x: %w", ErrAssistantApprovalNotPending)
+	}
+	next := func() string {
+		c.nextID++
+		return conversationID + "-n" + string(rune('0'+c.nextID))
+	}
+	appendMsg := func(kind string, payload []byte) AssistantMessage {
+		row := AssistantMessage{ID: next(), Kind: kind, Payload: payload, CreatedAt: time.Now().UTC()}
+		c.msgs = append(c.msgs, row)
+		return row
+	}
+	doc["state"] = state
+	payload, _ := json.Marshal(doc)
+	m.Payload = payload
+	var out []AssistantMessage
+	out = append(out, appendMsg(ack.Kind, ack.Payload))
+	if change != nil {
+		id := next()
+		ch := AssistantChange{
+			ID:        id,
+			Kind:      change.Kind,
+			TargetRef: change.TargetRef,
+			Summary:   change.Summary,
+			Undoable:  change.UndoPayload != nil,
+			CreatedAt: time.Now().UTC(),
+		}
+		c.changes = append(c.changes, ch)
+		cp, _ := json.Marshal(map[string]any{
+			"kind": "change", "change_id": ch.ID, "change_kind": ch.Kind,
+			"target_ref": ch.TargetRef, "summary": ch.Summary, "undoable": ch.Undoable,
+		})
+		out = append(out, appendMsg("change", cp))
 	}
 	f.conversations[conversationID] = c
 	return out, nil
@@ -193,19 +355,61 @@ func (f *fakeAssistantStore) UndoAll(ctx context.Context, c as.Caller, conversat
 // fakeAssistantRunner scripts the turn's answer (or failure) and records
 // what the route handed it.
 type fakeAssistantRunner struct {
-	answer  *as.Answer
-	failure *as.Failure
-	gotText string
-	gotCtx  as.TurnContext
+	answer   *as.Answer
+	failure  *as.Failure
+	gotText  string
+	gotCtx   as.TurnContext
+	gotTrust as.TrustLevel
 }
 
-func (r *fakeAssistantRunner) RunTurn(ctx context.Context, req as.TurnRequest) (*as.Answer, *as.Failure) {
+func (r *fakeAssistantRunner) RunTurn(ctx context.Context, req as.TurnRequest) (*as.TurnResult, *as.Failure) {
 	r.gotText = req.Text
 	r.gotCtx = req.Context
+	r.gotTrust = req.TrustLevel
 	if r.failure != nil {
 		return nil, r.failure
 	}
-	return r.answer, nil
+	if r.answer == nil {
+		return nil, nil
+	}
+	return &as.TurnResult{Answer: r.answer}, nil
+}
+
+// fakeApprovalRunner is the part-2 runner: it implements the confirm seam
+// (approvalExecutor) the part-1 fake does not, and can answer a turn with
+// the tool-loop's extra rows (question / approval_request / changes).
+type fakeApprovalRunner struct {
+	*fakeAssistantRunner
+	question   *as.TurnQuestion
+	approval   *as.TurnApproval
+	changes    []as.ChangeRecord
+	execTool   string
+	execArgs   map[string]string
+	execAck    string
+	execChange *as.ChangeRecord
+	execErr    error
+	execCalls  int
+}
+
+func (r *fakeApprovalRunner) RunTurn(ctx context.Context, req as.TurnRequest) (*as.TurnResult, *as.Failure) {
+	res, bad := r.fakeAssistantRunner.RunTurn(ctx, req)
+	if bad != nil || res == nil {
+		return res, bad
+	}
+	res.Question = r.question
+	res.Approval = r.approval
+	res.Changes = r.changes
+	return res, nil
+}
+
+// ExecuteAction is the confirm path: it re-runs the recorded action once
+// as the caller.
+func (r *fakeApprovalRunner) ExecuteAction(ctx context.Context, c as.Caller,
+	tool string, args map[string]string) (string, *as.ChangeRecord, error) {
+	r.execCalls++
+	r.execTool = tool
+	r.execArgs = args
+	return r.execAck, r.execChange, r.execErr
 }
 
 func assistantStrPtr(s string) *string { return &s }
@@ -213,10 +417,21 @@ func assistantStrPtr(s string) *string { return &s }
 func newAssistantConvTestServer(t *testing.T,
 	store AssistantConversationStore, runner as.TurnRunner, auth Authenticator) *Server {
 	t.Helper()
+	return newAssistantConvTestServerTrusted(t, store, runner, auth, nil)
+}
+
+// newAssistantConvTestServerTrusted wires the trust-level read (ADR-0046/
+// C2 seam) so the confirm/turn tests can assert it reaches the runner.
+func newAssistantConvTestServerTrusted(t *testing.T,
+	store AssistantConversationStore, runner as.TurnRunner, auth Authenticator,
+	trust func(ctx context.Context, c as.Caller) (string, bool)) *Server {
+	t.Helper()
 	s := newTestServerWith(t,
 		Config{ReplicaName: "replica-a", Version: "1.2.3", PublicURL: "http://localhost:8080"},
 		nil, fakeReadiness{expected: 1}, auth)
-	RegisterAssistantConversations(s, AssistantConversationDeps{Store: store, Runner: runner})
+	RegisterAssistantConversations(s, AssistantConversationDeps{
+		Store: store, Runner: runner, TrustLevel: trust,
+	})
 	return s
 }
 
@@ -358,9 +573,10 @@ func TestAssistantMessagesPostRefusals(t *testing.T) {
 	if rec := convPost(t, srv, base, big); rec.Code != http.StatusBadRequest {
 		t.Fatalf("oversized text status = %d, want 400", rec.Code)
 	}
-	// confirm/dismiss is the part-2 approval flow: an honest 400.
-	if rec := convPost(t, srv, base, `{"confirm":"msg-1"}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("confirm status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	// confirm with no runner wired is the honest 503: the approval flow
+	// ships with the part-2 runner.
+	if rec := convPost(t, srv, base, `{"confirm":"msg-1"}`); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("confirm status = %d, want 503 (body %s)", rec.Code, rec.Body)
 	}
 	// Unknown conversation: the not-found sentinel, never 403.
 	rec404 := convPost(t, srv,
@@ -560,5 +776,177 @@ func TestAssistantConversationsAuthAndCSRF(t *testing.T) {
 	srv2.ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusForbidden {
 		t.Fatalf("missing CSRF status = %d, want 403", rec2.Code)
+	}
+}
+
+// TestAssistantMessagesTurnTrustAndRows (ADR-0050 decision 2/4): the
+// caller's trust level reaches the runner normalized, and the turn's
+// extra rows (change messages, the approval_request row) are appended in
+// the store's order after the user and assistant rows.
+func TestAssistantMessagesTurnTrustAndRows(t *testing.T) {
+	t.Parallel()
+	store := newFakeAssistantStore()
+	store.seedConversation("u-1", "conv-1", "t")
+	runner := &fakeApprovalRunner{
+		fakeAssistantRunner: &fakeAssistantRunner{answer: &as.Answer{
+			AnswerMarkdown: "I can start that run; approve it.", Links: []as.Link{},
+			ToolCalls: []as.ToolCall{}, TurnID: "turn-9",
+		}},
+		approval: &as.TurnApproval{
+			Tool: "run.start", Args: map[string]string{"project_id": "p-1", "pipeline_id": "pl-1"},
+			Summary: "Start a run p-1 · pl-1", Risk: "starts a new pipeline run",
+		},
+		changes: []as.ChangeRecord{{
+			Kind: "navigate", TargetRef: "/runs", Summary: "Navigated to /runs",
+		}},
+	}
+	srv := newAssistantConvTestServerTrusted(t, store, runner, principalAuth(testPrincipal(), nil),
+		func(ctx context.Context, c as.Caller) (string, bool) { return "ask_all", true })
+	rec := convPost(t, srv,
+		"http://localhost:8080/api/v1/assistant/conversations/conv-1/messages",
+		`{"text":"start a run"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	msgs := body["messages"].([]any)
+	// user, assistant, the navigate change, the approval_request.
+	if len(msgs) != 4 || msgs[0].(map[string]any)["kind"] != "user" ||
+		msgs[1].(map[string]any)["kind"] != "assistant" ||
+		msgs[2].(map[string]any)["kind"] != "change" ||
+		msgs[3].(map[string]any)["kind"] != "approval_request" {
+		t.Fatalf("rows = %v, want user/assistant/change/approval_request", msgs)
+	}
+	changePayload := msgs[2].(map[string]any)["payload"].(map[string]any)
+	if changePayload["change_kind"] != "navigate" || changePayload["undoable"] != false {
+		t.Fatalf("change payload = %v", changePayload)
+	}
+	approvalPayload := msgs[3].(map[string]any)["payload"].(map[string]any)
+	if approvalPayload["state"] != "pending" || approvalPayload["action"] != "run.start" {
+		t.Fatalf("approval payload = %v", approvalPayload)
+	}
+	if runner.gotTrust != as.TrustAskAll {
+		t.Fatalf("runner trust = %q, want the normalized ask_all", runner.gotTrust)
+	}
+}
+
+// TestAssistantMessagesConfirmAndDismiss (ADR-0050 decision 2): confirm
+// re-runs the action exactly once as the caller and appends the
+// acknowledgement plus the change row; dismiss only moves the state; a
+// second decision on the resolved row is 409; the exclusive pair and the
+// action denial are refused without touching the request.
+func TestAssistantMessagesConfirmAndDismiss(t *testing.T) {
+	t.Parallel()
+	store := newFakeAssistantStore()
+	store.seedConversation("u-1", "conv-1", "t")
+	base := "http://localhost:8080/api/v1/assistant/conversations/conv-1/messages"
+	auth := principalAuth(testPrincipal(), nil)
+
+	// The part-1 runner (no confirm seam) keeps the honest 400.
+	part1 := &fakeAssistantRunner{}
+	if rec := convPost(t, newAssistantConvTestServer(t, store, part1, auth), base,
+		`{"confirm":"appr-1"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("part-1 confirm status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+
+	runner := &fakeApprovalRunner{
+		fakeAssistantRunner: &fakeAssistantRunner{},
+		execAck:             "Done — the run started.",
+		execChange: &as.ChangeRecord{
+			Kind: "run_start", TargetRef: "run:r-1", Summary: "Started run r-1",
+		},
+	}
+	srv := newAssistantConvTestServer(t, store, runner, auth)
+	store.seedApproval("u-1", "conv-1", "appr-1", "run.start",
+		map[string]string{"project_id": "p-1", "pipeline_id": "pl-1"})
+
+	// confirm + dismiss together is a 400 before anything is read.
+	if rec := convPost(t, srv, base, `{"confirm":"appr-1","dismiss":"appr-1"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("exclusive pair status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	// text alongside a decision is a 400.
+	if rec := convPost(t, srv, base, `{"confirm":"appr-1","text":"yes please"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("text+confirm status = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	// an unknown id is the same 409 as not-pending (no id enumeration).
+	if rec := convPost(t, srv, base, `{"confirm":"appr-unknown"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("unknown id status = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+
+	// The confirm: the action runs exactly once, the ack and the change
+	// row land, and the request is confirmed.
+	rec := convPost(t, srv, base, `{"confirm":"appr-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	msgs := body["messages"].([]any)
+	if len(msgs) != 2 || msgs[0].(map[string]any)["kind"] != "assistant" ||
+		msgs[1].(map[string]any)["kind"] != "change" {
+		t.Fatalf("confirm rows = %v, want the ack then the change", msgs)
+	}
+	if runner.execCalls != 1 || runner.execTool != "run.start" ||
+		runner.execArgs["pipeline_id"] != "pl-1" {
+		t.Fatalf("exec calls = %d tool %q args %v, want one run.start",
+			runner.execCalls, runner.execTool, runner.execArgs)
+	}
+	// The row itself moved to confirmed.
+	again := convPost(t, srv, base, `{"confirm":"appr-1"}`)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("second confirm status = %d, want 409 (body %s)", again.Code, again.Body)
+	}
+	if runner.execCalls != 1 {
+		t.Fatalf("a confirmed action re-ran: %d calls", runner.execCalls)
+	}
+
+	// The dismiss: no execution, the state moves, the ack lands.
+	store.seedApproval("u-1", "conv-1", "appr-2", "run.retry",
+		map[string]string{"project_id": "p-1", "run_id": "r-1", "node_id": "test"})
+	rec = convPost(t, srv, base, `{"dismiss":"appr-2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	msgs = body["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["kind"] != "assistant" {
+		t.Fatalf("dismiss rows = %v, want the ack alone", msgs)
+	}
+	if runner.execCalls != 1 {
+		t.Fatalf("dismiss executed an action: %d calls", runner.execCalls)
+	}
+	m2, err := store.GetMessage(context.Background(), "u-1", "conv-1", "appr-2")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal(m2.Payload, &doc)
+	if doc["state"] != "dismissed" {
+		t.Fatalf("dismissed state = %v, want dismissed", doc["state"])
+	}
+
+	// A denied action: the 409 names the stable code, the request stays
+	// pending, and the ack was not appended.
+	denied := &fakeApprovalRunner{
+		fakeAssistantRunner: &fakeAssistantRunner{},
+		execErr:             errors.New("x: " + as.ErrActionDenied.Error()),
+	}
+	store.seedApproval("u-1", "conv-1", "appr-3", "pipeline.publish",
+		map[string]string{"project_id": "p-1", "draft_id": "d-1"})
+	srv2 := newAssistantConvTestServer(t, store, denied, auth)
+	rec = convPost(t, srv2, base, `{"confirm":"appr-3"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("denied confirm status = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+	if rec.Body.String() == "" || !strings.Contains(rec.Body.String(), "action_denied") {
+		t.Fatalf("denied problem lacks the stable code: %s", rec.Body)
+	}
+	m3, err := store.GetMessage(context.Background(), "u-1", "conv-1", "appr-3")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	var doc3 map[string]any
+	_ = json.Unmarshal(m3.Payload, &doc3)
+	if doc3["state"] != "pending" {
+		t.Fatalf("denied confirm moved the state to %v, want pending", doc3["state"])
 	}
 }

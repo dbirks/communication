@@ -2269,7 +2269,7 @@ export interface paths {
     put?: never;
     /**
      * Post a message and run one server-side assistant turn
-     * @description ADR-0050 decision 2 (part 1). The server loads the caller's transcript history, folds it into the ADR-0034 broker's question with the page context, and appends the rows this request produced (the `user` row first, then the turn's output) in one transaction; the response carries exactly those rows. `text` is 1..2000 characters and is secret-scanned before any model egress (ADR-0018). `confirm`/`dismiss` name a pending `approval_request` — the approval flow lands in part 2 and answers `400 approval_requests_not_available` now. A turn that fails (secret-shaped text, model unreachable, caps) stores NOTHING and answers the ADR-0034 problem with `degraded` naming the cause; a conversation that is not the caller's answers 404 (never 403); a deployment without an assistant endpoint answers `503 assistant_not_configured`.
+     * @description ADR-0050 decision 2. A plain `text` message runs ONE server-side turn through the multi-turn tool loop: the server loads the caller's trust level (server-side, decision 4) and transcript history, runs the bounded model loop over the read registry plus the closed write/navigation tool set with the page context, and appends the rows this request produced (the `user` row first, then the turn's output: at most one `assistant`, one `question` and one `approval_request` row, plus the change rows) in one transaction; the response carries exactly those rows. `text` is 1..2000 characters and is secret-scanned before any model egress (ADR-0018). `confirm`/`dismiss` name a pending `approval_request` message of THIS conversation (decision 4's gate mechanics): no model call, the state moves, the confirmed action executes ONCE through the underlying permission-checked service as the caller, and the acknowledgement plus its change row are appended; an unknown id or a non-pending state answers `409 approval_request_not_pending`, and a confirmed action the caller's role no longer permits answers `409 action_denied` with the request left pending. A turn that fails (secret-shaped text, model unreachable, caps) stores NOTHING and answers the ADR-0034 problem with `degraded` naming the cause; a conversation that is not the caller's answers 404 (never 403); a deployment without an assistant endpoint answers `503 assistant_not_configured`.
      */
     post: operations["postAssistantMessage"];
     delete?: never;
@@ -2329,7 +2329,7 @@ export interface paths {
     put?: never;
     /**
      * Apply one change's recorded inverse op
-     * @description Decision 5: the inverse op (the server's own closed record, never model text) is applied as the caller through the underlying version-checked service, and `undone_at` is stamped in the same transaction. 404 when the change is not the caller's; 409 `change_not_undoable` when it cannot be undone (no inverse op, already undone, the target no longer exists, the caller lost write right, or the inverse does not structurally apply — the detail says so and the draft is left untouched). Part 1 ships the seam without the draft-edit inverse wired (that lands in part 2), so an undoable change answers 409 today.
+     * @description Decision 5: the inverse op (the server's own closed record, never model text) is applied as the caller through the underlying version-checked service, and `undone_at` is stamped in the same transaction. 404 when the change is not the caller's; 409 `change_not_undoable` when it cannot be undone (no inverse op, already undone, the target no longer exists, the caller lost write right, or the inverse does not structurally apply — the detail says so and the draft is left untouched). Draft edits undo through the same version-checked draft PUT the edit used; the other kinds record no inverse (a started run or made approval has none) and answer 409.
      */
     post: operations["undoAssistantChange"];
     delete?: never;
@@ -4862,12 +4862,12 @@ export interface components {
     };
     /**
      * AssistantMessage
-     * @description One transcript row (decision 1): append-only, keyed by `conversation_id, id`, in the `(created_at, id)` order. `kind` is `user` | `assistant` | `approval_request` | `approval_response`; the shape of `payload` follows `kind` (a discriminated object, rendered by the UI per kind).
+     * @description One transcript row (decision 1): append-only, keyed by `conversation_id, id`, in the `(created_at, id)` order. `kind` is `user` | `assistant` | `question` | `change` | `approval_request` (decision 3's payloads: the `assistant` row carries the answer markdown, the allowlist-validated links and the server-supplied tool-call summaries; `question` carries the model-written 2-4 options with free text always on; `approval_request` carries the gated action, its replayable args and the pending/confirmed/ dismissed state); the shape of `payload` follows `kind` (a discriminated object, rendered by the UI per kind).
      */
     AssistantMessage: {
       id: string;
       /** @enum {string} */
-      kind: "user" | "assistant" | "approval_request" | "approval_response";
+      kind: "user" | "assistant" | "question" | "change" | "approval_request";
       /** @description Kind-discriminated: the discriminator `kind` plus the kind's fields. */
       payload: {
         [key: string]: unknown;
@@ -4886,16 +4886,17 @@ export interface components {
     };
     /**
      * AssistantMessagePost
-     * @description A new user message. `context` is the page context the turn runs in; `context.entity` names the entity the context is about (a run, a draft, an approval, an inbox item or a pipeline revision) so the server can scope the turn's tools and answer. `confirm`/`dismiss` name a pending `approval_request` — the approval flow lands in part 2 (`400 approval_requests_not_available` until then).
+     * @description A new user message. `context` is the page context the turn runs in (decision 6): the client-asserted `route` is allowlist-validated and dropped when it fails, and `context.entity` names the entity the page is about (a starting point the turn's tools may use; the refs authorize nothing). `text` is 1..2000 characters and required UNLESS `confirm` or `dismiss` is set (the two are mutually exclusive, and `text` must be empty then). `confirm` re-runs the gated action exactly once; `dismiss` declines it (Not now).
      */
     AssistantMessagePost: {
-      text: string;
+      /** @description Required unless `confirm` or `dismiss` is set. */
+      text?: string;
       context?: {
         route?: string;
         project_id?: string;
         entity?: {
           /** @enum {string} */
-          kind: "run" | "draft" | "approval" | "inbox_item" | "pipeline_revision";
+          kind: "pipeline" | "draft" | "run" | "node_template" | "profile";
           id: string;
         };
       };
@@ -4911,7 +4912,7 @@ export interface components {
     AssistantChange: {
       id: string;
       /** @enum {string} */
-      kind: "draft_edit" | "run_retry" | "inbox_action" | "run_trigger" | "run_terminate";
+      kind: "draft_edit" | "navigate" | "run_start" | "run_retry" | "approval_decision" | "publish";
       /** @description The changed entity, e.g. `draft:d-1` or `run:r-1`. */
       target_ref: string;
       /** @description The human-readable line shown in the changes list. */
@@ -8817,7 +8818,7 @@ export interface operations {
           "application/json": components["schemas"]["AssistantMessageList"];
         };
       };
-      /** @description Missing/oversized `text`, a malformed body, `approval_requests_not_available` (confirm/dismiss before part 2), or secret-shaped material (`degraded: secret_in_request`, zero egress, nothing stored). */
+      /** @description Missing/oversized `text`, a malformed body, confirm/dismiss naming no id, `text` set alongside a decision, or `approval_requests_not_available` (a build whose runner has no confirm seam), or secret-shaped material (`degraded: secret_in_request`, zero egress, nothing stored). */
       400: {
         headers: {
           [name: string]: unknown;
@@ -8830,6 +8831,15 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       /** @description The conversation does not exist or is not the caller's. */
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/problem+json": components["schemas"]["AssistantProblem"];
+        };
+      };
+      /** @description `approval_request_not_pending` (the id names no pending approval request of this conversation; no id enumeration) or `action_denied` (the confirmed action the caller's role no longer permits; the request stays pending). */
+      409: {
         headers: {
           [name: string]: unknown;
         };

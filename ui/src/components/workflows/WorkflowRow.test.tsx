@@ -4,14 +4,20 @@
  * the assignment cell never claims "unassigned" while a read is in flight,
  * and the open-draft line names the real editor — no "by assistant".
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkflowRow, stepChain } from "./WorkflowRow";
+import { MoveToFolderDialog, WorkflowRow, stepChain } from "./WorkflowRow";
 import type { Assignment, DraftSummary, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
-import { projectFixture } from "../../test/fakes";
-import { wireAssignmentList, wirePipeline } from "../../test/fixtures/m4/wire";
+import { mockFetch, projectFixture, requestsTo } from "../../test/fakes";
+import {
+  WIRE_PIPELINE_ID,
+  wireAssignmentList,
+  wirePipeline,
+  wirePipelineList,
+} from "../../test/fixtures/m4/wire";
 import { samplePipelineDocument } from "../../test/fixtures/m4/samplePipeline";
 
 const pipeline = {
@@ -148,5 +154,91 @@ describe("WorkflowRow", () => {
     cleanup();
     mount({ canAuthor: false, duplicating: false });
     expect(screen.queryByTestId(`workflow-duplicate-${pipeline.slug}`)).toBeNull();
+  });
+
+  it("offers `Move to folder…` to authors only, wired to the row action", () => {
+    const onMoveToFolder = vi.fn();
+    mount({ onMoveToFolder });
+    fireEvent.click(screen.getByTestId(`workflow-move-folder-${pipeline.slug}`));
+    expect(onMoveToFolder).toHaveBeenCalledOnce();
+    cleanup();
+    mount({ canAuthor: false, duplicating: false, onMoveToFolder });
+    expect(screen.queryByTestId(`workflow-move-folder-${pipeline.slug}`)).toBeNull();
+  });
+});
+
+describe("MoveToFolderDialog (ADR-0049 § 8)", () => {
+  const folderRow = {
+    id: WIRE_PIPELINE_ID,
+    slug: pipeline.slug,
+    display_name: pipeline.display_name,
+    folder: null,
+  };
+  const patchPath = `/api/v1/pipelines/${WIRE_PIPELINE_ID}`;
+
+  function mountDialog() {
+    const { fetchMock, requests } = mockFetch([
+      { path: patchPath, method: "PATCH", body: { ...wirePipeline, folder: "Delivery" } },
+      {
+        path: "/api/v1/pipelines",
+        body: { pipelines: [{ ...wirePipelineList.pipelines[0], folder: "Delivery" }] },
+      },
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <MoveToFolderDialog
+            pipeline={folderRow}
+            folders={["Delivery", "Ops"]}
+            onClose={() => {}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return { fetchMock, requests };
+  }
+
+  it("files the row under the typed folder with one PATCH and nothing else", async () => {
+    const { requests } = mountDialog();
+    const input = (await screen.findByTestId("move-folder-input")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Delivery" } });
+    fireEvent.click(screen.getByTestId("move-folder-submit"));
+    await waitFor(() => {
+      expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, patchPath, "PATCH")[0].body ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(sent).toEqual({ folder: "Delivery" });
+  });
+
+  it("sends `folder: null` when the input is left empty (Unfiled)", async () => {
+    const { requests } = mountDialog();
+    await screen.findByTestId("move-folder-input");
+    fireEvent.click(screen.getByTestId("move-folder-submit"));
+    await waitFor(() => {
+      expect(requestsTo(requests, patchPath, "PATCH")).toHaveLength(1);
+    });
+    const sent = JSON.parse(requestsTo(requests, patchPath, "PATCH")[0].body ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    expect(sent).toEqual({ folder: null });
+  });
+
+  it("offers the existing folders as chips and a clear-to-Unfiled chip", async () => {
+    mountDialog();
+    const input = (await screen.findByTestId("move-folder-input")) as HTMLInputElement;
+    const dialog = screen.getByTestId("move-folder-dialog");
+    expect(within(dialog).getByTestId("move-folder-option-delivery")).toBeTruthy();
+    expect(within(dialog).getByTestId("move-folder-option-ops")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("move-folder-option-delivery"));
+    expect(input.value).toBe("Delivery");
+    fireEvent.click(screen.getByTestId("move-folder-option-unfiled"));
+    expect(input.value).toBe("");
   });
 });

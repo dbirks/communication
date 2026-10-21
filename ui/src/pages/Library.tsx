@@ -51,14 +51,18 @@ import {
   usePipelines,
   useRevision,
   useRevisionDocument,
+  UNFILED_FOLDER,
+  distinctFolders,
+  folderLabel,
   workflowRowFacts,
 } from "../api/pipelines";
 import { viewDraftSummary, viewPipelineSummary, viewRevisionSummary } from "../api/m4view";
-import type { Assignment, AssignmentList, Project } from "../api/types";
+import type { Assignment, AssignmentList, PipelineSummary, Project } from "../api/types";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
 import { isDefinitionDocument } from "../lib/pipeline/definition";
 import { routes } from "../lib/routes";
-import { WorkflowRow } from "../components/workflows/WorkflowRow";
+import { useLayoutPrefs } from "../lib/prefs";
+import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/WorkflowRow";
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
 import {
   hasLibraryRole,
@@ -114,9 +118,17 @@ export function LibraryPage() {
   const pipelines = usePipelines();
   const projects = useProjects();
   const canAuthor = hasLibraryRole(me.data);
+  const { prefs } = useLayoutPrefs();
+  // ADR-0049 § 8: grouping is a display preference; the `?folder=` param the
+  // sidebar's folder links set is the page's source of truth for the filter.
+  const showFolders = prefs.showWorkflowFolders;
+  const [searchParams, setSearchParams] = useSearchParams();
+  const folderFilter = searchParams.get("folder") ?? "";
   const [filter, setFilter] = useState<"all" | "has-draft">("all");
   const [usedInProject, setUsedInProject] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<PipelineSummary | null>(null);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const items = pipelines.data?.pipelines ?? [];
   const ids = items.map((pipeline) => pipeline.id);
@@ -131,9 +143,9 @@ export function LibraryPage() {
   );
   const revisionFan = useQueries({ queries: latestDigests.map(revisionQueryOptions) });
 
-  // Folders: the pipeline carries no `folder` field yet (gaps/library.md § 6
-  // U6c — needs a backend column + ADR), so the index is one flat list. The
-  // `showWorkflowFolders` preference stays a display preference until then.
+  // Folders (ADR-0049 § 8): the wire's own `folder` values, grouped
+  // client-side; a `null`/empty renders as the Unfiled group, last. The
+  // counts are the list read's own rows — nothing is invented.
 
   // The assignments fan the rows share: every project the caller belongs to,
   // keyed exactly like the project page's reads so the cache is shared. The
@@ -160,6 +172,16 @@ export function LibraryPage() {
 
   const duplicate = useDuplicatePipeline(items.map((pipeline) => pipeline.slug));
 
+  // The filter select and the move dialog's picker share the same names: the
+  // wire's distinct folder values (alphabetical), the Unfiled label last.
+  const folderNames = useMemo(() => {
+    const names = distinctFolders(items);
+    if (items.some((pipeline) => !pipeline.folder || pipeline.folder.length === 0)) {
+      names.push(UNFILED_FOLDER);
+    }
+    return names;
+  }, [items]);
+
   const rows = items.map((pipeline, index) => {
     const definition = definitions[index]?.data;
     const ready = definition !== undefined && !definitions[index]?.isError;
@@ -184,6 +206,18 @@ export function LibraryPage() {
   });
 
   const visible = rows.filter((row) => {
+    // A `?folder=` value the list no longer carries (its last row moved away)
+    // filters nothing: the select falls back to `all folders` and so does
+    // the page, rather than hiding rows behind a stale param.
+    const effectiveFolderFilter =
+      folderFilter && folderNames.includes(folderFilter) ? folderFilter : "";
+    if (
+      showFolders &&
+      effectiveFolderFilter &&
+      folderLabel(row.pipeline.folder) !== effectiveFolderFilter
+    ) {
+      return false;
+    }
     if (filter === "has-draft" && !row.drafts.some((draft) => draft.status !== "published")) {
       return false;
     }
@@ -192,6 +226,42 @@ export function LibraryPage() {
     }
     return true;
   });
+
+  // The grouped view (ADR-0049 § 8): one section per folder, Unfiled last;
+  // a group only renders while its rows survive the other filters.
+  const groups = folderNames
+    .map((name) => ({
+      name,
+      rows: visible.filter((row) =>
+        name === UNFILED_FOLDER
+          ? !row.pipeline.folder || row.pipeline.folder.length === 0
+          : row.pipeline.folder === name,
+      ),
+    }))
+    .filter((group) => group.rows.length > 0);
+
+  const rowNode = (row: (typeof rows)[number]) => (
+    <WorkflowRow
+      key={row.pipeline.id}
+      pipeline={row.pipeline}
+      definitionReady={row.ready}
+      revisions={row.revisions}
+      document={row.document}
+      drafts={row.drafts}
+      nameOf={actors.nameOf}
+      assigned={row.facts.assigned}
+      assignmentsResolved={row.facts.resolved}
+      canAuthor={canAuthor}
+      duplicating={duplicate.isPending && duplicate.variables === row.pipeline.id}
+      onDuplicate={() =>
+        duplicate.mutate(row.pipeline.id, {
+          onSuccess: ({ pipeline, draft }) => navigate(routes.draft(pipeline.id, draft.id)),
+        })
+      }
+      onOpen={() => navigate(routes.workflow(row.pipeline.id))}
+      onMoveToFolder={canAuthor ? () => setMoveTarget(row.pipeline) : undefined}
+    />
+  );
 
   const fanBroke =
     definitions.some((entry) => entry.isError) || assignmentsFan.some((entry) => entry.isError);
@@ -263,6 +333,31 @@ export function LibraryPage() {
               </option>
             ))}
           </Select>
+          {showFolders ? (
+            <Select
+              id="workflows-filter-folder"
+              aria-label="folder"
+              value={folderFilter && folderNames.includes(folderFilter) ? folderFilter : ""}
+              onChange={(event) => {
+                const next = new URLSearchParams(searchParams);
+                if (event.target.value === "") {
+                  next.delete("folder");
+                } else {
+                  next.set("folder", event.target.value);
+                }
+                setSearchParams(next, { replace: true });
+              }}
+              className="font-mono text-[10.5px]"
+              data-testid="workflows-filter-folder"
+            >
+              <option value="">all folders</option>
+              {folderNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </Select>
+          ) : null}
         </div>
       ) : null}
       {pipelines.data && visible.length === 0 ? (
@@ -273,31 +368,51 @@ export function LibraryPage() {
         </p>
       ) : null}
       {pipelines.data && visible.length > 0 ? (
-        <ul className="divide-y-0" data-testid="workflows-list">
-          {visible.map((row) => (
-            <WorkflowRow
-              key={row.pipeline.id}
-              pipeline={row.pipeline}
-              definitionReady={row.ready}
-              revisions={row.revisions}
-              document={row.document}
-              drafts={row.drafts}
-              nameOf={actors.nameOf}
-              assigned={row.facts.assigned}
-              assignmentsResolved={row.facts.resolved}
-              canAuthor={canAuthor}
-              duplicating={duplicate.isPending && duplicate.variables === row.pipeline.id}
-              onDuplicate={() =>
-                duplicate.mutate(row.pipeline.id, {
-                  onSuccess: ({ pipeline, draft }) => navigate(routes.draft(pipeline.id, draft.id)),
-                })
-              }
-              onOpen={() => navigate(routes.workflow(row.pipeline.id))}
-            />
-          ))}
-        </ul>
+        showFolders ? (
+          // ADR-0049 § 8: collapsible folder headers, each with its count
+          // (the group's own rows — never an invented number), Unfiled last.
+          <div className="space-y-2" data-testid="workflows-list">
+            {groups.map((group) => {
+              const open = collapsed[group.name] !== true;
+              const slug =
+                group.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, "-")
+                  .replace(/^-+|-+$/g, "") || "folder";
+              return (
+                <section key={group.name}>
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    onClick={() => setCollapsed((current) => ({ ...current, [group.name]: open }))}
+                    className="flex w-full items-center gap-[6px] rounded-[3px] border border-line bg-paper px-[8px] py-[5px] font-mono text-[10.5px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+                    data-testid={`workflow-folder-header-${slug}`}
+                  >
+                    <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+                    <span className="min-w-0 truncate">{group.name}</span>
+                    <span className="ml-auto shrink-0 font-normal text-muted">
+                      {group.rows.length}
+                    </span>
+                  </button>
+                  {open ? <ul className="divide-y-0">{group.rows.map(rowNode)}</ul> : null}
+                </section>
+              );
+            })}
+          </div>
+        ) : (
+          <ul className="divide-y-0" data-testid="workflows-list">
+            {visible.map(rowNode)}
+          </ul>
+        )
       ) : null}
       <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
+      {moveTarget ? (
+        <MoveToFolderDialog
+          pipeline={moveTarget}
+          folders={folderNames}
+          onClose={() => setMoveTarget(null)}
+        />
+      ) : null}
       {/* Below the definitions, never above them: the templates are the same
           vetted samples the authoring form offers, and a reader without the
           library role has no picker to find them behind. */}

@@ -39,6 +39,14 @@ var (
 	ErrAssistantChangeNotFound       = errors.New("api: assistant change not found")
 	ErrAssistantChangeNotUndoable    = errors.New("api: assistant change is not undoable")
 	ErrAssistantChangeAlreadyUndone  = errors.New("api: assistant change is already undone")
+	// ErrAssistantMessageNotFound is one transcript row the caller does not
+	// own; the confirm/dismiss route answers it with the same stable 409
+	// as a not-pending request so a probe cannot enumerate request ids.
+	ErrAssistantMessageNotFound = errors.New("api: assistant message not found")
+	// ErrAssistantApprovalNotPending is confirm/dismiss on an unknown id or
+	// a row that is not state=pending (decision 2: 409
+	// approval_request_not_pending).
+	ErrAssistantApprovalNotPending = errors.New("api: assistant approval request is not pending")
 )
 
 // AssistantChangeNotUndoable carries the detail the 409 names (ADR-0050
@@ -97,6 +105,28 @@ type (
 		Undoable  bool       `json:"undoable"`
 		UndoneAt  *time.Time `json:"undone_at"`
 		CreatedAt time.Time  `json:"created_at"`
+	}
+
+	// AssistantChangeInput is one change-log row the turn's mutations
+	// record (ADR-0050 decision 5); UndoPayload is nil for the not-
+	// undoable kinds and the server's closed inverse for draft edits.
+	AssistantChangeInput struct {
+		Kind        string
+		ProjectID   *string
+		TargetRef   string
+		Summary     string
+		UndoPayload []byte
+	}
+
+	// AppendTurnInput is one turn's rows in the store's append order
+	// (decision 3): the user row, the assistant row, one `change` message
+	// per change, the question row and the approval_request row.
+	AppendTurnInput struct {
+		User      *AssistantMessageInput
+		Assistant *AssistantMessageInput
+		Changes   []AssistantChangeInput
+		Question  *AssistantMessageInput
+		Approval  *AssistantMessageInput
 	}
 
 	// ChangeUndoResult is one row of the undo-all results array: one
@@ -177,8 +207,19 @@ type AssistantConversationStore interface {
 	ListConversations(ctx context.Context, userID string,
 		limit int, cursor AssistantListCursor) ([]AssistantConversation, string, error)
 	GetConversation(ctx context.Context, userID, id string) (AssistantConversation, error)
+	GetMessage(ctx context.Context, userID, conversationID, messageID string) (AssistantMessage, error)
 	AddTurnMessages(ctx context.Context, userID, conversationID string,
 		msgs []AssistantMessageInput) ([]AssistantMessage, error)
+	// AppendTurn is the part-2 append: one turn's rows (user, assistant,
+	// change messages, question, approval_request) plus the change rows in
+	// ONE transaction, the question's answered_by stamped by the user row.
+	AppendTurn(ctx context.Context, userID, conversationID string,
+		in AppendTurnInput) ([]AssistantMessage, error)
+	// CompleteApproval resolves one pending approval_request (confirm / Not
+	// now): the state update, the acknowledgement message and the change
+	// row the confirmed action logged in ONE transaction.
+	CompleteApproval(ctx context.Context, userID, conversationID, messageID, state string,
+		ack AssistantMessageInput, change *AssistantChangeInput) ([]AssistantMessage, error)
 	ListMessages(ctx context.Context, userID, conversationID string,
 		limit int, cursor AssistantListCursor) ([]AssistantMessage, string, error)
 	RecentMessages(ctx context.Context, userID, conversationID string, limit int) ([]AssistantMessage, error)
@@ -187,20 +228,27 @@ type AssistantConversationStore interface {
 	UndoAll(ctx context.Context, c assistant.Caller, conversationID string) ([]ChangeUndoResult, error)
 }
 
-// AssistantConversationDeps carries the store and the turn runner. A nil
-// Runner is the deployment without an assistant endpoint: the messages
-// route answers 503 assistant_not_configured, the read routes stay live
-// (an existing transcript is still readable), and no turn is ever faked.
+// AssistantConversationDeps carries the store, the turn runner and the
+// trust-level read. A nil Runner is the deployment without an assistant
+// endpoint: the messages route answers 503 assistant_not_configured, the
+// read routes stay live (an existing transcript is still readable), and no
+// turn is ever faked. TrustLevel (nil here) is the per-user
+// assistant.trust_level read from user_preferences (ADR-0046/C2) at the
+// start of each turn; a nil reader keeps the ADR's default (ask_risky).
 type AssistantConversationDeps struct {
 	Store  AssistantConversationStore
 	Runner assistant.TurnRunner
+	// TrustLevel reads the caller's assistant.trust_level (the stored
+	// string; the runner normalizes it). The bool is false when the
+	// preference has never been saved.
+	TrustLevel func(ctx context.Context, c assistant.Caller) (string, bool)
 }
 
 // RegisterAssistantConversations mounts the ADR-0050 conversation and
 // change routes. Session-authed; the mutations (POST) carry the same
 // CSRF contract as every other mutation (ADR-0014).
 func RegisterAssistantConversations(s *Server, deps AssistantConversationDeps) {
-	h := &assistantConversationHandlers{store: deps.Store, runner: deps.Runner, srv: s}
+	h := &assistantConversationHandlers{store: deps.Store, runner: deps.Runner, trust: deps.TrustLevel, srv: s}
 	s.HandleAuthed("POST /api/v1/assistant/conversations", http.HandlerFunc(h.createConversation))
 	s.HandleAuthed("GET /api/v1/assistant/conversations", http.HandlerFunc(h.listConversations))
 	s.HandleAuthed("POST /api/v1/assistant/conversations/{conversationId}/messages",
@@ -218,6 +266,7 @@ func RegisterAssistantConversations(s *Server, deps AssistantConversationDeps) {
 type assistantConversationHandlers struct {
 	store  AssistantConversationStore
 	runner assistant.TurnRunner
+	trust  func(ctx context.Context, c assistant.Caller) (string, bool)
 	srv    *Server
 }
 
@@ -384,11 +433,15 @@ type assistantMessagePayload struct {
 }
 
 // postMessage runs ONE server-side turn (ADR-0050 decision 2): the
-// caller's message plus the folded transcript goes to the runner, the
-// user row and the answer row are appended in one store transaction, and
-// the response carries exactly the rows this request appended (the user
-// row first). A failed turn stores nothing: the problem is written and
-// the transcript is untouched (the ADR-0034 refusal behaviour).
+// caller's message plus the transcript history goes to the runner with
+// the caller's trust level (read server-side, decision 4), and the rows
+// the turn produced (the user row first, then the turn's output —
+// assistant, change rows, question and approval_request rows) are
+// appended in ONE store transaction; the response carries exactly those
+// rows. A failed turn stores nothing (the ADR-0034 refusal behaviour).
+// A `confirm`/`dismiss` post is the approval decision instead of a turn
+// (decision 2's confirm mechanics): no model call, the state moves, the
+// action (if confirmed) executes once as the caller.
 func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.principal(w, r)
 	if !ok {
@@ -399,11 +452,13 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 		WriteProblem(w, http.StatusBadRequest, "Bad Request", err.Error())
 		return
 	}
-	// The approval flow (confirm / dismiss a pending approval_request)
-	// lands in part 2 with the trust-gated tool loop; an honest 400 now.
+	conversationID := r.PathValue("conversationId")
+	if _, err := h.store.GetConversation(r.Context(), p.UserID, conversationID); err != nil {
+		assistantConversationNotFound(w, err)
+		return
+	}
 	if body.Confirm != nil || body.Dismiss != nil {
-		assistantCodeProblem(w, http.StatusBadRequest, "approval_requests_not_available",
-			"confirm and dismiss arrive with the assistant's approval flow, which is not available on this build yet.")
+		h.postMessageApproval(w, r, p, conversationID, &body)
 		return
 	}
 	text := strings.TrimSpace(body.Text)
@@ -415,11 +470,6 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 	case len([]rune(text)) > assistant.MaxMessageRunes:
 		WriteProblem(w, http.StatusBadRequest, "Bad Request",
 			"text must be at most "+strconv.Itoa(assistant.MaxMessageRunes)+" characters.")
-		return
-	}
-	conversationID := r.PathValue("conversationId")
-	if _, err := h.store.GetConversation(r.Context(), p.UserID, conversationID); err != nil {
-		assistantConversationNotFound(w, err)
 		return
 	}
 	if h.runner == nil {
@@ -464,11 +514,12 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 			"Could not prepare the message.")
 		return
 	}
-	answer, bad := h.runner.RunTurn(r.Context(), assistant.TurnRequest{
-		Caller:  h.caller(p),
-		Text:    text,
-		Context: ctx,
-		History: history,
+	result, bad := h.runner.RunTurn(r.Context(), assistant.TurnRequest{
+		Caller:     h.caller(p),
+		Text:       text,
+		Context:    ctx,
+		History:    history,
+		TrustLevel: h.trustLevel(r.Context(), h.caller(p)),
 	})
 	if bad != nil {
 		// ADR-0034's refusal behaviour: nothing is stored, the problem
@@ -476,23 +527,74 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 		writeAssistantProblem(w, bad.Status, bad.Code, bad.Detail)
 		return
 	}
-	assistantPayload, err := json.Marshal(assistantMessagePayload{
-		Kind:           "assistant",
-		TurnID:         answer.TurnID,
-		AnswerMarkdown: answer.AnswerMarkdown,
-		Links:          answer.Links,
-		ToolCalls:      answer.ToolCalls,
-		Degraded:       answer.Degraded,
-	})
-	if err != nil {
-		WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
-			"Could not prepare the answer.")
-		return
+	in := AppendTurnInput{User: &AssistantMessageInput{Kind: "user", Payload: userPayload}}
+	if result.Answer != nil {
+		assistantPayload, err := json.Marshal(assistantMessagePayload{
+			Kind:           "assistant",
+			TurnID:         result.Answer.TurnID,
+			AnswerMarkdown: result.Answer.AnswerMarkdown,
+			Links:          result.Answer.Links,
+			ToolCalls:      result.Answer.ToolCalls,
+			Degraded:       result.Answer.Degraded,
+		})
+		if err != nil {
+			WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+				"Could not prepare the answer.")
+			return
+		}
+		in.Assistant = &AssistantMessageInput{Kind: "assistant", Payload: assistantPayload}
 	}
-	rows, err := h.store.AddTurnMessages(r.Context(), p.UserID, conversationID, []AssistantMessageInput{
-		{Kind: "user", Payload: userPayload},
-		{Kind: "assistant", Payload: assistantPayload},
-	})
+	for _, ch := range result.Changes {
+		in.Changes = append(in.Changes, AssistantChangeInput{
+			Kind:        ch.Kind,
+			ProjectID:   ch.ProjectID,
+			TargetRef:   ch.TargetRef,
+			Summary:     ch.Summary,
+			UndoPayload: ch.UndoPayload,
+		})
+	}
+	if result.Question != nil {
+		turnID := ""
+		if result.Answer != nil {
+			turnID = result.Answer.TurnID
+		}
+		q, err := json.Marshal(questionMessagePayload{
+			Kind:          "question",
+			TurnID:        turnID,
+			Prompt:        result.Question.Prompt,
+			Options:       result.Question.Options,
+			AllowFreeText: result.Question.AllowFreeText,
+			AnsweredBy:    nil,
+		})
+		if err != nil {
+			WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+				"Could not prepare the question.")
+			return
+		}
+		in.Question = &AssistantMessageInput{Kind: "question", Payload: q}
+	}
+	if result.Approval != nil {
+		turnID := ""
+		if result.Answer != nil {
+			turnID = result.Answer.TurnID
+		}
+		a, err := json.Marshal(approvalRequestPayload{
+			Kind:    "approval_request",
+			TurnID:  turnID,
+			Action:  result.Approval.Tool,
+			Args:    result.Approval.Args,
+			Summary: result.Approval.Summary,
+			Risk:    result.Approval.Risk,
+			State:   "pending",
+		})
+		if err != nil {
+			WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+				"Could not prepare the approval request.")
+			return
+		}
+		in.Approval = &AssistantMessageInput{Kind: "approval_request", Payload: a}
+	}
+	rows, err := h.store.AppendTurn(r.Context(), p.UserID, conversationID, in)
 	if err != nil {
 		if errors.Is(err, ErrAssistantConversationNotFound) {
 			assistantConversationNotFound(w, err)
@@ -506,6 +608,205 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 	WriteJSON(w, http.StatusOK, struct {
 		Messages []AssistantMessage `json:"messages"`
 	}{Messages: rows})
+}
+
+// trustLevel reads the caller's assistant.trust_level (ADR-0046/C2) for
+// the tool loop (decision 4). A deployment without the preference read
+// wired, or a value never saved, keeps the ADR's default: ask_risky.
+func (h *assistantConversationHandlers) trustLevel(ctx context.Context, c assistant.Caller) assistant.TrustLevel {
+	if h.trust == nil {
+		return assistant.TrustAskRisky
+	}
+	s, ok := h.trust(ctx, c)
+	if !ok || strings.TrimSpace(s) == "" {
+		return assistant.TrustAskRisky
+	}
+	return assistant.NormalizeTrustLevel(assistant.TrustLevel(s))
+}
+
+// postMessageApproval is the `confirm`/`dismiss` branch (decision 2): the
+// decision row is updated, the action (if confirmed) executes once through
+// the underlying service as the caller, and one short acknowledgement is
+// appended. There is no model call on this path. Unknown ids and
+// non-pending states answer 409 approval_request_not_pending; a confirmed
+// action the caller's role no longer permits is 409 action_denied and the
+// request stays pending.
+func (h *assistantConversationHandlers) postMessageApproval(w http.ResponseWriter, r *http.Request,
+	p *Principal, conversationID string, body *AssistantMessagePost) {
+	if body.Confirm != nil && body.Dismiss != nil {
+		assistantCodeProblem(w, http.StatusBadRequest, "confirm_and_dismiss_exclusive",
+			"confirm and dismiss are mutually exclusive: post one or the other.")
+		return
+	}
+	confirm := body.Confirm != nil
+	var id string
+	if confirm {
+		id = strings.TrimSpace(*body.Confirm)
+	} else {
+		id = strings.TrimSpace(*body.Dismiss)
+	}
+	if id == "" {
+		assistantCodeProblem(w, http.StatusBadRequest, "invalid_approval_id",
+			"confirm/dismiss must name an approval_request message id.")
+		return
+	}
+	if strings.TrimSpace(body.Text) != "" {
+		assistantCodeProblem(w, http.StatusBadRequest, "text_with_approval",
+			"text must be empty when confirming or dismissing an approval request.")
+		return
+	}
+	if h.runner == nil {
+		writeAssistantProblem(w, http.StatusServiceUnavailable, "assistant_not_configured",
+			"the assistant is not enabled on this deployment (COMMUNICATION_ASSISTANT_BASE_URL is unset)")
+		return
+	}
+	if confirm {
+		// A part-1 deployment (the folded-broker runner) has no confirm
+		// path: the honest answer, as before part 2, before any read.
+		if _, ok := h.runner.(approvalExecutor); !ok {
+			assistantCodeProblem(w, http.StatusBadRequest, "approval_requests_not_available",
+				"the assistant's approval flow is not available on this build yet.")
+			return
+		}
+	}
+	msg, err := h.store.GetMessage(r.Context(), p.UserID, conversationID, id)
+	if err != nil || msg.Kind != "approval_request" {
+		assistantApprovalProblem(w, http.StatusConflict, "approval_request_not_pending",
+			"That approval request is not pending.")
+		return
+	}
+	var ap approvalRequestPayload
+	if err := json.Unmarshal(msg.Payload, &ap); err != nil || ap.State != "pending" {
+		assistantApprovalProblem(w, http.StatusConflict, "approval_request_not_pending",
+			"That approval request is not pending.")
+		return
+	}
+	state := "dismissed"
+	var change *AssistantChangeInput
+	var ackMarkdown string
+	var ackCalls []assistant.ToolCall
+	if confirm {
+		ex := h.runner.(approvalExecutor)
+		args := ap.Args
+		if args == nil {
+			args = map[string]string{}
+		}
+		ack, ch, err := ex.ExecuteAction(r.Context(), h.caller(p), ap.Action, args)
+		if err != nil {
+			// Decision 4: the denial is reported with a stable reason,
+			// naming no project facts, and the request stays pending so
+			// the client can answer it again.
+			assistantApprovalProblem(w, http.StatusConflict, "action_denied",
+				"That action could not be run with your current permissions; the request stays pending.")
+			return
+		}
+		state = "confirmed"
+		ackMarkdown = ack
+		ackCalls = []assistant.ToolCall{{
+			Name: ap.Action,
+			Args: stringMapToAny(args),
+			OK:   true,
+		}}
+		if ch != nil {
+			change = &AssistantChangeInput{
+				Kind:        ch.Kind,
+				ProjectID:   ch.ProjectID,
+				TargetRef:   ch.TargetRef,
+				Summary:     ch.Summary,
+				UndoPayload: ch.UndoPayload,
+			}
+		}
+	} else {
+		ackMarkdown = "Noted — I have not run that action."
+	}
+	ackPayload, err := json.Marshal(assistantMessagePayload{
+		Kind:           "assistant",
+		TurnID:         ap.TurnID,
+		AnswerMarkdown: ackMarkdown,
+		Links:          []assistant.Link{},
+		ToolCalls:      nonNilToolCalls(ackCalls),
+		Degraded:       nil,
+	})
+	if err != nil {
+		WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+			"Could not prepare the acknowledgement.")
+		return
+	}
+	rows, err := h.store.CompleteApproval(r.Context(), p.UserID, conversationID, id, state,
+		AssistantMessageInput{Kind: "assistant", Payload: ackPayload}, change)
+	switch {
+	case err == nil:
+		WriteJSON(w, http.StatusOK, struct {
+			Messages []AssistantMessage `json:"messages"`
+		}{Messages: rows})
+	case errors.Is(err, ErrAssistantApprovalNotPending):
+		// The request resolved between the read and this write.
+		assistantApprovalProblem(w, http.StatusConflict, "approval_request_not_pending",
+			"That approval request is not pending.")
+	case errors.Is(err, ErrAssistantConversationNotFound):
+		assistantConversationNotFound(w, err)
+	default:
+		h.srv.logger.Error("assistant.messages.approval", "err", err.Error())
+		WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+			"Could not save the decision.")
+	}
+}
+
+// approvalExecutor is the part-2 runner's confirm seam: it re-runs one
+// recorded action exactly once as the caller (decision 4). The part-1
+// folded-broker runner does not implement it, which is the deployment's
+// honest 400 approval_requests_not_available.
+type approvalExecutor interface {
+	ExecuteAction(ctx context.Context, c assistant.Caller, tool string,
+		args map[string]string) (string, *assistant.ChangeRecord, error)
+}
+
+// questionMessagePayload is the kind-"question" payload (ADR-0050
+// decision 3): the model-written prompt, 2–4 options, free text always
+// allowed. answered_by is the replying user message's id, stamped by the
+// next turn in the same transaction the reply appends.
+type questionMessagePayload struct {
+	Kind          string                         `json:"kind"`
+	TurnID        string                         `json:"turn_id"`
+	Prompt        string                         `json:"prompt"`
+	Options       []assistant.TurnQuestionOption `json:"options"`
+	AllowFreeText bool                           `json:"allow_free_text"`
+	AnsweredBy    *string                        `json:"answered_by"`
+}
+
+// approvalRequestPayload is the kind-"approval_request" payload
+// (ADR-0050 decision 3): the action and its server-bounded string args
+// (the confirm path re-runs exactly these), the summary and risk the card
+// shows, and state pending -> confirmed | dismissed.
+type approvalRequestPayload struct {
+	Kind    string            `json:"kind"`
+	TurnID  string            `json:"turn_id"`
+	Action  string            `json:"action"`
+	Args    map[string]string `json:"args"`
+	Summary string            `json:"summary"`
+	Risk    string            `json:"risk"`
+	State   string            `json:"state"`
+}
+
+// assistantApprovalProblem is assistantCodeProblem for the approval flow's
+// two stable 409s, keeping one place that knows the shape.
+func assistantApprovalProblem(w http.ResponseWriter, status int, code, detail string) {
+	assistantCodeProblem(w, status, code, detail)
+}
+
+func stringMapToAny(m map[string]string) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func nonNilToolCalls(calls []assistant.ToolCall) []assistant.ToolCall {
+	if calls == nil {
+		return []assistant.ToolCall{}
+	}
+	return calls
 }
 
 // contextOrNil renders an empty validated context as an absent member.

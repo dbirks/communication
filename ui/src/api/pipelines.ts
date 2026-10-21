@@ -31,6 +31,7 @@ import type {
   PipelineList,
   PipelineRevision,
   PipelineRevisionSummaryList,
+  PipelineSummary,
   PipelineUpdate,
   ValidateResponse,
 } from "./types";
@@ -147,6 +148,58 @@ export function useUpdatePipeline() {
       apiFetch<Pipeline>(`/api/v1/pipelines/${pipelineId}`, { method: "PATCH", json: body }),
     onSuccess: async (pipeline) => {
       queryClient.setQueryData(queryKeys.pipeline(pipeline.id), pipeline);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+    },
+  });
+}
+
+/* ---------------------------------------------------------------- folders */
+
+/** ADR-0049 § 8: the client-side group label for a `null`/empty `folder`.
+ * The API serves `null` verbatim; only the UI names the group. */
+export const UNFILED_FOLDER = "Unfiled";
+
+/** The label the Workflows index and the sidebar render for a wire `folder`. */
+export function folderLabel(folder: string | null | undefined): string {
+  return folder && folder.length > 0 ? folder : UNFILED_FOLDER;
+}
+
+/** The distinct non-empty folder names of a pipeline list, alphabetically. */
+export function distinctFolders(items: { folder?: string | null }[]): string[] {
+  const names = new Set<string>();
+  for (const item of items) {
+    if (item.folder && item.folder.length > 0) names.add(item.folder);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * `PATCH /api/v1/pipelines/{pipelineId} { folder }` (ADR-0049 § 8): a name
+ * files the row under that group; `null` clears it (Unfiled). The pipeline
+ * read and the list row are patched in place so the index's groups and the
+ * sidebar's counts move without a second round trip; the invalidation behind
+ * them keeps any other reader honest.
+ */
+export function useMovePipelineFolder(pipelineId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (folder: string | null) =>
+      apiFetch<Pipeline>(`/api/v1/pipelines/${pipelineId}`, {
+        method: "PATCH",
+        json: { folder },
+      }),
+    onSuccess: async (pipeline) => {
+      const folder: string | null = pipeline.folder ?? null;
+      queryClient.setQueryData(queryKeys.pipeline(pipeline.id), pipeline);
+      const list = queryClient.getQueryData<PipelineList>(queryKeys.pipelines);
+      if (list) {
+        queryClient.setQueryData(queryKeys.pipelines, {
+          ...list,
+          pipelines: list.pipelines.map((row: PipelineSummary) =>
+            row.id === pipeline.id ? { ...row, folder } : row,
+          ),
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
     },
   });

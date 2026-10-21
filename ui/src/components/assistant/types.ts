@@ -1,12 +1,25 @@
 /**
  * Assistant v2 wire types — mirror ADR-0050 exactly.
  *
- * The backend routes are being built in parallel; these types are defined
- * locally so the presentational components can land first. When the
- * OpenAPI-generated types exist, a later unit swaps the imports — field
- * names are the snake_case JSON wire names from ADR-0050 and must not be
- * renamed. No component fetches: data flows in as props, callbacks out.
+ * Where the OpenAPI contract already carries a shape (the conversation rows,
+ * the undo results), the GENERATED types (`ui/src/api/schema.d.ts`) are
+ * re-exported below instead of a local copy. Where it does not — the
+ * kind-discriminated message `payload` arrives as an opaque `object`, and the
+ * `assistant_changes` kind CHECK lives in migration `00010` (draft_edit,
+ * navigate, run_start, run_retry, approval_decision, publish) — the local
+ * interfaces below are the wire truth and must not be renamed. No component
+ * fetches: data flows in as props, callbacks out.
  */
+import type { components } from "../../api/schema";
+
+/** Generated (api/openapi.yaml): the caller's persisted conversation row. */
+export type AssistantConversation = components["schemas"]["AssistantConversation"];
+/** Generated: one page of conversations, newest `last_message_at` first. */
+export type AssistantConversationList = components["schemas"]["AssistantConversationList"];
+/** Generated: one independent outcome of an undo attempt. */
+export type AssistantChangeUndoResult = components["schemas"]["AssistantChangeUndoResult"];
+/** Generated: the undo-all result (newest first, one result per attempt). */
+export type AssistantChangeUndoAll = components["schemas"]["AssistantChangeUndoAll"];
 
 /** `user_preferences.assistant.trust_level` (ADR-0046, C2; ADR-0050 §4). */
 export type TrustLevel = "ask_all" | "ask_risky" | "no_ask";
@@ -16,7 +29,9 @@ export type AssistantMessageKind =
   | "assistant"
   | "question"
   | "change"
-  | "approval_request";
+  | "approval_request"
+  /** The part-2 ack the server appends once a gated action ran (ADR-0050 §4); rendered as nothing. */
+  | "approval_response";
 
 /** `assistant_changes.kind` (ADR-0050 migration + Decision 5). */
 export type ChangeKind =
@@ -107,12 +122,19 @@ export interface AssistantApprovalRequestPayload {
   state: ApprovalRequestState;
 }
 
+/** Payload for `kind: "approval_response"` — the part-2 ack; renders as nothing. */
+export interface AssistantApprovalResponsePayload {
+  kind: "approval_response";
+  turn_id?: string | null;
+}
+
 export type AssistantMessagePayload =
   | AssistantUserPayload
   | AssistantAnswerPayload
   | AssistantQuestionPayload
   | AssistantChangePayload
-  | AssistantApprovalRequestPayload;
+  | AssistantApprovalRequestPayload
+  | AssistantApprovalResponsePayload;
 
 /** One transcript row (`GET /assistant/conversations/{id}/messages`). */
 export interface AssistantMessage {
@@ -135,6 +157,11 @@ export interface AssistantChange {
   undoable: boolean;
   undone_at: string | null;
   created_at: string;
+}
+
+/** The conversation's change log (`GET /assistant/conversations/{id}/changes`). */
+export interface AssistantChangeList {
+  changes: AssistantChange[];
 }
 
 /** The three trust levels, in the order the pill menu lists them (4d). */

@@ -166,7 +166,7 @@ func TestRunTurnFoldsHistoryAndContextIntoTheBrokerQuestion(t *testing.T) {
 		{Kind: "user", Payload: userPayload(t, "what nodes does the run have?")},
 		{Kind: "assistant", Payload: assistantPayload(t, "it has three.")},
 	}
-	answer, bad := runner.RunTurn(context.Background(), TurnRequest{
+	result, bad := runner.RunTurn(context.Background(), TurnRequest{
 		Caller: testCaller,
 		Text:   "and which one failed?",
 		Context: TurnContext{
@@ -179,8 +179,8 @@ func TestRunTurnFoldsHistoryAndContextIntoTheBrokerQuestion(t *testing.T) {
 	if bad != nil {
 		t.Fatalf("RunTurn failed: %v", bad)
 	}
-	if answer == nil || strings.TrimSpace(answer.AnswerMarkdown) == "" {
-		t.Fatalf("no answer: %+v", answer)
+	if result == nil || result.Answer == nil || strings.TrimSpace(result.Answer.AnswerMarkdown) == "" {
+		t.Fatalf("no answer: %+v", result)
 	}
 	if len(model.requests) != 1 {
 		t.Fatalf("model requests = %d, want 1", len(model.requests))

@@ -45,6 +45,7 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/settings/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/ops$`),
 	regexp.MustCompile(`^/artifacts/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/approvals/[A-Za-z0-9_-]{1,64}$`),
 	// Legacy routes the app-shell redesign still serves as redirects.
 	regexp.MustCompile(`^/library$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),

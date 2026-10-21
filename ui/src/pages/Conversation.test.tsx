@@ -28,6 +28,7 @@ import {
 } from "../test/fakes";
 import type { Conversation, TurnSandbox } from "../api/types";
 import { shortId } from "../api/names";
+import { DRAFT_PR_PROMPT } from "./Conversation";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
 const projectPath = `/api/v1/projects/${projectFixture.id}`;
@@ -626,12 +627,16 @@ describe("the thread page is a transcript column with a context rail", () => {
     expect(meta.textContent).toContain(projectFixture.name);
     expect(meta.textContent).toContain(claudeProfile.name);
     expect(screen.getByTestId("thread-age").textContent).toMatch(/\d+[smhd]/);
-    // 4f: ARTIFACTS says not available yet, and NEXT offers only the
-    // (still disabled) hand-to-workflow stub.
+    // 4f: ARTIFACTS says not available yet; NEXT offers the handoff (now live)
+    // and, for the controller, the draft-PR ask. The thread has no runs yet,
+    // so the linked-runs list stays hidden.
     expect(within(rail).getByTestId("artifacts-rail").textContent).toContain("Not available yet");
     const handoff = within(rail).getByTestId("hand-to-workflow");
-    expect((handoff as HTMLButtonElement).disabled).toBe(true);
-    expect(within(rail).queryByText(/draft PR/i)).toBeNull();
+    expect((handoff as HTMLButtonElement).disabled).toBe(false);
+    expect(within(rail).queryByTestId("thread-linked-runs")).toBeNull();
+    expect(within(rail).getByTestId("thread-draft-pr-open").textContent).toContain(
+      "Open a draft PR from this branch",
+    );
   });
 
   it("names the run the transcript belongs to from the ids the journal carried", async () => {
@@ -952,5 +957,226 @@ describe("an agent message that served a plan", () => {
     const transcript = await agentSays(bare);
     expect(within(transcript).getByTestId("plan-goal").textContent).toBe("Split the billing job");
     expect(within(transcript).getByTestId("agent-plan-toggle")).toBeTruthy();
+  });
+});
+
+describe("the NEXT rail: hand to a workflow, linked runs and the draft-PR ask", () => {
+  const linkedRunId = "01987a81-1111-7000-8000-abcdef012345";
+
+  it("lists the linked runs with their status, age and the workbench link", async () => {
+    const handed: Conversation = {
+      ...conversationFixture,
+      linked_runs: [
+        { run_id: linkedRunId, created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+      ],
+    };
+    renderApp({
+      path,
+      routes: routes(handed, [
+        // The list row carries no status; the row reads it from the run detail.
+        { path: `/api/v1/runs/${linkedRunId}`, method: "GET", body: { status: "queued" } },
+      ]),
+    });
+    const rail = await screen.findByRole("complementary", { name: "Thread context" });
+    const list = await within(rail).findByTestId("thread-linked-runs");
+    expect(within(list).getByTestId("thread-linked-run-status-0").textContent).toContain("queued");
+    // The age is answered from the recorded handoff moment (30 minutes back).
+    expect(list.textContent).toContain("30m");
+    const link = within(list).getByTestId("thread-linked-run-link-0");
+    expect(link.textContent).toContain(`run ${shortId(linkedRunId)}`);
+    expect((link as HTMLAnchorElement).getAttribute("href")).toBe(`/runs/${linkedRunId}`);
+  });
+
+  it("hides the linked-runs list while the thread has not started any run", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    const rail = await screen.findByRole("complementary", { name: "Thread context" });
+    expect(within(rail).queryByTestId("thread-linked-runs")).toBeNull();
+  });
+
+  it("opens the handoff dialog, links a started run and refetches the thread", async () => {
+    const { requests } = renderApp({
+      path,
+      routes: routes(conversationFixture, [
+        {
+          path: `/api/v1/projects/${projectFixture.id}/assignments`,
+          method: "GET",
+          body: {
+            assignments: [
+              {
+                id: "01987a82-2222-7000-8000-abcdef012345",
+                project_id: projectFixture.id,
+                pipeline_id: "01987a83-3333-7000-8000-abcdef012345",
+                pinned_revision_id: "01987a84-4444-7000-8000-abcdef012345",
+                pinned_revision_digest: "abc1234def56789012345678",
+                pinned_version_label: "stable r4",
+                max_concurrent_runs: 1,
+                budget_overrides: {},
+                effective_budgets: {},
+                enabled: true,
+                version: 1,
+                created_at: "2026-10-14T17:00:00Z",
+                updated_at: "2026-10-14T17:00:00Z",
+              },
+            ],
+          },
+        },
+        {
+          path: "/api/v1/pipelines",
+          method: "GET",
+          body: {
+            pipelines: [
+              {
+                id: "01987a83-3333-7000-8000-abcdef012345",
+                slug: "bug-fix",
+              },
+            ],
+          },
+        },
+        // The pinned revision declares a REQUIRED `goal` input: the dialog
+        // renders it as a form field and gates Start until it is filled.
+        {
+          path: `/api/v1/revisions/01987a84-4444-7000-8000-abcdef012345`,
+          method: "GET",
+          body: {
+            id: "01987a84-4444-7000-8000-abcdef012345",
+            canonical_document: {
+              spec: {
+                inputs: {
+                  type: "object",
+                  properties: {
+                    goal: { type: "string", description: "What should the run do?" },
+                  },
+                  required: ["goal"],
+                },
+              },
+            },
+          },
+        },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+          method: "GET",
+          body: { workspaces: [] },
+        },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+          method: "GET",
+          body: { artifacts: [] },
+        },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/runs`,
+          method: "POST",
+          status: 201,
+          body: { run_id: linkedRunId, status: "queued" },
+        },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+
+    fireEvent.click(screen.getByTestId("hand-to-workflow"));
+    const dialog = await screen.findByTestId("handoff-dialog");
+    // Wait for the workflow options to load; the summary starts empty
+    // because this thread has no agent message yet.
+    await within(dialog).findByTestId("handoff-workflow-select");
+    // The pinned revision's REQUIRED `goal` input is empty, so the submit
+    // stays gated until it is filled.
+    const goal = await within(dialog).findByTestId("new-run-input-goal");
+    expect(within(dialog).getByTestId("handoff-submit").hasAttribute("disabled")).toBe(true);
+    fireEvent.change(goal, { target: { value: "Trace the slow query" } });
+    const submit = within(dialog).getByTestId("handoff-submit");
+    await waitFor(() => expect(submit.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(submit);
+
+    // The dialog itself reports the start…
+    expect(await within(dialog).findByTestId("handoff-started")).toBeTruthy();
+    // …and the rail links the run with its short id.
+    const started = screen.getByTestId("thread-handoff-started");
+    expect(started.textContent).toContain(`Run #${shortId(linkedRunId)} started`);
+    expect((started as HTMLAnchorElement).getAttribute("href")).toBe(`/runs/${linkedRunId}`);
+
+    // The handoff body rides the API's own source contract (ADR-0053)…
+    await waitFor(() => {
+      const [create] = requestsTo(requests, `/api/v1/projects/${projectFixture.id}/runs`, "POST");
+      const body = JSON.parse(create.body ?? "{}");
+      expect(body.source.conversation_id).toBe(conversationId);
+    });
+    // …and the thread refetches itself: its linked_runs are the rail's list.
+    await waitFor(() => {
+      expect(requestsTo(requests, conversationPath, "GET").length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("sends the exact draft-PR prompt through the message path when the controller confirms", async () => {
+    const { requests } = renderApp({
+      path,
+      routes: routes(conversationFixture, [
+        {
+          path: `${conversationPath}/messages`,
+          method: "POST",
+          status: 202,
+          body: {
+            id: turnId,
+            conversation_id: conversationId,
+            status: "queued",
+            submitted_by: meFixture.id,
+            created_at: "2026-10-14T18:01:00Z",
+          },
+        },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+
+    fireEvent.click(screen.getByTestId("thread-draft-pr-open"));
+    const confirm = await screen.findByTestId("thread-draft-pr-confirm");
+    expect(confirm.textContent).toContain("GitHub token on its profile (ADR-0045)");
+    expect(confirm.textContent).toContain("the worker's egress allows github.com");
+    fireEvent.click(within(confirm).getByTestId("thread-draft-pr-send"));
+
+    await waitFor(() => {
+      const [request] = requestsTo(requests, `${conversationPath}/messages`, "POST");
+      expect(JSON.parse(request.body ?? "{}")).toEqual({ prompt: DRAFT_PR_PROMPT });
+    });
+    // The confirmation closes and the honest note: a PR exists only if the
+    // transcript shows its URL.
+    expect(screen.queryByTestId("thread-draft-pr-confirm")).toBeNull();
+    expect(screen.getByTestId("thread-draft-pr-sent").textContent).toContain(
+      "the agent's reply appears in the transcript",
+    );
+  });
+
+  it("cancels the draft-PR confirmation without sending anything", async () => {
+    const { requests } = renderApp({
+      path,
+      routes: routes(conversationFixture, [
+        {
+          path: `${conversationPath}/messages`,
+          method: "POST",
+          status: 202,
+          body: {
+            id: turnId,
+            conversation_id: conversationId,
+            status: "queued",
+            submitted_by: meFixture.id,
+            created_at: "2026-10-14T18:01:00Z",
+          },
+        },
+      ]),
+    });
+    await screen.findByTestId("conversation-title");
+
+    fireEvent.click(screen.getByTestId("thread-draft-pr-open"));
+    const confirm = await screen.findByTestId("thread-draft-pr-confirm");
+    fireEvent.click(within(confirm).getByTestId("thread-draft-pr-cancel"));
+    expect(screen.queryByTestId("thread-draft-pr-confirm")).toBeNull();
+    expect(requestsTo(requests, `${conversationPath}/messages`, "POST")).toEqual([]);
+  });
+
+  it("shows the draft-PR reason instead of the button to a non-controller", async () => {
+    renderApp({ path, routes: routes(controlledByOther) });
+    await screen.findByTestId("conversation-title");
+
+    expect(screen.queryByTestId("thread-draft-pr-open")).toBeNull();
+    expect(screen.getByTestId("thread-draft-pr").textContent).toContain(
+      "Take control to ask the agent",
+    );
   });
 });

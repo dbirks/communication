@@ -1,15 +1,19 @@
 /**
- * The Ask box is a jump list *and* — since ADR-0034 — the one read-only
- * question the server will answer: the chord opens it, typing filters, arrows
- * and Enter move the router, Enter on the Ask row posts the question with the
- * route context, a link answers with a jump, and a 503 leaves the list alone.
- * The router assertion uses a location probe rather than a screenshot of a page.
+ * The Ask box splits (ADR-0050): the jump half is this palette — the chord
+ * opens it (via the popover while the assistant is on screen, via
+ * `openPalette()` here), typing filters, arrows and Enter move the router.
+ * The ask half is the assistant popover (`assistant/AssistantPopover.tsx`):
+ * the chord opens it first, the Ask row hands the question over (posted with
+ * the route context), a 503 leaves the jump list alone, and the honest line
+ * says the assistant is not configured. The router assertion uses a location
+ * probe rather than a screenshot of a page.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import CommandPalette from "./CommandPalette";
+import CommandPalette, { openPalette } from "./CommandPalette";
+import AssistantPopover from "./assistant/AssistantPopover";
 import { shortId } from "../api/names";
 import {
   claudeProfile,
@@ -29,25 +33,56 @@ import {
 
 const runsPath = `/api/v1/projects/${wireProjectId}/runs`;
 
-const askPath = "/api/v1/assistant/ask";
+const assistantConversationsPath = "/api/v1/assistant/conversations";
+const assistantMessagesPath = `${assistantConversationsPath}/conv-1/messages`;
+
+/** The one conversation the create stub returns (id `conv-1`). */
+const assistantConversation = {
+  id: "conv-1",
+  title: null,
+  created_at: "2026-07-07T00:00:00Z",
+  updated_at: "2026-07-07T00:00:00Z",
+  last_message_at: null,
+};
 
 /** One scripted turn: prose, a jump it justifies, and the tools behind both. */
-const answerFixture = {
+const turnAnswerFixture = {
   answer_markdown: "Two runs wait on you.\n\nBoth stop at `build_until_verified`.",
   links: [
-    { label: "Open approvals", href: `/projects/${wireProjectId}/approvals` },
-    { label: "The stalled run", href: `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}` },
+    { label: "Open the board", route: "/board" },
+    { label: "The stalled run", route: `/runs/${WIRE_RUN_ID}` },
   ],
   tool_calls: [
-    { name: "approval.pending", args: { project_id: wireProjectId }, ok: true },
-    { name: "run.list", ok: false, reason: "not_found" },
+    { name: "approval.pending", summary: "Saw 2 pending approvals.", ok: true },
+    { name: "run.list", summary: "Could not list the runs.", ok: false, reason: "not_found" },
   ],
-  assistant_turn_id: "01TURN",
+  turn_id: "01TURN",
   degraded: null,
 };
 
+/** The wire rows the messages POST appends for a turn (the `user` row first). */
+function turnMessagesBody(text: string) {
+  return {
+    messages: [
+      {
+        id: "m-1",
+        kind: "user",
+        payload: { kind: "user", text },
+        created_at: "2026-07-07T00:00:01Z",
+      },
+      {
+        id: "m-2",
+        kind: "assistant",
+        payload: { kind: "assistant", ...turnAnswerFixture },
+        created_at: "2026-07-07T00:00:02Z",
+      },
+    ],
+    next_cursor: null,
+  };
+}
+
 const notConfiguredStub: RouteStub = {
-  path: askPath,
+  path: assistantMessagesPath,
   method: "POST",
   status: 503,
   body: {
@@ -67,6 +102,13 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: runsPath, body: wireRunList },
     { path: "/api/v1/agent-profiles", body: { items: [claudeProfile, codexProfile] } },
+    // The popover reads the caller's conversations while open; an empty page
+    // keeps the tests' conversations fresh.
+    {
+      path: assistantConversationsPath,
+      method: "GET",
+      body: { conversations: [], next_cursor: null },
+    },
   ];
 }
 
@@ -75,6 +117,7 @@ function Where() {
   return <div data-testid="where">{useLocation().pathname}</div>;
 }
 
+/** The shell mounts the palette and the popover together — so do the tests. */
 function mountPalette(path = "/inbox", extra: RouteStub[] = []) {
   const harness = mockFetch(routes(extra));
   const queryClient = new QueryClient({
@@ -84,6 +127,7 @@ function mountPalette(path = "/inbox", extra: RouteStub[] = []) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <CommandPalette context="inbox" />
+        <AssistantPopover />
         <Routes>
           <Route path="*" element={<Where />} />
         </Routes>
@@ -101,14 +145,18 @@ function pressChord(meta = false) {
 afterEach(cleanup);
 
 describe("CommandPalette", () => {
-  it("opens on Ctrl+K and names itself as a jump, not an answer", async () => {
+  it("opens the assistant popover on Ctrl+K, and the jump palette on the chord over it", async () => {
     mountPalette();
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByTestId("assistant-popover")).toBeNull();
 
+    pressChord();
+    expect(screen.getByTestId("assistant-popover")).toBeTruthy();
+
+    // The assistant is already on screen, so the chord lands on the jumps.
     pressChord();
     const dialog = await screen.findByRole("dialog");
     expect(screen.getByTestId("palette-footer").textContent).toContain(
-      "Read-only assistant — it can look things up and link you there; it cannot act.",
+      "The Ask row opens the assistant popover",
     );
     // The sections are jumpable before anything has even loaded.
     expect(within(dialog).getByText("Inbox")).toBeTruthy();
@@ -121,7 +169,7 @@ describe("CommandPalette", () => {
 
   it("filters case-insensitively on the label and on the secondary line", async () => {
     mountPalette();
-    pressChord(true);
+    openPalette();
     const input = await screen.findByTestId("palette-input");
 
     fireEvent.change(input, { target: { value: "MODU" } });
@@ -141,7 +189,7 @@ describe("CommandPalette", () => {
     mountPalette();
     expect((await screen.findByTestId("where")).textContent).toBe("/inbox");
 
-    pressChord();
+    openPalette();
     const input = await screen.findByTestId("palette-input");
     await waitFor(() =>
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
@@ -159,12 +207,12 @@ describe("CommandPalette", () => {
 
   it("closes on Esc and on a press outside the panel", async () => {
     mountPalette();
-    pressChord();
+    openPalette();
     const input = await screen.findByTestId("palette-input");
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    pressChord();
+    openPalette();
     await screen.findByRole("dialog");
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -182,7 +230,7 @@ describe("CommandPalette", () => {
 
   it("jumps straight to a project's recent run, and offers its sub-pages", async () => {
     mountPalette();
-    pressChord();
+    openPalette();
     const list = await screen.findByRole("listbox");
 
     // The row is named the way the runs list names it: pipeline slug + short id.
@@ -196,7 +244,7 @@ describe("CommandPalette", () => {
 
   it("offers the question as the first row once there is text to ask", async () => {
     mountPalette();
-    pressChord();
+    openPalette();
     const input = await screen.findByTestId("palette-input");
 
     // No text means no question: an empty box is a jump list and nothing else.
@@ -210,29 +258,47 @@ describe("CommandPalette", () => {
     expect(screen.getAllByRole("option")[0].getAttribute("data-testid")).toBe("palette-ask");
   });
 
-  it("posts the question with the route context on Enter", async () => {
-    const { requests } = mountPalette(`/projects/${wireProjectId}/runs`, [
-      { path: askPath, method: "POST", body: answerFixture },
+  it("posts the question with the route context to the popover on Enter", async () => {
+    const { requests } = mountPalette(`/p/${wireProjectId}/runs`, [
+      { path: assistantConversationsPath, method: "POST", body: assistantConversation },
+      {
+        path: assistantMessagesPath,
+        method: "POST",
+        body: turnMessagesBody("what is failing here?"),
+      },
     ]);
-    pressChord();
+    openPalette();
     const input = await screen.findByTestId("palette-input");
     fireEvent.change(input, { target: { value: "what is failing here?" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    await waitFor(() => expect(requestsTo(requests, askPath, "POST")).toHaveLength(1));
-    // `context.route` is the on-screen route, so “here” means this project.
-    expect(JSON.parse(requestsTo(requests, askPath, "POST")[0].body ?? "{}")).toEqual({
-      question: "what is failing here?",
-      context: { route: `/projects/${wireProjectId}/runs`, project_id: wireProjectId },
+    // The Ask row hands the question to the popover and gets out of the way.
+    const popover = await screen.findByTestId("assistant-popover");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(popover).getByTestId("assistant-msg-user").textContent).toContain(
+      "what is failing here?",
+    );
+    // The turn posts as a plain user message; `context.route` is the
+    // on-screen route, so "here" means this project.
+    const posted = requestsTo(requests, assistantMessagesPath, "POST");
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse(posted[0].body ?? "{}")).toEqual({
+      text: "what is failing here?",
+      context: { route: `/p/${wireProjectId}/runs`, project_id: wireProjectId },
     });
   });
 
   it("says thinking… while the turn is in flight, then answers and jumps", async () => {
     const { requests } = mountPalette("/inbox", [
-      { path: askPath, method: "POST", body: answerFixture },
+      { path: assistantConversationsPath, method: "POST", body: assistantConversation },
+      {
+        path: assistantMessagesPath,
+        method: "POST",
+        body: turnMessagesBody("which runs wait on me?"),
+      },
     ]);
 
-    // Hold the answer back so “pending” is observed rather than assumed: the
+    // Hold the answer back so "pending" is observed rather than assumed: the
     // stub's own resolution is only a microtask away.
     const responder = globalThis.fetch as unknown as (
       input: unknown,
@@ -244,20 +310,20 @@ describe("CommandPalette", () => {
     });
     vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
       const response = await responder(input, init);
-      if (input === askPath) await gate;
+      if (String(input).includes("/messages")) await gate;
       return response;
     });
 
-    pressChord();
+    openPalette();
     const input = await screen.findByTestId("palette-input");
     fireEvent.change(input, { target: { value: "which runs wait on me?" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    // Pending: a muted line, the list still there, and the box stays editable.
+    // Pending: a muted line in the popover, whose composer stays the surface.
+    await screen.findByTestId("assistant-popover");
     expect((await screen.findByTestId("assistant-thinking")).textContent).toContain("thinking…");
-    expect(screen.getByRole("listbox")).toBeTruthy();
-    expect((input as HTMLInputElement).disabled).toBe(false);
-    expect(requestsTo(requests, askPath, "POST")).toHaveLength(1);
+    expect(screen.getByTestId("assistant-composer-input")).toBeTruthy();
+    expect(requestsTo(requests, assistantMessagesPath, "POST")).toHaveLength(1);
 
     release();
     const answer = await screen.findByTestId("assistant-answer");
@@ -271,21 +337,21 @@ describe("CommandPalette", () => {
     expect(tools.hasAttribute("open")).toBe(false);
     expect(tools.textContent).toContain("approval.pending");
     expect(tools.textContent).toContain("run.list");
-    expect(tools.textContent).toContain("failed");
+    expect(tools.textContent).toContain("not_found");
 
     // A link is a jump: it navigates and gets out of the way.
     const link = screen.getAllByTestId("assistant-link")[0];
     expect(link.tagName).toBe("BUTTON");
     fireEvent.click(link);
-    expect((await screen.findByTestId("where")).textContent).toBe(
-      `/projects/${wireProjectId}/approvals`,
-    );
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((await screen.findByTestId("where")).textContent).toBe("/board");
   });
 
   it("keeps the jump list when the server has no assistant", async () => {
-    mountPalette("/inbox", [notConfiguredStub]);
-    pressChord();
+    mountPalette("/inbox", [
+      { path: assistantConversationsPath, method: "POST", body: assistantConversation },
+      notConfiguredStub,
+    ]);
+    openPalette();
     const input = await screen.findByTestId("palette-input");
 
     // A query that also names a jump target — the jump must survive the failure.
@@ -293,9 +359,13 @@ describe("CommandPalette", () => {
     await screen.findByTestId("palette-ask");
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
 
+    // The popover carries the failure honestly: one line, nothing faked.
     const line = await screen.findByTestId("assistant-error");
-    expect(line.textContent).toContain("The assistant isn't configured on this server.");
-    expect(screen.getByTestId("assistant-error").textContent).not.toContain("model base URL");
-    expect(within(screen.getByRole("listbox")).getByText("Operations")).toBeTruthy();
+    expect(line.textContent).toContain("isn't configured on this server");
+    expect(line.textContent).not.toContain("model base URL");
+    // The jump half is untouched by the assistant's 503: the palette's list
+    // still lands on the same target.
+    openPalette();
+    expect(within(await screen.findByRole("listbox")).getByText("Operations")).toBeTruthy();
   });
 });

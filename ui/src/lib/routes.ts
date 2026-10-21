@@ -59,4 +59,6 @@ export const routes = {
   ops: (): string => "/ops",
   /** User settings: `/settings/:tab` (`layout`, `assistant`); `/settings` → `layout`. */
   settings: (tab?: string): string => (tab ? `/settings/${encode(tab)}` : "/settings/layout"),
+  /** `/approvals/:approvalId` — the 4g approval detail page (ADR-0052). */
+  approval: (id: string): string => `/approvals/${encode(id)}`,
 };

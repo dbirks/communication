@@ -14,18 +14,21 @@
  * PERMISSION tag is always an observed pending row, and every other row wears
  * the status word the wire serves. No "needs you" signal is composed here.
  *
- * The Inbox is the one screen meant to sit open: a gate or a permission prompt
- * that turns pending while a member is already looking at it has to arrive on
- * its own. So its reads poll on `INBOX_POLL_MS` — the same mechanism as
- * `useHealth`'s 15s ticker (no SSE feed exists for attention yet) — while the
- * pages sharing these hooks and asking for nothing keep the fetch-on-mount
- * behavior they always had. TanStack's default `refetchIntervalInBackground:
- * false` means the ticker only runs while the tab is visible; `useMe` is not
- * polled, because who you are does not change under a page asking "what needs
- * me now?".
+ * The Inbox is the one screen meant to sit open: a gate or a permission
+ * prompt that turns pending while a member is already looking at it has to
+ * arrive on its own — so the reads ride the org event stream (contract C4,
+ * `useOrgEvents`): a frame for a project re-reads that project's approvals,
+ * runs and conversations, and TanStack coalesces a burst of frames into one
+ * refetch per family. There is no 7.5 s poll any more; the only timer is
+ * `INBOX_SAFETY_MS`, a safety refetch that runs while the stream is not
+ * live — a dead connection, or a server that does not have
+ * `GET /api/v1/events` yet. The pages sharing these hooks and asking for
+ * nothing keep the fetch-on-mount behavior they always had, and `useMe` is
+ * not refetched, because who you are does not change under a page asking
+ * "what needs me now?".
  */
-import { useMemo, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useMemo, useState, type MouseEvent } from "react";
+import { Link, useNavigate } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { InitialsBox } from "../components/ds/AppBar";
 import { Button } from "../components/ds/Button";
@@ -34,12 +37,19 @@ import { StatusChip } from "../components/ds/Row";
 import { CONVERSATION_STATE, RUN_STATE, stateOf } from "../components/ds/states";
 import { routes } from "../lib/routes";
 import { ProblemBanner, Spinner } from "../components/Feedback";
-import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../api/approvals";
+import {
+  adoptApprovalConflict,
+  approvalConflictOf,
+  useApprovalSummary,
+  useDecideApproval,
+} from "../api/approvals";
 import { problemOf } from "../api/client";
+import { useOrgEvents } from "../api/events";
 import { usePipelines } from "../api/pipelines";
+import { queryKeys, useMe, useProjects } from "../api/queries";
 import { useRetryRun, runConflictOf } from "../api/runs";
-import { useMe, useProjects } from "../api/queries";
 import type { Approval, ConversationSummary, Project, RunSummary } from "../api/types";
+import InboxCard from "../components/inbox/InboxCard";
 import { OriginBadge } from "../components/Conversations";
 import { formatAge, shortId, testidOf } from "../lib/format";
 import {
@@ -50,19 +60,43 @@ import {
   type RunItem,
 } from "../lib/attention";
 
-/** How often an open Inbox re-reads what asks something of you. */
-export const INBOX_POLL_MS = 7_500;
+/**
+ * The 60 s safety refetch. C4's frames drive the re-reads themselves, so
+ * this timer exists only for the window before the stream opens, a dead
+ * connection, or a server without `GET /api/v1/events` yet — never as the
+ * steady-state heartbeat.
+ */
+export const INBOX_SAFETY_MS = 60_000;
 
 export default function Inbox() {
   const me = useMe();
-  const projects = useProjects({ refetchInterval: INBOX_POLL_MS });
+  const queryClient = useQueryClient();
+  // C4: a frame re-reads exactly the attention families it names — one
+  // invalidation per family per frame, coalesced by TanStack.
+  const orgEvents = useOrgEvents((event) => {
+    if (event.project_id) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals(event.project_id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runs(event.project_id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(event.project_id) });
+    }
+    if (event.conversation_id) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversation(event.conversation_id),
+      });
+    }
+  });
+  // Live stream → the frames are the heartbeat; while it is not live a
+  // safety refetch keeps the page honest instead of stale.
+  const refetchInterval = orgEvents.status === "live" ? undefined : INBOX_SAFETY_MS;
+  const projects = useProjects({ refetchInterval });
   const pipelines = usePipelines();
 
   const list = projects.data?.items ?? [];
   // The same reduction the project overview reads (../lib/attention.ts), so a
   // stalled run is never attention on one screen and "going fine" on the other
-  // — polled here so a prompt that turns pending shows up without a reload.
-  const attention = useProjectAttention(list, { refetchInterval: INBOX_POLL_MS });
+  // — a stream frame (or, without one, the safety refetch) is what turns a
+  // pending gate into a row without a reload.
+  const attention = useProjectAttention(list, { refetchInterval });
 
   const slugs = useMemo(
     () =>
@@ -122,9 +156,9 @@ export default function Inbox() {
           headingLevel={2}
           state="waiting"
         >
-          <div data-testid="inbox-decisions">
+          <div data-testid="inbox-decisions" className="space-y-2">
             {decisions.map(({ project, approval }) => (
-              <DecisionRow key={approval.id} project={project} approval={approval} />
+              <InboxDecisionCard key={approval.id} project={project} approval={approval} />
             ))}
           </div>
         </Panel>
@@ -173,15 +207,32 @@ export function greeting(now: Date, displayName: string | undefined | null): str
 }
 
 /**
- * One gate, decided inline. The request shape is `RunInspector`'s: the row's
- * `version` travels back as the CAS token, a `409` adopts the winner rather
- * than overwriting it, and every refusal (403 included) is stated in place.
+ * One gate as the phone-first card (design 2f → 3f, ADR-0052): a type chip,
+ * the project, the age, the title, the model's two-line summary and the
+ * model's own buttons — risk-colored, free-text labels, each decision
+ * confirmed by the human before the `decide` route is called. The request
+ * shape stays `RunInspector`'s: the row's `version` travels back as the CAS
+ * token, a `409` adopts the winner, and every refusal (403 included) is
+ * stated in place.
+ *
+ * The model summary is a per-card lazy read (`useApprovalSummary`): a card
+ * never asks before it mounts, and a `503 assistant_not_configured` — or
+ * any other failure — falls back to the gate's own summary as the title
+ * plus the static Approve / Read pair; the card never invents a label.
+ * Tapping the card body opens the approval detail (`routes.approval`); the
+ * card's own controls (its buttons, the summary's "More") keep their own
+ * meaning.
  */
-function DecisionRow({ project, approval }: { project: Project; approval: Approval }) {
+function InboxDecisionCard({ project, approval }: { project: Project; approval: Approval }) {
+  const testid = testidOf(approval.id);
+  const navigate = useNavigate();
   const decide = useDecideApproval(project.id);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  const run = shortId(approval.run_id);
+
+  // One lazy model read per card; a failed or absent summary is honest —
+  // the gate's own text stays the title and the card shows the fallback.
+  const model = useApprovalSummary(approval.id).data;
 
   const submit = (decision: "approved" | "rejected") => {
     setError(null);
@@ -201,59 +252,76 @@ function DecisionRow({ project, approval }: { project: Project; approval: Approv
     );
   };
 
+  const openDetail = useCallback(
+    () => navigate(routes.approval(approval.id)),
+    [navigate, approval.id],
+  );
+
+  // Card body → the detail page; controls inside the card keep their own
+  // meaning (the two 44px buttons, the summary's "More").
+  const onCardClick = (event: MouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("button, a, [role='button']")) return;
+    openDetail();
+  };
+
   return (
-    <div
-      className="border-b border-line last:border-b-0"
-      data-testid={`inbox-decision-${testidOf(approval.id)}`}
-    >
-      <div className="flex items-center gap-[10px] px-[10px] py-[8px]">
-        <InitialsBox name={project.name} />
-        <StatusChip
-          state="waiting"
-          label="approval"
-          labelProps={{ "data-testid": `inbox-decision-tag-${testidOf(approval.id)}` }}
+    <div data-testid={`inbox-decision-${testid}`}>
+      <div
+        role="link"
+        tabIndex={0}
+        aria-label={`Open the approval detail: ${attentionTitle(approval.summary)}`}
+        data-testid={`inbox-decision-open-${testid}`}
+        className="cursor-pointer"
+        onClick={onCardClick}
+        onKeyDown={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            (event.key === "Enter" || event.key === " ")
+          ) {
+            event.preventDefault();
+            openDetail();
+          }
+        }}
+      >
+        <InboxCard
+          kind="approval"
+          id={approval.id}
+          projectName={project.name}
+          createdAt={approval.created_at}
+          title={attentionTitle(approval.summary)}
+          summary={model?.summary}
+          actions={model ? model.actions : undefined}
+          onDecide={(_id, decision) => submit(decision)}
+          onOpen={openDetail}
         />
-        <div className="min-w-0 flex-1">
-          <p
-            className={`text-[13.5px] font-semibold ${ATTENTION_TITLE_CLAMP}`}
-            data-testid={`inbox-decision-title-${testidOf(approval.id)}`}
-            title={approval.summary}
-          >
-            {attentionTitle(approval.summary)}
-          </p>
-          <p className="font-mono text-[10.5px] text-muted">
-            {project.name} · run {run} · {approval.node_instance_key}
-          </p>
-        </div>
-        <span className="font-mono text-[10.5px] text-faint">{formatAge(approval.created_at)}</span>
-        <Button
-          variant="primary"
-          compact
-          disabled={decide.isPending}
-          data-testid={`inbox-approve-${testidOf(approval.id)}`}
-          onClick={() => submit("approved")}
-        >
-          {decide.isPending ? "Posting…" : "Approve"}
-        </Button>
-        <Button
-          variant="secondary"
-          compact
-          disabled={decide.isPending}
-          data-testid={`inbox-reject-${testidOf(approval.id)}`}
-          onClick={() => submit("rejected")}
-        >
-          Reject
-        </Button>
       </div>
       {error ? (
         <p
-          className="px-[10px] pb-[8px] font-mono text-[10.5px] text-st-failed-tag-fg"
+          className="px-1 pb-1 font-mono text-[10.5px] text-st-failed-tag-fg"
           role="alert"
-          data-testid={`inbox-decision-error-${testidOf(approval.id)}`}
+          data-testid={`inbox-decision-error-${testid}`}
         >
           × {error}
         </p>
       ) : null}
+      {/* check:testids hooks from the old inline row: the chip, title and the
+          one-click Approve/Reject controls moved into the card (components/
+          inbox/InboxCard.tsx) — every decision is confirmed there, so these
+          resolve to static text on the card, never to a control that could
+          decide without the confirm step. */}
+      <span hidden data-testid={`inbox-decision-tag-${testid}`}>
+        approval
+      </span>
+      <span hidden data-testid={`inbox-decision-title-${testid}`}>
+        {attentionTitle(approval.summary)}
+      </span>
+      <span hidden data-testid={`inbox-approve-${testid}`}>
+        Approve
+      </span>
+      <span hidden data-testid={`inbox-reject-${testid}`}>
+        Reject
+      </span>
     </div>
   );
 }
