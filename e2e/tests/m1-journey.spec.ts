@@ -42,11 +42,20 @@ test("sign in through the mock OIDC provider", async () => {
 });
 
 test("create the Customer Platform project", async () => {
-  await page.getByTestId("create-project-name").fill("Customer Platform");
+  // The projects index (with the create form) moved from `/` to `/projects`
+  // with the app-shell redesign; `/` is now the Home briefing. The form
+  // starts open on an empty account (CI's fresh stack); on an account that
+  // already has projects it is collapsed behind the toggle.
+  await gotoApp(page, "/projects");
+  const nameField = page.getByTestId("create-project-name");
+  const toggle = page.getByTestId("new-project-toggle");
+  await expect(nameField.or(toggle)).toBeVisible();
+  if (!(await nameField.isVisible())) await toggle.click();
+  await nameField.fill("Customer Platform");
   await page.getByTestId("create-project-submit").click();
   await expect(page.getByTestId("project-name")).toHaveText("Customer Platform");
   projectPath = new URL(page.url()).pathname;
-  expect(projectPath).toMatch(/^\/projects\/[0-9a-f-]{36}$/);
+  expect(projectPath).toMatch(/^\/p\/[0-9a-f-]{36}$/);
 });
 
 test("add the frontend and backend repositories", async () => {
@@ -66,7 +75,7 @@ test("both API replicas serve identical state", async () => {
     [API_B_URL, "api-b"],
   ] as const) {
     const direct = await context.newPage();
-    await direct.goto(`${url}/`);
+    await direct.goto(`${url}/projects`);
     await expect(direct.getByTestId("project-list")).toContainText("Customer Platform");
     await direct.goto(`${url}${projectPath}`);
     await expect(direct.getByTestId("project-name")).toHaveText("Customer Platform");
@@ -133,7 +142,9 @@ test("a non-member gets not found for the project", async ({ browser }) => {
   const outsiderContext = await browser.newContext();
   const outsider = await outsiderContext.newPage();
   await signIn(outsider, OUTSIDER_SUBJECT);
-  await expect(outsider.getByTestId("project-list")).toHaveCount(0);
+  await gotoApp(outsider, "/projects");
+  // The project list card grid is absent; the index shows its empty state.
+  await expect(outsider.getByTestId("project-list-empty")).toBeVisible();
   await expect(outsider.getByText("No projects yet")).toBeVisible();
   await gotoApp(outsider, projectPath);
   await expect(outsider.getByTestId("project-not-found")).toBeVisible();

@@ -104,8 +104,14 @@ test.describe("M2 shared conversation and control handoff", () => {
   });
 
   test("alice creates the project, its repository, and adds bob", async () => {
-    await gotoApp(alice, "/");
-    await alice.getByTestId("create-project-name").fill(PROJECT_NAME);
+    // The create form lives on the projects index (app-shell redesign), not
+    // the Home briefing; open it if it is collapsed behind the toggle.
+    await gotoApp(alice, "/projects");
+    const nameField = alice.getByTestId("create-project-name");
+    const toggle = alice.getByTestId("new-project-toggle");
+    await expect(nameField.or(toggle)).toBeVisible();
+    if (!(await nameField.isVisible())) await toggle.click();
+    await nameField.fill(PROJECT_NAME);
     await alice.getByTestId("create-project-submit").click();
     await expect(alice.getByTestId("project-name")).toHaveText(PROJECT_NAME);
     projectPath = new URL(alice.url()).pathname;
@@ -125,7 +131,7 @@ test.describe("M2 shared conversation and control handoff", () => {
       profile: "Claude Code",
       prompt: FIRST_PROMPT,
     });
-    expect(conversationPath).toMatch(/^\/projects\/[0-9a-f-]{36}\/conversations\/[0-9a-f-]{36}$/);
+    expect(conversationPath).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
 
     // Alice is the controller of her own conversation and the agent is real:
     // the session binding is reported, not assumed.
