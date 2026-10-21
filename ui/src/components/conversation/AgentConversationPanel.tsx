@@ -22,13 +22,14 @@
  * through; the panel computes its own session only when none is supplied.
  * Every historical `data-testid` is preserved via the `ids` overrides.
  */
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Link } from "react-router";
 import { ApiError } from "../../api/client";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
 import { Button } from "../ds/Button";
 import { Textarea } from "../ds/Field";
 import Transcript from "../Transcript";
+import { TakeControlCard } from "../workbench/TakeControlCard";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
 import type { ConversationControl } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
@@ -110,6 +111,14 @@ interface ControlsProps {
   showVersionLine?: boolean;
   /** The page rail: the "You are driving this conversation." note. */
   showDrivingNote?: boolean;
+  /**
+   * Two-step takeover (the workbench dock): the first `Take control` click
+   * shows the confirm card instead of firing the mutation, which only runs
+   * when the card confirms. Off keeps the historical one-click take.
+   */
+  confirmTakeover?: boolean;
+  /** The step the confirm card names (the dock passes the node instance key). */
+  stepName?: string;
 }
 
 /** The controller badge and the only control acts: take, return, stop. */
@@ -120,6 +129,8 @@ export function AgentConversationControls({
   disabledTakeForViewer = false,
   showVersionLine = false,
   showDrivingNote = false,
+  confirmTakeover = false,
+  stepName,
 }: ControlsProps) {
   const {
     data,
@@ -135,6 +146,8 @@ export function AgentConversationControls({
     returnControl,
     cancelTurn,
   } = session;
+  // The confirm card (two-step takeover) is open state, not server state.
+  const [confirmOpen, setConfirmOpen] = useState(false);
   if (!data || !control) return null;
 
   const badge = (
@@ -151,13 +164,20 @@ export function AgentConversationControls({
     </span>
   );
 
-  // The version we last read; a stale one is a 409 we adopt (§9).
+  // The version we last read; a stale one is a 409 we adopt (§9). With
+  // `confirmTakeover` the first click only opens the card — the mutation
+  // fires from the card's confirm button, which says exactly what a
+  // takeover does (the current attempt is interrupted; the same step runs
+  // again on hand-back) before the user commits (ADR-0043, ADR-0016 §5).
   const takeButton = (
     <Button
       variant="primary"
       data-testid={ids.takeControl}
       disabled={takeControl.isPending || !roleKnown || !canRequestControl}
-      onClick={() => takeControl.mutate({ version: control.version })}
+      onClick={() => {
+        if (confirmTakeover) setConfirmOpen(true);
+        else takeControl.mutate({ version: control.version });
+      }}
     >
       {takeControl.isPending ? "Taking…" : "Take control"}
     </Button>
@@ -222,6 +242,16 @@ export function AgentConversationControls({
           {actions}
         </div>
       )}
+      {confirmOpen && confirmTakeover && !isController ? (
+        <TakeControlCard
+          step={stepName ?? "the current step"}
+          onConfirm={() => {
+            setConfirmOpen(false);
+            takeControl.mutate({ version: control.version });
+          }}
+          onCancel={() => setConfirmOpen(false)}
+        />
+      ) : null}
       {controlError ? <FormError error={controlError} /> : null}
       {cancelTurn.error ? <FormError error={cancelTurn.error} /> : null}
       {showDrivingNote && isController && takeControl.isSuccess ? (
@@ -374,6 +404,15 @@ export interface AgentConversationPanelProps {
     rows: number;
     nonControllerPlaceholder: string;
   };
+  /**
+   * Two-step takeover on this surface's `Take control` button. Defaults to
+   * `variant === "dock"`: the workbench dock always confirms before it
+   * interrupts the attempt, the standalone Conversation page keeps its
+   * one-click take. Pass `false` on a dock to opt out.
+   */
+  confirmTakeover?: boolean;
+  /** The step the confirm card names (the dock passes the node instance key). */
+  stepName?: string;
 }
 
 /**
@@ -456,6 +495,8 @@ function PanelInner({
   notFound,
   errorFallback,
   composer,
+  confirmTakeover,
+  stepName,
 }: AgentConversationPanelProps & { session: ConversationSession }) {
   const merged: ConversationPanelIds = { ...PAGE_PANEL_IDS, ...ids };
   const { conversation, data } = session;
@@ -546,6 +587,8 @@ function PanelInner({
           ids={merged}
           watching={watching}
           disabledTakeForViewer
+          confirmTakeover={confirmTakeover ?? variant === "dock"}
+          stepName={stepName}
         />
         {transcriptBlock}
         {composerBlock}
