@@ -47,6 +47,7 @@ func RegisterApprovalSummary(s *Server, approvals ApprovalStore, cfg AssistantCo
 		BaseURL: cfg.BaseURL,
 		APIKey:  cfg.APIKey,
 		Model:   cfg.Model,
+		Timeout: cfg.Timeout,
 		Logger:  s.logger,
 	})
 	if err != nil {

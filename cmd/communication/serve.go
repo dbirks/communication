@@ -133,6 +133,18 @@ environment:
                                         form is trimmed of trailing whitespace.
   COMMUNICATION_ASSISTANT_MODEL         model name to send (default
                                         "qwen3-8-27b", ADR-0034).
+  COMMUNICATION_ASSISTANT_TIMEOUT       per-model-call deadline for the
+                                        assistant (Go duration, e.g. "120s";
+                                        default 30s). The assistant's tool
+                                        loop calls the model several times
+                                        per turn, and a reasoning model under
+                                        load can take longer than 30s on a
+                                        single call. There is no separate
+                                        turn-level deadline: a turn is bounded
+                                        by per-call timeout x model calls, so
+                                        raising this lengthens a slow turn
+                                        instead of racing it. Unparseable or
+                                        non-positive is a startup refusal.
 
 migrations are applied separately: communication migrate up
 `
@@ -569,6 +581,14 @@ func serveScheduleTick(getenv func(string) string) (time.Duration, error) {
 	return d, nil
 }
 
+// envAssistantTimeout is the per-model-call deadline for the assistant's
+// egress (the broker's Config.Timeout, defaulting to assistant.DefaultTimeout
+// when left zero). It is per CALL, not per turn: the ADR-0050 conversation
+// runner and the ask route share one broker and there is no turn-level
+// deadline above them, so a multi-step turn simply takes up to
+// timeout x model-calls rather than racing a shorter envelope.
+const envAssistantTimeout = "COMMUNICATION_ASSISTANT_TIMEOUT"
+
 // serveAssistant is the parsed COMMUNICATION_ASSISTANT_* triple (ADR-0034).
 // Separate names from the worker's COMMUNICATION_MODEL_CHAT_* on purpose: one
 // process's endpoint and cost budget must not silently become another's.
@@ -576,6 +596,9 @@ type serveAssistant struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// Timeout is the per-model-call deadline; zero means the broker's
+	// assistant.DefaultTimeout applies.
+	Timeout time.Duration
 }
 
 // serveAssistantConfig resolves the assistant's egress. An unset base URL is
@@ -592,6 +615,16 @@ func serveAssistantConfig(getenv func(string) string) (serveAssistant, error) {
 		out.Model = assistant.DefaultModel
 	}
 	out.BaseURL = strings.TrimRight(strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_BASE_URL")), "/")
+	if raw := strings.TrimSpace(getenv(envAssistantTimeout)); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return out, fmt.Errorf("%s %q is not a duration: %w", envAssistantTimeout, raw, err)
+		}
+		if d <= 0 {
+			return out, fmt.Errorf("%s must be positive, got %s", envAssistantTimeout, d)
+		}
+		out.Timeout = d
+	}
 	out.APIKey = strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_API_KEY"))
 	if file := strings.TrimSpace(getenv("COMMUNICATION_ASSISTANT_API_KEY_FILE")); out.APIKey == "" && file != "" {
 		raw, err := os.ReadFile(file)
@@ -823,7 +856,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// the same egress triple as the assistant above — with it unset the routes
 	// answer 503 assistant_not_configured and the UI keeps the gate's own text.
 	api.RegisterApprovalSummary(handler, postgres.APIApprovalStore{R: m4Runtime},
-		api.AssistantConfig{BaseURL: d.Assistant.BaseURL, APIKey: d.Assistant.APIKey, Model: d.Assistant.Model})
+		api.AssistantConfig{BaseURL: d.Assistant.BaseURL, APIKey: d.Assistant.APIKey, Model: d.Assistant.Model, Timeout: d.Assistant.Timeout})
 	// ADR-0047's cross-project reads: the app shell's Home/Board/Threads/
 	// Inbox list routes, scoped per membership in the store's SQL.
 	api.RegisterCrossProject(handler, postgres.APICrossProjectStore{Pool: d.Pool})
@@ -844,6 +877,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			BaseURL: d.Assistant.BaseURL,
 			APIKey:  d.Assistant.APIKey,
 			Model:   d.Assistant.Model,
+			Timeout: d.Assistant.Timeout,
 		},
 	}
 	api.RegisterAssistant(handler, asstDeps)

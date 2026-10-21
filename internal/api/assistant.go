@@ -18,19 +18,24 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/dbirks/communication/internal/assistant"
 )
 
-// AssistantConfig is the serve-side egress triple, read from
-// COMMUNICATION_ASSISTANT_BASE_URL / _API_KEY (or _API_KEY_FILE) / _MODEL by
-// cmd/communication/serve.go. The API key is only ever handed to the broker to
-// put in a header: it is never logged, never echoed, never stored.
+// AssistantConfig is the serve-side egress quadruple, read from
+// COMMUNICATION_ASSISTANT_BASE_URL / _API_KEY (or _API_KEY_FILE) / _MODEL /
+// _TIMEOUT by cmd/communication/serve.go. The API key is only ever handed to
+// the broker to put in a header: it is never logged, never echoed, never
+// stored.
 type AssistantConfig struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// Timeout is the per-model-call deadline; zero means the broker's
+	// assistant.DefaultTimeout applies.
+	Timeout time.Duration
 }
 
 // AssistantDeps carries the read handles the tool registry is built over plus
@@ -93,6 +98,7 @@ func BuildAssistantBroker(deps AssistantDeps, logger *slog.Logger) (*assistant.B
 		BaseURL: deps.Config.BaseURL,
 		APIKey:  deps.Config.APIKey,
 		Model:   deps.Config.Model,
+		Timeout: deps.Config.Timeout,
 		Logger:  logger,
 	}, assistantStore{
 		projects:  deps.Projects,

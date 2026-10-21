@@ -14,6 +14,7 @@ import (
 
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/api/auth"
+	"github.com/dbirks/communication/internal/assistant"
 	"github.com/dbirks/communication/internal/store/postgres"
 )
 
@@ -224,6 +225,61 @@ func TestServeWorkerHeartbeat(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "COMMUNICATION_WORKER_HEARTBEAT") {
 		t.Errorf("stderr = %q, want it to name COMMUNICATION_WORKER_HEARTBEAT", stderr.String())
+	}
+}
+
+func TestServeAssistantConfigTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		raw     string
+		want    time.Duration
+		wantErr string
+	}{
+		{"", 0, ""},
+		{"   ", 0, ""},
+		{"120s", 120 * time.Second, ""},
+		{"1m30s", 90 * time.Second, ""},
+		{"ten seconds", 0, "is not a duration"},
+		{"0s", 0, "must be positive"},
+		{"-5s", 0, "must be positive"},
+	} {
+		got, err := serveAssistantConfig(func(k string) string {
+			if k == "COMMUNICATION_ASSISTANT_TIMEOUT" {
+				return tt.raw
+			}
+			return ""
+		})
+		if tt.wantErr == "" {
+			if err != nil || got.Timeout != tt.want {
+				t.Errorf("COMMUNICATION_ASSISTANT_TIMEOUT=%q -> %s, %v; want %s, no error", tt.raw, got.Timeout, err, tt.want)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("COMMUNICATION_ASSISTANT_TIMEOUT=%q -> error %v, want it to contain %q", tt.raw, err, tt.wantErr)
+		}
+	}
+
+	// Unset keeps the broker's own default: a zero Timeout means
+	// assistant.DefaultTimeout (30s) applies, and the model default is
+	// untouched by the timeout knob.
+	got, err := serveAssistantConfig(func(string) string { return "" })
+	if err != nil || got.Timeout != 0 || got.Model != assistant.DefaultModel {
+		t.Errorf("unset -> %+v, %v; want zero timeout and %s", got, err, assistant.DefaultModel)
+	}
+
+	// A bad value is a configuration error at startup, not a silently
+	// shorter (or unbounded) per-call deadline.
+	t.Setenv("COMMUNICATION_DATABASE_URL", "postgres://communication@postgres:5432/communication?sslmode=disable")
+	t.Setenv("COMMUNICATION_PUBLIC_URL", "http://localhost:18080")
+	t.Setenv("COMMUNICATION_OIDC_ISSUER", "http://oidc:8080/default")
+	t.Setenv("COMMUNICATION_OIDC_CLIENT_ID", "communication-dev")
+	t.Setenv("COMMUNICATION_ASSISTANT_TIMEOUT", "ten seconds")
+	var stdout, stderr bytes.Buffer
+	if got := runServe(context.Background(), nil, &stdout, &stderr); got != 2 {
+		t.Fatalf("runServe() = %d, want 2", got)
+	}
+	if !strings.Contains(stderr.String(), "COMMUNICATION_ASSISTANT_TIMEOUT") {
+		t.Errorf("stderr = %q, want it to name COMMUNICATION_ASSISTANT_TIMEOUT", stderr.String())
 	}
 }
 
