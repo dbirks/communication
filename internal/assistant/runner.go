@@ -359,6 +359,17 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		stop := false
 		for _, call := range ans.ToolCalls {
 			out := r.execOne(ctx, req, trust, call, &links, &changes)
+			// ADR-0050: every tool_calls row carries a short server-supplied
+			// summary. The executors set the detail line when they know it;
+			// the guard backfills the rest (refusals, gates) so no row ever
+			// reaches the wire without one.
+			if out.call.Summary == "" {
+				if out.call.OK {
+					out.call.Summary = bounded("Ran "+out.call.Name, 200)
+				} else {
+					out.call.Summary = refusedSummary(out.call.Reason)
+				}
+			}
 			calls = append(calls, out.call)
 			results = append(results, toolOutcome{call: out.call, payload: out.payload})
 			if out.link != nil {
@@ -660,7 +671,7 @@ func (r *ConversationRunner) execNavigate(name string, call toolCallRequest) exe
 	link := Link{Label: "Go to " + label, Href: route}
 	rec := &ChangeRecord{Kind: "navigate", TargetRef: route, Summary: "Navigated to " + route}
 	return execOutcome{
-		call:    ToolCall{Name: name, Args: stringArgView(args), OK: true},
+		call:    ToolCall{Name: name, Args: stringArgView(args), OK: true, Summary: bounded("Navigated to "+route, 200)},
 		payload: json.RawMessage(`{"status":"navigated"}`),
 		link:    &link,
 		change:  rec,
@@ -696,7 +707,8 @@ func (r *ConversationRunner) execDraftGet(ctx context.Context, c Caller, call to
 		"document": string(docBytes),
 	})
 	return execOutcome{
-		call:    ToolCall{Name: name, Args: stringArgView(args), OK: true},
+		call: ToolCall{Name: name, Args: stringArgView(args), OK: true,
+			Summary: fmt.Sprintf("Read draft %s (version %d)", short(args["draft_id"]), doc.Version)},
 		payload: payload,
 	}
 }
@@ -737,7 +749,8 @@ func (r *ConversationRunner) execQuestion(name string, call toolCallRequest) exe
 	}
 	q := &TurnQuestion{Prompt: prompt, Options: options, AllowFreeText: true}
 	return execOutcome{
-		call:     ToolCall{Name: name, Args: stringArgView(args), OK: true},
+		call: ToolCall{Name: name, Args: stringArgView(args), OK: true,
+			Summary: fmt.Sprintf("Asked a follow-up question with %d options", len(options))},
 		payload:  json.RawMessage(`{"status":"queued"}`),
 		question: q,
 	}

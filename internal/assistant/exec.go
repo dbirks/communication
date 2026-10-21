@@ -47,9 +47,11 @@ func isWriteShaped(name string) bool {
 	return false
 }
 
-// refused records a call that made zero store calls, with no data.
+// refused records a call that made zero store calls, with no data and no
+// resource name (the 404 rule); its summary names the stable reason only.
 func (t *turn) refused(name string, args map[string]any, reason string) {
-	t.record(ToolCall{Name: name, Args: args, OK: false, Reason: reason}, nil)
+	t.record(ToolCall{Name: name, Args: args, OK: false, Reason: reason,
+		Summary: refusedSummary(reason)}, nil)
 }
 
 func (t *turn) record(call ToolCall, payload json.RawMessage) {
@@ -103,7 +105,7 @@ func (t *turn) exec(call toolCallRequest) {
 		return
 	}
 	payload, _ := capPayload(raw)
-	ok := ToolCall{Name: name, Args: args, OK: true}
+	ok := ToolCall{Name: name, Args: args, OK: true, Summary: execSummary(name, args, raw)}
 	t.record(ok, payload)
 	if tl.links != nil {
 		for _, l := range tl.links(t, args, rows(payload)) {
@@ -118,6 +120,50 @@ func (t *turn) exec(call toolCallRequest) {
 			}
 		}
 	}
+}
+
+// refusedSummary is the transparency line of a call that never executed:
+// it names the stable reason code and, per ADR-0034's 404 rule, no rows
+// and no resource name — so a refusal can be read without leaking that a
+// project the caller cannot see even exists.
+func refusedSummary(reason string) string {
+	if reason == "" {
+		reason = "unknown"
+	}
+	return bounded("Not executed: "+reason, 200)
+}
+
+// execSummary writes the transparency line of one executed call, from the
+// tool name, the validated arguments and the row count — never by the model
+// and never from raw row content (docs/design/assistant-v1.md: tool_calls is
+// transparency, not a replay log).
+func execSummary(name string, args map[string]any, raw json.RawMessage) string {
+	n := len(rows(raw))
+	var s string
+	switch name {
+	case "project.list":
+		s = fmt.Sprintf("Listed %d projects", n)
+	case "run.list":
+		s = fmt.Sprintf("Listed %d runs for project %s", n, short(strArg(args, "project_id")))
+	case "run.nodes":
+		s = fmt.Sprintf("Read %d node executions for run %s", n, short(strArg(args, "run_id")))
+	case "approval.pending":
+		s = fmt.Sprintf("Listed %d pending approvals for project %s", n, short(strArg(args, "project_id")))
+	case "pipeline.revisions":
+		s = fmt.Sprintf("Listed %d published revisions for pipeline %s", n, short(strArg(args, "pipeline_id")))
+	case "palette.search":
+		s = fmt.Sprintf("Found %d matches for %q", n, bounded(strArg(args, "needle"), 60))
+	default:
+		s = fmt.Sprintf("Read %d results from %s", n, name)
+	}
+	return bounded(s, 200)
+}
+
+// strArg is one validated string argument of a call (bounded like parseArgs
+// leaves it).
+func strArg(args map[string]any, key string) string {
+	s, _ := args[key].(string)
+	return bounded(strings.TrimSpace(s), 200)
 }
 
 var truncatedMarker = json.RawMessage(

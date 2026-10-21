@@ -96,6 +96,24 @@ type Link struct {
 	Href  string `json:"href"`
 }
 
+// MessageLink is ADR-0050's conversation link vocabulary ({label, route}): the
+// same allowlist-checked link, named by the real route vocabulary the
+// transcript stores, not the one-shot ask's ADR-0034 href.
+type MessageLink struct {
+	Label string `json:"label"`
+	Route string `json:"route"`
+}
+
+// MessageLinks converts the allowlisted broker links into ADR-0050's
+// conversation vocabulary; the one-shot Answer keeps the href shape.
+func MessageLinks(links []Link) []MessageLink {
+	out := make([]MessageLink, 0, len(links))
+	for _, l := range links {
+		out = append(out, MessageLink{Label: l.Label, Route: l.Href})
+	}
+	return out
+}
+
 // ToolCall is the transparency record of one tool the broker ran (or refused).
 // Reason is a stable code and is present only when OK is false; a refused call
 // carries no data and no resource name (the 404 rule of
@@ -106,9 +124,10 @@ type ToolCall struct {
 	OK     bool           `json:"ok"`
 	Reason string         `json:"reason,omitempty"`
 	// Summary is the short server-supplied sentence ADR-0050 names in
-	// tool_calls[].summary (what the call did or recorded); it is never
-	// raw tool output and stays empty for refused calls. v1's ask route
-	// leaves it unset, so its bodies are byte-identical.
+	// tool_calls[].summary (what the call did or recorded). The code writes
+	// it from the call's arguments and result — never the model, never raw
+	// row content — and every executed and refused call carries it, on the
+	// one-shot ask as on the conversation messages.
 	Summary string `json:"summary,omitempty"`
 }
 

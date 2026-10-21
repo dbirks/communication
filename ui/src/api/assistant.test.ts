@@ -53,11 +53,19 @@ describe("mapAssistantMessage", () => {
       kind: "assistant",
       turn_id: "01TURN",
       answer_markdown: "Two runs wait on you.",
-      links: [{ label: "Open the board", route: "/board" }, { label: "missing route" }],
+      links: [
+        { label: "Open the board", route: "/board" },
+        // A pre-ADR-0050 transcript row: the server stored `href` then — the
+        // mapper tolerates it into the route vocabulary.
+        { label: "Legacy inbox", href: "/inbox" },
+        { label: "missing route" },
+      ],
       tool_calls: [
         { name: "run.list", summary: "Listed 3 runs.", ok: true },
         { name: "run.get", summary: "Could not read the run.", ok: false, reason: "not_found" },
-        { name: "missing summary", ok: true },
+        // A call whose server predates ADR-0050's summary field: kept, with
+        // the tool name standing in for the missing summary.
+        { name: "run.list", ok: true },
       ],
       degraded: null,
     });
@@ -68,7 +76,10 @@ describe("mapAssistantMessage", () => {
         kind: "assistant",
         turn_id: "01TURN",
         answer_markdown: "Two runs wait on you.",
-        links: [{ label: "Open the board", route: "/board" }],
+        links: [
+          { label: "Open the board", route: "/board" },
+          { label: "Legacy inbox", route: "/inbox" },
+        ],
         tool_calls: [
           { name: "run.list", summary: "Listed 3 runs.", ok: true },
           {
@@ -77,6 +88,7 @@ describe("mapAssistantMessage", () => {
             ok: false,
             reason: "not_found",
           },
+          { name: "run.list", summary: "run.list", ok: true },
         ],
         degraded: null,
       },

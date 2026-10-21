@@ -421,15 +421,17 @@ type userMessagePayload struct {
 }
 
 // assistantMessagePayload is the kind-"assistant" payload: the broker's
-// answer as it returned it (part 1 keeps ADR-0034's shape; part 2
-// reshapes it with the tool-loop's summaries).
+// answer as it returned it, in ADR-0050's message vocabulary — links named
+// by route (not the one-shot ask's href) and every tool_call carrying its
+// short server-supplied summary (part 2 reshapes it with the tool-loop's
+// summaries).
 type assistantMessagePayload struct {
-	Kind           string               `json:"kind"`
-	TurnID         string               `json:"turn_id"`
-	AnswerMarkdown string               `json:"answer_markdown"`
-	Links          []assistant.Link     `json:"links"`
-	ToolCalls      []assistant.ToolCall `json:"tool_calls"`
-	Degraded       *string              `json:"degraded"`
+	Kind           string                  `json:"kind"`
+	TurnID         string                  `json:"turn_id"`
+	AnswerMarkdown string                  `json:"answer_markdown"`
+	Links          []assistant.MessageLink `json:"links"`
+	ToolCalls      []assistant.ToolCall    `json:"tool_calls"`
+	Degraded       *string                 `json:"degraded"`
 }
 
 // postMessage runs ONE server-side turn (ADR-0050 decision 2): the
@@ -533,7 +535,7 @@ func (h *assistantConversationHandlers) postMessage(w http.ResponseWriter, r *ht
 			Kind:           "assistant",
 			TurnID:         result.Answer.TurnID,
 			AnswerMarkdown: result.Answer.AnswerMarkdown,
-			Links:          result.Answer.Links,
+			Links:          assistant.MessageLinks(result.Answer.Links),
 			ToolCalls:      result.Answer.ToolCalls,
 			Degraded:       result.Answer.Degraded,
 		})
@@ -703,9 +705,10 @@ func (h *assistantConversationHandlers) postMessageApproval(w http.ResponseWrite
 		state = "confirmed"
 		ackMarkdown = ack
 		ackCalls = []assistant.ToolCall{{
-			Name: ap.Action,
-			Args: stringMapToAny(args),
-			OK:   true,
+			Name:    ap.Action,
+			Args:    stringMapToAny(args),
+			OK:      true,
+			Summary: ack,
 		}}
 		if ch != nil {
 			change = &AssistantChangeInput{
@@ -723,7 +726,7 @@ func (h *assistantConversationHandlers) postMessageApproval(w http.ResponseWrite
 		Kind:           "assistant",
 		TurnID:         ap.TurnID,
 		AnswerMarkdown: ackMarkdown,
-		Links:          []assistant.Link{},
+		Links:          []assistant.MessageLink{},
 		ToolCalls:      nonNilToolCalls(ackCalls),
 		Degraded:       nil,
 	})

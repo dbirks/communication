@@ -261,7 +261,10 @@ function linksOf(value: unknown): LocalLink[] {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
     const label = strOrNone(entry.label);
-    const route = strOrNone(entry.route);
+    // ADR-0050 stores `route`; pre-ADR-0050 transcripts (and the one-shot
+    // ask's vocabulary) may carry `href` — tolerate it so old rows still
+    // render.
+    const route = strOrNone(entry.route) ?? strOrNone(entry.href);
     if (label !== null && route !== null) links.push({ label, route });
   }
   return links;
@@ -274,9 +277,11 @@ function toolCallsOf(value: unknown): LocalToolCall[] {
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
     const name = strOrNone(entry.name);
-    const summary = strOrNone(entry.summary);
-    if (name === null || summary === null || typeof entry.ok !== "boolean") continue;
-    const call: LocalToolCall = { name, summary, ok: entry.ok };
+    if (name === null || typeof entry.ok !== "boolean") continue;
+    // ADR-0050: the server supplies the summary; tolerate a call that
+    // lacks one (older turns) by falling back to the tool name so the
+    // "used N tools" disclosure never drops a real call.
+    const call: LocalToolCall = { name, summary: strOrNone(entry.summary) ?? name, ok: entry.ok };
     const reason = strOrNone(entry.reason);
     if (reason !== null) call.reason = reason;
     calls.push(call);

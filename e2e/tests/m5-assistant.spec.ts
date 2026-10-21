@@ -1,10 +1,13 @@
-// M5 assistant arm (docs/design/assistant-v1.md, ADR-0034): the read-only
-// in-app assistant behind Ctrl K — one question posted from the palette's Ask
-// row, an answer rendered over the same input with jump links and a collapsed
-// list of the tools it looked at, and every link the answer carries landing on
-// a real page rather than "Not found".
+// M5 assistant arm, re-pointed at Assistant v2 (ADR-0050, "Six Directions"
+// 2a/2c): ⌘K opens the read-only assistant popover (not the command palette —
+// the palette's Ask row hands off to the popover, and the palette itself is
+// the jump-only half reached from the popover's open state). One question
+// posted from the popover's composer, an answer rendered in the caller's
+// assistant conversation transcript with the tools it looked at, and every
+// link the answer carries landing on a real page rather than "Not found".
 //
-// It runs against the M4 lab by env override only — no second compose project:
+// It runs against the M4 lab by env override only — no second compose
+// project:
 //   COMMUNICATION_E2E_M5=1 \
 //   E2E_BASE_URL=http://localhost:18091 E2E_API_A_URL=http://localhost:18092 \
 //   E2E_API_B_URL=http://localhost:18093 \
@@ -15,22 +18,21 @@
 // answer takes 5-60 s — every wait below is bounded by ANSWER_TIMEOUT_MS, and
 // this suite asks exactly one question and resets nothing.
 //
-// SKIPPED, NEVER PASSED, WHEN THE DEPLOYMENT HAS NO ASSISTANT: the route
-// answers `503 assistant_not_configured` (api/openapi.yaml) when the broker
-// is absent. Test 1 probes that exact condition without spending a model turn:
-// a valid question whose body carries a secret-shaped string is refused by
-// the broker's egress scan (internal/assistant/scan.go) with
-// `400 secret_in_request` BEFORE a single byte reaches the model, so the
-// probe answers 400 on a configured lab and 503 on one that has no assistant
-// at all — the 503 turns the whole suite into a skip with that reason.
+// SKIPPED, NEVER PASSED, WHEN THE DEPLOYMENT HAS NO ASSISTANT: the v1 route
+// POST /api/v1/assistant/ask (still mounted, api/openapi.yaml) answers
+// `503 assistant_not_configured` when the broker is absent. Test 1 probes
+// that exact condition without spending a model turn: a valid question whose
+// body carries a secret-shaped string is refused by the broker's egress scan
+// (internal/assistant/scan.go) with `400 secret_in_request` BEFORE a single
+// byte reaches the model, so the probe answers 400 on a configured lab and
+// 503 on one that has no assistant at all — the 503 turns the whole suite
+// into a skip with that reason.
 //
-// THE LINK LEG RE-READS THE SERVED ANSWER, NOT THE PANEL: nothing about the
-// answer persists past the panel unmounting (assistant-v1.md), and closing the
-// palette is exactly what clicking a link does. The links asserted in this
-// file are therefore the `links` array of the served answer itself (captured
+// THE LINK LEG RE-READS THE SERVED ANSWER, NOT THE PANEL: the links asserted
+// in this file are the `links` array of the served assistant row (captured
 // off the real POST the UI made): the first link is taken by clicking the
-// rendered button, the rest are navigated to the same `href` that button
-// would `navigate(href)`. Each landing page must not be the app's "Not found"
+// rendered button, the rest are navigated to the same route that button
+// would navigate to. Each landing page must not be the app's "Not found"
 // ("That page does not exist.", ui/src/pages/NotFound.tsx). A link that 404s
 // is reported as the product bug it is — the assertion is not weakened.
 //
@@ -61,7 +63,7 @@ const NOT_FOUND_TEXT = "That page does not exist.";
  */
 const PROBE_QUESTION = 'Is the assistant configured? token="sk-abcdefghijklmnop0123456789"';
 
-/** The closed registry (assistant-v1.md § Tools): every rendered row names one of these. */
+/** The closed registry (ADR-0050, internal/assistant/tools.go): every rendered row names one. */
 const TOOL_NAMES = [
   "project.list",
   "run.list",
@@ -71,15 +73,23 @@ const TOOL_NAMES = [
   "palette.search",
 ];
 
-interface AssistantLink {
+interface AssistantLinkServed {
   label: string;
-  href: string;
+  /** The ADR-0050 vocabulary; the v1 broker's key for the same value. */
+  route?: string;
+  href?: string;
 }
 
 interface AssistantAnswerServed {
   answer_markdown: string;
-  links: AssistantLink[];
-  tool_calls: { name: string; ok: boolean; reason?: string }[];
+  links: AssistantLinkServed[];
+  tool_calls: { name: string; ok: boolean; summary?: string; reason?: string }[];
+}
+
+/** A served transcript row (POST /assistant/conversations/{id}/messages). */
+interface ServedMessage {
+  kind: string;
+  payload: Record<string, unknown>;
 }
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
@@ -97,7 +107,7 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
   let assistantAvailable = false;
   let skipReason = "";
   /** The served answer's `links`, in the order the broker sent them. */
-  let answerLinks: AssistantLink[] = [];
+  let answerLinks: AssistantLinkServed[] = [];
 
   test.beforeAll(async ({ browser }) => {
     // The gate-off run has no lab to talk to, so the contexts are only
@@ -159,59 +169,79 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
     await shot(alice, "m5-assistant-00-signed-in");
   });
 
-  test("Ask from the palette: the answer names M4 Exit and shows the tools it used", async () => {
+  test("Ask from the assistant popover: the answer names M4 Exit and shows the tools it used", async () => {
     if (!assistantAvailable) test.skip(true, skipReason);
     const served: AssistantAnswerServed[] = [];
-    const onAskResponse = (res: import("@playwright/test").Response) => {
+    const onMessageResponse = (res: import("@playwright/test").Response) => {
+      const url = res.url();
+      const isMessagePost =
+        res.request().method() === "POST" &&
+        url.includes("/api/v1/assistant/conversations/") &&
+        url.endsWith("/messages") &&
+        res.status() === 200;
+      if (!isMessagePost) return;
       void (async () => {
-        if (res.url().endsWith("/api/v1/assistant/ask") && res.status() === 200)
-          served.push((await res.json().catch(() => null)) as AssistantAnswerServed);
+        const body = (await res.json().catch(() => null)) as {
+          messages?: ServedMessage[];
+        } | null;
+        for (const row of body?.messages ?? []) {
+          if (row?.kind !== "assistant") continue;
+          const payload = row.payload as unknown as AssistantAnswerServed;
+          if (typeof payload?.answer_markdown === "string") served.push(payload);
+        }
       })();
     };
-    await test.step("Ctrl K opens the palette and the Ask row leads the results", async () => {
+    await test.step("Ctrl K opens the assistant popover and the question is sent", async () => {
       await gotoApp(alice, "/");
+      alice.on("response", onMessageResponse);
       await alice.keyboard.press("Control+K");
-      await expect(alice.getByTestId("palette-input")).toBeVisible();
-      await alice.getByTestId("palette-input").fill(QUESTION);
-      // The question is non-empty and matches no jump target exactly, so the
-      // Ask row is the first caret row of the filtered list.
-      const askRow = alice.getByTestId("palette-ask");
-      await expect(askRow).toBeVisible();
-      await expect(askRow).toContainText(`Ask: ${QUESTION}`);
+      await expect(alice.getByTestId("assistant-popover")).toBeVisible();
+      const input = alice.getByTestId("assistant-composer-input");
+      await expect(input).toBeVisible();
+      await input.fill(QUESTION);
+      // Enter (no Shift) is the composer's own send key (AssistantPanel).
+      await input.press("Enter");
     });
-    await test.step("the served answer renders over the same input (bounded wait)", async () => {
-      alice.on("response", onAskResponse);
-      await alice.getByTestId("palette-ask").click();
-      // v1 has no stream: the panel shows "thinking…" until the whole answer
-      // arrives, and one answer is a real model turn (5-60 s on this lab).
-      await expect(alice.getByTestId("assistant-answer")).toBeVisible({
-        timeout: ANSWER_TIMEOUT_MS,
-      });
-      await expect.poll(() => served.length).toBe(1);
-      const answer = served[0];
+    await test.step("the served answer renders in the transcript (bounded wait)", async () => {
+      // v2 has no stream either: the transcript appends the whole answer
+      // when the turn settles, and one answer is a real model turn
+      // (5-60 s on this lab). The answer is scoped to the LAST transcript
+      // row — an adopted earlier conversation can already render rows.
+      await expect
+        .poll(() => served.length, { timeout: ANSWER_TIMEOUT_MS })
+        .toBeGreaterThanOrEqual(1);
+      const answer = served[served.length - 1];
       answerLinks = answer.links ?? [];
+      const lastRow = alice.locator("[data-testid='assistant-msg-assistant']").last();
+      const answerEl = lastRow.getByTestId("assistant-answer");
+      await expect(answerEl).toBeVisible();
       expect(typeof answer.answer_markdown).toBe("string");
       expect(answer.answer_markdown.length).toBeGreaterThan(0);
     });
     await test.step("the answer names the M4 Exit project the way the component renders it", async () => {
-      const answer = alice.getByTestId("assistant-answer");
-      await expect(answer).toContainText(ALICE.projectName);
+      const answer = served[served.length - 1];
+      const answerEl = alice
+        .locator("[data-testid='assistant-msg-assistant']")
+        .last()
+        .getByTestId("assistant-answer");
+      await expect(answerEl).toContainText(ALICE.projectName);
       // The rendered prose is the served markdown as text (code spans set in
       // mono, everything else verbatim), so the first line must be readable
       // off the served body and present on screen.
-      const firstLine = served[0].answer_markdown
+      const firstLine = answer.answer_markdown
         .split(/\r?\n/)
         .map((line) => line.replace(/`/g, "").trim())
         .find((line) => line.length > 0);
       expect(firstLine, "the served answer carries no text line").toBeTruthy();
-      await expect(answer).toContainText(firstLine!.slice(0, 40));
+      await expect(answerEl).toContainText(firstLine!.slice(0, 40));
     });
     await test.step("the tool transparency list renders what the broker reported", async () => {
-      const answer = served[0];
-      const tools = alice.getByTestId("assistant-tools");
+      const answer = served[served.length - 1];
+      const lastRow = alice.locator("[data-testid='assistant-msg-assistant']").last();
+      const tools = lastRow.getByTestId("assistant-tools");
       if (answer.tool_calls.length > 0) {
-        // Collapsed <details> by default: the component shows it only when the
-        // broker really looked things up.
+        // Collapsed <details> by default: the component shows it only when
+        // the broker really looked things up ("used N tools ▸").
         await expect(tools).toBeVisible();
         await expect(tools.locator("summary")).toContainText(
           `used ${answer.tool_calls.length} tool`,
@@ -225,61 +255,80 @@ test.describe("M5 assistant — Ctrl K asks the read-only broker", () => {
             call.name,
           );
           await expect(rows.nth(i)).toContainText(call.name);
-          await expect(rows.nth(i)).toContainText(call.ok ? "ok" : "failed");
+          // Status is glyph + text, never colour alone: ✓ ok / × failed.
+          await expect(rows.nth(i).locator("span[aria-hidden]").first()).toHaveText(
+            call.ok ? "✓" : "×",
+          );
         }
       } else {
-        // An empty transparency record renders no block at all — the DOM must
-        // agree with the served answer rather than invent one.
+        // An empty transparency record renders no block at all — the DOM
+        // must agree with the served answer rather than invent one.
         await expect(tools).toHaveCount(0);
       }
     });
     await test.step("the answer's links render as buttons with the served labels", async () => {
-      const buttons = alice.getByTestId("assistant-link");
+      const buttons = alice
+        .locator("[data-testid='assistant-msg-assistant']")
+        .last()
+        .getByTestId("assistant-link");
       await expect(buttons).toHaveCount(answerLinks.length);
       for (let i = 0; i < answerLinks.length; i++) {
-        await expect(buttons.nth(i)).toHaveText(answerLinks[i].label);
+        await expect(buttons.nth(i)).toContainText(answerLinks[i].label);
       }
-      // The footer still says what the assistant is: the jump list survives
-      // underneath a failed turn, and the box never promises an action.
-      await expect(alice.getByTestId("palette-footer")).toContainText("Read-only assistant");
       await shot(alice, "m5-assistant-01-answer");
     });
   });
 
   test("every link in the answer lands on a real page", async () => {
     if (!assistantAvailable) test.skip(true, skipReason);
-    await test.step(`the answer carried ${answerLinks.length} link${answerLinks.length === 1 ? "" : "s"}`, async () => {
+    // ADR-0050's link vocabulary is `route`; the v1-shaped payload carries
+    // the same value as `href` — normalise so the leg tests the destination,
+    // and the count assertion below still catches a UI that dropped them.
+    const links = answerLinks.map((link) => ({
+      label: link.label,
+      route: link.route ?? link.href ?? "",
+    }));
+    await test.step(`the answer carried ${links.length} link${links.length === 1 ? "" : "s"}`, async () => {
       // "For every link in the answer": the set is the served answer's
-      // `links` array, asserted one by one below.
-      const buttons = alice.getByTestId("assistant-link");
-      await expect(buttons).toHaveCount(answerLinks.length);
+      // `links` array, asserted one by one below — and the transcript must
+      // render exactly that many buttons.
+      const buttons = alice
+        .locator("[data-testid='assistant-msg-assistant']")
+        .last()
+        .getByTestId("assistant-link");
+      await expect(buttons).toHaveCount(links.length);
     });
-    for (let i = 0; i < answerLinks.length; i++) {
-      const { label, href } = answerLinks[i];
-      await test.step(`link ${i + 1}/${answerLinks.length} — “${label}” (${href})`, async () => {
+    for (let i = 0; i < links.length; i++) {
+      const { label, route } = links[i];
+      await test.step(`link ${i + 1}/${links.length} — “${label}” (${route})`, async () => {
         if (i === 0) {
           // The product's own way to a link: click the rendered button, which
-          // closes the panel and navigates to the served href.
-          await alice.getByTestId("assistant-link").nth(0).click();
+          // navigates to the served route (the popover stays open over the
+          // destination — Esc closes it, the conversation survives).
+          await alice
+            .locator("[data-testid='assistant-msg-assistant']")
+            .last()
+            .getByTestId("assistant-link")
+            .first()
+            .click();
         } else {
-          // Nothing about the answer persists past the panel unmounting, so
-          // the next link is served its href directly — the same destination
+          // The next link is served its route directly — the same destination
           // the button would navigate to.
-          await gotoApp(alice, href);
+          await gotoApp(alice, route);
         }
-        // The destination is the served href's PATH and the app served it to
+        // The destination is the served route's PATH and the app served it to
         // the signed-in session — and it is not the app's "Not found" page.
-        // The Workbench appends ?node=…&instance=… on auto-select, so the
-        // full URL never equals the served href (the other M5 specs compare
-        // the path the same way).
-        const expectedPath = new URL(href, BASE_URL).pathname;
+        const expectedPath = new URL(route, BASE_URL).pathname;
         await expect
           .poll(() => new URL(alice.url()).pathname, {
-            message: `landed on ${new URL(alice.url()).pathname}, not the served href ${href}`,
+            message: `landed on ${new URL(alice.url()).pathname}, not the served route ${route}`,
           })
           .toBe(expectedPath);
         await expect(alice.getByTestId("user-badge")).toBeVisible();
         await expect(alice.getByText(NOT_FOUND_TEXT)).toHaveCount(0);
+        // Close the popover so the next landing is judged on the page, not
+        // on the overlay standing over it.
+        await alice.keyboard.press("Escape");
         await shot(alice, `m5-assistant-02-link-${i + 1}`);
       });
     }

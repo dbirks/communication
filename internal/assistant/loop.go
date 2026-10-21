@@ -117,7 +117,8 @@ func (t *turn) run(messages []chatMessage) (*Answer, *Failure) {
 			if t.toolRuns >= MaxToolCalls {
 				// The cap is a refusal, not a silent drop: the model is told the
 				// call was not made and makes zero store calls.
-				t.record(ToolCall{Name: name, OK: false, Reason: "tool_cap_exceeded"}, nil)
+				t.record(ToolCall{Name: name, OK: false, Reason: "tool_cap_exceeded",
+					Summary: refusedSummary("tool_cap_exceeded")}, nil)
 				continue
 			}
 			t.exec(call)
