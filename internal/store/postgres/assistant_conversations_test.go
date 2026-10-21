@@ -392,6 +392,58 @@ func TestAssistantChangesUndoTransition(t *testing.T) {
 	}
 }
 
+// Org-scoped draft edits carry a NULL project id: the runner pins
+// ProjectID to nil when the draft service cannot name a project (an
+// empty-string uuid would fail this insert against real Postgres; the
+// fakes hide it). This test records such a row, reads the column back
+// and undoes it.
+func TestAssistantChangeDraftEditNullProjectID(t *testing.T) {
+	t.Parallel()
+	f := assistantTestFixture(t)
+	ctx := testCtx(t)
+	conv, err := f.store.CreateConversation(ctx, f.owner)
+	if err != nil {
+		t.Fatalf("CreateConversation: %v", err)
+	}
+	f.convIDs = append(f.convIDs, conv.ID)
+
+	ch, err := f.store.InsertChange(ctx, f.owner, conv.ID, nil, "draft_edit",
+		"draft:d-1", "Inserted node `review` after `tests`",
+		[]byte(`{"draft_id":"d-1","inverse":{"op":"delete_node","node":"review"}}`))
+	if err != nil {
+		t.Fatalf("InsertChange(nil project): %v", err)
+	}
+	f.changeIDs = append(f.changeIDs, ch.ID)
+	if !ch.Undoable || ch.UndoneAt != nil {
+		t.Fatalf("fresh change = %+v, want undoable and open", ch)
+	}
+
+	// The NULL survives into the column — an "" uuid would have errored.
+	var stored *string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT project_id FROM assistant_changes WHERE id = $1::uuid`, ch.ID).
+		Scan(&stored); err != nil {
+		t.Fatalf("read back project_id: %v", err)
+	}
+	if stored != nil {
+		t.Fatalf("project_id = %q, want NULL (org-scoped draft)", *stored)
+	}
+
+	// The undo: wired inverse op + the undone_at stamp in one transaction.
+	caller := assistant.Caller{UserID: f.owner, OrganizationID: "org-1"}
+	wired := &AssistantConversationStore{Pool: f.pool, Undoer: fakeUndoer{}}
+	if _, err := wired.UndoChange(ctx, caller, ch.ID); err != nil {
+		t.Fatalf("UndoChange: %v", err)
+	}
+	undone, err := f.store.ListChanges(ctx, f.owner, conv.ID, "undone")
+	if err != nil || len(undone) != 1 || undone[0].ID != ch.ID {
+		t.Fatalf("undone list = %v, %v; want just this change", undone, err)
+	}
+	if undone[0].UndoneAt == nil {
+		t.Fatalf("undone change has no undone_at")
+	}
+}
+
 // fakeUndoer is the part-2-shaped seam test: the inverse op succeeds.
 type fakeUndoer struct{}
 

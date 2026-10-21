@@ -847,11 +847,15 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		},
 	}
 	api.RegisterAssistant(handler, asstDeps)
-	// ADR-0050 part 1: the per-user persisted conversations, transcript
-	// and change log. The turn is the same ADR-0034 broker with the
-	// transcript folded into its question (one egress config, the ask
-	// route's refusal behaviour); the undo seam ships UndoNotWired until
-	// part 2 wires the draft-edit inverse.
+	// ADR-0050: the per-user persisted conversations, transcript and
+	// change log. Part 2 wires the multi-turn tool-loop runner: the ADR-0034
+	// read registry plus the closed write/navigation set, every action run
+	// as the caller through the very stores the user's own routes use, the
+	// trust level read per turn from the caller's preferences (ADR-0046,
+	// default ask_risky), and the draft-edit undo seam applying the closed
+	// inverse through the version-checked draft PUT. With no egress triple
+	// the runner is nil and the routes answer 503 assistant_not_configured,
+	// exactly like the ask route.
 	asstBroker, asstErr := api.BuildAssistantBroker(asstDeps, d.API.Logger)
 	if asstErr != nil {
 		// RegisterAssistant already logged the deployment error; the
@@ -860,15 +864,35 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		asstBroker = nil
 	}
 	var asstRunner assistant.TurnRunner
+	var asstUndoer assistant.Undoer = assistant.UndoNotWired{}
 	if asstBroker != nil {
-		asstRunner = assistant.NewBrokerTurnRunner(asstBroker)
+		asstDraft := api.NewAssistantDraftService(postgres.APIPipelineStore{S: pipelineStore})
+		asstRunner = assistant.NewConversationRunner(assistant.ConversationRunnerDeps{
+			Broker: asstBroker,
+			Draft:  asstDraft,
+			Actions: api.NewAssistantActions(api.AssistantActionsDeps{
+				Runs:        postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
+				Assignments: postgres.APIAssignmentStore{S: pipelineStore},
+				Approvals:   postgres.APIApprovalStore{R: m4Runtime},
+				Projects:    apiProjects,
+				Trigger:     m4Trigger,
+			}),
+		})
+		// The draft-edit inverse (ADR-0050 decision 5): delete_node /
+		// update_prompt back through the same CAS PUT the edit used; a
+		// draft that moved refuses (the route's 409 change_not_undoable).
+		asstUndoer = assistant.DraftEditUndoer{Draft: asstDraft}
 	}
+	// The per-turn trust read (ADR-0046/C2): the caller's own row, defaults
+	// under a never-saved user; it authorizes nothing.
+	asstPrefs := postgres.APIUserPreferencesStore{S: &postgres.UserPreferencesStore{Pool: d.Pool}}
 	api.RegisterAssistantConversations(handler, api.AssistantConversationDeps{
 		Store: &postgres.AssistantConversationStore{
 			Pool:   d.Pool,
-			Undoer: assistant.UndoNotWired{},
+			Undoer: asstUndoer,
 		},
-		Runner: asstRunner,
+		Runner:     asstRunner,
+		TrustLevel: api.AssistantTrustLevel(asstPrefs),
 	})
 	api.RegisterSandbox(handler,
 		postgres.APITurnSandboxStore{Pool: d.Pool},
@@ -879,10 +903,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		})
 	// ADR-0046: the per-user display preferences (GET/PATCH
 	// /api/v1/me/preferences). Self-scoped — keyed by the caller's own user
-	// id, so the store needs only the pool.
-	api.RegisterPreferences(handler, postgres.APIUserPreferencesStore{
-		S: &postgres.UserPreferencesStore{Pool: d.Pool},
-	})
+	// id, so the store needs only the pool. (The same store answers the
+	// assistant's per-turn trust read above.)
+	api.RegisterPreferences(handler, asstPrefs)
 
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled

@@ -851,11 +851,17 @@ func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[
 	if inv, isUndoable := inverseFor(p, prevPrompt); isUndoable {
 		undo, _ = json.Marshal(draftUndoPayload{DraftID: args["draft_id"], Inverse: inv})
 	}
-	proj := doc.ProjectID
+	// Org-scoped drafts carry no project id (doc.ProjectID is "" when the
+	// service cannot name one): the change row keeps a NULL project id —
+	// an empty-string uuid would fail the insert against real Postgres.
+	var projectID *string
+	if proj := doc.ProjectID; proj != "" {
+		projectID = &proj
+	}
 	_ = newVersion
 	return bounded(summary, 300), &ChangeRecord{
 		Kind:        "draft_edit",
-		ProjectID:   &proj,
+		ProjectID:   projectID,
 		TargetRef:   "draft:" + args["draft_id"],
 		Summary:     bounded(summary, 300),
 		UndoPayload: undo,

@@ -50,10 +50,11 @@ type fakeDraftService struct {
 	replaceCalls int
 	getErr       error
 	replaceErr   error
+	project      string // "" when the service cannot name a project
 }
 
 func newFakeDraftService() *fakeDraftService {
-	return &fakeDraftService{doc: []byte(runnerYAML), version: 1}
+	return &fakeDraftService{doc: []byte(runnerYAML), version: 1, project: "p-1"}
 }
 
 func (f *fakeDraftService) GetDocument(_ context.Context, _ Caller, draftID string) (DraftDoc, error) {
@@ -65,7 +66,7 @@ func (f *fakeDraftService) GetDocument(_ context.Context, _ Caller, draftID stri
 	if draftID != "d-1" {
 		return DraftDoc{}, fmt.Errorf("no such draft %s", draftID)
 	}
-	return DraftDoc{Document: append([]byte(nil), f.doc...), Version: f.version, ProjectID: "p-1"}, nil
+	return DraftDoc{Document: append([]byte(nil), f.doc...), Version: f.version, ProjectID: f.project}, nil
 }
 
 func (f *fakeDraftService) ReplaceDocument(_ context.Context, _ Caller, draftID string, document []byte, want int) (int, error) {
@@ -458,6 +459,44 @@ func TestDraftEditChangeAndUndo(t *testing.T) {
 	if len(res3.Answer.ToolCalls) != 1 || res3.Answer.ToolCalls[0].OK ||
 		res3.Answer.ToolCalls[0].Reason != "draft_moved" {
 		t.Fatalf("stale edit tool call = %+v, want ok=false draft_moved", res3.Answer.ToolCalls)
+	}
+}
+
+// The change row's project id follows the draft service: org-scoped
+// drafts name no project (""), so the row carries a NULL project id —
+// the old code pinned &"" on every draft_edit row, and an empty-string
+// uuid fails the insert against real Postgres.
+func TestDraftEditChangeProjectID(t *testing.T) {
+	for _, tc := range []struct {
+		name, project string
+		wantNil       bool
+	}{
+		{name: "org_scoped_nil", project: "", wantNil: true},
+		{name: "project_named", project: "p-1", wantNil: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newFakeModel(t,
+				step{toolCalls: []toolCallRequest{toolCall("draft.apply", map[string]any{
+					"draft_id": "d-1", "version": "1", "op": "update_prompt",
+					"node": "plan", "prompt": "plan twice as carefully"})}},
+				step{text: "done"},
+			)
+			draft := newFakeDraftService()
+			draft.project = tc.project
+			r := newMatrixRunner(t, model, draft, nil)
+			res := runOne(t, r, TrustNoAsk)
+			if len(res.Changes) != 1 {
+				t.Fatalf("changes = %+v, want one draft_edit row", res.Changes)
+			}
+			ch := res.Changes[0]
+			if tc.wantNil {
+				if ch.ProjectID != nil {
+					t.Fatalf("ProjectID = %q, want nil (org-scoped draft)", *ch.ProjectID)
+				}
+			} else if ch.ProjectID == nil || *ch.ProjectID != tc.project {
+				t.Fatalf("ProjectID = %v, want %q", ch.ProjectID, tc.project)
+			}
+		})
 	}
 }
 
