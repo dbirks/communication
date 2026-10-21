@@ -10,6 +10,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CommandPalette, { openPalette } from "./CommandPalette";
@@ -212,7 +213,15 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
 
-    openPalette();
+    // The outside-press listener is a `useEffect` on `open`; opening through
+    // the raw window event outside `act` lets that effect race the press
+    // under load. Wrap the open so render + listener registration complete
+    // before the mousedown (in a browser the effect is always attached
+    // before the next user input task, so this is test timing, not a
+    // component race).
+    await act(async () => {
+      openPalette();
+    });
     await screen.findByRole("dialog");
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("dialog")).toBeNull();
