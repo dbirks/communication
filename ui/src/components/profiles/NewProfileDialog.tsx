@@ -22,6 +22,12 @@
  *   reflects what the live workers actually report (ADR-0035: the egress
  *   allowlist is worker-level, so nothing is claimed about it here).
  *
+ * The dialog owns the write path. On success (the POST — and the APM /
+ * account follow-ups when given) it hands the created row to the caller
+ * through `onCreated` and the CALLER closes it (the Studio inspector
+ * selects the profile, `/profiles` navigates to its detail). On any error
+ * the dialog stays open with the API's message.
+ *
  * The old inline form's testids (`agents-new-form`, `agents-new-name-input`,
  * `agents-new-launcher-select`, `agents-new-submit`, `agents-new-problem`)
  * travel into this dialog so the existing suites keep finding them.
@@ -174,7 +180,6 @@ function DialogBody({
   const [apmRef, setApmRef] = useState("");
   const [apmTarget, setApmTarget] = useState("");
   const [apmDigest, setApmDigest] = useState("");
-  const [createdProfile, setCreatedProfile] = useState<AgentProfile | null>(null);
   const [submitError, setSubmitError] = useState<unknown>(null);
   const [following, setFollowing] = useState(false);
 
@@ -248,15 +253,6 @@ function DialogBody({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (createdProfile) {
-      onCreated({
-        id: createdProfile.id,
-        name: createdProfile.name,
-        launcher_id: createdProfile.launcher_id,
-      });
-      onClose();
-      return;
-    }
     const launcherId = selectedLauncherId;
     const trimmedName = nameValue.trim();
     if (trimmedName === "" || launcherId === "") return;
@@ -277,7 +273,6 @@ function DialogBody({
       setSubmitError(error);
       return;
     }
-    setCreatedProfile(created);
     setFollowing(true);
     try {
       if (apmFilled === 3) {
@@ -306,15 +301,15 @@ function DialogBody({
       if (projectId !== "") {
         await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
       }
-      // Deliberately NOT closing here: the dialog stays open in its
-      // confirmation state (the \u2713 line above, footer button now
-      // \u201cDone\u201d) so the created profile is confirmed in place.
-      // `onCreated` + `onClose` fire from the Done button (the `createdProfile`
-      // guard at the top of this handler) or Cancel.
+      // Success: hand the created row to the caller (contract C6); the
+      // caller closes the dialog — the Studio inspector selects the profile,
+      // `/profiles` navigates to its detail. No confirmation state: that
+      // extra "Done" click broke the Studio flow.
+      onCreated({ id: created.id, name: created.name, launcher_id: created.launcher_id });
     } catch (error) {
       // The profile exists; the pin or the account grant is what failed.
-      // Keep the dialog open so the problem stays visible; the footer is
-      // now Done.
+      // Keep the dialog open with the API's message so the problem stays
+      // visible.
       setSubmitError(error);
     } finally {
       setFollowing(false);
@@ -626,13 +621,6 @@ function DialogBody({
 
           {submitError ? <FormError error={submitError} testid="agents-new-problem" /> : null}
 
-          {createdProfile ? (
-            <p className="font-mono text-[11px] text-st-done-tag-fg" role="status">
-              ✓ profile “{createdProfile.name}” created
-              {submitError ? " — the follow-up write failed above" : ""}
-            </p>
-          ) : null}
-
           <footer className="flex items-center justify-end gap-2 border-t border-line pt-3">
             <Button
               type="button"
@@ -645,16 +633,10 @@ function DialogBody({
             <Button
               type="submit"
               variant="primary"
-              disabled={createdProfile ? false : !canSubmit}
+              disabled={!canSubmit}
               data-testid="agents-new-submit"
             >
-              {busy
-                ? "Creating…"
-                : createdProfile
-                  ? "Done"
-                  : forStep
-                    ? `Create and use in ${forStep}`
-                    : "Create profile"}
+              {busy ? "Creating…" : forStep ? `Create and use in ${forStep}` : "Create profile"}
             </Button>
           </footer>
         </form>

@@ -192,16 +192,10 @@ describe("NewProfileDialog (5b)", () => {
     const submit = screen.getByTestId("agents-new-submit") as HTMLButtonElement;
     await waitFor(() => expect(submit.disabled).toBe(false));
     fireEvent.click(submit);
-    // The dialog stays open in its confirmation state; `onCreated` only
-    // fires from the Done button.
-    expect(await screen.findByText(`✓ profile “${created.name}” created`)).not.toBeNull();
-    expect(onCreated).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
-        "Done",
-      ),
-    );
-    fireEvent.click(screen.getByTestId("agents-new-submit"));
+    // Contract C6: the POST answers, the dialog hands the created row to the
+    // caller through `onCreated` — and does NOT close itself. The caller
+    // closes the dialog (the Studio inspector selects the profile,
+    // `/profiles` navigates to its detail).
     await waitFor(() =>
       expect(onCreated).toHaveBeenCalledWith({
         id: created.id,
@@ -209,7 +203,7 @@ describe("NewProfileDialog (5b)", () => {
         launcher_id: created.launcher_id,
       }),
     );
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
     const post = requestsTo(requests, "/api/v1/agent-profiles", "POST");
     expect(JSON.parse(post[0].body ?? "")).toEqual({
       name: "Claude Code · 2",
@@ -231,14 +225,7 @@ describe("NewProfileDialog (5b)", () => {
     );
     fireEvent.change(secretSelect, { target: { value: secret.id } });
     fireEvent.click(screen.getByTestId("agents-new-submit"));
-    // Stay open in the confirmation state; Done reports the created row.
-    await screen.findByText(`✓ profile “${created.name}” created`);
-    await waitFor(() =>
-      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
-        "Done",
-      ),
-    );
-    fireEvent.click(screen.getByTestId("agents-new-submit"));
+    // C6: success hands the row to the caller after the grant lands.
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const put = requestsTo(
       requests,
@@ -265,13 +252,7 @@ describe("NewProfileDialog (5b)", () => {
       target: { value: `sha256:${"1a".repeat(32)}` },
     });
     fireEvent.click(screen.getByTestId("agents-new-submit"));
-    await screen.findByText(`✓ profile “${created.name}” created`);
-    await waitFor(() =>
-      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
-        "Done",
-      ),
-    );
-    fireEvent.click(screen.getByTestId("agents-new-submit"));
+    // C6: success hands the row to the caller after the APM PATCH lands.
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const patch = requestsTo(requests, `/api/v1/agent-profiles/${created.id}`, "PATCH");
     expect(JSON.parse(patch[0].body ?? "")).toEqual({
