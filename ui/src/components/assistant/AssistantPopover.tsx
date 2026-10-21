@@ -224,10 +224,14 @@ export default function AssistantPopover() {
   }, [open, conversationId, conversations.data]);
 
   /** `Retry` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
+   * The decision post carries ONLY the request id — `{confirm: <id>}` or
+   * `{dismiss: <id>}` — never `text` (the handler 400s a decision post that
+   * carries text); a failed decision shows the API's own message inline.
    * Part 1 answers `400 approval_requests_not_available` until the gate
    * lands; the honest line says so. */
   const answerApproval = (messageId: string, confirm: boolean) => {
     void (async () => {
+      setSendError(null);
       try {
         let id = conversationId;
         if (!id) {
@@ -237,12 +241,7 @@ export default function AssistantPopover() {
         }
         const result = await post.mutateAsync({
           conversationId: id,
-          body: {
-            text: confirm ? "Retry" : "Not now",
-            context: assistantContextOf(location.pathname),
-            confirm: confirm ? messageId : null,
-            dismiss: confirm ? null : messageId,
-          },
+          body: confirm ? { confirm: messageId } : { dismiss: messageId },
         });
         setMessages((current) => [...current, ...result]);
       } catch (error) {

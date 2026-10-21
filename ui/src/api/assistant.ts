@@ -173,7 +173,9 @@ export function useAssistantMessages(conversationId: string | null) {
 
 /** A new user message plus the turn's output rows (the `user` row first). */
 export interface AssistantMessagePostBody {
-  text: string;
+  /** A plain turn's text; ABSENT on a confirm/dismiss post (the handler
+   * rejects a decision post that carries text — "text must be empty"). */
+  text?: string;
   context?: AssistantMessageContext;
   /** A pending `approval_request` message id to confirm (Retry). */
   confirm?: string | null;

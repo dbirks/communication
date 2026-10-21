@@ -154,7 +154,7 @@ describe("assistant mutation invalidation (e2e-p789b)", () => {
             onClick={() =>
               void post.mutateAsync({
                 conversationId: CONVERSATION_ID,
-                body: { text: "Retry", confirm: "msg-9" },
+                body: { confirm: "msg-9" },
               })
             }
           >
