@@ -11,6 +11,11 @@
 //   f. the assistant via ⌘K: add a human approval step to a draft of
 //      feature-development, then undo all.
 //
+// EXECUTION ORDER: e runs before d. journey_step's deterministic long turn
+// (its instruction, STEP_INSTRUCTION) settles before the approve gate can
+// open, so the takeover must land during that turn — the gate is then
+// approved (d) after the hand-back's re-queued attempt 2 has run.
+//
 // Runs ONLY against the app-shell lab when COMMUNICATION_E2E_SHELL_JOURNEY=1:
 //   cd e2e && COMMUNICATION_E2E_SHELL_JOURNEY=1 E2E_BASE_URL=http://localhost:15173 \
 //     E2E_EVIDENCE_DIR=$HOME/.cache/pi-orch/communication/logs/e2e-journey/ev \
@@ -47,9 +52,34 @@ const STAMP = process.env.E2E_SHELL_STAMP ?? Date.now().toString(36);
 /** The seeded pipeline the journey mutates: plan → approve → implement… */
 const PIPELINE_SLUG = "feature-development";
 const PROFILE_NAME = `journey-${STAMP}`;
-/** The draft instruction for the new Agent step (short, harmless). */
+/** The draft instruction for the new Agent step (harmless: read-only).
+ *
+ * A DETERMINISTIC long turn — the step e takeover must land WHILE
+ * journey_step is in flight, and a turn that settles in a few seconds is
+ * already over by the time Take control is confirmed (issue2 A5 had the
+ * exact race and solved it with a shell wait — impossible here: the dialog
+ * profile is always permission_mode=ask, which the ACP harness treats as
+ * deny, internal/agent/acp/permission.go, so any shell wait is rejected).
+ * A long generation keeps the turn open instead: at the lab model's
+ * ~80 tok/s, a 2500–4000 word essay stays in flight for well over the
+ * ~30 s the workbench UI needs between the API catch and the confirm click.
+ *
+ * The reply must still extract to a JSON object (§ 4 step 6 / 01 invariant
+ * 4): the essay is brace-free prose (the extractor falls back to the reply's
+ * first `{` … last `}`), and the listing travels as the final fenced json
+ * block, which extractStructuredOutput prefers over the brace span.
+ */
 const STEP_INSTRUCTION =
-  "List the files in the repository root and report their names. Do not modify anything.";
+  "Do not modify anything in the repository. Write a long essay of at least " +
+  "2500 words and at most 4000 words about the history of programming " +
+  "languages, from early assembly languages and FORTRAN to modern languages " +
+  "such as Go and Rust, with a separate section for each major language and " +
+  "concrete historical examples. Strict formatting rules: plain prose only — " +
+  "do not use any curly brace characters and do not use any fenced code " +
+  "blocks anywhere in the essay. After the essay, on a final separate line, " +
+  'reply with the result as a fenced json code block: a JSON object {"files": ...} ' +
+  "where files is the array of the file and directory names at the repository " +
+  "root (you may read the root listing to answer this).";
 /** The node id the new step is renamed to (renamed LAST — the rename commit
  * drops the node selection, so no other field may follow it). */
 const NEW_NODE_ID = "journey_step";
@@ -177,8 +207,8 @@ interface NodeRow {
 async function runNodes(request: APIRequestContext, runId: string): Promise<NodeRow[]> {
   const res = await request.get(`${BASE_URL}/api/v1/runs/${runId}/nodes`);
   if (!res.ok()) throw new Error(`GET /runs/${runId}/nodes -> ${res.status()}`);
-  const body = (await res.json()) as { nodes?: NodeRow[] };
-  return body.nodes ?? [];
+  const body = (await res.json()) as { node_executions?: NodeRow[] };
+  return body.node_executions ?? [];
 }
 
 /** Project-scoped gate list — the lab's core surface (the C3 cross-project
@@ -279,21 +309,38 @@ async function crossRunRow(
   return (body.runs ?? []).find((r) => r.id === runId);
 }
 
-/** Poll until an agent.acp node execution of the run is running. */
+/** Poll until the run's journey_step agent.acp node execution is in flight.
+ *
+ * The node's own status is the live signal: a worker-leased agent step sits
+ * at `leased` for its ENTIRE turn (BeginTurn flips only the conversation turn
+ * to `running`, never the node execution — ADR-0023 § 3's two-path node
+ * machine), and only the terminal write moves it on. `running` is kept as an
+ * accepted in-flight state so the poll cannot miss a build where the node does
+ * carry it.
+ *
+ * The node is targeted BY ID, not "any agent step": plan and implement are
+ * short turns (a few seconds) — catching one of them is the very race that
+ * made the pre-fix step e flaky (its turn settled before the confirm click).
+ * journey_step's instruction holds the lab model for about a minute or more,
+ * so that window is deterministic. Poll fast: one second between reads.
+ */
+const IN_FLIGHT = new Set(["leased", "running"]);
 async function waitForAgentRunning(request: APIRequestContext, runId: string): Promise<NodeRow> {
   const deadline = Date.now() + NODE_STEP_TIMEOUT_MS;
   for (;;) {
     const nodes = await runNodes(request, runId);
-    const running = nodes.find((n) => n.kind === "agent.acp" && n.status === "running");
-    if (running) return running;
+    const live = nodes.find(
+      (n) => n.node_id === NEW_NODE_ID && n.kind === "agent.acp" && IN_FLIGHT.has(n.status),
+    );
+    if (live) return live;
     if (Date.now() > deadline) {
       throw new Error(
-        `no agent.acp step went running in run ${runId} within the window (nodes: ${
+        `journey_step (${NEW_NODE_ID}) never went in-flight (leased/running) in run ${runId} within the window (nodes: ${
           nodes.map((n) => `${n.node_id}:${n.status}`).join(" ") || "none"
         })`,
       );
     }
-    await sleep(3_000);
+    await sleep(1_000);
   }
 }
 
@@ -489,6 +536,11 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
   test("b — publish: Validate then Publish, and the revision number increments", async ({
     page,
   }) => {
+    // Every serial step gets a fresh browser context (a fresh cookie jar),
+    // so the session must be re-established with the SAME subject before
+    // touching the state the previous step created (house style, like
+    // issue2-workbench.spec.ts re-signing per step).
+    await signIn(page, "admin");
     await gotoApp(page, state.draftUrl);
     await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
 
@@ -520,6 +572,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
   });
 
   test("c — start a run of the new revision and land on it", async ({ page }) => {
+    await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
     // Setup via API: the run must start from the NEW revision, so the project's
     // assignment is repinned to it (re-pinning is effective at new-run creation
     // only; the run itself starts through the UI, per the journey).
@@ -550,12 +603,19 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.getByTestId("new-run-input-goal").fill(`shell journey ${STAMP}`);
     const repo = page.getByTestId("new-run-input-repository");
     if ((await repo.count()) > 0) {
-      if ((await repo.evaluate((el) => el.tagName)) === "SELECT")
-        await repo.selectOption({ index: 0 });
-      else {
-        const res = await page.request.get(
-          `${BASE_URL}/api/v1/projects/${state.projectId}/repositories`,
-        );
+      if ((await repo.evaluate((el) => el.tagName)) === "SELECT") {
+        // index 0 is the empty “— choose —” placeholder; pick the first real
+        // option by its value (selecting the placeholder leaves the required
+        // field empty and the submit stays disabled forever).
+        const options = await repo.locator("option").all();
+        const value = await Promise.all(
+          options.map(async (option) => await option.getAttribute("value")),
+        ).then((values) => values.find((v) => v !== null && v !== ""));
+        if (!value)
+          throw new Error("the new-run form offers no selectable repository for the project");
+        await repo.selectOption({ value });
+      } else {
+        const res = await page.request.get(`${BASE_URL}/api/v1/projects/${state.projectId}/repos`);
         if (res.ok()) {
           const body = (await res.json()) as { items?: { name: string }[] };
           const first = (body.items ?? [])[0]?.name;
@@ -568,101 +628,108 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.waitForURL(/\/runs\/[0-9a-fA-F-]+/);
     state.runId = new URL(page.url()).pathname.split("/").pop() as string;
     await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
-    // The run is pinned to the revision just published.
-    await expect(page.getByTestId("run-pinned-revision")).toContainText(
-      state.revisionDigest.slice(0, 19),
-    );
+    // The run is pinned to the revision just published. The header renders
+    // it as `r{number} {shortDigest(digest).slice(0,6)}` (shortDigest strips
+    // the `sha256:` prefix), so assert that exact shape: the published
+    // number plus the digest's first six hex chars.
+    const expectedPinned = `r${state.revisionBefore + 1} ${state.revisionDigest
+      .replace(/^sha256:/, "")
+      .slice(0, 6)}`;
+    await expect(page.getByTestId("run-pinned-revision")).toContainText(expectedPinned);
     await evidence(
       page,
       `journey-c-run-${STAMP}`,
-      `run ${state.runId} started from the new revision ${state.revisionDigest.slice(0, 19)}… and the workbench opened on it`,
+      `run ${state.runId} started from the new revision ${expectedPinned} (${state.revisionDigest.slice(0, 19)}…) and the workbench opened on it`,
     );
-  });
-
-  test("d — approve the run's human gate from the Inbox at 390x844", async ({ page }) => {
-    // The run's plan step (a real agent turn) and the new journey step run
-    // before the gate, so the approval may take the whole gate window.
-    state.approvalId = await waitForApproval(page.request, state.runId);
-
-    // PHONE width: 390x844, as the journey demands.
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(BASE_URL + "/inbox");
-    await expect(page.getByTestId("inbox-decisions")).toBeVisible({ timeout: 30_000 });
-    const tid = testidOf(state.approvalId);
-    const card = page.getByTestId(`inbox-decision-${tid}`);
-    await expect(card).toBeVisible({ timeout: 30_000 });
-
-    // The card's Approve action, then its confirm step.
-    const action = await findApproveAction(page, tid);
-    await action.click();
-    const confirm = page.getByTestId(`inbox-card-confirm-${tid}`);
-    await expect(confirm).toBeVisible();
-    await checkShellScreen(page, "inbox-phone-approval", stopWatching ?? undefined);
-    await evidence(
-      page,
-      `journey-d-inbox-${STAMP}`,
-      `at 390x844 the Inbox decision card for the run's gate is open with its confirm step armed (approval …${state.approvalId.slice(-8)})`,
-    );
-
-    // The label is a decision word → “Confirm approve”; otherwise the card
-    // offers the Approve / Reject pair — either records the approval.
-    const go = page.getByTestId(`inbox-card-confirm-go-${tid}`);
-    if ((await go.count()) > 0) await go.click();
-    else await page.getByTestId(`inbox-card-confirm-approved-${tid}`).click();
-
-    // Asserted via the API: the approval is decided and the run moves on.
-    await waitForApprovalDecided(page.request, state.runId);
-    await expect(card).toBeHidden({ timeout: 60_000 });
-    await evidence(
-      page,
-      `journey-d-decided-${STAMP}`,
-      `the gate was approved from the phone-width Inbox; the run's approve step is succeeded via the API and the card left the Inbox`,
-    );
-    await page.setViewportSize({ width: 1500, height: 950 });
   });
 
   test("e — workbench: watch a live agent step, take control, prompt, hand back", async ({
     page,
   }) => {
-    await gotoApp(page, `/runs/${state.runId}`);
+    await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
+    // This test deliberately runs BEFORE step d: journey_step's long turn
+    // settles before the approve gate can open, so the deterministic takeover
+    // window is its attempt 1 — right after the run's short plan turn.
+    // Poll the API until journey_step is in flight, then load the workbench
+    // deep-linked to it (below) — the catch lands seconds after the lease,
+    // inside the ~2-minute long turn.
+    const agentPromise = waitForAgentRunning(page.request, state.runId);
+
+    // A live agent step (leased = the worker holds it and the agent is
+    // working; running = the turn is open) — its live status is what the
+    // workbench shows.
+    const node = await agentPromise;
+    state.agentNodeId = node.node_id;
+
+    // Load the workbench DEEP-LINKED to journey_step's node execution.
+    // `?node=<execution id>` is the workbench's own deep-link form: it is
+    // remapped to the definition node + instance on the first data, and a
+    // `?node=` present on page load suppresses the dock's attention
+    // auto-select for the life of the page. That suppression is what makes
+    // the takeover deterministic: without it the dock parks on the plan's
+    // just-finished conversation (whose completed attempt still offers a
+    // Take control button — the pre-fix run took over that WRONG step), and
+    // when the run then parked at the approval gate the auto-select moved
+    // the dock to the gate, the confirm card unmounted, and the confirm
+    // click waited out the 30-minute test timeout. With the deep link the
+    // dock shows journey_step from first paint and never moves (ADR-0043
+    // decision 4: the reader's pick wins).
+    await gotoApp(page, `/runs/${state.runId}?node=${node.id}`);
     await expect(page.getByTestId("workbench")).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
 
-    // Watch until an agent step runs — its live status is what the workbench shows.
-    const node = await waitForAgentRunning(page.request, state.runId);
-    state.agentNodeId = node.node_id;
+    // The dock shows journey_step's live conversation (its attempt's
+    // conversation is stamped at claim, so the dock shows it as soon as the
+    // worker's ACP session opens) and its Take control button.
     const dockControl = page.getByTestId("dock-take-control");
-    if (!(await dockControl.isVisible().catch(() => false))) {
-      // The dock auto-selects the node needing attention; if it is elsewhere,
-      // select the running step from the strip and the dock follows.
-      const cell = page
-        .locator('[data-testid^="workbench-step-cell-"]')
-        .filter({ hasText: node.node_id })
-        .first();
-      if ((await cell.count()) > 0) await cell.click();
-    }
-    await expect(dockControl).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId("dock-conversation")).toBeVisible();
+    await expect(dockControl).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
+    await expect(page.getByTestId("dock-conversation")).toBeVisible({ timeout: 30_000 });
     await checkShellScreen(page, "workbench", stopWatching ?? undefined);
     await evidence(
       page,
       `journey-e-live-${STAMP}`,
-      `the workbench shows agent step ${node.node_id} live (status running via the API) with its conversation in the dock`,
+      `the workbench is pinned to agent step ${node.node_id} (status ${node.status} via the API) with its live conversation in the dock`,
     );
 
-    // Take control: the first click opens the confirm card with its truthful copy.
+    // Take control: the first click opens the confirm card with its truthful
+    // copy — and the card names journey_step itself (the heading carries the
+    // step's instance key), so a card for any other step cannot pass.
     await dockControl.click();
     const takeCard = page.getByTestId("take-control-card");
-    await expect(takeCard).toBeVisible();
-    await expect(page.getByTestId("take-control-card-heading")).toContainText(/take control of/i);
+    await expect(takeCard).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("take-control-card-heading")).toContainText(NEW_NODE_ID);
     const copy = (await takeCard.textContent()) ?? "";
     expect(copy, "the card states what a takeover does").toMatch(/stops and the run pauses/);
     expect(copy, "the card states what a hand-back does").toMatch(/new attempt/i);
     await evidence(
       page,
       `journey-e-confirm-${STAMP}`,
-      `the take-control confirm card for ${node.node_id} says the attempt stops, the run pauses, and the hand-back re-runs the step as a new attempt (ADR-0043)`,
+      `the take-control confirm card names ${node.node_id} and says the attempt stops, the run pauses, and the hand-back re-runs the step as a new attempt (ADR-0043)`,
     );
-    await page.getByTestId("take-control-confirm").click();
+    // Bounded: the card is transient in-DOM state. A missed click must fail
+    // fast (and re-open it), not ride the 30-minute test timeout — the exact
+    // pre-fix failure mode.
+    for (let round = 0; ; round += 1) {
+      try {
+        await page.getByTestId("take-control-confirm").click({ timeout: 20_000 });
+        break;
+      } catch (err) {
+        const badge =
+          (await page
+            .getByTestId("dock-controller")
+            .textContent()
+            .catch(() => "")) ?? "";
+        if (/you are in control/i.test(badge)) break; // the click landed after all
+        if (round >= 1)
+          throw new Error(
+            `the take-control confirm click for ${NEW_NODE_ID} missed twice (the card closed?) — ${String(
+              err,
+            )}`,
+          );
+        await dockControl.click({ timeout: 20_000 });
+        await expect(takeCard).toBeVisible({ timeout: 15_000 });
+        await expect(page.getByTestId("take-control-card-heading")).toContainText(NEW_NODE_ID);
+      }
+    }
 
     // The controller line names you.
     await expect
@@ -715,7 +782,52 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await checkShellScreen(page, "workbench-after-takeover", stopWatching ?? undefined);
   });
 
+  test("d — approve the run's human gate from the Inbox at 390x844", async ({ page }) => {
+    await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
+    // The run's plan step and journey_step's re-queued attempt 2 (the step e
+    // hand-back runs it again) precede the gate, so the approval may take the
+    // whole gate window.
+    state.approvalId = await waitForApproval(page.request, state.runId);
+
+    // PHONE width: 390x844, as the journey demands.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(BASE_URL + "/inbox");
+    await expect(page.getByTestId("inbox-decisions")).toBeVisible({ timeout: 30_000 });
+    const tid = testidOf(state.approvalId);
+    const card = page.getByTestId(`inbox-decision-${tid}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+
+    // The card's Approve action, then its confirm step.
+    const action = await findApproveAction(page, tid);
+    await action.click();
+    const confirm = page.getByTestId(`inbox-card-confirm-${tid}`);
+    await expect(confirm).toBeVisible();
+    await checkShellScreen(page, "inbox-phone-approval", stopWatching ?? undefined);
+    await evidence(
+      page,
+      `journey-d-inbox-${STAMP}`,
+      `at 390x844 the Inbox decision card for the run's gate is open with its confirm step armed (approval …${state.approvalId.slice(-8)})`,
+    );
+
+    // The label is a decision word → “Confirm approve”; otherwise the card
+    // offers the Approve / Reject pair — either records the approval.
+    const go = page.getByTestId(`inbox-card-confirm-go-${tid}`);
+    if ((await go.count()) > 0) await go.click();
+    else await page.getByTestId(`inbox-card-confirm-approved-${tid}`).click();
+
+    // Asserted via the API: the approval is decided and the run moves on.
+    await waitForApprovalDecided(page.request, state.runId);
+    await expect(card).toBeHidden({ timeout: 60_000 });
+    await evidence(
+      page,
+      `journey-d-decided-${STAMP}`,
+      `the gate was approved from the phone-width Inbox; the run's approve step is succeeded via the API and the card left the Inbox`,
+    );
+    await page.setViewportSize({ width: 1500, height: 950 });
+  });
+
   test("f — assistant via ⌘K: add a step to the draft, then undo all", async ({ page }) => {
+    await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible();
 
@@ -730,8 +842,14 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.getByTestId("assistant-composer-input").fill(ASSISTANT_ASK);
     await page.getByTestId("assistant-send").click();
 
-    // Follow the assistant: answer questions with a model-written option,
-    // confirm any approval card, until the change chip lands.
+    // Follow the assistant until the change is REAL — a draft's YAML carries
+    // journey_check (via API). The change chip is NOT the gate: the popover
+    // loads the user's latest conversation, and a previous run's chip would
+    // break the loop before this ask lands (the marker is the proof). The
+    // journey's card contract is followed as demanded: a model-written
+    // option on any question card, confirm on any approval card. (A
+    // question the model asks in plain text — no card — is not a card to
+    // click; the turn ends and the deadline reports it honestly.)
     const deadline = Date.now() + AGENT_TURN_TIMEOUT_MS;
     for (;;) {
       const error = page.getByTestId("assistant-error");
@@ -759,32 +877,26 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         await page.getByTestId("assistant-approval-confirm").click();
         continue;
       }
-      if (
-        await page
-          .getByTestId("assistant-change-chip")
-          .isVisible()
-          .catch(() => false)
-      )
-        break;
+      if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;
       if (Date.now() > deadline)
         throw new Error(
-          `the assistant never produced a change chip for ${ASSISTANT_STEP_NAME} (assistant tool loop be-as-loop?)`,
+          `no draft of ${PIPELINE_SLUG} carries ${ASSISTANT_STEP_NAME} after the ask — the assistant never landed the change (assistant tool loop be-as-loop?)`,
         );
       await sleep(3_000);
     }
+
+    // The change chip counts its change(s) — expanded, so its rows show
+    // (the chip collapses by default and renders no rows closed).
     const chip = page.getByTestId("assistant-change-chip");
     await expect(chip).toBeVisible();
     expect((await chip.textContent()) ?? "", "the change chip counts its changes").toMatch(
       /\d+\s+changes?/,
     );
-    await expect(page.getByTestId("assistant-change-row").first()).toBeVisible();
+    const chipRow = page.getByTestId("assistant-change-row").first();
+    if (!(await chipRow.isVisible().catch(() => false)))
+      await page.getByTestId("assistant-change-chip-toggle").click();
+    await expect(chipRow).toBeVisible();
 
-    // The change is real: a draft's YAML now contains journey_check (via API).
-    await expect
-      .poll(async () => (await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length, {
-        timeout: 30_000,
-      })
-      .toBeGreaterThan(0);
     const withMarker = await draftsContaining(page.request, ASSISTANT_STEP_NAME);
     await evidence(
       page,
