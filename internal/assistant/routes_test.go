@@ -85,7 +85,7 @@ func TestApprovalLinkIsARealPage(t *testing.T) {
 	withRun := tl.links(nil, nil, []map[string]any{
 		{"id": "gate-1", "project_id": "p1", "run_id": "r1", "state": "pending"},
 	})
-	if len(withRun) != 1 || withRun[0].Href != "/projects/p1/runs/r1" {
+	if len(withRun) != 1 || withRun[0].Href != "/runs/r1" {
 		t.Fatalf("gate with run_id should link to the run page, got %#v", withRun)
 	}
 
@@ -96,12 +96,16 @@ func TestApprovalLinkIsARealPage(t *testing.T) {
 		t.Fatalf("gate without run_id should link to the inbox, got %#v", withoutRun)
 	}
 
-	// And the old approvals href must not survive as a linkable route.
+	// And the old approvals href must not survive as a linkable route; the
+	// legacy run redirect is still a real route the allowlist must mirror.
 	b := (*Broker)(nil)
 	if _, ok := b.allowedHref("/projects/p1/approvals"); ok {
 		t.Fatal("/projects/{id}/approvals has no UI route and must be dropped")
 	}
+	if _, ok := b.allowedHref("/runs/r1"); !ok {
+		t.Fatal("/runs/{run_id} is a real UI route and must be allowed")
+	}
 	if _, ok := b.allowedHref("/projects/p1/runs/r1"); !ok {
-		t.Fatal("/projects/{id}/runs/{run_id} is a real UI route and must be allowed")
+		t.Fatal("/projects/{id}/runs/{run_id} is a live redirect route and must be allowed")
 	}
 }

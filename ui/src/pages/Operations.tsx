@@ -1,8 +1,12 @@
 import { problemOf } from "../api/client";
-import { useHealth, useReadiness, useWorkers } from "../api/queries";
+import { useHealth, useReadiness, useWorkers, useSystemSandbox } from "../api/queries";
 import { useSystemScheduler } from "../api/runs";
-import { shortId } from "../lib/format";
+import { workerSandboxState } from "../api/sandbox";
+import type { WorkerSandboxStatus } from "../api/types";
+import { formatAge, shortId } from "../lib/format";
 import { SandboxHealthPanel } from "../components/Sandbox";
+import { InterruptedCallout } from "../components/ops/InterruptedCallout";
+import { CapabilityMatrix } from "../components/ops/CapabilityMatrix";
 import { Spinner } from "../components/Feedback";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
@@ -183,11 +187,18 @@ export default function Operations() {
   const readiness = useReadiness();
   const workers = useWorkers();
   const scheduler = useSystemScheduler();
+  const sandbox = useSystemSandbox();
   // Worker rows are keyed by name in `workers-table`; the sandbox panel registers
   // by id, so the two surfaces agree on one label instead of one of them showing
   // a uuid.
   const nameOfWorker = (workerId: string) =>
     workers.data?.items.find((worker) => worker.id === workerId)?.name ?? shortId(workerId);
+  // Leases per worker from the scheduler load report, by worker name.
+  const loadOf = (workerName: string) =>
+    scheduler.data?.workers.find((entry) => entry.name === workerName) ?? null;
+  // Per-worker sandbox verdict, registered by worker id.
+  const sandboxOf = (workerId: string) =>
+    sandbox.data?.workers.find((entry) => entry.worker_id === workerId) ?? null;
 
   const healthProblem = health.error ? problemOf(health.error) : null;
   const readinessProblem = readiness.error ? problemOf(readiness.error) : null;
@@ -201,6 +212,25 @@ export default function Operations() {
         Each request lands on whichever API replica the load balancer chose; the replica badge in
         the footer shows which one answered last.
       </p>
+
+      {/* 4h health line: replica, queue depth, oldest queue age — the values
+          the existing endpoints actually serve; the API has no replica
+          count or oldest-lease age, so those are omitted, not filled in. */}
+      {health.data || scheduler.data ? (
+        <p className="font-mono text-[11px] text-ink-2" data-testid="ops-health-line">
+          {health.data ? `replica: ${health.data.replica}` : "replica: —"}
+          {scheduler.data ? (
+            <>
+              {" "}
+              · queue: {scheduler.data.attempts_by_status.queued} queued,{" "}
+              {scheduler.data.attempts_by_status.leased} leased · oldest queued:{" "}
+              {formatAgeSeconds(scheduler.data.oldest_queued_age_seconds)}
+            </>
+          ) : null}
+        </p>
+      ) : null}
+
+      <InterruptedCallout leaseExpirations={scheduler.data?.lease_expirations ?? null} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         {health.isPending ? <Spinner label="Checking health" /> : null}
@@ -266,56 +296,92 @@ export default function Operations() {
             workers.data.items.length === 0 ? (
               <p className="text-[12.5px] text-muted">No workers registered</p>
             ) : (
-              <table className="w-full border-collapse text-[12.5px]" data-testid="workers-table">
-                <caption className="sr-only">Registered execution workers</caption>
-                <thead>
-                  <tr className="border-b border-line-strong text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                    <th scope="col" className="py-1 pr-4">
-                      Name
-                    </th>
-                    <th scope="col" className="py-1 pr-4">
-                      Hostname
-                    </th>
-                    <th scope="col" className="py-1 pr-4">
-                      Version
-                    </th>
-                    <th scope="col" className="py-1 pr-4">
-                      Status
-                    </th>
-                    <th scope="col" className="py-1 pr-4">
-                      Started
-                    </th>
-                    <th scope="col" className="py-1">
-                      Last heartbeat
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {workers.data.items.map((worker) => (
-                    <tr
-                      key={worker.id}
-                      data-testid={`worker-row-${worker.name}`}
-                      className="border-b border-line-soft last:border-b-0"
-                    >
-                      <td className="py-[5px] pr-4 font-semibold">{worker.name}</td>
-                      <td className="py-[5px] pr-4 font-mono text-[11px]">{worker.hostname}</td>
-                      <td className="py-[5px] pr-4 font-mono text-[11px]">{worker.version}</td>
-                      <td className="py-[5px] pr-4">
-                        <StatusChip
-                          state={stateOf(WORKER_STATE[worker.status])}
-                          label={`status: ${worker.status}`}
-                        />
-                      </td>
-                      <td className="py-[5px] pr-4 font-mono text-[11px]">
-                        {formatTime(worker.started_at)}
-                      </td>
-                      <td className="py-[5px] font-mono text-[11px]">
-                        {formatTime(worker.last_heartbeat_at)}
-                      </td>
+              <div className="overflow-x-auto">
+                <table
+                  className="w-full min-w-[640px] border-collapse text-[12.5px]"
+                  data-testid="workers-table"
+                >
+                  <caption className="sr-only">Registered execution workers</caption>
+                  <thead>
+                    <tr className="border-b border-line-strong text-left font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                      <th scope="col" className="py-1 pr-4">
+                        Name
+                      </th>
+                      <th scope="col" className="py-1 pr-4">
+                        Status
+                      </th>
+                      <th scope="col" className="py-1 pr-4">
+                        Leases
+                      </th>
+                      <th scope="col" className="py-1 pr-4">
+                        Sandbox
+                      </th>
+                      <th scope="col" className="py-1 pr-4">
+                        Last heartbeat
+                      </th>
+                      <th scope="col" className="py-1 pr-4">
+                        Version
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {workers.data.items.map((worker) => {
+                      const load = loadOf(worker.name);
+                      const verdict = sandboxOf(worker.id);
+                      return (
+                        <tr
+                          key={worker.id}
+                          data-testid={`worker-row-${worker.name}`}
+                          className="border-b border-line-soft last:border-b-0"
+                        >
+                          <td className="py-[5px] pr-4 font-semibold">
+                            {worker.name}
+                            <span className="ml-2 font-mono text-[10.5px] font-normal text-muted">
+                              {worker.hostname}
+                            </span>
+                          </td>
+                          <td className="py-[5px] pr-4">
+                            <StatusChip
+                              state={stateOf(WORKER_STATE[worker.status])}
+                              label={`status: ${worker.status}`}
+                            />
+                          </td>
+                          <td
+                            className="py-[5px] pr-4 font-mono text-[11px]"
+                            data-testid={`worker-leases-${worker.name}`}
+                          >
+                            {load
+                              ? `${load.active_attempts} / ${load.capacity} active`
+                              : scheduler.error
+                                ? "— not reported"
+                                : "—"}
+                          </td>
+                          <td
+                            className="py-[5px] pr-4 font-mono text-[11px]"
+                            data-testid={`worker-sandbox-${worker.name}`}
+                          >
+                            {verdict ? (
+                              <SandboxCell verdict={verdict} />
+                            ) : sandbox.error ? (
+                              "— not reported"
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td
+                            className="py-[5px] pr-4 font-mono text-[11px]"
+                            title={formatTime(worker.last_heartbeat_at)}
+                            data-testid={`worker-heartbeat-${worker.name}`}
+                          >
+                            {formatAge(worker.last_heartbeat_at)} ago
+                          </td>
+                          <td className="py-[5px] font-mono text-[11px]">{worker.version}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )
           ) : null}
         </div>
@@ -337,6 +403,20 @@ export default function Operations() {
           registered `permissive-dev`/`disabled`, is a finding an operator must
           see without reading worker logs (`05`, ADR-0019 D5). */}
       <SandboxHealthPanel nameOf={nameOfWorker} />
+
+      {/* 4h: the agent × capability matrix, straight from the launcher
+          registry (C5 / ADR-0051) — evidence-backed cells, never prefilled. */}
+      <CapabilityMatrix />
     </section>
+  );
+}
+
+/** One worker's sandbox cell: glyph + mode + verdict, never mode alone. */
+function SandboxCell({ verdict }: { verdict: WorkerSandboxStatus }) {
+  return (
+    <StatusChip
+      state={workerSandboxState(verdict)}
+      label={`${verdict.enforcement} · ${verdict.verified ? "verified" : "unverified"}`}
+    />
   );
 }

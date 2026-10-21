@@ -79,6 +79,7 @@ const (
 	CodeKindNotImplemented     Code = "kind_not_implemented"
 	CodeTemplatePublishDefer   Code = "template_publish_deferred"
 	CodeUnresolvedTemplate     Code = "unresolved_node_template"
+	CodeTemplateRefUnresolved  Code = "template_ref_unresolved"
 	CodeSecretLiteral          Code = "secret_literal_detected"
 	CodeInvalidSecretRef       Code = "invalid_secret_ref"
 	CodeUnknownProfile         Code = "unknown_profile"

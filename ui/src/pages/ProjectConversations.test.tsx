@@ -74,9 +74,7 @@ describe("/projects/:projectId conversations", () => {
       expect(row.textContent).toContain("●active");
       expect(row.textContent).toContain("controller: Ada Lovelace");
       expect(row.textContent).toContain("updated: 2026-10-14T18:05:00Z");
-      expect(row.getAttribute("href")).toBe(
-        `/projects/${projectFixture.id}/conversations/${conversationFixture.id}`,
-      );
+      expect(row.getAttribute("href")).toBe(`/threads/${conversationFixture.id}`);
     },
     TEST_TIMEOUT,
   );
@@ -254,9 +252,7 @@ describe("/projects/:projectId/conversations", () => {
         timeout: READ_MS,
       });
       expect(row.textContent).toContain("Refactor billing");
-      expect(row.getAttribute("href")).toBe(
-        `/projects/${projectFixture.id}/conversations/${conversationFixture.id}`,
-      );
+      expect(row.getAttribute("href")).toBe(`/threads/${conversationFixture.id}`);
       // Not the app's "Not found" page any more, and the rail knows where it is.
       expect(screen.queryByText("That page does not exist.")).toBeNull();
       const nav = screen.getByRole("navigation", { name: "Project sections" });
@@ -397,7 +393,7 @@ describe("the list says where each conversation was opened", () => {
     // anchor because the row is itself an anchor.
     expect(badge.getAttribute("role")).toBe("link");
     expect(badge.getAttribute("title")).toBe(
-      `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
+      `/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
     );
   });
 
@@ -409,19 +405,14 @@ describe("the list says where each conversation was opened", () => {
       const location = useLocation();
       return <div data-testid="badge-where">{`${location.pathname}${location.search}`}</div>;
     }
-    const workbenchHref = `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`;
+    const workbenchHref = `/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`;
     render(
-      <MemoryRouter
-        initialEntries={[`/projects/${projectFixture.id}/conversations/${runLinkedSummary.id}`]}
-      >
+      <MemoryRouter initialEntries={[`/threads/${runLinkedSummary.id}`]}>
         <Routes>
           <Route path="*" element={<Where />} />
         </Routes>
-        <Row
-          to={`/projects/${projectFixture.id}/conversations/${runLinkedSummary.id}`}
-          data-testid="conversation-row-badge-harness"
-        >
-          <OriginBadge conversation={runLinkedSummary} projectId={projectFixture.id} />
+        <Row to={`/threads/${runLinkedSummary.id}`} data-testid="conversation-row-badge-harness">
+          <OriginBadge conversation={runLinkedSummary} />
         </Row>
       </MemoryRouter>,
     );

@@ -220,6 +220,10 @@ func (a APIRunStore) m4RunReadView(ctx context.Context, pool *pgxpool.Pool, r Ru
 		MyRole:                role,
 	}
 	view.CancelRequestedAt = r.CancelRequestedAt
+	if r.SourceConversationID != "" {
+		id := r.SourceConversationID
+		view.SourceConversationID = &id
+	}
 
 	var digestScope string
 	err := pool.QueryRow(ctx, `

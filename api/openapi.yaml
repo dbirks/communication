@@ -2475,6 +2475,12 @@ paths:
         catalogue (unknown kind is `422`), a slug the organization already
         holds is `409`. Library role (organization admin) — `403` otherwise.
         Appends `node_template.create` in the creating transaction.
+        With `from_node` (ADR-0049 § 6, "also save as a reusable step") the
+        `kind` and `config` are taken from the named node of the named
+        draft's validated canonical document, the parameterization starts
+        empty (`parameters` {"type":"object","properties":{}},
+        `output_schema` {"type":"object"}), and an unvalidated or invisible
+        draft is `422` / `404`.
       security:
         - sessionCookie: []
           csrfHeader: []
@@ -2498,6 +2504,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
@@ -3957,7 +3965,7 @@ paths:
 
         | `type` | `payload` members |
         |---|---|
-        | `run.created` | `project_id`, `run_id`, `pipeline_id`, `revision_id`, `revision_digest`, `plan_digest`, `digest_scope`, `assignment_id`, `depth`, `parent_run_id`, `input_names`, `priority` |
+        | `run.created` | `project_id`, `run_id`, `pipeline_id`, `revision_id`, `revision_digest`, `plan_digest`, `digest_scope`, `assignment_id`, `depth`, `parent_run_id`, `input_names`, `priority`, `source_conversation_id` (ADR-0053, omitted when absent) |
         | `run.started` | `project_id`, `run_id`, `worker_affinity_present`, `repo_snapshot` |
         | `run.paused` | `project_id`, `run_id`, `paused_reason`, `in_flight_attempts`, `requested_by` |
         | `run.resumed` | `project_id`, `run_id`, `paused_reason` |
@@ -4302,6 +4310,133 @@ paths:
           $ref: "#/components/responses/ApprovalConflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/approvals/{approvalId}/summary:
+    post:
+      operationId: summarizeApproval
+      tags: [approvals, assistant]
+      summary: Model-written decider summary and suggested actions for a gate
+      description: >
+        ADR-0052's summarization pass. The gate's own `summary` plus its
+        `artifact_refs` (both bounded) go to the model through the ADR-0034
+        broker's single-completion path, and the answer is a short decider
+        summary and a small set of suggested actions. Authorized exactly like
+        `getApproval`: a gate the caller cannot see is `404`. The model NEVER
+        decides — it writes text a human reads, and the decider still calls
+        `decideApproval`.
+
+        * `summary` is at most two sentences; each `actions[]` label is at most
+          40 characters and `intent`/`risk` are the closed enums below (an
+          unknown model member is coerced to `other`, never a new value).
+        * The result is cached in memory keyed on the gate's `version`, so a
+          pending gate's summary is computed once and re-used until the gate is
+          decided (the version increments exactly once, for exactly one
+          decision). Nothing is persisted (ADR-0052).
+        * The output is secret-scanned like the broker's egress rule; a match is
+          a refusal, never an echo. With `COMMUNICATION_ASSISTANT_BASE_URL`
+          unset the feature is absent: `503` `assistant_not_configured`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: The decider summary and suggested actions.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: >
+            `assistant_not_configured` (the feature is absent),
+            `model_unreachable`, or a cap hit. The UI keeps the gate's own
+            summary and the static Approve/Reject buttons on screen.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "504":
+          description: "The endpoint did not answer within its arm (`degraded` is `model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+  /api/v1/approvals/{approvalId}/interpret:
+    post:
+      operationId: interpretApprovalReply
+      tags: [approvals, assistant]
+      summary: Interpret the approver's free-text reply and PROPOSE a decision
+      description: >
+        ADR-0052's free-text interpretation. The approver replies in their own
+        words; the model restates the intent and PROPOSES a decision and a short
+        decider note from the gate's summary plus the reply (both bounded).
+        Authorized exactly like `getApproval`: a gate the caller cannot see is
+        `404`.
+
+        * The model NEVER decides. The response is a **proposal**; the UI shows
+          it and the human confirms by calling `decideApproval` themselves (the
+          server never writes a decision on the model's behalf).
+        * `proposed.decision` is one of `approve`/`reject`/`request_changes`;
+          an ambiguous or unknown model member is coerced to `reject`, never
+          `approve`. `comments` is bounded to the decide route's 8 KiB cap so
+          the note the approver confirms can be pasted straight into `decide`.
+        * `text` is required and at most 2000 characters. With
+          `COMMUNICATION_ASSISTANT_BASE_URL` unset: `503`
+          `assistant_not_configured`.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalInterpret"
+      responses:
+        "200":
+          description: >
+            The model's restated intent and the proposed decision + note. The
+            gate was only READ: nothing is decided until the human calls
+            `decideApproval`.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalInterpretation"
+        "400":
+          description: Empty or oversized `text`, or a malformed body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: >
+            `assistant_not_configured`, `model_unreachable`, or a cap hit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "504":
+          description: "The endpoint did not answer within its arm (`degraded` is `model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
   # ------------------------------------------------- M4: scheduler ops ------
   /api/v1/system/scheduler:
     get:
@@ -4509,6 +4644,344 @@ paths:
                 $ref: "#/components/schemas/AssistantProblem"
         "504":
           description: "The assistant endpoint did not answer within its arm (`degraded` is `model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+
+  /api/v1/assistant/conversations:
+    post:
+      operationId: createAssistantConversation
+      tags: [assistant]
+      summary: Start a new assistant conversation for the caller
+      description: >
+        ADR-0050 part 1: the per-user persisted assistant conversation
+        (decision 2). The conversation belongs to the signed-in user and
+        survives navigation and reload; its title stays null until the
+        first user message. Session-authed; the mutation carries the same
+        CSRF contract as every other POST.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        "201":
+          description: "The new conversation (null title, null last_message_at)."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantConversation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    get:
+      operationId: listAssistantConversations
+      tags: [assistant]
+      summary: List the caller's assistant conversations
+      description: >
+        The caller's own conversations only, newest `last_message_at`
+        first (never-messaged conversations last). Cursor paging over the
+        `(last_message_at DESC NULLS LAST, id DESC)` ordering; `next_cursor`
+        is null when the list is exhausted.
+      parameters:
+        - name: limit
+          in: query
+          description: "Page size, 1..200 (default 50)."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          description: "A `next_cursor` from an earlier response."
+          schema:
+            type: string
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: "One page of the caller's conversations."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantConversationList"
+        "400":
+          description: "`invalid_cursor` / `invalid_limit` (problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/assistant/conversations/{conversationId}/messages:
+    post:
+      operationId: postAssistantMessage
+      tags: [assistant]
+      summary: Post a message and run one server-side assistant turn
+      description: >
+        ADR-0050 decision 2 (part 1). The server loads the caller's
+        transcript history, folds it into the ADR-0034 broker's question
+        with the page context, and appends the rows this request produced
+        (the `user` row first, then the turn's output) in one transaction;
+        the response carries exactly those rows. `text` is 1..2000
+        characters and is secret-scanned before any model egress (ADR-0018).
+        `confirm`/`dismiss` name a pending `approval_request` — the
+        approval flow lands in part 2 and answers
+        `400 approval_requests_not_available` now. A turn that fails
+        (secret-shaped text, model unreachable, caps) stores NOTHING and
+        answers the ADR-0034 problem with `degraded` naming the cause; a
+        conversation that is not the caller's answers 404 (never 403);
+        a deployment without an assistant endpoint answers
+        `503 assistant_not_configured`.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssistantMessagePost"
+      responses:
+        "200":
+          description: "The rows appended by this request (the user row first)."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantMessageList"
+        "400":
+          description: >
+            Missing/oversized `text`, a malformed body,
+            `approval_requests_not_available` (confirm/dismiss before
+            part 2), or secret-shaped material
+            (`degraded: secret_in_request`, zero egress, nothing stored).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "The conversation does not exist or is not the caller's."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "503":
+          description: "`assistant_not_configured`, `model_unreachable`, or a cap hit."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "504":
+          description: "The endpoint did not answer within its arm (`degraded: model_timeout`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+    get:
+      operationId: listAssistantMessages
+      tags: [assistant]
+      summary: Page the conversation transcript, oldest first
+      description: >
+        The caller's transcript, ordered by `(created_at, id)` — the
+        append-only ordering of decision 1. `next_cursor` is null when the
+        transcript is exhausted.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: "Page size, 1..200 (default 50)."
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          description: "A `next_cursor` from an earlier response."
+          schema:
+            type: string
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: "One oldest-first page of transcript rows."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantMessageList"
+        "400":
+          description: "`invalid_cursor` / `invalid_limit` (problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: "The conversation does not exist or is not the caller's."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+  /api/v1/assistant/conversations/{conversationId}/changes:
+    get:
+      operationId: listAssistantChanges
+      tags: [assistant]
+      summary: List the conversation's change log
+      description: >
+        ADR-0050 decision 5: the assistant-scoped "who changed this and
+        why" record. `state` filters on `undone_at` (`open` | `undone` |
+        `all`, default `all`). `undoable` is the PRESENCE of the stored
+        inverse op; the `undo_payload` itself is never returned by any
+        read route.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [open, undone, all]
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: "The change log in creation order."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantChangeList"
+        "400":
+          description: "`invalid_state` (problem+json)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: "The conversation does not exist or is not the caller's."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+  /api/v1/assistant/conversations/{conversationId}/undo-all:
+    post:
+      operationId: undoAllAssistantChanges
+      tags: [assistant]
+      summary: Undo every still-open undoable change of the conversation
+      description: >
+        Decision 2: newest first, one independent attempt per open change
+        — a failed row never blocks the next. Each result is
+        `undone` | `already_undone` | `not_undoable` | `failed`; a
+        `failed` result carries the stable detail in `error`.
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        "200":
+          description: "One independent outcome per open change."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantChangeUndoAll"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "The conversation does not exist or is not the caller's."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+  /api/v1/assistant/changes/{changeId}/undo:
+    post:
+      operationId: undoAssistantChange
+      tags: [assistant]
+      summary: Apply one change's recorded inverse op
+      description: >
+        Decision 5: the inverse op (the server's own closed record, never
+        model text) is applied as the caller through the underlying
+        version-checked service, and `undone_at` is stamped in the same
+        transaction. 404 when the change is not the caller's; 409
+        `change_not_undoable` when it cannot be undone (no inverse op,
+        already undone, the target no longer exists, the caller lost
+        write right, or the inverse does not structurally apply — the
+        detail says so and the draft is left untouched). Part 1 ships the
+        seam without the draft-edit inverse wired (that lands in part 2),
+        so an undoable change answers 409 today.
+      parameters:
+        - name: changeId
+          in: path
+          required: true
+          schema:
+            type: string
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      responses:
+        "200":
+          description: "The updated change (with `undone_at`)."
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantChange"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "The change does not exist or is not the caller's."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/AssistantProblem"
+        "409":
+          description: "`change_not_undoable` (the detail names why)."
           content:
             application/problem+json:
               schema:
@@ -5977,6 +6450,22 @@ components:
         finished_at:
           type: ["string", "null"]
           format: date-time
+    ConversationLinkedRun:
+      title: ConversationLinkedRun
+      description: >
+        ADR-0053: one run this conversation (thread) was handed to — the
+        forward link, complementing `run_link`'s reverse direction. The
+        thread stays open and unmodified; `created_at` is the handoff moment
+        (the run's creation).
+      type: object
+      required: [run_id, created_at]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
     ConversationRunLink:
       title: ConversationRunLink
       description: >
@@ -6020,7 +6509,7 @@ components:
         part of this identity: `status` describes the conversation, the (nullable)
         `agent_session` describes what is attached right now.
       type: object
-      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control, origin, run_link]
+      required: [id, project_id, agent_profile_id, title, status, created_by, created_at, updated_at, control, origin, run_link, linked_runs]
       properties:
         id:
           type: string
@@ -6093,6 +6582,15 @@ components:
           anyOf:
             - $ref: "#/components/schemas/ConversationRunLink"
             - type: "null"
+        linked_runs:
+          description: >
+            ADR-0053: the runs this thread started (it stays open and links
+            to them), creation order; empty when none. Every listed run is
+            one the caller may see (the thread's visibility predicate ran
+            first).
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationLinkedRun"
     ConversationSummary:
       title: ConversationSummary
       description: >
@@ -7613,9 +8111,12 @@ components:
       title: NodeTemplateCreate
       description: >
         `createNodeTemplate`'s body. Defaults when omitted: `version_label`
-        1.0.0, `workspace_mode` run_workspace, `output_schema` {}.
+        1.0.0, `workspace_mode` run_workspace, `output_schema` {}. `kind`,
+        `parameters` and `config` are required UNLESS `from_node` is present
+        (ADR-0049 § 6): then `kind` and `config` come from the named node
+        and `parameters` defaults to an empty object schema.
       type: object
-      required: [slug, display_name, kind, parameters, config]
+      required: [slug, display_name]
       properties:
         slug:
           type: string
@@ -7629,12 +8130,15 @@ components:
           maxLength: 2000
         kind:
           type: string
-          description: A v1alpha1 catalogue kind; unknown kinds are `422`.
+          description: >
+            A v1alpha1 catalogue kind; unknown kinds are `422`. Taken from
+            the node when `from_node` is present.
         parameters:
           type: object
           description: JSON schema over the parameter values.
         config:
           type: object
+          description: The parameterized body. Taken from the node when `from_node` is present.
         output_schema:
           type: object
         workspace_mode:
@@ -7643,6 +8147,18 @@ components:
         version_label:
           type: string
           pattern: "^\\d+\\.\\d+\\.\\d+$"
+        from_node:
+          type: object
+          description: >
+            ADR-0049 § 6: the Studio's "also save as a reusable step" — the
+            step is created from this node's kind and config.
+          required: [draft_id, node_id]
+          properties:
+            draft_id:
+              type: string
+              format: uuid
+            node_id:
+              type: string
     NodeTemplateRevisionCreate:
       title: NodeTemplateRevisionCreate
       description: >
@@ -8489,6 +9005,84 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/RunRepoSnapshot"
+            source_conversation_id:
+              type: ["string", "null"]
+              format: uuid
+              description: >
+                ADR-0053: the thread this run was started from
+                (null for an ordinary run). The reverse read is the
+                conversation detail's `linked_runs`.
+    RunSource:
+      title: RunSource
+      description: >
+        `RunCreate.source` (ADR-0053, artboard 5d): the thread (the API's
+        `conversation`) the run is handed from. The caller must see the
+        conversation (`404` otherwise) and its project must equal the
+        run's project (`422 source-project-mismatch`). The run's base is the
+        thread branch's RECORDED head per repository (the post-commit ref
+        read, ADR-0017 D8/P8) — a thread with no recorded commits beyond its
+        base for a repository starts that repository from the default branch,
+        and the `201 base` member says which, per repository. Agents start
+        fresh sessions: the thread's transcript is NOT replayed.
+      type: object
+      required: [conversation_id]
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        summary:
+          type: string
+          maxLength: 8000
+          description: >
+            Becomes the first step's seeded input through the run-inputs
+            path: recorded as a run input named `handoff_summary` (origin
+            `submitted`), bound as `${{ inputs.handoff_summary }}` like any
+            input. A caller-supplied `inputs.handoff_summary` is overridden
+            by this value.
+        artifact_ids:
+          type: ["array", "null"]
+          items:
+            type: string
+            format: uuid
+          description: >
+            Artifacts attached to the run by reference
+            (`artifacts.run_id`, same transaction; the row keeps its
+            `conversation_id`). Unknown or foreign ids are `404`; an
+            artifact already attached to another run is `422
+            source-artifact-taken`.
+    RunSourceBaseRepo:
+      title: RunSourceBaseRepo
+      description: >
+        One repository's honest base answer in the `201 base` member
+        (ADR-0053): whether the thread branch carried recorded commits
+        beyond its base and, when it did, the pinned commit.
+      type: object
+      required: [repository_id, mode, reason]
+      properties:
+        repository_id:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum: [thread_branch, default_branch]
+        base_commit:
+          type: ["string", "null"]
+          description: The pinned head; null in `default_branch` mode.
+        reason:
+          type: string
+          description: The observed fact (recorded head vs base), not a paraphrase.
+    RunSourceBase:
+      title: RunSourceBase
+      description: >
+        The create response's `base` member: one row per repository of the
+        project, name order.
+      type: object
+      required: [repositories]
+      properties:
+        repositories:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunSourceBaseRepo"
     RunCreate:
       title: RunCreate
       description: >
@@ -8496,7 +9090,10 @@ components:
         `pipeline_revision_id`. `inputs` is validated against the pinned
         revision's `spec.inputs` in the creating transaction (`422` with
         validate-style units otherwise; absent optional inputs take declared
-        defaults, recorded as `origin: default` in `run_inputs`).
+        defaults, recorded as `origin: default` in `run_inputs`). `source`
+        (ADR-0053) starts the run from a thread: its branch is the pinned
+        base, `summary` seeds the `handoff_summary` input and the listed
+        artifacts ride along by reference.
       type: object
       minProperties: 1
       properties:
@@ -8516,12 +9113,18 @@ components:
           description: >
             Same semantics as the `Idempotency-Key` header (which wins when
             both are present); the mapping is stored per project for 24 h.
+        source:
+          $ref: "#/components/schemas/RunSource"
     RunCreateResponse:
       title: RunCreateResponse
       description: >
         The `201` (and the `200` idempotent replay): the run is queued, and
         every later fact about it arrives through `GET /runs/{runId}` or its
-        event stream — this response proves creation and pinning, nothing else.
+        event stream — this response proves creation and pinning, nothing
+        else. `base` (ADR-0053) is present exactly when the request carried
+        `source`: the per-repository answer to "does the thread branch carry
+        anything?" (absent on the idempotent replay, which re-answers the
+        original create).
       type: object
       required: [run_id, status]
       properties:
@@ -8531,6 +9134,8 @@ components:
         status:
           type: string
           enum: [queued]
+        base:
+          $ref: "#/components/schemas/RunSourceBase"
     RunRetryRequest:
       title: RunRetryRequest
       description: >
@@ -9078,6 +9683,81 @@ components:
         created_at:
           type: string
           format: date-time
+    ApprovalSummary:
+      title: ApprovalSummary
+      description: >
+        ADR-0052: the model-written decider summary for a gate. The model is a
+        reader over the caller's own gate, never a decider — the decider still
+        calls `decideApproval`. `summary` is at most two sentences; each action
+        label is at most 40 characters and `intent`/`risk` are the closed enums
+        (an unknown model member is coerced to `other`). Nothing is persisted;
+        the result is cached in memory keyed on the gate's `version`.
+      type: object
+      required: [summary, actions, model, generated_at]
+      properties:
+        summary:
+          type: string
+          description: At most two sentences, no markdown.
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            type: object
+            required: [label, intent, risk]
+            properties:
+              label:
+                type: string
+                maxLength: 40
+              intent:
+                type: string
+                enum: [approve, reject, request_changes, other]
+              risk:
+                type: string
+                enum: [proceed, refuse, destructive, other]
+        model:
+          type: string
+          description: The endpoint model that wrote the summary (the honest `model` field, never a capability claim).
+        generated_at:
+          type: string
+          format: date-time
+    ApprovalInterpret:
+      title: ApprovalInterpret
+      description: Request body for `interpretApprovalReply` — the approver's free-text reply.
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+    ApprovalInterpretation:
+      title: ApprovalInterpretation
+      description: >
+        ADR-0052: the model's PROPOSED reading of the approver's reply. The
+        model never decides — the UI shows this and the human confirms by
+        calling `decideApproval`. `proposed.decision` is one of
+        `approve`/`reject`/`request_changes`; an ambiguous or unknown model
+        member is coerced to `reject`, never `approve`. `comments` is bounded to
+        the decide route's 8 KiB cap so the confirmed note can be pasted straight
+        into `decide`.
+      type: object
+      required: [interpretation, proposed]
+      properties:
+        interpretation:
+          type: string
+          description: One plain sentence restating the approver's intent.
+        proposed:
+          type: object
+          required: [decision, comments]
+          properties:
+            decision:
+              type: string
+              enum: [approve, reject, request_changes]
+            comments:
+              type: string
+              maxLength: 8192
+              description: A short decider note, faithful to the approver's words.
     ApprovalList:
       title: ApprovalList
       type: object
@@ -9364,6 +10044,187 @@ components:
                 `model_timeout`, `malformed_completion`,
                 `model_call_cap_exceeded`, `tool_cap_exceeded` or
                 `secret_in_request`.
+    AssistantConversation:
+      title: AssistantConversation
+      description: >
+        ADR-0050 part 1 (decision 2): the per-user persisted assistant
+        conversation. The `title` stays null until the first user message
+        and is then the (truncated) first line of that message.
+      type: object
+      required: [id, title, created_at, updated_at, last_message_at]
+      properties:
+        id:
+          type: string
+        title:
+          type: [string, "null"]
+          description: "Null until the first user message."
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_message_at:
+          type: [string, "null"]
+          description: "Null until the conversation has a message."
+    AssistantConversationList:
+      title: AssistantConversationList
+      description: One page of the caller's conversations, newest `last_message_at` first.
+      type: object
+      required: [conversations, next_cursor]
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistantConversation"
+        next_cursor:
+          type: [string, "null"]
+          description: "Opaque; null when the list is exhausted."
+    AssistantMessage:
+      title: AssistantMessage
+      description: >
+        One transcript row (decision 1): append-only, keyed by
+        `conversation_id, id`, in the `(created_at, id)` order. `kind` is
+        `user` | `assistant` | `approval_request` | `approval_response`;
+        the shape of `payload` follows `kind` (a discriminated object,
+        rendered by the UI per kind).
+      type: object
+      required: [id, kind, payload, created_at]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [user, assistant, approval_request, approval_response]
+        payload:
+          type: object
+          description: "Kind-discriminated: the discriminator `kind` plus the kind's fields."
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+    AssistantMessageList:
+      title: AssistantMessageList
+      description: >
+        One oldest-first page of transcript rows. The `post` answer reuses
+        this shape for the rows appended by that request (the `user` row
+        first, then the turn's output).
+      type: object
+      required: [messages, next_cursor]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistantMessage"
+        next_cursor:
+          type: [string, "null"]
+          description: "Opaque; null when the transcript is exhausted."
+    AssistantMessagePost:
+      title: AssistantMessagePost
+      description: >
+        A new user message. `context` is the page context the turn runs in;
+        `context.entity` names the entity the context is about (a run, a
+        draft, an approval, an inbox item or a pipeline revision) so the
+        server can scope the turn's tools and answer. `confirm`/`dismiss`
+        name a pending `approval_request` — the approval flow lands in
+        part 2 (`400 approval_requests_not_available` until then).
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        context:
+          type: object
+          properties:
+            route:
+              type: string
+              maxLength: 2048
+            project_id:
+              type: string
+            entity:
+              type: object
+              required: [kind, id]
+              properties:
+                kind:
+                  type: string
+                  enum: [run, draft, approval, inbox_item, pipeline_revision]
+                id:
+                  type: string
+        confirm:
+          type: [string, "null"]
+          description: "A pending `approval_request` message id to confirm."
+        dismiss:
+          type: [string, "null"]
+          description: "A pending `approval_request` message id to dismiss."
+    AssistantChange:
+      title: AssistantChange
+      description: >
+        ADR-0050 decision 5: one recorded change. The record is the
+        server's own closed record — the user can see what changed, what
+        happened before, and why — and `undoable` is the PRESENCE of the
+        stored inverse op. The `undo_payload` itself is never returned by
+        any read route; undo goes through the undo op.
+      type: object
+      required: [id, kind, target_ref, summary, undoable, undone_at, created_at]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [draft_edit, run_retry, inbox_action, run_trigger, run_terminate]
+        target_ref:
+          type: string
+          description: "The changed entity, e.g. `draft:d-1` or `run:r-1`."
+        summary:
+          type: string
+          description: "The human-readable line shown in the changes list."
+        undoable:
+          type: boolean
+          description: "Whether a stored inverse op is present (not whether it will still apply)."
+        undone_at:
+          type: [string, "null"]
+        created_at:
+          type: string
+          format: date-time
+    AssistantChangeList:
+      title: AssistantChangeList
+      description: The conversation's change log in creation order.
+      type: object
+      required: [changes]
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistantChange"
+    AssistantChangeUndoResult:
+      title: AssistantChangeUndoResult
+      description: >
+        One independent outcome of an undo attempt: `undone` |
+        `already_undone` | `not_undoable` | `failed`; `error` carries the
+        stable detail for the non-success rows.
+      type: object
+      required: [change_id, status]
+      properties:
+        change_id:
+          type: string
+        status:
+          type: string
+          enum: [undone, already_undone, not_undoable, failed]
+        error:
+          type: [string, "null"]
+    AssistantChangeUndoAll:
+      title: AssistantChangeUndoAll
+      description: One independent outcome per open change (newest first).
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssistantChangeUndoResult"
+
     AssistantDraftProposalRequest:
       title: AssistantDraftProposalRequest
       description: >

@@ -41,6 +41,10 @@ import (
 var (
 	ErrNodeTemplateNotFound = errors.New("api: node template not found")
 	ErrNodeTemplateConflict = errors.New("api: node template unique constraint violation")
+	// ErrNodeTemplateDraftNotValidated is from_node's 400: the draft exists
+	// and is visible but has no validated canonical document yet, so there is
+	// no node config to copy (ADR-0049 § 6).
+	ErrNodeTemplateDraftNotValidated = errors.New("api: draft has no validated canonical document")
 )
 
 // ntSemverPattern is 07's semver: the revision's version label, unique per
@@ -205,6 +209,9 @@ type NodeTemplateStore interface {
 	CreateTemplate(ctx context.Context, c Caller, in NodeTemplateCreateInput) (NodeTemplateView, error)
 	CreateTemplateRevision(ctx context.Context, c Caller, templateID string, in NodeTemplateRevisionInput) (NodeTemplateRevisionCreateResponse, error)
 	DuplicateTemplate(ctx context.Context, c Caller, templateID, slug, displayName string) (NodeTemplateView, error)
+	// NodeFromDraft (ADR-0049 § 6): the kind and config of one node in a
+	// draft's validated canonical document, for from_node create.
+	NodeFromDraft(ctx context.Context, c Caller, draftID, nodeID string) (kind string, config json.RawMessage, err error)
 	// RecordDenied writes the audit row for a refused read or mutation.
 	RecordDenied(ctx context.Context, c Caller, resourceID, action string) error
 }
@@ -221,6 +228,13 @@ type ntCreateBody struct {
 	OutputSchema  json.RawMessage `json:"output_schema,omitempty"`
 	WorkspaceMode string          `json:"workspace_mode,omitempty"`
 	VersionLabel  string          `json:"version_label,omitempty"`
+	// FromNode is ADR-0049 § 6 ("also save as a reusable step"): the kind and
+	// config come from the named node of the named draft's validated
+	// canonical document, and the parameterization starts empty.
+	FromNode *struct {
+		DraftID string `json:"draft_id"`
+		NodeID  string `json:"node_id"`
+	} `json:"from_node,omitempty"`
 }
 
 type ntRevisionBody struct {
@@ -392,6 +406,30 @@ func (h *ntHandlers) create(w http.ResponseWriter, r *http.Request) {
 		h.badRequest(w, r, err)
 		return
 	}
+	// ADR-0049 § 6 ("also save as a reusable step"): from_node owns the
+	// kind and the config — they come from the named node of the named
+	// draft's validated canonical document — and the parameterization starts
+	// empty ({} parameters schema, output_schema {"type":"object"}) so the
+	// first revision's behaviour is byte-identical to the inline node.
+	if body.FromNode != nil {
+		if body.FromNode.DraftID == "" || body.FromNode.NodeID == "" {
+			ntInvalid(w, "from_node requires draft_id and node_id.")
+			return
+		}
+		kind, config, err := h.store.NodeFromDraft(r.Context(), c, body.FromNode.DraftID, body.FromNode.NodeID)
+		if err != nil {
+			h.failFromNode(w, r, c, err)
+			return
+		}
+		body.Kind = kind
+		body.Config = config
+		if len(body.Parameters) == 0 {
+			body.Parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		if len(body.OutputSchema) == 0 {
+			body.OutputSchema = json.RawMessage(`{"type":"object"}`)
+		}
+	}
 	if !ntSlug(w, body.Slug, body.DisplayName) {
 		return
 	}
@@ -521,6 +559,21 @@ func (h *ntHandlers) duplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusCreated, view)
+}
+
+// failFromNode maps a from_node read failure onto the HTTP contract: a draft
+// or node the caller cannot see is the uniform 404 (with audit row), an
+// unvalidated draft the honest 400.
+func (h *ntHandlers) failFromNode(w http.ResponseWriter, r *http.Request, c Caller, err error) {
+	switch {
+	case errors.Is(err, ErrNodeTemplateNotFound):
+		h.denied(w, r, c, "", "no such object, or it is not visible to your organization")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such object.")
+	case errors.Is(err, ErrNodeTemplateDraftNotValidated):
+		ntInvalid(w, "The draft has no validated document yet; validate it first, then save the step from its node.")
+	default:
+		h.serverError(w, r, "", "node_template.store", err)
+	}
 }
 
 // fail maps a registry-store error onto the HTTP contract: a cross-org or

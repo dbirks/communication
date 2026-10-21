@@ -19,6 +19,7 @@ import Conversations from "../components/Conversations";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import ProjectSectionNav from "../components/ProjectSectionNav";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
+import { routes } from "../lib/routes";
 
 export default function ProjectConversations() {
   const { projectId = "" } = useParams<{ projectId: string }>();
@@ -29,7 +30,7 @@ export default function ProjectConversations() {
   // read).
   const list = useConversations(projectId);
 
-  if (project.isPending) return <Spinner label="Loading conversations" />;
+  if (project.isPending) return <Spinner label="Loading threads" />;
 
   // A non-member gets the one refusal every screen under `/projects/:id`
   // gives: the project read answers 404, and a panel saying "no conversations
@@ -37,7 +38,7 @@ export default function ProjectConversations() {
   if (projectAccessRefused(project.error) || projectAccessRefused(list.error)) {
     return (
       <ProjectUnavailable
-        heading="Conversations"
+        heading="Threads"
         headingId="project-conversations-heading"
         testid="project-conversations-not-found"
       />
@@ -48,7 +49,7 @@ export default function ProjectConversations() {
     return (
       <section aria-labelledby="project-conversations-error-heading">
         <h1 id="project-conversations-error-heading" className="text-title-l font-bold">
-          Conversations
+          Threads
         </h1>
         <ProblemBanner error={project.error} fallback="The project could not be loaded." />
       </section>
@@ -66,18 +67,18 @@ export default function ProjectConversations() {
       <div className="min-w-0 space-y-4">
         <header className="space-y-1">
           <p className="font-mono text-[11px] text-muted">
-            <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
+            <Link to={routes.project(data.id)} className="text-accent-text hover:text-ink">
               {data.name}
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Conversations</span>
+            <span>Threads</span>
           </p>
           <h1
             id="project-conversations-heading"
             className="text-title-l font-bold"
             data-testid="project-conversations-title"
           >
-            Conversations — {data.name}
+            Threads — {data.name}
           </h1>
           <p className="text-[12.5px] text-muted">
             Your role: <span className="font-mono">{data.my_role}</span>. Only contributors and

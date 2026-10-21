@@ -16,6 +16,7 @@ import type { Project } from "../api/types";
 import { FormError, ProblemBanner, Spinner } from "./Feedback";
 import { Button } from "./ds/Button";
 import { Field, Input, Select, Textarea } from "./ds/Field";
+import { routes } from "../lib/routes";
 
 export interface NewConversationDialogProps {
   open: boolean;
@@ -122,10 +123,10 @@ function DialogBody({
         className="w-full max-w-[440px] rounded-[3px] border border-line-strong bg-surface p-4 shadow-[0_8px_24px_rgba(30,29,26,0.18)]"
       >
         <h2 id="new-conversation-dialog-title" className="text-[15px] font-bold">
-          New conversation
+          New thread
         </h2>
         <p className="mt-1 text-[12.5px] text-muted">
-          A one-off agent conversation in a project workspace — no workflow needed.
+          A one-off thread with an agent in a project workspace — no workflow needed.
         </p>
 
         <div className="mt-3 space-y-3">
@@ -189,8 +190,8 @@ function DialogBody({
               data-testid="new-conversation-dialog-need-project"
             >
               {writable.length === 0 && !projectsPending
-                ? "No projects where you can start a conversation."
-                : "Choose a project to start the conversation."}
+                ? "No projects where you can start a thread."
+                : "Choose a project to start the thread."}
             </p>
           ) : null}
         </div>
@@ -224,7 +225,7 @@ function ConversationForm({ project, onCreated }: { project: Project; onCreated:
       },
       {
         onSuccess: (conversation) => {
-          navigate(`/projects/${project.id}/conversations/${conversation.id}`);
+          navigate(routes.thread(conversation.id));
           onCreated();
         },
       },
@@ -234,7 +235,7 @@ function ConversationForm({ project, onCreated }: { project: Project; onCreated:
   return (
     <form
       onSubmit={onSubmit}
-      aria-label="New conversation fields"
+      aria-label="New thread fields"
       className="space-y-3 border-t border-line pt-3"
     >
       <Field id="conversation-title" label="Title">
@@ -294,7 +295,7 @@ function ConversationForm({ project, onCreated }: { project: Project; onCreated:
         data-testid="conversation-new-submit"
         disabled={create.isPending || !title.trim() || !profileId}
       >
-        {create.isPending ? "Starting…" : "Start conversation"}
+        {create.isPending ? "Starting…" : "Start thread"}
       </Button>
       <FormError error={create.error} />
     </form>

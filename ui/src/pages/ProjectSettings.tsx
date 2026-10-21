@@ -17,6 +17,7 @@ import ProjectSectionNav from "../components/ProjectSectionNav";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { MaterializationsPanel, SecretMountsPanel, SecretsPanel } from "../components/Secrets";
 import { WorkspacesPanel } from "../components/Workspaces";
+import { routes } from "../lib/routes";
 
 function Settings({ project }: { project: Project }) {
   const secrets = useSecrets(project.id);
@@ -81,7 +82,7 @@ export default function ProjectSettings() {
       <div className="min-w-0 space-y-4">
         <header className="space-y-1">
           <p className="font-mono text-[11px] text-muted">
-            <Link to={`/projects/${data.id}`} className="text-accent-text hover:text-ink">
+            <Link to={routes.project(data.id)} className="text-accent-text hover:text-ink">
               {data.name}
             </Link>
             <span aria-hidden="true"> / </span>

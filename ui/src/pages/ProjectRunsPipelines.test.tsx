@@ -125,12 +125,23 @@ function routes(role: "maintainer" | "viewer", extra: RouteStub[] = []): RouteSt
 
 function mount(role: "maintainer" | "viewer", extra: RouteStub[] = []) {
   return renderApp({
-    path: `/projects/${wireProjectId}/pipelines`,
+    path: `/p/${wireProjectId}/pipelines`,
     routes: routes(role, extra),
   });
 }
 
-describe("/projects/:projectId/pipelines — assigning a library pipeline", () => {
+describe("/p/:projectId/pipelines — assigning a library pipeline", () => {
+  it("keeps the legacy /projects/:id/pipelines address alive as a redirect", async () => {
+    // The pre-move address still renders the same surface: App.tsx turns it
+    // into a replace-navigate to the canonical /p/:id/pipelines.
+    renderApp({
+      path: `/projects/${wireProjectId}/pipelines`,
+      routes: routes("maintainer"),
+    });
+    await screen.findByTestId("pipeline-assign-list");
+    expect(screen.getByTestId("assign-open-module-check")).toBeTruthy();
+  });
+
   it("offers a maintainer the assign control only for the unassigned pipeline", async () => {
     mount("maintainer");
 
@@ -143,11 +154,13 @@ describe("/projects/:projectId/pipelines — assigning a library pipeline", () =
     expect(within(list).queryByTestId("assign-open-feature-development")).toBeNull();
     // A viewer-only surface must not even show the control; this one does, and
     // the pin line stays the server's truth until something is assigned — in
-    // short form, because a bare uuid is never a label.
-    const pin = screen.getByTestId("project-pipeline-pin").textContent ?? "";
-    expect(pin).toContain("pinned revision r7");
-    expect(pin).toContain(shortId(WIRE_REVISION_ID));
-    expect(pin).not.toContain(WIRE_REVISION_ID);
+    // short form, because a bare uuid is never a label. The pin line only
+    // shows the revision number once the pinned-revision read has landed, so
+    // await that state rather than the block's first paint.
+    const pin = await screen.findByText((text) => text.startsWith("pinned revision r7"));
+    expect(pin.textContent).toContain("pinned revision r7");
+    expect(pin.textContent).toContain(shortId(WIRE_REVISION_ID));
+    expect(pin.textContent).not.toContain(WIRE_REVISION_ID);
   });
 
   it("reports the project's assignment on the row, not a channel M4 has no word for", async () => {
@@ -262,7 +275,7 @@ describe("/projects/:projectId/pipelines — assigning a library pipeline", () =
 
 /* ------------------------------------------------ ADR-0032 "when to run" */
 
-describe("/projects/:projectId/pipelines — when to run", () => {
+describe("/p/:projectId/pipelines — when to run", () => {
   it("shows a viewer the cadence and the countdown, with no controls", async () => {
     mount("viewer", [{ path: SCHEDULES_PATH, body: { schedules: [wireSchedule()] } }]);
 
@@ -303,11 +316,11 @@ describe("/projects/:projectId/pipelines — when to run", () => {
 
   it("a maintainer with no schedules sees the honest absence and the Add control", async () => {
     mount("maintainer");
-    const block = await screen.findByTestId("schedules-block-feature-development");
-    expect(within(block).getByTestId("schedules-none-feature-development").textContent).toContain(
-      "Never scheduled",
-    );
-    expect(within(block).getByTestId("schedule-open-feature-development")).toBeTruthy();
+    // The absence line only exists once the schedules read has landed (the
+    // block itself paints while it is still in flight).
+    const none = await screen.findByTestId("schedules-none-feature-development");
+    expect(none.textContent).toContain("Never scheduled");
+    expect(screen.getByTestId("schedule-open-feature-development")).toBeTruthy();
   });
 
   it("adds a schedule with a preset cron and the revision's declared inputs", async () => {
@@ -392,7 +405,8 @@ describe("a schedule row says what the schedule is actually doing", () => {
     await withSchedules("maintainer", { enabled: false, next_run_at: "2026-06-19T09:00:00Z" });
 
     const block = await screen.findByTestId("schedules-block-feature-development");
-    const toggle = within(block).getByTestId("schedule-enabled-feature-development");
+    // The row (and its toggle) renders only once the schedules read lands.
+    const toggle = await within(block).findByTestId("schedule-enabled-feature-development");
     expect((toggle as HTMLInputElement).checked).toBe(false);
     expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe(
       "paused",
@@ -410,10 +424,8 @@ describe("a schedule row says what the schedule is actually doing", () => {
   it("an enabled schedule reads as on, and a slot already gone by is due now", async () => {
     await withSchedules("maintainer", { next_run_at: "2020-01-02T09:00:00Z" });
     const block = await screen.findByTestId("schedules-block-feature-development");
-    expect(
-      (within(block).getByTestId("schedule-enabled-feature-development") as HTMLInputElement)
-        .checked,
-    ).toBe(true);
+    const enabled = await within(block).findByTestId("schedule-enabled-feature-development");
+    expect((enabled as HTMLInputElement).checked).toBe(true);
     expect(within(block).getByTestId("schedule-state-feature-development").textContent).toBe("on");
     expect(within(block).getByTestId("schedule-next-feature-development").textContent).toBe(
       "due now",
@@ -470,7 +482,7 @@ describe("a schedule row says what the schedule is actually doing", () => {
  */
 const UNKNOWN_EDITOR = "01987b22-0006-7000-8000-abcdef987654";
 
-describe("/projects/:projectId/pipelines as a caller who cannot open the project", () => {
+describe("/p/:projectId/pipelines as a caller who cannot open the project", () => {
   const problem = (status: number) => ({
     type: "about:blank",
     title: status === 403 ? "Forbidden" : "Not Found",

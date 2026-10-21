@@ -21,6 +21,7 @@ import { Button } from "../components/ds/Button";
 import { Field, Textarea, Input } from "../components/ds/Field";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
+import { routes } from "../lib/routes";
 import {
   CONVERSATION_STATE,
   RUN_STATE,
@@ -184,7 +185,7 @@ function ProjectCard({
     <li data-testid={`project-card-${project.slug}`} className="h-full min-w-0">
       <article className="flex h-full flex-col overflow-hidden rounded-[3px] border border-line-strong bg-surface">
         <Link
-          to={`/projects/${project.id}`}
+          to={routes.project(project.id)}
           data-testid={`project-link-${project.slug}`}
           className="flex items-start gap-[10px] border-b border-line px-[12px] py-[10px]"
         >
@@ -258,7 +259,7 @@ function ProjectCard({
 
         <div className="border-t border-line px-[12px] py-[8px]">
           <Link
-            to={`/projects/${project.id}`}
+            to={routes.project(project.id)}
             className="ds-btn ds-btn--secondary inline-flex h-[26px] items-center rounded-[4px] px-[10px]"
             data-testid={`project-open-${project.slug}`}
           >
@@ -317,25 +318,25 @@ interface CardItem {
  * live conversation, each already in its own list's order. */
 function topItems(view: ProjectAttentionView): CardItem[] {
   const items: CardItem[] = [
-    ...view.decisions.map(({ project, approval }) => ({
+    ...view.decisions.map(({ approval }) => ({
       key: `decision-${approval.id}`,
       state: "waiting" as StateName,
       tag: "approval",
       title: attentionTitle(approval.summary),
       full: approval.summary,
       meta: `${formatAge(approval.created_at)} · run ${shortId(approval.run_id)}`,
-      to: `/projects/${project.id}/runs/${approval.run_id}`,
+      to: routes.run(approval.run_id),
     })),
-    ...view.stalled.map(({ project, run }) => ({
+    ...view.stalled.map(({ run }) => ({
       key: `stalled-${run.id}`,
       state: stateOf(RUN_STATE[run.status]),
       tag: run.status,
       title: `Run ${shortId(run.id)}${run.failed_cause ? ` — ${run.failed_cause}` : ""}`,
       full: `Run ${shortId(run.id)}${run.failed_cause ? ` — ${run.failed_cause}` : ""}`,
       meta: `${formatAge(run.created_at)} · run ${shortId(run.id)}`,
-      to: `/projects/${project.id}/runs/${run.id}`,
+      to: routes.run(run.id),
     })),
-    ...view.conversations.map(({ project, conversation, pendingPermissions }) => ({
+    ...view.conversations.map(({ conversation, pendingPermissions }) => ({
       key: `conversation-${conversation.id}`,
       state:
         pendingPermissions > 0
@@ -345,7 +346,7 @@ function topItems(view: ProjectAttentionView): CardItem[] {
       title: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
       full: conversation.title.trim() || `conversation ${shortId(conversation.id)}`,
       meta: `${formatAge(conversation.updated_at)} · conversation`,
-      to: `/projects/${project.id}/conversations/${conversation.id}`,
+      to: routes.thread(conversation.id),
     })),
   ];
   return items.slice(0, 2);
@@ -420,7 +421,7 @@ function NewProjectForm() {
         onSuccess: (project) => {
           setName("");
           setDescription("");
-          navigate(`/projects/${project.id}`);
+          navigate(routes.project(project.id));
         },
       },
     );

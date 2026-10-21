@@ -1,7 +1,11 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, useLocation } from "react-router";
 import { describe, expect, it } from "vitest";
+import App from "./App";
+import { setCsrfToken } from "./api/client";
 import { renderApp } from "./test/render";
-import { meFixture, projectFixture, requestsTo } from "./test/fakes";
+import { meFixture, mockFetch, projectFixture, requestsTo } from "./test/fakes";
 import type { RouteStub } from "./test/fakes";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture, replica: "replica-b" };
@@ -41,12 +45,13 @@ describe("auth", () => {
 
     await screen.findByRole("heading", { name: "Sign in" });
     const signIn = screen.getByTestId("sign-in");
-    expect(signIn.getAttribute("href")).toBe("/auth/login?return_to=%2Fprojects%2Fp-1");
+    // The legacy path redirects first, so the return target is the canonical one.
+    expect(signIn.getAttribute("href")).toBe("/auth/login?return_to=%2Fp%2Fp-1");
     expect(screen.queryByTestId("project-name")).toBeNull();
   });
 
   it("shows the signed-in user and the replica that answered", async () => {
-    renderApp({ path: "/", routes: projectRoutes, replica: "replica-b" });
+    renderApp({ path: "/projects", routes: projectRoutes, replica: "replica-b" });
 
     const badge = await screen.findByTestId("user-badge");
     expect(badge.textContent).toContain("Ada Lovelace");
@@ -68,7 +73,7 @@ describe("auth", () => {
       body: { items: [] },
     };
     renderApp({
-      path: "/",
+      path: "/projects",
       replica: "replica-a",
       routes: [
         me,
@@ -242,5 +247,79 @@ describe("unknown routes", () => {
   it("renders a not found page without requiring a session", async () => {
     renderApp({ path: "/does-not-exist", routes: [unauthenticated] });
     await screen.findByRole("heading", { name: "Not found" });
+  });
+});
+
+/**
+ * Redirect audit (contract C1): every legacy URL still resolves, on its
+ * canonical path, with the query string and hash preserved. Each row mounts
+ * the whole app in a MemoryRouter and reads the location the user actually
+ * ends on — not the route table in isolation. Unstubbed page reads answer 404
+ * in the background; the location itself must not move again.
+ */
+function LocationProbe() {
+  const location = useLocation();
+  return (
+    <div data-testid="probe-location">{location.pathname + location.search + location.hash}</div>
+  );
+}
+
+function renderAt(path: string) {
+  setCsrfToken(null);
+  mockFetch([{ path: "/api/v1/me", body: meFixture }]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return screen.getByTestId("probe-location");
+}
+
+describe("legacy route redirects", () => {
+  /** [legacy URL, final pathname + search + hash] */
+  const REDIRECTS: [string, string][] = [
+    ["/library", "/workflows"],
+    ["/library?x=1", "/workflows?x=1"],
+    ["/library/pl-1", "/workflows/pl-1"],
+    ["/library/pl-1?draft=d-1", "/workflows/pl-1/drafts/d-1"],
+    ["/library/pl-1/drafts/d-1", "/workflows/pl-1/drafts/d-1"],
+    ["/agents", "/profiles"],
+    ["/agents/ap-1", "/profiles/ap-1"],
+    ["/projects/p-1", "/p/p-1"],
+    ["/projects/p-1/runs", "/p/p-1/runs"],
+    ["/projects/p-1/runs/r-1", "/runs/r-1"],
+    [
+      "/projects/p-1/runs/r-1?view=timeline&node=build&instance=n-1",
+      "/runs/r-1?view=timeline&node=build&instance=n-1",
+    ],
+    ["/projects/p-1/pipelines", "/p/p-1/pipelines"],
+    ["/projects/p-1/artifacts", "/p/p-1/artifacts"],
+    ["/projects/p-1/conversations", "/p/p-1/conversations"],
+    ["/projects/p-1/conversations/c-1", "/threads/c-1"],
+    ["/projects/p-1/settings", "/p/p-1/settings"],
+    ["/settings", "/settings/layout"],
+  ];
+
+  for (const [from, to] of REDIRECTS) {
+    it(`resolves ${from} on ${to}`, async () => {
+      const probe = renderAt(from);
+      await waitFor(() => expect(probe.textContent).toBe(to), { timeout: 5_000 });
+    });
+  }
+
+  it("keeps a new canonical route in place", async () => {
+    const probe = renderAt("/inbox?tab=attention");
+    expect(probe.textContent).toBe("/inbox?tab=attention");
+  });
+
+  it("sends /p/:projectId/:repo to the project overview in phase 1", async () => {
+    const probe = renderAt("/p/p-1/widgets");
+    await waitFor(() => expect(probe.textContent).toBe("/p/p-1"), { timeout: 5_000 });
   });
 });

@@ -272,6 +272,7 @@ export const conversationFixture: Conversation = {
   },
   origin: "manual",
   run_link: null,
+  linked_runs: [],
   pending_permissions: [],
 };
 

@@ -36,6 +36,7 @@ import { iterationOf } from "../../lib/pipeline/runView";
 import { toRunEvent } from "../../lib/pipeline/runEvents";
 import { retryVerdict } from "../../pages/RunInspector";
 import { childRunOf } from "../../lib/pipeline/workbench";
+import { routes } from "../../lib/routes";
 import type {
   AttemptDetail as AttemptView,
   NodeExecutionSummary,
@@ -63,6 +64,11 @@ export interface WorkbenchDockProps {
   /** The run's tree (child runs through `pipeline_invocations`) — the
    * `pipeline.invoke` dock links to the child run the invocation made. */
   tree: RunTreeRoot | null;
+  /** Full-screen transcript mode (`?full=1`, design 5c). */
+  fullScreen?: boolean;
+  /** Toggles full screen (the page owns the `?full=` param). When present,
+   * the dock's header carries the `⤢ full screen` button. */
+  onToggleFullScreen?: () => void;
 }
 
 export function WorkbenchDock({
@@ -75,6 +81,8 @@ export function WorkbenchDock({
   nodes,
   frames,
   tree,
+  fullScreen = false,
+  onToggleFullScreen,
 }: WorkbenchDockProps) {
   const executionId = execution?.id ?? "";
   const detail = useRunNode(run.id, executionId);
@@ -205,6 +213,22 @@ export function WorkbenchDock({
 
   return (
     <div className="space-y-[10px]" data-testid="workbench-dock">
+      {/* The transcript dock's own full-screen control (design 5c): `⤢ full
+       * screen` folds the graph into the step strip; the page's strip row owns
+       * the `⤡ show graph` restore, so the header offers only what it can do
+       * from here. */}
+      {onToggleFullScreen && !fullScreen ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            data-testid="workbench-fullscreen"
+            onClick={onToggleFullScreen}
+            className="rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            ⤢ full screen
+          </button>
+        </div>
+      ) : null}
       <NodePaneHeader
         node={execution}
         nodes={[execution]}
@@ -247,7 +271,7 @@ export function WorkbenchDock({
             {childRun.status}
           </p>
           <Link
-            to={`/projects/${projectId}/runs/${childRun.child_run_id}`}
+            to={routes.run(childRun.child_run_id)}
             data-testid="dock-child-run-link"
             className="mt-[6px] inline-block rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
@@ -260,7 +284,12 @@ export function WorkbenchDock({
         </p>
       ) : null}
       {isAgent ? (
-        <AgentDock attempt={selectedAttempt} fallback={sharedConversation} projectId={projectId} />
+        <AgentDock
+          attempt={selectedAttempt}
+          fallback={sharedConversation}
+          projectId={projectId}
+          stepName={execution.node_instance_key}
+        />
       ) : null}
       {isGate ? (
         gate ? (
@@ -368,13 +397,17 @@ function DockTitle({
   );
 }
 
-/** The `agent.acp` dock: the conversation is the main content. */
+/** The `agent.acp` dock: the conversation is the main content.
+ * `stepName` names the step on the dock's take-control card — the node's
+ * instance key, the one label the run's own data always carries. */
 function AgentDock({
   attempt,
   fallback,
   projectId,
+  stepName,
 }: {
   attempt: AttemptView | null;
+  stepName: string;
   /** When the selected attempt has not been stamped with the conversation
    * yet (a retry or a takeover re-run, stamped at claim time), the
    * conversation its predecessor opened — the re-run rides that same row.
@@ -410,6 +443,7 @@ function AgentDock({
           conversationId={fallback.conversationId}
           projectId={projectId}
           variant="dock"
+          stepName={stepName}
           attemptTurnId={undefined}
           ids={{
             controlBanner: "dock-control-banner",
@@ -445,6 +479,7 @@ function AgentDock({
         conversationId={conversationId}
         projectId={projectId}
         variant="dock"
+        stepName={stepName}
         // No `turnFilter`: the dock is the live surface, and a takeover opens a
         // NEW turn in the same conversation. Scoping to the attempt's original
         // turn hid the human's prompt and the agent's reply — the transcript

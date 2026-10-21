@@ -129,7 +129,7 @@ describe("/projects/:projectId/runs", () => {
   it("links each row to the run inspector route", async () => {
     mountRuns();
     const row = await screen.findByTestId(`run-row-${WIRE_RUN_ID}`);
-    expect(row.getAttribute("href")).toBe(`/projects/${wireProjectId}/runs/${WIRE_RUN_ID}`);
+    expect(row.getAttribute("href")).toBe(`/runs/${WIRE_RUN_ID}`);
     expect(row.textContent).toMatch(/#\w{8} feature-development/);
   });
 });

@@ -30,6 +30,7 @@ import {
 import { queryKeys, useAgentProfiles, useProjects } from "../api/queries";
 import { usePipelines } from "../api/pipelines";
 import { shortId } from "../api/names";
+import { routes } from "../lib/routes";
 import type { RunSummaryList } from "../api/types";
 
 export interface PaletteItem {
@@ -49,21 +50,21 @@ const PAGES: PaletteItem[] = [
     group: "Pages",
     label: "Projects",
     secondary: "page · all projects",
-    to: "/",
+    to: routes.projects(),
   },
   {
     id: "page-library",
     group: "Pages",
     label: "Library",
     secondary: "page · pipeline library",
-    to: "/library",
+    to: routes.workflows(),
   },
   {
     id: "page-agents",
     group: "Pages",
     label: "Agents",
     secondary: "page · agent profiles",
-    to: "/agents",
+    to: routes.profiles(),
   },
   {
     id: "page-ops",
@@ -130,7 +131,7 @@ function usePaletteItems(): PaletteItem[] {
         group: "Projects",
         label: project.name,
         secondary: `project · /${project.slug}`,
-        to: `/projects/${project.id}`,
+        to: routes.project(project.id),
       });
       for (const sub of SUB_PAGES) {
         items.push({
@@ -138,7 +139,7 @@ function usePaletteItems(): PaletteItem[] {
           group: "Projects",
           label: `${project.name} · ${sub.label}`,
           secondary: `project · ${sub.hint}`,
-          to: `/projects/${project.id}/${sub.path}`,
+          to: routes.projectTab(project.id, sub.path),
         });
       }
     }
@@ -149,7 +150,7 @@ function usePaletteItems(): PaletteItem[] {
         group: "Pipelines",
         label: pipeline.display_name || pipeline.slug,
         secondary: `pipeline · /${pipeline.slug}`,
-        to: `/library/${pipeline.id}`,
+        to: routes.workflow(pipeline.id),
       });
     }
 
@@ -166,7 +167,7 @@ function usePaletteItems(): PaletteItem[] {
           group: "Recent runs",
           label: `${slug} #${shortId(run.id)}`,
           secondary: `recent run · ${project.name} · ${run.status}`,
-          to: `/projects/${project.id}/runs/${run.id}`,
+          to: routes.run(run.id),
         });
       }
     });
@@ -177,7 +178,7 @@ function usePaletteItems(): PaletteItem[] {
         group: "Agents",
         label: profile.name,
         secondary: `agent profile · ${profile.launcher_id}`,
-        to: "/agents",
+        to: routes.profile(profile.id),
       });
     }
 

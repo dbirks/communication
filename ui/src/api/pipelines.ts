@@ -25,6 +25,8 @@ import type {
   DraftPut,
   DraftSummaryList,
   Pipeline,
+  Project,
+  Problem,
   PipelineCreate,
   PipelineList,
   PipelineRevision,
@@ -339,6 +341,144 @@ import type { components } from "./schema";
 
 export type Schedule = components["schemas"]["Schedule"];
 export type ScheduleList = components["schemas"]["ScheduleList"];
+
+/** Query options for `GET /api/v1/projects/{projectId}/schedules` — the same
+ * key `useSchedules` reads, so the workflows index fan shares its cache with
+ * the project page's schedules panel. */
+export function schedulesQueryOptions(projectId: string, enabled = true) {
+  return {
+    queryKey: schedulesKey(projectId),
+    queryFn: () => apiFetch<ScheduleList>(`/api/v1/projects/${projectId}/schedules`),
+    enabled: enabled && projectId.length > 0,
+  } as const;
+}
+
+/** Query options for `GET /api/v1/revisions/{digestOrId}` keyed by the digest
+ * a pipeline's summary offers (route 13 resolves a digest or an id alike) —
+ * the workflows index row needs the full record's `canonical_document` for
+ * the step chain and `document_text` for Duplicate. */
+export function revisionQueryOptions(revisionDigest: string) {
+  return {
+    queryKey: queryKeys.revision(revisionDigest),
+    queryFn: () => apiFetch<PipelineRevision>(`/api/v1/revisions/${revisionDigest}`),
+    enabled: revisionDigest.length > 0,
+  } as const;
+}
+
+/* ----------------------------------------------------- workflows index (3a) */
+
+/** The next free copy slug: `<slug>-copy`, then `<slug>-copy-2`, … (phase 4
+ * client-side duplicate; a backend endpoint supersedes this in U6). */
+export function suggestCopySlug(slug: string, taken: readonly string[]): string {
+  const base = `${slug}-copy`;
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}-${n}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+}
+
+/**
+ * Client-side `Duplicate` (gaps/library.md U1): the source pipeline is never
+ * touched — the copy is a fresh logical definition (ADR-0002's logical
+ * create) seeded with one draft holding the latest revision's regenerated
+ * document. DRAFT ONLY pipelines duplicate the newest un-published draft's
+ * text instead; a pipeline with neither has nothing honest to duplicate and
+ * the mutation 404s to the row's error line.
+ */
+export function useDuplicatePipeline(existingSlugs: readonly string[]) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (pipelineId: string) => {
+      const source = await apiFetch<Pipeline>(`/api/v1/pipelines/${pipelineId}`);
+      const latest = source.revisions[0];
+      let documentYaml: string;
+      if (latest) {
+        documentYaml = await apiFetch<string>(
+          `/api/v1/revisions/${latest.revision_digest}/document?format=yaml`,
+        );
+      } else {
+        const drafts = await apiFetch<DraftSummaryList>(`/api/v1/pipelines/${pipelineId}/drafts`);
+        const open = [...drafts.drafts]
+          .filter((draft) => draft.status !== "published")
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+        if (!open) {
+          const problem: Problem = {
+            type: "https://communication.dev/errors/nothing-to-duplicate",
+            title: "Nothing to duplicate",
+            status: 422,
+            detail: "This workflow has no published revision or open draft.",
+          };
+          throw new ApiError(problem, problem);
+        }
+        const draft = await apiFetch<Draft>(`/api/v1/drafts/${open.id}`);
+        documentYaml = draft.document_yaml;
+      }
+      const slug = suggestCopySlug(source.slug, existingSlugs);
+      const created = await apiFetch<Pipeline>("/api/v1/pipelines", {
+        method: "POST",
+        json: {
+          slug,
+          display_name: `${source.display_name} copy`,
+          ...(source.description ? { description: source.description } : {}),
+        },
+      });
+      const draft = await apiFetch<Draft>(`/api/v1/pipelines/${created.id}/drafts`, {
+        method: "POST",
+        json: { document_yaml: documentYaml },
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines });
+      return { pipeline: created, draft, slug };
+    },
+  });
+}
+
+/**
+ * The one derivation the workflows index rows share: which of the caller's
+ * projects pin this pipeline, and which of those pins carry an enabled cron
+ * (the trigger cell renders `cron <expr>` for those and `manual` for the
+ * rest). The lists arrive from the page's shared fan — keyed exactly like
+ * `useAssignments`/`schedulesQueryOptions` — so this stays pure.
+ */
+export interface WorkflowRowAssignment {
+  project: Project;
+  assignment: Assignment;
+  /** The enabled schedule's normalized `cron_expr`, or null for `manual`. */
+  cron: string | null;
+}
+
+export interface WorkflowRowFacts {
+  assigned: WorkflowRowAssignment[];
+  /** True when every assignment list the caller can see has arrived — a
+   * project whose read failed or is pending never renders as "unassigned".
+   * (A project with no *loaded* list is excluded from `assigned`, so an
+   * honest `—` is only claimed when `resolved`.) */
+  resolved: boolean;
+}
+
+export function workflowRowFacts(
+  projects: Project[],
+  assignmentLists: (AssignmentList | undefined)[],
+  scheduleLists: (ScheduleList | undefined)[],
+  pipelineId: string,
+): WorkflowRowFacts {
+  const assigned: WorkflowRowAssignment[] = [];
+  let resolved = true;
+  projects.forEach((project, index) => {
+    const list = assignmentLists[index];
+    if (!list) {
+      resolved = false;
+      return;
+    }
+    const assignment = list.assignments.find((candidate) => candidate.pipeline_id === pipelineId);
+    if (!assignment) return;
+    const schedules = scheduleLists[index]?.schedules ?? [];
+    const cron =
+      schedules.find((s) => s.assignment_id === assignment.id && s.enabled)?.cron_expr ?? null;
+    assigned.push({ project, assignment, cron });
+  });
+  return { assigned, resolved };
+}
 export type ScheduleCreate = components["schemas"]["ScheduleCreate"];
 export type SchedulePatch = components["schemas"]["SchedulePatch"];
 

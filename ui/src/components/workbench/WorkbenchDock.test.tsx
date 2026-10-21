@@ -21,6 +21,7 @@ import {
 } from "../../test/fakes";
 import type { Attempt, NodeExecution } from "../../api/types";
 import type { NodeExecutionSummary } from "../../lib/pipeline/contract";
+import { routes } from "../../lib/routes";
 import { WorkbenchDock, type WorkbenchDockProps } from "./WorkbenchDock";
 import {
   WIRE_NODE_PLAN,
@@ -70,7 +71,12 @@ function baseProps(): Omit<WorkbenchDockProps, "execution" | "attemptNumber" | "
 function renderDock(
   execution: NodeExecutionSummary | null,
   extra: RouteStub[] = [],
-  over: Partial<Pick<WorkbenchDockProps, "attemptNumber" | "onAttemptChange" | "tree">> = {},
+  over: Partial<
+    Pick<
+      WorkbenchDockProps,
+      "attemptNumber" | "onAttemptChange" | "tree" | "fullScreen" | "onToggleFullScreen"
+    >
+  > = {},
 ) {
   const onAttemptChange = vi.fn();
   const { fetchMock, requests } = mockFetch([
@@ -124,6 +130,25 @@ describe("WorkbenchDock", () => {
   it("says so honestly when no node is selected", async () => {
     renderDock(null);
     expect(await screen.findByTestId("workbench-dock-empty")).toBeTruthy();
+  });
+
+  it("offers ⤢ full screen on the dock header — and nothing, once full screen is on", async () => {
+    const onToggleFullScreen = vi.fn();
+    renderDock(row({}), [{ path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: wireNodeDetail }], {
+      onToggleFullScreen,
+    });
+    const button = await screen.findByTestId("workbench-fullscreen");
+    expect(button.textContent).toContain("full screen");
+    fireEvent.click(button);
+    expect(onToggleFullScreen).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    renderDock(row({}), [{ path: `${RUN_PATH}/nodes/${WIRE_NODE_PLAN}`, body: wireNodeDetail }], {
+      fullScreen: true,
+      onToggleFullScreen,
+    });
+    await screen.findByTestId("dock-title");
+    expect(screen.queryByTestId("workbench-fullscreen")).toBeNull();
   });
 
   it("says the agent has not started when the attempt holds no conversation", async () => {
@@ -461,7 +486,7 @@ describe("WorkbenchDock", () => {
     expect(line.textContent).toContain("running");
     const link = screen.getByTestId("dock-child-run-link");
     expect(link.textContent).toBe("Open child run");
-    expect(link.getAttribute("href")).toBe(`/projects/${wireProjectId}/runs/child-run-13`);
+    expect(link.getAttribute("href")).toBe(routes.run("child-run-13"));
   });
 
   it("says so when a pipeline.invoke has no child run in the tree yet", async () => {

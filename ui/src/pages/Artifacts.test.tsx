@@ -166,9 +166,7 @@ describe("/artifacts/:artifactId", () => {
     expect(screen.getByTestId("artifact-redaction").textContent).toContain("changed nothing");
     // Provenance is a link to the conversation, because the ids are not readable.
     const provenance = screen.getByTestId("artifact-conversation-link");
-    expect(provenance.getAttribute("href")).toBe(
-      `/projects/${projectId}/conversations/${conversationId}`,
-    );
+    expect(provenance.getAttribute("href")).toBe(`/threads/${conversationId}`);
     expect(provenance.textContent).toContain(conversationId.slice(-8));
     expect(screen.getByTestId("artifact-turn").textContent).toBe(turnId.slice(-8));
   });

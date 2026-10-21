@@ -1,5 +1,5 @@
 /**
- * Studio.tsx — the Workflow Studio page, `/library/:pipelineId/drafts/:draftId`.
+ * Studio.tsx — the Workflow Studio page, `/workflows/:pipelineId/drafts/:draftId`.
  *
  * `docs/design/studio-workbench.md` §3: the palette | canvas | inspector
  * authoring surface over one draft. The YAML text is the source of truth
@@ -548,6 +548,7 @@ export function StudioPage() {
     >
       <StudioHeader
         pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
+        pipelineId={pipelineId}
         savedVersion={studio.savedVersion || null}
         validation={viewValidate(draft.data?.validation ?? null)}
         readOnly={readOnly}

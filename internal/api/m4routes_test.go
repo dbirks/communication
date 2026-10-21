@@ -1770,6 +1770,13 @@ func m4IsM4Path(p string) bool {
 	if p == "/api/v1/runs" || p == "/api/v1/approvals" {
 		return false
 	}
+	// ADR-0052's summarization pass and free-text interpretation live under
+	// the approvals prefix but are assistant routes (registered in
+	// approval_summary.go), not part of the frozen M4 37 — excluded the same
+	// way as the cross-project top-level list above.
+	if p == "/api/v1/approvals/{approvalId}/summary" || p == "/api/v1/approvals/{approvalId}/interpret" {
+		return false
+	}
 	prefixes := []string{
 		"/api/v1/pipelines", "/api/v1/drafts", "/api/v1/revisions",
 		"/api/v1/schemas/pipeline-v1alpha1", "/api/v1/assignments",

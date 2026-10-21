@@ -182,6 +182,14 @@ type ConversationRunLinkView struct {
 	AttemptNumber   int     `json:"attempt_number"`
 }
 
+// ConversationLinkedRunView is the ConversationLinkedRun schema (ADR-0053):
+// one run this conversation was handed to — the forward link, complementing
+// the run_link's reverse direction. CreatedAt is the handoff moment.
+type ConversationLinkedRunView struct {
+	RunID     string    `json:"run_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ConversationView is the Conversation schema.
 type ConversationView struct {
 	ID                 string                   `json:"id"`
@@ -203,6 +211,9 @@ type ConversationView struct {
 	// conversation; RunLink names that attempt's node for deep-linking.
 	Origin  string                   `json:"origin"`
 	RunLink *ConversationRunLinkView `json:"run_link"`
+	// LinkedRuns (ADR-0053): the runs this thread was handed to (forward
+	// link), creation order; empty when none.
+	LinkedRuns []ConversationLinkedRunView `json:"linked_runs"`
 }
 
 // ConversationSummaryView is the ConversationSummary schema: the project

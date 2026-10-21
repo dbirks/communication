@@ -56,7 +56,7 @@ export const PROJECT_SECTIONS: readonly {
 export function ProjectSectionNav({
   projectId,
   active,
-  className = "md:sticky md:top-[64px]",
+  className = "md:sticky md:top-0",
 }: ProjectSectionNavProps) {
   const navigate = useNavigate();
   return (

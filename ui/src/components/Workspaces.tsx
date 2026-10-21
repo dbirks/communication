@@ -277,8 +277,7 @@ export function WorkspaceWidget({ projectId, conversationId }: WorkspaceWidgetPr
   if (!latest) {
     return (
       <p className="text-[12.5px] text-muted" data-testid="workspace-widget-empty">
-        No workspace for this conversation yet — one is prepared when the agent first needs a
-        checkout.
+        No workspace for this thread yet — one is prepared when the agent first needs a checkout.
       </p>
     );
   }

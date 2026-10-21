@@ -130,8 +130,27 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     const header = await screen.findByTestId("studio-header");
     expect((await screen.findByTestId("studio-title")).textContent).toBe("Feature development");
     // The version the draft read served, and the server's last verdict.
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("draft v12");
+    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("DRAFT v12");
     expect((await screen.findByTestId("studio-validation-chip")).textContent).toContain("invalid");
+    // The 4a tab strip: Canvas/YAML view tabs with aria-selected, plus the
+    // Runs / Assigned links onto the workflow page. The page holds no
+    // assignment data, so the Assigned tab omits the count.
+    const tabs = await screen.findByTestId("studio-header-tabs");
+    expect((await screen.findByTestId("studio-view-canvas")).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    expect((await screen.findByTestId("studio-view-yaml")).getAttribute("aria-selected")).toBe(
+      "false",
+    );
+    const runsLink = within(tabs).getByTestId("studio-header-runs");
+    expect(runsLink.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    const assignedLink = within(tabs).getByTestId("studio-header-assigned");
+    expect(assignedLink.textContent).toBe("Assigned");
+    expect(assignedLink.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    // The breadcrumb links back to the workflows index.
+    expect((await screen.findByTestId("studio-breadcrumb-workflows")).getAttribute("href")).toBe(
+      "/workflows",
+    );
     // The authoring columns: palette on the left, the canvas in the middle,
     // the inspector's pipeline view when nothing is selected.
     expect(await screen.findByTestId("studio-palette")).toBeTruthy();
@@ -145,7 +164,7 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect(await screen.findByTestId("studio-page")).toBeTruthy();
     // The replace happened: the pipeline page is no longer what's rendered.
     await waitFor(() => expect(screen.queryByTestId("pipeline-page")).toBeNull());
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("draft v12");
+    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("DRAFT v12");
   });
 
   it("switches the canvas for the YAML text and back", async () => {

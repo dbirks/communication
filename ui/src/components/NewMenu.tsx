@@ -9,6 +9,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import NewConversationDialog from "./NewConversationDialog";
 import { VARIANT_CLASS } from "./ds/Button";
+import { routes } from "../lib/routes";
 
 const MENU_ITEMS = [
   { id: "conversation", label: "New conversation" },
@@ -62,8 +63,8 @@ export default function NewMenu() {
   const activate = (id: MenuItemId) => {
     setOpen(false);
     if (id === "conversation") setDialogOpen(true);
-    else if (id === "workflow") navigate("/library");
-    else navigate("/"); // the projects list lives at "/"; a run is started from a project
+    else if (id === "workflow") navigate(routes.workflows());
+    else navigate(routes.projects()); // the projects list; a run is started from a project
   };
 
   return (

@@ -17,10 +17,14 @@ package postgres
 // empty and every count/usage list is honestly zero/empty.
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,6 +33,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/pipelines/canon"
+	"github.com/dbirks/communication/internal/pipelines/compiler"
 )
 
 var _ api.NodeTemplateStore = APINodeTemplateStore{}
@@ -188,6 +193,14 @@ func (s APINodeTemplateStore) GetTemplate(ctx context.Context, c api.Caller, tem
 	latestID := ""
 	if len(revs) > 0 {
 		latestID = revs[0].RevisionID // newest first
+		latest := revs[0]             // the highest revision_number row, fully populated
+		detail.Template.LatestRevision = api.NodeTemplateRevisionSummary{
+			RevisionID:     latest.RevisionID,
+			RevisionNumber: latest.RevisionNumber,
+			VersionLabel:   latest.VersionLabel,
+			RevisionDigest: latest.RevisionDigest,
+			CreatedAt:      latest.CreatedAt,
+		}
 	}
 	detail.Usages, err = s.usages(ctx, pool, c, templateID, latestID)
 	if err != nil {
@@ -382,13 +395,15 @@ func (s APINodeTemplateStore) CreateTemplateRevision(ctx context.Context, c api.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var nextNumber int
+	var slug string
 	if err := tx.QueryRow(ctx, `
 		SELECT (SELECT coalesce(max(revision_number), 0) + 1
-		        FROM node_template_revisions WHERE template_id = $1::uuid)
-		FROM node_templates
-		WHERE id = $1::uuid AND organization_id = $2::uuid
-		FOR UPDATE OF node_templates`, templateID, c.OrganizationID).
-		Scan(&nextNumber); errors.Is(err, pgx.ErrNoRows) {
+		        FROM node_template_revisions WHERE template_id = $1::uuid),
+		       t.slug
+		FROM node_templates t
+		WHERE t.id = $1::uuid AND t.organization_id = $2::uuid
+		FOR UPDATE OF t`, templateID, c.OrganizationID).
+		Scan(&nextNumber, &slug); errors.Is(err, pgx.ErrNoRows) {
 		return api.NodeTemplateRevisionCreateResponse{}, api.ErrNodeTemplateNotFound
 	} else if err != nil {
 		return api.NodeTemplateRevisionCreateResponse{},
@@ -431,14 +446,115 @@ func (s APINodeTemplateStore) CreateTemplateRevision(ctx context.Context, c api.
 		}); err != nil {
 		return api.NodeTemplateRevisionCreateResponse{}, err
 	}
+	// ADR-0049 § 5: "Edit for all N" — one ADOPTED DRAFT per workflow whose
+	// latest published revision references this template, in the SAME
+	// transaction as the revision row. Published revisions are never mutated
+	// and no running run is touched; a pipeline with an open draft is
+	// skipped (never clobber a human's in-progress draft), honestly reported.
+	adopted := []api.TemplateAdoption{}
+	skipped := []api.TemplateAdoptionSkipped{}
+	if in.AdoptUsing {
+		adopted, skipped, err = s.adoptDrafts(ctx, tx, c, templateID, slug, in.VersionLabel)
+		if err != nil {
+			return api.NodeTemplateRevisionCreateResponse{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return api.NodeTemplateRevisionCreateResponse{}, fmt.Errorf("postgres: commit node template revision: %w", err)
 	}
 	return api.NodeTemplateRevisionCreateResponse{
 		Revision: rev,
-		Adopted:  []api.TemplateAdoption{},
-		Skipped:  []api.TemplateAdoptionSkipped{},
+		Adopted:  adopted,
+		Skipped:  skipped,
 	}, nil
+}
+
+// adoptDrafts is ADR-0049 § 5 inside the caller's open transaction: the § 4
+// scope (non-archived pipelines whose LATEST published revision has a refs
+// row for this template), the transformation (every referencing node's
+// `template` becomes slug@new-version, document_text re-rendered from the
+// canonical document exactly as publish does), and one pipeline.draft.create
+// journal row per adopted draft. A pipeline with an open draft (any status
+// other than published) lands in skipped with reason "open_draft".
+func (s APINodeTemplateStore) adoptDrafts(ctx context.Context, tx pgx.Tx, c api.Caller, templateID, slug, versionLabel string) ([]api.TemplateAdoption, []api.TemplateAdoptionSkipped, error) {
+	// Phase 1: the scope, collected fully — the pgx tx connection cannot take
+	// another query while these rows are still open.
+	rows, err := tx.Query(ctx, `
+		SELECT pr.id::text, pr.pipeline_id::text, p.slug, pr.canonical_document, pr.ui_layout,
+		       EXISTS (SELECT 1 FROM pipeline_drafts d
+		               WHERE d.pipeline_id = pr.pipeline_id AND d.status <> 'published')
+		FROM pipeline_revision_template_refs r
+		JOIN pipeline_revisions pr ON pr.id = r.pipeline_revision_id
+		JOIN pipelines p ON p.id = pr.pipeline_id
+		WHERE r.template_id = $1::uuid AND pr.organization_id = $2::uuid
+		  AND p.archived_at IS NULL
+		  AND pr.revision_number = (SELECT max(revision_number) FROM pipeline_revisions
+		                             WHERE pipeline_id = p.id)
+		GROUP BY pr.id, p.slug, pr.canonical_document, pr.ui_layout
+		ORDER BY p.slug`, templateID, c.OrganizationID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("postgres: node template adopt scope: %w", err)
+	}
+	type adoptScope struct {
+		pipelineID, pipelineSlug string
+		canonical, uiLayout      []byte
+		openDraft                bool
+	}
+	var scope []adoptScope
+	for rows.Next() {
+		var a adoptScope
+		var revisionID string
+		if err := rows.Scan(&revisionID, &a.pipelineID, &a.pipelineSlug, &a.canonical, &a.uiLayout, &a.openDraft); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("postgres: scan node template adopt scope: %w", err)
+		}
+		scope = append(scope, a)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, fmt.Errorf("postgres: node template adopt scope: %w", err)
+	}
+	rows.Close()
+	// Phase 2: one draft + one journal row per scoped pipeline.
+	adopted := []api.TemplateAdoption{}
+	skipped := []api.TemplateAdoptionSkipped{}
+	for _, a := range scope {
+		if a.openDraft {
+			skipped = append(skipped, api.TemplateAdoptionSkipped{PipelineID: a.pipelineID, Reason: "open_draft"})
+			continue
+		}
+		newCanonical, err := rewriteTemplateRefs(a.canonical, slug, versionLabel)
+		if err != nil {
+			return nil, nil, fmt.Errorf("postgres: transform adopted document %s: %w", a.pipelineID, err)
+		}
+		documentText, err := (&PipelineDefinitions{}).Export(newCanonical)
+		if err != nil {
+			return nil, nil, fmt.Errorf("postgres: render adopted document_text %s: %w", a.pipelineID, err)
+		}
+		sum := sha256.Sum256([]byte(documentText))
+		var draftID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO pipeline_drafts
+				(pipeline_id, document_text, source_kind, source_sha256, ui_layout, edited_by)
+			VALUES ($1::uuid, $2, 'manual', $3,
+			        COALESCE(NULLIF($4, '')::jsonb, '{}'::jsonb), $5::uuid)
+			RETURNING id::text`,
+			a.pipelineID, documentText, hex.EncodeToString(sum[:]), string(a.uiLayout), c.UserID).
+			Scan(&draftID); err != nil {
+			return nil, nil, fmt.Errorf("postgres: create adopted draft %s: %w", a.pipelineID, err)
+		}
+		if err := m4AppendAppendable(ctx, tx, events.TypePipelineDraftCreated, c.OrganizationID, "",
+			c.UserID, events.PipelineDraftCreatedPayload{
+				PipelineID: a.pipelineID, DraftID: draftID, Reason: "template_adopt",
+				TemplateID: templateID, VersionLabel: versionLabel,
+			}); err != nil {
+			return nil, nil, err
+		}
+		adopted = append(adopted, api.TemplateAdoption{
+			PipelineID: a.pipelineID, PipelineSlug: a.pipelineSlug, DraftID: draftID, DraftVersion: 1,
+		})
+	}
+	return adopted, skipped, nil
 }
 
 // DuplicateTemplate is POST /node-templates/{id}/duplicate: a NEW template
@@ -555,4 +671,252 @@ func (s APINodeTemplateStore) RecordDenied(ctx context.Context, c api.Caller, re
 		return err
 	}
 	return m4Denied(ctx, pool, c, resourceID, action)
+}
+
+// ================================================================ part 2
+
+// ADR-0049 § 2/§ 5/§ 6: the compiler-facing registry loader, the adopt-via-
+// draft helpers, and the from-node read. Same three rules as part 1: org-
+// scoped SQL, one-transaction mutations, honest sentinels.
+
+// templateRegistry is the compiler.TemplateRegistry view over Postgres:
+// every template the caller's organization holds with its published
+// revisions, read in ONE query (the compiler then answers per-node lookups
+// without touching the database again — no N+1 inside a validate).
+type templateRegistry struct {
+	active map[string]bool
+	byRef  map[string]compiler.TemplateRevision
+}
+
+func (r *templateRegistry) GetActiveTemplate(slug string) bool { return r.active[slug] }
+
+// GetTemplateRevision answers the pinned revision for slug@version; an
+// unknown slug, an unknown version and a RETIRED template all answer
+// not-found so the compiler fail-closes as template_ref_unresolved
+// (ADR-0049 § 1: retirement never deletes a revision, but new references to
+// a retired template must not compile).
+func (r *templateRegistry) GetTemplateRevision(slug, version string) (compiler.TemplateRevision, bool) {
+	t, ok := r.byRef[slug+"@"+version]
+	return t, ok
+}
+
+// LoadTemplateRegistry builds the caller-org's template registry (ADR-0049
+// § 2). A pool the org cannot read is an error the caller degrades to an
+// empty registry (fail-closed at the diagnostic, not a 500).
+func LoadTemplateRegistry(ctx context.Context, pool *pgxpool.Pool, orgID string) (compiler.TemplateRegistry, error) {
+	if !prjValidUUID(orgID) {
+		return &templateRegistry{active: map[string]bool{}, byRef: map[string]compiler.TemplateRevision{}}, nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT t.slug, t.status, t.kind, t.id::text, ntr.id::text, ntr.version_label,
+		       ntr.parameters::text, ntr.config::text, ntr.output_schema::text,
+		       ntr.workspace_mode,
+		       ntr.revision_digest
+		FROM node_templates t
+		JOIN node_template_revisions ntr ON ntr.template_id = t.id
+		WHERE t.organization_id = $1::uuid
+		ORDER BY t.slug, ntr.revision_number`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: load template registry: %w", err)
+	}
+	defer rows.Close()
+	reg := &templateRegistry{active: map[string]bool{}, byRef: map[string]compiler.TemplateRevision{}}
+	for rows.Next() {
+		var (
+			slug, status, kind, templateID, revisionID, versionLabel, workspaceMode, digest string
+			parameters, config, outputSchema                                                json.RawMessage
+		)
+		if err := rows.Scan(&slug, &status, &kind, &templateID, &revisionID, &versionLabel,
+			&parameters, &config, &outputSchema, &workspaceMode, &digest); err != nil {
+			return nil, fmt.Errorf("postgres: scan template registry: %w", err)
+		}
+		if status == "active" {
+			reg.active[slug] = true
+		}
+		var configMap map[string]canon.Value
+		if err := json.Unmarshal(config, &configMap); err != nil {
+			return nil, fmt.Errorf("postgres: template %s revision %s config is not an object: %w", slug, versionLabel, err)
+		}
+		var paramsCanon, outputCanon canon.Value
+		if err := json.Unmarshal(orEmptyJSON(parameters), &paramsCanon); err != nil {
+			return nil, fmt.Errorf("postgres: template %s revision %s parameters is not JSON: %w", slug, versionLabel, err)
+		}
+		if err := json.Unmarshal(orEmptyJSON(outputSchema), &outputCanon); err != nil {
+			return nil, fmt.Errorf("postgres: template %s revision %s output_schema is not JSON: %w", slug, versionLabel, err)
+		}
+		rev := compiler.TemplateRevision{
+			Slug:           slug,
+			TemplateID:     templateID,
+			RevisionID:     revisionID,
+			Kind:           kind,
+			Parameters:     paramsCanon,
+			Config:         configMap,
+			OutputSchema:   outputCanon,
+			WorkspaceMode:  workspaceMode,
+			RevisionDigest: digest,
+		}
+		if status == "active" {
+			reg.byRef[slug+"@"+versionLabel] = rev
+		}
+	}
+	return reg, rows.Err()
+}
+
+// rewriteTemplateRefs is the ADR-0049 § 5 transformation on canonical
+// document BYTES: every node whose `template` reference names slug (any
+// version — the refs table is version-blind by design) is rewritten to
+// slug@versionLabel; no other node is touched. The result is re-canonicalized
+// so document_text and canonical_document agree exactly as at publish
+// (ADR-0021 § 5: the re-render is the honest textual form).
+func rewriteTemplateRefs(canonical []byte, slug, versionLabel string) ([]byte, error) {
+	dec := json.NewDecoder(bytes.NewReader(canonical))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, fmt.Errorf("decode canonical document: %w", err)
+	}
+	top, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("canonical document root is not an object")
+	}
+	spec, _ := top["spec"].(map[string]any)
+	nodes, _ := spec["nodes"].([]any)
+	var all []map[string]any
+	collectNodes(nodes, &all)
+	prefix := slug + "@"
+	for _, n := range all {
+		if tmpl, ok := n["template"].(string); ok && strings.HasPrefix(tmpl, prefix) {
+			n["template"] = slug + "@" + versionLabel
+		}
+	}
+	cv, err := jsonToCanon(top)
+	if err != nil {
+		return nil, fmt.Errorf("canonical document has an unsupported value: %w", err)
+	}
+	doc, ok := cv.(canon.Map)
+	if !ok {
+		return nil, fmt.Errorf("canonical document root is not an object")
+	}
+	return canon.CanonicalizeDocument(doc)
+}
+
+// collectNodes lists every node object in a nodes array, descending into
+// composite bodies (config.body.nodes) — a referencing node may live inside
+// an until/for_each body, and its reference must be rewritten too.
+func collectNodes(nodes []any, out *[]map[string]any) {
+	for _, item := range nodes {
+		n, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		*out = append(*out, n)
+		if cfg, ok := n["config"].(map[string]any); ok {
+			if body, ok := cfg["body"].(map[string]any); ok {
+				if inner, ok := body["nodes"].([]any); ok {
+					collectNodes(inner, out)
+				}
+			}
+		}
+	}
+}
+
+// jsonToCanon turns a JSON-decoded value tree into canon.Value; json.Number
+// becomes the loader's numeric model (int64 or float64) so the re-canonical
+// bytes agree with a loader-produced document byte for byte.
+func jsonToCanon(v any) (canon.Value, error) {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]canon.Value, len(t))
+		for k, e := range t {
+			cv, err := jsonToCanon(e)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = cv
+		}
+		return out, nil
+	case []any:
+		out := make([]canon.Value, len(t))
+		for i, e := range t {
+			cv, err := jsonToCanon(e)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = cv
+		}
+		return out, nil
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return i, nil
+		}
+		if f, err := t.Float64(); err == nil {
+			return f, nil
+		}
+		return t.String(), nil
+	case string, bool, nil:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("unsupported JSON value type %T", v)
+	}
+}
+
+// NodeFromDraft is the ADR-0049 § 6 read behind from_node: one node's kind
+// and config from a draft's validated canonical document. A draft the caller
+// cannot see (or a missing node id) is the uniform not-found sentinel; a
+// draft that has never validated has no canonical document and is the
+// api.ErrNodeTemplateDraftNotValidated 400.
+func (s APINodeTemplateStore) NodeFromDraft(ctx context.Context, c api.Caller, draftID, nodeID string) (kind string, config json.RawMessage, err error) {
+	pool, err := s.pool()
+	if err != nil {
+		return "", nil, err
+	}
+	if err := prjRequireCaller(callerFromAPI(c)); err != nil {
+		return "", nil, err
+	}
+	var canonical []byte
+	err = pool.QueryRow(ctx, `
+		SELECT d.canonical_document
+		FROM pipeline_drafts d
+		JOIN pipelines p ON p.id = d.pipeline_id
+		WHERE d.id = $1::uuid AND p.organization_id = $2::uuid`, draftID, c.OrganizationID).
+		Scan(&canonical)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, api.ErrNodeTemplateNotFound
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("postgres: read draft %s for node template: %w", draftID, err)
+	}
+	if len(canonical) == 0 {
+		return "", nil, api.ErrNodeTemplateDraftNotValidated
+	}
+	dec := json.NewDecoder(bytes.NewReader(canonical))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return "", nil, fmt.Errorf("postgres: decode draft %s canonical document: %w", draftID, err)
+	}
+	top, ok := v.(map[string]any)
+	if !ok {
+		return "", nil, fmt.Errorf("postgres: draft %s canonical document root is not an object", draftID)
+	}
+	spec, _ := top["spec"].(map[string]any)
+	nodes, _ := spec["nodes"].([]any)
+	var all []map[string]any
+	collectNodes(nodes, &all)
+	for _, n := range all {
+		if id, _ := n["id"].(string); id != nodeID {
+			continue
+		}
+		kind, _ = n["kind"].(string)
+		cfg, _ := n["config"].(map[string]any)
+		if cfg == nil {
+			cfg = map[string]any{}
+		}
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			return "", nil, fmt.Errorf("postgres: encode node %s config: %w", nodeID, err)
+		}
+		return kind, raw, nil
+	}
+	return "", nil, api.ErrNodeTemplateNotFound
 }

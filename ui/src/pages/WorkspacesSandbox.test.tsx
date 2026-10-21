@@ -353,7 +353,7 @@ describe("a conversation's workspace and enforcement record", () => {
       ]),
     });
     expect((await screen.findByTestId("workspace-widget-empty")).textContent).toContain(
-      "No workspace for this conversation yet",
+      "No workspace for this thread yet",
     );
   });
 

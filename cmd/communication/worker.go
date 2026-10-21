@@ -764,9 +764,17 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 		if err != nil {
 			return fmt.Errorf("list repositories of project %s: %w", c.ProjectID, err)
 		}
+		// ADR-0053: the pinned starting bases (runs.repo_snapshot) — the run
+		// snapshotted them at creation (normally the thread branch's recorded
+		// head) and never moves them. An unknown empty map is the ordinary
+		// run: the default-branch startPoint, exactly as before.
+		bases, err := runs.BaseCommits(ctx, c.RunID)
+		if err != nil {
+			return fmt.Errorf("read the pinned base commits of run %s: %w", c.RunID, err)
+		}
 		specs := make([]wsgit.RepoSpec, 0, len(repos))
 		for _, r := range repos {
-			specs = append(specs, wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch})
+			specs = append(specs, wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch, BaseCommit: bases[r.ID]})
 		}
 		prep, err := mgr.Prepare(ctx, wsgit.PrepareRequest{
 			// The run scope and the run id: <workspaces>/run/<run-id> with work/

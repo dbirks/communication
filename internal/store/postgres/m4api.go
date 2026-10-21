@@ -844,6 +844,13 @@ func (a APIPipelineStore) PublishDraft(ctx context.Context, c api.Caller, draftI
 		WHERE id = $1::uuid AND version = $3`, draftID, rev.ID, in.ExpectedVersion); err != nil {
 		return api.RevisionView{}, fmt.Errorf("postgres: mark draft %s published: %w", draftID, err)
 	}
+	// ADR-0049 § 2.4: one pipeline_revision_template_refs row per (node,
+	// template) in the SAME transaction as the revision row. The pins are
+	// already in the compiled plan (validated against the org's registry),
+	// so publish extracts them instead of re-resolving.
+	if err := insertRevisionTemplateRefs(ctx, tx, rev.ID, rev.CompiledPlan); err != nil {
+		return api.RevisionView{}, err
+	}
 	if err := m4AppendAppendable(ctx, tx, events.TypePipelineRevisionPublished, orgID, "",
 		c.UserID, events.PipelineRevisionPublishedPayload{
 			PipelineID: rev.PipelineID, RevisionID: rev.ID, RevisionNumber: rev.RevisionNumber,
@@ -857,6 +864,41 @@ func (a APIPipelineStore) PublishDraft(ctx context.Context, c api.Caller, draftI
 		return api.RevisionView{}, fmt.Errorf("postgres: commit publish: %w", err)
 	}
 	return m4RevisionView(rev), nil
+}
+
+// insertRevisionTemplateRefs writes the ADR-0049 § 2.4 refs rows: one per
+// templateRefs entry the compiler pinned on a plan node. The plan is the
+// source of truth — it was compiled (and its digest taken) against the
+// org's registry at validate, so what the refs table says is exactly what
+// the pinned plan says.
+func insertRevisionTemplateRefs(ctx context.Context, tx pgx.Tx, revisionID string, compiledPlan []byte) error {
+	if len(compiledPlan) == 0 {
+		return nil
+	}
+	var plan struct {
+		Nodes []struct {
+			ID           string `json:"id"`
+			TemplateRefs []struct {
+				TemplateID         string `json:"template_id"`
+				TemplateRevisionID string `json:"template_revision_id"`
+			} `json:"templateRefs"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(compiledPlan, &plan); err != nil {
+		return fmt.Errorf("postgres: read template pins from compiled plan: %w", err)
+	}
+	for _, n := range plan.Nodes {
+		for _, ref := range n.TemplateRefs {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO pipeline_revision_template_refs
+					(pipeline_revision_id, template_id, template_revision_id, node_id)
+				VALUES ($1::uuid, $2::uuid, $3::uuid, $4)`,
+				revisionID, ref.TemplateID, ref.TemplateRevisionID, n.ID); err != nil {
+				return fmt.Errorf("postgres: insert pipeline revision template refs: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // revisionIDForDigest reads back the winning revision after a digest-collision
@@ -999,10 +1041,15 @@ func (a APIPipelineStore) RecordDenied(ctx context.Context, c api.Caller, resour
 // Registry existence checks (unknown_profile / unknown_repository) need
 // project context the validate route does not carry (§ 2.1 route 11's
 // subject is the draft, not a project), so they stay the compiler's optional
-// pass and this build runs with a nil *compiler.Registries — the documented
-// "skip every existence check" configuration (compiler/helpers.go).
+// pass and a build without a pool runs with a nil *compiler.Registries — the
+// documented "skip every existence check" configuration (compiler/helpers.go).
+// Template references are different (ADR-0049 § 2): they are ORG-scoped, and
+// the caller's organization travels in every validate. WithTemplates wires
+// the Postgres-backed registry loader; fail-closed, a node's template
+// reference that cannot be resolved is template_ref_unresolved, never a 500.
 type PipelineDefinitions struct {
 	validator *schema.Validator
+	pool      *pgxpool.Pool
 }
 
 // NewPipelineDefinitions compiles the shipped schema once, at process start
@@ -1016,22 +1063,41 @@ func NewPipelineDefinitions() (*PipelineDefinitions, error) {
 	return &PipelineDefinitions{validator: v}, nil
 }
 
+// WithTemplates wires the template-registry loader (ADR-0049 § 2): validate
+// then resolves node `template: slug@semver` references against the
+// caller's organization's published, active revisions.
+func (d *PipelineDefinitions) WithTemplates(pool *pgxpool.Pool) *PipelineDefinitions {
+	d.pool = pool
+	return d
+}
+
+// compileOptions builds the compiler's registries for one validate. A pool
+// that cannot be read answers an EMPTY registry — a template reference then
+// fail-closes as template_ref_unresolved (the honest answer: the registry
+// cannot prove the revision) rather than breaking every validate.
+func (d *PipelineDefinitions) compileOptions(ctx context.Context, c api.Caller) compiler.Options {
+	opts := compiler.Options{}
+	if d.pool == nil {
+		return opts
+	}
+	reg, err := LoadTemplateRegistry(ctx, d.pool, c.OrganizationID)
+	if err != nil {
+		return opts
+	}
+	opts.Registries = &compiler.Registries{Templates: reg}
+	return opts
+}
+
 func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, documentYAML string) (api.ValidationOutcome, error) {
-	_ = ctx
-	_ = c
 	doc, diags := loader.Load([]byte(documentYAML))
 	if !diags.Valid() {
 		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
-	if doc.Kind == loader.KindNodeTemplate {
-		// § 9.1 row 12: a NodeTemplate document is valid but publishable by
-		// nothing in M4 (ADR-0024 § 2). The refusal is a finding, so the
-		// draft row records it and publish cannot race past it.
-		diags.Addf(diag.SourceCompiler, diag.CodeTemplatePublishDefer, "/",
-			"NodeTemplate publication is deferred to M5; the template registry does not exist yet")
-		return d.invalid(m4RedactFindings(diags, doc)), nil
-	}
-	if doc.Kind != loader.KindPipeline {
+	// ADR-0049 § 2 lifts the ADR-0024 § 2 deferral: a NodeTemplate document
+	// validates (schema + compiler) like any other; the registry API is the
+	// template's publish path, and the compiler's template_ref_unresolved
+	// diagnostic replaces the former publish refusal for node references.
+	if doc.Kind != loader.KindPipeline && doc.Kind != loader.KindNodeTemplate {
 		diags.Addf(diag.SourceLoader, diag.CodeUnknownDocument, "/",
 			"document kind %q has no schema branch", doc.Kind)
 		return d.invalid(m4RedactFindings(diags, doc)), nil
@@ -1040,7 +1106,7 @@ func (d *PipelineDefinitions) Validate(ctx context.Context, c api.Caller, docume
 	if !diags.Valid() {
 		return d.invalid(m4RedactFindings(diags, doc)), nil
 	}
-	plan, cdiags := compiler.Compile(doc, compiler.Options{})
+	plan, cdiags := compiler.Compile(doc, d.compileOptions(ctx, c))
 	diags = append(diags, cdiags...)
 	if !diags.Valid() {
 		return d.invalid(m4RedactFindings(diags, doc)), nil

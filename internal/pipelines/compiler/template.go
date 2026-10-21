@@ -8,11 +8,11 @@ import (
 	"github.com/dbirks/communication/internal/pipelines/schema"
 )
 
-// nodeTemplate compiles a NodeTemplate document (01 § node templates, ADR-0024
-// § 2). M4 validates its shape and parameters and refuses the *publish*:
-// publishing would need a template registry, which is M5. A caller that sets
-// AllowNodeTemplatePublish gets a plan with a template-scope expression
-// environment instead.
+// nodeTemplate compiles a NodeTemplate document (01 § node templates). M4
+// validates its shape and parameters; publishing a template is the registry
+// API's job (ADR-0049 § 3) — the document's config is compiled against the
+// template's parameter envelope, which is what a host node's expansion
+// substitutes into its own config values.
 func (w *walk) nodeTemplate(spec map[string]canonValue) {
 	w.inputs = expr.SchemaFromJSON(spec["parameters"])
 	w.plan.Inputs = spec["parameters"]
@@ -57,13 +57,6 @@ func (w *walk) nodeTemplate(spec map[string]canonValue) {
 		ConfigBindings: w.configValues(cfg, ptr.Root.Child("spec").Child("config"), tmpl, impl),
 	})
 
-	if !w.opts.AllowNodeTemplatePublish {
-		// ADR-0024 § 2: validate answers template_publish_deferred rather than
-		// pretending the registry exists. The document itself is valid — that is
-		// what makes an M5 upgrade a config change instead of a rewrite.
-		w.err(ptr.Root.Child("kind"), diag.CodeTemplatePublishDefer,
-			"node template %q is valid, but publishing templates is deferred to M5 (ADR-0024 § 2): the template registry and expansion do not exist in this build", name)
-	}
 	if r := w.opts.Registries; r != nil && r.NodeTemplates != nil && name != "" {
 		if r.NodeTemplates.Exists(name) {
 			w.err(ptr.Root.Child("metadata").Child("name"), diag.CodeDuplicateKey,

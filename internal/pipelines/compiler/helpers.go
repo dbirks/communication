@@ -33,6 +33,36 @@ type PipelineTarget struct {
 	ChildDepth int
 }
 
+// TemplateRevision is one pinned node-template revision the registry hands to
+// the compiler (ADR-0049 § 2): the identity a plan pins, plus the content the
+// composed node is built from. The digest travels so the plan can prove which
+// canonical revision it was compiled against.
+type TemplateRevision struct {
+	Slug           string
+	TemplateID     string
+	RevisionID     string
+	Kind           string
+	Parameters     canonValue
+	Config         map[string]canonValue
+	OutputSchema   canonValue
+	WorkspaceMode  string
+	RevisionDigest string
+}
+
+// TemplateRegistry answers the compile-time questions a DB-free compiler
+// cannot answer for `template: slug@semver` node references (ADR-0049 § 2).
+// The store implements it over node_templates / node_template_revisions for
+// the caller's organization; a unit test implements it over a map.
+type TemplateRegistry interface {
+	// GetActiveTemplate reports whether slug names an existing template in
+	// the registry (any status — the status check rides GetTemplateRevision).
+	GetActiveTemplate(slug string) bool
+	// GetTemplateRevision returns the pinned revision for slug@version: an
+	// unknown slug, an unknown version or a retired template all answer
+	// not-found so the compiler can refuse fail-closed.
+	GetTemplateRevision(slug, version string) (TemplateRevision, bool)
+}
+
 // Pipelines answers existence for an invoke target.
 type Pipelines interface {
 	Resolve(name string) (PipelineTarget, bool)
@@ -47,6 +77,9 @@ type Registries struct {
 	Repositories  NameSet
 	PipelineRevs  Pipelines
 	NodeTemplates NameSet
+	// Templates resolves a pipeline node's `template: slug@semver` reference
+	// (ADR-0049 § 2). Nil keeps a reference fail-closed: template_ref_unresolved.
+	Templates TemplateRegistry
 }
 
 // Options configure a compile.
@@ -59,9 +92,6 @@ type Options struct {
 	// so a later milestone reuses this compiler without a fork; M4 never sets it
 	// (ADR-0024 § 2).
 	AllowDeferredKinds bool
-	// AllowNodeTemplatePublish lets a NodeTemplate document compile instead of
-	// answering template_publish_deferred. M4 never sets it (ADR-0024 § 2).
-	AllowNodeTemplatePublish bool
 	// InvokeDepthCheck makes a pipeline.invoke prove its depth against
 	// policies.maxChildDepth at publish. Off by default because the target
 	// revision's own policies belong to the API layer that holds its plan.

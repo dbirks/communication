@@ -1,32 +1,26 @@
-import type { ReactNode } from "react";
-import { useLocation, useNavigate } from "react-router";
-import { useLogout, useMe } from "../api/queries";
-import { useReplicaName } from "../api/replica";
-import { problemOf } from "../api/client";
-import { AppBar, InitialsBox } from "./ds/AppBar";
-import CommandPalette from "./CommandPalette";
-import NewMenu from "./NewMenu";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useLocation } from "react-router";
+import { useLayoutPrefs } from "../lib/prefs";
+import { Mark } from "./ds/Mark";
 import { Button } from "./ds/Button";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
+import Sidebar, { openAsk } from "./Sidebar";
+import CommandPalette from "./CommandPalette";
 
+/**
+ * The sections the Ask box's context chip names, in the order the sidebar
+ * lists them. A nav item wins; anything outside the track is named by its own
+ * first segment (`/p/proj-1` is `p`, `/login` is `login`) rather than guessed
+ * at.
+ */
 const NAV_ITEMS = [
+  { to: "/", label: "Home", end: true },
   { to: "/inbox", label: "Inbox" },
-  { to: "/", label: "Projects", end: true },
-  { to: "/library", label: "Workflows" },
-  { to: "/agents", label: "Agents" },
+  { to: "/board", label: "Board" },
+  { to: "/threads", label: "Threads" },
   { to: "/ops", label: "Operations" },
 ];
 
-export interface ShellProps {
-  children: ReactNode;
-  /** Routes that own the whole viewport (the Run Workbench) drop the
-   * content column's width cap and padding; they pad themselves. */
-  fullBleed?: boolean;
-}
-
-/** The Ask box's context chip: the section the current path belongs to. A nav
- * item wins; anything outside the track is named by its own first segment
- * (`/projects/p-1` is `projects`, `/login` is `login`) rather than guessed at. */
 export function sectionOf(pathname: string): string {
   const hit = NAV_ITEMS.find((item) =>
     item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`),
@@ -35,74 +29,131 @@ export function sectionOf(pathname: string): string {
   return (hit?.label ?? (first || "projects")).toLowerCase();
 }
 
-/** App shell: NAV-I app bar (C mark, section track, signed-in user, sign
- * out), main content on paper, mono replica footer. */
-export default function Shell({ children, fullBleed = false }: ShellProps) {
-  const replica = useReplicaName();
-  const me = useMe();
-  const logout = useLogout();
-  const navigate = useNavigate();
-  const location = useLocation();
+export interface ShellProps {
+  children: ReactNode;
+  /** Routes that own the whole viewport (the Run Workbench) drop the
+   * content column's width cap and padding; they pad themselves. */
+  fullBleed?: boolean;
+}
 
-  const onSignOut = () => {
-    logout.mutate(undefined, {
-      onSuccess: () => navigate("/login"),
-      onError: () => navigate("/login"),
-    });
+/**
+ * App shell — Sidebar v3. A 240px white column on every page (no top app bar
+ * anywhere): mark, New/Ask, cross-project nav, the project tree or switcher
+ * (a saved preference), the library, and the identity footer. Below `md`
+ * (768px) the column is an off-canvas drawer opened from a slim top strip;
+ * the content column then owns the full width.
+ */
+export default function Shell({ children, fullBleed = false }: ShellProps) {
+  const { prefs } = useLayoutPrefs();
+  const location = useLocation();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+
+  // Content changed = the phone drawer has delivered its link.
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname]);
+
+  // Esc closes the drawer and the keyboard goes back to the button that
+  // opened it; the page body is locked while it stands over the content.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDrawerOpen(false);
+        menuButton.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [drawerOpen]);
+
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    menuButton.current?.focus();
   };
 
-  const logoutError = logout.error ? problemOf(logout.error).detail || "Sign out failed." : null;
-
   return (
-    <div className="flex min-h-screen flex-col bg-paper text-ink">
-      <AppBar
-        items={NAV_ITEMS}
-        ask={<CommandPalette context={sectionOf(location.pathname)} />}
-        right={
-          <>
-            {me.data ? (
-              <>
-                {/* The New menu starts things; signed-out visitors have nothing to start. */}
-                <NewMenu />
-                {/* The "Signed in as …" line is hidden until xl: the bar is a
-                    single line from 1024 up, and that text only fits in the
-                    wider (max-w-6xl) row from 1280 up. */}
-                <span className="hidden min-w-0 text-[12.5px] text-muted xl:inline">
-                  Signed in as{" "}
-                  <strong data-testid="user-badge" className="font-semibold text-ink">
-                    {me.data.display_name}
-                  </strong>
-                  {me.data.organization ? ` · ${me.data.organization.name}` : ""}
-                </span>
-                <InitialsBox name={me.data.display_name} />
-                <Button variant="secondaryPlain" data-testid="sign-out" onClick={onSignOut}>
-                  Sign out
-                </Button>
-              </>
-            ) : (
-              <span className="font-mono text-[11px] text-faint">not signed in</span>
-            )}
-          </>
-        }
-      />
-      {logoutError ? (
-        <p
-          className="mx-auto w-full max-w-5xl px-4 pt-2 font-mono text-[11px] text-st-failed-tag-fg"
-          role="alert"
-        >
-          × {logoutError}
-        </p>
+    <div className="flex min-h-screen bg-paper text-ink">
+      {/* Desktop column: sticky, screen-height; the column scrolls itself. */}
+      <div className="sticky top-0 hidden h-screen shrink-0 md:block">
+        <Sidebar />
+      </div>
+
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col">
+        {/* Phone top strip: the 44px menu button and the mark. */}
+        <header className="sticky top-0 z-20 flex h-11 items-center gap-2 border-b border-ink bg-surface px-2 md:hidden">
+          <button
+            ref={menuButton}
+            type="button"
+            data-testid="sidebar-open"
+            aria-label="Open sidebar"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen(true)}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-[4px] border border-fill-edge bg-surface text-ink hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+              <path
+                d="M2 5h14M2 9h14M2 13h14"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <Mark size={22} />
+          <span className="min-w-0 truncate text-[13px] font-semibold">Communication</span>
+        </header>
+
+        <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
+          {/* Keyed by the path: navigating clears a caught render error instead
+              of leaving the crash banner on every later page. */}
+          <RouteErrorBoundary key={location.pathname}>{children}</RouteErrorBoundary>
+        </main>
+      </div>
+
+      {/* The phone drawer: backdrop + off-canvas column. */}
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            data-testid="sidebar-backdrop"
+            onClick={closeDrawer}
+            className="absolute inset-0 h-full w-full cursor-default bg-ink/25"
+          />
+          <div className="absolute inset-y-0 left-0">
+            <Sidebar variant="drawer" onClose={closeDrawer} />
+          </div>
+        </div>
       ) : null}
-      <main className={fullBleed ? "w-full flex-1" : "mx-auto w-full max-w-5xl flex-1 px-4 py-6"}>
-        {/* Keyed by the path: navigating clears a caught render error instead
-            of leaving the crash banner on every later page. */}
-        <RouteErrorBoundary key={location.pathname}>{children}</RouteErrorBoundary>
-      </main>
-      <footer className="border-t border-line px-4 py-2">
-        <span data-testid="replica-badge" className="font-mono text-[11px] text-faint">
-          replica: {replica}
-        </span>
-      </footer>
+
+      {/* The command palette's engine, anchored at the content's bottom-right
+          (the assistant popover's design position): its trigger box is hidden
+          — the sidebar's `Ask ⌘K` row (or the floating button) opens it — but
+          the global ⌘K listener and the panel stay mounted here. */}
+      <div className="fixed bottom-0 right-[248px] z-30 h-px w-px [&>button]:hidden">
+        <CommandPalette context={sectionOf(location.pathname)} />
+      </div>
+
+      {/* Ask placement: a saved preference. `floating` parks the button at
+          the content's bottom-right, above the palette engine. */}
+      {prefs.askPlacement === "floating" ? (
+        <Button
+          variant="secondary"
+          data-testid="ask-float"
+          onClick={openAsk}
+          className="fixed bottom-4 right-4 z-30 font-mono text-[11px] md:right-[256px]"
+        >
+          Ask ⌘K
+        </Button>
+      ) : null}
     </div>
   );
 }

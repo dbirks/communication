@@ -29,7 +29,7 @@ const members: Member[] = [
   { user_id: grace.id, display_name: grace.display_name, role: "contributor" },
 ];
 
-const page = `/projects/${projectId}/conversations/${conversationId}`;
+const page = `/p/${projectId}/conversations/${conversationId}`;
 
 function routes(extra: RouteStub[] = []): RouteStub[] {
   return [

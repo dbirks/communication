@@ -1,8 +1,9 @@
 import { useMemo } from "react";
 import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
-import { useTurnSandbox } from "../api/queries";
+import { useProject, useTurnSandbox } from "../api/queries";
 import { interruptedCopy, runLinkOf, turnStatusText } from "../api/transcript";
+import { formatAge } from "../lib/format";
 import { conversationRunHref, instanceLeaf } from "../components/Conversations";
 import { shortId } from "../api/names";
 import type { TurnSandbox } from "../api/types";
@@ -16,8 +17,10 @@ import { TurnSandboxPanel } from "../components/Sandbox";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
+import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
 import { STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
+import { routes } from "../lib/routes";
 
 /**
  * Whether what the wire returned is a verdict at all.
@@ -48,16 +51,28 @@ export function sandboxVerdictRecorded(record: TurnSandbox | undefined): boolean
   );
 }
 
-export default function ConversationPage() {
-  const { projectId = "", conversationId = "" } = useParams<{
+export default function ConversationPage({
+  projectId: projectIdProp,
+}: {
+  projectId?: string;
+} = {}) {
+  const params = useParams<{
     projectId: string;
     conversationId: string;
   }>();
+  // The project-less deep link (`/threads/:id`) resolves the project from the
+  // conversation itself and passes it here; the legacy path reads it from the URL.
+  const projectId = projectIdProp ?? params.projectId ?? "";
+  const conversationId = params.conversationId ?? "";
   // One session for the whole page: the transcript/composer surface below and
   // the controller line in the rail read the same hooks, and the SSE stream is
   // opened exactly once.
   const session = useConversationSession(conversationId, projectId);
   const { conversation, data, activeTurn, transcript, status, described } = session;
+  // The header's meta line names the project in words (`thread · Widgets ·
+  // Claude Code · 12m`); the deep link resolves the id from the conversation
+  // itself, so the read is enabled only once a real id is in hand.
+  const project = useProject(projectId);
 
   // "Part of" is read off the journal's own correlation columns (M4 contract
   // § 3): a conversation whose rows name no run shows no run link.
@@ -82,12 +97,12 @@ export default function ConversationPage() {
     return (
       <section aria-labelledby="conversation-missing-heading">
         <h1 id="conversation-missing-heading" className="text-title-l font-bold">
-          Conversation
+          Thread
         </h1>
         <p className="mt-2 text-st-failed-tag-fg" role="alert">
           <span aria-hidden="true">× </span>
           <span data-testid="conversation-not-found">
-            Conversation not found or you do not have access
+            Thread not found or you do not have access
           </span>
         </p>
       </section>
@@ -98,12 +113,9 @@ export default function ConversationPage() {
     return (
       <section aria-labelledby="conversation-error-heading">
         <h1 id="conversation-error-heading" className="text-title-l font-bold">
-          Conversation
+          Thread
         </h1>
-        <ProblemBanner
-          error={conversation.error}
-          fallback="The conversation could not be loaded."
-        />
+        <ProblemBanner error={conversation.error} fallback="The thread could not be loaded." />
       </section>
     );
   }
@@ -117,22 +129,48 @@ export default function ConversationPage() {
     <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
       {/* 6d: the transcript is the reading surface and owns the column; the
           context that explains it sits in a narrow rail beside it. */}
-      <div className="min-w-0 max-w-[760px] space-y-4" data-testid="conversation-main">
+      <div className="min-w-0 max-w-[820px] space-y-4" data-testid="conversation-main">
         <header className="space-y-2">
           <p className="font-mono text-[11px] text-muted">
-            <Link to={`/projects/${projectId}`} className="text-accent-text hover:text-ink">
+            <Link to={routes.project(projectId)} className="text-accent-text hover:text-ink">
               Project
             </Link>
             <span aria-hidden="true"> / </span>
-            <span>Conversations</span>
+            <span>Threads</span>
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <h1 data-testid="conversation-title" className="text-title-l font-bold">
               {data.title}
             </h1>
+            {/* 4f: the control line lives with the title — the "You are in
+                control" pill and the danger Stop sit in the header, and the
+                same shared controls (take / return / stop) render there with
+                the page's historical testids. */}
+            <AgentConversationControls
+              session={session}
+              ids={{
+                badge: "controller-badge",
+                takeControl: "take-control",
+                returnControl: "return-control",
+                stopTurn: "stop-turn",
+              }}
+              showVersionLine
+            />
           </div>
           <p className="font-mono text-[11px] text-muted" data-testid="conversation-meta">
-            <span>profile: {data.agent_profile_name ?? data.agent_profile_id}</span>
+            <span>thread</span>
+            <span className="px-2" aria-hidden="true">
+              ·
+            </span>
+            <span>{project.data?.name ?? (project.isPending ? "…" : projectId)}</span>
+            <span className="px-2" aria-hidden="true">
+              ·
+            </span>
+            <span>{data.agent_profile_name ?? data.agent_profile_id}</span>
+            <span className="px-2" aria-hidden="true">
+              ·
+            </span>
+            <span data-testid="thread-age">{formatAge(data.created_at)}</span>
             <span className="px-2" aria-hidden="true">
               ·
             </span>
@@ -164,7 +202,7 @@ export default function ConversationPage() {
                 className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
                 data-testid="conversation-manual-label"
               >
-                Manual conversation
+                One-off thread
               </span>
             ) : null}
             {data.agent_session ? (
@@ -205,7 +243,7 @@ export default function ConversationPage() {
         />
       </div>
 
-      <aside className="min-w-0 space-y-3" aria-label="Conversation context">
+      <aside className="min-w-0 space-y-3" aria-label="Thread context">
         {/* Where this transcript was opened (ADR-0043): a manual conversation
             never carries a run or graph link, and a run conversation deep-links
             into the Run Workbench — the API's run_link first, the journal's
@@ -214,7 +252,7 @@ export default function ConversationPage() {
           <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
             <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
               <Link
-                to={conversationRunHref(projectId, apiRunLink)}
+                to={conversationRunHref(apiRunLink)}
                 className="text-accent-text hover:text-ink"
                 data-testid="part-of-run-link"
               >
@@ -230,7 +268,7 @@ export default function ConversationPage() {
           <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
             <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
               <Link
-                to={`/projects/${projectId}/runs/${runLink.runId}`}
+                to={routes.run(runLink.runId)}
                 className="text-accent-text hover:text-ink"
                 data-testid="part-of-run-link"
               >
@@ -244,7 +282,7 @@ export default function ConversationPage() {
                     // The attempt is a row inside the run the panel already
                     // links, so its id is a link to that run, not a bare hex.
                     <Link
-                      to={`/projects/${projectId}/runs/${runLink.runId}`}
+                      to={routes.run(runLink.runId)}
                       className="text-accent-text hover:text-ink"
                       data-testid="part-of-attempt-link"
                     >
@@ -271,52 +309,65 @@ export default function ConversationPage() {
           <div data-testid="workspace-widget">
             <WorkspaceWidget projectId={projectId} conversationId={conversationId} />
           </div>
-        </section>
-        <section aria-labelledby="sandbox-rail-heading" className="space-y-2">
-          <h2
-            id="sandbox-rail-heading"
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-          >
-            Sandbox
-          </h2>
-          {latestTurnId ? (
-            turnSandbox.data && !sandboxVerdictRecorded(turnSandbox.data) ? (
-              // Pending and unreadable answers stay with the panel, which words
-              // them honestly; only the recorded-nothing 200 is rewritten here.
-              <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
-                No sandbox verdict recorded for this conversation — its journal holds no sandbox
-                event, so this page cannot say what the agent ran under.
-              </p>
+          {/* 4f: the sandbox verdict reads with the workspace — it is the
+              enforcement the workspace ran under, so it stays in one place. */}
+          <div aria-labelledby="sandbox-rail-heading">
+            {latestTurnId ? (
+              turnSandbox.data && !sandboxVerdictRecorded(turnSandbox.data) ? (
+                // Pending and unreadable answers stay with the panel, which words
+                // them honestly; only the recorded-nothing 200 is rewritten here.
+                <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
+                  No sandbox verdict recorded for this conversation — its journal holds no sandbox
+                  event, so this page cannot say what the agent ran under.
+                </p>
+              ) : (
+                <TurnSandboxPanel turnId={latestTurnId} />
+              )
             ) : (
-              <TurnSandboxPanel turnId={latestTurnId} />
-            )
-          ) : (
-            <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
-              No turn yet, so nothing has launched and there is no enforcement to report.
-            </p>
-          )}
+              <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
+                No turn yet, so nothing has launched and there is no enforcement to report.
+              </p>
+            )}
+          </div>
         </section>
-        {/* The controller line, in words: who is driving, the version the CAS
-            token is at, and the only control acts on the page. The shared
-            controls read the page's own session. */}
-        <section aria-labelledby="controller-rail-heading" className="space-y-2">
+        {/* 4f ARTIFACTS: the artifact API cannot be filtered by thread, so
+            this page cannot tell this thread's files from another thread's —
+            the honest answer is to say so, not to list the project's files. */}
+        <section aria-labelledby="artifacts-rail-heading" className="space-y-2">
           <h2
-            id="controller-rail-heading"
+            id="artifacts-rail-heading"
             className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
           >
-            Controller
+            Artifacts
           </h2>
-          <AgentConversationControls
-            session={session}
-            ids={{
-              badge: "controller-badge",
-              takeControl: "take-control",
-              returnControl: "return-control",
-              stopTurn: "stop-turn",
-            }}
-            showVersionLine
-            showDrivingNote
-          />
+          <p className="text-[12.5px] text-muted" data-testid="artifacts-rail">
+            Not available yet — the artifact API cannot list just this thread's files, so this page
+            won't guess which saved files are yours.
+          </p>
+          <Link
+            to={routes.projectTab(projectId, "artifacts")}
+            className="inline-block font-mono text-[11px] text-accent-text hover:text-ink"
+            data-testid="artifacts-project-link"
+          >
+            See the project's artifacts →
+          </Link>
+        </section>
+        {/* 4f NEXT: the only offered follow-up. "Hand to a workflow…" stays
+            disabled until the handoff backend lands; a draft-PR entry is not
+            rendered at all until push support exists (gaps/threads.md §5). */}
+        <section aria-labelledby="next-rail-heading" className="space-y-2">
+          <h2
+            id="next-rail-heading"
+            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+          >
+            Next
+          </h2>
+          <Button variant="primary" disabled data-testid="hand-to-workflow">
+            Hand to a workflow…
+          </Button>
+          <p className="font-mono text-[10.5px] text-faint" data-testid="hand-to-workflow-note">
+            coming in the next unit — the handoff API has not landed yet
+          </p>
         </section>
       </aside>
     </div>

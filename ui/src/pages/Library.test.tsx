@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useParams } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { LibraryPage, PipelinePage } from "./Library";
-import type { Draft, DraftSummary, Me, ValidateResponse } from "../api/types";
+import type { Draft, DraftSummary, Me, Pipeline, ValidateResponse } from "../api/types";
 import {
   BLANK_SKELETON_YAML,
   PIPELINE_TEMPLATES,
@@ -22,6 +22,7 @@ import {
   WIRE_ASSIGNMENT_ID,
   WIRE_DRAFT_ID,
   WIRE_PIPELINE_ID,
+  WIRE_CHILD_PIPELINE_ID,
   WIRE_REVISION_ID,
   wireAssignmentList,
   wireDraftSummaries,
@@ -42,6 +43,44 @@ const revisionPath = `/api/v1/revisions/${WIRE_REVISION_ID}`;
 const digest = wirePipeline.revisions[0].revision_digest;
 const validatePath = `${draftPath}/validate`;
 const publishPath = `${draftPath}/publish`;
+
+/** The second org workflow in the wire list, as a DRAFT ONLY definition. */
+const childPipeline: Pipeline = {
+  id: WIRE_CHILD_PIPELINE_ID,
+  slug: "module-check",
+  display_name: "Module check",
+  description: "A checklist of module checks.",
+  created_by: wireUserId,
+  created_at: "2026-07-02T10:00:00Z",
+  latest_revision_number: 0,
+  revision_count: 0,
+  archived: false,
+  revisions: [],
+};
+
+/** `Duplicate` on `feature-development` answers with this fresh definition. */
+const COPY_PIPELINE_ID = "01987c01-0000-7000-8000-copy01234567";
+const COPY_DRAFT_ID = "01987c02-0000-7000-8000-copy01234567";
+const copyPipeline: Pipeline = {
+  ...childPipeline,
+  id: COPY_PIPELINE_ID,
+  slug: "feature-development-copy",
+  display_name: "Feature development copy",
+  description: wirePipeline.description,
+  created_at: "2026-07-31T10:00:00Z",
+};
+
+/** `Import YAML` answers with this fresh definition. */
+const IMPORT_PIPELINE_ID = "01987c03-0000-7000-8000-import0123456";
+const IMPORT_DRAFT_ID = "01987c04-0000-7000-8000-import0123456";
+const importedPipeline: Pipeline = {
+  ...childPipeline,
+  id: IMPORT_PIPELINE_ID,
+  slug: "nightly-sweep",
+  display_name: "Nightly sweep",
+  description: "",
+  created_at: "2026-07-31T10:00:00Z",
+};
 
 function wireDraft(status: Draft["status"], validation?: ValidateResponse): Draft {
   return {
@@ -66,8 +105,10 @@ function routes(overrides: RouteStub[] = []): RouteStub[] {
     { path: "/api/v1/me", body: admin },
     { path: "/api/v1/pipelines", body: wirePipelineList },
     { path: pipelinePath, body: wirePipeline },
+    { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}`, body: childPipeline },
     { path: revisionsPath, body: { revisions: wirePipeline.revisions } },
     { path: draftsPath, body: wireDraftSummaries },
+    { path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}/drafts`, body: { drafts: [] } },
     { path: `/api/v1/revisions/${digest}`, body: wireRevision },
     { path: `/api/v1/revisions/${digest}/document`, body: wireRevision.document_text },
     { path: revisionPath, body: wireRevision },
@@ -75,6 +116,9 @@ function routes(overrides: RouteStub[] = []): RouteStub[] {
     { path: draftPath, body: wireDraft("invalid", w8Validation as ValidateResponse) },
     { path: validatePath, method: "POST", body: w8Validation },
     { path: publishPath, method: "POST", status: 409, body: { title: "Nope", status: 409 } },
+    { path: "/api/v1/projects", body: { items: [projectFixture] } },
+    { path: `/api/v1/projects/${wireProjectId}/assignments`, body: wireAssignmentList },
+    { path: `/api/v1/projects/${wireProjectId}/schedules`, body: { schedules: [] } },
   ];
   return [...overrides, ...base];
 }
@@ -89,10 +133,13 @@ function mount(path: string, overrides: RouteStub[] = []) {
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/workflows" element={<LibraryPage />} />
           <Route path="/library/:pipelineId" element={<PipelinePage />} />
+          <Route path="/workflows/:pipelineId" element={<PipelinePage />} />
           {/* The Studio route itself is tested in pages/Studio.test.tsx; the
               library only has to land the navigation there. */}
           <Route path="/library/:pipelineId/drafts/:draftId" element={<StudioRouteStub />} />
+          <Route path="/workflows/:pipelineId/drafts/:draftId" element={<StudioRouteStub />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -126,32 +173,142 @@ function metadataName(document: string): string | undefined {
  * those writes are widened. */
 const settled = { timeout: 4000 };
 
-describe("/library", () => {
-  it("lists the org pipelines and opens the one you click", async () => {
-    mount("/library");
-    const list = await screen.findByTestId("pipeline-library");
-    expect(within(list).getByText("Feature development")).toBeTruthy();
-    fireEvent.click(within(list).getByTestId("pipeline-name-feature-development"));
+describe("/workflows — the index (3a)", () => {
+  it("lists the org workflows with the server's own chips and opens the one you click", async () => {
+    mount("/workflows");
+    const list = await screen.findByTestId("workflows-list");
+    expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
+    // The chip is the summary's own values: r-number and the first six hex.
+    expect(screen.getByTestId("workflow-revision-feature-development").textContent).toContain(
+      `PUBLISHED r${wirePipeline.revisions[0].revision_number} 3f2f3f`,
+    );
+    // A zero-revision workflow reads DRAFT ONLY — no invented revision.
+    expect(screen.getByTestId("workflow-revision-module-check").textContent).toContain(
+      "DRAFT ONLY",
+    );
+    fireEvent.click(screen.getByTestId("workflow-open-feature-development"));
     expect(await screen.findByTestId("pipeline-page")).toBeTruthy();
     expect((await screen.findByTestId("pipeline-header-meta")).textContent).toContain(
       "feature-development",
     );
   });
 
-  it("is an org surface: no project channel claims, and the draft line names the editor", async () => {
-    mount("/library");
-    const list = await screen.findByTestId("pipeline-library");
-    // No project owns these rows, so "no channel set for this project" would
-    // be a lie — the channel cell is absent entirely.
-    expect(within(list).queryAllByTestId(/pipeline-no-channel-/)).toHaveLength(0);
-    expect(within(list).queryAllByTestId(/pipeline-channels-/)).toHaveLength(0);
-    // The draft line resolves `edited_by` (the signed-in user's id) to a name.
-    const draftLine = within(list).getByTestId("pipeline-validation-feature-development");
+  it("names the assigned project, the trigger, and the real draft editor", async () => {
+    mount("/workflows");
+    await screen.findByTestId("workflows-list");
+    // The assignments fan is the caller's own membership: Widgets pins this
+    // pipeline (wireAssignmentList) and has no schedule → `manual`.
+    expect(screen.getByTestId("workflow-assignments-feature-development").textContent).toContain(
+      projectFixture.name,
+    );
+    expect(screen.getByTestId("workflow-trigger-feature-development").textContent).toContain(
+      "manual",
+    );
+    // The draft line resolves `edited_by` to a name — never a raw id and
+    // never "by assistant" (no assistant identity is persisted).
+    const draftLine = screen.getByTestId("workflow-draft-feature-development");
     expect(draftLine.textContent).toContain("Ada Lovelace");
     expect(draftLine.textContent).not.toContain(wireUserId);
   });
 
-  it("posts a new pipeline slug for an org admin", async () => {
+  it("filters: `has open draft` and `used in <project>` narrow the flat list", async () => {
+    mount("/workflows");
+    const list = await screen.findByTestId("workflows-list");
+    expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId("workflows-filter-draft"));
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    // module-check has no open draft; feature-development's draft is not published.
+    expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+    expect(screen.queryByTestId("workflow-row-module-check")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("workflows-filter-all"));
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
+
+    fireEvent.change(screen.getByTestId("workflows-filter-project"), {
+      target: { value: wireProjectId },
+    });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+  });
+
+  it("Duplicate: a new `<slug>-copy` pipeline with exactly one draft, landing on that draft", async () => {
+    const copyDraft: Draft = {
+      ...wireDraft("draft"),
+      id: COPY_DRAFT_ID,
+      pipeline_id: COPY_PIPELINE_ID,
+    };
+    const { requests } = mount("/workflows", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: copyPipeline },
+      {
+        path: `/api/v1/pipelines/${COPY_PIPELINE_ID}/drafts`,
+        method: "POST",
+        status: 201,
+        body: copyDraft,
+      },
+    ]);
+    await screen.findByTestId("workflow-duplicate-feature-development");
+    fireEvent.click(screen.getByTestId("workflow-duplicate-feature-development"));
+    const landed = await screen.findByTestId("studio-route", undefined, settled);
+    expect(landed.textContent).toBe(`${COPY_PIPELINE_ID} / ${COPY_DRAFT_ID}`);
+    // The three writes: the source document, the new pipeline, the new draft.
+    const pipelinePost = requestsTo(requests, "/api/v1/pipelines", "POST")[0];
+    expect(pipelinePost.body).toContain(`"slug":"feature-development-copy"`);
+    const draftPosts = requestsTo(requests, `/api/v1/pipelines/${COPY_PIPELINE_ID}/drafts`, "POST");
+    expect(draftPosts).toHaveLength(1);
+    expect(draftPosts[0].body).toContain("apiVersion");
+  });
+
+  it("Import YAML: the pipeline first, then the draft holding the pasted document, landing in Studio", async () => {
+    const importedDraft: Draft = {
+      ...wireDraft("draft"),
+      id: IMPORT_DRAFT_ID,
+      pipeline_id: IMPORT_PIPELINE_ID,
+      document_yaml: w8DraftYaml,
+    };
+    const { requests } = mount("/workflows", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: importedPipeline },
+      {
+        path: `/api/v1/pipelines/${IMPORT_PIPELINE_ID}/drafts`,
+        method: "POST",
+        status: 201,
+        body: importedDraft,
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId("workflows-import-yaml"));
+    const dialog = await screen.findByTestId("import-yaml-dialog");
+    fireEvent.change(within(dialog).getByTestId("import-yaml-doc"), {
+      target: { value: w8DraftYaml },
+    });
+    fireEvent.change(within(dialog).getByTestId("import-yaml-slug"), {
+      target: { value: "nightly-sweep" },
+    });
+    fireEvent.click(within(dialog).getByTestId("import-yaml-submit"));
+    const landed = await screen.findByTestId("studio-route", undefined, settled);
+    expect(landed.textContent).toBe(`${IMPORT_PIPELINE_ID} / ${IMPORT_DRAFT_ID}`);
+    expect(requestsTo(requests, "/api/v1/pipelines", "POST")[0].body).toContain(
+      `"slug":"nightly-sweep"`,
+    );
+    const draftPost = requestsTo(
+      requests,
+      `/api/v1/pipelines/${IMPORT_PIPELINE_ID}/drafts`,
+      "POST",
+    )[0];
+    expect(draftPost.body).toContain("apiVersion");
+  });
+
+  it("Import YAML: Escape closes the dialog without writing anything", async () => {
+    const { requests } = mount("/workflows", [
+      { path: "/api/v1/pipelines", method: "POST", status: 201, body: importedPipeline },
+    ]);
+    fireEvent.click(await screen.findByTestId("workflows-import-yaml"));
+    await screen.findByTestId("import-yaml-dialog");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByTestId("import-yaml-dialog")).toBeNull();
+    expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
+  });
+
+  it("posts a new workflow slug for an org admin", async () => {
     const { requests } = mount("/library", [
       { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
     ]);

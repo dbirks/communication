@@ -9,6 +9,7 @@ import { Panel } from "./ds/Panel";
 import { Row, StatusChip } from "./ds/Row";
 import { CONVERSATION_STATE, stateOf } from "./ds/states";
 import { shortId } from "../lib/format";
+import { routes } from "../lib/routes";
 
 /**
  * Stable hook for the browser proof: `conversation-row-<title-slug>` mirrors how
@@ -43,17 +44,18 @@ type RunLink = NonNullable<ConversationSummary["run_link"]>;
  * workbench reads `node`/`instance`/`attempt` from the URL. `node` is the
  * definition node id and is omitted when the node execution did not store one.
  */
-export function conversationRunHref(projectId: string, link: RunLink): string {
-  const params = new URLSearchParams();
-  if (link.node_id) params.set("node", link.node_id);
-  params.set("instance", link.node_execution_id);
-  params.set("attempt", String(link.attempt_number));
-  return `/projects/${projectId}/runs/${link.run_id}?${params.toString()}`;
+export function conversationRunHref(link: RunLink): string {
+  // `routes.run` drops empty values, so `node` is omitted when the node
+  // execution stored no definition id — the workbench reads the same params.
+  return routes.run(link.run_id, {
+    node: link.node_id ?? "",
+    instance: link.node_execution_id,
+    attempt: String(link.attempt_number),
+  });
 }
 
 export interface OriginBadgeProps {
   conversation: Pick<ConversationSummary, "origin" | "run_link">;
-  projectId: string;
 }
 
 /**
@@ -72,11 +74,11 @@ export interface OriginBadgeProps {
  * href and only keyboard Enter would reach the workbench. Both fire before
  * `navigate(href)` takes the SPA deep link.
  */
-export function OriginBadge({ conversation, projectId }: OriginBadgeProps) {
+export function OriginBadge({ conversation }: OriginBadgeProps) {
   const navigate = useNavigate();
   const link = conversation.run_link;
   if (conversation.origin === "run" && link) {
-    const href = conversationRunHref(projectId, link);
+    const href = conversationRunHref(link);
     return (
       <span
         role="link"
@@ -239,14 +241,14 @@ export default function Conversations({ project }: ConversationsProps) {
               {conversations.data.items.map((conversation) => (
                 <li key={conversation.id}>
                   <Row
-                    to={`/projects/${project.id}/conversations/${conversation.id}`}
+                    to={routes.thread(conversation.id)}
                     data-testid={`conversation-row-${titleSlug(conversation.title, conversation.id)}`}
                   >
                     <StatusChip
                       state={stateOf(CONVERSATION_STATE[conversation.status])}
                       label={conversation.status}
                     />
-                    <OriginBadge conversation={conversation} projectId={project.id} />
+                    <OriginBadge conversation={conversation} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12.5px] font-semibold">
                         {conversation.title}

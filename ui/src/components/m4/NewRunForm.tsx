@@ -32,6 +32,7 @@ import { formatAge } from "../../lib/format";
 import { Button } from "../ds/Button";
 import { Field, Input, Select, Textarea } from "../ds/Field";
 import { ProblemBanner, Spinner } from "../Feedback";
+import { routes } from "../../lib/routes";
 
 /** Value types a run input can carry on the wire. */
 export type InputValue = string | number | boolean;
@@ -377,7 +378,7 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
       {
         onSuccess: (run) => {
           onCreated?.(run.run_id);
-          navigate(`/projects/${projectId}/runs/${run.run_id}`);
+          navigate(routes.run(run.run_id));
         },
         onError: () => {
           // The key is unchanged: the retry re-answers with the same run (or

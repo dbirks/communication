@@ -32,7 +32,7 @@ import { shortId } from "../api/names";
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
 const projectPath = `/api/v1/projects/${projectFixture.id}`;
 const conversationPath = `/api/v1/conversations/${conversationId}`;
-const path = `/projects/${projectFixture.id}/conversations/${conversationId}`;
+const path = `/p/${projectFixture.id}/conversations/${conversationId}`;
 
 function routes(conversation: Conversation, extra: RouteStub[] = []): RouteStub[] {
   // `extra` first so a stub there can shadow the defaults below.
@@ -61,7 +61,17 @@ const staleControlConflict = {
   },
 };
 
-describe("/projects/:projectId/conversations/:conversationId", () => {
+describe("/p/:projectId/conversations/:conversationId", () => {
+  it("keeps the legacy /projects/:id/conversations/:id address alive as a redirect", async () => {
+    // The pre-move address still renders the same surface: App.tsx turns it
+    // into a replace-navigate to the canonical /p/:id/conversations/:id.
+    renderApp({
+      path: `/projects/${projectFixture.id}/conversations/${conversationId}`,
+      routes: routes(conversationFixture),
+    });
+    await screen.findByTestId("conversation-title");
+  });
+
   it("renders the transcript and merges streamed agent chunks into one message", async () => {
     renderApp({ path, routes: routes(conversationFixture) });
     await screen.findByTestId("conversation-title");
@@ -583,13 +593,13 @@ const RUN_ID = "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c";
 const NODE_EXECUTION_ID = "01987b12-3c6c-7f5d-9a31-4e5f6a7b8c9d";
 const ATTEMPT_ID = "01987b13-4d7d-7a6e-8b42-5f6a7b8c9d0e";
 
-describe("the conversation page is a transcript column with a context rail", () => {
-  it("puts the workspace, the sandbox and the controller line in the rail", async () => {
+describe("the thread page is a transcript column with a context rail", () => {
+  it("puts the workspace and the sandbox in the rail, and the control line in the header", async () => {
     renderApp({ path, routes: routes(conversationFixture) });
     await screen.findByTestId("conversation-title");
 
     const main = await screen.findByTestId("conversation-main");
-    const rail = screen.getByRole("complementary", { name: "Conversation context" });
+    const rail = screen.getByRole("complementary", { name: "Thread context" });
     act(() => {
       FakeEventSource.last().emit(
         conversationEvent("conversation.message.user", {
@@ -605,9 +615,23 @@ describe("the conversation page is a transcript column with a context rail", () 
     expect(within(main).getByTestId("composer-input")).toBeTruthy();
     expect(within(rail).getByTestId("workspace-widget")).toBeTruthy();
     expect(within(rail).getByTestId("sandbox-verdict")).toBeTruthy();
-    expect(within(rail).getByTestId("controller-badge")).toBeTruthy();
-    expect(within(rail).queryByTestId("take-control")).toBeNull(); // you already hold control
-    expect(within(rail).getByTestId("return-control")).toBeTruthy();
+    // 4f: the controller pill and the control acts sit with the title.
+    expect(within(main).getByTestId("controller-badge")).toBeTruthy();
+    expect(within(main).queryByTestId("take-control")).toBeNull(); // you already hold control
+    expect(within(main).getByTestId("return-control")).toBeTruthy();
+    expect(within(rail).queryByTestId("controller-badge")).toBeNull();
+    // 4f: the meta line reads `thread · <project> · <profile> · <age>`.
+    const meta = screen.getByTestId("conversation-meta");
+    expect(meta.textContent).toContain("thread");
+    expect(meta.textContent).toContain(projectFixture.name);
+    expect(meta.textContent).toContain(claudeProfile.name);
+    expect(screen.getByTestId("thread-age").textContent).toMatch(/\d+[smhd]/);
+    // 4f: ARTIFACTS says not available yet, and NEXT offers only the
+    // (still disabled) hand-to-workflow stub.
+    expect(within(rail).getByTestId("artifacts-rail").textContent).toContain("Not available yet");
+    const handoff = within(rail).getByTestId("hand-to-workflow");
+    expect((handoff as HTMLButtonElement).disabled).toBe(true);
+    expect(within(rail).queryByText(/draft PR/i)).toBeNull();
   });
 
   it("names the run the transcript belongs to from the ids the journal carried", async () => {
@@ -630,7 +654,7 @@ describe("the conversation page is a transcript column with a context rail", () 
     });
 
     const link = await screen.findByTestId("part-of-run-link");
-    expect(link.getAttribute("href")).toBe(`/projects/${projectFixture.id}/runs/${RUN_ID}`);
+    expect(link.getAttribute("href")).toBe(`/runs/${RUN_ID}`);
     expect(screen.getByTestId("part-of-node").textContent).toContain("node execution");
     expect(screen.getByTestId("controller-badge").textContent).toContain("pipeline run");
   });
@@ -726,10 +750,8 @@ describe("the PART OF panel says which run this transcript belongs to", () => {
     expect(node.textContent).toContain(`attempt ${shortId(ATTEMPT_ID)}`);
     // And the attempt is not a bare hex: it names the run it lives inside.
     const attempt = screen.getByTestId("part-of-attempt-link");
-    expect(attempt.getAttribute("href")).toBe(`/projects/${projectFixture.id}/runs/${RUN_ID}`);
-    expect(screen.getByTestId("part-of-run-link").getAttribute("href")).toBe(
-      `/projects/${projectFixture.id}/runs/${RUN_ID}`,
-    );
+    expect(attempt.getAttribute("href")).toBe(`/runs/${RUN_ID}`);
+    expect(screen.getByTestId("part-of-run-link").getAttribute("href")).toBe(`/runs/${RUN_ID}`);
   });
 
   it("says no verdict was recorded instead of asserting the run was unsandboxed", async () => {
@@ -815,7 +837,7 @@ describe("the page says where the conversation was opened", () => {
     renderApp({ path, routes: routes(runLinked) });
     const link = await screen.findByTestId("part-of-run-link");
     expect(link.getAttribute("href")).toBe(
-      `/projects/${projectFixture.id}/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
+      `/runs/${RUN_ID}?node=review&instance=${NODE_EXECUTION_ID}&attempt=2`,
     );
     expect(link.textContent).toContain("Ship the billing refactor");
     expect(screen.getByTestId("part-of-node").textContent).toContain("node review");
@@ -841,7 +863,7 @@ describe("the page says where the conversation was opened", () => {
     const link = await screen.findByTestId("part-of-run-link");
     // No definition node id was stored, so the workbench link omits `node`.
     expect(link.getAttribute("href")).toBe(
-      `/projects/${projectFixture.id}/runs/${RUN_ID}?instance=${NODE_EXECUTION_ID}&attempt=1`,
+      `/runs/${RUN_ID}?instance=${NODE_EXECUTION_ID}&attempt=1`,
     );
     expect(link.textContent).toContain(shortId(RUN_ID));
     expect(screen.getByTestId("part-of-node").textContent).toContain("node scan");
@@ -851,7 +873,7 @@ describe("the page says where the conversation was opened", () => {
     renderApp({ path, routes: routes(conversationFixture) });
     await screen.findByTestId("conversation-title");
     expect(await screen.findByTestId("conversation-manual-label")).toBeTruthy();
-    expect(screen.getByTestId("conversation-manual-label").textContent).toBe("Manual conversation");
+    expect(screen.getByTestId("conversation-manual-label").textContent).toBe("One-off thread");
     act(() => {
       FakeEventSource.last().emit(
         conversationEvent(

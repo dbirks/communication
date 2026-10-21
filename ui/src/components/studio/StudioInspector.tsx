@@ -24,7 +24,16 @@ import {
   type OpResult,
 } from "../../lib/pipeline/graphDoc";
 import { DEFERRED_KINDS } from "../../lib/pipeline/definition";
-import { useAgentProfiles } from "../../api/queries";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiFetch, ApiError } from "../../api/client";
+import { useAgentProfiles, useSystemSandbox } from "../../api/queries";
+import { nodeTemplateKeys, type NodeTemplate } from "../../api/nodeTemplates";
+import type { components } from "../../api/schema";
+
+type NodeTemplateCreateBody = components["schemas"]["NodeTemplateCreate"];
+import { useLaunchers } from "../../api/launchers";
+import { sandboxChip } from "../../lib/profiles";
+import { NewProfileDialog } from "../profiles/NewProfileDialog";
 import {
   CEL_HINT,
   fieldsFor,
@@ -47,6 +56,7 @@ import {
   TextareaField,
 } from "./fields";
 import { Field, Input } from "../ds/Field";
+import { routes } from "../../lib/routes";
 import { KindChip } from "../m4/KindChip";
 
 const DEFERRED: Record<string, string | undefined> = DEFERRED_KINDS as Record<
@@ -153,20 +163,100 @@ function PipelinePanel({
   );
 }
 
-/** The agent profile as a select over the org's launch descriptors. */
+/** The select value that means "open New profile…" — never written to the draft. */
+const NEW_PROFILE_VALUE = "__new_profile__";
+
+/** The `name`/`launcher_id` the chip needs; org profile rows satisfy this. */
+interface AgentProfileLike {
+  id: string;
+  name: string;
+  launcher_id: string;
+  apm_package_ref?: string | null;
+}
+
+/**
+ * The 4b SUGGESTED default (shots/4b): the `config.profile` of the nearest
+ * upstream `agent.acp` node — BFS over `dependsOn`, staying in the node's
+ * own scope (edges only cross scopes through the scope itself). Null when
+ * no upstream agent step carries a profile yet.
+ */
+function suggestedUpstreamProfile(
+  model: GraphModel,
+  doc: Record<string, unknown>,
+  nodeId: string,
+): { nodeId: string; profile: string } | null {
+  const me = findNode(model, nodeId);
+  if (me === undefined) return null;
+  const seen = new Set<string>([nodeId]);
+  const queue = [...me.dependsOn];
+  while (queue.length > 0) {
+    const depId = queue.shift() as string;
+    if (seen.has(depId)) continue;
+    seen.add(depId);
+    const dep = findNode(model, depId);
+    if (dep === undefined || dep.scope.length !== me.scope.length) continue;
+    if (dep.kind === "agent.acp") {
+      const nodeObj = nodeObjectOf(doc, dep.pointer);
+      const profile = nodeObj === null ? undefined : getAt(nodeObj, ["config", "profile"]);
+      if (profile !== undefined && profile !== null && String(profile) !== "") {
+        return { nodeId: dep.id, profile: String(profile) };
+      }
+    }
+    queue.push(...dep.dependsOn);
+  }
+  return null;
+}
+
+/** The agent profile as a select over the org's launch descriptors.
+ *
+ * 4b: every option shows the sandbox chip (glyph + words, never colour
+ * alone) for the profile's launcher; a NEW agent node (no `config.profile`
+ * yet) defaults to the nearest upstream agent node's profile, marked
+ * SUGGESTED; the last option `+ New profile…` opens the NewProfileDialog
+ * with `forStep` = this node's id — choosing it never mutates the draft,
+ * only the created callback writes `config.profile`.
+ */
 function ProfileSelect({
   readOnly,
   value,
   onCommit,
+  model,
+  nodeId,
+  doc,
 }: {
   readOnly: boolean;
   value: unknown;
   onCommit: (value: string) => void;
+  model: GraphModel;
+  nodeId: string;
+  doc: Record<string, unknown>;
 }) {
   const { data } = useAgentProfiles();
-  const profiles = data?.items ?? [];
+  const { data: sandbox } = useSystemSandbox();
+  const { data: launcherList } = useLaunchers();
+  const [creating, setCreating] = useState(false);
+  const profiles: AgentProfileLike[] = (data?.items ?? []) as AgentProfileLike[];
   const current = value === undefined || value === null ? "" : String(value);
-  const known = profiles.map((p) => p.name);
+  const known = new Set(profiles.map((p) => p.name));
+  const launchers = launcherList?.launchers ?? null;
+  const suggested = current === "" ? suggestedUpstreamProfile(model, doc, nodeId) : null;
+  const shown = current !== "" ? current : (suggested?.profile ?? "");
+
+  const optionLabel = (p: AgentProfileLike): string => {
+    const chip = sandboxChip({
+      launcherId: p.launcher_id,
+      launchers,
+      sandbox,
+    });
+    const base =
+      `${p.name} · ${p.launcher_id}` +
+      (p.apm_package_ref ? ` · ${p.apm_package_ref}` : "") +
+      ` ${chip.glyph} ${chip.text}`;
+    if (suggested !== null && suggested.profile === p.name)
+      return `SUGGESTED · same as ${suggested.nodeId} — ${base}`;
+    return base;
+  };
+
   return (
     <Field
       id="agent-profile"
@@ -175,7 +265,7 @@ function ProfileSelect({
         <span className="block">
           Profile settings apply to every step that uses this profile; fields below override only
           this step.{" "}
-          <Link to="/agents" className="underline" data-testid="insp-profile-edit">
+          <Link to={routes.profiles()} className="underline" data-testid="insp-profile-edit">
             Edit profile ↗
           </Link>
         </span>
@@ -185,25 +275,143 @@ function ProfileSelect({
         id="agent-profile"
         className="w-full rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[12.5px] text-ink focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
         disabled={readOnly}
-        value={current}
+        value={shown}
         data-testid="insp-profile"
-        onChange={(e) => onCommit(e.target.value)}
+        onChange={(e) => {
+          if (e.target.value === NEW_PROFILE_VALUE) {
+            setCreating(true);
+            return; // the draft is not touched until a profile is actually created
+          }
+          onCommit(e.target.value);
+        }}
       >
         {profiles.length === 0 ? (
-          <option value="">{current !== "" ? current : "no profiles yet"}</option>
+          <option value="">{shown !== "" ? shown : "no profiles yet"}</option>
         ) : (
           profiles.map((p) => (
             <option key={p.id} value={p.name}>
-              {p.name} · {p.launcher_id}
-              {p.apm_package_ref ? ` · ${p.apm_package_ref}` : ""}
+              {optionLabel(p)}
             </option>
           ))
         )}
-        {current !== "" && !known.includes(current) ? (
-          <option value={current}>{current}</option>
-        ) : null}
+        {shown !== "" && !known.has(shown) ? <option value={shown}>{shown}</option> : null}
+        <option value={NEW_PROFILE_VALUE} data-testid="insp-profile-new">
+          + New profile…
+        </option>
       </select>
+      {suggested !== null && current === "" ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="insp-profile-suggested">
+          SUGGESTED · same as {suggested.nodeId}
+        </p>
+      ) : null}
+      {creating ? (
+        <NewProfileDialog
+          open={creating}
+          onClose={() => setCreating(false)}
+          forStep={nodeId}
+          onCreated={(profile: { id: string; name: string; launcher_id: string }) => {
+            setCreating(false);
+            if (!readOnly) onCommit(profile.name);
+          }}
+        />
+      ) : null}
     </Field>
+  );
+}
+
+/**
+ * The unchecked "Also save as a reusable step" + `Save as step` (4b).
+ * Checking the box arms the button; the button POSTs the node's kind +
+ * config as a node template (slug = node id, version 1.0.0) and shows
+ * either a link to `/steps/{id}` or the API error (a 403 for a caller
+ * without the library role stays an error, not a silent skip).
+ */
+function SaveAsStep({
+  nodeId,
+  kind,
+  config,
+  readOnly,
+}: {
+  nodeId: string;
+  kind: string;
+  config: unknown;
+  readOnly: boolean;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<NodeTemplate | null>(null);
+  const queryClient = useQueryClient();
+
+  const save = () => {
+    if (!armed || busy || readOnly) return;
+    setBusy(true);
+    setError(null);
+    const body: NodeTemplateCreateBody = {
+      slug: nodeId,
+      display_name: `${kindDisplayName(kind)} · ${nodeId}`,
+      kind,
+      parameters: {},
+      // The OpenAPI-generated `Record<string, never>` is the `object` shape;
+      // the node's config values are plain strings/maps, so a cast is the
+      // only honest fit here (the body is validated server-side).
+      config: (isObj(config) ? config : {}) as Record<string, never>,
+      version_label: "1.0.0",
+    };
+    void apiFetch<NodeTemplate>("/api/v1/node-templates", { method: "POST", json: body })
+      .then((template) => {
+        setCreated(template);
+        void queryClient.invalidateQueries({ queryKey: nodeTemplateKeys.list });
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof ApiError ? `${e.status} ${e.message}` : String(e)),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="space-y-[6px]" data-testid="insp-save-step">
+      <label className="flex items-center gap-[6px] font-mono text-[12.5px] text-ink">
+        <input
+          type="checkbox"
+          className="accent-ink"
+          disabled={readOnly}
+          checked={armed}
+          data-testid="insp-save-step-toggle"
+          onChange={(e) => setArmed(e.target.checked)}
+        />
+        Also save as a reusable step
+      </label>
+      <button
+        type="button"
+        className="rounded-[3px] border border-line-strong bg-paper px-[10px] py-1 font-mono text-[12px] text-ink hover:border-ink disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]"
+        disabled={!armed || busy || readOnly}
+        onClick={save}
+        data-testid="insp-save-step-button"
+      >
+        {busy ? "Saving…" : "Save as step"}
+      </button>
+      {created !== null ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="insp-save-step-done">
+          Saved as step “{created.slug}” v1.0.0. "
+          <Link
+            to={routes.step(created.id)}
+            className="underline"
+            data-testid="insp-save-step-link"
+          >
+            View the step ↗
+          </Link>
+        </p>
+      ) : null}
+      {error !== null ? (
+        <p
+          className="font-mono text-[11px] text-st-failed-tag-fg"
+          data-testid="insp-save-step-error"
+        >
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -535,17 +743,33 @@ export function StudioInspector({
                     readOnly={readOnly}
                     value={getAt(nodeObj, ["config", "profile"])}
                     onCommit={(v) => commit(field, v)}
+                    model={model}
+                    nodeId={nodeId}
+                    doc={doc}
                   />
                   <p className="font-mono text-[11px] text-faint">
                     Model is chosen by the profile's launcher.
                   </p>
+                  <SaveAsStep
+                    key={`save-step-${nodeId}`}
+                    nodeId={nodeId}
+                    kind={kind}
+                    config={getAt(nodeObj, ["config"])}
+                    readOnly={readOnly}
+                  />
                 </div>
               );
             }
+            // 4b: the agent prompt field reads as "What should it do?"
+            // (label only — the field, its widget and its op are unchanged).
+            const shown =
+              kind === "agent.acp" && field.path[0] === "config" && field.path[1] === "prompt"
+                ? { ...field, label: "What should it do?" }
+                : field;
             return (
               <FieldControl
                 key={fid}
-                field={field}
+                field={shown}
                 id={fid}
                 nodeObj={nodeObj}
                 model={model}

@@ -71,25 +71,28 @@ type Run struct {
 	PipelineID         string
 	PipelineRevisionID string
 	AssignmentID       string
-	RevisionDigest     string
-	PlanDigest         string
-	PlanSnapshot       json.RawMessage
-	PoliciesSnapshot   json.RawMessage
-	RepoSnapshot       json.RawMessage
-	Status             string
-	FailedCause        string
-	PausedReason       string
-	CancelRequestedAt  *time.Time
-	Depth              int
-	ParentRunID        string
-	TriggeredBy        string
-	WorkerAffinity     string
-	WorkerVolumeID     string
-	Priority           int
-	ExpressionEvals    int
-	CreatedAt          time.Time
-	StartedAt          *time.Time
-	FinishedAt         *time.Time
+	// SourceConversationID (ADR-0053) is the thread the run was started
+	// from; empty string is NULL (an ordinary run).
+	SourceConversationID string
+	RevisionDigest       string
+	PlanDigest           string
+	PlanSnapshot         json.RawMessage
+	PoliciesSnapshot     json.RawMessage
+	RepoSnapshot         json.RawMessage
+	Status               string
+	FailedCause          string
+	PausedReason         string
+	CancelRequestedAt    *time.Time
+	Depth                int
+	ParentRunID          string
+	TriggeredBy          string
+	WorkerAffinity       string
+	WorkerVolumeID       string
+	Priority             int
+	ExpressionEvals      int
+	CreatedAt            time.Time
+	StartedAt            *time.Time
+	FinishedAt           *time.Time
 }
 
 // NodeExecution is one runtime occurrence of a node in a run, identified by
@@ -168,7 +171,8 @@ func (s *RunStore) leaseTTL() time.Duration {
 // ------------------------------------------------------------------- runs
 
 const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revision_id,
-	COALESCE(assignment_id::text, ''), revision_digest, plan_digest, plan_snapshot, policies_snapshot,
+	COALESCE(assignment_id::text, ''), COALESCE(source_conversation_id::text, ''),
+	revision_digest, plan_digest, plan_snapshot, policies_snapshot,
 	repo_snapshot, status, failed_cause, paused_reason, cancel_requested_at, depth,
 	COALESCE(parent_run_id::text, ''), COALESCE(triggered_by::text, ''),
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
@@ -184,7 +188,7 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		started, finished *time.Time
 	)
 	err := row.Scan(&r.ID, &r.OrganizationID, &r.ProjectID, &r.PipelineID, &r.PipelineRevisionID,
-		&r.AssignmentID, &r.RevisionDigest, &r.PlanDigest, &plan, &polic, &repo,
+		&r.AssignmentID, &r.SourceConversationID, &r.RevisionDigest, &r.PlanDigest, &plan, &polic, &repo,
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
 		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished)
@@ -209,18 +213,25 @@ type NewRun struct {
 	PipelineID         string
 	PipelineRevisionID string
 	AssignmentID       string // "" ⇒ NULL (direct revision start)
-	RevisionDigest     string
-	PlanDigest         string
-	PlanSnapshot       json.RawMessage
-	PoliciesSnapshot   json.RawMessage
-	RepoSnapshot       json.RawMessage // "" ⇒ []
-	Priority           int
-	Depth              int
-	ParentRunID        string
-	TriggeredBy        string // "" ⇒ NULL (child or system start)
+	// SourceConversationID (ADR-0053) names the thread this run was started
+	// from; "" ⇒ NULL.
+	SourceConversationID string
+	RevisionDigest       string
+	PlanDigest           string
+	PlanSnapshot         json.RawMessage
+	PoliciesSnapshot     json.RawMessage
+	RepoSnapshot         json.RawMessage // "" ⇒ []
+	Priority             int
+	Depth                int
+	ParentRunID          string
+	TriggeredBy          string // "" ⇒ NULL (child or system start)
 	// Inputs are validated against spec.inputs by the caller; the store
 	// writes one run_inputs row per entry.
 	Inputs map[string]RunInput
+	// ArtifactIDs (ADR-0053) are attached to the run by reference inside the
+	// create transaction (artifacts.run_id); "" rows and foreign rows were
+	// refused before the transaction.
+	ArtifactIDs []string
 	// Idempotency (12 case 1, ADR-0023 § 12): when Key is non-empty the
 	// create is guarded by run_idempotency_keys. Same key + same SHA returns
 	// the stored run (Created=false); same key, different SHA is
@@ -278,15 +289,17 @@ func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run R
 	if run, err = s.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
-			 revision_digest, plan_digest, plan_snapshot, policies_snapshot, repo_snapshot,
-			 depth, parent_run_id, triggered_by, priority)
+			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
+			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
-		        $6, $7, $8::jsonb, $9::jsonb, COALESCE(NULLIF($10, '')::jsonb, '[]'::jsonb),
-		        $11, NULLIF($12, '')::uuid, NULLIF($13, '')::uuid, $14)
+		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
+		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
+		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
-		in.RevisionDigest, in.PlanDigest, string(orEmptyJSON(in.PlanSnapshot)),
-		string(orEmptyJSON(in.PoliciesSnapshot)), string(in.RepoSnapshot),
+		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
+		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
+		string(in.RepoSnapshot),
 		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority)); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}

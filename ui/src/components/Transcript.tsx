@@ -12,8 +12,6 @@ import { Button } from "./ds/Button";
 import { StatusChip } from "./ds/Row";
 import { PERMISSION_STATE, STATES, TOOL_STATE, stateOf } from "./ds/states";
 
-const itemClass = "rounded-[3px] border border-line-strong bg-surface px-[10px] py-2 text-[12.5px]";
-
 /** A tool call's streamed preview, shown only when it says something. */
 function ToolPreview({
   label,
@@ -344,8 +342,8 @@ function PermissionCard({
 
         {open && !canDecide ? (
           <p className="mt-1 text-[12.5px] text-muted" data-testid="permission-readonly">
-            Only the controller{controllerName ? ` (${controllerName})` : ""} can answer this. Take
-            control to decide.
+            Open to decide. Only the controller
+            {controllerName ? ` (${controllerName})` : ""} can answer this — take control to decide.
           </p>
         ) : null}
 
@@ -399,7 +397,13 @@ export default function Transcript({
         switch (item.kind) {
           case "user":
             return (
-              <li key={item.id} data-testid="transcript-item" className={itemClass}>
+              // 4f: the user's own prompt reads as a bubble in the accent
+              // tint — the agent's prose stays plain text beside it.
+              <li
+                key={item.id}
+                data-testid="transcript-item"
+                className="rounded-[3px] border border-accent-edge bg-accent-tint px-[10px] py-2 text-[12.5px]"
+              >
                 <span className="font-semibold">{nameOf(item.authorUserId)}:</span>{" "}
                 <span className="whitespace-pre-wrap">{item.text}</span>
               </li>

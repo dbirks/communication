@@ -64,10 +64,12 @@ describe("NewConversationDialog (project page opener)", () => {
 
     expect(dialog.getAttribute("role")).toBe("dialog");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(screen.getByRole("heading", { name: "New conversation" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "New thread" })).not.toBeNull();
     // The one-line explainer under the title.
     expect(
-      screen.getByText("A one-off agent conversation in a project workspace — no workflow needed."),
+      screen.getByText(
+        "A one-off thread with an agent in a project workspace — no workflow needed.",
+      ),
     ).not.toBeNull();
 
     // Project fixed: the name renders, and there is no project select.

@@ -19,6 +19,7 @@ import { ApiError } from "../api/client";
 import { useArtifact } from "../api/queries";
 import { ArtifactDetail } from "../components/Artifacts";
 import { ProblemBanner, Spinner } from "../components/Feedback";
+import { routes } from "../lib/routes";
 
 /**
  * `created_by` is `worker` for anything a worker published, or a user id for an
@@ -73,12 +74,12 @@ export default function ArtifactPage() {
         Artifact {data.name}
       </h1>
       <p className="font-mono text-[11px] text-muted">
-        <Link to={`/projects/${data.project_id}`} className="text-accent-text hover:text-ink">
+        <Link to={routes.project(data.project_id)} className="text-accent-text hover:text-ink">
           Project
         </Link>
         <span aria-hidden="true"> / </span>
         <Link
-          to={`/projects/${data.project_id}/artifacts`}
+          to={routes.projectTab(data.project_id, "artifacts")}
           className="text-accent-text hover:text-ink"
         >
           Artifacts

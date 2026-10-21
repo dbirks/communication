@@ -199,6 +199,16 @@ type CnvRunLink struct {
 	AttemptNumber   int
 }
 
+// CnvLinkedRun (ADR-0053) is one run this conversation was handed to:
+// runs.source_conversation_id, the forward link complementing run_link's
+// reverse direction (a run-linked conversation's RunLink says which run
+// opened it; LinkedRuns says which runs a manual thread started). CreatedAt
+// is the run's creation — the handoff moment.
+type CnvLinkedRun struct {
+	RunID     string
+	CreatedAt time.Time
+}
+
 // CnvConversation is a conversation with its control row, live binding, active
 // turn and pending prompts. MyRole is the *caller's* project role, kept so the
 // store can be the second authorization gate rather than the only one.
@@ -224,6 +234,9 @@ type CnvConversation struct {
 	// conversation; RunLink names that attempt's node for deep-linking.
 	Origin  string
 	RunLink *CnvRunLink
+	// LinkedRuns (ADR-0053): the runs this conversation started
+	// (runs.source_conversation_id), creation order; nil = none.
+	LinkedRuns []CnvLinkedRun
 }
 
 // CnvSummary is a list row: enough for a project timeline (who is driving, is
@@ -413,7 +426,36 @@ func cnvGetConversation(ctx context.Context, q prjQuerier, c Caller, conversatio
 	if err != nil {
 		return CnvConversation{}, err
 	}
+	linked, err := cnvLinkedRuns(ctx, q, cv.ID)
+	if err != nil {
+		return CnvConversation{}, err
+	}
+	cv.LinkedRuns = linked
 	return cv, nil
+}
+
+// cnvLinkedRuns (ADR-0053) reads the forward handoff links: the runs this
+// conversation started, creation order. The visibility predicate already ran
+// on the conversation row itself (cnvConversationSelect), so every run named
+// here is one the caller may also see — the link cannot out-see its thread.
+func cnvLinkedRuns(ctx context.Context, q prjQuerier, conversationID string) ([]CnvLinkedRun, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id::text, created_at FROM runs
+		WHERE source_conversation_id = $1::uuid
+		ORDER BY created_at, id`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: conversation linked runs: %w", err)
+	}
+	defer rows.Close()
+	out := []CnvLinkedRun{}
+	for rows.Next() {
+		var l CnvLinkedRun
+		if err := rows.Scan(&l.RunID, &l.CreatedAt); err != nil {
+			return nil, fmt.Errorf("postgres: scan conversation linked run: %w", err)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 // cnvRunLinkByConversationSQL is the single-conversation read of the list's
@@ -2220,6 +2262,10 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 	if pending == nil {
 		pending = []api.PermissionRequestView{}
 	}
+	linked := make([]api.ConversationLinkedRunView, 0, len(cv.LinkedRuns))
+	for _, l := range cv.LinkedRuns {
+		linked = append(linked, api.ConversationLinkedRunView{RunID: l.RunID, CreatedAt: l.CreatedAt})
+	}
 	return api.ConversationView{
 		ID:               cv.ID,
 		ProjectID:        cv.ProjectID,
@@ -2241,6 +2287,7 @@ func cnvAPIConversation(cv CnvConversation) api.ConversationView {
 		PendingPermissions: pending,
 		Origin:             cv.Origin,
 		RunLink:            cnvAPIRunLink(cv.RunLink),
+		LinkedRuns:         linked,
 	}
 }
 

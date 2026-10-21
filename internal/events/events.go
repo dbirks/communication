@@ -1280,6 +1280,7 @@ const (
 	TypePipelineCreated            = "pipeline.created"
 	TypePipelineDraftUpdated       = "pipeline.draft.updated"
 	TypePipelineDraftValidated     = "pipeline.draft.validated"
+	TypePipelineDraftCreated       = "pipeline.draft.create"
 	TypePipelineRevisionPublished  = "pipeline.revision.published"
 	TypePipelineRevisionDeprecated = "pipeline.revision.deprecated"
 
@@ -1324,6 +1325,10 @@ type RunCreatedPayload struct {
 	ParentRunID    string   `json:"parent_run_id,omitempty"`
 	InputNames     []string `json:"input_names"`
 	Priority       int      `json:"priority"`
+	// SourceConversationID (ADR-0053) names the thread the run was started
+	// from; omitted for ordinary runs so pre-ADR-0053 envelopes are
+	// byte-identical to the new ones.
+	SourceConversationID string `json:"source_conversation_id,omitempty"`
 }
 
 // RunStartedPayload is run.started (§ 3 row 2). The repo snapshot names
@@ -1773,6 +1778,20 @@ type NodeTemplateRevisionPublishedPayload struct {
 	RevisionNumber int    `json:"revision_number"`
 	VersionLabel   string `json:"version_label"`
 	RevisionDigest string `json:"revision_digest"`
+}
+
+// PipelineDraftCreatedPayload is ADR-0049 § 5: the adopt-via-draft flow's
+// journal row — one per adopted pipeline draft, written in the same
+// transaction as the revision row it adopts from. Reason is "template_adopt"
+// (a hand-authored draft has no such row; this journal row carries the
+// reason). ProjectID is empty — a pipeline definition is org-scoped.
+type PipelineDraftCreatedPayload struct {
+	ProjectID    string `json:"project_id"`
+	PipelineID   string `json:"pipeline_id"`
+	DraftID      string `json:"draft_id"`
+	Reason       string `json:"reason,omitempty"`
+	TemplateID   string `json:"template_id,omitempty"`
+	VersionLabel string `json:"version_label,omitempty"`
 }
 
 // NodeTemplateDuplicatedPayload is ADR-0049 § 7's node_template.duplicate:

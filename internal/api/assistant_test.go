@@ -323,7 +323,7 @@ func TestAssistantAskAnswersWithReadTools(t *testing.T) {
 	if len(out.ToolCalls) != 1 || out.ToolCalls[0].Name != "project.list" || !out.ToolCalls[0].OK {
 		t.Fatalf("tool_calls = %+v", out.ToolCalls)
 	}
-	if len(out.Links) != 1 || out.Links[0].Href != "/projects/01JPROJECTA" {
+	if len(out.Links) != 1 || out.Links[0].Href != "/p/01JPROJECTA" {
 		t.Fatalf("links = %+v — a tool-produced app route is the only allowed link", out.Links)
 	}
 	// The tool ran as the session's caller, not as a service identity.

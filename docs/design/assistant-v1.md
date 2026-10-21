@@ -12,7 +12,7 @@ route so "why did this run fail?" means the run on screen):
 
 ```json
 { "question": "which of my projects have runs waiting on an approval?",
-  "context": { "route": "/projects/01J…/runs/01K…", "project_id": "01J…",
+  "context": { "route": "/runs/01K…", "project_id": "01J…",
                "palette_index": [{ "label": "Inbox", "secondary": "page · attention", "to": "/inbox" }] } }
 ```
 
@@ -20,13 +20,17 @@ Response `200` (`links` are what the UI renders as buttons; `tool_calls` is tran
 
 ```json
 { "answer_markdown": "Project A has 2 runs waiting…",
-  "links": [{ "label": "Open Project A approvals", "href": "/projects/01J…/approvals" }],
+  "links": [{ "label": "Gate on run 01K…", "href": "/runs/01K…" }],
   "tool_calls": [{ "name": "approval.pending", "args": { "project_id": "01J…" }, "ok": true }],
   "assistant_turn_id": "01K…", "degraded": null }
 ```
 
-Rules: `href` must be same-origin and match a route allowlist (`/`, `/inbox`, `/library…`,
-`/projects/{id}…`, `/agents`, `/ops`) or the server drops the link and records the drop; markdown is
+Rules: `href` must be same-origin and match a route allowlist — the canonical shell routes (`/`, `/inbox`,
+`/board`, `/threads[/{id}]`, `/projects`, `/p/{projectId}[/{tab|conversations|conversations/{id}}]`,
+`/workflows[/{pipelineId}[/{draftId}]]`, `/steps[/{id}]`, `/profiles[/{id}]`, `/runs/{runId}`,
+`/settings[/{tab}]`, `/ops`, `/artifacts/{id}`) plus the legacy redirect routes still served by the UI
+(`/library…`, `/agents[/{id}]`, `/projects/{projectId}…`) — or the server drops the link and records the drop;
+markdown is
 sanitized client-side (ADR-0020's viewer rules, never the app's origin). A denied/unauthorized tool call is
 `ok: false` with a stable `reason` code and **no** project name — the 404 rule of
 `internal/api/conversations.go:31-36` applies to the answer text too. Model unreachable or cap-hit ⇒
@@ -76,5 +80,5 @@ persists past the panel unmounting.
 - **Integration** (real PostgreSQL): the six tools against seeded fixtures return byte-identical payloads to
   their HTTP routes, which is the "one control source" rule from `08-assistant.md:42`.
 - **UI**: Playwright leg — type a question, Enter on the Ask row, assert the collapsed tool list, click a
-  link, land on `/projects/:id/runs/:runId`; and a leg where the fake server 500s and the jump list survives.
+  link, land on `/runs/:runId`; and a leg where the fake server 500s and the jump list survives.
 - Out of scope for v1: streaming/SSE, transcript persistence, phrase buttons, diffs, approvals, analytics.

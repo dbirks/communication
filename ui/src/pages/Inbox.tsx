@@ -32,6 +32,7 @@ import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { StatusChip } from "../components/ds/Row";
 import { CONVERSATION_STATE, RUN_STATE, stateOf } from "../components/ds/states";
+import { routes } from "../lib/routes";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { adoptApprovalConflict, approvalConflictOf, useDecideApproval } from "../api/approvals";
 import { problemOf } from "../api/client";
@@ -298,7 +299,7 @@ function StalledRow({
         </div>
         <span className="font-mono text-[10.5px] text-faint">{formatAge(run.created_at)}</span>
         <Link
-          to={`/projects/${project.id}/runs/${run.id}`}
+          to={routes.run(run.id)}
           className="ds-btn ds-btn--secondary inline-flex h-[26px] items-center rounded-[4px] px-[10px]"
           data-testid={`inbox-open-run-${testidOf(run.id)}`}
         >
@@ -375,8 +376,8 @@ function ConversationRow({ item }: { item: ConversationItem }) {
             {title}
           </p>
           <p className="font-mono text-[10.5px] text-muted">
-            <OriginBadge conversation={conversation} projectId={project.id} /> {project.name} ·
-            controller {controllerName(conversation)} · {conversation.status}
+            <OriginBadge conversation={conversation} /> {project.name} · controller{" "}
+            {controllerName(conversation)} · {conversation.status}
             {conversation.has_active_turn ? " · turn open" : ""}
           </p>
         </div>
@@ -384,7 +385,7 @@ function ConversationRow({ item }: { item: ConversationItem }) {
           {formatAge(conversation.updated_at)}
         </span>
         <Link
-          to={`/projects/${project.id}/conversations/${conversation.id}`}
+          to={routes.thread(conversation.id)}
           className="ds-btn ds-btn--secondary inline-flex h-[26px] items-center rounded-[4px] px-[10px]"
           data-testid={`inbox-open-conversation-${testidOf(conversation.id)}`}
         >
@@ -432,7 +433,7 @@ function RunningStrip({
           <span aria-hidden="true" className="text-muted">
             {initialsOf(project.name)}
           </span>
-          <Link to={`/projects/${project.id}/runs/${run.id}`} className="text-accent-text">
+          <Link to={routes.run(run.id)} className="text-accent-text">
             {shortId(run.id)}
           </Link>
           <span>{slugs.get(run.pipeline_id) ?? "pipeline"}</span>

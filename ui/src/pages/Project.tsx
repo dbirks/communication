@@ -40,6 +40,7 @@ import { Panel } from "../components/ds/Panel";
 import { Row, StatusChip } from "../components/ds/Row";
 import { useAttentionForProject, attentionTitle, ATTENTION_TITLE_CLAMP } from "../lib/attention";
 import { formatAge, testidOf } from "../lib/format";
+import { routes } from "../lib/routes";
 import { RunStatusChip, elapsed, shortId } from "./ProjectRuns";
 
 const MEMBER_ROLES: readonly MemberRole[] = ["maintainer", "contributor", "viewer"];
@@ -109,7 +110,7 @@ function NeedsAttention({ project }: { project: Project }) {
             key={approval.id}
             data-testid={`project-attention-decision-${testidOf(approval.id)}`}
           >
-            <Row to={`/projects/${project.id}/runs/${approval.run_id}`}>
+            <Row to={routes.run(approval.run_id)}>
               <StatusChip
                 state="waiting"
                 label="approval"
@@ -135,7 +136,7 @@ function NeedsAttention({ project }: { project: Project }) {
         {attention.stalled.map(({ run }) => (
           <Row
             key={run.id}
-            to={`/projects/${project.id}/runs/${run.id}`}
+            to={routes.run(run.id)}
             data-testid={`project-attention-run-${testidOf(run.id)}`}
           >
             <RunStatusChip
@@ -182,7 +183,7 @@ function RecentRuns({ project }: { project: Project }) {
       headingLevel={2}
       meta={
         <Link
-          to={`/projects/${project.id}/runs`}
+          to={routes.projectTab(project.id, "runs")}
           className="font-mono text-[10.5px] normal-case"
           data-testid="recent-runs-all"
         >
@@ -201,11 +202,7 @@ function RecentRuns({ project }: { project: Project }) {
           </p>
         ) : null}
         {rows.map((run) => (
-          <Row
-            key={run.id}
-            to={`/projects/${project.id}/runs/${run.id}`}
-            data-testid={`recent-run-${testidOf(run.id)}`}
-          >
+          <Row key={run.id} to={routes.run(run.id)} data-testid={`recent-run-${testidOf(run.id)}`}>
             <RunStatusChip status={run.status} testid={`recent-run-status-${testidOf(run.id)}`} />
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
               #{shortId(run.id)} {slugs.get(run.pipeline_id) ?? run.pipeline_id}

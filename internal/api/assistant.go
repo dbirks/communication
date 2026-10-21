@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,6 +80,29 @@ type (
 	}
 )
 
+// BuildAssistantBroker builds the ADR-0034 broker over the deps' read
+// handles and egress config. A nil broker with a nil error is the
+// "feature absent on this deployment" answer, not a failure. The v1 ask
+// route and the ADR-0050 conversation routes share one broker so the whole
+// assistant surface has one egress configuration.
+func BuildAssistantBroker(deps AssistantDeps, logger *slog.Logger) (*assistant.Broker, error) {
+	if strings.TrimSpace(deps.Config.BaseURL) == "" {
+		return nil, nil
+	}
+	return assistant.New(assistant.Config{
+		BaseURL: deps.Config.BaseURL,
+		APIKey:  deps.Config.APIKey,
+		Model:   deps.Config.Model,
+		Logger:  logger,
+	}, assistantStore{
+		projects:  deps.Projects,
+		runs:      deps.Runs,
+		approvals: deps.Approvals,
+		pipelines: deps.Pipelines,
+		profiles:  deps.Profiles,
+	})
+}
+
 // RegisterAssistant mounts POST /api/v1/assistant/ask. With no base URL the
 // route still answers — with 503 assistant_not_configured — so the palette gets
 // a definite answer rather than a 404 that looks like a broken client, and the
@@ -86,28 +110,14 @@ type (
 // unset means the feature is absent).
 func RegisterAssistant(s *Server, deps AssistantDeps) {
 	h := &asstHandlers{srv: s}
-	store := assistantStore{
-		projects:  deps.Projects,
-		runs:      deps.Runs,
-		approvals: deps.Approvals,
-		pipelines: deps.Pipelines,
-		profiles:  deps.Profiles,
-	}
-	if strings.TrimSpace(deps.Config.BaseURL) != "" {
-		broker, err := assistant.New(assistant.Config{
-			BaseURL: deps.Config.BaseURL,
-			APIKey:  deps.Config.APIKey,
-			Model:   deps.Config.Model,
-			Logger:  s.logger,
-		}, store)
-		if err != nil {
-			// A configured-but-invalid endpoint is a deployment error the
-			// operator must see at startup; serve refuses on New, and a route
-			// built without a broker answers 503 like the unset case.
-			s.logger.Error("assistant: endpoint configured but unusable", "error", err.Error())
-		} else {
-			h.broker = broker
-		}
+	broker, err := BuildAssistantBroker(deps, s.logger)
+	if err != nil {
+		// A configured-but-invalid endpoint is a deployment error the
+		// operator must see at startup; serve refuses on New, and a route
+		// built without a broker answers 503 like the unset case.
+		s.logger.Error("assistant: endpoint configured but unusable", "error", err.Error())
+	} else {
+		h.broker = broker
 	}
 	// ADR-0044's proposals route reuses this deps member when it ALSO
 	// implements assistantDraftAccess (the concrete store adapter does:

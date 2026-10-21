@@ -118,6 +118,7 @@ func TestCodesAreThePublicContract(t *testing.T) {
 		"expression_budget_exceeded",
 		// policy / registry
 		"kind_not_implemented", "template_publish_deferred", "unresolved_node_template",
+		"template_ref_unresolved",
 		"secret_literal_detected", "invalid_secret_ref", "unknown_profile",
 		"unknown_repository", "unknown_node_template", "unsupported_session_mode",
 		"unsupported_policy", "child_depth_exceeded", "budget_below_minimum",
@@ -136,7 +137,8 @@ func TestCodesAreThePublicContract(t *testing.T) {
 		diag.CodeUndeclaredRoot, diag.CodeFunctionNotAllowed, diag.CodeNonBoolean,
 		diag.CodeUnknownField, diag.CodeTypeMismatch, diag.CodeUndeclaredOutput,
 		diag.CodeReservedNodeID, diag.CodeExpressionBudget, diag.CodeKindNotImplemented,
-		diag.CodeTemplatePublishDefer, diag.CodeUnresolvedTemplate, diag.CodeSecretLiteral,
+		diag.CodeTemplatePublishDefer, diag.CodeUnresolvedTemplate, diag.CodeTemplateRefUnresolved,
+		diag.CodeSecretLiteral,
 		diag.CodeInvalidSecretRef, diag.CodeUnknownProfile, diag.CodeUnknownRepository,
 		diag.CodeUnknownNodeTemplate, diag.CodeUnsupportedSessionMode, diag.CodeUnsupportedPolicy,
 		diag.CodeChildDepthExceeded, diag.CodeBudgetBelowMinimum, diag.CodeBudgetAboveCeiling,

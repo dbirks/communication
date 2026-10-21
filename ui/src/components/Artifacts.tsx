@@ -30,6 +30,7 @@ import { StatusChip } from "./ds/Row";
 import { ARTIFACT_STATE, SENSITIVITY_STATE, stateOf } from "./ds/states";
 import { Spinner } from "./Feedback";
 import { formatAge, formatBytes, formatTime, shortId } from "../lib/format";
+import { routes } from "../lib/routes";
 
 /** One artifact row (`⟨T:artifact-row-*⟩`). Metadata only; bytes are never here. */
 export function ArtifactRow({ artifact }: { artifact: Artifact }) {
@@ -324,7 +325,7 @@ export function ArtifactDetail({ artifact, createdByName, currentOrigin }: Artif
             )}
             {artifact.conversation_id ? (
               <Link
-                to={`/projects/${artifact.project_id}/conversations/${artifact.conversation_id}`}
+                to={routes.thread(artifact.conversation_id)}
                 className="font-mono text-[11px] text-accent-text hover:text-ink"
                 data-testid="artifact-conversation-link"
               >

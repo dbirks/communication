@@ -317,6 +317,11 @@
     },
     "config": {
      "type": "object"
+    },
+    "template": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9.-]{0,127}@\\d+\\.\\d+\\.\\d+$",
+     "description": "ADR-0049 § 2: slug@semver reference to a published node-template revision (e.g. security-reviewer@1.2.0). The node's kind must equal the revision's spec.implements; the node's config carries the parameter values, and the canonical document keeps the reference string as written."
     }
    },
    "allOf": [
@@ -326,6 +331,11 @@
        "kind": {
         "const": "agent.acp"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -345,6 +355,11 @@
        "kind": {
         "const": "process.exec"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -364,6 +379,11 @@
        "kind": {
         "const": "condition"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -383,6 +403,11 @@
        "kind": {
         "const": "human.approval"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -402,6 +427,11 @@
        "kind": {
         "const": "until"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -421,6 +451,11 @@
        "kind": {
         "const": "for_each"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -440,6 +475,11 @@
        "kind": {
         "const": "artifact.publish"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -459,6 +499,11 @@
        "kind": {
         "const": "model.chat"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -478,6 +523,11 @@
        "kind": {
         "const": "pipeline.invoke"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -500,6 +550,11 @@
          "join"
         ]
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -522,6 +577,11 @@
          "git.publish"
         ]
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -544,6 +604,11 @@
          "integration.action"
         ]
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -563,6 +628,11 @@
        "kind": {
         "const": "gate"
        }
+      },
+      "not": {
+       "required": [
+        "template"
+       ]
       }
      },
      "then": {
@@ -1349,7 +1419,7 @@
      }
     }
    },
-   "description": "A NodeTemplate document validates in M4 and cannot be published: the template registry is M5 (ADR-0024 § 2), and validate answers template_publish_deferred."
+   "description": "A NodeTemplate document validates (ADR-0049 § 2 lifted the ADR-0024 § 2 deferral); the registry API is the publish path, and a pipeline node references a revision as slug@semver."
   }
  }
 }

@@ -783,6 +783,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// ADR-0049 § 2: validate resolves node `template: slug@semver` references
+	// against the org's registry (fail-closed template_ref_unresolved).
+	definitionService.WithTemplates(d.Pool)
 	runStore := &postgres.RunStore{Pool: d.Pool}
 	m4Children := &postgres.M4Children{Runs: runStore}
 	m4Runtime := postgres.NewRuntimeStore(d.Pool, &runtime.Advancer{
@@ -814,6 +817,13 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		apiProjects)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
+	// ADR-0052's approval summarization pass and free-text interpretation:
+	// one bounded model turn each, over ADR-0034's broker, authorized exactly
+	// like the approval routes (a gate the caller cannot see is 404). Reuses
+	// the same egress triple as the assistant above — with it unset the routes
+	// answer 503 assistant_not_configured and the UI keeps the gate's own text.
+	api.RegisterApprovalSummary(handler, postgres.APIApprovalStore{R: m4Runtime},
+		api.AssistantConfig{BaseURL: d.Assistant.BaseURL, APIKey: d.Assistant.APIKey, Model: d.Assistant.Model})
 	// ADR-0047's cross-project reads: the app shell's Home/Board/Threads/
 	// Inbox list routes, scoped per membership in the store's SQL.
 	api.RegisterCrossProject(handler, postgres.APICrossProjectStore{Pool: d.Pool})
@@ -824,7 +834,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// are the very store reads mounted above, each issued with the CALLER's own
 	// identity — the assistant holds no handle it does not pass a Caller to, and
 	// the narrow read interfaces in api/assistant.go expose no write method.
-	api.RegisterAssistant(handler, api.AssistantDeps{
+	asstDeps := api.AssistantDeps{
 		Projects:  apiProjects,
 		Runs:      postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		Approvals: postgres.APIApprovalStore{R: m4Runtime},
@@ -835,6 +845,30 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			APIKey:  d.Assistant.APIKey,
 			Model:   d.Assistant.Model,
 		},
+	}
+	api.RegisterAssistant(handler, asstDeps)
+	// ADR-0050 part 1: the per-user persisted conversations, transcript
+	// and change log. The turn is the same ADR-0034 broker with the
+	// transcript folded into its question (one egress config, the ask
+	// route's refusal behaviour); the undo seam ships UndoNotWired until
+	// part 2 wires the draft-edit inverse.
+	asstBroker, asstErr := api.BuildAssistantBroker(asstDeps, d.API.Logger)
+	if asstErr != nil {
+		// RegisterAssistant already logged the deployment error; the
+		// conversation routes answer 503 assistant_not_configured like the
+		// ask route.
+		asstBroker = nil
+	}
+	var asstRunner assistant.TurnRunner
+	if asstBroker != nil {
+		asstRunner = assistant.NewBrokerTurnRunner(asstBroker)
+	}
+	api.RegisterAssistantConversations(handler, api.AssistantConversationDeps{
+		Store: &postgres.AssistantConversationStore{
+			Pool:   d.Pool,
+			Undoer: assistant.UndoNotWired{},
+		},
+		Runner: asstRunner,
 	})
 	api.RegisterSandbox(handler,
 		postgres.APITurnSandboxStore{Pool: d.Pool},

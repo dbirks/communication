@@ -25,6 +25,7 @@ import { useProject } from "../api/queries";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import type { RunSummary } from "../api/types";
 import type { RunStatus } from "../lib/pipeline/contract";
+import { routes } from "../lib/routes";
 
 const ACTIVE_STATES: readonly RunStatus[] = ["queued", "preparing", "running"];
 const WAITING_STATES: readonly RunStatus[] = ["waiting_human", "paused"];
@@ -185,7 +186,7 @@ export function RunsListColumn({ projectId, selectedRunId = null }: RunsListColu
             run={run}
             slug={slugs.get(run.pipeline_id) ?? run.pipeline_id}
             selected={run.id === selectedRunId}
-            to={`/projects/${projectId}/runs/${run.id}`}
+            to={routes.run(run.id)}
           />
         ))}
       </div>
@@ -313,7 +314,7 @@ export default function ProjectRuns() {
             : "Pick a run to open its definition, execution tree and timeline."}
         </p>
         <p className="mt-4 font-mono text-[11px] text-faint">
-          <Link className="underline" to={`/projects/${projectId}/pipelines`}>
+          <Link className="underline" to={routes.projectTab(projectId, "pipelines")}>
             Pipelines
           </Link>{" "}
           decide what a run of this project looks like.

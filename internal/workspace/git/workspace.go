@@ -88,6 +88,14 @@ type RepoSpec struct {
 	// DefaultBranch is the ref to base the run branch on; empty means the
 	// mirror's HEAD.
 	DefaultBranch string
+	// BaseCommit (ADR-0053) is the pinned starting base for the scope branch:
+	// a commit identity the run snapshotted at creation (runs.repo_snapshot)
+	// — normally the thread branch's recorded head. Non-empty, the scope
+	// branch is created from EXACTLY this commit and a mirror that does not
+	// contain it refuses the prepare (infra, never a guess); empty keeps
+	// today's default-branch startPoint. An already-existing run ref always
+	// resumes from itself, pin or not (ADR-0017 D1).
+	BaseCommit string
 }
 
 // PreparedRepo is the persisted half of one workspace repository: the four
@@ -415,11 +423,25 @@ func (m *Manager) ensureCheckout(ctx context.Context, mirror Mirror, scopeID str
 
 	base := existing
 	if !hasRunRef {
-		resolved, err := m.startPoint(ctx, mirror, spec)
-		if err != nil {
-			return err
+		if spec.BaseCommit != "" {
+			// ADR-0053's pinned base: the run snapshotted this commit identity
+			// at creation and it never moves. The mirror must contain it —
+			// thread refs are local mirror state (mirrorFetchRefspec never
+			// fetches them), so on another worker's fresh mirror the honest
+			// answer is a named refusal, never a silent fall-back to the
+			// default branch (that would move the pinned base).
+			if _, ok := m.refCommit(ctx, mirror, spec.BaseCommit); !ok {
+				return fmt.Errorf("workspace: pinned base commit %s for %s is not present in mirror %s (it came from a thread branch this worker does not own); the run refuses rather than move its base (ADR-0053)",
+					shortSHA(spec.BaseCommit), spec.Name, mirror.Path)
+			}
+			base = spec.BaseCommit
+		} else {
+			resolved, err := m.startPoint(ctx, mirror, spec)
+			if err != nil {
+				return err
+			}
+			base = resolved
 		}
-		base = resolved
 	}
 	if mode == "clone" {
 		if _, err := m.Git.Run(ctx, "", "clone", "--quiet", "--no-local", mirror.Path, checkout); err != nil {
@@ -472,6 +494,16 @@ func (m *Manager) refCommit(ctx context.Context, mirror Mirror, ref string) (str
 		return "", false
 	}
 	return commit, true
+}
+
+// shortSHA abbrevates a commit id for a refusal message: the full identity is
+// what the journal carries (PreparedRepo / the error), the short form is the
+// human half of "which commit".
+func shortSHA(sha string) string {
+	if len(sha) >= 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // startPoint resolves the commit a run bases on, in the order ADR-0017 D2

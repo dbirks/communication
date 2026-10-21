@@ -352,7 +352,7 @@ func TestAskRunsToolWithCallerAndReturnsLinks(t *testing.T) {
 	if len(answer.ToolCalls) != 1 || answer.ToolCalls[0].Name != "project.list" || !answer.ToolCalls[0].OK {
 		t.Fatalf("tool_calls = %+v", answer.ToolCalls)
 	}
-	want := []string{"/projects/01JPROJECTA", "/projects/01JPROJECTB"}
+	want := []string{"/p/01JPROJECTA", "/p/01JPROJECTB"}
 	if len(answer.Links) != 2 || answer.Links[0].Href != want[0] || answer.Links[1].Href != want[1] {
 		t.Fatalf("links = %+v, want %v", answer.Links, want)
 	}
@@ -574,10 +574,16 @@ func TestAskRefusesSecretShapedPromptBeforeSend(t *testing.T) {
 
 func TestAllowedHrefDropsLinksOutsideTheAppRoutes(t *testing.T) {
 	b := &Broker{}
-	good := []string{"/", "/login", "/inbox", "/library", "/library/01PIPELINE", "/agents", "/ops",
+	good := []string{"/", "/login", "/inbox", "/board", "/threads/01C", "/projects",
+		"/p/01P", "/p/01P/artifacts", "/p/01P/runs", "/p/01P/pipelines", "/p/01P/settings",
+		"/p/01P/conversations", "/p/01P/conversations/01C", "/p/01P/01R",
+		"/workflows", "/workflows/01PIPELINE", "/workflows/01PIPELINE/drafts/01D",
+		"/steps", "/steps/01S", "/profiles", "/profiles/01AG", "/runs/01R", "/settings",
+		"/settings/layout", "/ops", "/artifacts/01A",
+		"/library", "/library/01PIPELINE", "/library/01PIPELINE/drafts/01D", "/agents", "/agents/01AG",
 		"/projects/01P", "/projects/01P/artifacts", "/projects/01P/runs", "/projects/01P/runs/01R",
 		"/projects/01P/pipelines", "/projects/01P/settings",
-		"/projects/01P/conversations", "/projects/01P/conversations/01C", "/artifacts/01A"}
+		"/projects/01P/conversations", "/projects/01P/conversations/01C"}
 	for _, href := range good {
 		if _, ok := b.allowedHref(href); !ok {
 			t.Errorf("allowed route rejected: %q", href)
@@ -585,7 +591,7 @@ func TestAllowedHrefDropsLinksOutsideTheAppRoutes(t *testing.T) {
 	}
 	bad := []string{"", "https://evil.example/x", "//evil.example/x", "/x", "/schedules", "/api/v1/projects",
 		"/projects/01P/../01Q", "/projects/01P/runs/01R?next=evil", "/projects/01P#frag",
-		"/projects/01P/approvals", "/projects/01P/runs/01R/extra", "/projects", "/evil",
+		"/projects/01P/approvals", "/projects/01P/runs/01R/extra", "/evil",
 		"/projects/01P/settings/deep"}
 	for _, href := range bad {
 		if _, ok := b.allowedHref(href); ok {
@@ -634,7 +640,7 @@ func TestPaletteSearchReadsTheCallersOwnIndex(t *testing.T) {
 	if len(answer.ToolCalls) != 1 || !answer.ToolCalls[0].OK {
 		t.Fatalf("tool_calls = %+v", answer.ToolCalls)
 	}
-	if len(answer.Links) != 1 || answer.Links[0].Href != "/library/01PIPE" {
+	if len(answer.Links) != 1 || answer.Links[0].Href != "/workflows/01PIPE" {
 		t.Fatalf("links = %+v, want the one app route the hit justified", answer.Links)
 	}
 	envelope := ""

@@ -115,7 +115,7 @@ describe("/projects/:projectId", () => {
     // Named by the pipeline slug and the short id the wire serves — never an
     // invented run title.
     expect(row.textContent).toContain("feature-development");
-    expect(row.getAttribute("href")).toBe(`/projects/${projectId}/runs/${WIRE_RUN_ID}`);
+    expect(row.getAttribute("href")).toBe(`/runs/${WIRE_RUN_ID}`);
     expect(screen.queryByTestId("project-attention-empty")).toBeNull();
     // The same run is the newest one, so it is the recent list too.
     expect(screen.getByTestId(`recent-run-${testidOf(WIRE_RUN_ID)}`).textContent).toContain(

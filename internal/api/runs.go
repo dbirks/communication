@@ -64,6 +64,14 @@ var (
 	// comparison against the pinned revision's declared budgets happens in
 	// the store, next to the plan; the API renders the 400.
 	ErrBudgetOverridesRaise = errors.New("api: budget_overrides_may_only_lower")
+	// ErrRunSourceProjectMismatch (ADR-0053): the source conversation is
+	// visible but lives in another project than the URL claims — a 422
+	// refusal (the caller names two visible objects; the claim is false).
+	ErrRunSourceProjectMismatch = errors.New("api: the source conversation belongs to a different project")
+	// ErrRunSourceArtifactTaken (ADR-0053): the named artifact is already
+	// attached to another run — a 422 refusal; re-attach through that run,
+	// never a second attachment.
+	ErrRunSourceArtifactTaken = errors.New("api: the named artifact is already attached to another run")
 	// ErrNodeExecutionNotFound is route 31's 404: the retry body named a
 	// `node_instance_keys[]` entry that is not a node execution of the run.
 	// The client asked to act on a row that does not exist — a client error,
@@ -173,6 +181,23 @@ type RunRepoSnapshotView struct {
 	BaseCommit   string `json:"base_commit"`
 }
 
+// RunSourceBaseRepoView is one repository's honest base answer in the create
+// response (ADR-0053, artboard 5d's CARRIES OVER panel): whether the thread
+// branch carried commits and, when it did, the pinned commit. BaseCommit is
+// null in default_branch mode — there is no pinned identity to name.
+type RunSourceBaseRepoView struct {
+	RepositoryID string  `json:"repository_id"`
+	Mode         string  `json:"mode"` // thread_branch | default_branch
+	BaseCommit   *string `json:"base_commit"`
+	Reason       string  `json:"reason"`
+}
+
+// RunSourceBaseView is the create response's `base` member: one row per
+// repository of the project, in name order.
+type RunSourceBaseView struct {
+	Repositories []RunSourceBaseRepoView `json:"repositories"`
+}
+
 // RunView is the Run schema (RunSummary plus the pause/cancellation facts,
 // the placement view, the validated inputs and the expression counter).
 // MyRole travels for the mutation gates and is never serialized.
@@ -185,16 +210,44 @@ type RunView struct {
 	CancelRequestedAt     *time.Time            `json:"cancel_requested_at"`
 	Inputs                []RunInputValueView   `json:"inputs"`
 	RepoSnapshot          []RunRepoSnapshotView `json:"repo_snapshot"`
+	// SourceConversationID (ADR-0053) is the thread this run was started
+	// from; nil for an ordinary run. SourceBase is the create response's
+	// honest per-repository base answer — set by CreateRun only, never a
+	// stored field.
+	SourceConversationID *string            `json:"source_conversation_id"`
+	SourceBase           *RunSourceBaseView `json:"source_base,omitempty"`
 
 	MyRole string `json:"-"`
 }
 
 // RunCreateResponse is the 201 (and the idempotent 200): the run is queued
 // and pinned; every later fact arrives through GET /runs or its stream.
+// Base (ADR-0053) is present only when the request carried source:
+// per-repository answers to "does the thread branch carry anything?".
 type RunCreateResponse struct {
-	RunID  string `json:"run_id"`
-	Status string `json:"status"`
+	RunID  string             `json:"run_id"`
+	Status string             `json:"status"`
+	Base   *RunSourceBaseView `json:"base,omitempty"`
 }
+
+// RunSourceInput is the validated shape of RunCreate.source (ADR-0053):
+// the thread the run starts from, the optional handoff summary and the
+// artifact ids attached to the run by reference. Nil = an ordinary run.
+type RunSourceInput struct {
+	ConversationID string
+	Summary        string // "" ⇒ no handoff_summary input
+	ArtifactIDs    []string
+}
+
+const (
+	// RunBaseThreadBranch: the run bases on the thread branch's recorded
+	// head commit, pinned into repo_snapshot at creation.
+	RunBaseThreadBranch = "thread_branch"
+	// RunBaseDefaultBranch: the thread branch carried no recorded commits
+	// beyond its base for this repository; the run starts from the
+	// repository's default branch (today's startPoint).
+	RunBaseDefaultBranch = "default_branch"
+)
 
 // NodeExecutionView is the NodeExecution schema: one execution of one node
 // at one place in the run's tree of scopes, keyed by the text path
@@ -481,6 +534,8 @@ type RunCreateInput struct {
 	Key                string
 	RequestSHA         string
 	TriggeredBy        string
+	// Source (ADR-0053): the thread this run is handed from; nil = ordinary run.
+	Source *RunSourceInput
 }
 
 // RunRetryInput is the retry request; empty NodeInstanceKeys means "every
@@ -510,11 +565,18 @@ type AssignmentPatchInput struct {
 
 // --- request bodies ----------------------------------------------------------
 
+type rnRunSourceBody struct {
+	ConversationID string   `json:"conversation_id"`
+	Summary        *string  `json:"summary"`
+	ArtifactIDs    []string `json:"artifact_ids"`
+}
+
 type rnRunCreateBody struct {
 	AssignmentID       string                     `json:"assignment_id,omitempty"`
 	PipelineRevisionID string                     `json:"pipeline_revision_id,omitempty"`
 	Inputs             map[string]json.RawMessage `json:"inputs,omitempty"`
 	Idempotency        string                     `json:"idempotency,omitempty"`
+	Source             *rnRunSourceBody           `json:"source,omitempty"`
 }
 
 type rnRetryBody struct {
@@ -788,6 +850,24 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var source *RunSourceInput
+	if body.Source != nil {
+		if !validUUID(body.Source.ConversationID) {
+			rnInvalid(w, "source.conversation_id must be a uuid.")
+			return
+		}
+		for _, id := range body.Source.ArtifactIDs {
+			if !validUUID(id) {
+				rnInvalid(w, "source.artifact_ids entries must be uuids.")
+				return
+			}
+		}
+		source = &RunSourceInput{ConversationID: body.Source.ConversationID, ArtifactIDs: body.Source.ArtifactIDs}
+		if body.Source.Summary != nil {
+			source.Summary = *body.Source.Summary
+		}
+	}
+
 	run, created, err := h.store.CreateRun(r.Context(), c, RunCreateInput{
 		ProjectID:          projectID,
 		AssignmentID:       body.AssignmentID,
@@ -796,6 +876,7 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		Key:                key,
 		RequestSHA:         m4SHA256(raw),
 		TriggeredBy:        c.UserID,
+		Source:             source,
 	})
 	if err != nil {
 		h.fail(w, r, c, projectID, "run.create", err)
@@ -804,13 +885,13 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 	if created {
 		h.nudge(r.Context(), run.ID)
 		w.Header().Set("Location", "/api/v1/runs/"+run.ID)
-		WriteJSON(w, http.StatusCreated, RunCreateResponse{RunID: run.ID, Status: "queued"})
+		WriteJSON(w, http.StatusCreated, RunCreateResponse{RunID: run.ID, Status: "queued", Base: run.SourceBase})
 		return
 	}
 	// Idempotent replay: the stored run is the answer, 200 — a retried
 	// click is not a second run (12 case 1) and never re-triggers (the
 	// original create already did; the advancer would only shrug).
-	WriteJSON(w, http.StatusOK, RunCreateResponse{RunID: run.ID, Status: "queued"})
+	WriteJSON(w, http.StatusOK, RunCreateResponse{RunID: run.ID, Status: "queued", Base: run.SourceBase})
 }
 
 func (h *rnHandlers) getRun(w http.ResponseWriter, r *http.Request) {
@@ -1319,6 +1400,22 @@ func (h *rnHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 			key = named.NodeInstanceKey
 		}
 		m4WriteNodeExecutionNotFound(w, key)
+	case errors.Is(err, ErrConversationNotFound):
+		// ADR-0053: a source conversation the caller may not see answers the
+		// same 404 the conversation route gives — no existence is disclosed.
+		h.denied(w, r, c, resourceID, action, "no such conversation, or it is not visible to you")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such conversation.")
+	case errors.Is(err, ErrArtifactNotFound):
+		h.denied(w, r, c, resourceID, action, "no such artifact, or it is not visible to you")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such artifact.")
+	case errors.Is(err, ErrRunSourceProjectMismatch):
+		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, "source-project-mismatch",
+			"Source project mismatch",
+			"The source conversation belongs to a different project than the run's; start the run in the conversation's project.")
+	case errors.Is(err, ErrRunSourceArtifactTaken):
+		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, "source-artifact-taken",
+			"Artifact already attached",
+			"The named artifact is already attached to another run; it cannot ride two runs at once.")
 	case errors.Is(err, ErrAssignmentConflict):
 		m4WriteTypedProblem(w, http.StatusConflict, "assignment-already-exists",
 			"Assignment already exists",

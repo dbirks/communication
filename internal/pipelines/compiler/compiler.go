@@ -370,7 +370,33 @@ func (w *walk) node(s *scope, id string) {
 	// A composite's predicates are evaluated over the body's envelope, so they
 	// compile in the child scope; every other config field is the parent's.
 	cfg, _ := nv["config"].(map[string]canon.Value)
-	child := w.compositeChild(s, id, kind, cfg, at)
+	body := cfg // what the policy and composite checks read
+	var tmplRev TemplateRevision
+	hasTmplRef := false
+	// ADR-0049 § 2: a `template: slug@semver` member turns the node into a pin
+	// of the template revision's parameterized body. The canonical document
+	// keeps the reference string as written; only the plan gains the
+	// expansion (templateRefs + templateParams), so a template's content
+	// change cannot move this revision's digest (ADR-0021).
+	if ref, ok := nv["template"].(string); ok && ref != "" {
+		if compositeNodeKinds[kind] {
+			w.err(at.Child("template"), diag.CodeTemplateRefUnresolved,
+				"node %q references a template, but a %s body cannot be composed through parameters yet", id, kind)
+		} else if rev, found := w.resolveTemplateRef(id, ref, kind, cfg, at); found {
+			hasTmplRef = true
+			tmplRev = rev
+			body = rev.Config
+			pn.TemplateRefs = []TemplateRef{{
+				TemplateID:             rev.TemplateID,
+				TemplateRevisionID:     rev.RevisionID,
+				TemplateRevisionDigest: rev.RevisionDigest,
+			}}
+			pn.TemplateParams = cfg
+			// The revision's output schema is the node's contract.
+			pn.Outputs = rev.OutputSchema
+		}
+	}
+	child := w.compositeChild(s, id, kind, body, at)
 	if child != nil {
 		pn.SubScope = child.key
 		// A for_each scope ends when every index key is terminal (ADR-0023 § 8);
@@ -399,8 +425,17 @@ func (w *walk) node(s *scope, id string) {
 			pn.ResultBindings = w.resultBindings(rb, at.Child("config").Child("resultBindings"), child)
 		}
 	}
-	pn.ConfigBindings = w.configValues(cfg, at.Child("config"), s, kind)
-	w.kindPolicy(s, id, kind, cfg, at, &pn)
+	if hasTmplRef {
+		// The body's bindings compile in the template-scope environment (the
+		// parameters are the declared roots); the node's config is the values.
+		pn.ConfigBindings = w.templateBodyBindings(tmplRev, at.Child("config"), kind)
+		// Secret literals in the parameter values are refused exactly as in an
+		// inline node's config (ADR-0049 § 2.3/Security).
+		w.secretLiterals(s, id, cfg, at.Child("config"), &pn)
+	} else {
+		pn.ConfigBindings = w.configValues(cfg, at.Child("config"), s, kind)
+	}
+	w.kindPolicy(s, id, kind, body, at, &pn)
 
 	w.plan.Nodes = append(w.plan.Nodes, pn)
 	if child != nil && !w.bailed {

@@ -136,6 +136,25 @@ type Node struct {
 	Profile        string         `json:"profile,omitempty"`
 	Route          string         `json:"route,omitempty"`
 	SubScope       string         `json:"subScope,omitempty"`
+	// TemplateRefs pins the node's `template: slug@semver` reference to the
+	// revision it resolved against at compile time (ADR-0049 § 2.3). Covered
+	// by plan_digest: a run executes the pinned revision forever, and the
+	// store writes a pipeline_revision_template_refs row per entry at publish.
+	TemplateRefs []TemplateRef `json:"templateRefs,omitempty"`
+	// TemplateParams is the node's config as the template's parameter values
+	// (ADR-0049 § 2: the node's config carries the parameter values). It is
+	// stored on the plan so the composed ConfigBindings stay resolvable without
+	// a claim-time lookup.
+	TemplateParams canon.Value `json:"templateParams,omitempty"`
+}
+
+// TemplateRef is one ADR-0049 § 2 pinning entry: the template revision a
+// node resolved to at compile time. Identity plus digest, so the plan can
+// prove which canonical revision it was built from without re-reading it.
+type TemplateRef struct {
+	TemplateID             string `json:"template_id"`
+	TemplateRevisionID     string `json:"template_revision_id"`
+	TemplateRevisionDigest string `json:"template_revision_digest"`
 }
 
 // FailurePolicy is 03's failure table, compiled. Deviation D6: the error route

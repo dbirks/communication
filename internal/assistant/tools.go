@@ -61,7 +61,7 @@ var toolRegistry = func() map[string]tool {
 				if id == "" {
 					return Link{}, false
 				}
-				return Link{Label: "Open " + labelOf(row) + " (" + short(id) + ")", Href: "/projects/" + id}, true
+				return Link{Label: "Open " + labelOf(row) + " (" + short(id) + ")", Href: "/p/" + id}, true
 			})
 		})
 
@@ -76,7 +76,7 @@ var toolRegistry = func() map[string]tool {
 				if id == "" || prj == "" {
 					return Link{}, false
 				}
-				return Link{Label: "Run " + short(id) + " · " + fallback(field(row, "status"), "unknown"), Href: "/projects/" + prj + "/runs/" + id}, true
+				return Link{Label: "Run " + short(id) + " · " + fallback(field(row, "status"), "unknown"), Href: "/runs/" + id}, true
 			})
 		})
 
@@ -107,7 +107,7 @@ var toolRegistry = func() map[string]tool {
 				// one has no dedicated page, so the inbox — which lists pending
 				// gates — is the page that actually exists.
 				if rid := field(row, "run_id"); rid != "" {
-					return Link{Label: "Gate on run " + short(rid), Href: "/projects/" + prj + "/runs/" + rid}, true
+					return Link{Label: "Gate on run " + short(rid), Href: "/runs/" + rid}, true
 				}
 				return Link{Label: "Open inbox", Href: "/inbox"}, true
 			})
@@ -120,7 +120,7 @@ var toolRegistry = func() map[string]tool {
 		},
 		func(_ *turn, args map[string]any, _ []map[string]any) []Link {
 			id := args["pipeline_id"].(string)
-			return []Link{{Label: "Open pipeline " + short(id), Href: "/library/" + id}}
+			return []Link{{Label: "Open pipeline " + short(id), Href: "/workflows/" + id}}
 		})
 
 	add("palette.search", "Search the caller's own navigation index (projects, pipelines, runs, agent profiles) for a name or fragment.",

@@ -208,7 +208,7 @@ describe(`/projects/:projectId/runs/:runId`, () => {
       "revision 8 published since this run started — this run is pinned to 7",
     );
     expect(screen.getByTestId("run-new-revision-link").getAttribute("href")).toBe(
-      `/library/${WIRE_PIPELINE_ID}`,
+      `/workflows/${WIRE_PIPELINE_ID}`,
     );
     // The pinned identity the run started with is unchanged on the page.
     expect(screen.getByTestId("run-title").textContent).toMatch(/^Run #/);

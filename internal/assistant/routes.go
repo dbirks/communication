@@ -3,8 +3,6 @@ package assistant
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"path"
 	"regexp"
 	"strings"
 )
@@ -17,47 +15,55 @@ import (
 // dropped. routes_test.go re-derives this list from ui/src/App.tsx and fails
 // the build if the two ever drift apart.
 var allowedRoutes = []*regexp.Regexp{
+	// Shell pages.
 	regexp.MustCompile(`^/login$`),
 	regexp.MustCompile(`^/$`),
 	regexp.MustCompile(`^/inbox$`),
+	regexp.MustCompile(`^/board$`),
+	regexp.MustCompile(`^/threads$`),
+	regexp.MustCompile(`^/threads/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/projects$`),
+	// Project pages (canonical /p/… form).
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/artifacts$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/runs$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/pipelines$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/settings$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}$`),
+	// Global pages.
+	regexp.MustCompile(`^/workflows$`),
+	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/steps$`),
+	regexp.MustCompile(`^/steps/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/profiles$`),
+	regexp.MustCompile(`^/profiles/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/runs/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/settings$`),
+	regexp.MustCompile(`^/settings/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/ops$`),
+	regexp.MustCompile(`^/artifacts/[A-Za-z0-9_-]{1,64}$`),
+	// Legacy routes the app-shell redesign still serves as redirects.
 	regexp.MustCompile(`^/library$`),
-	regexp.MustCompile(`^/agents$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/library/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/agents$`),
+	regexp.MustCompile(`^/agents/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/artifacts$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/runs$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/runs/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/pipelines$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/settings$`),
-	regexp.MustCompile(`^/artifacts/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/conversations$`),
 	regexp.MustCompile(`^/projects/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
-	regexp.MustCompile(`^/ops$`),
 }
 
-// allowedHref accepts a same-origin app route and returns its clean form. A
-// path with a scheme, a host, a query, a fragment, a backslash or a "." segment
-// is refused, so no answer can carry an off-origin URL however the tool built
-// it.
-func (b *Broker) allowedHref(href string) (string, bool) {
-	href = strings.TrimSpace(href)
-	if href == "" || strings.ContainsAny(href, "?#\\@") {
-		return "", false
-	}
-	if !strings.HasPrefix(href, "/") || strings.HasPrefix(href, "//") {
-		return "", false
-	}
-	if u, err := url.Parse(href); err != nil || u.Host != "" || u.Scheme != "" {
-		return "", false
-	}
-	for _, r := range allowedRoutes {
-		if r.MatchString(href) {
-			return path.Clean(href), true
-		}
-	}
-	return "", false
-}
+// allowedHref is declared in conversation.go over CleanRoute (ADR-0050
+// extracted the v1 validation there); this file owns the allowlist it
+// matches against.
 
 // paletteSearch is the palette's own read fan: the caller's projects, pipelines
 // and agent profiles plus each project's runs, matched case-insensitively
@@ -91,21 +97,21 @@ func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 		return nil, err
 	}
 	for _, p := range rows(projects) {
-		add(p, "/projects/"+field(p, "id"))
+		add(p, "/p/"+field(p, "id"))
 	}
 	pipelines, err := t.b.store.ListPipelines(t.ctx, t.caller)
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range rows(pipelines) {
-		add(p, "/library/"+field(p, "id"))
+		add(p, "/workflows/"+field(p, "id"))
 	}
 	profiles, err := t.b.store.ListAgentProfiles(t.ctx, t.caller)
 	if err != nil {
 		return nil, err
 	}
 	for _, p := range rows(profiles) {
-		add(p, "/agents")
+		add(p, "/profiles")
 	}
 	for _, p := range rows(projects) {
 		pid := field(p, "id")
@@ -119,7 +125,7 @@ func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 			continue
 		}
 		for _, r := range rows(runsRaw) {
-			add(r, "/projects/"+pid+"/runs/"+field(r, "id"))
+			add(r, "/runs/"+field(r, "id"))
 		}
 	}
 	if len(out) > MaxItems {

@@ -29,6 +29,10 @@ type ntFakeStore struct {
 	calls    []string
 	lastIn   NodeTemplateCreateInput
 	lastRev  NodeTemplateRevisionInput
+	// from-node read (ADR-0049 § 6): scripted answer for NodeFromDraft.
+	nodeKind   string
+	nodeConfig json.RawMessage
+	nodeErr    error
 }
 
 func (f *ntFakeStore) ListTemplates(context.Context, Caller) ([]NodeTemplateView, error) {
@@ -68,6 +72,10 @@ func (f *ntFakeStore) DuplicateTemplate(_ context.Context, _ Caller, id, _, _ st
 func (f *ntFakeStore) RecordDenied(context.Context, Caller, string, string) error {
 	f.calls = append(f.calls, "denied")
 	return nil
+}
+func (f *ntFakeStore) NodeFromDraft(_ context.Context, _ Caller, draftID, nodeID string) (string, json.RawMessage, error) {
+	f.calls = append(f.calls, "node-from-draft:"+draftID+":"+nodeID)
+	return f.nodeKind, f.nodeConfig, f.nodeErr
 }
 
 func ntMount(t *testing.T, store *ntFakeStore, auth Authenticator) *Server {
@@ -285,5 +293,58 @@ func TestNodeTemplateRevisionAndDuplicate(t *testing.T) {
 	rec = ntSend(t, s, http.MethodPost, ntURL+"/t-1/duplicate", `{"slug":"Up","display_name":"Copy"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("bad slug duplicate = %d, want 400", rec.Code)
+	}
+}
+
+// TestNodeTemplateCreateFromNode is ADR-0049 § 6: the Studio's "also save as
+// a reusable step" — kind and config come from the named node, and the
+// parameterization starts empty.
+func TestNodeTemplateCreateFromNode(t *testing.T) {
+	body := `{"slug":"review-step","display_name":"Review step",
+		"from_node":{"draft_id":"d-1","node_id":"review"}}`
+	store := &ntFakeStore{
+		nodeKind: "agent.acp", nodeConfig: json.RawMessage(`{"profile":"p","prompt":"x"}`),
+		created: NodeTemplateView{
+			ID: "t-1", Slug: "review-step", DisplayName: "Review Step",
+			Kind: "agent.acp", Status: "active",
+			LatestRevision: NodeTemplateRevisionSummary{RevisionID: "r-1", RevisionNumber: 1,
+				VersionLabel: "1.0.0", RevisionDigest: "sha256:" + strings.Repeat("0", 64), CreatedAt: ntNow()},
+			CreatedBy: "u-nt", CreatedAt: ntNow(), UpdatedAt: ntNow(),
+		},
+	}
+	s := ntMount(t, store, ntCaller(true))
+	rec := ntSend(t, s, http.MethodPost, ntURL, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("from_node POST = %d (%s)", rec.Code, rec.Body)
+	}
+	if got := store.lastIn; got.Kind != "agent.acp" ||
+		string(got.Config) != `{"profile":"p","prompt":"x"}` ||
+		string(got.Parameters) != `{"type":"object","properties":{}}` ||
+		string(got.OutputSchema) != `{"type":"object"}` {
+		t.Errorf("from_node did not own the create input: %+v", got)
+	}
+
+	// missing members: 400 before the store.
+	store2 := &ntFakeStore{}
+	s2 := ntMount(t, store2, ntCaller(true))
+	rec = ntSend(t, s2, http.MethodPost, ntURL,
+		`{"slug":"review-step","display_name":"Review Step","from_node":{"draft_id":"d-1"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("from_node without node_id = %d, want 400 (%s)", rec.Code, rec.Body)
+	}
+
+	// the honest 400 for an unvalidated draft, and the 404 for an invisible
+	// one — both before a template row could exist.
+	store3 := &ntFakeStore{nodeErr: ErrNodeTemplateDraftNotValidated}
+	s3 := ntMount(t, store3, ntCaller(true))
+	rec = ntSend(t, s3, http.MethodPost, ntURL, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unvalidated from_node = %d, want 400 (%s)", rec.Code, rec.Body)
+	}
+	store4 := &ntFakeStore{nodeErr: ErrNodeTemplateNotFound}
+	s4 := ntMount(t, store4, ntCaller(true))
+	rec = ntSend(t, s4, http.MethodPost, ntURL, body)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("invisible from_node draft = %d, want 404 (%s)", rec.Code, rec.Body)
 	}
 }

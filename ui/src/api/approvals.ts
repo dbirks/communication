@@ -14,6 +14,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
+import type { components } from "./schema";
 import { queryKeys } from "./queries";
 import type { Approval, ApprovalConflictProblem, ApprovalDecide, ApprovalList } from "./types";
 
@@ -95,4 +96,62 @@ export function adoptApprovalConflict(
   );
   void queryClient.invalidateQueries({ queryKey: queryKeys.approval(conflict.approval_id) });
   return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* ADR-0052: the model's decider summary and free-text interpretation. */
+
+/** `POST /approvals/{id}/summary` response — the model's two-sentence summary plus suggested actions. */
+export type ApprovalSummary = components["schemas"]["ApprovalSummary"];
+
+/** `POST /approvals/{id}/interpret` response — a PROPOSAL the human confirms. */
+export type ApprovalInterpretation = components["schemas"]["ApprovalInterpretation"];
+
+/**
+ * `POST /api/v1/approvals/{approvalId}/summary` (ADR-0052). The model NEVER
+ * decides: this is text a human reads, and the decider still calls `decide`.
+ * The server caches the answer in memory keyed on the gate's `version`, so a
+ * plain query is the right shape — the result is stable while the gate is
+ * pending. With no assistant configured the route answers `503
+ * assistant_not_configured` and the caller falls back to the gate's own
+ * summary (see `assistantNotConfigured` in `./assistant`).
+ */
+export function useApprovalSummary(approvalId: string) {
+  return useQuery({
+    queryKey: queryKeys.approval(approvalId).concat("summary"),
+    queryFn: () =>
+      apiFetch<ApprovalSummary>(`/api/v1/approvals/${approvalId}/summary`, { method: "POST" }),
+    enabled: approvalId.length > 0,
+  });
+}
+
+/**
+ * `POST /api/v1/approvals/{approvalId}/interpret` (ADR-0052). The approver
+ * replies in their own words; the model restates the intent and PROPOSES a
+ * decision plus a short note. The proposal is never sent anywhere — the UI
+ * shows it and the human confirms by calling `decide` themselves.
+ * `503 assistant_not_configured` when no endpoint model is set.
+ */
+export function useInterpretApproval(approvalId: string) {
+  return useMutation({
+    mutationFn: (text: string) =>
+      apiFetch<ApprovalInterpretation>(`/api/v1/approvals/${approvalId}/interpret`, {
+        method: "POST",
+        json: { text },
+      }),
+  });
+}
+
+/**
+ * The plan artifact's bytes as text. `/content` is role-gated by sensitivity
+ * (ADR-0020) and streams the artifact's `media_type`, so the fetch is a plain
+ * `apiFetch<string>` — `apiFetch` hands back the body verbatim when it is not
+ * JSON, which is exactly what a markdown plan is.
+ */
+export function useArtifactContent(artifactId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.artifact(artifactId ?? "").concat("content"),
+    queryFn: () => apiFetch<string>(`/api/v1/artifacts/${artifactId}/content`),
+    enabled: artifactId !== null && artifactId.length > 0,
+  });
 }

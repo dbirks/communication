@@ -212,42 +212,90 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 		}
 	}
 
-	inputs, err := m4ValidateRunInputs(pin.plan, in.Inputs)
+	// ADR-0053: the source thread — visibility, project match, the recorded
+	// thread heads and the artifact refusals all answer BEFORE any row moves,
+	// so a refused source writes nothing.
+	var source *m4RunSourceAnswer
+	if in.Source != nil {
+		source, err = m4RunSource(ctx, pool, cc, in.Source, in.ProjectID)
+		if err != nil {
+			return api.RunView{}, false, err
+		}
+	}
+
+	submitted := in.Inputs
+	extraAllowed := []string(nil)
+	if source != nil && source.Summary != "" {
+		// The handoff summary rides the run-inputs path (the place run inputs
+		// already flow): one more recorded input, named handoff_summary, origin
+		// submitted — bound as ${{ inputs.handoff_summary }} like any input.
+		summaryRaw, err := json.Marshal(source.Summary)
+		if err != nil {
+			return api.RunView{}, false, fmt.Errorf("postgres: encode handoff summary: %w", err)
+		}
+		extraAllowed = []string{"handoff_summary"}
+		if submitted == nil {
+			submitted = map[string]json.RawMessage{}
+		} else {
+			copied := make(map[string]json.RawMessage, len(submitted)+1)
+			for k, v := range submitted {
+				copied[k] = v
+			}
+			submitted = copied
+		}
+		// A caller-supplied handoff_summary loses to source.summary: the
+		// summary clause is the named source of that value (the body's inputs
+		// cannot pretend to be the thread's).
+		submitted["handoff_summary"] = summaryRaw
+	}
+
+	inputs, err := m4ValidateRunInputs(pin.plan, submitted, extraAllowed...)
 	if err != nil {
 		return api.RunView{}, false, err
 	}
 
+	sourceConversationID, repoSnapshot := "", json.RawMessage(nil)
+	var artifactIDs []string
+	if source != nil {
+		sourceConversationID = source.ConversationID
+		repoSnapshot = source.RepoSnapshot
+		artifactIDs = source.ArtifactIDs
+	}
 	newRun := NewRun{
-		OrganizationID:     c.OrganizationID,
-		ProjectID:          pin.projectID,
-		PipelineID:         pin.pipelineID,
-		PipelineRevisionID: pin.revisionID,
-		AssignmentID:       pin.assignmentID,
-		RevisionDigest:     pin.revisionDigest,
-		PlanDigest:         pin.planDigest,
-		PlanSnapshot:       pin.plan,
-		PoliciesSnapshot:   m4PoliciesSnapshot(pin.plan, pin.budgetOverrides),
-		Depth:              0,
-		TriggeredBy:        in.TriggeredBy,
-		Inputs:             inputs,
-		Key:                in.Key,
-		RequestSHA:         in.RequestSHA,
+		OrganizationID:       c.OrganizationID,
+		ProjectID:            pin.projectID,
+		PipelineID:           pin.pipelineID,
+		PipelineRevisionID:   pin.revisionID,
+		AssignmentID:         pin.assignmentID,
+		SourceConversationID: sourceConversationID,
+		RevisionDigest:       pin.revisionDigest,
+		PlanDigest:           pin.planDigest,
+		PlanSnapshot:         pin.plan,
+		PoliciesSnapshot:     m4PoliciesSnapshot(pin.plan, pin.budgetOverrides),
+		RepoSnapshot:         repoSnapshot,
+		Depth:                0,
+		TriggeredBy:          in.TriggeredBy,
+		Inputs:               inputs,
+		Key:                  in.Key,
+		RequestSHA:           in.RequestSHA,
+		ArtifactIDs:          artifactIDs,
 	}
 	kind, id := m4RunActor(in.TriggeredBy)
 	newRun.Event = &RunEvent{
 		Type: events.TypeRunCreated, ActorKind: kind, ActorID: id,
 		Payload: events.RunCreatedPayload{
-			ProjectID:      pin.projectID,
-			RunID:          "", // filled inside the create tx, from the row's own id
-			PipelineID:     pin.pipelineID,
-			RevisionID:     pin.revisionID,
-			RevisionDigest: pin.revisionDigest,
-			PlanDigest:     pin.planDigest,
-			DigestScope:    pin.digestScope,
-			AssignmentID:   pin.assignmentID,
-			Depth:          0,
-			InputNames:     m4InputNames(inputs),
-			Priority:       0,
+			ProjectID:            pin.projectID,
+			RunID:                "", // filled inside the create tx, from the row's own id
+			PipelineID:           pin.pipelineID,
+			RevisionID:           pin.revisionID,
+			RevisionDigest:       pin.revisionDigest,
+			PlanDigest:           pin.planDigest,
+			DigestScope:          pin.digestScope,
+			AssignmentID:         pin.assignmentID,
+			Depth:                0,
+			InputNames:           m4InputNames(inputs),
+			Priority:             0,
+			SourceConversationID: sourceConversationID,
 		},
 	}
 
@@ -270,6 +318,11 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 	view, err := a.m4RunReadView(ctx, pool, run, "maintainer")
 	if err != nil {
 		return api.RunView{}, false, err
+	}
+	if created && source != nil {
+		// The create response's honest per-repository base answer (ADR-0053);
+		// the read path never carries it — it is the create's one-time fact.
+		view.SourceBase = &api.RunSourceBaseView{Repositories: source.Repos}
 	}
 	return view, created, nil
 }
@@ -294,18 +347,39 @@ func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool,
 	run, err := a.Runs.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
-			 revision_digest, plan_digest, plan_snapshot, policies_snapshot, repo_snapshot,
-			 depth, parent_run_id, triggered_by, priority)
+			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
+			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
-		        $6, $7, $8::jsonb, $9::jsonb, COALESCE(NULLIF($10, '')::jsonb, '[]'::jsonb),
-		        $11, NULLIF($12, '')::uuid, NULLIF($13, '')::uuid, $14)
+		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
+		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
+		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
-		in.RevisionDigest, in.PlanDigest, string(orEmptyJSON(in.PlanSnapshot)),
-		string(orEmptyJSON(in.PoliciesSnapshot)), string(in.RepoSnapshot),
+		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
+		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
+		string(in.RepoSnapshot),
 		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority))
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
+	}
+
+	// ADR-0053: the named artifacts are attached to the run BY REFERENCE in
+	// this same transaction (the row keeps its conversation_id — the thread's
+	// artifacts rail stays truthful; the run's list gains the row). The
+	// validation in m4RunSource already proved the rows are in this project
+	// and unattached; a race between validation and insert re-fails the whole
+	// create with the artifact answer, never a half-attached run.
+	for _, artifactID := range in.ArtifactIDs {
+		res, err := tx.Exec(ctx, `
+			UPDATE artifacts SET run_id = $2::uuid
+			WHERE id = $1::uuid AND (run_id IS NULL OR run_id = $2::uuid)`,
+			artifactID, run.ID)
+		if err != nil {
+			return Run{}, false, fmt.Errorf("postgres: attach artifact %s to run %s: %w", artifactID, run.ID, err)
+		}
+		if res.RowsAffected() == 0 {
+			return Run{}, false, fmt.Errorf("%w: %w (attach %s)", api.ErrArtifactNotFound, ErrRunNotFound, artifactID)
+		}
 	}
 
 	for name, input := range in.Inputs {
@@ -444,6 +518,199 @@ func m4ResolvePin(ctx context.Context, pool *pgxpool.Pool, c Caller, in api.RunC
 	return pin, nil
 }
 
+// m4RunSourceAnswer is ADR-0053's resolved source: the thread id, the
+// per-repository base answer (name order), the pinned repo_snapshot entries
+// (thread branches only — the default-branch fallbacks pin nothing, they
+// keep today's startPoint), the validated artifact ids and the handoff
+// summary.
+type m4RunSourceAnswer struct {
+	ConversationID string
+	Repos          []api.RunSourceBaseRepoView
+	RepoSnapshot   json.RawMessage
+	ArtifactIDs    []string
+	Summary        string
+}
+
+// m4RunSource answers ADR-0053's source clause with the row data the control
+// plane actually holds — it never resolves git refs (the mirrors are the
+// workers', ADR-0017 D1):
+//
+//   - the conversation must be visible to the caller (the same
+//     conversations→projects→memberships predicate the conversation route
+//     uses, verbatim in SQL). Invisible or unknown ⇒ 404.
+//   - its project must equal the URL's project ⇒ 422 on mismatch (the caller
+//     names two visible objects; the claim is false, it is not invisible).
+//   - per repository, the thread's recorded heads (workspace_repos, the
+//     post-commit ref read of ADR-0017 D8/P8) decide the base: a recorded
+//     head beyond the recorded base pins that head into repo_snapshot; a
+//     clean or unprepared thread falls back to the default branch.
+//   - every named artifact must exist in this project, be undeleted and be
+//     unattached (a row in another project or a deleted row is the same 404
+//     as unknown — naming a resource that is not here is not a leak target).
+func m4RunSource(ctx context.Context, pool *pgxpool.Pool, c Caller, in *api.RunSourceInput, projectID string) (*m4RunSourceAnswer, error) {
+	var convProject string
+	err := pool.QueryRow(ctx, `
+		SELECT c.project_id::text
+		FROM conversations c
+		JOIN projects p ON p.id = c.project_id
+		LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
+		WHERE c.id = $2::uuid
+		  AND p.organization_id = $3::uuid
+		  AND ($4::boolean OR m.user_id IS NOT NULL)`,
+		c.UserID, in.ConversationID, c.OrganizationID, c.IsOrgAdmin).Scan(&convProject)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %w", api.ErrConversationNotFound, ErrConversationNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: resolve source conversation %s: %w", in.ConversationID, err)
+	}
+	if convProject != projectID {
+		// The caller may see both objects and still must not start a run
+		// "in" the wrong one — a 422 refusal, not the 404 invisibility answer.
+		return nil, api.ErrRunSourceProjectMismatch
+	}
+
+	// The thread's recorded heads, one statement. Every live state except
+	// `lost` counts: a released workspace keeps its ref by design
+	// (ADR-0017 D1), so its recorded head is still the honest answer; a lost
+	// workspace's volume is gone and its head must not be pinned.
+	type threadHead struct{ head, base string }
+	heads := map[string]threadHead{}
+	rows, err := pool.Query(ctx, `
+		SELECT wr.repository_id::text, wr.head_commit, wr.base_commit
+		FROM workspace_repos wr
+		JOIN workspaces w ON w.id = wr.workspace_id
+		WHERE w.conversation_id = $1::uuid
+		  AND w.scope_kind = 'conversation'
+		  AND w.project_id = $2::uuid
+		  AND w.state IN ('preparing','ready','quarantined','released')`,
+		in.ConversationID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read thread %s workspace heads: %w", in.ConversationID, err)
+	}
+	for rows.Next() {
+		var repoID string
+		var head, base *string
+		if err := rows.Scan(&repoID, &head, &base); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("postgres: scan thread head of %s: %w", in.ConversationID, err)
+		}
+		h, b := "", ""
+		if head != nil {
+			h = *head
+		}
+		if base != nil {
+			b = *base
+		}
+		heads[repoID] = threadHead{head: h, base: b}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("postgres: iterate thread heads: %w", err)
+	}
+	rows.Close()
+
+	// Dedup: a twice-named artifact is the same reference, not two attaches
+	// (the second would match zero rows and fail the create for a body the
+	// caller meant as one).
+	seen := map[string]bool{}
+	artifactIDs := make([]string, 0, len(in.ArtifactIDs))
+	for _, id := range in.ArtifactIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		var project, state, runID string
+		var deleted bool
+		err := pool.QueryRow(ctx, `
+			SELECT a.project_id::text, a.state, COALESCE(a.run_id::text, ''),
+			       a.deleted_at IS NOT NULL
+			FROM artifacts a WHERE a.id = $1::uuid`, id).Scan(&project, &state, &runID, &deleted)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %w", api.ErrArtifactNotFound, ErrRunNotFound)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("postgres: resolve source artifact %s: %w", id, err)
+		}
+		if project != projectID || deleted {
+			return nil, fmt.Errorf("%w: %w", api.ErrArtifactNotFound, ErrRunNotFound)
+		}
+		if runID != "" {
+			return nil, fmt.Errorf("%w: artifact %s is attached to run %s", api.ErrRunSourceArtifactTaken, id, runID)
+		}
+		artifactIDs = append(artifactIDs, id)
+	}
+
+	ans := &m4RunSourceAnswer{
+		ConversationID: in.ConversationID,
+		Summary:        in.Summary,
+		ArtifactIDs:    artifactIDs,
+	}
+
+	type projRepo struct{ id, name string }
+	repoRows, err := pool.Query(ctx,
+		`SELECT id::text, name FROM repositories WHERE project_id = $1::uuid ORDER BY name`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list project %s repositories: %w", projectID, err)
+	}
+	var repos []projRepo
+	for repoRows.Next() {
+		var r projRepo
+		if err := repoRows.Scan(&r.id, &r.name); err != nil {
+			repoRows.Close()
+			return nil, fmt.Errorf("postgres: scan repository of %s: %w", projectID, err)
+		}
+		repos = append(repos, r)
+	}
+	if err := repoRows.Err(); err != nil {
+		repoRows.Close()
+		return nil, err
+	}
+	repoRows.Close()
+
+	snapshot := []api.RunRepoSnapshotView{}
+	ans.Repos = make([]api.RunSourceBaseRepoView, 0, len(repos))
+	for _, r := range repos {
+		th := heads[r.id]
+		if th.head != "" && th.head != th.base {
+			ans.Repos = append(ans.Repos, api.RunSourceBaseRepoView{
+				RepositoryID: r.id, Mode: api.RunBaseThreadBranch,
+				BaseCommit: &th.head,
+				Reason:     "the thread branch has recorded commits beyond its base (" + shortSHA(th.head) + "); the run pins that head as its base",
+			})
+			snapshot = append(snapshot, api.RunRepoSnapshotView{RepositoryID: r.id, BaseCommit: th.head})
+			continue
+		}
+		// The honest arm of the fallback: an absent workspace row (the thread
+		// never prepared a checkout for this repository) is not the same fact
+		// as a clean branch, and the reason must say which one was observed.
+		detail := "no recorded head yet"
+		if th.head != "" {
+			detail = "recorded head equals the recorded base"
+		}
+		ans.Repos = append(ans.Repos, api.RunSourceBaseRepoView{
+			RepositoryID: r.id, Mode: api.RunBaseDefaultBranch, BaseCommit: nil,
+			Reason: "no recorded commits beyond the base in the thread (" + detail + "); the run starts from the repository's default branch",
+		})
+	}
+	if len(snapshot) > 0 {
+		b, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: encode pinned base snapshot: %w", err)
+		}
+		ans.RepoSnapshot = b
+	}
+	return ans, nil
+}
+
+// shortSHA abbrevates a commit id for a human-readable reason string.
+func shortSHA(sha string) string {
+	if len(sha) >= 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
 // m4PoliciesSnapshot is the run's copy of the ceilings it will actually be
 // held to: the pinned plan's policies and budget record, with the
 // assignment's overrides layered on top. Overrides may only LOWER (route 18
@@ -510,7 +777,13 @@ func toNumber(v any) (float64, bool) {
 // rows: every declared input the run will actually see, with its origin. An
 // absent optional takes its schema default (origin "default"); a missing
 // required or an undeclared name is the 422 in § 2.2's unit shape.
-func m4ValidateRunInputs(plan json.RawMessage, submitted map[string]json.RawMessage) (map[string]RunInput, error) {
+//
+// extraAllowed (ADR-0053) names inputs the create path admits even when the
+// pinned revision does not declare them: today exactly `handoff_summary`,
+// the thread handoff's system-provided input (declared revisions still
+// type-check it; only the unknown_input refusal is waived). No other caller
+// passes any.
+func m4ValidateRunInputs(plan json.RawMessage, submitted map[string]json.RawMessage, extraAllowed ...string) (map[string]RunInput, error) {
 	var p struct {
 		Inputs struct {
 			Properties           map[string]json.RawMessage `json:"properties"`
@@ -526,13 +799,17 @@ func m4ValidateRunInputs(plan json.RawMessage, submitted map[string]json.RawMess
 		required[name] = true
 	}
 	open := p.Inputs.AdditionalProperties == nil || *p.Inputs.AdditionalProperties
+	extra := map[string]bool{}
+	for _, name := range extraAllowed {
+		extra[name] = true
+	}
 
 	var bad []api.ValidateError
 	out := map[string]RunInput{}
 	for name, raw := range submitted {
 		decl, known := p.Inputs.Properties[name]
 		if !known {
-			if !open || len(p.Inputs.Properties) == 0 {
+			if (!open || len(p.Inputs.Properties) == 0) && !extra[name] {
 				bad = append(bad, api.ValidateError{
 					Code: "unknown_input", Source: "run",
 					Message: fmt.Sprintf("input %q is not declared by the pinned revision", name),

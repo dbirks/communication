@@ -263,6 +263,47 @@ func (s *RunWorkspaces) RunWorkspace(ctx context.Context, runID string) (worker.
 	return worker.RunWorkspaceRef{WorkspaceID: id, VolumeID: volumeID, RepoStates: states, Repos: repos}, true, nil
 }
 
+// BaseCommits (ADR-0053) returns the run's pinned starting base commits:
+// runs.repo_snapshot decoded to repository_id → commit. The run workspace
+// preparer hands each to the git Manager as a RepoSpec.BaseCommit; an empty
+// answer (no snapshot, the ordinary run) means "no pin — the default branch
+// startPoint, exactly as before this ADR". This is a READ of the creation
+// transaction's pin, not a re-resolution: the run never moves its base.
+func (s *RunWorkspaces) BaseCommits(ctx context.Context, runID string) (map[string]string, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: BaseCommits requires a pool")
+	}
+	if runID == "" {
+		return nil, errors.New("postgres: base commits lookup requires a run id")
+	}
+	var raw []byte
+	err := s.Pool.QueryRow(ctx, `
+		SELECT repo_snapshot FROM runs WHERE id = $1::uuid`, runID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read run %s repo_snapshot: %w", runID, err)
+	}
+	type entry struct {
+		RepositoryID string `json:"repository_id"`
+		BaseCommit   string `json:"base_commit"`
+	}
+	var entries []entry
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return nil, fmt.Errorf("postgres: decode run %s repo_snapshot: %w", runID, err)
+		}
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		if e.RepositoryID != "" && e.BaseCommit != "" {
+			out[e.RepositoryID] = e.BaseCommit
+		}
+	}
+	return out, nil
+}
+
 // RecordBoundaryCommit is the write half of the node-boundary capture for
 // kinds that run no agent turn (process.exec): the worker read the ref back
 // after the command exited (ADR-0017 D8: a ref read, never an exit status)

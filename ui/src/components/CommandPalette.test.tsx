@@ -147,13 +147,13 @@ describe("CommandPalette", () => {
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
     );
 
-    // Inbox is first; one step down is Projects at "/".
+    // Inbox is first; one step down is Projects at "/projects".
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-1");
     expect(screen.getByRole("option", { selected: true }).textContent).toContain("Projects");
 
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByTestId("where").textContent).toBe("/");
+    expect(screen.getByTestId("where").textContent).toBe("/projects");
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
@@ -191,9 +191,7 @@ describe("CommandPalette", () => {
     expect(within(list).getByText(`${projectFixture.name} · Settings`)).toBeTruthy();
 
     fireEvent.click(label.closest('[role="option"]') as HTMLElement);
-    expect((await screen.findByTestId("where")).textContent).toBe(
-      `/projects/${wireProjectId}/runs/${WIRE_RUN_ID}`,
-    );
+    expect((await screen.findByTestId("where")).textContent).toBe(`/runs/${WIRE_RUN_ID}`);
   });
 
   it("offers the question as the first row once there is text to ask", async () => {

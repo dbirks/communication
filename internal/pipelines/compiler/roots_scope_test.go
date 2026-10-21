@@ -167,9 +167,11 @@ func TestC13dSiblingScopeRootsAreRefused(t *testing.T) {
 	}
 }
 
-// TestC13dParametersRootCompilesInTemplateScope: M4 validates a NodeTemplate and
-// refuses the publish (contract § 9.1 row 12, ADR-0024 § 2). Both claims must hold
-// at once — the parameters root resolving, and template_publish_deferred standing.
+// TestC13dParametersRootCompilesInTemplateScope: the NodeTemplate scope
+// answer (contract § 9.1 row 12): the parameters root resolves inside the
+// template scope and the document compiles. ADR-0049 § 2 lifted the
+// ADR-0024 § 2 publish deferral: the registry API is the publish path and
+// the compiler no longer refuses the document itself.
 func TestC13dParametersRootCompilesInTemplateScope(t *testing.T) {
 	d := compileYAMLFile(t, "testdata/c13d-parameters-template.yaml")
 	for _, x := range diagsAt(d, "/spec/config") {
@@ -177,14 +179,8 @@ func TestC13dParametersRootCompilesInTemplateScope(t *testing.T) {
 			t.Errorf("the parameters root was refused in its own scope: %s %s", x.Code, x.Message)
 		}
 	}
-	var deferred bool
-	for _, x := range d {
-		if x.Code == diag.CodeTemplatePublishDefer {
-			deferred = true
-		}
-	}
-	if !deferred {
-		t.Errorf("template_publish_deferred missing; saw %s", showDiags(d))
+	if !d.Valid() {
+		t.Errorf("the NodeTemplate document no longer compiles cleanly: %s", showDiags(d))
 	}
 }
 

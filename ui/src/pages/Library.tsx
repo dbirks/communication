@@ -1,18 +1,22 @@
 /**
- * The org pipeline library as a real route (`/library`) and one pipeline's
- * authoring surface (`/library/:pipelineId`).
+ * The org **Workflows** index (`/workflows`) and one workflow's authoring
+ * surface (`/workflows/:pipelineId`). The API vocabulary is unchanged — a
+ * workflow is the spec's *pipeline*; only the UI wording moved (ADR-0043).
  *
- * Honesty rules inherited from `pages/ProjectRunsPipelines.tsx`, unchanged:
- * - A row is built from `viewPipeline`/`viewPipelineSummary` over the same two
- *   reads the project page fans (`GET /pipelines/{id}` + its drafts list). The
- *   list route carries neither revisions nor drafts, so nothing here can be
- *   invented from it.
- * - `channels` is M6 rollout vocabulary; the wire serves none, so rows carry
- *   `channels: []`. At org scope the channel cell is omitted entirely — there
- *   is no project here for a channel to belong to.
- * - A draft's state is the server's `status` column, never a client-side guess
- *   — which is why Publish is gated in `DraftEditor`, not here.
- * - Authoring controls (new pipeline, new draft, the editor) appear only for
+ * Honesty rules (docs/design/handoff-app-shell/gaps/library.md § 5),
+ * unchanged from the old library page:
+ * - A row is built from the same two reads the project page fans
+ *   (`GET /pipelines/{id}` + its drafts list); nothing is invented beyond
+ *   what the wire serves.
+ * - `channels` is M6 rollout vocabulary; the wire serves none, so the
+ *   revision chip is a single `✓ PUBLISHED r{n} {digest6}` — no amber
+ *   BETA/STABLE dual chip, and never "by assistant" (no assistant identity
+ *   is persisted on drafts).
+ * - Duplicate is the client-side three writes the gap analysis settles on
+ *   (U1) until a backend endpoint exists: GET the latest revision's
+ *   regenerated document → POST a new pipeline `<slug>-copy[-n]` → POST one
+ *   draft under it, then land on that draft.
+ * - Authoring controls (new workflow, import, duplicate) appear only for
  *   the library role: `01` gives definition-reading to every org member and
  *   publishing to org admins alone.
  */
@@ -27,7 +31,6 @@ import { Field, Input, Select } from "../components/ds/Field";
 import { DRAFT_STATE, REVISION_STATE, stateOf } from "../components/ds/states";
 import { FormError, ProblemBanner, Spinner } from "../components/Feedback";
 import { DefinitionGraph } from "../components/m4/DefinitionGraph";
-import { PipelineLibrary, type PipelineLibraryRow } from "../components/m4/PipelineLibrary";
 import { YamlView } from "../components/m4/YamlView";
 import { apiFetch, problemOf } from "../api/client";
 import { useActorNames } from "../api/actors";
@@ -36,24 +39,27 @@ import { formatAge } from "../lib/format";
 import {
   pipelineDraftsQueryOptions,
   pipelineQueryOptions,
+  revisionQueryOptions,
+  schedulesQueryOptions,
   useCreateAssignment,
   useCreateDraft,
   useCreatePipeline,
+  useDuplicatePipeline,
   usePipeline,
   usePipelineDrafts,
   usePipelineRevisions,
   usePipelines,
   useRevision,
   useRevisionDocument,
+  workflowRowFacts,
 } from "../api/pipelines";
-import {
-  viewDraftSummary,
-  viewPipeline,
-  viewPipelineSummary,
-  viewRevisionSummary,
-} from "../api/m4view";
+import { viewDraftSummary, viewPipelineSummary, viewRevisionSummary } from "../api/m4view";
 import type { Assignment, AssignmentList, Project } from "../api/types";
 import type { DefinitionDocument } from "../lib/pipeline/definition";
+import { isDefinitionDocument } from "../lib/pipeline/definition";
+import { routes } from "../lib/routes";
+import { WorkflowRow } from "../components/workflows/WorkflowRow";
+import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
 import {
   hasLibraryRole,
   LIBRARY_AUTHORING_HINT,
@@ -69,60 +75,229 @@ import {
 } from "../lib/pipeline/templates";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
 
-/* ------------------------------------------------------------- /library */
+/* ------------------------------------------------------------- /workflows */
+
+/** The 3a filter row's toggle chip: a pressed state a screen reader hears
+ * (`aria-pressed`) and a keyboard can reach (the ds focus ring). */
+function FilterChip({
+  active,
+  onClick,
+  testid,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  testid: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={
+        active
+          ? "rounded-[3px] border border-ink bg-ink px-[8px] py-[3px] font-mono text-[10.5px] text-surface"
+          : "rounded-[3px] border border-line bg-surface px-[8px] py-[3px] font-mono text-[10.5px] text-ink hover:border-line-strong"
+      }
+      data-testid={testid}
+    >
+      {children}
+    </button>
+  );
+}
 
 export function LibraryPage() {
   const navigate = useNavigate();
   const me = useMe();
   const actors = useActorNames();
   const pipelines = usePipelines();
+  const projects = useProjects();
   const canAuthor = hasLibraryRole(me.data);
-  const ids = useMemo(
-    () => (pipelines.data?.pipelines ?? []).map((pipeline) => pipeline.id),
-    [pipelines.data],
-  );
+  const [filter, setFilter] = useState<"all" | "has-draft">("all");
+  const [usedInProject, setUsedInProject] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+
+  const items = pipelines.data?.pipelines ?? [];
+  const ids = items.map((pipeline) => pipeline.id);
   // One fan keyed exactly like the single-read hooks (as the project page does).
   const definitions = useQueries({ queries: ids.map(pipelineQueryOptions) });
   const draftsList = useQueries({ queries: ids.map(pipelineDraftsQueryOptions) });
 
-  const rows: PipelineLibraryRow[] = [];
-  definitions.forEach((entry, index) => {
-    const definition = entry.data;
-    if (!definition) return;
-    const view = viewPipeline(definition);
-    rows.push({
-      pipeline: { ...viewPipelineSummary(definition), description: definition.description },
-      latest: view.revisions[0] ?? null,
-      revisions: view.revisions,
-      drafts: (draftsList[index]?.data?.drafts ?? []).map(viewDraftSummary),
-      channels: [],
-    });
+  // The step chain needs the latest revision's canonical document: route 13
+  // resolves a digest, so the fan keys on each row's newest summary digest.
+  const latestDigests = items.map(
+    (_pipeline, index) => definitions[index]?.data?.revisions[0]?.revision_digest ?? "",
+  );
+  const revisionFan = useQueries({ queries: latestDigests.map(revisionQueryOptions) });
+
+  // Folders: the pipeline carries no `folder` field yet (gaps/library.md § 6
+  // U6c — needs a backend column + ADR), so the index is one flat list. The
+  // `showWorkflowFolders` preference stays a display preference until then.
+
+  // The assignments fan the rows share: every project the caller belongs to,
+  // keyed exactly like the project page's reads so the cache is shared. The
+  // schedules fan arms only for projects that actually pin an indexed
+  // workflow — a `manual` trigger costs one assignments read, not two.
+  const projectItems = projects.data?.items ?? [];
+  const indexIds = new Set(ids);
+  const assignmentsFan = useQueries({
+    queries: projectItems.map((project) => ({
+      queryKey: queryKeys.assignments(project.id),
+      queryFn: () => apiFetch<AssignmentList>(`/api/v1/projects/${project.id}/assignments`),
+    })),
   });
+  const schedulesFan = useQueries({
+    queries: projectItems.map((project, index) =>
+      schedulesQueryOptions(
+        project.id,
+        (assignmentsFan[index]?.data?.assignments ?? []).some((assignment) =>
+          indexIds.has(assignment.pipeline_id),
+        ),
+      ),
+    ),
+  });
+
+  const duplicate = useDuplicatePipeline(items.map((pipeline) => pipeline.slug));
+
+  const rows = items.map((pipeline, index) => {
+    const definition = definitions[index]?.data;
+    const ready = definition !== undefined && !definitions[index]?.isError;
+    const revision = revisionFan[index]?.data;
+    const document =
+      revision && isDefinitionDocument(revision.canonical_document)
+        ? revision.canonical_document
+        : null;
+    return {
+      pipeline,
+      ready,
+      revisions: definition?.revisions ?? [],
+      document,
+      drafts: draftsList[index]?.data?.drafts ?? [],
+      facts: workflowRowFacts(
+        projectItems,
+        assignmentsFan.map((entry) => entry?.data),
+        schedulesFan.map((entry) => entry?.data),
+        pipeline.id,
+      ),
+    };
+  });
+
+  const visible = rows.filter((row) => {
+    if (filter === "has-draft" && !row.drafts.some((draft) => draft.status !== "published")) {
+      return false;
+    }
+    if (usedInProject && !row.facts.assigned.some((entry) => entry.project.id === usedInProject)) {
+      return false;
+    }
+    return true;
+  });
+
+  const fanBroke =
+    definitions.some((entry) => entry.isError) || assignmentsFan.some((entry) => entry.isError);
 
   return (
     <div className="min-h-full space-y-4 px-4 py-4" data-testid="library-page">
-      <h1 className="text-[19px] font-bold" id="library-heading">
-        Pipeline library
-      </h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-[19px] font-bold" id="library-heading">
+          Workflows
+        </h1>
+        {canAuthor ? (
+          <Button
+            variant="secondary"
+            onClick={() => setImportOpen(true)}
+            data-testid="workflows-import-yaml"
+          >
+            Import YAML
+          </Button>
+        ) : null}
+      </div>
       {me.isError ? (
         <ProblemBanner error={me.error} fallback="Your identity could not be read." />
       ) : null}
       {canAuthor ? <NewPipelineForm /> : null}
-      {pipelines.isPending ? <Spinner label="Loading the pipeline library" /> : null}
+      {pipelines.isPending ? <Spinner label="Loading the workflow library" /> : null}
       {pipelines.isError ? (
-        <ProblemBanner error={pipelines.error} fallback="The pipeline library could not be read." />
+        <ProblemBanner error={pipelines.error} fallback="The workflow library could not be read." />
       ) : null}
-      {rows.length > 0 || pipelines.data ? (
-        <PipelineLibrary
-          rows={rows}
-          scope="org"
-          nameOf={actors.nameOf}
-          canCreate={canAuthor}
-          onNew={() => document.getElementById("library-new-slug")?.focus()}
-          headingId="library-rows-heading"
-          onOpen={(pipeline) => navigate(`/library/${pipeline.id}`)}
+      {projects.isError ? (
+        <ProblemBanner
+          error={projects.error}
+          fallback="Your projects could not be read — assignment cells stay honest about it."
         />
       ) : null}
+      {fanBroke ? (
+        <ProblemBanner
+          error={undefined}
+          fallback="Some rows could not be read in full — their cells stay empty rather than invented."
+        />
+      ) : null}
+      {pipelines.data ? (
+        <div className="flex flex-wrap items-center gap-[6px]" data-testid="workflows-filters">
+          <FilterChip
+            active={filter === "all"}
+            onClick={() => setFilter("all")}
+            testid="workflows-filter-all"
+          >
+            all
+          </FilterChip>
+          <FilterChip
+            active={filter === "has-draft"}
+            onClick={() => setFilter("has-draft")}
+            testid="workflows-filter-draft"
+          >
+            has open draft
+          </FilterChip>
+          <Select
+            id="workflows-filter-project"
+            aria-label="used in project"
+            value={usedInProject}
+            onChange={(event) => setUsedInProject(event.target.value)}
+            className="font-mono text-[10.5px]"
+            data-testid="workflows-filter-project"
+          >
+            <option value="">used in any project</option>
+            {projectItems.map((project) => (
+              <option key={project.id} value={project.id}>
+                {`used in ${project.name}`}
+              </option>
+            ))}
+          </Select>
+        </div>
+      ) : null}
+      {pipelines.data && visible.length === 0 ? (
+        <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
+          {rows.length === 0
+            ? "No workflows yet — one is created with `New workflow` below."
+            : "No workflow matches the current filter."}
+        </p>
+      ) : null}
+      {pipelines.data && visible.length > 0 ? (
+        <ul className="divide-y-0" data-testid="workflows-list">
+          {visible.map((row) => (
+            <WorkflowRow
+              key={row.pipeline.id}
+              pipeline={row.pipeline}
+              definitionReady={row.ready}
+              revisions={row.revisions}
+              document={row.document}
+              drafts={row.drafts}
+              nameOf={actors.nameOf}
+              assigned={row.facts.assigned}
+              assignmentsResolved={row.facts.resolved}
+              canAuthor={canAuthor}
+              duplicating={duplicate.isPending && duplicate.variables === row.pipeline.id}
+              onDuplicate={() =>
+                duplicate.mutate(row.pipeline.id, {
+                  onSuccess: ({ pipeline, draft }) => navigate(routes.draft(pipeline.id, draft.id)),
+                })
+              }
+              onOpen={() => navigate(routes.workflow(row.pipeline.id))}
+            />
+          ))}
+        </ul>
+      ) : null}
+      <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
       {/* Below the definitions, never above them: the templates are the same
           vetted samples the authoring form offers, and a reader without the
           library role has no picker to find them behind. */}

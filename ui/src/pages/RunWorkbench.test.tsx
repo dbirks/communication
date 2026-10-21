@@ -17,6 +17,7 @@ import RunWorkbench from "./RunWorkbench";
 import type { NodeExecution } from "../api/types";
 import {
   WIRE_NODE_IMPLEMENT,
+  WIRE_NODE_LOOP,
   WIRE_NODE_PLAN,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
@@ -177,6 +178,73 @@ describe("the Run Workbench", () => {
     expect(await stepRow("canvas-step-row-plan")).toBeTruthy();
   });
 
+  it("?full=1 folds the graph into the step strip and centres the transcript at 760px", async () => {
+    mount("?full=1");
+    await screen.findByTestId("run-title");
+    const strip = await screen.findByTestId("workbench-step-strip", undefined, { timeout: 5000 });
+    // The canvas is folded away and the split's tab row leaves with it.
+    expect(screen.queryByTestId("workbench-graph-frame")).toBeNull();
+    expect(screen.queryByTestId("workbench-tab-graph")).toBeNull();
+    // One cell per TOP-LEVEL step, in the pinned revision's document order.
+    const cells = strip.querySelectorAll("[data-testid^='workbench-step-cell-']");
+    expect(Array.from(cells).map((cell) => cell.getAttribute("data-testid"))).toEqual([
+      "workbench-step-cell-plan",
+      "workbench-step-cell-approve",
+      "workbench-step-cell-build_until_verified",
+      "workbench-step-cell-verdict",
+      "workbench-step-cell-publish_verified",
+      "workbench-step-cell-publish_needs_attention",
+    ]);
+    // The loop cell wears the graph overlay's iteration counter, compacted.
+    expect(screen.getByTestId("workbench-step-cell-build_until_verified").textContent).toContain(
+      "1/2",
+    );
+    // The transcript is centred and capped at 760px.
+    const transcript = screen.getByTestId("workbench-fullscreen-transcript");
+    expect(transcript.className).toContain("max-w-[760px]");
+  });
+
+  it("a strip cell selects that step's transcript, and ⤡ show graph returns to the split", async () => {
+    mount("?full=1&node=plan", [
+      { path: `${RUN_PATH}/nodes/${WIRE_NODE_LOOP}`, body: wireNodeDetail },
+    ]);
+    await screen.findByTestId("run-title");
+    const planCell = await screen.findByTestId("workbench-step-cell-plan", undefined, {
+      timeout: 5000,
+    });
+    // The deep-link selection (node=plan) is the raised cell.
+    expect(planCell.getAttribute("aria-pressed")).toBe("true");
+    expect(planCell.className).toContain("shadow-(--shadow-raised)");
+
+    // Clicking the loop's cell is clicking its node on the graph: the dock
+    // follows to the scope's own execution.
+    fireEvent.click(screen.getByTestId("workbench-step-cell-build_until_verified"));
+    const title = await screen.findByTestId("dock-title", undefined, { timeout: 5000 });
+    expect(title.textContent).toContain("/build_until_verified");
+    expect(
+      screen.getByTestId("workbench-step-cell-build_until_verified").getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    // ⤡ show graph: `full` leaves the URL and the canvas is back.
+    fireEvent.click(screen.getByTestId("workbench-show-graph"));
+    expect(screen.queryByTestId("workbench-step-strip")).toBeNull();
+    expect(await stepRow("canvas-step-row-plan")).toBeTruthy();
+  });
+
+  it("Esc leaves full screen — but not while the reader is typing", async () => {
+    mount("?full=1");
+    await screen.findByTestId("run-title");
+    await screen.findByTestId("workbench-step-strip", undefined, { timeout: 5000 });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(screen.getByTestId("workbench-step-strip")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("workbench-step-strip")).toBeNull());
+    input.remove();
+  });
+
   it("auto-selects the gate the run is waiting on before the reader clicks", async () => {
     mount("", [
       { path: `${RUN_PATH}/nodes`, body: { node_executions: wireWaitingNodes } },
@@ -318,16 +386,103 @@ describe("the Run Workbench", () => {
     mount("?tab=execution");
 
     await screen.findByTestId("run-title");
-    // The rewrite happens on first data — then the tree view is what renders.
+    // The rewrite happens on first data — then the tree view is what renders,
+    // reached through its toggle (the old tab's testid lives on the toggle,
+    // not on a fifth tab button).
     await waitFor(() =>
-      expect(screen.getByTestId("workbench-tab-tree").getAttribute("aria-selected")).toBe("true"),
+      expect(screen.getByTestId("workbench-tab-tree").getAttribute("aria-pressed")).toBe("true"),
     );
     expect(await screen.findByTestId("run-tree")).toBeTruthy();
     expect(screen.queryByTestId("workbench-graph-view")).toBeNull();
   });
+
+  it("reaches the execution tree from the toggle inside the Graph view", async () => {
+    mount();
+    await screen.findByTestId("workbench-graph-view");
+    expect(screen.getByTestId("workbench-tab-tree").textContent).toContain("execution tree");
+    expect(screen.queryByTestId("run-tree")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("workbench-tab-tree"));
+    await waitFor(() =>
+      expect(screen.getByTestId("workbench-tab-tree").getAttribute("aria-pressed")).toBe("true"),
+    );
+    expect(await screen.findByTestId("run-tree")).toBeTruthy();
+    expect(screen.queryByTestId("workbench-graph-view")).toBeNull();
+  });
+
+  it("lists the run's referenced artifacts on the Artifacts tab with the count badge", async () => {
+    mount("?view=artifacts");
+
+    await screen.findByTestId("run-title");
+    expect(screen.getByTestId("workbench-tab-artifacts").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+    const view = await screen.findByTestId("workbench-artifacts-view");
+    // The wire's run names one artifact (the plan step's `plan.md`): the
+    // badge is the client-side sum of the steps' artifact_refs.
+    expect(screen.getByTestId("workbench-artifacts-badge").textContent).toBe("1");
+    const link = screen.getByTestId("workbench-artifact-link-0");
+    expect(link.textContent).toContain("plan.md");
+    expect(link.getAttribute("href")).toContain("/artifacts/");
+    expect(view.textContent).toContain("referenced by /plan");
+  });
+
+  it("shows the honest empty state when no step has referenced an artifact", async () => {
+    const noRefs: NodeExecution[] = wireNodeList.node_executions.map((node) => ({
+      ...node,
+      artifact_refs: [],
+    }));
+    mount("?view=artifacts", [{ path: `${RUN_PATH}/nodes`, body: { node_executions: noRefs } }]);
+
+    await screen.findByTestId("workbench-artifacts-empty");
+    expect(screen.queryByTestId("workbench-artifacts-badge")).toBeNull();
+    expect(screen.getByTestId("workbench-artifacts-project-link")).toBeTruthy();
+  });
 });
 
 /* -------------------------------------------------- the header stays honest */
+
+describe("the run header's meta line", () => {
+  it("names the workflow, the short run id, the pinned revision and the started age", async () => {
+    mount();
+
+    const meta = await screen.findByTestId("run-header-meta");
+    // `feature-development #<short> · revision r<n> <digest> (pinned) · started <age>`.
+    expect(meta.textContent).toContain("feature-development #");
+    expect(meta.textContent).toContain("(pinned) · started ");
+    // No actor frame in the journal buffer yet — the "by" half is absent,
+    // not invented. The header keeps no worker name anywhere (ADR-0016 § 8).
+    expect(meta.textContent).not.toContain(" by ");
+    expect(meta.textContent).not.toContain("worker");
+  });
+
+  it("adds the started-by actor only when a run.created frame names it", async () => {
+    mount();
+
+    await screen.findByTestId("run-header-meta");
+    act(() => {
+      FakeEventSource.last().emit(
+        wireRunEvent(
+          "run.created",
+          {},
+          { actor: { kind: "human", id: meFixture.id }, global_seq: 9901 },
+        ),
+      );
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("run-header-meta").textContent).toContain(
+        `by ${meFixture.display_name}`,
+      ),
+    );
+  });
+
+  it("renames the draft verb to Fix the workflow… and keeps its testid", async () => {
+    mount("", [{ path: "/api/v1/me", body: { ...meFixture, is_org_admin: true } }]);
+
+    const button = await screen.findByTestId("run-new-draft");
+    expect(button.textContent).toBe("Fix the workflow…");
+  });
+});
 
 describe("the run header follows the stream", () => {
   it("reads running after the gate is decided — the advancer's run.resumed names the cleared gate park", async () => {

@@ -1,11 +1,18 @@
 /**
- * The Run Workbench header (ADR-0043, design §6): project breadcrumb, the
- * run's goal (the run's own `inputs` when the API serves them, else the
- * pipeline's slug and short id), the pinned-revision link, the stream state,
- * the header verbs (Open pinned workflow / New draft from this revision) and
- * the reused Pause/Resume/Cancel/Retry actions. The "a newer revision was
- * published" notice rides right under it, worded exactly as the inspector
- * always worded it.
+ * The Run Workbench header (ADR-0043, design §6; gap U1/U5): project
+ * breadcrumb, the run's goal (the run's own `inputs` when the API serves
+ * them, else the pipeline's slug and short id), the status chip, the meta
+ * line `<workflow> #<short run id> · <repo> · revision r<n> <digest6>
+ * (pinned) · started <age>[ by <name>]`, the header verbs (Open pinned
+ * workflow / Fix the workflow…) and the reused Pause/Resume/Cancel/Retry
+ * actions. The "a newer revision was published" notice rides right under it,
+ * worded exactly as the inspector always worded it.
+ *
+ * Honesty in the meta line: `<repo>` is the project's repository only when
+ * there is exactly one (several repositories make the run's own data
+ * ambiguous, so the segment is omitted); `by <name>` appears only when a
+ * `run.created` / `run.started` frame in the journal buffer names the actor
+ * (never a worker name — ADR-0016 § 8).
  */
 import { useState } from "react";
 import { Alert } from "../ds/Alert";
@@ -16,11 +23,12 @@ import { useCreateDraft } from "../../api/pipelines";
 import { problemOf } from "../../api/client";
 import { hasLibraryRole } from "../../lib/pipeline/authoring";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
-import { shortId } from "../../lib/format";
+import { formatAge, shortId } from "../../lib/format";
 import { RunActions } from "../../pages/RunInspector";
 import { RunStatusChip } from "../../pages/ProjectRuns";
 import type { NodeExecutionSummary, RunDetail } from "../../lib/pipeline/contract";
 import { Link, useNavigate } from "react-router";
+import { routes } from "../../lib/routes";
 
 export interface RunHeaderProps {
   projectId: string;
@@ -35,6 +43,12 @@ export interface RunHeaderProps {
    * flight (the digest is always on the run itself). */
   revision: { revision_number: number; revision_digest: string } | null;
   nodes: readonly NodeExecutionSummary[];
+  /** The project's repository name, or null when the project holds several
+   * (or none) and the run's data does not say which one it ran in. */
+  repoName: string | null;
+  /** The actor of the run's `run.created` / `run.started` frame, in words —
+   * null when the journal buffer the page holds has no such frame. */
+  startedBy: string | null;
 }
 
 export function RunHeader({
@@ -45,6 +59,8 @@ export function RunHeader({
   streamStatus,
   revision,
   nodes,
+  repoName,
+  startedBy,
 }: RunHeaderProps) {
   const project = useProject(projectId);
   const me = useMe();
@@ -60,7 +76,7 @@ export function RunHeader({
     createDraft.mutate(
       { from_revision_id: run.pipeline_revision_id },
       {
-        onSuccess: (draft) => navigate(`/library/${run.pipeline_id}/drafts/${draft.id}`),
+        onSuccess: (draft) => navigate(routes.draft(run.pipeline_id, draft.id)),
         onError: (error: unknown) => setDraftError(problemOf(error).title),
       },
     );
@@ -75,14 +91,14 @@ export function RunHeader({
           className="flex items-center gap-[6px] font-mono text-[11px] text-muted"
         >
           <Link
-            to={`/projects/${projectId}`}
+            to={routes.project(projectId)}
             className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             {project.data?.name ?? projectId}
           </Link>
           <span aria-hidden>/</span>
           <Link
-            to={`/projects/${projectId}/runs`}
+            to={routes.projectTab(projectId, "runs")}
             className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             Runs
@@ -99,24 +115,26 @@ export function RunHeader({
             {streamStatus}
           </span>
         </div>
-        <p className="font-mono text-[11px] text-muted">
-          revision{" "}
+        <p className="min-w-0 font-mono text-[11px] text-muted" data-testid="run-header-meta">
+          {slug} #{shortId(run.id)}
+          {repoName ? <> · {repoName}</> : null} · revision{" "}
           <a
-            href={`/library/${run.pipeline_id}`}
+            href={routes.workflow(run.pipeline_id)}
             data-testid="run-pinned-revision"
             className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             {revision
-              ? `r${revision.revision_number} · ${shortDigest(revision.revision_digest)}`
-              : shortDigest(run.revision_digest)}
+              ? `r${revision.revision_number} ${shortDigest(revision.revision_digest).slice(0, 6)}`
+              : shortDigest(run.revision_digest).slice(0, 6)}
           </a>{" "}
-          (pinned)
+          (pinned) · started {formatAge(run.started_at ?? run.created_at)}
+          {startedBy ? <> by {startedBy}</> : null}
         </p>
       </div>
       <div className="flex flex-col items-end gap-2">
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Link
-            to={`/library/${run.pipeline_id}`}
+            to={routes.workflow(run.pipeline_id)}
             data-testid="run-open-workflow"
             className="rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
@@ -129,7 +147,7 @@ export function RunHeader({
               data-testid="run-new-draft"
               onClick={startDraftFromRevision}
             >
-              {createDraft.isPending ? "Starting draft…" : "New draft from this revision"}
+              {createDraft.isPending ? "Starting draft…" : "Fix the workflow…"}
             </Button>
           ) : null}
         </div>
@@ -169,7 +187,7 @@ export function NewRevisionNotice({
         testid="run-new-revision-notice"
         action={
           <Link
-            to={`/library/${pipelineId}`}
+            to={routes.workflow(pipelineId)}
             className="shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid="run-new-revision-link"
           >

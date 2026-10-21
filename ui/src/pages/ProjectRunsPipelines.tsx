@@ -60,6 +60,7 @@ import type { DefinitionDocument } from "../lib/pipeline/definition";
 import type { PipelineRevisionSummary, PipelineSummary } from "../lib/pipeline/contract";
 import { shortDigest } from "../lib/pipeline/yamlPointer";
 import { ProjectSectionNav } from "./ProjectRuns";
+import { routes } from "../lib/routes";
 
 export default function ProjectPipelines() {
   const { projectId = "" } = useParams();
@@ -539,7 +540,7 @@ function WhenToRun({
             </span>
             {schedule.last_run_id ? (
               <Link
-                to={`/projects/${projectId}/runs/${schedule.last_run_id}`}
+                to={routes.run(schedule.last_run_id)}
                 className="font-mono text-[11px] text-accent"
                 data-testid={`schedule-last-run-${slug}`}
               >

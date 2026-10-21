@@ -83,6 +83,7 @@ import {
   shortDigest,
   shortId,
 } from "./ProjectRuns";
+import { routes } from "../lib/routes";
 
 type Tab = "definition" | "execution" | "timeline";
 const TABS: readonly { id: Tab; label: string }[] = [
@@ -372,7 +373,7 @@ export default function RunInspector({
               testid="run-new-revision-notice"
               action={
                 <Link
-                  to={`/library/${run.pipeline_id}`}
+                  to={routes.workflow(run.pipeline_id)}
                   className="shrink-0 rounded-[3px] border border-line px-2 py-[3px] font-mono text-[11px] text-ink-2 underline-offset-2 hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                   data-testid="run-new-revision-link"
                 >
@@ -442,7 +443,6 @@ export default function RunInspector({
         ) : null}
         {tab === "execution" ? (
           <RunExecutionTab
-            projectId={projectId}
             nodes={projection.nodes}
             tree={tree}
             definitionOrder={definitionOrder}
@@ -675,7 +675,6 @@ function RunDefinitionTab({
 /* -------------------------------------------------------- execution tab */
 
 export function RunExecutionTab({
-  projectId,
   nodes,
   tree,
   definitionOrder,
@@ -684,7 +683,6 @@ export function RunExecutionTab({
   onSelect,
   onSelectBranch,
 }: {
-  projectId: string;
   nodes: NodeExecutionSummary[];
   tree: RunTreeRoot | null;
   /** The pinned revision's node ids in document order, read once by the page
@@ -732,7 +730,7 @@ export function RunExecutionTab({
         }
         selectedKey={selectedKey}
         onSelect={onSelect}
-        runPath={(child) => `/projects/${projectId}/runs/${child}`}
+        runPath={(child) => routes.run(child)}
         headingId="run-tree-heading"
       />
     </div>

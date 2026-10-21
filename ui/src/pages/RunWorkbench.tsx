@@ -12,15 +12,22 @@
  * back button leaves the run, and a link to a node is shareable. Old
  * inspector links stay valid: `?tab=timeline|execution|definition` maps to
  * the new view, and a `?node=` that names a node execution (not a definition
- * node) is rewritten to `node=` + `instance=` on first data.
+ * node) is rewritten to `node=` + `instance=` on first data. The tab row is
+ * Graph / Timeline / Artifacts / Diagnostics; the Execution tree rides a
+ * toggle inside the Graph view (the tree view's `?view=tree` stays valid and
+ * the toggle keeps the old tab's testid), and the Artifacts tab lists the
+ * run's referenced artifacts — the client-side sum over the steps'
+ * `artifact_refs`, never a guess (gap U1).
  *
  * Live-data honesty: the overlays and the dock read the execution journal
  * (`/runs/{id}/nodes` + the SSE stream); the auto-select rule fires once,
  * before the reader clicks anything, and never again (ADR-0043 decision 4).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router";
 import { usePipelines, usePipelineRevisions, useRevision } from "../api/pipelines";
+import { useRepositories } from "../api/queries";
+import { useActorNames } from "../api/actors";
 import { useRun, useRunNodes, useRunTree } from "../api/runs";
 import { useRunEvents } from "../api/runEvents";
 import { viewNodeExecution, viewRun, viewRunTree } from "../api/m4view";
@@ -44,6 +51,7 @@ import { branchesOf, findBranch } from "../lib/pipeline/branches";
 import { NewRevisionNotice, RunHeader, RunHeaderLoading } from "../components/workbench/RunHeader";
 import { WorkbenchDock } from "../components/workbench/WorkbenchDock";
 import { InstancePicker, scopeInstances } from "../components/workbench/InstancePicker";
+import { StepStrip, buildStepCells, type StepStripStep } from "../components/workbench/StepStrip";
 import { StudioCanvas, type UiLayout } from "../components/studio/StudioCanvas";
 import {
   attentionNodeId,
@@ -52,22 +60,32 @@ import {
   RunTimelineTab,
 } from "../pages/RunInspector";
 import RunInspector from "../pages/RunInspector";
-import type { NodeExecutionSummary } from "../lib/pipeline/contract";
+import { shortId } from "../lib/format";
+import { routes } from "../lib/routes";
+import type { ArtifactRef, NodeExecutionSummary } from "../lib/pipeline/contract";
 
-type View = "graph" | "timeline" | "tree" | "diagnostics";
+type View = "graph" | "timeline" | "tree" | "artifacts" | "diagnostics";
 
 const WORKBENCH_TABS: readonly { id: View; label: string }[] = [
   { id: "graph", label: "Graph" },
   { id: "timeline", label: "Timeline" },
-  { id: "tree", label: "Execution tree" },
+  { id: "artifacts", label: "Artifacts" },
   { id: "diagnostics", label: "Diagnostics" },
 ];
 
 /** The view a URL names — and the old inspector's `?tab=` mapped onto it, so
- * links written before the workbench keep reading the same view. */
+ * links written before the workbench keep reading the same view. `?view=tree`
+ * (and `?tab=execution`) still resolve: the tree view is reached through the
+ * toggle inside the Graph view, not through a fifth tab. */
 export function readWorkbenchView(params: URLSearchParams): View {
   const view = params.get("view");
-  if (view === "graph" || view === "timeline" || view === "tree" || view === "diagnostics")
+  if (
+    view === "graph" ||
+    view === "timeline" ||
+    view === "tree" ||
+    view === "artifacts" ||
+    view === "diagnostics"
+  )
     return view;
   const tab = params.get("tab");
   if (tab === "timeline") return "timeline";
@@ -82,6 +100,10 @@ export function readWorkbenchView(params: URLSearchParams): View {
 function withWorkbenchState(current: URLSearchParams, state: WorkbenchUrlState): URLSearchParams {
   const next = new URLSearchParams(current);
   for (const key of ["node", "instance", "attempt", "view", "scope"]) next.delete(key);
+  // `view=artifacts` is the page's own vocabulary (the workbench state model
+  // knows graph/timeline/tree/diagnostics): every rewrite must carry it
+  // through, or a selection change flips the reader back onto the graph.
+  if (current.get("view") === "artifacts") next.set("view", "artifacts");
   const query = workbenchSearch(state);
   if (query !== "") {
     for (const [key, value] of new URLSearchParams(query)) next.set(key, value);
@@ -180,11 +202,19 @@ function useNarrow(): boolean {
   return narrow;
 }
 
-export default function RunWorkbench() {
-  const { projectId = "", runId = "" } = useParams();
+export default function RunWorkbench({ projectId: projectIdProp }: { projectId?: string } = {}) {
+  const routeParams = useParams();
+  // The project-less deep link (`/runs/:runId`) resolves the project from the
+  // run itself and passes it here; the legacy path keeps reading it from the URL.
+  const projectId = projectIdProp ?? routeParams.projectId ?? "";
+  const runId = routeParams.runId ?? "";
   const [params, setParams] = useSearchParams();
   const view = readWorkbenchView(params);
   const narrow = useNarrow();
+  // Full-screen transcript (design 5c): `?full=1` folds the graph into the
+  // step strip and centres the transcript; the param rides alongside the
+  // ADR-0043 fields and is left alone by every selection rewrite.
+  const fullScreen = params.get("full") === "1";
 
   /* ---------------------------------------------------------- the reads */
   const runQuery = useRun(runId);
@@ -227,6 +257,39 @@ export default function RunWorkbench() {
     return typeof found?.value === "string" ? found.value : null;
   }, [runQuery.data]);
 
+  // The Artifacts tab's rows: every step's `artifact_refs`, named by the step
+  // that references it. The count is this sum — "referenced" artifacts, the
+  // same artifact named by two steps counts twice (there is no run-level
+  // artifact endpoint to dedupe against, and a guess would be a lie).
+  const artifactRefs = useMemo(() => {
+    const rows: { ref: ArtifactRef; nodeKey: string }[] = [];
+    for (const node of projection.nodes) {
+      for (const ref of node.artifact_refs) rows.push({ ref, nodeKey: node.node_instance_key });
+    }
+    return rows;
+  }, [projection.nodes]);
+
+  // The header's "started by <name>": only when a `run.created` / `run.started`
+  // frame with an actor is in the journal buffer this page holds — never
+  // invented, and never a worker name (ADR-0016 § 8).
+  const { actorLabel } = useActorNames(projectId);
+  const startedBy = useMemo(() => {
+    for (const frame of stream.events) {
+      if (frame.type !== "run.created" && frame.type !== "run.started") continue;
+      return actorLabel(frame.actor);
+    }
+    return null;
+  }, [stream.events, actorLabel]);
+
+  // The header's repo segment: a project with exactly one repository names it
+  // unambiguously; with several, the run's data does not say which one it ran
+  // in, so the segment is omitted rather than guessed.
+  const repositories = useRepositories(projectId);
+  const repoName = useMemo(() => {
+    const items = repositories.data?.items ?? [];
+    return items.length === 1 ? items[0].name : null;
+  }, [repositories.data]);
+
   /* ------------------------------------------ the pinned revision, read-once */
   const revisionRecord = useRevision(baseRun?.pipeline_revision_id ?? "");
   const definitionDocument = (revisionRecord.data?.canonical_document ??
@@ -266,6 +329,63 @@ export default function RunWorkbench() {
   const statusOverlay = useMemo(
     () => overlays(projection.nodes, scopes),
     [projection.nodes, scopes],
+  );
+
+  /** Full screen (`?full=1`) sets and clears one param — the ADR-0043
+   * selection fields are never touched, so a deep link to a step survives
+   * the round trip through the strip. */
+  const setFull = useCallback(
+    (value: boolean) =>
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          if (value) next.set("full", "1");
+          else next.delete("full");
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+
+  // Esc leaves full screen — unless the reader is typing in a field.
+  useEffect(() => {
+    if (!fullScreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      )
+        return;
+      setFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullScreen, setFull]);
+
+  /** The full-screen strip's cells: the pinned definition's TOP-LEVEL steps
+   * in document order, wearing the graph boxes' own overlays. Before the
+   * revision answers, the journal's top-level rows stand in — never steps
+   * the run has not named. */
+  const topSteps = useMemo<StepStripStep[]>(() => {
+    if (definitionDocument?.spec?.nodes)
+      return definitionDocument.spec.nodes.map((node) => ({ id: node.id, kind: node.kind }));
+    const seen = new Set<string>();
+    const order: StepStripStep[] = [];
+    for (const row of projection.nodes) {
+      const root = row.node_instance_key.split(/[/[]/)[0];
+      if (root === row.node_id && !seen.has(row.node_id)) {
+        seen.add(row.node_id);
+        order.push({ id: row.node_id, kind: row.kind });
+      }
+    }
+    return order;
+  }, [definitionDocument, projection.nodes]);
+  const stripCells = useMemo(
+    () => buildStepCells(topSteps, statusOverlay),
+    [topSteps, statusOverlay],
   );
 
   // The discipline: once the reader clicks, the page never moves the
@@ -486,7 +606,7 @@ export default function RunWorkbench() {
    * tests render the canvas without the page's frame). */
   const [stepsTidied, setStepsTidied] = useState(false);
   useEffect(() => {
-    if (narrow || view !== "graph" || stepsTidied) return;
+    if (narrow || fullScreen || view !== "graph" || stepsTidied) return;
     let cancelled = false;
     let timer: number | undefined;
     const tryTidy = () => {
@@ -520,7 +640,7 @@ export default function RunWorkbench() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [narrow, view, stepsTidied]);
+  }, [narrow, fullScreen, view, stepsTidied]);
 
   const startResize = (event: { clientX: number; pointerId: number; target: unknown }) => {
     const target = event.target as HTMLElement | null;
@@ -569,8 +689,26 @@ export default function RunWorkbench() {
   const ringStyle = graphRingStyle(selectedDefId);
 
   /* ------------------------------------------------------------- the views */
+  /** The Graph/Timeline/Artifacts/Diagnostics row is the workbench's tab set
+   * (gap U1); the Execution tree no longer rides it — the toggle below lives
+   * inside the Graph view, and the tree view carries the toggle back. Both
+   * keep the old tab's `workbench-tab-tree` testid, so a bookmarked selector
+   * finds the tree either way. */
+  const treeToggle = (target: "tree" | "graph") => (
+    <button
+      type="button"
+      data-testid="workbench-tab-tree"
+      aria-pressed={view === "tree"}
+      onClick={() => setView(target)}
+      className="shrink-0 self-start rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+    >
+      {target === "tree" ? "execution tree »" : "« back to graph"}
+    </button>
+  );
+
   const graphView = (
     <div data-testid="workbench-graph-view">
+      <div className="flex items-center justify-end gap-2 pb-2">{treeToggle("tree")}</div>
       {ringStyle ? <style>{ringStyle}</style> : null}
       {scopePickers.length > 0 ? (
         <div className="space-y-[6px] pb-2">
@@ -625,16 +763,73 @@ export default function RunWorkbench() {
   );
 
   const treeView = (
-    <RunExecutionTab
-      projectId={projectId}
-      nodes={projection.nodes}
-      tree={tree}
-      definitionOrder={definitionOrder}
-      selectedKey={selectedExecution?.node_instance_key ?? null}
-      selectedBranch={selectedBranch}
-      onSelect={selectHandle}
-      onSelectBranch={selectBranch}
-    />
+    <div data-testid="workbench-tree-view">
+      <div className="flex items-center justify-end gap-2 pb-2">{treeToggle("graph")}</div>
+      <RunExecutionTab
+        nodes={projection.nodes}
+        tree={tree}
+        definitionOrder={definitionOrder}
+        selectedKey={selectedExecution?.node_instance_key ?? null}
+        selectedBranch={selectedBranch}
+        onSelect={selectHandle}
+        onSelectBranch={selectBranch}
+      />
+    </div>
+  );
+
+  /** The Artifacts tab: the client-side list of the run's referenced
+   * artifacts (sum of the steps' `artifact_refs`, labelled "referenced") with
+   * the honest empty state when no step has referenced one. */
+  const artifactsView = (
+    <div data-testid="workbench-artifacts-view">
+      {artifactRefs.length > 0 ? (
+        <>
+          <p className="font-mono text-[11px] text-muted">
+            {artifactRefs.length} referenced artifact{artifactRefs.length === 1 ? "" : "s"} across
+            the run's steps — the client-side sum of the steps' artifact references, so an artifact
+            named by two steps counts twice.
+          </p>
+          <ul
+            className="divide-y divide-line overflow-x-auto rounded-[3px] border border-line bg-surface"
+            data-testid="workbench-artifacts-list"
+          >
+            {artifactRefs.map((row, index) => (
+              <li
+                key={`${row.ref.id}:${index}`}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2"
+              >
+                <Link
+                  to={`/artifacts/${row.ref.id}`}
+                  className="text-[12.5px] font-semibold text-ink underline-offset-2 hover:underline hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  data-testid={`workbench-artifact-link-${index}`}
+                >
+                  {row.ref.name || shortId(row.ref.id)}
+                </Link>
+                <span className="font-mono text-[10.5px] text-faint">{row.ref.kind}</span>
+                {row.ref.sensitivity ? (
+                  <span className="font-mono text-[10.5px] text-faint">{row.ref.sensitivity}</span>
+                ) : null}
+                <span className="ml-auto font-mono text-[10.5px] text-muted">
+                  referenced by {row.nodeKey}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="font-mono text-[11px] text-muted" data-testid="workbench-artifacts-empty">
+          No step of this run has referenced an artifact yet. The{" "}
+          <Link
+            to={routes.projectTab(projectId, "artifacts")}
+            className="underline-offset-2 text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            data-testid="workbench-artifacts-project-link"
+          >
+            project's artifacts
+          </Link>{" "}
+          page lists what it has stored.
+        </p>
+      )}
+    </div>
   );
 
   const dock = (
@@ -648,6 +843,8 @@ export default function RunWorkbench() {
       nodes={projection.nodes}
       frames={stream.events}
       tree={tree}
+      fullScreen={fullScreen}
+      onToggleFullScreen={() => setFull(!fullScreen)}
     />
   );
 
@@ -666,6 +863,8 @@ export default function RunWorkbench() {
           goal={goal}
           slug={slug}
           streamStatus={stream.status}
+          repoName={repoName}
+          startedBy={startedBy}
           revision={
             revisionNumber === null
               ? null
@@ -685,77 +884,125 @@ export default function RunWorkbench() {
           />
         ) : null}
 
-        <div className="flex gap-1 py-3">
-          <div role="tablist" aria-label="Workbench views" className="flex gap-1">
-            {WORKBENCH_TABS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                aria-selected={view === item.id}
-                data-testid={`workbench-tab-${item.id}`}
-                onClick={() => setView(item.id)}
-                className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
-                  view === item.id
-                    ? "border-ink bg-ink text-paper"
-                    : "border-line text-muted hover:border-line-strong hover:text-ink"
-                } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          {!narrow ? (
-            <button
-              type="button"
-              data-testid="workbench-dock-collapse"
-              aria-label={dockCollapsed ? "Show the node detail" : "Hide the node detail"}
-              onClick={() => setDockCollapsed((value) => !value)}
-              className="ml-auto self-center rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-            >
-              {dockCollapsed ? "detail »" : "« detail"}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="flex min-h-0 flex-1">
-        <main className="min-w-0 flex-1 px-4 pb-4">
-          {view === "graph" ? graphView : null}
-          {view === "timeline" ? timelineView : null}
-          {view === "tree" ? treeView : null}
-          {view === "diagnostics" ? <RunInspector embedded /> : null}
-        </main>
-        {!narrow && !dockCollapsed ? (
-          <aside className="flex min-w-0 border-l border-line bg-surface">
+        {/* The tab row belongs to the split presentation; in full screen
+         * (design 5c) the step strip takes its place. */}
+        {!fullScreen ? (
+          <div className="flex gap-1 py-3">
             <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-valuemin={DOCK_MIN}
-              aria-valuemax={DOCK_MAX}
-              aria-valuenow={dockWidth}
-              aria-label="Resize the node detail"
-              tabIndex={0}
-              data-testid="workbench-dock-resizer"
-              onPointerDown={startResize}
-              onPointerMove={onResize}
-              onPointerUp={endResize}
-              onPointerCancel={endResize}
-              onKeyDown={onSeparatorKey}
-              className="w-[6px] shrink-0 cursor-col-resize border-r border-line hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
-            />
-            <div
-              className="w-full overflow-y-auto px-3 py-3"
-              style={{ width: dockWidth }}
-              data-testid="workbench-dock-pane"
+              role="tablist"
+              aria-label="Workbench views"
+              className="flex max-w-full gap-1 overflow-x-auto"
             >
-              {dock}
+              {WORKBENCH_TABS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === item.id}
+                  data-testid={`workbench-tab-${item.id}`}
+                  onClick={() => setView(item.id)}
+                  className={`shrink-0 whitespace-nowrap rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
+                    view === item.id
+                      ? "border-ink bg-ink text-paper"
+                      : "border-line text-muted hover:border-line-strong hover:text-ink"
+                  } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+                >
+                  {item.label}
+                  {item.id === "artifacts" && artifactRefs.length > 0 ? (
+                    <span
+                      data-testid="workbench-artifacts-badge"
+                      className="ml-1.5 rounded-[3px] bg-paper/15 px-1 font-mono text-[10.5px] font-normal"
+                    >
+                      {artifactRefs.length}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
             </div>
-          </aside>
+            {!narrow ? (
+              <button
+                type="button"
+                data-testid="workbench-dock-collapse"
+                aria-label={dockCollapsed ? "Show the node detail" : "Hide the node detail"}
+                onClick={() => setDockCollapsed((value) => !value)}
+                className="ml-auto self-center rounded-[3px] border border-line px-2 py-[3px] font-mono text-[10.5px] text-muted hover:border-line-strong hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                {dockCollapsed ? "detail »" : "« detail"}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
-      {narrow ? (
+      <div className="flex min-h-0 flex-1">
+        {fullScreen ? (
+          /* Full-screen transcript (design 5c): the graph is the strip of
+           * step cells across the top; the transcript is centred at 760px. */
+          <main className="min-w-0 flex-1 px-4 pb-4">
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex w-full min-w-0 items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="workbench-show-graph"
+                  onClick={() => setFull(false)}
+                  className="shrink-0 rounded-[3px] border border-line px-2.5 py-[5px] text-[12px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                >
+                  ⤡ show graph
+                </button>
+                <div className="min-w-0 flex-1">
+                  <StepStrip
+                    cells={stripCells}
+                    selectedId={selectedDefId}
+                    onSelect={selectDefinition}
+                  />
+                </div>
+              </div>
+              <div className="w-full max-w-[760px]" data-testid="workbench-fullscreen-transcript">
+                {dock}
+              </div>
+            </div>
+          </main>
+        ) : (
+          <>
+            <main className="min-w-0 flex-1 px-4 pb-4">
+              {view === "graph" ? graphView : null}
+              {view === "timeline" ? timelineView : null}
+              {view === "tree" ? treeView : null}
+              {view === "artifacts" ? artifactsView : null}
+              {view === "diagnostics" ? <RunInspector embedded /> : null}
+            </main>
+            {!narrow && !dockCollapsed ? (
+              <aside className="flex min-w-0 border-l border-line bg-surface">
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-valuemin={DOCK_MIN}
+                  aria-valuemax={DOCK_MAX}
+                  aria-valuenow={dockWidth}
+                  aria-label="Resize the node detail"
+                  tabIndex={0}
+                  data-testid="workbench-dock-resizer"
+                  onPointerDown={startResize}
+                  onPointerMove={onResize}
+                  onPointerUp={endResize}
+                  onPointerCancel={endResize}
+                  onKeyDown={onSeparatorKey}
+                  className="w-[6px] shrink-0 cursor-col-resize border-r border-line hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+                />
+                <div
+                  className="w-full overflow-y-auto px-3 py-3"
+                  style={{ width: dockWidth }}
+                  data-testid="workbench-dock-pane"
+                >
+                  {dock}
+                </div>
+              </aside>
+            ) : null}
+          </>
+        )}
+      </div>
+
+      {narrow && !fullScreen ? (
         <section
           className="border-t border-line bg-surface px-4 py-3"
           data-testid="workbench-dock-panel"

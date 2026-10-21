@@ -26,6 +26,8 @@ func ntMop(t *testing.T, pool *pgxpool.Pool, orgIDs ...string) {
 		bg := context.Background()
 		for _, orgID := range orgIDs {
 			for _, sql := range []string{
+				`DELETE FROM pipeline_revision_template_refs WHERE template_revision_id IN
+				    (SELECT id FROM node_template_revisions WHERE organization_id = $1)`,
 				`DELETE FROM node_template_revisions WHERE organization_id = $1`,
 				`DELETE FROM node_templates WHERE organization_id = $1`,
 			} {
@@ -210,6 +212,16 @@ func TestNodeTemplateCreateRevisionsDuplicateIsolation(t *testing.T) {
 	}
 	if detail.Template.UsedInCount != 0 || len(detail.Usages) != 0 {
 		t.Errorf("usages = %+v, want none (refs table is empty until publish)", detail.Usages)
+	}
+	// latest_revision is the highest revision_number row, fully populated —
+	// not a zero summary the client would have to rebuild from revisions[0].
+	wantLatest := detail.Revisions[0]
+	gotLatest := detail.Template.LatestRevision
+	if gotLatest.RevisionID == "" || gotLatest.RevisionNumber == 0 ||
+		gotLatest.RevisionID != wantLatest.RevisionID || gotLatest.RevisionNumber != 3 ||
+		gotLatest.VersionLabel != "1.1.1" || gotLatest.RevisionDigest != wantLatest.RevisionDigest ||
+		!gotLatest.CreatedAt.Equal(wantLatest.CreatedAt) {
+		t.Errorf("latest_revision = %+v, want the revision-3 row %+v", gotLatest, wantLatest)
 	}
 
 	// list: org-scoped, one query's worth.

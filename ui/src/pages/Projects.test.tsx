@@ -10,6 +10,7 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import type { Project } from "../api/types";
+import { routes } from "../lib/routes";
 
 const me: RouteStub = { path: "/api/v1/me", body: meFixture };
 
@@ -33,7 +34,7 @@ function projectDetailRoutes(project: Project): RouteStub[] {
 describe("/ projects index", () => {
   it("lists the visible projects with the caller's role", async () => {
     const { requests } = renderApp({
-      path: "/",
+      path: "/projects",
       routes: [
         me,
         {
@@ -48,17 +49,20 @@ describe("/ projects index", () => {
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
 
     const widgets = screen.getByTestId("project-link-widgets");
-    expect(widgets.getAttribute("href")).toBe(`/projects/${projectFixture.id}`);
+    expect(widgets.getAttribute("href")).toBe(routes.project(projectFixture.id));
     expect(widgets.textContent).toContain("Widgets");
     expect(widgets.textContent).toContain("role: maintainer");
     expect(screen.getByTestId("project-link-other-app").textContent).toContain("role: viewer");
 
-    expect(requestsTo(requests, "/api/v1/projects", "GET")).toHaveLength(1);
+    // The page's own data is one org-wide list read — never a per-project
+    // fan-out. The shell's sidebar tree may add at most one more read of the
+    // same list (same query key), so at most two requests are legitimate.
+    expect(requestsTo(requests, "/api/v1/projects", "GET").length).toBeLessThanOrEqual(2);
   });
 
   it("shows an empty state when there are no projects", async () => {
     renderApp({
-      path: "/",
+      path: "/projects",
       routes: [me, { path: "/api/v1/projects", method: "GET", body: { items: [] } }],
     });
     await screen.findByText("No projects yet");
@@ -66,7 +70,7 @@ describe("/ projects index", () => {
 
   it("creates a project with the CSRF header and opens it", async () => {
     const { requests } = renderApp({
-      path: "/",
+      path: "/projects",
       routes: [
         me,
         { path: "/api/v1/projects", method: "GET", body: { items: [] } },
@@ -98,7 +102,7 @@ describe("/ projects index", () => {
 
   it("shows the problem detail inline when the slug is taken (409)", async () => {
     renderApp({
-      path: "/",
+      path: "/projects",
       routes: [
         me,
         { path: "/api/v1/projects", method: "GET", body: { items: [projectFixture] } },
@@ -131,7 +135,7 @@ describe("/ projects index", () => {
 
   it("shows the problem detail inline for a validation failure (422)", async () => {
     renderApp({
-      path: "/",
+      path: "/projects",
       routes: [
         me,
         { path: "/api/v1/projects", method: "GET", body: { items: [] } },
@@ -216,7 +220,7 @@ function boardStub(projects: Project[], perProject: Record<string, AttentionStub
       },
     );
   }
-  return renderApp({ path: "/", routes });
+  return renderApp({ path: "/projects", routes });
 }
 
 function cards(): string[] {

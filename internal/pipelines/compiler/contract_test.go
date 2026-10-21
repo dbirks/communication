@@ -182,7 +182,7 @@ var specExamples = []struct {
 }{
 	{"feature-development.yaml", []string{string(diag.CodeKindNotImplemented), string(diag.CodeSchemaShape)}},
 	{"process-ready-issues.yaml", []string{string(diag.CodeKindNotImplemented), string(diag.CodeSchemaShape)}},
-	{"node-template-reviewer.yaml", []string{string(diag.CodeTemplatePublishDefer)}},
+	{"node-template-reviewer.yaml", []string{}},
 	{"project-binding.yaml", []string{string(diag.CodeUnknownDocument)}},
 	{"secret-mounts.yaml", []string{string(diag.CodeUnknownDocument)}},
 }
@@ -191,7 +191,7 @@ func TestSpecExamplesAnswerTheContract(t *testing.T) {
 	for _, tc := range specExamples {
 		t.Run(tc.file, func(t *testing.T) {
 			doc, d := load(t, "../../../communication-spec/examples/"+tc.file)
-			plan, cd := compiler.Compile(doc, compiler.Options{AllowNodeTemplatePublish: false})
+			plan, cd := compiler.Compile(doc, compiler.Options{})
 			all := append(d, cd...)
 			_ = plan
 			if len(tc.want) == 0 {
