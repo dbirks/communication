@@ -29,9 +29,13 @@ function ToolPreview({
         {label}
       </div>
       {/* Mono (rule 07: machine-produced) and scrollable: a 4 KB diff must not
-          push the transcript off the screen. */}
+          push the transcript off the screen. The pre is a focusable scroll
+          region (axe scrollable-region-focusable). */}
       <pre
-        className={`overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted ${
+        role="region"
+        tabIndex={0}
+        aria-label={`${label} (preview)`}
+        className={`overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
           tall ? "max-h-[45vh]" : "max-h-24"
         }`}
         data-testid={`tool-preview-${label}`}
@@ -77,7 +81,10 @@ function AgentMessageBody({ text }: { text: string }) {
     <div className="mt-1" data-testid="agent-plan">
       {raw ? (
         <pre
-          className="overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted"
+          role="region"
+          tabIndex={0}
+          aria-label="Raw plan text"
+          className="overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.45] text-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           data-testid="agent-plan-raw"
         >
           {text}

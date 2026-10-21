@@ -990,7 +990,10 @@ export default function RunWorkbench({ projectId: projectIdProp }: { projectId?:
                   className="w-[6px] shrink-0 cursor-col-resize border-r border-line hover:border-accent focus-visible:outline-2 focus-visible:outline-accent"
                 />
                 <div
-                  className="w-full overflow-y-auto px-3 py-3"
+                  role="region"
+                  tabIndex={0}
+                  aria-label="Node detail"
+                  className="w-full overflow-y-auto px-3 py-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                   style={{ width: dockWidth }}
                   data-testid="workbench-dock-pane"
                 >

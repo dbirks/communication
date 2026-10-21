@@ -397,7 +397,14 @@ function PlanArtifactBody({
       meta={`${formatBytes(match.size_bytes)} · ${match.sensitivity}`}
       headingLevel={2}
     >
-      <div className="max-h-[480px] overflow-y-auto p-3">
+      {/* The plan inline: a focusable scroll region so keyboard users can
+          scroll a long plan (axe scrollable-region-focusable). */}
+      <div
+        role="region"
+        tabIndex={0}
+        aria-label={`${refName} plan`}
+        className="max-h-[480px] overflow-y-auto p-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+      >
         <PlanProse text={String(content.data)} testid={testid} />
       </div>
     </Panel>

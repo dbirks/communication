@@ -111,12 +111,20 @@ export function YamlView({
         data-layout={layout}
       >
         <div className="min-w-0">
-          {/* A code block, not an editor: no role="textbox", no tabIndex on the
-              pre, so nothing pretends to be editable. Scroll is on the region. */}
+          {/* A code block, not an editor: no role="textbox" so nothing pretends
+              to be editable. It IS a scroll region, though — tabIndex + region
+              role let keyboard users focus and scroll it (axe
+              scrollable-region-focusable); focus ring is the ds token. */}
+          {/* A code block, not an editor: no role="textbox" so nothing pretends
+              to be editable. It IS a scroll region, though — tabIndex + region
+              role let keyboard users focus and scroll it (axe
+              scrollable-region-focusable); focus ring is the ds token. */}
           <pre
             data-testid="yaml-view"
+            role="region"
+            tabIndex={0}
             aria-label={label ? `Pipeline document: ${label}` : "Pipeline document"}
-            className="max-h-[460px] overflow-auto rounded-[3px] border border-line bg-surface font-mono text-[11.5px] leading-[17px]"
+            className="max-h-[460px] overflow-auto rounded-[3px] border border-line bg-surface font-mono text-[11.5px] leading-[17px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <code>
               {lines.slice(0, visible).map((line, index) => {

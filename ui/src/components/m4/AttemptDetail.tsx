@@ -324,7 +324,10 @@ function OutputsSection({ outputs }: { outputs: Record<string, unknown> | null }
         id="attempt-outputs"
         data-testid="attempt-outputs"
         hidden={!open}
-        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
+        role="region"
+        tabIndex={0}
+        aria-label="Node outputs document (JSON)"
+        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         {JSON.stringify(outputs, null, 2)}
       </pre>
@@ -402,7 +405,10 @@ function Capture({ label, text }: { label: string; text: string }) {
       </p>
       <pre
         data-testid={`attempt-${label}`}
-        className="mt-[2px] max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[15px] text-muted"
+        role="region"
+        tabIndex={0}
+        aria-label={`${label} preview`}
+        className="mt-[2px] max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[15px] text-muted focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         {text}
       </pre>

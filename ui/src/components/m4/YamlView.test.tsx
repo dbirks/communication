@@ -132,6 +132,20 @@ describe("YamlView", () => {
     expect(note).toContain("draft");
   });
 
+  it("is a keyboard-reachable scroll region (axe scrollable-region-focusable)", () => {
+    render(<YamlView text={samplePipelineYaml} label="revision 7" />);
+    const yaml = screen.getByTestId("yaml-view");
+    // Focusable, named, and the focus ring is the ds token: keyboard users
+    // can Tab to the document and scroll it; screen readers hear its name.
+    expect(yaml.getAttribute("role")).toBe("region");
+    expect(yaml.getAttribute("tabindex")).toBe("0");
+    expect(yaml.getAttribute("aria-label")).toBe("Pipeline document: revision 7");
+    expect(yaml.className).toContain("focus-visible:outline-accent");
+    expect(yaml.className).toContain("overflow-auto");
+    // Still not an editor: a scroll region, not a textbox.
+    expect(yaml.hasAttribute("contenteditable")).toBe(false);
+  });
+
   it("stacks findings below a full-width document in the below layout", () => {
     render(<YamlView text={w8DraftYaml} validation={w8Validation} layout="below" />);
     expect(screen.getByTestId("yaml-view-layout").getAttribute("data-layout")).toBe("below");

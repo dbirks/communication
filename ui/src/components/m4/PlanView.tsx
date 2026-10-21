@@ -496,7 +496,10 @@ function RestBlock({
       <pre
         id={contentId}
         hidden={!open}
-        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px]"
+        role="region"
+        tabIndex={0}
+        aria-label={`${label} document (JSON)`}
+        className="mt-[4px] max-h-64 overflow-auto rounded-[3px] border border-line bg-paper p-[8px] font-mono text-[11px] leading-[16px] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         data-testid={`${testid}-json`}
       >
         {JSON.stringify(value, null, 2)}
