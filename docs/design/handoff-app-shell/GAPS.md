@@ -52,9 +52,9 @@ Rule: real data only. Where the backend cannot supply something, render an hones
 | (next number) | Inbox summarization pass — `POST /approvals/{id}/summary` → `{summary, actions:[{label,intent,risk}]}` (+ free-text interpretation) | planned | [inbox-ops §3 (W1/W2)](gaps/inbox-ops.md), [home-board §3](gaps/home-board.md) |
 | (next number) | Run from a thread branch with seeded input + run↔thread link (`RunCreate.source`, `runs.source_conversation_id`) | planned | [threads §3 (W4b)](gaps/threads.md) |
 | (next number) | Draft PR from a thread — push integration + token-in-sandbox delivery | planned | [threads §3 (W7)](gaps/threads.md) |
-| (next number) | Server-side APM lock digest — "Lock it" (`POST /agent-profiles/{id}/apm:lock`); the digest is pasted by hand today | planned | [profiles §3 (W7)](gaps/profiles.md) |
+| ADR-0054 | Server-side APM lock digest — "Lock it" (`POST /agent-profiles/{id}/apm/lock`); the digest is pasted by hand today | Accepted (design; implementation later) | [profiles §3 (W7)](gaps/profiles.md) |
 | (next number) | Worker identity in the browser — worker name on attempt lines; amends ADR-0016 §8 | planned | [workbench §4.2](gaps/workbench.md) |
-| (next number) | Pause-before-next-step — takeover pauses at a step boundary (5c semantics); today it interrupts the current attempt | planned | [workbench §4.1](gaps/workbench.md) |
+| ADR-0055 | Pause-before-next-step — takeover pauses at a step boundary (5c semantics); today it interrupts the current attempt | Proposed (evaluated and deferred — the redesign keeps the current semantics) | [workbench §4.1](gaps/workbench.md) |
 
 ## Per-phase table (build order: `GOAL.md` phases 1–9)
 
