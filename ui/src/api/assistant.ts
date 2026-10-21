@@ -13,6 +13,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
 import type { components } from "./schema";
+import { queryKeys } from "./queries";
 import type {
   AssistantChangeList,
   AssistantMessageContext,
@@ -117,7 +118,22 @@ export const assistantQueryKeys = {
   conversations: (limit?: number) => ["assistant", "conversations", limit ?? 1] as const,
   messages: (conversationId: string | null) => ["assistant", "messages", conversationId] as const,
   changes: (conversationId: string | null) => ["assistant", "changes", conversationId] as const,
+  /** The `changes` prefix: every conversation's change log at once (the
+   * undo mutations answer with a change, not a conversation id, so they
+   * invalidate by prefix — a trailing `null` segment would match nothing). */
+  changesAll: ["assistant", "changes"] as const,
 };
+
+/**
+ * The draft id a change's `target_ref` names (`draft:d-1`), or null when it
+ * names nothing the draft cache is keyed on (`run:r-1`, `pipeline:p-1`). An
+ * assistant change is a server-side write to that draft: any open Studio
+ * draft must refetch, not wait for a remount (e2e-p789b).
+ */
+export function draftIdFromTargetRef(targetRef: string | null | undefined): string | null {
+  const match = /^draft:(.+)$/.exec(targetRef ?? "");
+  return match && match[1].length > 0 ? match[1] : null;
+}
 
 /** One page of the caller's conversations, newest `last_message_at` first. */
 export function useAssistantConversations(limit = 1, enabled = true) {
@@ -166,6 +182,7 @@ export interface AssistantMessagePostBody {
 }
 
 export function usePostAssistantMessage() {
+  const queryClient = useQueryClient();
   return useMutation<
     LocalMessage[],
     Error,
@@ -178,6 +195,20 @@ export function usePostAssistantMessage() {
           json: body,
         }),
       ),
+    // A turn can record a change the caller did not ask for by name: a
+    // confirmed approval (Retry), a no_ask / ask_risky draft edit on a plain
+    // post. The change log must not wait for a remount, and a draft edit
+    // must refetch the draft it wrote (e2e-p789b).
+    onSuccess: (rows, { conversationId }) => {
+      void queryClient.invalidateQueries({
+        queryKey: assistantQueryKeys.changes(conversationId),
+      });
+      for (const row of rows) {
+        if (row.payload.kind !== "change") continue;
+        const draftId = draftIdFromTargetRef(row.payload.target_ref);
+        if (draftId) void queryClient.invalidateQueries({ queryKey: queryKeys.draft(draftId) });
+      }
+    },
   });
 }
 
@@ -198,8 +229,10 @@ export function useUndoAssistantChange() {
       apiFetch<components["schemas"]["AssistantChange"]>(assistantUndoPath(changeId), {
         method: "POST",
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: assistantQueryKeys.changes(null) });
+    onSuccess: (change) => {
+      void queryClient.invalidateQueries({ queryKey: assistantQueryKeys.changesAll });
+      const draftId = draftIdFromTargetRef(change.target_ref);
+      if (draftId) void queryClient.invalidateQueries({ queryKey: queryKeys.draft(draftId) });
     },
   });
 }
@@ -213,7 +246,10 @@ export function useUndoAllAssistantChanges() {
         method: "POST",
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: assistantQueryKeys.changes(null) });
+      void queryClient.invalidateQueries({ queryKey: assistantQueryKeys.changesAll });
+      // The results carry only change ids, not targets: every open change
+      // may have written a draft, so the whole draft subtree refetches.
+      void queryClient.invalidateQueries({ queryKey: ["draft"] });
     },
   });
 }
