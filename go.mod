@@ -1,6 +1,6 @@
 module github.com/dbirks/communication
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/coder/acp-go-sdk v0.13.5

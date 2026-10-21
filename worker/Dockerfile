@@ -33,7 +33,7 @@
 # would have run on bookworm; the base is chosen by the stricter requirement.
 
 # Stage 1: build the Go binary. No toolchain survives into the final image.
-FROM golang:1.27.2-trixie AS gobuild
+FROM golang:1.27.3-trixie AS gobuild
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

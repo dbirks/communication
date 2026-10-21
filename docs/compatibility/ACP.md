@@ -80,7 +80,7 @@ Observed from `session/new` and confirmed by `session/set_mode` /
 
 ## Worker container (M2, observed 2026-10-14)
 
-Image `communication-worker:dev` (worker/Dockerfile: golang:1.27.2-trixie build, node:22-bookworm-slim runtime, pinned `@agentclientprotocol/claude-agent-acp@0.90.0`, `@agentclientprotocol/codex-acp@2.2.2`, `@anthropic-ai/claude-code@2.1.300`, `@openai/codex@0.162.1`). Run under compose project `m2wrk` with the credential override `compose.harness.yml` (host uid; the image itself carries no credentials).
+Image `communication-worker:dev` (worker/Dockerfile: golang:1.27.3-trixie build, node:22-bookworm-slim runtime, pinned `@agentclientprotocol/claude-agent-acp@0.90.0`, `@agentclientprotocol/codex-acp@2.2.2`, `@anthropic-ai/claude-code@2.1.300`, `@openai/codex@0.162.1`). Run under compose project `m2wrk` with the credential override `compose.harness.yml` (host uid; the image itself carries no credentials).
 
 - `communication doctor --acp claude --acp-timeout 120s` **inside the worker container** against the real account:
   `acp:claude ok @agentclientprotocol/claude-agent-acp@0.90.0 protocol=1 loadSession=true session=81fe7d87 events=message_chunk:2,tool_call:1,tool_call_update:4,unknown:10 elapsed=8.3s` → **PASS** (the first claude row ever observed from a container, not just the host).

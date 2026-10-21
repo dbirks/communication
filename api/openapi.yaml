@@ -7334,9 +7334,8 @@ components:
         archived:
           type: boolean
         folder:
-          type: string
+          type: [string, "null"]
           maxLength: 200
-          nullable: true
           description: >
             ADR-0049 § 8: the display group the Workflows index groups by;
             null = unfiled (the UI renders the Unfiled group client-side).
@@ -7371,9 +7370,8 @@ components:
         description:
           type: string
         folder:
-          type: string
+          type: [string, "null"]
           maxLength: 200
-          nullable: true
           description: "ADR-0049 § 8 — the display group; null = unfiled."
         created_by:
           type: string
@@ -7426,9 +7424,8 @@ components:
         archived:
           type: boolean
         folder:
-          type: string
+          type: [string, "null"]
           maxLength: 200
-          nullable: true
           description: >
             ADR-0049 § 8: the display group for the Workflows sidebar and
             index. `null` clears it; an absent member does not touch it;
@@ -7611,8 +7608,7 @@ components:
           items:
             $ref: "#/components/schemas/NodeTemplate"
         next_cursor:
-          type: string
-          nullable: true
+          type: [string, "null"]
     NodeTemplateCreate:
       title: NodeTemplateCreate
       description: >

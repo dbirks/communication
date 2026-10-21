@@ -37,7 +37,7 @@ COPY internal/pipelines/schema/assets/ ./internal/pipelines/schema/assets/
 RUN pnpm --dir ui build
 
 # ---------------------------------------------------------------- Go binary
-FROM golang:1.27.2-trixie AS build
+FROM golang:1.27.3-trixie AS build
 
 WORKDIR /src
 
