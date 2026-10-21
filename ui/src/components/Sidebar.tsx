@@ -17,6 +17,7 @@
  * takes focus in on mount).
  */
 import {
+  useEffect,
   useMemo,
   useLayoutEffect,
   useRef,
@@ -166,7 +167,22 @@ function ProjectTree() {
   const flags = useSidebarFlags();
   const items = projects.data?.items ?? [];
 
+  /**
+   * The chevron's optimistic bridge. The saved preference is the source of
+   * truth (it survives a reload), but the click also lands in this local
+   * state so the chevron flips on the same event — it must not wait on the
+   * preferences query's external-store notification to catch up. The bridge
+   * is dropped whenever the cached preference changes identity (the
+   * optimistic write, the PATCH answer, or a failure rollback), from which
+   * point the preference value alone drives the DOM.
+   */
+  const [bridge, setBridge] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    setBridge((previous) => (Object.keys(previous).length === 0 ? previous : {}));
+  }, [prefs]);
+
   const setExpanded = (id: string, open: boolean) => {
+    setBridge((previous) => ({ ...previous, [`project:${id}`]: open }));
     update({ expanded: { ...prefs.expanded, [`project:${id}`]: open } });
   };
 
@@ -177,7 +193,8 @@ function ProjectTree() {
   return (
     <div className="flex flex-col gap-px">
       {items.map((project) => {
-        const open = prefs.expanded[`project:${project.id}`] === true;
+        const key = `project:${project.id}`;
+        const open = bridge[key] ?? prefs.expanded[key] === true;
         const href = routes.project(project.id);
         return (
           <div key={project.id}>

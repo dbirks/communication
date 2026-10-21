@@ -184,7 +184,7 @@ describe("NewProfileDialog (5b)", () => {
   });
 
   it("creates the selected profile and calls onCreated with the created row", async () => {
-    const { requests, onCreated } = mount();
+    const { requests, onCreated, onClose } = mount();
     // No step → the suggestion is the agent name + a unique n.
     expect((screen.getByTestId("agents-new-name-input") as HTMLInputElement).value).toBe(
       "Claude Code · 2",
@@ -192,6 +192,16 @@ describe("NewProfileDialog (5b)", () => {
     const submit = screen.getByTestId("agents-new-submit") as HTMLButtonElement;
     await waitFor(() => expect(submit.disabled).toBe(false));
     fireEvent.click(submit);
+    // The dialog stays open in its confirmation state; `onCreated` only
+    // fires from the Done button.
+    expect(await screen.findByText(`✓ profile “${created.name}” created`)).not.toBeNull();
+    expect(onCreated).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
+        "Done",
+      ),
+    );
+    fireEvent.click(screen.getByTestId("agents-new-submit"));
     await waitFor(() =>
       expect(onCreated).toHaveBeenCalledWith({
         id: created.id,
@@ -199,6 +209,7 @@ describe("NewProfileDialog (5b)", () => {
         launcher_id: created.launcher_id,
       }),
     );
+    expect(onClose).toHaveBeenCalled();
     const post = requestsTo(requests, "/api/v1/agent-profiles", "POST");
     expect(JSON.parse(post[0].body ?? "")).toEqual({
       name: "Claude Code · 2",
@@ -219,6 +230,14 @@ describe("NewProfileDialog (5b)", () => {
       expect((secretSelect as HTMLSelectElement).options.length).toBeGreaterThan(1),
     );
     fireEvent.change(secretSelect, { target: { value: secret.id } });
+    fireEvent.click(screen.getByTestId("agents-new-submit"));
+    // Stay open in the confirmation state; Done reports the created row.
+    await screen.findByText(`✓ profile “${created.name}” created`);
+    await waitFor(() =>
+      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
+        "Done",
+      ),
+    );
     fireEvent.click(screen.getByTestId("agents-new-submit"));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const put = requestsTo(
@@ -245,6 +264,13 @@ describe("NewProfileDialog (5b)", () => {
     fireEvent.change(screen.getByTestId("new-profile-apm-digest"), {
       target: { value: `sha256:${"1a".repeat(32)}` },
     });
+    fireEvent.click(screen.getByTestId("agents-new-submit"));
+    await screen.findByText(`✓ profile “${created.name}” created`);
+    await waitFor(() =>
+      expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).textContent).toBe(
+        "Done",
+      ),
+    );
     fireEvent.click(screen.getByTestId("agents-new-submit"));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const patch = requestsTo(requests, `/api/v1/agent-profiles/${created.id}`, "PATCH");

@@ -68,6 +68,13 @@ interface PreferencesState {
   layout: LayoutPrefs;
   trustLevel: TrustLevel;
   updatedAt: string | null;
+  /**
+   * `Date.now()` of the last optimistic local change, `0` when the cache holds
+   * only what the server last answered. A fetch that *started* before this
+   * timestamp read a document from before the change and must not clobber it
+   * (the change's PATCH answer is the source of truth).
+   */
+  localAt: number;
 }
 
 export const preferencesQueryKey = ["me", "preferences"] as const;
@@ -116,7 +123,36 @@ export function parsePreferences(body: PreferencesWire, stored = true): Preferen
     layout: parseLayout(body.layout),
     trustLevel: parseTrustLevel(body.assistant),
     updatedAt: isString(body.updated_at) ? body.updated_at : null,
+    localAt: 0,
   };
+}
+
+/**
+ * True when `fetched` is older than what the cache already holds and writing
+ * it would regress the UI:
+ * - the cache holds a document saved after the fetch's, or the same one —
+ *   the fetch raced a save and read the pre-save row;
+ * - or the document was never saved (both `updated_at` are `null`) and a
+ *   local change was made after the fetch started — the fetch read the
+ *   pre-change row and the pending PATCH's answer is authoritative.
+ */
+/**
+ * True when `fetched` is older than what the cache already holds and writing
+ * it would regress the UI (the fetch raced a local change and read the
+ * pre-change row):
+ * - the cache carries a local change no server answer has confirmed yet —
+ *   a `null` `updated_at` with a non-zero `localAt`; once the PATCH answer
+ *   lands it carries a fresh `updated_at` and the timestamp rule below
+ *   takes over. The pending change's own answer is the source of truth;
+ * - or the cache holds a document saved at or after the fetch's — the
+ *   fetch read the pre-save row.
+ */
+function isStaleFetch(prev: PreferencesState, fetched: PreferencesState): boolean {
+  if (prev.updatedAt == null && prev.localAt > 0) return true;
+  if (prev.updatedAt && fetched.updatedAt) {
+    return Date.parse(fetched.updatedAt) <= Date.parse(prev.updatedAt);
+  }
+  return false;
 }
 
 function toLayoutWire(layout: LayoutPrefs): NonNullable<PreferencesPatch["layout"]> {
@@ -132,13 +168,28 @@ function toLayoutWire(layout: LayoutPrefs): NonNullable<PreferencesPatch["layout
  * The shared read + write. Optimistic changes land in the query cache, so
  * every consumer sees the same value and a change survives a tab switch.
  */
+/** Stable identity across renders so consumers' effects don't churn while the query holds no data. */
+const EMPTY_STATE: PreferencesState = {
+  stored: true,
+  layout: { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
+  trustLevel: DEFAULT_TRUST_LEVEL,
+  updatedAt: null,
+  localAt: 0,
+};
+
 function usePreferencesCore() {
   const queryClient = useQueryClient();
   const query = useQuery<PreferencesState>({
     queryKey: preferencesQueryKey,
     queryFn: async () => {
       try {
-        return parsePreferences(await apiFetch<PreferencesWire>(PREFERENCES_PATH));
+        const fetched = parsePreferences(await apiFetch<PreferencesWire>(PREFERENCES_PATH));
+        // A fetch that raced a local optimistic change read the pre-change
+        // document; the persisted state the user just made keeps winning
+        // (its PATCH answer lands in the cache separately).
+        const prev = queryClient.getQueryData<PreferencesState>(preferencesQueryKey);
+        if (prev && isStaleFetch(prev, fetched)) return prev;
+        return fetched;
       } catch (error) {
         // The parallel backend may not ship the endpoint yet: degrade to the
         // in-memory mode instead of treating it as a fault. Keep any change
@@ -147,9 +198,10 @@ function usePreferencesCore() {
           const previous = queryClient.getQueryData<PreferencesState>(preferencesQueryKey);
           return {
             stored: false,
-            layout: previous?.layout ?? { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
+            layout: previous?.layout ?? EMPTY_STATE.layout,
             trustLevel: previous?.trustLevel ?? DEFAULT_TRUST_LEVEL,
             updatedAt: null,
+            localAt: previous?.localAt ?? 0,
           };
         }
         throw error;
@@ -164,25 +216,32 @@ function usePreferencesCore() {
       apiFetch<PreferencesWire>(PREFERENCES_PATH, { method: "PATCH", json: body }),
     // The PATCH answers with the full document: replace the cached state.
     onSuccess: (body) => {
-      queryClient.setQueryData(preferencesQueryKey, parsePreferences(body));
+      queryClient.setQueryData<PreferencesState>(preferencesQueryKey, (prev) => ({
+        ...parsePreferences(body),
+        localAt: prev?.localAt ?? 0,
+      }));
+    },
+    // A failed save (400/401/network): drop the "unconfirmed local change"
+    // marker so the next read can replace the rolled-back value with the
+    // server's truth.
+    onError: () => {
+      queryClient.setQueryData<PreferencesState>(preferencesQueryKey, (prev) =>
+        prev ? { ...prev, localAt: 0 } : prev,
+      );
     },
   });
 
-  const state = query.data ?? {
-    stored: true,
-    layout: { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
-    trustLevel: DEFAULT_TRUST_LEVEL,
-    updatedAt: null,
-  };
+  const state = query.data ?? EMPTY_STATE;
 
   const applyLayout = (patch: Partial<LayoutPrefs>) => {
     const next = { ...state.layout, ...patch, expanded: patch.expanded ?? state.layout.expanded };
-    // Optimistic: the radio flips immediately; the server's answer replaces it.
+    // Optimistic: the chevron flips immediately; the server's answer replaces it.
     queryClient.setQueryData<PreferencesState>(preferencesQueryKey, (prev) => ({
       stored: prev?.stored ?? true,
       layout: next,
       trustLevel: prev?.trustLevel ?? DEFAULT_TRUST_LEVEL,
       updatedAt: prev?.updatedAt ?? null,
+      localAt: Date.now(),
     }));
     mutation.mutate({ layout: toLayoutWire(next) });
   };
@@ -193,6 +252,7 @@ function usePreferencesCore() {
       layout: prev?.layout ?? { ...DEFAULT_LAYOUT_PREFS, expanded: {} },
       trustLevel,
       updatedAt: prev?.updatedAt ?? null,
+      localAt: Date.now(),
     }));
     mutation.mutate({ assistant: { trust_level: trustLevel } });
   };

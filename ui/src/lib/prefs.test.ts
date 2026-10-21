@@ -122,6 +122,60 @@ describe("useLayoutPrefs", () => {
     expect(result.current.saved).toBe(false);
     expect(result.current.prefs.askPlacement).toBe("floating");
   });
+
+  it("does not let a slow GET clobber a change made while it was in flight", async () => {
+    // The never-saved document the late GET will carry: no expansion keys.
+    const STALE = {
+      layout: {
+        projects_mode: "tree",
+        ask_placement: "sidebar",
+        show_workflow_folders: true,
+        expanded: {},
+      },
+      assistant: { trust_level: "ask_risky" },
+      updated_at: null,
+    };
+    const getStub: RouteStub = { path: PREFERENCES_PATH, method: "GET", body: STALE };
+    const SAVED = {
+      ...STALE,
+      layout: { ...STALE.layout, expanded: { "project:abc": true } },
+      updated_at: "2026-10-21T07:00:00Z",
+    };
+    const { fetchMock, requests, queryClient, wrapper } = harness([
+      getStub,
+      { path: PREFERENCES_PATH, method: "PATCH", body: SAVED },
+    ]);
+
+    // Gate the first GET behind a promise so the local change lands while
+    // it is still in flight — the e2e race it guards against.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = fetchMock.getMockImplementation() as (
+      input: unknown,
+      init?: RequestInit,
+    ) => Promise<Response>;
+    fetchMock.mockImplementationOnce(async (input: unknown, init?: RequestInit) => {
+      await gate;
+      return original(input, init);
+    });
+
+    const { result } = renderHook(() => useLayoutPrefs(), { wrapper });
+    act(() => {
+      result.current.update({ expanded: { "project:abc": true } });
+    });
+    await waitFor(() => expect(result.current.prefs.expanded["project:abc"]).toBe(true));
+
+    // The slow GET now resolves with the pre-change document: the change
+    // (and the PATCH's answer) must keep winning.
+    release();
+    await waitFor(() => expect(result.current.prefs.expanded["project:abc"]).toBe(true));
+
+    // A fresh fetch started after the change applies the saved document.
+    getStub.body = SAVED;
+    queryClient.invalidateQueries({ queryKey: preferencesQueryKey });
+    await waitFor(() => expect(requestsTo(requests, PREFERENCES_PATH, "GET")).toHaveLength(2));
+    expect(result.current.prefs.expanded["project:abc"]).toBe(true);
+  });
 });
 
 describe("useAssistantPrefs", () => {

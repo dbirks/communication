@@ -420,24 +420,28 @@ export default function RunInspector({
           />
         </div>
 
-        <div className="flex gap-1 py-3" role="tablist" aria-label="Run views">
-          {TABS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              data-testid={`run-tab-${item.id}`}
-              onClick={() => setTab(item.id)}
-              className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
-                tab === item.id
-                  ? "border-ink bg-ink text-paper"
-                  : "border-line text-muted hover:border-line-strong hover:text-ink"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-1 py-3">
+          {/* The tablist holds only its tab children (axe aria-required-
+           * children); the collapse control sits beside it. */}
+          <div role="tablist" aria-label="Run views" className="flex gap-1">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.id}
+                data-testid={`run-tab-${item.id}`}
+                onClick={() => setTab(item.id)}
+                className={`rounded-[3px] border px-3 py-[5px] text-[12.5px] font-semibold ${
+                  tab === item.id
+                    ? "border-ink bg-ink text-paper"
+                    : "border-line text-muted hover:border-line-strong hover:text-ink"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           {navOpen ? (
             <button
               type="button"

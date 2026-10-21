@@ -306,8 +306,11 @@ function DialogBody({
       if (projectId !== "") {
         await queryClient.invalidateQueries({ queryKey: queryKeys.secrets(projectId) });
       }
-      onCreated({ id: created.id, name: created.name, launcher_id: created.launcher_id });
-      onClose();
+      // Deliberately NOT closing here: the dialog stays open in its
+      // confirmation state (the \u2713 line above, footer button now
+      // \u201cDone\u201d) so the created profile is confirmed in place.
+      // `onCreated` + `onClose` fire from the Done button (the `createdProfile`
+      // guard at the top of this handler) or Cancel.
     } catch (error) {
       // The profile exists; the pin or the account grant is what failed.
       // Keep the dialog open so the problem stays visible; the footer is
