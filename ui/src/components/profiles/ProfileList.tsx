@@ -58,14 +58,6 @@ export default function ProfileList({
   onOpen,
   onEdit,
 }: ProfileListProps) {
-  function pick(event: React.KeyboardEvent<HTMLElement>) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    if (event.currentTarget.dataset.profileId) {
-      const profile = profiles.find((p) => p.id === event.currentTarget.dataset.profileId);
-      if (profile) onOpen(profile);
-    }
-  }
   return (
     <div data-testid="profiles-list" className="rounded-[3px] border border-line-strong bg-surface">
       <div className="flex items-center gap-2 border-b border-line px-[10px] py-1 font-mono text-[10px] font-semibold tracking-[.04em]">
@@ -90,32 +82,39 @@ export default function ProfileList({
           return (
             <li key={profile.id} data-testid={`agent-item-${profile.id}`}>
               <div
-                role="button"
-                tabIndex={0}
-                aria-label={`${profile.name} — open profile`}
-                aria-current={selected || undefined}
                 data-profile-id={profile.id}
                 data-testid={`agent-row-${profile.id}`}
                 onClick={() => onOpen(profile)}
-                onKeyDown={pick}
-                className={`flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 p-2 outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                className={`flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 p-2 ${
                   selected ? "bg-fill" : ""
                 }`}
               >
-                <span
-                  className="min-w-[6rem] flex-1 truncate text-[13px] font-semibold"
-                  data-testid={`agent-name-${profile.id}`}
-                  title={profile.name}
+                <button
+                  type="button"
+                  aria-label={`${profile.name} — open profile`}
+                  aria-current={selected || undefined}
+                  data-profile-id={profile.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpen(profile);
+                  }}
+                  className="flex min-w-0 flex-1 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-[3px] outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 >
-                  {profile.name}
-                </span>
-                <span
-                  className="font-mono text-[11px] text-muted"
-                  data-testid={`agent-launcher-${profile.id}`}
-                >
-                  launcher: {profile.launcher_id}
-                </span>
-                <Chip chip={chip} testid={`profile-chip-${profile.id}`} />
+                  <span
+                    className="min-w-[6rem] flex-1 truncate text-[13px] font-semibold"
+                    data-testid={`agent-name-${profile.id}`}
+                    title={profile.name}
+                  >
+                    {profile.name}
+                  </span>
+                  <span
+                    className="font-mono text-[11px] text-muted"
+                    data-testid={`agent-launcher-${profile.id}`}
+                  >
+                    launcher: {profile.launcher_id}
+                  </span>
+                  <Chip chip={chip} testid={`profile-chip-${profile.id}`} />
+                </button>
                 {canWrite ? (
                   <Button
                     variant="secondary"
