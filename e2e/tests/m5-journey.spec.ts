@@ -374,9 +374,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   let aliceContext: BrowserContext;
   let admin: Page;
   let alice: Page;
-  let pipelinePath = ""; // /library/{pipelineId}
+  let pipelinePath = ""; // /workflows/{pipelineId}
   let projectPath = ""; // /projects/{M4 Exit id}
-  let runPath = ""; // /projects/{id}/runs/{runId}
+  let runPath = ""; // /runs/{runId} (route contract C1)
   let runId = "";
 
   test.beforeAll(async ({ browser }) => {
@@ -422,16 +422,16 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
 
   test("step 1 — admin clones the Plan with approval sample", async () => {
     await test.step("Library → New pipeline → Start from: Plan with approval", async () => {
-      await gotoApp(admin, "/library");
+      await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
       await admin.getByTestId("library-new-slug-input").fill(SLUG);
       await admin.getByTestId("library-new-name-input").fill(SLUG);
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
-      // seeded's Workflow Studio, at /library/:id/drafts/:draftId.
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
-      pipelinePath = `/library/${new URL(admin.url()).pathname.split("/")[2]}`;
+      // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId.
+      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      pipelinePath = `/workflows/${new URL(admin.url()).pathname.split("/")[2]}`;
       // The Studio's YAML view is the same authoring surface the old editor
       // exposed as its textarea.
       await admin.getByTestId("studio-view-yaml").click();
@@ -528,7 +528,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
         const runsHref = await admin.getByTestId("assign-start-run-link").getAttribute("href");
         projectPath = (runsHref ?? "").replace(/\/runs$/, "");
         await admin.getByTestId("assign-start-run-link").click();
-        await admin.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs$/);
+        await admin.waitForURL(/\/p\/[0-9a-f-]{36}\/runs$/);
         await shot(admin, "m5-03-assigned");
       } else {
         // The lab's arm: `admin` is the org admin with no project membership,
@@ -574,7 +574,8 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // list — not a URL a user has to remember.
       await selectByOptionText(alice, "new-run-input-repository", REPO_BINDING);
       await alice.getByTestId("new-run-submit").click();
-      await alice.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/);
+      // Route contract C1: the workbench is the project-less `/runs/:runId`.
+      await alice.waitForURL(/\/runs\/[0-9a-f-]{36}$/);
       runPath = new URL(alice.url()).pathname;
       runId = runPath.split("/").pop() ?? "";
       expect(runId).toMatch(/^[0-9a-f-]{36}$/);
@@ -848,19 +849,19 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
    * inside the suite's own budget (the 60s schema floor, `GATE_TWIN`).
    */
   test("a retried run whose retriable node is an expired gate comes back live", async () => {
-    let gatePath = ""; // /projects/{id}/runs/{scratch run id}
+    let gatePath = ""; // /runs/{scratch run id}
     let gateRunId = "";
     let askedRow = ""; // the inbox decision row's own testid, id and all
     const gateId = () => testidOf(gateRunId);
 
     await test.step("publish a scratch copy whose gate deadline is the schema floor", async () => {
-      await gotoApp(admin, "/library");
+      await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
       await admin.getByTestId("library-new-slug-input").fill(GATE_SLUG);
       await admin.getByTestId("library-new-name-input").fill(GATE_SLUG);
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
       await admin.getByTestId("studio-view-yaml").click();
       await admin.getByTestId("studio-yaml").fill(GATE_TWIN.replace("__GATE_SLUG__", GATE_SLUG));
       await admin.getByTestId("studio-save").click();
@@ -893,7 +894,7 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await selectByOptionText(alice, "new-run-assignment", GATE_SLUG);
       await alice.getByTestId("new-run-input-goal").fill(GATE_GOAL);
       await alice.getByTestId("new-run-submit").click();
-      await alice.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/);
+      await alice.waitForURL(/\/runs\/[0-9a-f-]{36}$/);
       gatePath = new URL(alice.url()).pathname;
       gateRunId = gatePath.split("/").pop() ?? "";
       expect(gateRunId).toMatch(/^[0-9a-f-]{36}$/);

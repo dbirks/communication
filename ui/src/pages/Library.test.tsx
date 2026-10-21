@@ -696,6 +696,55 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
 describe("/library/:pipelineId", () => {
   const detail = `/library/${WIRE_PIPELINE_ID}`;
 
+  it("bleeds to the shell's content column, never under the sidebar", async () => {
+    // Repeats the desktop shell's geometry — a 240px sticky sidebar, then the
+    // content column that holds the page's <main> — with the centred reading
+    // column 370px in (1500px viewport, 240px column-left, 1000px max-w-5xl).
+    // jsdom does no layout, so the rects and the column's clientWidth are
+    // stubbed and the page re-measures on resize.
+    mockFetch(routes());
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[detail]}>
+          <div data-testid="content-column">
+            <main>
+              <Routes>
+                <Route path="/library/:pipelineId" element={<PipelinePage />} />
+              </Routes>
+            </main>
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const page = (await screen.findByTestId("pipeline-page")) as HTMLElement;
+    const mainEl = page.parentElement as HTMLElement;
+    const column = mainEl.parentElement as HTMLElement;
+    const rect = (left: number, width: number) =>
+      ({
+        left,
+        right: left + width,
+        top: 0,
+        bottom: 0,
+        width,
+        height: 0,
+        x: left,
+        y: 0,
+      }) as DOMRect;
+    Object.defineProperty(column, "clientWidth", { value: 1260, configurable: true });
+    column.getBoundingClientRect = () => rect(240, 1260);
+    mainEl.getBoundingClientRect = () => rect(370, 1000);
+    window.dispatchEvent(new Event("resize"));
+    await waitFor(() => expect(page.getAttribute("data-full-width")).toBe("1260"));
+    // The negative margin pulls the page to the column's left edge (240px, the
+    // sidebar's right edge) and the width runs it to the column's right edge
+    // (1500px): nothing under the sidebar, no sideways page scroll.
+    expect(page.style.marginLeft).toBe("-130px");
+    expect(page.style.width).toBe("1260px");
+  });
+
   it("shows the newest revision's regenerated document and graph by default", async () => {
     mount(detail);
     const yaml = await screen.findByTestId("yaml-view");

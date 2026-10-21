@@ -108,9 +108,14 @@ export default function RunInspector({
   const selectedBranch = readBranchIndex(params.get("branch"));
   // The run view owns the whole viewport: the shell's centred reading column is
   // about 64rem wide, and a graph squeezed into what is left of it shows one
-  // node. So this page measures the column it was handed and bleeds out of it.
+  // node. So this page measures the shell's content column — `<main>`'s parent:
+  // the flex-1 region right of the 240px sticky sidebar (the full width below
+  // `md`, where the sidebar is a drawer) — and bleeds out to its edges, never
+  // under the sidebar. The old `marginLeft: -left, width: viewport` assumed
+  // the top-bar layout where content started at x=0 and parked this page
+  // under the sticky column.
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [bleed, setBleed] = useState<{ left: number; width: number } | null>(null);
+  const [bleed, setBleed] = useState<{ offset: number; width: number } | null>(null);
   const [navOpen, setNavOpen] = useState(true);
   /** Measure from the parent, never from the element itself: the parent's
    * content-box left is the child's static position and does not move when the
@@ -119,13 +124,26 @@ export default function RunInspector({
     const el = rootRef.current;
     const parent = el?.parentElement;
     if (!el || !parent) return;
-    const style = window.getComputedStyle(parent);
-    const left = parent.getBoundingClientRect().left + parseFloat(style.paddingLeft || "0");
-    const width = document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
+    const main = el.closest("main");
+    const column = main?.parentElement ?? null;
+    const staticLeft =
+      parent.getBoundingClientRect().left +
+      parseFloat(window.getComputedStyle(parent).paddingLeft || "0");
+    const offset = column ? staticLeft - column.getBoundingClientRect().left : 0;
+    const columnStyle = column ? window.getComputedStyle(column) : null;
+    const columnWidth = column
+      ? column.clientWidth -
+        parseFloat(columnStyle?.paddingLeft || "0") -
+        parseFloat(columnStyle?.paddingRight || "0")
+      : 0;
+    const width =
+      columnWidth > 0
+        ? columnWidth
+        : document.documentElement.clientWidth || window.innerWidth || el.offsetWidth;
     // Equal values do not re-render: this runs from a ref callback, and a new
     // object every time would be a render loop with a measurement in it.
     setBleed((current) =>
-      current && current.left === left && current.width === width ? current : { left, width },
+      current && current.offset === offset && current.width === width ? current : { offset, width },
     );
   }, []);
   // A ref callback rather than an effect: the page is a loading skeleton for its
@@ -307,7 +325,7 @@ export default function RunInspector({
       className={`grid min-h-full grid-cols-1 ${columns} border-y border-line bg-paper`}
       style={
         bleed
-          ? { width: bleed.width || undefined, marginLeft: -bleed.left, maxWidth: "none" }
+          ? { width: bleed.width || undefined, marginLeft: -bleed.offset, maxWidth: "none" }
           : { maxWidth: "none" }
       }
     >

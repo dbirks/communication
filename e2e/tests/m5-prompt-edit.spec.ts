@@ -98,7 +98,7 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
 
   let adminContext: BrowserContext;
   let admin: Page;
-  let pipelinePath = ""; // /library/{pipelineId}
+  let pipelinePath = ""; // /workflows/{pipelineId}
   let draftId = "";
   let templateDigest = ""; // the pristine clone's digest (the baseline)
   let r1Digest = ""; // the published r1's digest
@@ -136,18 +136,18 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
 
   test("step 1 — admin clones the Plan with approval sample", async () => {
     await test.step("Library → New pipeline → Start from: Plan with approval", async () => {
-      await gotoApp(admin, "/library");
+      await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
       await admin.getByTestId("library-new-slug-input").fill(SLUG);
       await admin.getByTestId("library-new-name-input").fill(SLUG);
       await selectByOptionText(admin, "library-new-template-select", TEMPLATE_LABEL);
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
-      // seeded's Workflow Studio, at /library/:id/drafts/:draftId
+      // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId
       // (m5-journey step 1).
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
       const cloneUrl = new URL(admin.url());
-      pipelinePath = `/library/${cloneUrl.pathname.split("/")[2]}`;
+      pipelinePath = `/workflows/${cloneUrl.pathname.split("/")[2]}`;
       draftId = cloneUrl.pathname.split("/").at(-1) ?? "";
       expect(draftId).toMatch(/^[0-9a-f-]{36}$/);
       // The Studio's YAML view is the same authoring surface the old editor
@@ -264,7 +264,7 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       status: string;
     }
     await test.step("the published r1's digest differs from the template's", async () => {
-      const pipelineId = pipelinePath.slice("/library/".length);
+      const pipelineId = pipelinePath.slice("/workflows/".length);
       const listResponse = await adminContext.request.get(
         `${BASE_URL}/api/v1/pipelines/${pipelineId}/revisions`,
       );
