@@ -1,0 +1,71 @@
+{
+  "schema": "communication.acp-observed/v1",
+  "note": "Structured transcript of the ACP/sandbox capability cells that docs/compatibility/ACP.md and docs/compatibility/SANDBOX.md record as OBSERVED. Append-only: a probe run adds a row (later observed_at wins per launcher/capability; on a tie the later row in the file wins). Cells with no row here are not_tested by definition (ADR-0051). Every row's `evidence` names a path that exists in this repository.",
+  "transcribed_at": "2026-10-21",
+  "rows": [
+    {
+      "launcher": "claude",
+      "capability": "acp_session",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-claude.json",
+      "note": "docs/compatibility/ACP.md matrix row (host probe, v0.0.1 baseline): new session PASS; probed with raw JSON-RPC over stdio, @agentclientprotocol/claude-agent-acp@0.90.0, protocolVersion 1, loadSession advertised."
+    },
+    {
+      "launcher": "claude",
+      "capability": "resume",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-claude.json",
+      "note": "docs/compatibility/ACP.md matrix 'Native restore' cell: PASS — loadSession advertised, 10 updates replayed (host probe 2026-10-14)."
+    },
+    {
+      "launcher": "claude",
+      "capability": "permission_prompts",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-claude-permission.json",
+      "note": "docs/compatibility/ACP.md 'Permission modes (Claude)' (probe v0.0.3): with session/set_mode modeId=default (Manual) the adapter sent session/request_permission; allow_once and reject_once round-trips both observed. The adapter default mode auto never asks — the server must select the prompting mode."
+    },
+    {
+      "launcher": "claude",
+      "capability": "acp_session",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/ACP.md",
+      "note": "docs/compatibility/ACP.md 'Worker container (M2)' section (same date, container context): communication doctor --acp claude inside communication-worker:dev against the real account, plus the full turn loop (plain answer, session reuse, permission bridge, cancel, SIGTERM, hard-kill resume via session/load) journal-verified in domain_events."
+    },
+    {
+      "launcher": "claude",
+      "capability": "nono_required",
+      "result": "observed",
+      "observed_at": "2026-10-16T00:00:00Z",
+      "evidence": "docs/compatibility/SANDBOX.md",
+      "note": "docs/compatibility/SANDBOX.md 'preapproved_within_sandbox lab evaluation (2026-10-16)': claude-agent-acp launched by nono 0.80.0 in required mode inside communication-worker:dev — sandbox.verified journal rows, filesystem denial outside the grants, and rows 8a/8b's observed egress denial under the ADR-0035 allowlist. claude is the only launcher evaluated for required mode (ADR-0036); Codex was not tested."
+    },
+    {
+      "launcher": "codex",
+      "capability": "acp_session",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-codex.json",
+      "note": "docs/compatibility/ACP.md matrix row (host probe, v0.0.1 baseline): new session PASS; @agentclientprotocol/codex-acp@2.2.2, protocolVersion 1, loadSession advertised."
+    },
+    {
+      "launcher": "codex",
+      "capability": "resume",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-codex.json",
+      "note": "docs/compatibility/ACP.md matrix 'Native restore' cell: PASS — loadSession advertised, 15 updates replayed (host probe 2026-10-14)."
+    },
+    {
+      "launcher": "codex",
+      "capability": "permission_prompts",
+      "result": "observed",
+      "observed_at": "2026-10-14T00:00:00Z",
+      "evidence": "docs/compatibility/probes/acp/results-codex-permission.json",
+      "note": "docs/compatibility/ACP.md 'Permission modes (Codex)' (probe v0.0.3): with session/set_mode modeId=read-only the adapter sent session/request_permission; allow_once and reject_once round-trips both observed. The adapter default mode agent never asks."
+    }
+  ]
+}

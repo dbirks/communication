@@ -225,7 +225,7 @@ func TestEnvelopeMatchesSchemaExample(t *testing.T) {
 }
 
 func TestM1TypeConstants(t *testing.T) {
-	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`) // the schema's type pattern
+	pattern := regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`) // the schema's type pattern
 	for _, tt := range []struct{ got, want string }{
 		{TypeProjectCreated, "project.created"},
 		{TypeProjectMemberUpdated, "project.member.updated"},
@@ -299,7 +299,7 @@ func m2Types() []struct {
 // the envelope schema's own `type` pattern: a dotted name the journal would
 // reject is a contract bug, not a typo in a test.
 func TestM2TypeConstants(t *testing.T) {
-	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
+	pattern := regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
 	seen := map[string]bool{}
 	for _, tt := range m2Types() {
 		if tt.constant != tt.literal {
@@ -745,7 +745,7 @@ func m3Types() []struct {
 // schema's own `type` pattern. The `.`-joined lowercase form is not a convention
 // — a name the journal's schema would reject is a contract bug.
 func TestM3TypeConstants(t *testing.T) {
-	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
+	pattern := regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
 	seen := map[string]bool{}
 	for _, tt := range m3Types() {
 		if tt.constant != tt.literal {
@@ -1118,6 +1118,10 @@ func m4Types() []struct {
 		{TypePipelineRevisionDeprecated, "pipeline.revision.deprecated", PipelineRevisionDeprecatedPayload{}},
 		{TypeAssignmentCreated, "assignment.created", AssignmentCreatedPayload{}},
 		{TypeAssignmentUpdated, "assignment.updated", AssignmentUpdatedPayload{}},
+		{TypePipelineUpdate, "pipeline.update", PipelineUpdatePayload{}},
+		{TypeNodeTemplateCreated, "node_template.create", NodeTemplateCreatedPayload{}},
+		{TypeNodeTemplateRevisionPublished, "node_template.revision.publish", NodeTemplateRevisionPublishedPayload{}},
+		{TypeNodeTemplateDuplicated, "node_template.duplicate", NodeTemplateDuplicatedPayload{}},
 	}
 }
 
@@ -1126,7 +1130,7 @@ func m4Types() []struct {
 // run.override.applied is never one of the emitted constants (ADR-0024 § 3:
 // M4 has no emitter for it; the name exists so M5 needs no rename).
 func TestM4TypeConstants(t *testing.T) {
-	pattern := regexp.MustCompile(`^[a-z]+(\.[a-z_]+)+$`)
+	pattern := regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
 	seen := map[string]bool{}
 	for _, tt := range m4Types() {
 		if tt.constant != tt.literal {
@@ -1310,6 +1314,18 @@ func TestM4PayloadFieldNames(t *testing.T) {
 		"ApprovalDeniedPayload":    {"approval_id", "project_id", "reason", "run_id"},
 		"ApprovalCancelledPayload": {"approval_id", "project_id", "reason", "run_id"},
 		"PipelineCreatedPayload":   {"pipeline_id", "project_id", "slug"},
+		"PipelineUpdatePayload":    {"changed_fields", "pipeline_id", "project_id"},
+		"NodeTemplateCreatedPayload": {
+			"project_id", "slug", "template_id", "version_label",
+		},
+		"NodeTemplateRevisionPublishedPayload": {
+			"project_id", "revision_digest", "revision_id", "revision_number",
+			"template_id", "version_label",
+		},
+		"NodeTemplateDuplicatedPayload": {
+			"project_id", "slug", "source_template_id", "source_template_slug",
+			"template_id",
+		},
 		"PipelineDraftUpdatedPayload": {
 			"draft_id", "edited_by", "kind", "project_id", "source_sha256", "version",
 		},
@@ -1475,6 +1491,20 @@ func TestM4PayloadFieldNames(t *testing.T) {
 		},
 		"PipelineCreatedPayload": PipelineCreatedPayload{
 			ProjectID: "p-1", PipelineID: "pipe-1", Slug: "feature-development",
+		},
+		"PipelineUpdatePayload": PipelineUpdatePayload{
+			ProjectID: "", PipelineID: "pipe-1", ChangedFields: []string{"folder"},
+		},
+		"NodeTemplateCreatedPayload": NodeTemplateCreatedPayload{
+			ProjectID: "", TemplateID: "nt-1", Slug: "security-reviewer", VersionLabel: "1.0.0",
+		},
+		"NodeTemplateRevisionPublishedPayload": NodeTemplateRevisionPublishedPayload{
+			ProjectID: "", TemplateID: "nt-1", RevisionID: "nr-1", RevisionNumber: 2,
+			VersionLabel: "1.1.0", RevisionDigest: digest,
+		},
+		"NodeTemplateDuplicatedPayload": NodeTemplateDuplicatedPayload{
+			ProjectID: "", TemplateID: "nt-2", SourceTemplateID: "nt-1",
+			Slug: "security-reviewer-copy", SourceTemplateSlug: "security-reviewer",
 		},
 		"PipelineDraftUpdatedPayload": PipelineDraftUpdatedPayload{
 			ProjectID: "p-1", DraftID: "d-1", Version: 2, SourceSHA256: hex64,

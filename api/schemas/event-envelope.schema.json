@@ -29,8 +29,8 @@
     },
     "type": {
       "type": "string",
-      "pattern": "^[a-z]+(\\.[a-z_]+)+$",
-      "description": "Dotted lowercase event type, e.g. `project.created`, `repository.added`, `node.attempt.completed`."
+      "pattern": "^[a-z_]+(\\.[a-z_]+)+$",
+      "description": "Dotted lowercase event type, e.g. `project.created`, `repository.added`, `node.attempt.completed`. First segment admits underscores for ADR-0049's `node_template.*` names."
     },
     "schema_version": {
       "type": "integer",

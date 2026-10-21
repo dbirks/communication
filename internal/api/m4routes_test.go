@@ -1762,7 +1762,14 @@ func m4OpenAPIOperations(doc string) map[string]bool {
 }
 
 // m4IsM4Path is the prefix set of the M4 surface (route table § 2.1).
+// The cross-project top-level lists (ADR-0047, registered in
+// crossproject.go — outside the M4 files this diff greps) share the
+// `/api/v1/runs` and `/api/v1/approvals` prefixes but are not part of the
+// frozen M4 37, so the exact templates are excluded here.
 func m4IsM4Path(p string) bool {
+	if p == "/api/v1/runs" || p == "/api/v1/approvals" {
+		return false
+	}
 	prefixes := []string{
 		"/api/v1/pipelines", "/api/v1/drafts", "/api/v1/revisions",
 		"/api/v1/schemas/pipeline-v1alpha1", "/api/v1/assignments",

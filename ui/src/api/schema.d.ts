@@ -186,6 +186,43 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/preferences": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * My display preferences
+     * @description The signed-in user's display preferences (ADR-0046): the app-shell
+     *     layout settings and the assistant trust level. Defaults are merged
+     *     under any stored values — `projects_mode` `tree`, `ask_placement`
+     *     `sidebar`, `show_workflow_folders` `true`, `expanded` `{}`,
+     *     `trust_level` `ask_risky` — and `updated_at` is `null` until the
+     *     first save. The values are display preferences only: they authorize
+     *     nothing.
+     */
+    get: operations["getMyPreferences"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update my display preferences
+     * @description Deep-merges any subset of the document, per section: an absent member
+     *     is unchanged, and `expanded` merges key-by-key. The answer is the
+     *     full document with the new `updated_at`. Unknown keys at any level
+     *     and unknown enum values are `400` problem+json naming the field
+     *     (stable code `invalid_preferences`); the `expanded` map takes at most
+     *     500 keys, each at most 120 characters. Subject to the same
+     *     authentication and CSRF rules as every other mutation; saves are
+     *     last-write-wins per user (there is no version — display state only).
+     */
+    patch: operations["patchMyPreferences"];
+    trace?: never;
+  };
   "/api/v1/projects": {
     parameters: {
       query?: never;
@@ -314,6 +351,28 @@ export interface paths {
      *     is never removed — the only roles settable here are the three below.
      */
     put: operations["putMember"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Stream the caller's organization-wide events (SSE)
+     * @description `text/event-stream` of the caller's rows from the `domain_events` journal, multiplexed across **every project the caller may see** in their organization (memberships, or everything for an organization admin, the same visibility as `GET /api/v1/projects`) — ADR-0048.
+     *     Framing, resume, gap-safety and the 15 s heartbeat are identical to `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): one frame per event, `id: <global_seq>` / `event: <type>` / `data: <envelope JSON>`, replayed from `Last-Event-ID` (which wins over `?after=`, which wins over the journal head). Because `id:` is the *global* journal `global_seq`, the browser's automatic reconnect resumes mid-journal across projects, and sequences of projects the caller may no longer see are simply gaps — a resume across them replays nothing wrong.
+     *     Authorization is per row: the visibility predicate lives in the store read, and it is re-evaluated by every batch the handler queries, so a membership granted or revoked mid-stream takes effect on the next query (ADR-0048 §3). Rows without a `project_id` (organization-scoped events) are **not** delivered: the stream carries project events only (ADR-0048 §4). A caller who is a member of no project gets an open, quiet stream — the route names no resource, so there is nothing to 404. Every envelope carries `project_id`, which a client uses to route the frame (and it is the same envelope the project stream sends).
+     */
+    get: operations["streamOrgEvents"];
+    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -463,6 +522,47 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/launchers": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Launcher registry with evidence-backed capability cells
+     * @description The launcher registry the profiles list, the New-profile dialog and the Operations capability matrix render from (ADR-0051). Always contains the four product card ids `claude`, `codex`, `pi`, `antigravity` in that order; any registered launcher beyond them follows, and the client's "Other ACP agent" card is the catch-all for exactly those.
+     *     Three different kinds of fact are kept strictly separate, and each must be read as no more than it is:
+     *     * `registered` — the built-in registry (worker launch code) has a
+     *       launcher entry. A registered launcher is **not** a capability
+     *       claim: nothing about this route says a harness works on any host.
+     *     * `capabilities` — each cell's `result` comes ONLY from a recorded
+     *       probe row in `docs/compatibility/acp-observed.json` (the structured
+     *       transcript of the observed cells in `docs/compatibility/ACP.md` and
+     *       `docs/compatibility/SANDBOX.md`). `observed_at` and `evidence` are
+     *       present exactly when the verdict is evidence-backed. A cell with no
+     *       recorded row is `not_tested` — the API can never report `observed`
+     *       without a dated, path-cited row behind it, and a worker being
+     *       online is not evidence that it was ever run.
+     *     * `workers_online` — a documented approximation, not a per-launcher
+     *       claim: workers register their sandbox state (ADR-0019 D5) but not
+     *       the launchers they can run, so the number is the count of live
+     *       workers whose registration says required sandbox enforcement with
+     *       a verified launch (the same liveness rule `GET /api/v1/workers`
+     *       applies); `0` for an unregistered launcher, because with no
+     *       launcher entry nothing runs on any worker.
+     *
+     *     Read-only: session required, no membership check (this matches `GET /api/v1/workers` and `GET /api/v1/system/sandbox`), and the values authorize nothing.
+     */
+    get: operations["listLaunchers"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agent-profiles": {
     parameters: {
       query?: never;
@@ -532,6 +632,26 @@ export interface paths {
      *     `agent_profile_id` must be a profile of the caller's organization (`422` otherwise). `contributor` or `maintainer` required; a `viewer` gets `403`. M2 does not honour `Idempotency-Key`, so a retried create makes a second conversation (ADR-0014 §Consequences).
      */
     post: operations["createConversation"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/conversations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List conversations across every visible project
+     * @description ADR-0047: the shell's cross-project thread list. The same rows the project route lists — the existing `ConversationSummary` schema, with `project_id` on every row — scoped to every project the caller is a member of by the membership predicate in SQL; a project the caller is not a member of contributes no rows and no error. Newest first (`created_at DESC, id DESC`) with keyset pagination: `limit` is 1–200 (default 50) and `cursor` is the previous page's `next_cursor`. Live updates ride the org event stream (ADR-0048), not polling.
+     */
+    get: operations["listConversationsCrossProject"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1077,6 +1197,90 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/node-templates": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the organization's step (node-template) registry
+     * @description ADR-0049 § 3. The registry with each template's `latest_revision` summary and its computed `used_in_count` (the § 4 number: workflows whose LATEST published revision references the template — zero until publish writes `pipeline_revision_template_refs`). Organization member+. Part 1 lists the whole registry in one page: `next_cursor` is null.
+     */
+    get: operations["listNodeTemplates"];
+    put?: never;
+    /**
+     * Create a step and its immutable revision 1
+     * @description ADR-0049 § 3. One transaction: the template row, revision 1 and the `node_template.create` journal row. `kind` must be in the v1alpha1 catalogue (unknown kind is `422`), a slug the organization already holds is `409`. Library role (organization admin) — `403` otherwise. Appends `node_template.create` in the creating transaction.
+     */
+    post: operations["createNodeTemplate"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/node-templates/{templateId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read a step with its full revision history and usages
+     * @description ADR-0049 § 3. The template, its revisions newest first (content included) and its `usages` (the § 4 rows: workflows whose latest published revision references it, `up_to_date` against the template's latest revision). A template of another organization is `404`, never `403` — existence is not disclosed across tenants. Organization member+.
+     */
+    get: operations["getNodeTemplate"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/node-templates/{templateId}/revisions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Append immutable revision N+1 ("Edit for all")
+     * @description ADR-0049 § 3. The UI's "Edit for all N workflows → version x.y.z". Revisions are immutable: this appends revision N+1 in one transaction with the `node_template.revision.publish` journal row; a `version_label` the template already carries is `409`. With `adopt_using_workflows: true` the response's `adopted`/`skipped` arrays carry the § 5 draft adoptions (part 2; part 1 answers both empty — the refs table is empty until publish writes it). Library role.
+     */
+    post: operations["createNodeTemplateRevision"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/node-templates/{templateId}/duplicate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Duplicate a step as a new one (revision 1 = content copy)
+     * @description ADR-0049 § 3. The UI's "Duplicate as a new step…". A NEW template (`slug`/`display_name` in the body; a slug the organization holds is `409`) whose revision 1 is a content copy of the source's latest revision — same `parameters`/`config`/`output_schema`/`workspace_mode` and same `version_label`, `revision_number` 1, the same digest. One transaction, one `node_template.duplicate` row. The ADR-0049 prose writes this route `POST /node-templates/{id}:duplicate`; the Go 1.22 router requires the wildcard to be a whole segment, so the house action-segment form (`/duplicate`, like `/deprecate`) is the wire contract. Library role.
+     */
+    post: operations["duplicateNodeTemplate"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/pipelines/{pipelineId}": {
     parameters: {
       query?: never;
@@ -1409,6 +1613,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List runs across every visible project
+     * @description ADR-0047: the board and Home's cross-project run list. The same rows as `listProjectRuns` — the `RunSummary` schema plus `project_name`, `pipeline_slug`, `pipeline_display_name` (the workflow's human names, not bare ids) and `steps` (the top-level nodes of the run's pinned revision, definition order, each projected onto the board's seven step states) — scoped to every project the caller is a member of by the membership predicate in SQL. Newest first (`created_at DESC, id DESC`) with keyset pagination: `limit` is 1–200 (default 50), `cursor` is the previous page's `next_cursor`. `status` is a comma-separated list of `RunStatus` values; `mine=true` keeps only runs whose `triggered_by` is the caller (a child or a system start is never "mine"); `updated_since` matches `COALESCE(finished_at, created_at) >= value` — the "done today" and "just created" asks. Every invalid value is `400` before any store call. Live updates ride the org event stream (ADR-0048), not polling.
+     */
+    get: operations["listRunsCrossProject"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/runs/{runId}": {
     parameters: {
       query?: never;
@@ -1665,6 +1889,10 @@ export interface paths {
      *     | `pipeline.revision.deprecated` | `project_id`, `revision_id`, `revision_digest` |
      *     | `assignment.created` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides` |
      *     | `assignment.updated` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides`, `before`, `after` |
+     *     | `pipeline.update` | `project_id`, `pipeline_id`, `changed_fields` |
+     *     | `node_template.create` | `project_id`, `template_id`, `slug`, `version_label` |
+     *     | `node_template.revision.publish` | `project_id`, `template_id`, `revision_id`, `revision_number`, `version_label`, `revision_digest` |
+     *     | `node_template.duplicate` | `project_id`, `template_id`, `source_template_id`, `slug`, `source_template_slug` |
      *
      *     Nested shapes (named here because the payload member is the object's
      *     name; none of it carries a path, a secret value, a prompt body, a
@@ -1782,6 +2010,26 @@ export interface paths {
      * @description The UI's "needs attention" list: pending gates first, ordered by `deadline_at` (the one about to expire is the urgent one), then decided history newest first. These are the durable pipeline gates (`approval_requests`), *not* the ACP permission prompts of M2 (`permission_requests`): different table, different authorizer, different CAS (ADR-0023 § 9 keeps the two names apart on purpose). Viewer+.
      */
     get: operations["listProjectApprovals"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/approvals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List approval gates across every visible project
+     * @description ADR-0047: the inbox's cross-project gate list. The existing `Approval` schema — `project_id` and `run_id` are already on every row — scoped to every project the caller is a member of by the membership predicate in SQL, with the same role gate the detail route enforces applied row by row. Pending-first ordering (the one about to expire is the urgent one), the project list's rule; `status` filters on one `Approval` state and absent lists every state. No pagination: a gate is an action, and the count is bounded by the caller's projects and their pending workflows.
+     */
+    get: operations["listApprovalsCrossProject"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2187,6 +2435,49 @@ export interface components {
       items: components["schemas"]["Worker"][];
     };
     /**
+     * LauncherList
+     * @description The `listLaunchers` body. Deliberately `launchers` rather than the `{items: [...]}` envelope: the UI's agent cards map positionally to the ids, and the first four are always the product card ids (ADR-0051).
+     */
+    LauncherList: {
+      launchers: components["schemas"]["Launcher"][];
+    };
+    /**
+     * Launcher
+     * @description One launcher card. See `listLaunchers` for what `registered`, `workers_online` and `capabilities` may and may not claim.
+     */
+    Launcher: {
+      /** @description Stable launcher identifier (profiles' `launcher_id` keys into it). */
+      id: string;
+      /** @description Human-facing name; the registry entry of record for built-ins. */
+      display_name: string;
+      /** @description A built-in launcher entry exists. False means a profile naming this id would fail closed at launch (ADR-0019 D6). */
+      registered: boolean;
+      /** @description Live workers whose registration records required sandbox enforcement with a verified launch (the documented approximation — workers do not report per-launcher capability); `0` when `registered` is false. */
+      workers_online: number;
+      /** @description The four capability cells, in the schema's order. */
+      capabilities: components["schemas"]["LauncherCapability"][];
+    };
+    /** LauncherCapability */
+    LauncherCapability: {
+      /**
+       * @description One cell of the 12-test-strategy compatibility table.
+       * @enum {string}
+       */
+      capability: "acp_session" | "resume" | "permission_prompts" | "nono_required";
+      /**
+       * @description `observed` only from a recorded probe row; `not_supported` only from an observed negative; `not_tested` is the default and the only value a missing row may produce.
+       * @enum {string}
+       */
+      result: "observed" | "not_supported" | "not_tested";
+      /**
+       * Format: date-time
+       * @description RFC 3339 date the evidence row records; null when not evidence-backed.
+       */
+      observed_at: string | null;
+      /** @description Repo-relative path of the cited evidence; null when not evidence-backed. */
+      evidence: string | null;
+    };
+    /**
      * AgentProfile
      * @description A launchable agent configuration (`agent_profiles`). `launcher_id` is a key into the agent launcher registry, not a promise that the harness works on this host — capability evidence lives in `docs/compatibility/ACP.md`.
      * @example {
@@ -2473,6 +2764,15 @@ export interface components {
     /** ConversationSummaryList */
     ConversationSummaryList: {
       items: components["schemas"]["ConversationSummary"][];
+    };
+    /**
+     * CrossProjectConversationList
+     * @description ADR-0047: the `GET /api/v1/conversations` envelope — the existing `ConversationSummary` schema across every project the caller is a member of, one keyset page.
+     */
+    CrossProjectConversationList: {
+      items: components["schemas"]["ConversationSummary"][];
+      /** @description The `cursor` value for the next page; null exactly when the page holds the last row. */
+      next_cursor: string | null;
     };
     /**
      * ConversationCreate
@@ -3101,6 +3401,8 @@ export interface components {
       latest_revision_number: number;
       revision_count: number;
       archived: boolean;
+      /** @description ADR-0049 § 8: the display group the Workflows index groups by; null = unfiled (the UI renders the Unfiled group client-side). */
+      folder?: string | null;
     };
     /** PipelineList */
     PipelineList: {
@@ -3116,6 +3418,8 @@ export interface components {
       slug: string;
       display_name: string;
       description: string;
+      /** @description ADR-0049 § 8 — the display group; null = unfiled. */
+      folder?: string | null;
       /** Format: uuid */
       created_by: string;
       /** Format: date-time */
@@ -3143,6 +3447,169 @@ export interface components {
       display_name?: string;
       description?: string;
       archived?: boolean;
+      /** @description ADR-0049 § 8: the display group for the Workflows sidebar and index. `null` clears it; an absent member does not touch it; both are valid, so `minProperties: 1` counts this member when present. */
+      folder?: string | null;
+    };
+    /**
+     * NodeTemplate
+     * @description ADR-0049 § 3: a reusable parameterized step — the registry row plus its latest revision's identity and the § 4 usage count. Revisions are immutable (ADR-0002); this row is the mutable shell around them.
+     */
+    NodeTemplate: {
+      /** Format: uuid */
+      id: string;
+      /** @description Unique in the organization; a pipeline node references it as `slug@semver`. */
+      slug: string;
+      display_name: string;
+      /** @description The implemented kind (e.g. `agent.acp`) — a v1alpha1 catalogue name. */
+      kind: string;
+      description: string;
+      /** @enum {string} */
+      status: "active" | "retired";
+      latest_revision: components["schemas"]["NodeTemplateRevisionSummary"];
+      /** @description The § 4 number, computed at read time: the workflows whose LATEST published revision references this template. Draft references never count. */
+      used_in_count: number;
+      /** Format: uuid */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
+    /**
+     * NodeTemplateRevisionSummary
+     * @description The NodeTemplate `latest_revision` member — identity, never content.
+     */
+    NodeTemplateRevisionSummary: {
+      /** Format: uuid */
+      revision_id: string;
+      revision_number: number;
+      version_label: string;
+      /** @description The ADR-0021 canonical digest of the four content members (scope v1alpha1-canonical-1). Identical content across templates is deliberately the same digest. */
+      revision_digest: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /**
+     * NodeTemplateRevision
+     * @description One immutable revision (ADR-0049 § 3). There is no mutation route to it: a new version is a new row.
+     */
+    NodeTemplateRevision: {
+      /** Format: uuid */
+      revision_id: string;
+      /** @description Monotonic per template, unique, never reused. */
+      revision_number: number;
+      /** @description Unique per template; a clash is `409`. */
+      version_label: string;
+      /** @description The JSON schema the node's `config` (parameter values) is validated against at publish. */
+      parameters: Record<string, never>;
+      /** @description The parameterized body; bindings are composed with the node's config at publish (part 2). */
+      config: Record<string, never>;
+      output_schema: Record<string, never>;
+      /** @enum {string} */
+      workspace_mode: "run_workspace" | "read_only";
+      revision_digest: string;
+      /** Format: uuid */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+    };
+    /**
+     * TemplateUsage
+     * @description ADR-0049 § 4: one workflow whose latest published revision references the template. `up_to_date` is true iff it references the template's latest revision — the honest signal behind the per-use live status.
+     */
+    TemplateUsage: {
+      /** Format: uuid */
+      pipeline_id: string;
+      pipeline_slug: string;
+      pipeline_display_name: string;
+      /** @description The pipeline's latest published revision number. */
+      revision_number: number;
+      /** Format: uuid */
+      template_revision_id: string;
+      /** @description The referencing nodes, sorted. */
+      node_ids: string[];
+      up_to_date: boolean;
+    };
+    /**
+     * NodeTemplateDetail
+     * @description ADR-0049 § 3: `getNodeTemplate`'s body — the template, its full revision history (newest first) and its usages.
+     */
+    NodeTemplateDetail: {
+      template: components["schemas"]["NodeTemplate"];
+      revisions: components["schemas"]["NodeTemplateRevision"][];
+      usages: components["schemas"]["TemplateUsage"][];
+    };
+    /**
+     * NodeTemplateList
+     * @description The listNodeTemplates envelope. next_cursor is null in part 1.
+     */
+    NodeTemplateList: {
+      templates: components["schemas"]["NodeTemplate"][];
+      next_cursor: string | null;
+    };
+    /**
+     * NodeTemplateCreate
+     * @description `createNodeTemplate`'s body. Defaults when omitted: `version_label` 1.0.0, `workspace_mode` run_workspace, `output_schema` {}.
+     */
+    NodeTemplateCreate: {
+      slug: string;
+      display_name: string;
+      description?: string;
+      /** @description A v1alpha1 catalogue kind; unknown kinds are `422`. */
+      kind: string;
+      /** @description JSON schema over the parameter values. */
+      parameters: Record<string, never>;
+      config: Record<string, never>;
+      output_schema?: Record<string, never>;
+      /** @enum {string} */
+      workspace_mode?: "run_workspace" | "read_only";
+      version_label?: string;
+    };
+    /**
+     * NodeTemplateRevisionCreate
+     * @description `createNodeTemplateRevision`'s body — "Edit for all". `version_label` is required (no default: the label is the human's choice for the new version).
+     */
+    NodeTemplateRevisionCreate: {
+      parameters: Record<string, never>;
+      config: Record<string, never>;
+      output_schema?: Record<string, never>;
+      /** @enum {string} */
+      workspace_mode?: "run_workspace" | "read_only";
+      version_label: string;
+      /**
+       * @description ADR-0049 § 5 (part 2) — adopt the new revision into drafts of the referencing workflows.
+       * @default false
+       */
+      adopt_using_workflows: boolean;
+    };
+    /**
+     * TemplateDuplicate
+     * @description The duplicateNodeTemplate body.
+     */
+    TemplateDuplicate: {
+      slug: string;
+      display_name: string;
+    };
+    /**
+     * NodeTemplateRevisionCreateResponse
+     * @description `createNodeTemplateRevision`'s 201 body: the new revision plus the § 5 adoption result (empty arrays in part 1 — no refs exist yet).
+     */
+    NodeTemplateRevisionCreateResponse: {
+      revision: components["schemas"]["NodeTemplateRevision"];
+      adopted: {
+        /** Format: uuid */
+        pipeline_id: string;
+        pipeline_slug: string;
+        /** Format: uuid */
+        draft_id: string;
+        draft_version: number;
+      }[];
+      skipped: {
+        /** Format: uuid */
+        pipeline_id: string;
+        /** @enum {string} */
+        reason: "open_draft";
+      }[];
     };
     /**
      * PipelineRevisionSummary
@@ -3510,6 +3977,36 @@ export interface components {
     /** RunSummaryList */
     RunSummaryList: {
       runs: components["schemas"]["RunSummary"][];
+    };
+    /**
+     * CrossProjectRunStep
+     * @description ADR-0047 § 4: one top-level node of a run's pinned revision, in definition order, projected onto the board's seven step states. `state` maps the node execution's statuses: ready/leased have not visibly started (`pending`), `interrupted` stopped without completing (`failed`), and the rest is the identity; a node with several execution rows (a loop) takes the state that most needs attention (failed > running > waiting > cancelled > succeeded > skipped > pending), so the segment count is the step count, not the execution count.
+     */
+    CrossProjectRunStep: {
+      /** @description The node id as declared in the pinned revision document. */
+      node_id: string;
+      /** @description The node kind from the pinned revision (e.g. `agent.acp`, `process.exec`). */
+      kind: string;
+      /** @enum {string} */
+      state: "pending" | "running" | "waiting" | "succeeded" | "failed" | "skipped" | "cancelled";
+    };
+    /**
+     * CrossProjectRunSummary
+     * @description ADR-0047: the `RunSummary` row plus the cross-project extras a board card or Home row needs without a second fetch: which project, which workflow (by its human names, not bare ids), and the per-step projection.
+     */
+    CrossProjectRunSummary: components["schemas"]["RunSummary"] & {
+      /** @description The project's display name (a run is listed with its project on the row). */
+      project_name: string;
+      pipeline_slug: string;
+      pipeline_display_name: string;
+      /** @description The pinned revision's top-level nodes in definition order; empty when the stored plan snapshot does not decode. */
+      steps: components["schemas"]["CrossProjectRunStep"][];
+    };
+    /** CrossProjectRunList */
+    CrossProjectRunList: {
+      runs: components["schemas"]["CrossProjectRunSummary"][];
+      /** @description The `cursor` value for the next page; null exactly when the page holds the last row. */
+      next_cursor: string | null;
     };
     /**
      * RunPlacement
@@ -3919,6 +4416,13 @@ export interface components {
       approvals: components["schemas"]["Approval"][];
     };
     /**
+     * CrossProjectApprovalList
+     * @description ADR-0047: the `GET /api/v1/approvals` envelope — the existing `Approval` schema across every project the caller is a member of.
+     */
+    CrossProjectApprovalList: {
+      approvals: components["schemas"]["Approval"][];
+    };
+    /**
      * ApprovalDecide
      * @description Request body for `decideApproval`.
      */
@@ -4189,6 +4693,73 @@ export interface components {
       code: "assistant_proposal_invalid";
     };
     /**
+     * UserPreferences
+     * @description The signed-in user's display preferences (ADR-0046). Display preferences only: they authorize nothing and no authorization path reads them. Defaults are merged under stored values; `updated_at` is `null` until the user has saved at least once.
+     */
+    UserPreferences: {
+      layout: components["schemas"]["UserPreferencesLayout"];
+      assistant: components["schemas"]["UserPreferencesAssistant"];
+      /**
+       * Format: date-time
+       * @description When the user last saved, or `null` if never.
+       */
+      updated_at: string | null;
+    };
+    /**
+     * UserPreferencesLayout
+     * @description The app-shell layout preferences (Settings → Layout). Defaults: `tree`, `sidebar`, `true`, `{}`.
+     */
+    UserPreferencesLayout: {
+      /**
+       * @description Projects in the sidebar as a tree (default) or as a single switcher button.
+       * @enum {string}
+       */
+      projects_mode: "tree" | "switcher";
+      /**
+       * @description Where the Ask button lives (default `sidebar`, or a floating bottom-right button); the ⌘K palette works from anywhere either way.
+       * @enum {string}
+       */
+      ask_placement: "sidebar" | "floating";
+      /** @description Whether the sidebar's Workflows entry expands to folders (default `true`) or stays a single link. */
+      show_workflow_folders: boolean;
+      /** @description Sidebar expand/collapse state keyed by id. At most 500 keys, each at most 120 characters. */
+      expanded: {
+        [key: string]: boolean;
+      };
+    };
+    /**
+     * UserPreferencesAssistant
+     * @description The assistant section. `trust_level` is enforced client-side in the assistant tool loop (ADR-0046); the server still caps every assistant call at the caller's own role (ADR-0034).
+     */
+    UserPreferencesAssistant: {
+      /**
+       * @description How often the assistant asks before acting: always, only for risky operations (default), or never.
+       * @default ask_risky
+       * @enum {string}
+       */
+      trust_level: "ask_all" | "ask_risky" | "no_ask";
+    };
+    /**
+     * UserPreferencesPatch
+     * @description The PATCH body: any subset of the document, deep-merged per section. An absent member is unchanged; `expanded` merges key-by-key. Unknown keys and unknown enum values are `400` problem+json naming the field.
+     */
+    UserPreferencesPatch: {
+      layout?: {
+        /** @enum {string} */
+        projects_mode?: "tree" | "switcher";
+        /** @enum {string} */
+        ask_placement?: "sidebar" | "floating";
+        show_workflow_folders?: boolean;
+        expanded?: {
+          [key: string]: boolean;
+        };
+      };
+      assistant?: {
+        /** @enum {string} */
+        trust_level?: "ask_all" | "ask_risky" | "no_ask";
+      };
+    };
+    /**
      * Communication durable event envelope
      * @description Envelope for every row of the `domain_events` journal and every `data:` frame of the project SSE stream (communication-spec/09-api-events-data.md, 'Durable event envelope'). Identifiers are Postgres `uuid` values rendered as strings; timestamps are RFC 3339 in UTC. `global_seq` is the monotonic replay cursor used for SSE `Last-Event-ID` / `?after=`. The envelope is stable; the shape of `payload` is defined per event `type` and per `schema_version` by the event type's own schema.
      * @example {
@@ -4246,7 +4817,7 @@ export interface components {
       event_id: string;
       /** @description Database-generated global sequence (`bigint GENERATED ALWAYS AS IDENTITY`). Monotonic; the SSE event `id:` and the reconnect cursor. */
       global_seq: number;
-      /** @description Dotted lowercase event type, e.g. `project.created`, `repository.added`, `node.attempt.completed`. */
+      /** @description Dotted lowercase event type, e.g. `project.created`, `repository.added`, `node.attempt.completed`. First segment admits underscores for ADR-0049's `node_template.*` names. */
       type: string;
       /** @description Version of the payload schema for this `type`. Consumers must ignore payload fields they do not know. */
       schema_version: number;
@@ -4630,6 +5201,8 @@ export interface components {
     ProfileId: string;
     /** @description A `pipelines` id. Pipelines are organization-scoped: a definition of another organization is `404`, never `403`, so library existence is not disclosed across tenants. */
     PipelineId: string;
+    /** @description A `node_templates` id. Templates are organization-scoped: a template of another organization is `404`, never `403` (ADR-0049 § 3). */
+    TemplateId: string;
     /** @description A `pipeline_drafts` id. Authorization resolves through the draft's pipeline and its organization (contributor+ of that organization's library surface). */
     DraftId: string;
     /** @description Either a `pipeline_revisions` id (`uuid`) or its `revision_digest` (`sha256:<64 hex>`). A digest belonging to another organization is `404`, byte-identical to an unknown one. */
@@ -4832,6 +5405,55 @@ export interface operations {
           "application/json": components["schemas"]["UserList"];
         };
       };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  getMyPreferences: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The full preferences document, defaults included. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UserPreferences"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  patchMyPreferences: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UserPreferencesPatch"];
+      };
+    };
+    responses: {
+      /** @description The full document after the merge. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UserPreferences"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
       401: components["responses"]["Unauthorized"];
     };
   };
@@ -5084,6 +5706,35 @@ export interface operations {
       422: components["responses"]["UnprocessableEntity"];
     };
   };
+  streamOrgEvents: {
+    parameters: {
+      query?: {
+        /** @description Explicit resume cursor for clients that do not send `Last-Event-ID` (the UI records the last `global_seq` it rendered). Events with `global_seq` strictly greater than this are replayed. */
+        after?: components["parameters"]["After"];
+      };
+      header?: {
+        /** @description Last event `global_seq` the client processed, sent automatically by `EventSource` on reconnect. Events with `global_seq` strictly greater than this are replayed before the stream goes live. */
+        "Last-Event-ID"?: components["parameters"]["LastEventId"];
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description An open `text/event-stream`. Frames are event envelopes from any of the caller's projects; the stream does not terminate on its own. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "text/event-stream": components["schemas"]["event-envelope.schema"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
   streamProjectEvents: {
     parameters: {
       query?: {
@@ -5134,6 +5785,28 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["WorkerList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  listLaunchers: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Launcher registry. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LauncherList"];
         };
       };
       401: components["responses"]["Unauthorized"];
@@ -5284,6 +5957,34 @@ export interface operations {
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
       422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  listConversationsCrossProject: {
+    parameters: {
+      query?: {
+        /** @description Page size; 1–200, default 50. */
+        limit?: number;
+        /** @description Opaque keyset cursor — the previous page's `next_cursor`. An unparseable value is `400` problem+json. */
+        cursor?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of cross-project conversation summaries. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CrossProjectConversationList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
     };
   };
   getConversation: {
@@ -6084,6 +6785,149 @@ export interface operations {
       422: components["responses"]["UnprocessableEntity"];
     };
   };
+  listNodeTemplates: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The registry. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeTemplateList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+    };
+  };
+  createNodeTemplate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["NodeTemplateCreate"];
+      };
+    };
+    responses: {
+      /** @description The template with its revision 1. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeTemplate"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  getNodeTemplate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `node_templates` id. Templates are organization-scoped: a template of another organization is `404`, never `403` (ADR-0049 § 3). */
+        templateId: components["parameters"]["TemplateId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The detail. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeTemplateDetail"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  createNodeTemplateRevision: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `node_templates` id. Templates are organization-scoped: a template of another organization is `404`, never `403` (ADR-0049 § 3). */
+        templateId: components["parameters"]["TemplateId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["NodeTemplateRevisionCreate"];
+      };
+    };
+    responses: {
+      /** @description The new revision plus the adoption result. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeTemplateRevisionCreateResponse"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
+  duplicateNodeTemplate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description A `node_templates` id. Templates are organization-scoped: a template of another organization is `404`, never `403` (ADR-0049 § 3). */
+        templateId: components["parameters"]["TemplateId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TemplateDuplicate"];
+      };
+    };
+    responses: {
+      /** @description The new template. */
+      201: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NodeTemplate"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+      422: components["responses"]["UnprocessableEntity"];
+    };
+  };
   getPipeline: {
     parameters: {
       query?: never;
@@ -6766,6 +7610,44 @@ export interface operations {
       422: components["responses"]["ValidateFailed"];
     };
   };
+  listRunsCrossProject: {
+    parameters: {
+      query?: {
+        /** @description Comma-separated `RunStatus` values; absent is no filter. */
+        status?: string;
+        /** @description Keep only the runs of this project (which the caller must belong to). */
+        project_id?: string;
+        /** @description Keep only the runs of this workflow. */
+        pipeline_id?: string;
+        /** @description `true` keeps only runs the caller started (`triggered_by` = the caller). Must be `true` when present; absent or `false`- anything-else is `400`. */
+        mine?: boolean;
+        /** @description RFC 3339 timestamp; keep rows whose `COALESCE(finished_at, created_at)` is at or after it. */
+        updated_since?: string;
+        /** @description Page size; 1–200, default 50. */
+        limit?: number;
+        /** @description Opaque keyset cursor — the previous page's `next_cursor`. An unparseable value is `400` problem+json. */
+        cursor?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of cross-project run summaries. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CrossProjectRunList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+    };
+  };
   getRun: {
     parameters: {
       query?: never;
@@ -7097,6 +7979,32 @@ export interface operations {
       };
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
+    };
+  };
+  listApprovalsCrossProject: {
+    parameters: {
+      query?: {
+        /** @description One `Approval` state; absent lists every state. */
+        status?: "pending" | "decided" | "expired" | "cancelled" | "denied";
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The caller's gates across all their projects. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CrossProjectApprovalList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
     };
   };
   getApproval: {

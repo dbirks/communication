@@ -393,6 +393,68 @@ paths:
                 $ref: "#/components/schemas/UserList"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/v1/me/preferences:
+    get:
+      operationId: getMyPreferences
+      tags: [identity]
+      summary: My display preferences
+      description: |
+        The signed-in user's display preferences (ADR-0046): the app-shell
+        layout settings and the assistant trust level. Defaults are merged
+        under any stored values — `projects_mode` `tree`, `ask_placement`
+        `sidebar`, `show_workflow_folders` `true`, `expanded` `{}`,
+        `trust_level` `ask_risky` — and `updated_at` is `null` until the
+        first save. The values are display preferences only: they authorize
+        nothing.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The full preferences document, defaults included.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPreferences"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    patch:
+      operationId: patchMyPreferences
+      tags: [identity]
+      summary: Update my display preferences
+      description: |
+        Deep-merges any subset of the document, per section: an absent member
+        is unchanged, and `expanded` merges key-by-key. The answer is the
+        full document with the new `updated_at`. Unknown keys at any level
+        and unknown enum values are `400` problem+json naming the field
+        (stable code `invalid_preferences`); the `expanded` map takes at most
+        500 keys, each at most 120 characters. Subject to the same
+        authentication and CSRF rules as every other mutation; saves are
+        last-write-wins per user (there is no version — display state only).
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPreferencesPatch"
+      responses:
+        "200":
+          description: The full document after the merge.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPreferences"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/projects:
     get:
       operationId: listProjects
@@ -682,6 +744,57 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/events:
+    get:
+      operationId: streamOrgEvents
+      tags: [events]
+      summary: Stream the caller's organization-wide events (SSE)
+      description: >
+        `text/event-stream` of the caller's rows from the `domain_events`
+        journal, multiplexed across **every project the caller may see** in
+        their organization (memberships, or everything for an organization
+        admin, the same visibility as `GET /api/v1/projects`) — ADR-0048.
+
+        Framing, resume, gap-safety and the 15 s heartbeat are identical to
+        `GET /api/v1/projects/{projectId}/events` (ADR-0014 §5, §9): one frame
+        per event, `id: <global_seq>` / `event: <type>` / `data: <envelope
+        JSON>`, replayed from `Last-Event-ID` (which wins over `?after=`, which
+        wins over the journal head). Because `id:` is the *global* journal
+        `global_seq`, the browser's automatic reconnect resumes mid-journal
+        across projects, and sequences of projects the caller may no longer
+        see are simply gaps — a resume across them replays nothing wrong.
+
+        Authorization is per row: the visibility predicate lives in the store
+        read, and it is re-evaluated by every batch the handler queries, so a
+        membership granted or revoked mid-stream takes effect on the next
+        query (ADR-0048 §3). Rows without a `project_id` (organization-scoped
+        events) are **not** delivered: the stream carries project events only
+        (ADR-0048 §4). A caller who is a member of no project gets an open,
+        quiet stream — the route names no resource, so there is nothing to
+        404. Every envelope carries `project_id`, which a client uses to route
+        the frame (and it is the same envelope the project stream sends).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/LastEventId"
+        - $ref: "#/components/parameters/After"
+      responses:
+        "200":
+          description: >
+            An open `text/event-stream`. Frames are event envelopes from any
+            of the caller's projects; the stream does not terminate on its
+            own.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/EventEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/projects/{projectId}/events:
     get:
       operationId: streamProjectEvents
@@ -834,6 +947,58 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkerList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/launchers:
+    get:
+      operationId: listLaunchers
+      tags: [profiles, workers]
+      summary: Launcher registry with evidence-backed capability cells
+      description: >
+        The launcher registry the profiles list, the New-profile dialog and
+        the Operations capability matrix render from (ADR-0051). Always
+        contains the four product card ids `claude`, `codex`, `pi`,
+        `antigravity` in that order; any registered launcher beyond them
+        follows, and the client's "Other ACP agent" card is the catch-all for
+        exactly those.
+
+        Three different kinds of fact are kept strictly separate, and each
+        must be read as no more than it is:
+
+        * `registered` — the built-in registry (worker launch code) has a
+          launcher entry. A registered launcher is **not** a capability
+          claim: nothing about this route says a harness works on any host.
+        * `capabilities` — each cell's `result` comes ONLY from a recorded
+          probe row in `docs/compatibility/acp-observed.json` (the structured
+          transcript of the observed cells in `docs/compatibility/ACP.md` and
+          `docs/compatibility/SANDBOX.md`). `observed_at` and `evidence` are
+          present exactly when the verdict is evidence-backed. A cell with no
+          recorded row is `not_tested` — the API can never report `observed`
+          without a dated, path-cited row behind it, and a worker being
+          online is not evidence that it was ever run.
+        * `workers_online` — a documented approximation, not a per-launcher
+          claim: workers register their sandbox state (ADR-0019 D5) but not
+          the launchers they can run, so the number is the count of live
+          workers whose registration says required sandbox enforcement with
+          a verified launch (the same liveness rule `GET /api/v1/workers`
+          applies); `0` for an unregistered launcher, because with no
+          launcher entry nothing runs on any worker.
+
+        Read-only: session required, no membership check (this matches
+        `GET /api/v1/workers` and `GET /api/v1/system/sandbox`), and the
+        values authorize nothing.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Launcher registry.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LauncherList"
         "401":
           $ref: "#/components/responses/Unauthorized"
   /api/v1/agent-profiles:
@@ -1067,6 +1232,54 @@ paths:
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/conversations:
+    get:
+      operationId: listConversationsCrossProject
+      tags: [conversations]
+      summary: List conversations across every visible project
+      description: >
+        ADR-0047: the shell's cross-project thread list. The same rows the
+        project route lists — the existing `ConversationSummary` schema, with
+        `project_id` on every row — scoped to every project the caller is a
+        member of by the membership predicate in SQL; a project the caller is
+        not a member of contributes no rows and no error. Newest first
+        (`created_at DESC, id DESC`) with keyset pagination: `limit` is 1–200
+        (default 50) and `cursor` is the previous page's `next_cursor`. Live
+        updates ride the org event stream (ADR-0048), not polling.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size; 1–200, default 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque keyset cursor — the previous page's `next_cursor`. An
+            unparseable value is `400` problem+json.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of cross-project conversation summaries.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossProjectConversationList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/conversations/{conversationId}:
     get:
       operationId: getConversation
@@ -2226,6 +2439,191 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/node-templates:
+    get:
+      operationId: listNodeTemplates
+      tags: [node-templates]
+      summary: List the organization's step (node-template) registry
+      description: >
+        ADR-0049 § 3. The registry with each template's `latest_revision`
+        summary and its computed `used_in_count` (the § 4 number: workflows
+        whose LATEST published revision references the template — zero until
+        publish writes `pipeline_revision_template_refs`). Organization
+        member+. Part 1 lists the whole registry in one page: `next_cursor`
+        is null.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The registry.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTemplateList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createNodeTemplate
+      tags: [node-templates]
+      summary: Create a step and its immutable revision 1
+      description: >
+        ADR-0049 § 3. One transaction: the template row, revision 1 and the
+        `node_template.create` journal row. `kind` must be in the v1alpha1
+        catalogue (unknown kind is `422`), a slug the organization already
+        holds is `409`. Library role (organization admin) — `403` otherwise.
+        Appends `node_template.create` in the creating transaction.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeTemplateCreate"
+      responses:
+        "201":
+          description: The template with its revision 1.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTemplate"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/node-templates/{templateId}:
+    get:
+      operationId: getNodeTemplate
+      tags: [node-templates]
+      summary: Read a step with its full revision history and usages
+      description: >
+        ADR-0049 § 3. The template, its revisions newest first (content
+        included) and its `usages` (the § 4 rows: workflows whose latest
+        published revision references it, `up_to_date` against the template's
+        latest revision). A template of another organization is `404`, never
+        `403` — existence is not disclosed across tenants. Organization
+        member+.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/TemplateId"
+      responses:
+        "200":
+          description: The detail.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTemplateDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/node-templates/{templateId}/revisions:
+    post:
+      operationId: createNodeTemplateRevision
+      tags: [node-templates]
+      summary: Append immutable revision N+1 ("Edit for all")
+      description: >
+        ADR-0049 § 3. The UI's "Edit for all N workflows → version x.y.z".
+        Revisions are immutable: this appends revision N+1 in one transaction
+        with the `node_template.revision.publish` journal row; a
+        `version_label` the template already carries is `409`. With
+        `adopt_using_workflows: true` the response's `adopted`/`skipped`
+        arrays carry the § 5 draft adoptions (part 2; part 1 answers both
+        empty — the refs table is empty until publish writes it). Library
+        role.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeTemplateRevisionCreate"
+      responses:
+        "201":
+          description: The new revision plus the adoption result.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTemplateRevisionCreateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/node-templates/{templateId}/duplicate:
+    post:
+      operationId: duplicateNodeTemplate
+      tags: [node-templates]
+      summary: Duplicate a step as a new one (revision 1 = content copy)
+      description: >
+        ADR-0049 § 3. The UI's "Duplicate as a new step…". A NEW template
+        (`slug`/`display_name` in the body; a slug the organization holds is
+        `409`) whose revision 1 is a content copy of the source's latest
+        revision — same `parameters`/`config`/`output_schema`/`workspace_mode`
+        and same `version_label`, `revision_number` 1, the same digest. One
+        transaction, one `node_template.duplicate` row. The ADR-0049 prose
+        writes this route `POST /node-templates/{id}:duplicate`; the Go 1.22
+        router requires the wildcard to be a whole segment, so the house
+        action-segment form (`/duplicate`, like `/deprecate`) is the wire
+        contract. Library role.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/TemplateId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemplateDuplicate"
+      responses:
+        "201":
+          description: The new template.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTemplate"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
   /api/v1/pipelines/{pipelineId}:
     get:
       operationId: getPipeline
@@ -3097,6 +3495,101 @@ paths:
         "422":
           $ref: "#/components/responses/ValidateFailed"
 
+  /api/v1/runs:
+    get:
+      operationId: listRunsCrossProject
+      tags: [runs]
+      summary: List runs across every visible project
+      description: >
+        ADR-0047: the board and Home's cross-project run list. The same rows
+        as `listProjectRuns` — the `RunSummary` schema plus
+        `project_name`, `pipeline_slug`, `pipeline_display_name` (the
+        workflow's human names, not bare ids) and `steps` (the top-level
+        nodes of the run's pinned revision, definition order, each projected
+        onto the board's seven step states) — scoped to every project the
+        caller is a member of by the membership predicate in SQL. Newest
+        first (`created_at DESC, id DESC`) with keyset pagination: `limit`
+        is 1–200 (default 50), `cursor` is the previous page's `next_cursor`.
+        `status` is a comma-separated list of `RunStatus` values; `mine=true`
+        keeps only runs whose `triggered_by` is the caller (a child or a
+        system start is never "mine"); `updated_since` matches
+        `COALESCE(finished_at, created_at) >= value` — the "done today" and
+        "just created" asks. Every invalid value is `400` before any store
+        call. Live updates ride the org event stream (ADR-0048), not polling.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Comma-separated `RunStatus` values; absent is no filter.
+          schema:
+            type: string
+            example: running,waiting_human
+        - name: project_id
+          in: query
+          required: false
+          description: Keep only the runs of this project (which the caller must belong to).
+          schema:
+            type: string
+            format: uuid
+        - name: pipeline_id
+          in: query
+          required: false
+          description: Keep only the runs of this workflow.
+          schema:
+            type: string
+            format: uuid
+        - name: mine
+          in: query
+          required: false
+          description: >
+            `true` keeps only runs the caller started (`triggered_by` =
+            the caller). Must be `true` when present; absent or `false`-
+            anything-else is `400`.
+          schema:
+            type: boolean
+            default: false
+        - name: updated_since
+          in: query
+          required: false
+          description: >
+            RFC 3339 timestamp; keep rows whose `COALESCE(finished_at,
+            created_at)` is at or after it.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          description: Page size; 1–200, default 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque keyset cursor — the previous page's `next_cursor`. An
+            unparseable value is `400` problem+json.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of cross-project run summaries.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossProjectRunList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/runs/{runId}:
     get:
       operationId: getRun
@@ -3501,6 +3994,10 @@ paths:
         | `pipeline.revision.deprecated` | `project_id`, `revision_id`, `revision_digest` |
         | `assignment.created` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides` |
         | `assignment.updated` | `project_id`, `assignment_id`, `pipeline_id`, `pinned_revision_id`, `revision_digest`, `max_concurrent_runs`, `budget_overrides`, `before`, `after` |
+        | `pipeline.update` | `project_id`, `pipeline_id`, `changed_fields` |
+        | `node_template.create` | `project_id`, `template_id`, `slug`, `version_label` |
+        | `node_template.revision.publish` | `project_id`, `template_id`, `revision_id`, `revision_number`, `version_label`, `revision_digest` |
+        | `node_template.duplicate` | `project_id`, `template_id`, `source_template_id`, `slug`, `source_template_slug` |
 
         Nested shapes (named here because the payload member is the object's
         name; none of it carries a path, a secret value, a prompt body, a
@@ -3669,6 +4166,45 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/approvals:
+    get:
+      operationId: listApprovalsCrossProject
+      tags: [approvals]
+      summary: List approval gates across every visible project
+      description: >
+        ADR-0047: the inbox's cross-project gate list. The existing
+        `Approval` schema — `project_id` and `run_id` are already on every
+        row — scoped to every project the caller is a member of by the
+        membership predicate in SQL, with the same role gate the detail
+        route enforces applied row by row. Pending-first ordering (the one
+        about to expire is the urgent one), the project list's rule; `status`
+        filters on one `Approval` state and absent lists every state. No
+        pagination: a gate is an action, and the count is bounded by the
+        caller's projects and their pending workflows.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: One `Approval` state; absent lists every state.
+          schema:
+            type: string
+            enum: [pending, decided, expired, cancelled, denied]
+      responses:
+        "200":
+          description: The caller's gates across all their projects.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossProjectApprovalList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/v1/approvals/{approvalId}:
     get:
       operationId: getApproval
@@ -4196,6 +4732,16 @@ components:
         A `pipelines` id. Pipelines are organization-scoped: a definition of
         another organization is `404`, never `403`, so library existence is
         not disclosed across tenants.
+      schema:
+        type: string
+        format: uuid
+    TemplateId:
+      name: templateId
+      in: path
+      required: true
+      description: >
+        A `node_templates` id. Templates are organization-scoped: a template
+        of another organization is `404`, never `403` (ADR-0049 § 3).
       schema:
         type: string
         format: uuid
@@ -5063,6 +5609,74 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Worker"
+    LauncherList:
+      title: LauncherList
+      description: >
+        The `listLaunchers` body. Deliberately `launchers` rather than the
+        `{items: [...]}` envelope: the UI's agent cards map positionally to
+        the ids, and the first four are always the product card ids
+        (ADR-0051).
+      type: object
+      required: [launchers]
+      properties:
+        launchers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Launcher"
+    Launcher:
+      title: Launcher
+      description: >
+        One launcher card. See `listLaunchers` for what `registered`,
+        `workers_online` and `capabilities` may and may not claim.
+      type: object
+      required: [id, display_name, registered, workers_online, capabilities]
+      properties:
+        id:
+          type: string
+          description: Stable launcher identifier (profiles' `launcher_id` keys into it).
+        display_name:
+          type: string
+          description: Human-facing name; the registry entry of record for built-ins.
+        registered:
+          type: boolean
+          description: >
+            A built-in launcher entry exists. False means a profile naming
+            this id would fail closed at launch (ADR-0019 D6).
+        workers_online:
+          type: integer
+          description: >
+            Live workers whose registration records required sandbox
+            enforcement with a verified launch (the documented approximation
+            — workers do not report per-launcher capability); `0` when
+            `registered` is false.
+        capabilities:
+          type: array
+          description: The four capability cells, in the schema's order.
+          items:
+            $ref: "#/components/schemas/LauncherCapability"
+    LauncherCapability:
+      title: LauncherCapability
+      type: object
+      required: [capability, result, observed_at, evidence]
+      properties:
+        capability:
+          type: string
+          enum: [acp_session, resume, permission_prompts, nono_required]
+          description: One cell of the 12-test-strategy compatibility table.
+        result:
+          type: string
+          enum: [observed, not_supported, not_tested]
+          description: >
+            `observed` only from a recorded probe row; `not_supported` only
+            from an observed negative; `not_tested` is the default and the
+            only value a missing row may produce.
+        observed_at:
+          type: [string, "null"]
+          format: date-time
+          description: RFC 3339 date the evidence row records; null when not evidence-backed.
+        evidence:
+          type: [string, "null"]
+          description: Repo-relative path of the cited evidence; null when not evidence-backed.
     AgentProfile:
       title: AgentProfile
       description: >
@@ -5545,6 +6159,22 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConversationSummary"
+    CrossProjectConversationList:
+      title: CrossProjectConversationList
+      description: >
+        ADR-0047: the `GET /api/v1/conversations` envelope — the existing
+        `ConversationSummary` schema across every project the caller is a
+        member of, one keyset page.
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationSummary"
+        next_cursor:
+          type: ["string", "null"]
+          description: The `cursor` value for the next page; null exactly when the page holds the last row.
     ConversationCreate:
       title: ConversationCreate
       description: >
@@ -6703,6 +7333,13 @@ components:
           minimum: 0
         archived:
           type: boolean
+        folder:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: >
+            ADR-0049 § 8: the display group the Workflows index groups by;
+            null = unfiled (the UI renders the Unfiled group client-side).
     PipelineList:
       title: PipelineList
       type: object
@@ -6733,6 +7370,11 @@ components:
           type: string
         description:
           type: string
+        folder:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: "ADR-0049 § 8 — the display group; null = unfiled."
         created_by:
           type: string
           format: uuid
@@ -6783,6 +7425,304 @@ components:
           maxLength: 2000
         archived:
           type: boolean
+        folder:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: >
+            ADR-0049 § 8: the display group for the Workflows sidebar and
+            index. `null` clears it; an absent member does not touch it;
+            both are valid, so `minProperties: 1` counts this member when
+            present.
+    NodeTemplate:
+      title: NodeTemplate
+      description: >
+        ADR-0049 § 3: a reusable parameterized step — the registry row plus
+        its latest revision's identity and the § 4 usage count. Revisions
+        are immutable (ADR-0002); this row is the mutable shell around
+        them.
+      type: object
+      required:
+        [id, slug, display_name, kind, description, status, latest_revision,
+         used_in_count, created_by, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          pattern: "^[a-z][a-z0-9.-]{0,127}$"
+          description: Unique in the organization; a pipeline node references it as `slug@semver`.
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        kind:
+          type: string
+          description: The implemented kind (e.g. `agent.acp`) — a v1alpha1 catalogue name.
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, retired]
+        latest_revision:
+          $ref: "#/components/schemas/NodeTemplateRevisionSummary"
+        used_in_count:
+          type: integer
+          minimum: 0
+          description: >
+            The § 4 number, computed at read time: the workflows whose
+            LATEST published revision references this template. Draft
+            references never count.
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    NodeTemplateRevisionSummary:
+      title: NodeTemplateRevisionSummary
+      description: The NodeTemplate `latest_revision` member — identity, never content.
+      type: object
+      required: [revision_id, revision_number, version_label, revision_digest, created_at]
+      properties:
+        revision_id:
+          type: string
+          format: uuid
+        revision_number:
+          type: integer
+          minimum: 1
+        version_label:
+          type: string
+          pattern: "^\\d+\\.\\d+\\.\\d+$"
+        revision_digest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: >
+            The ADR-0021 canonical digest of the four content members
+            (scope v1alpha1-canonical-1). Identical content across templates
+            is deliberately the same digest.
+        created_at:
+          type: string
+          format: date-time
+    NodeTemplateRevision:
+      title: NodeTemplateRevision
+      description: >
+        One immutable revision (ADR-0049 § 3). There is no mutation route to
+        it: a new version is a new row.
+      type: object
+      required:
+        [revision_id, revision_number, version_label, parameters, config,
+         output_schema, workspace_mode, revision_digest, created_by,
+         created_at]
+      properties:
+        revision_id:
+          type: string
+          format: uuid
+        revision_number:
+          type: integer
+          minimum: 1
+          description: Monotonic per template, unique, never reused.
+        version_label:
+          type: string
+          pattern: "^\\d+\\.\\d+\\.\\d+$"
+          description: Unique per template; a clash is `409`.
+        parameters:
+          type: object
+          description: The JSON schema the node's `config` (parameter values) is validated against at publish.
+        config:
+          type: object
+          description: The parameterized body; bindings are composed with the node's config at publish (part 2).
+        output_schema:
+          type: object
+        workspace_mode:
+          type: string
+          enum: [run_workspace, read_only]
+        revision_digest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+    TemplateUsage:
+      title: TemplateUsage
+      description: >
+        ADR-0049 § 4: one workflow whose latest published revision references
+        the template. `up_to_date` is true iff it references the template's
+        latest revision — the honest signal behind the per-use live status.
+      type: object
+      required:
+        [pipeline_id, pipeline_slug, pipeline_display_name, revision_number,
+         template_revision_id, node_ids, up_to_date]
+      properties:
+        pipeline_id:
+          type: string
+          format: uuid
+        pipeline_slug:
+          type: string
+        pipeline_display_name:
+          type: string
+        revision_number:
+          type: integer
+          minimum: 1
+          description: The pipeline's latest published revision number.
+        template_revision_id:
+          type: string
+          format: uuid
+        node_ids:
+          type: array
+          items:
+            type: string
+          description: The referencing nodes, sorted.
+        up_to_date:
+          type: boolean
+    NodeTemplateDetail:
+      title: NodeTemplateDetail
+      description: >
+        ADR-0049 § 3: `getNodeTemplate`'s body — the template, its full
+        revision history (newest first) and its usages.
+      type: object
+      required: [template, revisions, usages]
+      properties:
+        template:
+          $ref: "#/components/schemas/NodeTemplate"
+        revisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeTemplateRevision"
+        usages:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateUsage"
+    NodeTemplateList:
+      title: NodeTemplateList
+      description: The listNodeTemplates envelope. next_cursor is null in part 1.
+      type: object
+      required: [templates, next_cursor]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeTemplate"
+        next_cursor:
+          type: string
+          nullable: true
+    NodeTemplateCreate:
+      title: NodeTemplateCreate
+      description: >
+        `createNodeTemplate`'s body. Defaults when omitted: `version_label`
+        1.0.0, `workspace_mode` run_workspace, `output_schema` {}.
+      type: object
+      required: [slug, display_name, kind, parameters, config]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z][a-z0-9.-]{0,127}$"
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        kind:
+          type: string
+          description: A v1alpha1 catalogue kind; unknown kinds are `422`.
+        parameters:
+          type: object
+          description: JSON schema over the parameter values.
+        config:
+          type: object
+        output_schema:
+          type: object
+        workspace_mode:
+          type: string
+          enum: [run_workspace, read_only]
+        version_label:
+          type: string
+          pattern: "^\\d+\\.\\d+\\.\\d+$"
+    NodeTemplateRevisionCreate:
+      title: NodeTemplateRevisionCreate
+      description: >
+        `createNodeTemplateRevision`'s body — "Edit for all". `version_label`
+        is required (no default: the label is the human's choice for the new
+        version).
+      type: object
+      required: [parameters, config, version_label]
+      properties:
+        parameters:
+          type: object
+        config:
+          type: object
+        output_schema:
+          type: object
+        workspace_mode:
+          type: string
+          enum: [run_workspace, read_only]
+        version_label:
+          type: string
+          pattern: "^\\d+\\.\\d+\\.\\d+$"
+        adopt_using_workflows:
+          type: boolean
+          default: false
+          description: "ADR-0049 § 5 (part 2) — adopt the new revision into drafts of the referencing workflows."
+    TemplateDuplicate:
+      title: TemplateDuplicate
+      description: The duplicateNodeTemplate body.
+      type: object
+      required: [slug, display_name]
+      properties:
+        slug:
+          type: string
+          pattern: "^[a-z][a-z0-9.-]{0,127}$"
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+    NodeTemplateRevisionCreateResponse:
+      title: NodeTemplateRevisionCreateResponse
+      description: >
+        `createNodeTemplateRevision`'s 201 body: the new revision plus the § 5
+        adoption result (empty arrays in part 1 — no refs exist yet).
+      type: object
+      required: [revision, adopted, skipped]
+      properties:
+        revision:
+          $ref: "#/components/schemas/NodeTemplateRevision"
+        adopted:
+          type: array
+          items:
+            type: object
+            required: [pipeline_id, pipeline_slug, draft_id, draft_version]
+            properties:
+              pipeline_id:
+                type: string
+                format: uuid
+              pipeline_slug:
+                type: string
+              draft_id:
+                type: string
+                format: uuid
+              draft_version:
+                type: integer
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [pipeline_id, reason]
+            properties:
+              pipeline_id:
+                type: string
+                format: uuid
+              reason:
+                type: string
+                enum: [open_draft]
     PipelineRevisionSummary:
       title: PipelineRevisionSummary
       description: >
@@ -7403,6 +8343,68 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RunSummary"
+    CrossProjectRunStep:
+      title: CrossProjectRunStep
+      description: >
+        ADR-0047 § 4: one top-level node of a run's pinned revision, in
+        definition order, projected onto the board's seven step states.
+        `state` maps the node execution's statuses: ready/leased have not
+        visibly started (`pending`), `interrupted` stopped without completing
+        (`failed`), and the rest is the identity; a node with several
+        execution rows (a loop) takes the state that most needs attention
+        (failed > running > waiting > cancelled > succeeded > skipped >
+        pending), so the segment count is the step count, not the execution
+        count.
+      type: object
+      required: [node_id, kind, state]
+      properties:
+        node_id:
+          type: string
+          description: The node id as declared in the pinned revision document.
+        kind:
+          type: string
+          description: The node kind from the pinned revision (e.g. `agent.acp`, `process.exec`).
+        state:
+          type: string
+          enum: [pending, running, waiting, succeeded, failed, skipped, cancelled]
+    CrossProjectRunSummary:
+      title: CrossProjectRunSummary
+      description: >
+        ADR-0047: the `RunSummary` row plus the cross-project extras a board
+        card or Home row needs without a second fetch: which project, which
+        workflow (by its human names, not bare ids), and the per-step
+        projection.
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          required: [project_name, pipeline_slug, pipeline_display_name, steps]
+          properties:
+            project_name:
+              type: string
+              description: The project's display name (a run is listed with its project on the row).
+            pipeline_slug:
+              type: string
+            pipeline_display_name:
+              type: string
+            steps:
+              type: array
+              items:
+                $ref: "#/components/schemas/CrossProjectRunStep"
+              description: >
+                The pinned revision's top-level nodes in definition order;
+                empty when the stored plan snapshot does not decode.
+    CrossProjectRunList:
+      title: CrossProjectRunList
+      type: object
+      required: [runs, next_cursor]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/CrossProjectRunSummary"
+        next_cursor:
+          type: ["string", "null"]
+          description: The `cursor` value for the next page; null exactly when the page holds the last row.
     RunPlacement:
       title: RunPlacement
       description: >
@@ -8089,6 +9091,18 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Approval"
+    CrossProjectApprovalList:
+      title: CrossProjectApprovalList
+      description: >
+        ADR-0047: the `GET /api/v1/approvals` envelope — the existing
+        `Approval` schema across every project the caller is a member of.
+      type: object
+      required: [approvals]
+      properties:
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
     ApprovalDecide:
       title: ApprovalDecide
       description: Request body for `decideApproval`.
@@ -8555,3 +9569,105 @@ components:
                 The stable reason class, identical to the one in the `type`
                 URI's last segment; the typed reason (e.g. `bad_id`,
                 `no_edge`, `wrong_kind`) lives in `detail`.
+    UserPreferences:
+      title: UserPreferences
+      description: >
+        The signed-in user's display preferences (ADR-0046). Display
+        preferences only: they authorize nothing and no authorization path
+        reads them. Defaults are merged under stored values; `updated_at`
+        is `null` until the user has saved at least once.
+      type: object
+      required: [layout, assistant, updated_at]
+      properties:
+        layout:
+          $ref: "#/components/schemas/UserPreferencesLayout"
+        assistant:
+          $ref: "#/components/schemas/UserPreferencesAssistant"
+        updated_at:
+          type: ["string", "null"]
+          format: date-time
+          description: When the user last saved, or `null` if never.
+    UserPreferencesLayout:
+      title: UserPreferencesLayout
+      description: >
+        The app-shell layout preferences (Settings → Layout). Defaults: `tree`,
+        `sidebar`, `true`, `{}`.
+      type: object
+      required: [projects_mode, ask_placement, show_workflow_folders, expanded]
+      additionalProperties: false
+      properties:
+        projects_mode:
+          type: string
+          enum: [tree, switcher]
+          description: >
+            Projects in the sidebar as a tree (default) or as a single
+            switcher button.
+        ask_placement:
+          type: string
+          enum: [sidebar, floating]
+          description: >
+            Where the Ask button lives (default `sidebar`, or a floating
+            bottom-right button); the ⌘K palette works from anywhere
+            either way.
+        show_workflow_folders:
+          type: boolean
+          description: >
+            Whether the sidebar's Workflows entry expands to folders
+            (default `true`) or stays a single link.
+        expanded:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: >
+            Sidebar expand/collapse state keyed by id. At most 500 keys,
+            each at most 120 characters.
+    UserPreferencesAssistant:
+      title: UserPreferencesAssistant
+      description: >
+        The assistant section. `trust_level` is enforced client-side in the
+        assistant tool loop (ADR-0046); the server still caps every
+        assistant call at the caller's own role (ADR-0034).
+      type: object
+      required: [trust_level]
+      additionalProperties: false
+      properties:
+        trust_level:
+          type: string
+          enum: [ask_all, ask_risky, no_ask]
+          default: ask_risky
+          description: >
+            How often the assistant asks before acting: always, only for
+            risky operations (default), or never.
+    UserPreferencesPatch:
+      title: UserPreferencesPatch
+      description: >
+        The PATCH body: any subset of the document, deep-merged per section.
+        An absent member is unchanged; `expanded` merges key-by-key. Unknown
+        keys and unknown enum values are `400` problem+json naming the
+        field.
+      type: object
+      additionalProperties: false
+      properties:
+        layout:
+          type: object
+          additionalProperties: false
+          properties:
+            projects_mode:
+              type: string
+              enum: [tree, switcher]
+            ask_placement:
+              type: string
+              enum: [sidebar, floating]
+            show_workflow_folders:
+              type: boolean
+            expanded:
+              type: object
+              additionalProperties:
+                type: boolean
+        assistant:
+          type: object
+          additionalProperties: false
+          properties:
+            trust_level:
+              type: string
+              enum: [ask_all, ask_risky, no_ask]

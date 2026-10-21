@@ -10,7 +10,7 @@
  */
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resumeUrl, useEventStream } from "./events";
+import { resumeUrl, useEventStream, useOrgEvents } from "./events";
 import { FakeEventSource } from "../test/fakes";
 import { wireRunEvent } from "../test/fixtures/m4/wire";
 
@@ -131,5 +131,54 @@ describe("useEventStream — reconnect, not reload", () => {
     });
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(source.readyState).toBe(FakeEventSource.CLOSED);
+  });
+});
+
+describe("useOrgEvents — the org-level journal stream (ADR-0048)", () => {
+  it("opens the multiplexed scope and forwards every type it knows", async () => {
+    const seen: string[] = [];
+    const projects: string[] = [];
+    const { result } = renderHook(() =>
+      useOrgEvents((event) => {
+        seen.push(event.type);
+        projects.push(event.project_id ?? "?");
+      }),
+    );
+    const source = FakeEventSource.last();
+    expect(source.url).toBe("/api/v1/events");
+    act(() => source.open());
+    expect(result.current.status).toBe("live");
+
+    // Frames from two different projects, two different milestones: the hook
+    // multiplexes them and names the project each envelope carries.
+    act(() => {
+      source.emit(wireRunEvent("run.failed", {}, { global_seq: 10, project_id: "p-a" }));
+      source.emit(wireRunEvent("project.created", {}, { global_seq: 11, project_id: "p-b" }));
+    });
+    expect(seen).toEqual(["run.failed", "project.created"]);
+    expect(projects).toEqual(["p-a", "p-b"]);
+    expect(result.current.events.map((event) => event.global_seq)).toEqual([10, 11]);
+  });
+
+  it("reconnects with the shared global cursor, so a resume skips across projects", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useOrgEvents());
+    const first = FakeEventSource.last();
+    act(() => {
+      first.emit(wireRunEvent("run.started", {}, { global_seq: 50, project_id: "p-a" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    act(() => first.fail());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    const second = FakeEventSource.last();
+    expect(second).not.toBe(first);
+    // The cursor is the journal-global global_seq, so the resume url carries
+    // the last sequence seen across every project.
+    expect(second.url).toBe("/api/v1/events?after=50");
+    expect(result.current.events.map((event) => event.global_seq)).toEqual([50]);
   });
 });

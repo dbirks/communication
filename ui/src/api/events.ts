@@ -89,6 +89,25 @@ export const M3_EVENT_TYPES = [
 
 export type ProjectM3EventType = (typeof M3_EVENT_TYPES)[number];
 
+/**
+ * The full journal vocabulary (ADR-0048): everything `internal/events`
+ * emits on a project row — M1 through M4 — plus the five types no
+ * project-scope list carries today. The org stream multiplexes every
+ * project, so it subscribes to the union rather than one milestone's slice;
+ * a new journal type added later belongs in this list.
+ */
+export const ORG_EVENT_TYPES: readonly string[] = [
+  ...M1_EVENT_TYPES,
+  ...M2_EVENT_TYPES,
+  ...M3_EVENT_TYPES,
+  ...M4_PROJECT_EVENT_TYPES,
+  "agent.profile.created",
+  "agent.profile.updated",
+  "run.override.applied",
+  "sandbox.egress_observed",
+  "schedule.fired",
+];
+
 /** Everything the project scope carries from M1 through M4. */
 const PROJECT_EVENT_TYPES = [...M1_EVENT_TYPES, ...M3_EVENT_TYPES, ...M4_PROJECT_EVENT_TYPES];
 
@@ -334,6 +353,28 @@ export function useProjectEvents(projectId: string): ProjectEvents {
   });
   // The activity feed shows the newest frame at the top.
   return { events: [...events].reverse(), status };
+}
+
+/**
+ * The org-level journal stream (`GET /api/v1/events`, ADR-0048): the same
+ * envelopes the project stream sends, multiplexed across every project the
+ * caller may see. Every envelope carries `project_id`, which a consumer uses
+ * to route a frame — the hook deliberately does not invalidate any project
+ * cache, because the caller (the app shell) decides what a cross-project
+ * frame means, and a shell that invalidated every project per frame would
+ * reproduce the read storm `useProjectEvents` coalesces away. Consumers pass
+ * their own `onEvent`; the returned buffer keeps the last frames for feeds.
+ */
+export function useOrgEvents(
+  onEvent?: (event: EventEnvelope) => void,
+  opts: { types?: readonly string[] } = {},
+): EventStream {
+  return useEventStream({
+    url: "/api/v1/events",
+    types: opts.types ?? ORG_EVENT_TYPES,
+    keys: [],
+    onEvent,
+  });
 }
 
 /**

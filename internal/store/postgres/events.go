@@ -75,6 +75,36 @@ const cnvConversationEventsSQL = `
 	ORDER BY e.global_seq
 	LIMIT $4`
 
+// orgEventsSQL is the org-level journal read behind GET /api/v1/events
+// (ADR-0048). It is evtJournalSQL widened from one project to every project
+// the caller may see — the same visibility as prjProjectSelect: a membership
+// in the caller's organization, or every project of the organization for an
+// org admin — with the gap-safety clause kept verbatim: the org stream and
+// the project stream share one journal, one global_seq cursor and one
+// commit-order argument (ADR-0014 §9), so it may not weaken any part of them.
+//
+// Project-less (org-scoped) rows are excluded on purpose: the stream carries
+// project events only (ADR-0048 §4). $1 the cursor, $2 the caller's org-admin
+// flag, $3 the caller's organization, $4 the caller's user id, $5 the limit.
+const orgEventsSQL = `
+	SELECT ` + prjEventColumns + `
+	FROM domain_events e
+	WHERE e.global_seq > $1
+	  AND e.tx_id < pg_snapshot_xmin(pg_current_snapshot())
+	  AND e.project_id IS NOT NULL
+	  AND (
+	        $2::boolean AND e.organization_id = $3::uuid
+	        OR e.project_id IN (
+	             SELECT m.project_id
+	             FROM memberships m
+	             JOIN projects p ON p.id = m.project_id
+	             WHERE m.user_id = $4::uuid
+	               AND p.organization_id = $3::uuid
+	        )
+      )
+	ORDER BY e.global_seq
+	LIMIT $5`
+
 // LockEventJournal acquires the transaction-scoped advisory lock that orders
 // journal appends, holding it to COMMIT. ADOPT IT AS THE FIRST statement of any
 // transaction that will AppendEvent when the project id is already known.
@@ -337,6 +367,37 @@ func (s *ProjectStore) EventsAfter(ctx context.Context, projectID string, afterS
 	rows, err := s.Pool.Query(ctx, evtJournalSQL, projectID, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: query events: %w", err)
+	}
+	return evtScanEvents(rows, limit)
+}
+
+// OrgEventsAfter returns up to limit journal rows for every project the
+// caller may see, with global_seq strictly greater than afterSeq, oldest
+// first — the replay path behind GET /api/v1/events (ADR-0048). The visibility
+// predicate is inside the SQL and is therefore re-evaluated on every call:
+// a row from a project the caller stopped seeing is absent from the batch, and
+// because the stream's cursor advances on delivered rows only, membership that
+// changes mid-stream costs neither a gap nor a duplicate (ADR-0048 §3).
+//
+// Project-less (org-scoped) rows are not returned (ADR-0048 §4). A row is
+// withheld while its inserting transaction might still commit a smaller
+// sequence value later, exactly as on the project read.
+func (s *ProjectStore) OrgEventsAfter(ctx context.Context, c Caller, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if s == nil || s.Pool == nil {
+		return nil, errors.New("postgres: project store has no pool")
+	}
+	if err := prjRequireCaller(c); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = prjDefaultEventLimit
+	}
+	if limit > prjMaxEventLimit {
+		limit = prjMaxEventLimit
+	}
+	rows, err := s.Pool.Query(ctx, orgEventsSQL, afterSeq, c.IsOrgAdmin, c.OrganizationID, c.UserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: query org events: %w", err)
 	}
 	return evtScanEvents(rows, limit)
 }
@@ -651,8 +712,10 @@ type APIEventStream struct {
 }
 
 var (
-	_ api.EventStream = APIEventStream{}
-	_ api.EventStream = (*APIEventStream)(nil)
+	_ api.EventStream    = APIEventStream{}
+	_ api.EventStream    = (*APIEventStream)(nil)
+	_ api.OrgEventStream = APIEventStream{}
+	_ api.OrgEventStream = (*APIEventStream)(nil)
 )
 
 // EventsAfter implements api.EventStream, behind the caller's project
@@ -664,8 +727,17 @@ func (a APIEventStream) EventsAfter(ctx context.Context, c api.Caller, projectID
 	return a.S.VisibleEventsAfter(ctx, prjAPICaller(c), projectID, afterSeq, limit)
 }
 
-// Watch implements api.EventStream. Without a wake-up source the handler
-// falls back to polling, which is correct but sleepier.
+// OrgEventsAfter implements api.OrgEventStream across the caller's projects
+// (ADR-0048); the visibility predicate is inside the store's SQL.
+func (a APIEventStream) OrgEventsAfter(ctx context.Context, c api.Caller, afterSeq int64, limit int) ([]events.Envelope, error) {
+	if a.S == nil || a.S.Pool == nil {
+		return nil, errors.New("postgres: event stream has no pool")
+	}
+	return a.S.OrgEventsAfter(ctx, prjAPICaller(c), afterSeq, limit)
+}
+
+// Watch implements api.EventStream and api.OrgEventStream. Without a wake-up
+// source the handler falls back to polling, which is correct but sleepier.
 func (a APIEventStream) Watch(ctx context.Context) (<-chan struct{}, func(), error) {
 	if a.Wakes == nil {
 		return nil, func() {}, nil

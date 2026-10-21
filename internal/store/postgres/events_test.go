@@ -383,3 +383,96 @@ func evtSummary(evs []events.Envelope) []int64 {
 	}
 	return out
 }
+
+// TestOrgEventsAfterRestrictsToVisibleProjects pins the org stream's
+// permission predicate inside the SQL (ADR-0048 §4): a member sees only the
+// projects of their organization they belong to, an org admin sees every
+// project of the organization, project-less (org-scoped) rows are out of
+// scope, and the resume cursor orders the multiplexed rows globally.
+func TestOrgEventsAfterRestrictsToVisibleProjects(t *testing.T) {
+	store, orgID := prjFixture(t)
+	ctx := testCtx(t)
+	a, b, otherOrgID, otherUser := prjUsers(t, store, orgID)
+	p1 := prjCreateProject(t, store, a, orgID, "One", "org-one")
+	p2 := prjCreateProject(t, store, b, orgID, "Two", "org-two")
+
+	// a is a member of p1 only: p2's rows must be absent, not 404.
+	got, err := store.OrgEventsAfter(ctx, Caller{UserID: a, OrganizationID: orgID}, 0, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter (member a): %v", err)
+	}
+	if len(got) != 1 || got[0].ProjectID != p1.ID {
+		t.Errorf("member a saw %v (projects %v), want only p1's row",
+			evtSummary(got), evtProjects(got))
+	}
+
+	// b is a member of p2 only.
+	got, err = store.OrgEventsAfter(ctx, Caller{UserID: b, OrganizationID: orgID}, 0, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter (member b): %v", err)
+	}
+	if len(got) != 1 || got[0].ProjectID != p2.ID {
+		t.Errorf("member b saw %v, want only p2's row", evtProjects(got))
+	}
+
+	// An org admin with no membership in p1 sees both, oldest first.
+	got, err = store.OrgEventsAfter(ctx, Caller{UserID: b, OrganizationID: orgID, IsOrgAdmin: true}, 0, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter (org admin): %v", err)
+	}
+	if len(got) != 2 || got[0].ProjectID != p1.ID || got[1].ProjectID != p2.ID ||
+		got[0].GlobalSeq >= got[1].GlobalSeq {
+		t.Errorf("org admin saw %v (projects %v), want p1 then p2 in global order",
+			evtSummary(got), evtProjects(got))
+	}
+
+	// A project-less (org-scoped) row is out of scope of the org stream: the
+	// multiplexer carries project events only (ADR-0048 §4).
+	if _, err := store.Pool.Exec(ctx, `
+		INSERT INTO domain_events (type, organization_id, project_id, actor_kind, actor_id)
+		VALUES ('agent.profile.created', $1::uuid, NULL, 'human', 'evt-test')`, orgID); err != nil {
+		t.Fatalf("insert project-less row: %v", err)
+	}
+	got, err = store.OrgEventsAfter(ctx, Caller{UserID: b, OrganizationID: orgID, IsOrgAdmin: true}, 0, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter after org-scoped row: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("org admin saw %d rows after a project-less insert, want still 2", len(got))
+	}
+
+	// The resume cursor is the shared global_seq: resuming above the first
+	// row replays exactly the rest.
+	cursor := got[0].GlobalSeq
+	got, err = store.OrgEventsAfter(ctx, Caller{UserID: b, OrganizationID: orgID, IsOrgAdmin: true}, cursor, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter resume: %v", err)
+	}
+	if len(got) != 1 || got[0].GlobalSeq != cursor+1 {
+		t.Errorf("resume at %d saw %v, want only seq %d", cursor, evtSummary(got), cursor+1)
+	}
+
+	// A caller from another organization sees nothing of this organization:
+	// the predicate is scoped by organization, not just by membership.
+	got, err = store.OrgEventsAfter(ctx, Caller{UserID: otherUser, OrganizationID: otherOrgID, IsOrgAdmin: true}, 0, 100)
+	if err != nil {
+		t.Fatalf("OrgEventsAfter (other org): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("other-organization caller saw %v, want nothing", evtProjects(got))
+	}
+}
+
+// evtProjects renders row project ids (and a dash for project-less rows) so a
+// failure says which project leaked through the predicate.
+func evtProjects(evs []events.Envelope) []string {
+	out := make([]string, 0, len(evs))
+	for _, e := range evs {
+		if e.ProjectID == "" {
+			out = append(out, "-")
+			continue
+		}
+		out = append(out, e.ProjectID)
+	}
+	return out
+}

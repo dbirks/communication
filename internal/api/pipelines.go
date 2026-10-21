@@ -166,12 +166,22 @@ type PipelineStore interface {
 
 // --- inputs (handler → store) ---------------------------------------------
 
+// FolderPatch is the PATCH body's `folder` member (ADR-0049 § 8) in its
+// three wire states: absent (the column is untouched), JSON null (cleared)
+// and a string (set). A plain *string cannot tell absent from null.
+type FolderPatch struct {
+	Set   bool
+	Clear bool
+	Value string
+}
+
 // PipelineUpdateInput is the PATCH body reduced to "what moved": nil means
 // the member was absent and its column does not change.
 type PipelineUpdateInput struct {
 	DisplayName *string
 	Description *string
 	Archived    *bool
+	Folder      FolderPatch
 }
 
 // DraftCreateInput is a created draft from already-materialized bytes.
@@ -207,13 +217,17 @@ type DraftPublishInput struct {
 
 // PipelineSummaryView is the PipelineSummary schema: a library row. No
 // document bytes ride a list route.
+// PipelineSummaryView is one row of the pipeline library list (route 1).
+// Folder is ADR-0049 § 8's display group: null = unfiled, computed into
+// groups client-side.
 type PipelineSummaryView struct {
-	ID                   string `json:"id"`
-	Slug                 string `json:"slug"`
-	DisplayName          string `json:"display_name"`
-	LatestRevisionNumber int    `json:"latest_revision_number"`
-	RevisionCount        int    `json:"revision_count"`
-	Archived             bool   `json:"archived"`
+	ID                   string  `json:"id"`
+	Slug                 string  `json:"slug"`
+	DisplayName          string  `json:"display_name"`
+	Folder               *string `json:"folder"`
+	LatestRevisionNumber int     `json:"latest_revision_number"`
+	RevisionCount        int     `json:"revision_count"`
+	Archived             bool    `json:"archived"`
 }
 
 // PipelineListView is the PipelineList envelope.
@@ -222,12 +236,14 @@ type PipelineListView struct {
 }
 
 // PipelineView is the Pipeline schema: the logical definition plus its
-// revision summaries (identity and digests, never bodies).
+// revision summaries (identity and digests, never bodies). Folder is
+// ADR-0049 § 8's display group: null = unfiled.
 type PipelineView struct {
 	ID                   string                `json:"id"`
 	Slug                 string                `json:"slug"`
 	DisplayName          string                `json:"display_name"`
 	Description          string                `json:"description"`
+	Folder               *string               `json:"folder"`
 	CreatedBy            string                `json:"created_by"`
 	CreatedAt            time.Time             `json:"created_at"`
 	LatestRevisionNumber int                   `json:"latest_revision_number"`
@@ -399,11 +415,14 @@ type plPipelineCreateBody struct {
 }
 
 // plPipelineUpdateBody is PipelineUpdate: pointer members distinguish
-// "absent" from "set to empty/false"; minProperties 1 is checked below.
+// "absent" from "set to empty/false"; folder is a raw message so JSON
+// null (clear) is distinguishable from absent (untouched); minProperties 1
+// is checked below.
 type plPipelineUpdateBody struct {
-	DisplayName *string `json:"display_name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Archived    *bool   `json:"archived,omitempty"`
+	DisplayName *string          `json:"display_name,omitempty"`
+	Description *string          `json:"description,omitempty"`
+	Archived    *bool            `json:"archived,omitempty"`
+	Folder      *json.RawMessage `json:"folder,omitempty"`
 }
 
 // plDraftCreateBody is DraftCreate: exactly one member, enforced here
@@ -516,9 +535,26 @@ func (h *plHandlers) updatePipeline(w http.ResponseWriter, r *http.Request) {
 		h.badRequest(w, r, err)
 		return
 	}
-	if body.DisplayName == nil && body.Description == nil && body.Archived == nil {
-		plInvalid(w, "at least one of display_name, description or archived is required.")
+	if body.DisplayName == nil && body.Description == nil && body.Archived == nil && body.Folder == nil {
+		plInvalid(w, "at least one of display_name, description, archived or folder is required.")
 		return
+	}
+	var folder FolderPatch
+	if body.Folder != nil {
+		if string(*body.Folder) == "null" {
+			folder.Clear = true
+		} else {
+			var s string
+			if err := json.Unmarshal(*body.Folder, &s); err != nil {
+				plInvalid(w, "folder must be a string or null (null clears it).")
+				return
+			}
+			if len(s) < 1 || len(s) > 200 {
+				plInvalid(w, "folder must be 1 to 200 characters.")
+				return
+			}
+			folder.Set, folder.Value = true, s
+		}
 	}
 	if body.DisplayName != nil && len(*body.DisplayName) > 200 {
 		plInvalid(w, "display_name must be at most 200 characters.")
@@ -530,6 +566,7 @@ func (h *plHandlers) updatePipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	pipe, err := h.store.UpdatePipeline(r.Context(), c, pipelineID, PipelineUpdateInput{
 		DisplayName: body.DisplayName, Description: body.Description, Archived: body.Archived,
+		Folder: folder,
 	})
 	if err != nil {
 		h.fail(w, r, c, pipelineID, "pipeline.update", err)

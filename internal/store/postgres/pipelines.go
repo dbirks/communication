@@ -57,9 +57,12 @@ type Pipeline struct {
 	Slug           string
 	DisplayName    string
 	Description    string
-	CreatedBy      string
-	CreatedAt      time.Time
-	ArchivedAt     *time.Time
+	// Folder is ADR-0049 § 8's display string: NULL = unfiled, the API
+	// never special-cases an empty string (the CHECK allows none).
+	Folder     *string
+	CreatedBy  string
+	CreatedAt  time.Time
+	ArchivedAt *time.Time
 	// LatestRevisionNumber and RevisionCount are read together with the row
 	// (contract § 2.1 route 1); 0 when nothing has ever been published.
 	LatestRevisionNumber int
@@ -136,7 +139,7 @@ const pipPipelineColumns = `id, organization_id, slug, display_name, description
 
 const pipPipelineShape = `
 	SELECT p.id, p.organization_id, p.slug, p.display_name, p.description,
-	       p.created_by::text, p.created_at, p.archived_at,
+	       p.folder, p.created_by::text, p.created_at, p.archived_at,
 	       COALESCE(r.latest, 0), COALESCE(r.total, 0)
 	FROM pipelines p
 	LEFT JOIN LATERAL (
@@ -150,7 +153,7 @@ func (s *PipelineStore) scanPipeline(row pgx.Row) (Pipeline, error) {
 		arch *time.Time
 	)
 	err := row.Scan(&p.ID, &p.OrganizationID, &p.Slug, &p.DisplayName, &p.Description,
-		&p.CreatedBy, &p.CreatedAt, &arch, &p.LatestRevisionNumber, &p.RevisionCount)
+		&p.Folder, &p.CreatedBy, &p.CreatedAt, &arch, &p.LatestRevisionNumber, &p.RevisionCount)
 	p.ArchivedAt = arch
 	return p, err
 }

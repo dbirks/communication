@@ -673,10 +673,12 @@ func m4RunTrigger(drv *postgres.M4Driver, schedulerOff bool) api.M4Trigger {
 //	api.RegisterProjects      projects, repositories, members
 //	api.RegisterGitHubIssues  GET /api/v1/projects/{projectId}/repos/{repositoryId}/issues (ADR-0031)
 //	api.RegisterEvents        GET /api/v1/projects/{projectId}/events (SSE)
+//	api.RegisterOrgEvents     GET /api/v1/events (SSE, ADR-0048)
 //	api.RegisterConversations agent profiles, conversations, messages, control,
 //	                          cancel, permission decisions and
 //	                          GET /api/v1/conversations/{id}/events (SSE)
 //	api.RegisterWorkers       GET /api/v1/workers
+//	api.RegisterLaunchers     GET /api/v1/launchers (ADR-0051)
 //	api.RegisterPipelines     pipelines, drafts, revisions, publish,
 //	                          validate, schemas (docs/m4-contract.md § 2)
 //	api.RegisterRuns          runs, node executions, attempts, assignments,
@@ -724,10 +726,20 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	api.RegisterGitHubIssues(handler, apiProjects, github.New())
 	api.RegisterEvents(handler, apiProjects,
 		postgres.APIEventStream{S: projectStore, Wakes: wakes})
+	// The org-level stream multiplexes the same journal across the caller's
+	// projects (ADR-0048); it reuses the project stream's store read.
+	api.RegisterOrgEvents(handler, postgres.APIEventStream{S: projectStore, Wakes: wakes})
 	api.RegisterConversations(handler, apiConversations, apiConversations,
 		postgres.APIConversationStream{S: conversationStore, Journal: projectStore, Wakes: wakes})
 	api.RegisterWorkers(handler, postgres.APIWorkerStore{
 		R:                 &postgres.WorkerRegistry{Pool: d.Pool},
+		HeartbeatInterval: d.WorkerHeartbeat,
+	})
+	// ADR-0051: the launcher registry + evidence-backed capability cells.
+	// Reuses the /workers liveness window, so the launcher count and the
+	// worker list never disagree about which workers are live.
+	api.RegisterLaunchers(handler, postgres.APILauncherStore{
+		Pool:              d.Pool,
 		HeartbeatInterval: d.WorkerHeartbeat,
 	})
 
@@ -790,6 +802,7 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		log.Info("pipeline scheduler disabled on this replica (COMMUNICATION_PIPELINE_SCHEDULER=off)")
 	}
 	api.RegisterPipelines(handler, postgres.APIPipelineStore{S: pipelineStore}, definitionService)
+	api.RegisterNodeTemplates(handler, postgres.APINodeTemplateStore{Pool: d.Pool})
 	api.RegisterRuns(handler,
 		postgres.APIRunStore{Runs: runStore, Runtime: m4Runtime},
 		postgres.APIAssignmentStore{S: pipelineStore},
@@ -801,6 +814,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		apiProjects)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
+	// ADR-0047's cross-project reads: the app shell's Home/Board/Threads/
+	// Inbox list routes, scoped per membership in the store's SQL.
+	api.RegisterCrossProject(handler, postgres.APICrossProjectStore{Pool: d.Pool})
 	api.RegisterScheduler(handler, postgres.APISchedulerStore{Pool: d.Pool,
 		HeartbeatInterval: d.WorkerHeartbeat}) // same liveness window as /workers
 	// ADR-0034's read-only assistant: one route, mounted unconditionally and
@@ -827,6 +843,12 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			PinnedBackendVersion: d.M3.PinnedVersion,
 			PolicyDigest:         d.M3.PolicyDigest,
 		})
+	// ADR-0046: the per-user display preferences (GET/PATCH
+	// /api/v1/me/preferences). Self-scoped — keyed by the caller's own user
+	// id, so the store needs only the pool.
+	api.RegisterPreferences(handler, postgres.APIUserPreferencesStore{
+		S: &postgres.UserPreferencesStore{Pool: d.Pool},
+	})
 
 	// ADR-0020 D6's other half: on the preview host, nothing except /preview/*
 	// exists — no SPA shell, no API. The wrapper goes *outside* the assembled

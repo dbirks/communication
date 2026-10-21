@@ -221,6 +221,7 @@ const m4PipelineFrom = `
 func m4PipelineView(p Pipeline) api.PipelineView {
 	return api.PipelineView{
 		ID: p.ID, Slug: p.Slug, DisplayName: p.DisplayName, Description: p.Description,
+		Folder:    p.Folder,
 		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 		LatestRevisionNumber: p.LatestRevisionNumber, RevisionCount: p.RevisionCount,
 		Archived:  p.ArchivedAt != nil,
@@ -250,7 +251,7 @@ func (a APIPipelineStore) ListPipelines(ctx context.Context, c api.Caller) ([]ap
 		return nil, err
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT p.id, p.slug, p.display_name, COALESCE(r.latest, 0), COALESCE(r.total, 0),
+		SELECT p.id, p.slug, p.display_name, p.folder, COALESCE(r.latest, 0), COALESCE(r.total, 0),
 		       p.archived_at IS NOT NULL
 		`+m4PipelineFrom+`
 		ORDER BY p.slug`, c.OrganizationID)
@@ -262,7 +263,7 @@ func (a APIPipelineStore) ListPipelines(ctx context.Context, c api.Caller) ([]ap
 	for rows.Next() {
 		var v api.PipelineSummaryView
 		var archived bool
-		if err := rows.Scan(&v.ID, &v.Slug, &v.DisplayName, &v.LatestRevisionNumber,
+		if err := rows.Scan(&v.ID, &v.Slug, &v.DisplayName, &v.Folder, &v.LatestRevisionNumber,
 			&v.RevisionCount, &archived); err != nil {
 			return nil, fmt.Errorf("postgres: scan api pipeline: %w", err)
 		}
@@ -339,8 +340,12 @@ func (a APIPipelineStore) GetPipeline(ctx context.Context, c api.Caller, pipelin
 	return view, nil
 }
 
-// UpdatePipeline is route 4: metadata only — nil patch members do not move,
-// and no column this touches can reach a revision, a draft or a run.
+// UpdatePipeline is route 4: metadata only — nil patch members do not
+// move, and no column this touches can reach a revision, a draft or a run.
+// ADR-0049 § 8: `folder` rides the same PATCH — its three wire states are
+// absent (untouched), JSON null (cleared) and a string (set) — and the
+// pipeline.update journal row (ADR-0049 § 7) lands in the same
+// transaction, naming the members that moved.
 func (a APIPipelineStore) UpdatePipeline(ctx context.Context, c api.Caller, pipelineID string,
 	in api.PipelineUpdateInput) (api.PipelineView, error) {
 	pool, err := a.pool()
@@ -350,26 +355,68 @@ func (a APIPipelineStore) UpdatePipeline(ctx context.Context, c api.Caller, pipe
 	if !prjValidUUID(pipelineID) {
 		return api.PipelineView{}, api.ErrPipelineNotFound
 	}
+	// folderMode: 0 absent (untouched), 1 JSON null (clear), 2 set.
+	folderMode := 0
+	var folderVal *string
+	if in.Folder.Set {
+		folderMode, folderVal = 2, &in.Folder.Value
+	} else if in.Folder.Clear {
+		folderMode = 1
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return api.PipelineView{}, fmt.Errorf("postgres: begin update pipeline: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var pipe Pipeline
-	err = pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE pipelines
 		SET display_name = COALESCE($3, display_name),
 		    description  = COALESCE($4, description),
 		    archived_at  = CASE
 		        WHEN $5::boolean IS NULL THEN archived_at
 		        WHEN $5::boolean       THEN COALESCE(archived_at, now())
-		        ELSE NULL END
+		        ELSE NULL END,
+		    folder       = CASE
+		        WHEN $6::int = 0 THEN folder
+		        WHEN $6::int = 1 THEN NULL
+		        ELSE $7 END
 		WHERE id = $2::uuid AND organization_id = $1::uuid
-		RETURNING id, organization_id, slug, display_name, description,
+		RETURNING id, organization_id, slug, display_name, description, folder,
 		          created_by::text, created_at, archived_at`,
-		c.OrganizationID, pipelineID, in.DisplayName, in.Description, in.Archived).
-		Scan(&pipe.ID, &pipe.OrganizationID, &pipe.Slug, &pipe.DisplayName,
-			&pipe.Description, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.ArchivedAt)
+		c.OrganizationID, pipelineID, in.DisplayName, in.Description, in.Archived,
+		folderMode, folderVal).
+		Scan(&pipe.ID, &pipe.OrganizationID, &pipe.Slug, &pipe.DisplayName, &pipe.Description,
+			&pipe.Folder, &pipe.CreatedBy, &pipe.CreatedAt, &pipe.ArchivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.PipelineView{}, api.ErrPipelineNotFound
 	}
 	if err != nil {
 		return api.PipelineView{}, fmt.Errorf("postgres: api update pipeline %s: %w", pipelineID, err)
+	}
+	// The journal row names the members the PATCH moved — `folder`
+	// whenever it set or cleared the group (ADR-0049 § 7).
+	changed := []string{}
+	if in.DisplayName != nil {
+		changed = append(changed, "display_name")
+	}
+	if in.Description != nil {
+		changed = append(changed, "description")
+	}
+	if in.Archived != nil {
+		changed = append(changed, "archived")
+	}
+	if in.Folder.Set || in.Folder.Clear {
+		changed = append(changed, "folder")
+	}
+	if err := m4AppendAppendable(ctx, tx, events.TypePipelineUpdate, pipe.OrganizationID, "",
+		c.UserID, events.PipelineUpdatePayload{
+			ProjectID: "", PipelineID: pipe.ID, ChangedFields: changed,
+		}); err != nil {
+		return api.PipelineView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return api.PipelineView{}, fmt.Errorf("postgres: commit update pipeline: %w", err)
 	}
 	view := m4PipelineView(pipe)
 	view.Revisions = []api.RevisionSummaryView{}

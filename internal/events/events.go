@@ -1285,6 +1285,20 @@ const (
 
 	TypeAssignmentCreated = "assignment.created"
 	TypeAssignmentUpdated = "assignment.updated"
+
+	// Node template registry (ADR-0049): the API-emitted audit rows for the
+	// org-scoped step registry, plus the pipeline metadata PATCH row. Like
+	// the other definition rows they share the journal but never the run
+	// correlation columns; project_id carries the empty string (a template
+	// has no project) so a stream reader can still attribute the envelope.
+	// The first-segment underscore (node_template.*) is why the envelope
+	// `type` pattern admits [a-z_] before the first dot (09's ADR-0049 names
+	// are fixed; the pattern only widens, so every existing name still
+	// matches).
+	TypePipelineUpdate                = "pipeline.update"
+	TypeNodeTemplateCreated           = "node_template.create"
+	TypeNodeTemplateRevisionPublished = "node_template.revision.publish"
+	TypeNodeTemplateDuplicated        = "node_template.duplicate"
 )
 
 // ReservedTypeRunOverrideApplied is § 3 row 37: the type name is fixed so M5
@@ -1721,6 +1735,56 @@ type PipelineRevisionDeprecatedPayload struct {
 	ProjectID      string `json:"project_id"`
 	RevisionID     string `json:"revision_id"`
 	RevisionDigest string `json:"revision_digest"`
+}
+
+// PipelineUpdatePayload is the ADR-0049 folder row: the metadata-only
+// PATCH /pipelines/{id} appends it when `folder` changed (set or cleared).
+// ProjectID is empty — a pipeline definition is org-scoped and has no
+// project. ChangedFields names the body members that moved (ADR-0049 § 7:
+// the detail carries `folder` when it changed; the list shape lets the
+// route's other metadata members ride the same row without a new type).
+type PipelineUpdatePayload struct {
+	ProjectID     string   `json:"project_id"`
+	PipelineID    string   `json:"pipeline_id"`
+	ChangedFields []string `json:"changed_fields"`
+}
+
+// NodeTemplateCreatedPayload is ADR-0049 § 7's node_template.create — the
+// template row and its revision 1 land in one transaction, and the row
+// names both (the revision id through the created revision's digest
+// identity would be a lie before the insert, so the slug pins the created
+// content and version_label names it).
+type NodeTemplateCreatedPayload struct {
+	ProjectID    string `json:"project_id"`
+	TemplateID   string `json:"template_id"`
+	Slug         string `json:"slug"`
+	VersionLabel string `json:"version_label"`
+}
+
+// NodeTemplateRevisionPublishedPayload is ADR-0049 § 7's
+// node_template.revision.publish — "Edit for all N" from the UI side. The
+// digest is the canonicalization of the revision's four content members
+// (ADR-0021 scope v1alpha1-canonical-1), so the journal row is verifiable
+// without re-reading the content.
+type NodeTemplateRevisionPublishedPayload struct {
+	ProjectID      string `json:"project_id"`
+	TemplateID     string `json:"template_id"`
+	RevisionID     string `json:"revision_id"`
+	RevisionNumber int    `json:"revision_number"`
+	VersionLabel   string `json:"version_label"`
+	RevisionDigest string `json:"revision_digest"`
+}
+
+// NodeTemplateDuplicatedPayload is ADR-0049 § 7's node_template.duplicate:
+// a NEW template whose revision 1 copies the source's latest revision
+// (content-identical, hence same digest — the row keeps the source id so
+// the copy's provenance survives without a second query).
+type NodeTemplateDuplicatedPayload struct {
+	ProjectID          string `json:"project_id"`
+	TemplateID         string `json:"template_id"`
+	SourceTemplateID   string `json:"source_template_id"`
+	Slug               string `json:"slug"`
+	SourceTemplateSlug string `json:"source_template_slug"`
 }
 
 // -------------------------------------------------------- M4: assignment payloads
