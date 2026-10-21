@@ -109,7 +109,9 @@ test.describe("M2 shared conversation and control handoff", () => {
     await gotoApp(alice, "/projects");
     const nameField = alice.getByTestId("create-project-name");
     const toggle = alice.getByTestId("new-project-toggle");
-    await expect(nameField.or(toggle)).toBeVisible();
+    // On a fresh account the form is already open, so both the field and the
+    // ("Close") toggle are visible: take the first match to satisfy strict mode.
+    await expect(nameField.or(toggle).first()).toBeVisible();
     if (!(await nameField.isVisible())) await toggle.click();
     await nameField.fill(PROJECT_NAME);
     await alice.getByTestId("create-project-submit").click();
