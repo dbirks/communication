@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dbirks/communication/internal/pipelines/canon"
+	"github.com/dbirks/communication/internal/pipelines/compiler"
 	"github.com/dbirks/communication/internal/pipelines/diag"
 	"github.com/dbirks/communication/internal/pipelines/loader"
 )
@@ -27,20 +29,105 @@ const (
 	OpUpdatePrompt = "update_prompt"
 )
 
-// executableKinds is the kind set a proposal may insert. The schema's
-// validate-only kinds (parallel, join, gate, git.commit, git.publish,
-// integration.query, integration.action) are deliberately absent: a
-// proposal the run would refuse to execute is not a proposal.
-var executableKinds = map[string]bool{
-	"agent.acp":        true,
-	"model.chat":       true,
-	"process.exec":     true,
-	"condition":        true,
-	"human.approval":   true,
-	"until":            true,
-	"for_each":         true,
-	"pipeline.invoke":  true,
-	"artifact.publish": true,
+// executableKinds is the kind set a proposal may insert: the compiler's
+// executed catalogue (compiler.ExecutedKinds, guarded against the shipped
+// schema by the compiler's own contract test — no hard-coded copy here),
+// minus the Publish kinds. ADR-0045 keeps the Publish kinds out of new
+// authoring, so the assistant adds working nodes, never publish nodes
+// (artifact.publish is executed but still excluded; git.publish is not
+// executed yet). The schema's validate-only kinds (parallel, join, gate,
+// git.commit, integration.*) never appear: a proposal the run would refuse
+// to execute is not a proposal.
+var executableKinds = func() map[string]bool {
+	m := map[string]bool{}
+	for _, k := range compiler.ExecutedKinds() {
+		m[k] = true
+	}
+	delete(m, "git.publish")
+	delete(m, "artifact.publish")
+	return m
+}()
+
+// executableKindList is the insertable kind set in stable order — the list
+// the draft.apply tool's description and every unknown_kind refusal name.
+func executableKindList() []string {
+	out := make([]string, 0, len(executableKinds))
+	for k := range executableKinds {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// kindSuggestion names the closest insertable kind to a rejected value so
+// the model can correct itself in the same turn: a dotted suffix first
+// ("approval" -> "human.approval"), then a unique substring, then an edit
+// distance small enough to be a misspelling rather than a different
+// concept.
+func kindSuggestion(got string) string {
+	g := strings.ToLower(strings.TrimSpace(got))
+	if g == "" {
+		return ""
+	}
+	var suffix, substr []string
+	best, bestDist := "", 1<<30
+	for _, k := range executableKindList() {
+		if k == g {
+			continue
+		}
+		if strings.HasSuffix(k, g) {
+			suffix = append(suffix, k)
+		}
+		if strings.Contains(k, g) {
+			substr = append(substr, k)
+		}
+		if d := editDistance(g, k); d < bestDist {
+			best, bestDist = k, d
+		}
+	}
+	switch {
+	case len(suffix) == 1:
+		return suffix[0]
+	case len(substr) == 1:
+		return substr[0]
+	case bestDist <= 3 && bestDist < len(g)/2+1:
+		return best
+	}
+	return ""
+}
+
+// editDistance is the classic Levenshtein distance for the misspelling
+// fallback of kindSuggestion (both strings are short kind names).
+func editDistance(a, b string) int {
+	ca, cb := []rune(a), []rune(b)
+	dist := make([]int, len(cb)+1)
+	for j := range dist {
+		dist[j] = j
+	}
+	for i, ra := range ca {
+		prev := dist[0]
+		dist[0] = i + 1
+		for j, rb := range cb {
+			old := dist[j+1] // the value the NEXT row's prev needs
+			cur := old
+			cost := 1
+			if ra == rb {
+				cost = 0
+			}
+			if v := dist[j] + cost; v < cur { // substitute
+				cur = v
+			}
+			if v := prev + 1; v < cur { // insert
+				cur = v
+			}
+			if v := old + 1; v < cur { // delete
+				cur = v
+			}
+			dist[j+1] = cur
+			prev = old
+		}
+	}
+	return dist[len(cb)]
 }
 
 // proposalIDPattern is the schema's `identifier` pattern verbatim
@@ -276,7 +363,7 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 		}
 		after, ok := d.Find(p.After)
 		if !ok {
-			return proposalError("unknown_node", "node %q is not in the draft", p.After)
+			return unknownNodeError(d, p.After)
 		}
 		if deps := d.DependentsInScope(after); len(deps) > 0 {
 			return proposalError("target_has_dependents",
@@ -289,11 +376,11 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 		}
 		from, ok := d.Find(p.From)
 		if !ok {
-			return proposalError("unknown_node", "node %q is not in the draft", p.From)
+			return unknownNodeError(d, p.From)
 		}
 		to, ok := d.Find(p.To)
 		if !ok {
-			return proposalError("unknown_node", "node %q is not in the draft", p.To)
+			return unknownNodeError(d, p.To)
 		}
 		if !hasEdge(to.DependsOn, p.From) {
 			return proposalError("no_edge", "node %q does not depend on node %q; there is no edge to split", to.ID, from.ID)
@@ -318,7 +405,7 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 	case OpUpdatePrompt:
 		node, ok := d.Find(p.Node)
 		if !ok {
-			return proposalError("unknown_node", "node %q is not in the draft", p.Node)
+			return unknownNodeError(d, p.Node)
 		}
 		if node.Kind == "model.chat" {
 			return proposalError("prompt_kind_not_supported", "node %q is model.chat; update_prompt edits agent.acp prompts only", p.Node)
@@ -331,15 +418,47 @@ func ValidateProposal(d *Doc, p Proposal) *ProposalError {
 		}
 		return nil
 	default:
-		return proposalError("unknown_op", "op %q is not one of insert_after, insert_on_edge, update_prompt", p.Op)
+		return proposalError("unknown_op", "op %q is not one of %s", p.Op, strings.Join(validOpList(), ", "))
 	}
+}
+
+// validOpList is the closed op set (ADR-0044 § 2) in stable order — what the
+// draft.apply tool's description and the unknown_op refusal name.
+func validOpList() []string {
+	return []string{OpInsertAfter, OpInsertOnEdge, OpUpdatePrompt}
+}
+
+// unknownNodeError is the unknown_node refusal with the draft's own node
+// ids, so a tool result can show the model the anchors it must retry with
+// (the acceptance failure this exists for: the model could not see the ids
+// it must anchor on).
+func unknownNodeError(d *Doc, id string) *ProposalError {
+	return proposalError("unknown_node", "node %q is not in the draft%s", id, d.idTail())
+}
+
+// idTail is the draft's node ids for an error detail, capped so one detail
+// cannot outgrow the bounded tool payload.
+func (d *Doc) idTail() string {
+	if d == nil || len(d.order) == 0 {
+		return ""
+	}
+	ids := append([]string(nil), d.order...)
+	if len(ids) > 24 {
+		ids = append(ids[:24], "…")
+	}
+	return "; this draft's node ids are: " + strings.Join(ids, ", ")
 }
 
 // validateInsertKindID is the shared half of the two insert ops: the kind is
 // executable, the id is well-formed and unused.
 func validateInsertKindID(d *Doc, p Proposal) *ProposalError {
 	if !executableKinds[p.Kind] {
-		return proposalError("unknown_kind", "kind %q is not an executable node kind", p.Kind)
+		detail := fmt.Sprintf("kind %q is not a node kind the assistant can add", p.Kind)
+		if s := kindSuggestion(p.Kind); s != "" {
+			detail += fmt.Sprintf("; did you mean %q?", s)
+		}
+		detail += "; valid kinds: " + strings.Join(executableKindList(), ", ")
+		return proposalError("unknown_kind", "%s", detail)
 	}
 	if !proposalIDPattern.MatchString(p.ID) {
 		return proposalError("bad_id", "id %q must match the schema identifier pattern %s", p.ID, proposalIDPattern.String())
@@ -399,6 +518,30 @@ func ExtractProposal(raw string) (Proposal, error) {
 	return p, nil
 }
 
+// draftNodeView is one row of draft.get's structural view (the tool the
+// model plans a draft edit from): everything an insert can anchor on, and
+// nothing a secret could travel in — no prompts, no config, no profiles.
+type draftNodeView struct {
+	ID        string   "json:\"id\""
+	Kind      string   "json:\"kind\""
+	Scope     string   "json:\"scope,omitempty\""
+	DependsOn []string "json:\"depends_on,omitempty\""
+	When      string   "json:\"when,omitempty\""
+}
+
+// structNodes renders the draft's node tree in draft order: every node,
+// wherever it sits in the scopes, so a 13-node draft's ids all reach the
+// model inside the draft.get cap.
+func structNodes(d *Doc) []draftNodeView {
+	out := make([]draftNodeView, 0, len(d.order))
+	for _, id := range d.order {
+		n := d.byID[id]
+		out = append(out, draftNodeView{ID: n.ID, Kind: n.Kind, Scope: n.Scope,
+			DependsOn: n.DependsOn, When: bounded(n.When, 200)})
+	}
+	return out
+}
+
 // ProposalNodeSummary is one row of the compact draft summary the model sees:
 // ids, kinds, scopes, edges, guards, a 400-character prompt preview and the
 // profile. Configs do not travel at all, so a secret value cannot reach the
@@ -443,7 +586,7 @@ func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string)
 {"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"insert_on_edge","from":"<existing node id>","to":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"update_prompt","node":"<existing node id>","prompt":"<the new prompt text>","summary":"<one short sentence>"}
-Rules: kind is one of agent.acp, model.chat, process.exec, condition, human.approval, until, for_each, pipeline.invoke, artifact.publish. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.
+Rules: kind is one of ` + strings.Join(executableKindList(), ", ") + `. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.
 Worked example: the draft has nodes tests and review, where review depends on tests. Instruction \"insert a code reviewer after tests\" => the target node already has a dependent, so the answer is {\"op\":\"insert_on_edge\",\"from\":\"tests\",\"to\":\"review\",\"kind\":\"agent.acp\",\"id\":\"code_reviewer\",\"config\":{\"profile\":\"m4-reviewer\",\"prompt\":\"Review the code.\"},\"summary\":\"Insert a code reviewer between tests and review\"} — NOT insert_after.`
 	user := "Draft nodes (id, kind, scope, depends_on, when guard, prompt preview, profile):\n"
 	user += string(summariesJSON)

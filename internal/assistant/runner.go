@@ -208,13 +208,13 @@ func (r *ConversationRunner) registerTools() {
 	if r.draft != nil {
 		reg(runnerTool{
 			name:    "draft.get",
-			desc:    "Read one pipeline draft's current YAML document and version (so a draft edit can be planned).",
+			desc:    "Read one pipeline draft's structure (every node id, kind, scope and dependsOn, in draft order), its version, and the full YAML document when it fits (so a draft edit can be planned). The node list is complete even when the YAML does not fit.",
 			props:   map[string]any{"draft_id": stringProp("the draft id")},
 			require: []string{"draft_id"},
 		})
 		reg(runnerTool{
 			name: "draft.apply",
-			desc: "Apply ONE structural change to a pipeline draft through the version-checked draft PUT: op is insert_after (new node after an existing node), insert_on_edge (new node split on a from->to edge) or update_prompt (replace an agent.acp node's prompt). config is a JSON object of scalar values. The draft's current version is required so a stale edit cannot win.",
+			desc: `Apply ONE structural change to a pipeline draft through the version-checked draft PUT. ops (required args in {…}): insert_after {after: existing node id, kind, id} — a new node after an existing node, valid only when that node has no dependents; insert_on_edge {from, to, kind, id} — a new node split on the from->to edge; update_prompt {node, prompt} — replaces an agent.acp node's prompt. Both insert ops take an optional config: a JSON object of scalar values (for an agent.acp node: {"profile":"…","prompt":"…"}). Valid node kinds: ` + strings.Join(executableKindList(), ", ") + `. A human approval step is kind "human.approval", never "approval". The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. draft_id and the version draft.get returned are required so a stale edit cannot win. If the result is proposal_invalid, its detail names the fix and the valid values: correct the arguments and retry.`,
 			props: map[string]any{
 				"draft_id": stringProp("the draft id"),
 				"version":  stringProp("the draft version draft.get returned"),
@@ -678,8 +678,22 @@ func (r *ConversationRunner) execNavigate(name string, call toolCallRequest) exe
 	}
 }
 
+// maxDraftGetBytes caps one draft.get tool payload. It is deliberately
+// larger than the general MaxResultBytes cap (2048), and this is the only
+// tool with a larger one: the acceptance failure this exists for was a
+// model that could not see the node ids it must anchor on, and a
+// 13-node draft's structural view (every id, kind, scope and dependsOn)
+// alone approaches that cap. The view is structural only — no prompts,
+// no config, no secrets — so the larger cap leaks nothing a smaller one
+// would have kept out, and the raw YAML joins the view only while the
+// whole payload still fits.
+const maxDraftGetBytes = 8192
+
 // execDraftGet is draft.get (class read): a draft read as the caller
-// through the same service the GET /api/v1/drafts/{id} route uses.
+// through the same service the GET /api/v1/drafts/{id} route uses. The
+// model gets the compact structural view — every node id, kind, scope and
+// dependsOn — plus the raw YAML only while it fits the cap, so a retry of
+// draft.apply can always anchor on a real id.
 func (r *ConversationRunner) execDraftGet(ctx context.Context, c Caller, call toolCallRequest, name string) execOutcome {
 	tl, _ := r.localTool(name)
 	args, err := parseToolArgs(tl, call.Function.Arguments)
@@ -697,20 +711,36 @@ func (r *ConversationRunner) execDraftGet(ctx context.Context, c Caller, call to
 		}
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: reason}}
 	}
-	docBytes := doc.Document
-	if len(docBytes) > MaxResultBytes {
-		docBytes = docBytes[:MaxResultBytes]
-	}
-	payload, _ := json.Marshal(map[string]any{
-		"draft_id": args["draft_id"],
-		"version":  doc.Version,
-		"document": string(docBytes),
-	})
+	payload := draftGetPayload(args["draft_id"], doc)
 	return execOutcome{
 		call: ToolCall{Name: name, Args: stringArgView(args), OK: true,
 			Summary: fmt.Sprintf("Read draft %s (version %d)", short(args["draft_id"]), doc.Version)},
 		payload: payload,
 	}
+}
+
+// draftGetPayload is the tool result of a successful draft read: the
+// structural node view, the version, and the raw YAML while it fits the
+// tool's own cap (with an honest note when it does not).
+func draftGetPayload(draftID string, doc DraftDoc) json.RawMessage {
+	obj := map[string]any{"draft_id": draftID, "version": doc.Version}
+	if d, loadErr := LoadDraftDoc(doc.Document); loadErr == nil {
+		obj["nodes"] = structNodes(d)
+	} else {
+		obj["error"] = "the draft document does not load"
+		obj["detail"] = bounded(loadErr.Error(), 512)
+	}
+	view, _ := json.Marshal(obj)
+	// The raw YAML joins the view only while the whole payload fits the
+	// cap; the note names what the model loses instead of a truncated
+	// document it cannot parse.
+	if len(view)+len(doc.Document)+96 <= maxDraftGetBytes {
+		obj["document"] = string(doc.Document)
+	} else {
+		obj["document_note"] = fmt.Sprintf("the full YAML is %d bytes and does not fit next to the node view; the ids, kinds, scopes and edges above are complete", len(doc.Document))
+	}
+	out, _ := json.Marshal(obj)
+	return json.RawMessage(bounded(string(out), maxDraftGetBytes))
 }
 
 // execQuestion is ui.question (decision 3): the model writes ONE short
@@ -778,12 +808,39 @@ func (r *ConversationRunner) runDraftApply(ctx context.Context, c Caller, name s
 	case errors.Is(aerr, ErrDraftDenied):
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "forbidden"}}
 	case errors.Is(aerr, ErrDraftInvalid):
-		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "proposal_invalid"}}
+		// The refusal travels to the MODEL, not just the record: the
+		// payload names what was wrong and the valid alternatives, so
+		// the loop can retry within the same turn (bounded by the
+		// existing tool cap).
+		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "proposal_invalid"},
+			payload: proposalInvalidPayload(aerr)}
 	default:
 		// A stale version (or any CAS miss) is the draft moving under the
 		// edit: reported to the model so it re-reads, never forced.
-		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "draft_moved"}}
+		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "draft_moved"},
+			payload: json.RawMessage(`{"error":"draft_moved","detail":"the draft moved since it was read; call draft.get for the current version and retry"}`)}
 	}
+}
+
+// proposalInvalidPayload is the tool result a refused draft.apply returns
+// to the model: the stable reason, the validator's detail (which names the
+// closest valid kind and the draft's own node ids), and the closed sets for
+// reference, all bounded by the draft tool's cap.
+func proposalInvalidPayload(err error) json.RawMessage {
+	detail := err.Error()
+	var perr *ProposalError
+	if errors.As(err, &perr) {
+		// The validator's own words beat the wrapped chain for the model:
+		// they already carry the reason, the suggestion and the valid set.
+		detail = perr.Detail
+	}
+	blob, _ := json.Marshal(map[string]any{
+		"error":       "proposal_invalid",
+		"detail":      bounded(detail, 512),
+		"valid_ops":   validOpList(),
+		"valid_kinds": executableKindList(),
+	})
+	return json.RawMessage(bounded(string(blob), maxDraftGetBytes))
 }
 
 // applyDraft is the shared draft-edit path: the loop's ungated draft.apply
@@ -843,7 +900,9 @@ func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[
 		}
 	}
 	if vErr := ValidateProposal(d, p); vErr != nil {
-		return "", nil, fmt.Errorf("%w: %s", ErrDraftInvalid, vErr.Reason)
+		// %w keeps the *ProposalError in the chain: the tool result and the
+		// confirm path can both name the validator's own detail.
+		return "", nil, fmt.Errorf("%w: %w", ErrDraftInvalid, vErr)
 	}
 	out, err := applyDraftOp(doc.Document, p)
 	if err != nil {
