@@ -146,8 +146,13 @@ test("a non-member gets not found for the project", async ({ browser }) => {
   await signIn(outsider, OUTSIDER_SUBJECT);
   await gotoApp(outsider, "/projects");
   // The project list card grid is absent; the index shows its empty state.
+  // Scope the text check inside the empty state: the sidebar's projects
+  // section renders the same phrase ("no projects yet") on every page, so a
+  // page-level getByText matches both (strict mode).
   await expect(outsider.getByTestId("project-list-empty")).toBeVisible();
-  await expect(outsider.getByText("No projects yet")).toBeVisible();
+  await expect(
+    outsider.getByTestId("project-list-empty").getByText("No projects yet"),
+  ).toBeVisible();
   await gotoApp(outsider, projectPath);
   await expect(outsider.getByTestId("project-not-found")).toBeVisible();
   await outsiderContext.close();
