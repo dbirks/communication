@@ -32,7 +32,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { checkA11y } from "./a11y.js";
-import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
+import { AGENT_TURN_TIMEOUT_MS, BASE_URL } from "./env.js";
 import {
   expectRunStatus,
   openProjectBySlug,
@@ -502,11 +502,13 @@ async function closeContext(context: { close: () => Promise<void> }): Promise<vo
  */
 const state: {
   pipelineSlug: string;
+  pipelineId: string;
   runUrl: string;
   acpSlug: string;
   revisionDigest: string;
 } = {
   pipelineSlug: FALLBACK_SLUG,
+  pipelineId: "",
   runUrl: "",
   acpSlug: "",
   revisionDigest: "",
@@ -546,6 +548,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     const revisionRef = published.revisionDigest ?? published.revisionId ?? null;
     if (published.pipelineId && revisionRef) {
       state.pipelineSlug = published.pipelineSlug ?? FALLBACK_SLUG;
+      state.pipelineId = published.pipelineId;
       state.revisionDigest = published.revisionDigest ?? "";
       console.log(`WORKBENCH setup: using studio-published revision ${revisionRef}`);
     } else {
@@ -644,14 +647,32 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
 
     // The run page names the pinned revision — it must be the studio-published
     // one (the repin's proof), not the older revision without code_review.
+    // The redesigned header reads `r<n> <digest6>` (design 4e: "revision r3
+    // 8f2c1a (pinned)"), so the expected text pairs the first six hex of the
+    // digest with the revision NUMBER the API names for it.
     if (state.revisionDigest) {
-      const digestShort = state.revisionDigest.startsWith("sha256:")
-        ? state.revisionDigest.slice(7, 19)
-        : state.revisionDigest.slice(0, 12);
-      await expect(page.getByTestId("run-pinned-revision")).toContainText(digestShort, {
+      const digest6 = state.revisionDigest.startsWith("sha256:")
+        ? state.revisionDigest.slice(7, 13)
+        : state.revisionDigest.slice(0, 6);
+      let expected = digest6;
+      if (state.pipelineId) {
+        const revisionsRes = await page.request.get(
+          `${BASE_URL}/api/v1/pipelines/${state.pipelineId}/revisions?limit=100`,
+        );
+        if (revisionsRes.ok()) {
+          const revisions = (await revisionsRes.json()) as {
+            revisions: { revision_number: number; revision_digest: string }[];
+          };
+          const pinned = revisions.revisions.find(
+            (row) => row.revision_digest === state.revisionDigest,
+          );
+          if (pinned) expected = `r${pinned.revision_number} ${digest6}`;
+        }
+      }
+      await expect(page.getByTestId("run-pinned-revision")).toContainText(expected, {
         timeout: NODE_STEP_TIMEOUT_MS,
       });
-      console.log(`WORKBENCH A4: run pinned to the studio-published revision ${digestShort}`);
+      console.log(`WORKBENCH A4: run pinned to the studio-published revision ${expected}`);
     }
 
     // The DEFAULT view is the graph: tab selected, canvas present, and the

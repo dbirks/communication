@@ -29,6 +29,11 @@ export async function checkA11y(page: Page, name: string): Promise<void> {
     console.log(
       `A11Y ${name}: [${v.impact ?? "unknown"}] ${v.id} — ${v.description} (${v.nodes.length} node(s))`,
     );
+    for (const n of v.nodes.slice(0, 3)) {
+      console.log(`A11Y ${name}:   node: ${n.target.join(" > ")}`);
+      for (const line of (n.failureSummary ?? "").split("\n").slice(0, 6))
+        console.log(`     ${line}`);
+    }
   }
   test.info().attach(`a11y-${name}.json`, {
     body: JSON.stringify(results, null, 2),
