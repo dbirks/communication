@@ -1,6 +1,7 @@
 /**
  * The Settings page (`/settings/:tab`) rendered on its real route: the two
- * tabs, the three layout radio groups with the documented defaults, the
+ * tabs (plus the Operations link, README Shell footer 4h), the three layout
+ * radio groups with the documented defaults, the
  * trust-level group, and the honest "not saved" state when the server does
  * not store preferences yet (the 404 degradation of contract C2).
  */
@@ -82,6 +83,19 @@ describe("Settings page", () => {
 
   it("treats an unknown tab as the Layout tab", () => {
     mount("/settings/nope");
+    expect(screen.getByTestId("settings-layout")).toBeTruthy();
+  });
+
+  it("links Operations to /ops with its one-line description", () => {
+    mount("/settings/layout");
+    const opsLink = screen.getByTestId("settings-ops-link");
+    expect(opsLink.getAttribute("href")).toBe("/ops");
+    expect(
+      screen.getByText("Workers, queue health and the agent × capability matrix"),
+    ).toBeTruthy();
+    // It is a link, not a settings tab: it never becomes aria-current and
+    // never swaps the rendered panel.
+    expect(opsLink.getAttribute("aria-current")).toBeNull();
     expect(screen.getByTestId("settings-layout")).toBeTruthy();
   });
 });
