@@ -166,8 +166,10 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
       // is served by the profile's detail panel — the row opens it — and it
       // says `ask`, because the route has no field to make it anything else.
       await expect(row).toHaveCount(1, { timeout: 30_000 });
-      const rowId =
-        ((await row.first().getAttribute("data-testid")) ?? "").replace(/^agent-item-/, "");
+      const rowId = ((await row.first().getAttribute("data-testid")) ?? "").replace(
+        /^agent-item-/,
+        "",
+      );
       await admin.getByTestId(`agent-row-${rowId}`).click();
       await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(/\bask\b/);
       await shot(admin, "m5-inbox-01-ask-profile");

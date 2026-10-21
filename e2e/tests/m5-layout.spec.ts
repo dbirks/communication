@@ -427,10 +427,7 @@ async function discoverLab(browser: Browser, request: APIRequestContext): Promis
     // `/workflows/:id`, not the old `pipeline-name-*` button.
     await gotoApp(admin, "/workflows");
     await expect(admin.getByTestId("library-page")).toBeVisible({ timeout: 30_000 });
-    const wfRow = admin
-      .getByTestId("workflows-list")
-      .locator('a[href^="/workflows/"]')
-      .first();
+    const wfRow = admin.getByTestId("workflows-list").locator('a[href^="/workflows/"]').first();
     await expect(wfRow, "the lab's workflows list has no pipeline row").toBeVisible({
       timeout: LOADED_TIMEOUT_MS,
     });
