@@ -97,3 +97,15 @@ describe("Board run-drawer wiring", () => {
     expect(screen.getByTestId("board-page")).toBeTruthy();
   });
 });
+
+describe("Board header bands — contrast (never dilute a token fg with opacity)", () => {
+  it("every column header band and count badge keeps its full token fg", () => {
+    renderBoard();
+    for (const column of ["queued", "running", "needs-you", "failed", "done"]) {
+      const band = screen.getByTestId(`board-col-${column}`).querySelector("button") as Element;
+      const badge = screen.getByTestId(`board-col-count-${column}`);
+      expect(band.className).not.toMatch(/opacity/);
+      expect(badge.className).not.toMatch(/opacity/);
+    }
+  });
+});

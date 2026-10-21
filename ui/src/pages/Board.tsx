@@ -60,6 +60,10 @@ function BoardColumn({
       className="min-w-0 rounded-[6px] border border-line bg-paper"
       aria-label={`${spec.label} (${runs.length})`}
     >
+      {/* The header and its count badge share the column's token fg: the
+          solid states (NEEDS YOU ink-on-waiting, FAILED white-on-failed) are
+          AA at full opacity, and no opacity blend may dilute them below
+          4.5:1 (e.g. 80% white over the failed token computes to 4.21:1). */}
       <button
         type="button"
         aria-expanded={open}
@@ -68,7 +72,10 @@ function BoardColumn({
       >
         <span aria-hidden="true">{spec.glyph}</span>
         <span>{spec.label}</span>
-        <span className="ml-auto rounded-[3px] px-1 font-mono text-[10px] opacity-80">
+        <span
+          className="ml-auto rounded-[3px] px-1 font-mono text-[10px]"
+          data-testid={`board-col-count-${spec.id}`}
+        >
           {runs.length}
         </span>
       </button>

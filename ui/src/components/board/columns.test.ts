@@ -193,3 +193,20 @@ describe("the secondary groupings", () => {
     ]);
   });
 });
+
+describe("the header bands — AA contrast on the solid state fills", () => {
+  it("FAILED is the solid failed token with white text, NEEDS YOU ink on waiting", () => {
+    const failed = BOARD_COLUMNS.find((column) => column.id === "failed");
+    const waiting = BOARD_COLUMNS.find((column) => column.id === "needs-you");
+    expect(failed?.headerClass).toBe("bg-st-failed-strong text-st-failed-strong-fg");
+    expect(waiting?.headerClass).toBe("bg-st-waiting-strong text-ink");
+  });
+
+  it("no header band (or anything inheriting it) may dilute a token fg with opacity", () => {
+    // 80% white over the failed token computes to 4.21:1 — the axe serious
+    // found on the board. The band and its count badge must stay full-strength.
+    for (const column of BOARD_COLUMNS) {
+      expect(column.headerClass).not.toMatch(/opacity/);
+    }
+  });
+});
