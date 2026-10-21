@@ -52,6 +52,12 @@ export type TranscriptItem =
       inputPreview: string;
       outputPreview: string;
       truncated: boolean;
+      /** `occurred_at` of the first `conversation.tool.*` event for the call. */
+      startedAt: string | null;
+      /** `occurred_at` of the last `conversation.tool.*` event for the call. */
+      lastAt: string | null;
+      /** `occurred_at` of the event that first reported a terminal status; null while running. */
+      finishedAt: string | null;
     }
   | {
       kind: "permission";
@@ -106,6 +112,38 @@ function options(payload: Record<string, unknown>): PermissionOption[] {
     if (!optionId) return [];
     return [{ option_id: optionId, label: str(option, "label"), kind: str(option, "kind") }];
   });
+}
+
+/** The `conversation.tool.*` statuses the journal treats as final. */
+const TOOL_TERMINAL = new Set(["completed", "failed"]);
+
+/**
+ * The right slot of a tool row (the design's diffstat slot — timing only).
+ *
+ * The number is journal time, honest by construction: start is the
+ * `occurred_at` of the first `conversation.tool.*` event for the call, finish
+ * the `occurred_at` of the event that first reported a terminal status. There
+ * is no diffstat: no event or API field carries added/removed line counts,
+ * and parsing `+N −M` out of agent prose would be a guess dressed as data.
+ * A finished call with no usable times renders nothing (null), never 0s.
+ */
+export function toolTimingLabel(item: Extract<TranscriptItem, { kind: "tool" }>): string | null {
+  if (TOOL_TERMINAL.has(item.status)) {
+    if (!item.startedAt || !item.finishedAt) return null;
+    return formatElapsed(Date.parse(item.finishedAt) - Date.parse(item.startedAt));
+  }
+  return "● running";
+}
+
+/** A journal elapsed span as a compact slot: `<1s`, `14s`, `1m 05s`, `1h 05m`. */
+export function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 1000) return "<1s";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 const INTERRUPT_COPY: Record<string, string> = {
@@ -367,6 +405,7 @@ export function projectTranscript(
       }
       case "conversation.tool.call": {
         const callId = str(payload, "tool_call_id");
+        const status = str(payload, "status") || "pending";
         const item: Extract<TranscriptItem, { kind: "tool" }> = {
           kind: "tool",
           id: event.event_id,
@@ -374,10 +413,13 @@ export function projectTranscript(
           toolCallId: callId,
           title: str(payload, "title"),
           toolKind: str(payload, "kind"),
-          status: str(payload, "status") || "pending",
+          status,
           inputPreview: meaningfulPreview(str(payload, "input_preview")),
           outputPreview: "",
           truncated: bool(payload, "truncated"),
+          startedAt: at,
+          lastAt: at,
+          finishedAt: TOOL_TERMINAL.has(status) ? at : null,
         };
         push(item);
         if (callId) tools.set(callId, item);
@@ -389,13 +431,21 @@ export function projectTranscript(
         if (target) {
           // Update in place: the row already on screen changes status, never a
           // second row for the same tool call.
-          target.status = str(payload, "status") || target.status;
+          const status = str(payload, "status");
+          if (status) target.status = status;
           const title = str(payload, "title");
           if (title) target.title = title;
           target.outputPreview += str(payload, "output_preview");
           target.truncated = target.truncated || bool(payload, "truncated");
+          target.lastAt = at;
+          // The finish is pinned by the first terminal report; a late update
+          // must not move the number a person already read.
+          if (TOOL_TERMINAL.has(target.status) && target.finishedAt === null) {
+            target.finishedAt = at;
+          }
           break;
         }
+        const status = str(payload, "status") || "pending";
         const item: Extract<TranscriptItem, { kind: "tool" }> = {
           kind: "tool",
           id: event.event_id,
@@ -403,10 +453,13 @@ export function projectTranscript(
           toolCallId: callId,
           title: str(payload, "title") || "(tool call not in transcript)",
           toolKind: "",
-          status: str(payload, "status") || "pending",
+          status,
           inputPreview: "",
           outputPreview: meaningfulPreview(str(payload, "output_preview")),
           truncated: bool(payload, "truncated"),
+          startedAt: at,
+          lastAt: at,
+          finishedAt: TOOL_TERMINAL.has(status) ? at : null,
         };
         push(item);
         if (callId) tools.set(callId, item);

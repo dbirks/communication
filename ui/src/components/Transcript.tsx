@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { problemOf } from "../api/client";
-import { planDocumentOf, type TranscriptItem } from "../api/transcript";
+import { planDocumentOf, toolTimingLabel, type TranscriptItem } from "../api/transcript";
 import { deciderLabel } from "../api/actors";
 import type { PermissionOption } from "../api/types";
 import { formatClock } from "../lib/format";
@@ -124,6 +124,10 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
     depth === "head" &&
     (headLines(item.inputPreview) !== item.inputPreview ||
       headLines(item.outputPreview) !== item.outputPreview);
+  // The right slot (the design's diffstat slot): journal time only — a
+  // finished call shows its elapsed span, a running one "● running". Never
+  // parsed out of prose (honest-data rule).
+  const timing = toolTimingLabel(item);
 
   return (
     <li
@@ -154,6 +158,14 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
           label={`status: ${item.status}`}
           labelProps={{ "data-testid": `tool-status-${item.toolCallId}` }}
         />
+        {timing ? (
+          <span
+            data-testid={`tool-timing-${item.toolCallId}`}
+            className="w-[72px] shrink-0 text-right font-mono text-[11px] text-muted"
+          >
+            {timing}
+          </span>
+        ) : null}
         <span
           aria-hidden="true"
           className="w-3 shrink-0 text-center font-mono text-[10px] text-faint"

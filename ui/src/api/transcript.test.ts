@@ -6,10 +6,12 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  formatElapsed,
   interruptedCopy,
   meaningfulPreview,
   planDocumentOf,
   projectTranscript,
+  toolTimingLabel,
   turnStatusText,
 } from "./transcript";
 import { conversationEvent, turnId } from "../test/fakes";
@@ -79,6 +81,116 @@ describe("projectTranscript", () => {
     const tool = tools[0];
     expect(tool?.kind === "tool" && tool.status).toBe("completed");
     expect(tool?.kind === "tool" && tool.outputPreview).toBe("ok (done)");
+  });
+
+  describe("tool timing (the design's diffstat slot — journal time only)", () => {
+    it("formats elapsed journal spans like the slot: <1s, 14s, 1m 05s", () => {
+      expect(formatElapsed(999)).toBe("<1s");
+      expect(formatElapsed(1000)).toBe("1s");
+      expect(formatElapsed(14_000)).toBe("14s");
+      expect(formatElapsed(65_000)).toBe("1m 05s");
+      expect(formatElapsed(600_000)).toBe("10m 00s");
+      expect(formatElapsed(3_600_000 + 5 * 60_000)).toBe("1h 05m");
+    });
+
+    it("records first and last occurred_at per call and shows the elapsed span when finished", () => {
+      const t0 = "2026-10-14T18:00:00Z";
+      const transcript = projectTranscript([
+        conversationEvent(
+          "conversation.tool.call",
+          { tool_call_id: "t-timing", title: "pnpm test", kind: "exec", status: "in_progress" },
+          { global_seq: 1, occurred_at: t0 },
+        ),
+        conversationEvent(
+          "conversation.tool.update",
+          { tool_call_id: "t-timing", status: "in_progress", update_seq: 1 },
+          { global_seq: 2, occurred_at: "2026-10-14T18:00:05Z" },
+        ),
+        conversationEvent(
+          "conversation.tool.update",
+          { tool_call_id: "t-timing", status: "completed", output_preview: "ok", update_seq: 2 },
+          { global_seq: 3, occurred_at: "2026-10-14T18:00:14Z" },
+        ),
+      ]);
+      const tool = transcript.items.find((item) => item.kind === "tool");
+      expect(tool?.kind === "tool" && tool.startedAt).toBe(t0);
+      expect(tool?.kind === "tool" && tool.lastAt).toBe("2026-10-14T18:00:14Z");
+      expect(tool?.kind === "tool" && tool.finishedAt).toBe("2026-10-14T18:00:14Z");
+      expect(tool?.kind === "tool" && toolTimingLabel(tool)).toBe("14s");
+    });
+
+    it("keeps a running call on the running marker — never a guessed number", () => {
+      const transcript = projectTranscript([
+        conversationEvent(
+          "conversation.tool.call",
+          { tool_call_id: "t-live", title: "go build ./...", kind: "exec", status: "in_progress" },
+          { global_seq: 10, occurred_at: "2026-10-14T18:00:00Z" },
+        ),
+      ]);
+      const tool = transcript.items.find((item) => item.kind === "tool");
+      expect(tool?.kind === "tool" && tool.finishedAt).toBeNull();
+      expect(tool?.kind === "tool" && toolTimingLabel(tool)).toBe("● running");
+    });
+
+    it("pins the finish at the first terminal report; a late update moves only lastAt", () => {
+      const transcript = projectTranscript([
+        conversationEvent(
+          "conversation.tool.call",
+          { tool_call_id: "t-pinned", title: "edit", kind: "edit", status: "in_progress" },
+          { global_seq: 20, occurred_at: "2026-10-14T18:00:00Z" },
+        ),
+        conversationEvent(
+          "conversation.tool.update",
+          { tool_call_id: "t-pinned", status: "completed", update_seq: 1 },
+          { global_seq: 21, occurred_at: "2026-10-14T18:00:05Z" },
+        ),
+        conversationEvent(
+          "conversation.tool.update",
+          {
+            tool_call_id: "t-pinned",
+            status: "completed",
+            output_preview: " (late)",
+            update_seq: 2,
+          },
+          { global_seq: 22, occurred_at: "2026-10-14T18:00:09Z" },
+        ),
+      ]);
+      const tool = transcript.items.find((item) => item.kind === "tool");
+      expect(tool?.kind === "tool" && tool.finishedAt).toBe("2026-10-14T18:00:05Z");
+      expect(tool?.kind === "tool" && tool.lastAt).toBe("2026-10-14T18:00:09Z");
+      expect(tool?.kind === "tool" && toolTimingLabel(tool)).toBe("5s");
+    });
+
+    it("shows the elapsed span of a failed call too — the number is not a verdict", () => {
+      const transcript = projectTranscript([
+        conversationEvent(
+          "conversation.tool.call",
+          { tool_call_id: "t-fail", title: "pnpm check", kind: "exec", status: "in_progress" },
+          { global_seq: 30, occurred_at: "2026-10-14T18:00:00Z" },
+        ),
+        conversationEvent(
+          "conversation.tool.update",
+          { tool_call_id: "t-fail", status: "failed", update_seq: 1 },
+          { global_seq: 31, occurred_at: "2026-10-14T18:00:02Z" },
+        ),
+      ]);
+      const tool = transcript.items.find((item) => item.kind === "tool");
+      expect(tool?.kind === "tool" && tool.status).toBe("failed");
+      expect(tool?.kind === "tool" && toolTimingLabel(tool)).toBe("2s");
+    });
+
+    it("an orphan terminal update (its call scrolled out of the window) is honest, not 0s", () => {
+      const transcript = projectTranscript([
+        conversationEvent(
+          "conversation.tool.update",
+          { tool_call_id: "t-gone", status: "completed", output_preview: "ok", update_seq: 1 },
+          { global_seq: 40, occurred_at: "2026-10-14T18:00:00Z" },
+        ),
+      ]);
+      const tool = transcript.items.find((item) => item.kind === "tool");
+      expect(tool?.kind === "tool" && tool.startedAt).toBe("2026-10-14T18:00:00Z");
+      expect(tool?.kind === "tool" && toolTimingLabel(tool)).toBe("<1s");
+    });
   });
 
   it("closes a permission card when the decision event arrives", () => {
