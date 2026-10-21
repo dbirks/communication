@@ -70,6 +70,13 @@ export const STEP_LIBRARY: {
   label: string;
   description: string;
   runnable: boolean;
+  /**
+   * `offered: false` hides the kind from the Studio step picker and palette
+   * (ADR-0045: Publish kinds are not offered there). The catalogue entry
+   * itself is untouched — YAML authoring, validation and the inspector keep
+   * working with the kind.
+   */
+  offered?: boolean;
 }[] = [
   {
     kind: "agent.acp",
@@ -124,6 +131,7 @@ export const STEP_LIBRARY: {
     label: "Publish artifact",
     description: "Publish a workspace file or node output as an artifact.",
     runnable: true,
+    offered: false, // ADR-0045 — kept in the YAML catalogue, hidden from the picker/palette
   },
   {
     kind: "parallel",
@@ -154,6 +162,7 @@ export const STEP_LIBRARY: {
     label: "Git publish",
     description: "Publish commits as a branch or PR (not runnable yet: M6).",
     runnable: false,
+    offered: false, // ADR-0045 — kept in the YAML catalogue, hidden from the picker/palette
   },
   {
     kind: "integration.query",
@@ -168,6 +177,15 @@ export const STEP_LIBRARY: {
     runnable: false,
   },
 ];
+
+/**
+ * The kinds the Studio step picker and palette offer. ADR-0045 keeps the
+ * Publish kinds out of the Studio UI; everything else (including the
+ * "not runnable yet" kinds) stays offered.
+ */
+export function offeredSteps(items: typeof STEP_LIBRARY = STEP_LIBRARY): typeof STEP_LIBRARY {
+  return items.filter((item) => item.offered !== false);
+}
 
 function labelFor(kind: string): string {
   return STEP_LIBRARY.find((s) => s.kind === kind)?.label ?? kind.replaceAll(".", " ");

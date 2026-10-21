@@ -6,7 +6,7 @@
  * after the selected node, or at the end of the root scope when nothing is
  * selected.
  */
-import { STEP_LIBRARY, type ScopePath } from "../../lib/pipeline/graphDoc";
+import { offeredSteps, type ScopePath } from "../../lib/pipeline/graphDoc";
 import { setPaletteDragKind } from "./StudioCanvas";
 import { useMemo, useState, type DragEvent } from "react";
 
@@ -23,12 +23,20 @@ export interface StudioPaletteProps {
   onAddAfter?(afterId: string | null, scope: ScopePath, kind: string): void;
 }
 
+type PaletteEntry = ReturnType<typeof offeredSteps>[number];
+
 interface Group {
   name: string;
-  kinds: (typeof STEP_LIBRARY)[number][];
+  kinds: PaletteEntry[];
 }
 
-function groups(items: (typeof STEP_LIBRARY)[number][]): Group[] {
+/**
+ * ADR-0045: the palette offers the same kinds as the step picker — the
+ * catalogue minus the Publish kinds (which stay in the YAML catalogue).
+ */
+const PALETTE_ITEMS = offeredSteps();
+
+function groups(items: PaletteEntry[]): Group[] {
   return [
     {
       name: "Steps",
@@ -55,8 +63,8 @@ export function StudioPalette({
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return STEP_LIBRARY;
-    return STEP_LIBRARY.filter(
+    if (!q) return PALETTE_ITEMS;
+    return PALETTE_ITEMS.filter(
       (item) =>
         item.label.toLowerCase().includes(q) ||
         item.kind.toLowerCase().includes(q) ||

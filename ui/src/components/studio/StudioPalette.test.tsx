@@ -45,6 +45,12 @@ describe("StudioPalette", () => {
     expect(setData).toHaveBeenCalledWith(PALETTE_DRAG_TYPE, "agent.acp");
   });
 
+  it("never offers Publish kinds (ADR-0045)", () => {
+    render(<StudioPalette selectedId={null} onAddAfter={vi.fn()} />);
+    expect(screen.queryByTestId("palette-item-git.publish")).toBeNull();
+    expect(screen.queryByTestId("palette-item-artifact.publish")).toBeNull();
+  });
+
   it("filters with the search box and shows the non-runnable group greyed", () => {
     render(<StudioPalette selectedId={null} onAddAfter={vi.fn()} />);
     expect(screen.getByText("Not runnable yet")).toBeTruthy();
