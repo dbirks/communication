@@ -130,4 +130,9 @@ describe("StepPicker", () => {
     fireEvent.click(screen.getByTestId("step-picker-item-model.chat"));
     expect(onPick).toHaveBeenCalledWith("model.chat");
   });
+
+  it("keeps the scrollable list keyboard reachable (AXE scrollable-region-focusable)", () => {
+    render(<StepPicker onPick={vi.fn()} onClose={vi.fn()} />);
+    expect((screen.getByTestId("step-picker-list") as HTMLDivElement).tabIndex).toBe(0);
+  });
 });

@@ -176,7 +176,14 @@ export function StepPicker({
         onKeyDown={onKeyDown}
         className="mb-1.5 w-full rounded-md border border-line bg-paper px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
       />
-      <div data-testid="step-picker-list" className="max-h-72 overflow-y-auto">
+      {/* tabindex=0 keeps the scrollable region keyboard reachable (AXE
+          scrollable-region-focusable); the search input still owns the
+          picker's keyboard contract. */}
+      <div
+        data-testid="step-picker-list"
+        tabIndex={0}
+        className="max-h-72 overflow-y-auto outline-none"
+      >
         {featuredVisible && (
           <section aria-label="Start a new step" data-testid="step-picker-featured">
             <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">

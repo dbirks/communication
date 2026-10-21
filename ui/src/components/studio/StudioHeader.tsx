@@ -2,8 +2,10 @@
  * StudioHeader — the top bar of the Workflow Studio (phase 4, 4a):
  * breadcrumb `Workflows / {name}`, the `DRAFT vN` chip, the server's last
  * validation chip, the Canvas · YAML · Runs · Assigned tab strip (Canvas/YAML
- * are the view toggle as tabs with `aria-selected`; Runs/Assigned navigate
- * to the workflow page's revisions and assignment sections), then the
+ * are the view toggle as a `role=tablist` of `role=tab` buttons; Runs/Assigned
+ * are plain links that sit in the same strip, outside the tablist, since a
+ * tablist may only own tab children (AXE aria-required-children); they
+ * navigate to the workflow page's revisions and assignment sections), then the
  * existing Save / Validate / Diff / Publish actions.
  *
  * Desktop (≥768px) is a single 52px row: the name never shrinks below 160px
@@ -149,29 +151,34 @@ export function StudioHeader({
       <nav
         aria-label="Studio views"
         className="flex w-full items-center gap-[2px] overflow-x-auto rounded-[3px] border border-line p-[2px] md:w-auto md:min-w-0"
-        role="tablist"
         data-testid="studio-header-tabs"
       >
-        <Button
-          variant="ghost"
-          compact
-          role="tab"
-          aria-selected={view === "canvas"}
-          onClick={() => onViewChange("canvas")}
-          data-testid="studio-view-canvas"
+        <div
+          role="tablist"
+          aria-label="Canvas and YAML views"
+          className="flex items-center gap-[2px]"
         >
-          Canvas
-        </Button>
-        <Button
-          variant="ghost"
-          compact
-          role="tab"
-          aria-selected={view === "yaml"}
-          onClick={() => onViewChange("yaml")}
-          data-testid="studio-view-yaml"
-        >
-          YAML
-        </Button>
+          <Button
+            variant="ghost"
+            compact
+            role="tab"
+            aria-selected={view === "canvas"}
+            onClick={() => onViewChange("canvas")}
+            data-testid="studio-view-canvas"
+          >
+            Canvas
+          </Button>
+          <Button
+            variant="ghost"
+            compact
+            role="tab"
+            aria-selected={view === "yaml"}
+            onClick={() => onViewChange("yaml")}
+            data-testid="studio-view-yaml"
+          >
+            YAML
+          </Button>
+        </div>
         <Link to={workflowPage} className={TAB_CLASS} data-testid="studio-header-runs">
           Runs
         </Link>

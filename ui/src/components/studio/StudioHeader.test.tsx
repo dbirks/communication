@@ -100,6 +100,15 @@ describe("StudioHeader", () => {
     for (const testid of ["studio-header-runs", "studio-header-assigned"]) {
       expect((screen.getByTestId(testid) as HTMLAnchorElement).getAttribute("href")).toBe(target);
     }
+    // AXE aria-required-children (critical): a tablist may only own tab
+    // children — the Runs/Assigned links live in the strip, outside it.
+    const tablist = screen.getByRole("tablist");
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs).toHaveLength(2);
+    for (const tab of tabs) expect(tablist.contains(tab)).toBe(true);
+    for (const testid of ["studio-header-runs", "studio-header-assigned"]) {
+      expect(tablist.contains(screen.getByTestId(testid))).toBe(false);
+    }
   });
 
   it("gives every phone action button a 44px tap target", () => {
