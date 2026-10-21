@@ -38,7 +38,7 @@ import path from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { checkA11y } from "./a11y.js";
-import { gotoApp, signIn } from "./helpers.js";
+import { expectNoLegacyAppBar, gotoApp, signIn } from "./helpers.js";
 
 const ISSUE2_ENABLED = process.env.COMMUNICATION_E2E_ISSUE2 === "1";
 /** Unique per run so re-runs never collide with their own earlier rows. */
@@ -53,7 +53,23 @@ async function evidence(page: Page, name: string, what: string): Promise<void> {
   console.log(`EVIDENCE ${name}: ${what}`);
 }
 
-/** Resolve a pipeline in the org library by slug (no list UI: `/library` is the create form). */
+/**
+ * The pipeline page bleeds to the window's left edge (it measures its
+ * centred column and offsets out of it), so under the new shell its 300px
+ * left rail starts at x≈0, mostly beneath the 240px sticky sidebar: the
+ * "New draft" button's centre (measured x≈231) and the revision rows are
+ * partially covered (the reported shell defect). A human clicks the part
+ * they can see — aim a few px inside the right edge, never the centre.
+ */
+async function clickVisiblePart(page: Page, testId: string): Promise<void> {
+  const locator = page.getByTestId(testId);
+  const box = (await locator.boundingBox()) ?? { width: 80, height: 26 };
+  await locator.click({
+    position: { x: box.width - 8, y: box.height / 2 },
+  });
+}
+
+/** Resolve a pipeline in the org library by slug (no list UI: `/workflows` is the create form). */
 async function pipelineInfo(
   page: Page,
   slug: string,
@@ -126,13 +142,14 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
   test("A0: open the deterministic twin draft in the Studio", async ({ page }) => {
     console.log(`issue2-studio: run stamp ${STAMP}`);
     await signIn(page, "admin");
-    await gotoApp(page, "/library");
+    await gotoApp(page, "/workflows");
     const pipeline = await pipelineInfo(page, PIPELINE_SLUG);
     state.pipelineId = pipeline.id;
 
-    await page.goto(`/library/${pipeline.id}`);
+    await page.goto(`/workflows/${pipeline.id}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible();
     await expect(page.getByTestId("pipeline-header-meta")).toContainText(PIPELINE_SLUG);
+    await expectNoLegacyAppBar(page);
 
     // Re-run safety: a previous run of this journey published a customized
     // revision (code_review + the trailing until scope). The newest revision
@@ -161,8 +178,8 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
         (line) => `${line} (re-stored ${STAMP})`,
       );
       expect(seededDoc, "the stamp must land on the description line").not.toBe(seededDocRaw);
-      await page.getByTestId("pipeline-new-draft").click();
-      await expect(page).toHaveURL(new RegExp(`/library/${pipeline.id}/drafts/`));
+      await clickVisiblePart(page, "pipeline-new-draft");
+      await expect(page).toHaveURL(new RegExp(`/workflows/${pipeline.id}/drafts/`));
       await expect(page.getByTestId("studio-canvas")).toBeVisible();
       await page.getByTestId("studio-view-yaml").click();
       await page.getByTestId("studio-yaml").fill(seededDoc);
@@ -179,13 +196,13 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
         "studio-rerun-restored",
         `a previous journey run had published a customized revision — the seeded twin (oldest revision's document, description stamped "re-stored ${STAMP}" so the digest is fresh) was restored through the Studio and republished as the newest revision, so the journey runs on the pristine twin again`,
       );
-      await page.goto(`/library/${pipeline.id}`);
+      await page.goto(`/workflows/${pipeline.id}`);
       await expect(page.getByTestId("pipeline-page")).toBeVisible();
     }
 
     // New draft: the pipeline page's clone control, built from the newest revision.
-    await page.getByTestId("pipeline-new-draft").click();
-    await expect(page).toHaveURL(new RegExp(`/library/${pipeline.id}/drafts/`));
+    await clickVisiblePart(page, "pipeline-new-draft");
+    await expect(page).toHaveURL(new RegExp(`/workflows/${pipeline.id}/drafts/`));
     state.draftUrl = new URL(page.url()).href;
     state.draftId = state.draftUrl.split("/").pop() as string;
 
@@ -480,9 +497,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     );
 
     // Reopen the published revision from the pipeline page.
-    await page.goto(`/library/${state.pipelineId}`);
+    await page.goto(`/workflows/${state.pipelineId}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible();
-    await page.getByTestId(`revision-row-${state.revisionNumber}`).click();
+    await clickVisiblePart(page, `revision-row-${state.revisionNumber}`);
     await expect(page.getByTestId("definition-graph")).toBeVisible();
     await expect(page.getByTestId(`definition-graph-scope-${state.untilId}`)).toBeVisible();
     const revisionYaml = page.getByTestId("yaml-view");
@@ -508,9 +525,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // is read-only — revisions are immutable), so A3 works in its own clone
     // of the newest revision. The plan → approve and verdict → publish edges
     // it exercises exist in that clone too.
-    await gotoApp(page, `/library/${state.pipelineId}`);
-    await page.getByTestId("pipeline-new-draft").click();
-    await expect(page).toHaveURL(new RegExp(`/library/${state.pipelineId}/drafts/`));
+    await gotoApp(page, `/workflows/${state.pipelineId}`);
+    await clickVisiblePart(page, "pipeline-new-draft");
+    await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipelineId}/drafts/`));
     state.draftA3 = new URL(page.url()).href;
     await gotoApp(page, state.draftA3);
     await backToCanvas(page);
@@ -641,9 +658,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await signIn(page, "admin");
     // A fresh draft: proposals are made against the saved version, and a dirty
     // draft blocks the assistant box entirely.
-    await gotoApp(page, `/library/${state.pipelineId}`);
-    await page.getByTestId("pipeline-new-draft").click();
-    await expect(page).toHaveURL(new RegExp(`/library/${state.pipelineId}/drafts/`));
+    await gotoApp(page, `/workflows/${state.pipelineId}`);
+    await clickVisiblePart(page, "pipeline-new-draft");
+    await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipelineId}/drafts/`));
     const draft2Id = new URL(page.url()).pathname.split("/").pop() as string;
 
     const versionBefore = await draftVersion(page, draft2Id);

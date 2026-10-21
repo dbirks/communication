@@ -213,8 +213,8 @@ test.describe("W3 start a run from a GitHub issue", () => {
   let aliceContext: BrowserContext;
   let admin: Page;
   let alice: Page;
-  let pipelinePath = ""; // /library/{pipelineId}
-  let projectPath = ""; // /projects/{M4 Exit id}
+  let pipelinePath = ""; // /workflows/{pipelineId}
+  let projectPath = ""; // /p/{M4 Exit id}
   let runId = "";
   let issueNumber = 0;
   let issueTitle = "";
@@ -262,14 +262,14 @@ test.describe("W3 start a run from a GitHub issue", () => {
       // Any template only seeds a draft to replace: the editor is then filled
       // with the issue-run document whole, the way m5-journey replaces its
       // clone with the process.exec twin.
-      await gotoApp(admin, "/library");
+      await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
       await admin.getByTestId("library-new-slug-input").fill(SLUG);
       await admin.getByTestId("library-new-name-input").fill(SLUG);
       await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
       await admin.getByTestId("library-new-submit").click();
-      await admin.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
-      pipelinePath = `/library/${new URL(admin.url()).pathname.split("/")[2]}`;
+      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      pipelinePath = `/workflows/${new URL(admin.url()).pathname.split("/")[2]}`;
       // The Studio's YAML view is the same authoring surface the old editor
       // exposed as its textarea.
       await admin.getByTestId("studio-view-yaml").click();
@@ -418,7 +418,8 @@ test.describe("W3 start a run from a GitHub issue", () => {
   test("the started run records the issue in its run_inputs", async () => {
     await test.step("start the run from the prefilled form", async () => {
       await alice.getByTestId("new-run-submit").click();
-      await alice.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/);
+      // Route contract C1: the workbench is the project-less `/runs/:runId`.
+      await alice.waitForURL(/\/runs\/[0-9a-f-]{36}$/);
       runId = new URL(alice.url()).pathname.split("/").pop() ?? "";
       expect(runId).toMatch(/^[0-9a-f-]{36}$/);
       await shot(alice, "m5w3-06-run-started");

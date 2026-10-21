@@ -1,10 +1,10 @@
-// The M6 screens of the M5 exit suite: `/agents` (ADR-0030 — a launch
+// The M6 screens of the M5 exit suite: `/profiles` (ADR-0030 — a launch
 // descriptor, its permission mode, and the APM skill-package pin with its
 // "How do I get this?" digest recipe) and the "When to run" block on
-// `/projects/:id/pipelines` (ADR-0032 — a schedule belongs to a project
+// `/p/:id/pipelines` (ADR-0032 — a schedule belongs to a project
 // ASSIGNMENT and fires its pinned revision on a UTC cron cadence). There is no
-// `/schedules` route to visit: `ui/src/App.tsx` mounts `/agents` and
-// `/projects/:projectId/pipelines`, and the schedule UI lives beside the
+// `/schedules` route to visit: `ui/src/App.tsx` mounts `/profiles` and
+// `/p/:projectId/pipelines`, and the schedule UI lives beside the
 // assignment it owns (`WhenToRun` in `ui/src/pages/ProjectRunsPipelines.tsx`).
 //
 // It runs against the M4 lab by env override only, exactly like m5-journey and
@@ -16,7 +16,7 @@
 // role) come from docs/compatibility/probes/m4/seed.sh.
 //
 // WHO DOES WHAT, and why the brief's "as a maintainer" splits in two:
-// `/agents` list-visible is organization-wide (`api/openapi.yaml`
+// `/profiles` list-visible is organization-wide (`api/openapi.yaml`
 // listAgentProfiles: "the listing stays available to every member of the
 // organization"), but BOTH write surfaces — `POST /api/v1/agent-profiles` and
 // `PATCH /api/v1/agent-profiles/{id}` — are the library role's (`me.is_org_admin
@@ -37,7 +37,7 @@
 // information here". So this spec asserts the org-wide visibility positively
 // (erin reads the same row, with no write control) and proves the project
 // boundary where the domain really draws it: project A's assignment and its
-// schedules. Erin deep-linked to `/projects/<A>/pipelines` gets the one
+// schedules. Erin deep-linked to `/p/<A>/pipelines` gets the one
 // refusal sentence (`ProjectUnavailable`, ADR-0014 § 3) and zero
 // `schedules-block-*`, while alice's identical URL lists the assignment block
 // she can edit.
@@ -55,7 +55,7 @@ const ERIN = { subject: "erin" };
 
 const stamp =
   process.env.E2E_M5_AGENTS_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
-/** The profile this run creates through the product's own /agents form. */
+/** The profile this run creates through the product's own /profiles form. */
 const PROFILE_NAME = `m5-agents-${stamp}`;
 /** A syntactically valid pin that resolves to nothing: no launch ever stages it,
  * because the only conversation this suite starts on it is none. */
@@ -94,7 +94,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
   let admin: Page;
   let alice: Page;
   let erin: Page;
-  let projectPath = ""; // /projects/{M4 Exit id}
+  let projectPath = ""; // /p/{M4 Exit id}
   let projectId = "";
   /** The profile this run created; empty when nothing was created. */
   let profileId = "";
@@ -158,19 +158,27 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
 
   test("agents: a skill pin, its digest help, and who may not see the controls", async () => {
     await test.step("admin (the library role) creates the profile the arm pins", async () => {
-      await gotoApp(admin, "/agents");
+      await gotoApp(admin, "/profiles");
       await expect(admin.getByTestId("agents-page")).toBeVisible();
-      // The disclaimer is the page's own honesty rule (ADR-0030 § 6): staging
-      // is not isolation, and the page says it out loud to every reader.
-      await expect(admin.getByTestId("agents-disclaimer")).toContainText(
-        /staging is not isolation/i,
-      );
+      // The New profile button is the library role's gate (ADR-0030); the
+      // form itself now lives in the dialog it opens.
+      await expect(admin.getByTestId("agents-new-open")).toBeVisible();
+      await admin.getByTestId("agents-new-open").click();
       await expect(admin.getByTestId("agents-new-form")).toBeVisible();
       await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-      await admin.getByTestId("agents-new-launcher-select").selectOption("claude");
+      // The new dialog picks the launcher by agent card (radio), not a select;
+      // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
+      await admin.getByTestId("new-profile-card-claude").click();
       await admin.getByTestId("agents-new-submit").click();
       profileId = await profileIdOf(admin, PROFILE_NAME);
       expect(profileId).toMatch(/^[0-9a-f-]{36}$/);
+      // The row opens the profile's detail panel — the disclaimer is the
+      // page's own honesty rule (ADR-0030 § 6): staging is not isolation, and
+      // the page says it out loud to every reader.
+      await admin.getByTestId(`agent-row-${profileId}`).click();
+      await expect(admin.getByTestId("agents-disclaimer")).toContainText(
+        /staging is not isolation/i,
+      );
     });
     await test.step("the new row serves its permission mode (ask — nothing else is writable)", async () => {
       // `permission_mode` has no field on POST (ADR-0030), so `ask` is what a
@@ -234,8 +242,11 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await shot(admin, "m5-agents-02-digest-help");
     });
     await test.step("alice (project maintainer, no library role) reads the SAME row read-only", async () => {
-      await gotoApp(alice, "/agents");
+      await gotoApp(alice, "/profiles");
       await expect(alice.getByTestId(`agent-item-${profileId}`)).toBeVisible();
+      // The row opens the detail panel that serves the permission mode and
+      // the skill package triple.
+      await alice.getByTestId(`agent-row-${profileId}`).click();
       // What the brief asks a maintainer to see, served to her own session:
       // the permission mode, and the skill package triple pinned above.
       await expect(alice.getByTestId(`agent-permission-${profileId}`)).toHaveText(
@@ -245,12 +256,12 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       await expect(alice.getByTestId(`agent-apm-digest-${profileId}`)).toHaveText(APM_DIGEST_SHORT);
       // And the controls she may not have are absent — the page's own
       // fail-closed predicate (`me.is_org_admin`), not a hidden button.
-      await expect(alice.getByTestId("agents-new-form")).toHaveCount(0);
+      await expect(alice.getByTestId("agents-new-open")).toHaveCount(0);
       await expect(alice.getByTestId(`agent-edit-${profileId}`)).toHaveCount(0);
       await expect(alice.getByTestId(`agent-apm-form-${profileId}`)).toHaveCount(0);
-      // The panel's own words about this reader's role (the heading is an `id`,
-      // not a test id — `ui/src/components/ds/Panel.tsx`).
-      await expect(alice.locator("#agents-rows-heading")).toContainText(/AGENT PROFILES/i);
+      // The panel's own words about this reader's role (plain list header
+      // text in the new profile list, not an id).
+      await expect(alice.getByTestId("profiles-list")).toContainText(/AGENT PROFILES/i);
       await expect(alice.getByText(/read-only for your role/)).toBeVisible();
       await shot(alice, "m5-agents-03-maintainer-readonly");
     });
@@ -260,9 +271,9 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
       // the organization"), so erin reads the org-wide row — the honest form of
       // the brief's isolation arm. What IS project-scoped is the assignment and
       // its schedules, and those are the things she cannot list.
-      await gotoApp(erin, "/agents");
+      await gotoApp(erin, "/profiles");
       await expect(erin.getByTestId(`agent-item-${profileId}`)).toBeVisible();
-      await expect(erin.getByTestId("agents-new-form")).toHaveCount(0);
+      await expect(erin.getByTestId("agents-new-open")).toHaveCount(0);
       await expect(erin.getByTestId(`agent-edit-${profileId}`)).toHaveCount(0);
       // Erin holds no membership row on project A (§ 7.2 W9), so every project
       // surface answers the one refusal sentence (ADR-0014 § 3) — here with zero
@@ -404,7 +415,7 @@ test.describe("M5 agents + schedules: profiles, skill pins and the cron clock", 
 async function removePinQuietly(page: Page, id: string): Promise<void> {
   if (!id) return;
   try {
-    await gotoApp(page, "/agents");
+    await gotoApp(page, "/profiles");
     await page.getByTestId(`agent-edit-${id}`).click({ timeout: 10_000 });
     await page.getByTestId(`agents-apm-remove-${id}`).click({ timeout: 10_000 });
   } catch {

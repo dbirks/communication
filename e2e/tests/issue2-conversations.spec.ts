@@ -27,6 +27,7 @@ import { AGENT_TURN_TIMEOUT_MS } from "./env.js";
 import { checkA11y } from "./a11y.js";
 import {
   expectTurnStatus,
+  expectNoLegacyAppBar,
   gotoApp,
   openProjectBySlug,
   selectByOptionText,
@@ -91,10 +92,13 @@ function nodeFromUrl(page: Page): string | null {
 }
 
 /**
- * A sign-in variant that does NOT rely on the `user-badge` span: that span is
- * `hidden xl:inline` in the app bar, so at the 390px viewport it is
- * `display:none` and the shared `signIn`'s visibility wait would time out. The
- * `sign-out` button stays visible at every width, so it is the right
+ * A sign-in variant that does NOT rely on the `user-badge` span: that span
+ * (and the `sign-out` button) live in the sidebar footer, and at the 390px
+ * viewport the sidebar is the drawer behind the phone top strip's menu
+ * button — both are `display:none` until the drawer opens. The sign-in chain
+ * ends on the lab's own embedded UI origin (where the menu button does not
+ * exist at all), so the variant navigates back to the app under test first,
+ * then opens the drawer; the footer's `sign-out` button is the
  * "signed in" signal at phone width.
  */
 async function signInNarrow(page: Page, subject: string): Promise<void> {
@@ -102,7 +106,17 @@ async function signInNarrow(page: Page, subject: string): Promise<void> {
   await page.getByTestId("sign-in").click();
   await page.getByPlaceholder("Enter any user/subject").fill(subject);
   await page.getByRole("button", { name: "Sign-in" }).click();
-  await expect(page.getByTestId("sign-out")).toBeVisible();
+  // Back to the app under test (baseURL), where the session cookie — shared
+  // per host across the lab's ports — is valid.
+  await gotoApp(page, "/");
+  // At 390px the sidebar (and its footer) sits behind the menu button:
+  // open the drawer before the footer's sign-out can be visible. The Shell
+  // renders the hidden desktop rail AND the drawer as two `sidebar` nodes —
+  // the drawer is the last one in the DOM.
+  await page.getByTestId("sidebar-open").click();
+  const drawer = page.getByTestId("sidebar").last();
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByTestId("sign-out")).toBeVisible();
 }
 
 test.describe("issue2 conversations (A7 + run link-backs)", () => {
@@ -116,6 +130,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     test.setTimeout(300_000); // one real agent turn plus four axe passes, bounded
     await signIn(page, "alice");
     const projectUrl = await openProjectBySlug(page, PROJECT_SLUG);
+    // The app shell is the new sidebar frame: the old top app bar's
+    // `aria-label="Primary"` header is gone (Sidebar v3 regression gate).
+    await expectNoLegacyAppBar(page);
 
     // --- Entry 1: the project overview header button (project fixed). ---
     await page.getByTestId("project-new-conversation").click();
@@ -133,7 +150,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       `New conversation dialog opened from the ${PROJECT_SLUG} overview header with the project pinned, profile ${PROFILE} and the first prompt filled — no pipeline field exists`,
     );
     await page.getByTestId("conversation-new-submit").click();
-    await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/conversations\/[0-9a-f-]{36}$/);
+    // The one-off conversation lands on its standalone thread page
+    // (`/threads/:conversationId` — route contract C1).
+    await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/);
 
     // The real agent turn: a bounded wait for the "pong" reply AND a terminal
     // turn status — the page's own `turn-status` chip says the turn completed.
@@ -248,7 +267,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     }
     await expect(badge).toBeVisible({ timeout: 15_000 });
     const badgeHref = (await badge.getAttribute("title")) ?? "";
-    expect(badgeHref).toMatch(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}\?/);
+    // Route contract C1: the workbench deep link is the project-less
+    // `/runs/:runId` with the node as a query param.
+    expect(badgeHref).toMatch(/\/runs\/[0-9a-f-]{36}\?/);
     expect(new URL(badgeHref, "http://x").searchParams.get("node")).not.toBeNull();
     await checkA11y(page, "conversations list (run-linked)");
     await evidence(
@@ -266,8 +287,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     // link lands.
     await badge.click();
     // SPA navigation (react-router) fires no "load" event, so waitForURL
-    // would hang; toHaveURL polls the URL until the ?node= deep link lands.
-    await expect(page).toHaveURL(/\/projects\/.+\/runs\/.+\?node=/);
+    // would hang; toHaveURL polls the URL until the ?node= deep
+    // link lands.
+    await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}\?node=/);
     const selectedDef = nodeFromUrl(page);
     expect(selectedDef, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });
@@ -287,7 +309,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       'xpath=ancestor::*[starts-with(@data-testid, "conversation-row-")][1]',
     );
     const rowHref = (await row.getAttribute("href")) ?? "";
-    expect(rowHref).toMatch(/\/conversations\/[0-9a-f-]{36}$/);
+    expect(rowHref).toMatch(/\/threads\/[0-9a-f-]{36}$/);
     await page.goto(rowHref);
     const partOfRun = page.getByTestId("part-of-run-link");
     await expect(partOfRun.first()).toBeVisible({ timeout: 15_000 });
@@ -302,7 +324,7 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       `the conversation page's part-of-run-link points at the same workbench deep link as the list badge (${linkHref})`,
     );
     await partOfRun.first().click();
-    await expect(page).toHaveURL(/\/projects\/.+\/runs\/.+\?node=/);
+    await expect(page).toHaveURL(/\/runs\/[0-9a-f-]{36}\?node=/);
     const selectedDef2 = nodeFromUrl(page);
     expect(selectedDef2, "the workbench URL keeps the source node").not.toBeNull();
     await expect(page.getByTestId("run-title")).toBeVisible({ timeout: WORKBENCH_TIMEOUT_MS });

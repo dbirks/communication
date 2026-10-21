@@ -52,7 +52,12 @@ export async function signIn(
     await claimsField.fill(JSON.stringify(claims));
   }
   await page.getByRole("button", { name: "Sign-in" }).click();
-  // The redirect chain lands back on the SPA with a session cookie set.
+  // The IdP redirect chain ends on the lab's own embedded UI origin (the
+  // OIDC callback is registered there); the session cookie is shared per
+  // host, so a fresh navigation to the app under test (baseURL) is signed in.
+  // Every later relative `page.goto` in the suite resolves against baseURL,
+  // so the suite works on the dev server's live tree from here on.
+  await gotoApp(page, "/");
   await expect(page.getByTestId("user-badge")).toBeVisible();
 }
 
@@ -209,7 +214,10 @@ export async function startConversation(
   await selectByOptionText(page, "conversation-new-profile", options.profile);
   await page.getByTestId("conversation-new-prompt").fill(options.prompt);
   await page.getByTestId("conversation-new-submit").click();
-  await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/conversations\/[0-9a-f-]{36}$/);
+  // The standalone thread page (route contract C1: conversations live at
+  // `/threads/:conversationId`; the old `/projects/…/conversations/…` URL
+  // redirects to it, but the canonical target is what is asserted).
+  await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/);
   return new URL(page.url()).pathname;
 }
 
@@ -359,10 +367,12 @@ export async function repinAssignment(
 
 /**
  * Open a project from the project list by its slug; resolves to its app path
- * (`/projects/<uuid>`), which every section link is built from.
+ * (`/p/<uuid>`, route contract C1), which every section link is built from.
  */
 export async function openProjectBySlug(page: Page, slug: string): Promise<string> {
-  await gotoApp(page, "/");
+  // The project list is its own page now (route contract C1: `/projects`);
+  // the home briefing no longer renders the project cards.
+  await gotoApp(page, "/projects");
   await page.getByTestId(`project-link-${slug}`).click();
   await expect(page.getByTestId("project-name")).toBeVisible();
   return new URL(page.url()).pathname;
@@ -379,6 +389,17 @@ export async function expectRunStatus(page: Page, status: RegExp, timeout: numbe
 }
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * Regression gate for the app-shell redesign: the old top app bar is gone —
+ * Sidebar v3 replaced it, so no `header` or `nav` may carry the old bar's
+ * `aria-label="Primary"` any more. The sidebar's own `aside` (a complementary
+ * region, not a header or nav) may keep the label; that is not the app bar.
+ */
+export async function expectNoLegacyAppBar(page: Page): Promise<void> {
+  await expect(page.locator('header[aria-label="Primary"]')).toHaveCount(0);
+  await expect(page.locator('nav[aria-label="Primary"]')).toHaveCount(0);
+}
 
 /**
  * Restart services through the same compose invocation the suite runs against

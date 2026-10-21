@@ -18,7 +18,7 @@
 // (api/openapi.yaml, ADR-0030 §5) takes only `name` + `launcher_id` and leaves
 // `permission_mode` at the column default `ask`, which is precisely the mode
 // this arm needs; it is the organization library role that may call it, so
-// admin creates it through the product's own /agents form and the arm then
+// admin creates it through the product's own /profiles form and the arm then
 // reads the served `permission_mode` back off the row.
 //
 // WHY BOB'S INBOX IS OPENED AFTER THE PROMPT IS PENDING: the three reads behind
@@ -91,8 +91,8 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
   let admin: Page;
   let alice: Page;
   let bob: Page;
-  let projectPath = ""; // /projects/{M4 Exit id}
-  let conversationPath = ""; // /projects/{id}/conversations/{id}
+  let projectPath = ""; // /p/{M4 Exit id}
+  let conversationPath = ""; // /threads/{conversation id}
   let conversationId = "";
   /** The request the pending card exposed; every later step reads this one. */
   let permissionLabel = "";
@@ -146,21 +146,30 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
   });
 
   test("admin creates an ask-mode profile and the row serves ask", async () => {
-    await test.step("/agents → NEW AGENT (the route takes a name and a launcher, nothing else)", async () => {
-      await gotoApp(admin, "/agents");
+    await test.step("/profiles → NEW AGENT (the route takes a name and a launcher, nothing else)", async () => {
+      await gotoApp(admin, "/profiles");
       await expect(admin.getByTestId("agents-page")).toBeVisible();
-      // The library role is what the form's presence means (ADR-0030).
-      await expect(admin.getByTestId("agents-new-form")).toBeVisible();
+      // The library role is what the New profile button's presence means
+      // (ADR-0030); the form itself now lives in the dialog it opens.
+      await expect(admin.getByTestId("agents-new-open")).toBeVisible();
       const row = profileRow(admin);
       if ((await row.count()) === 0) {
+        await admin.getByTestId("agents-new-open").click();
+        await expect(admin.getByTestId("agents-new-form")).toBeVisible();
         await admin.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-        await admin.getByTestId("agents-new-launcher-select").selectOption("claude");
+        // The new dialog picks the launcher by agent card (radio), not a select;
+        // `agents-new-launcher-select` is the disabled "Other ACP agent" catch-all.
+        await admin.getByTestId("new-profile-card-claude").click();
         await admin.getByTestId("agents-new-submit").click();
       }
-      // The created row, read back from the served list: `ask`, because the
-      // route has no field to make it anything else.
+      // The created row, read back from the served list. The permission mode
+      // is served by the profile's detail panel — the row opens it — and it
+      // says `ask`, because the route has no field to make it anything else.
       await expect(row).toHaveCount(1, { timeout: 30_000 });
-      await expect(row.locator('[data-testid^="agent-permission-"]')).toHaveText(/\bask\b/);
+      const rowId =
+        ((await row.first().getAttribute("data-testid")) ?? "").replace(/^agent-item-/, "");
+      await admin.getByTestId(`agent-row-${rowId}`).click();
+      await expect(admin.getByTestId(`agent-permission-${rowId}`)).toHaveText(/\bask\b/);
       await shot(admin, "m5-inbox-01-ask-profile");
     });
   });
@@ -177,9 +186,9 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
       expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
       await expect(alice.getByTestId("conversation-title")).toHaveText(TITLE);
       // The profile the page says it launched, in the mode the row served.
-      await expect(alice.getByTestId("conversation-meta")).toContainText(
-        `profile: ${PROFILE_NAME}`,
-      );
+      // The new thread meta renders the profile name as its own `·`-separated
+      // field (no `profile:` prefix), so assert the name itself.
+      await expect(alice.getByTestId("conversation-meta")).toContainText(PROFILE_NAME);
       // A real session on a real worker, or there is nothing to wait for.
       await expect(alice.getByTestId("agent-session")).toContainText("agent: claude", {
         timeout: PERMISSION_REQUEST_TIMEOUT_MS,
@@ -258,7 +267,8 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
   test("bob opens it and sees the pending request — one he is not offered to answer", async () => {
     await test.step("the inbox's own Open link, not a hand-built url", async () => {
       await bob.getByTestId(`inbox-open-conversation-${testidOf(conversationId)}`).click();
-      await bob.waitForURL(/\/projects\/[^/]+\/conversations\//, { timeout: 30_000 });
+      // The inbox's Open link goes to the standalone thread page (C1).
+      await bob.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
       await expect(bob.getByTestId("conversation-title")).toHaveText(TITLE);
     });
     await test.step("the pending request is on the conversation page", async () => {

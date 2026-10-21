@@ -8,8 +8,8 @@
 //     pnpm exec playwright test tests/m5-layout.spec.ts --reporter=line
 // The lab's identities come from docs/compatibility/probes/m4/seed.sh: alice is
 // maintainer of `m4-exit` (so she sees the project, its runs list, a run, its
-// conversations), admin is org admin with the library role (so /library, one
-// pipeline page, /agents and /ops render their authoring surfaces rather than
+// conversations), admin is org admin with the library role (so /workflows, one
+// pipeline page, /profiles and /ops render their authoring surfaces rather than
 // their read-only fallbacks — the controls are where overflow lives).
 //
 // WHAT IT CLAIMS, exactly: for each screen the brief names, at 390x844 (phone)
@@ -26,12 +26,12 @@
 // HOW SIGN-IN IS PROVED AT EVERY WIDTH: `GET /api/v1/me` through the page's own
 // request context (which shares the browser's cookie jar) returns 200 with the
 // expected `display_name`/`email`, and the URL is still the path that was asked
-// for rather than an `/auth/…` redirect. The app-bar name (`user-badge`) is NOT
-// that proof at phone width: since e609b00 the bar hides the name below the
-// Tailwind `sm:` breakpoint (`ui/src/components/Shell.tsx` — `hidden …
-// sm:inline`) precisely so it cannot force 390px sideways, so a hidden badge
-// there means "narrow screen", not "signed out". The badge is therefore only
-// asserted at desktop width, where it is designed to be visible.
+// for rather than an `/auth/…` redirect. The sidebar-footer name
+// (`user-badge`) is NOT that proof at phone width: the badge lives in the
+// sidebar footer, and below the `md:` breakpoint the sidebar is the drawer
+// behind the phone top strip's menu button, so a hidden badge there means
+// "narrow screen", not "signed out". The badge is therefore only asserted at
+// desktop width, where the sidebar rail is designed to be visible.
 //
 // ONE TEST PER SCREEN × VIEWPORT, no serial mode and no shared page: a failing
 // screen reports itself and stops nothing, so the run says which screens are
@@ -57,7 +57,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { BASE_URL } from "./env.js";
-import { gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
+import { expectNoLegacyAppBar, gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -79,8 +79,9 @@ const TEST_TIMEOUT_MS = Number(
   process.env.E2E_M5_LAYOUT_TEST_TIMEOUT_MS ?? LOADED_TIMEOUT_MS + 60_000,
 );
 
-/** The Tailwind `sm:` width from which the app bar shows the signed-in name. */
-const BADGE_MIN_WIDTH = 640;
+/** The Tailwind `md:` width from which the sidebar (and its footer's
+ * signed-in name) is rendered as the fixed rail instead of the drawer. */
+const BADGE_MIN_WIDTH = 768;
 
 const VIEWPORTS = [
   { name: "390x844", width: 390, height: 844 },
@@ -94,10 +95,10 @@ type Viewer = "alice" | "admin";
 
 /** Ids discovered from served pages; never seeded into this file. */
 interface Lab {
-  projectPath: string; // /projects/{m4-exit id}
-  runPath: string; // /projects/{id}/runs/{run id}
-  pipelinePath: string; // /library/{pipeline id}
-  conversationPath: string; // /projects/{id}/conversations/{conversation id}
+  projectPath: string; // /p/{m4-exit id}
+  runPath: string; // /runs/{run id}
+  pipelinePath: string; // /workflows/{pipeline id}
+  conversationPath: string; // /threads/{conversation id}
 }
 
 interface Screen {
@@ -128,9 +129,9 @@ const screens: Screen[] = [
     why: "the landing screen",
   },
   {
-    label: "/",
+    label: "/projects",
     viewer: "alice",
-    path: () => "/",
+    path: () => "/projects",
     anchor: "projects-heading",
     why: "the project list",
   },
@@ -156,9 +157,9 @@ const screens: Screen[] = [
     why: "the screen QA found overflowing at 390px (e609b00), now the graph-first Run Workbench",
   },
   {
-    label: "/library",
+    label: "/workflows",
     viewer: "admin",
-    path: () => "/library",
+    path: () => "/workflows",
     anchor: "library-page",
     why: "the org pipeline library",
   },
@@ -170,9 +171,9 @@ const screens: Screen[] = [
     why: "revisions, drafts and the definition graph",
   },
   {
-    label: "/agents",
+    label: "/profiles",
     viewer: "admin",
-    path: () => "/agents",
+    path: () => "/profiles",
     anchor: "agents-page",
     why: "the agent profile table",
   },
@@ -256,7 +257,7 @@ test.describe("M5 layout: no horizontal page scroll on the main screens", () => 
 /**
  * A fresh context, signed in through the mock IdP at desktop size, with the
  * console ledger attached before the first navigation. The caller resizes it;
- * sign-in itself is proved by the API, not by the responsive app bar.
+ * sign-in itself is proved by the API, not by the responsive sidebar.
  */
 async function newSignedInPage(browser: Browser, viewer: Viewer): Promise<Page> {
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
@@ -291,7 +292,7 @@ async function expectSignedIn(page: Page, viewer: Viewer, where: string): Promis
   expect(me.display_name, `${where}: signed in as ${JSON.stringify(me.display_name)}`).toBe(viewer);
   expect(me.email, `${where}: unexpected email claim`).toBe(`${viewer}@example.test`);
   if (viewer === "admin") {
-    // /library, the pipeline page, /agents and /ops are on this list because
+    // /workflows, the pipeline page, /profiles and /ops are on this list because
     // admin's role makes their authoring controls render; that fact is part of
     // the sign-in proof, not an assumption about the page.
     expect(me.is_org_admin, `${where}: admin does not hold the organization admin role`).toBe(true);
@@ -327,10 +328,13 @@ async function checkScreen(
   // was signed in and merely too narrow to show the name.
   await expectSignedIn(page, screen.viewer, where);
   expect(new URL(page.url()).pathname, `${where}: landed somewhere else`).toBe(path);
+  // The old top app bar's `aria-label="Primary"` header/nav is gone — Sidebar
+  // v3 replaced it (regression gate for the app-shell redesign).
+  await expectNoLegacyAppBar(page);
   if (viewport.width >= BADGE_MIN_WIDTH) {
     await expect(
       page.getByTestId("user-badge"),
-      `${where}: the app bar hides the signed-in name at a width that shows it`,
+      `${where}: the sidebar footer hides the signed-in name at a width that shows it`,
     ).toBeVisible({ timeout: 30_000 });
   }
   await expect(page.getByTestId(screen.anchor), `${where}: never rendered`).toBeVisible({
@@ -400,9 +404,9 @@ async function discoverLab(browser: Browser, request: APIRequestContext): Promis
   const alice = await newSignedInPage(browser, "alice");
   const admin = await newSignedInPage(browser, "admin");
   try {
-    // The project, read from the list by slug.
+    // The project, read from the list by slug (route contract C1: `/p/:id`).
     lab.projectPath = await openProjectBySlug(alice, PROJECT_SLUG);
-    expect(lab.projectPath).toMatch(/^\/projects\/[0-9a-f-]{36}$/);
+    expect(lab.projectPath).toMatch(/^\/p\/[0-9a-f-]{36}$/);
 
     // One run, named by the runs list's own row id.
     await gotoApp(alice, `${lab.projectPath}/runs`);
@@ -414,25 +418,31 @@ async function discoverLab(browser: Browser, request: APIRequestContext): Promis
     const testid = await row.getAttribute("data-testid");
     const runId = (testid ?? "").slice("run-row-".length);
     expect(runId).toMatch(/^[0-9a-f-]{36}$/);
-    lab.runPath = `${lab.projectPath}/runs/${runId}`;
+    // Route contract C1: the workbench deep link is the project-less
+    // `/runs/:runId` (the old `/projects/:id/runs/:runId` URL redirects).
+    lab.runPath = `/runs/${runId}`;
 
-    // One pipeline, opened from the library by name.
-    await gotoApp(admin, "/library");
+    // One pipeline, opened from the workflows list by clicking its row —
+    // the new /workflows row (WorkflowRow) exposes the pipeline link to
+    // `/workflows/:id`, not the old `pipeline-name-*` button.
+    await gotoApp(admin, "/workflows");
     await expect(admin.getByTestId("library-page")).toBeVisible({ timeout: 30_000 });
-    const name = admin.locator('[data-testid^="pipeline-name-"]').first();
-    await expect(name, "the lab's library has no pipeline").toBeVisible({
+    const wfRow = admin
+      .getByTestId("workflows-list")
+      .locator('a[href^="/workflows/"]')
+      .first();
+    await expect(wfRow, "the lab's workflows list has no pipeline row").toBeVisible({
       timeout: LOADED_TIMEOUT_MS,
     });
-    await name.click();
-    await admin.waitForURL(/\/library\/[0-9a-f-]{36}/, { timeout: 30_000 });
+    await wfRow.click();
+    await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}/, { timeout: 30_000 });
     lab.pipelinePath = new URL(admin.url()).pathname;
-    expect(lab.pipelinePath).toMatch(/^\/library\/[0-9a-f-]{36}$/);
+    expect(lab.pipelinePath).toMatch(/^\/workflows\/[0-9a-f-]{36}$/);
 
     // One conversation, or the product's own create-with-no-prompt.
     lab.conversationPath = await firstConversationPath(alice, lab.projectPath);
-    expect(lab.conversationPath).toMatch(
-      /^\/projects\/[0-9a-f-]{36}\/conversations\/[0-9a-f-]{36}$/,
-    );
+    // Route contract C1: the standalone thread page is `/threads/:id`.
+    expect(lab.conversationPath).toMatch(/^\/threads\/[0-9a-f-]{36}$/);
   } finally {
     for (const page of [alice, admin]) {
       await page
@@ -561,7 +571,8 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
   ).toBeVisible({ timeout: LOADED_TIMEOUT_MS });
   if ((await rows.count()) > 0) {
     await rows.first().click();
-    await page.waitForURL(/\/conversations\//, { timeout: 30_000 });
+    // The row's anchor is the standalone thread page (route contract C1).
+    await page.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
     return new URL(page.url()).pathname;
   }
   // The create form lives in a dialog; open it before the fields exist.
@@ -570,9 +581,7 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
   await page.getByTestId("conversation-new-title").fill(`m5-layout-${STAMP}`);
   await pickFirstOption(page, "conversation-new-profile");
   await page.getByTestId("conversation-new-submit").click();
-  await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/conversations\/[0-9a-f-]{36}$/, {
-    timeout: 30_000,
-  });
+  await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
   return new URL(page.url()).pathname;
 }
 

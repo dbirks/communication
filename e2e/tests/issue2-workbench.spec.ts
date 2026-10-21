@@ -627,7 +627,7 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await page.getByTestId("new-run-input-fanout_count").fill("14");
     await page.getByTestId("new-run-input-hold_seconds").fill("20");
     await page.getByTestId("new-run-submit").click();
-    await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}/, {
+    await page.waitForURL(/\/runs\/[0-9a-f-]{36}/, {
       timeout: NODE_STEP_TIMEOUT_MS,
     });
     state.runUrl = page.url();
