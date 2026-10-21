@@ -306,3 +306,33 @@ Additive only: new tables, new routes, one extended tool registry; v1 `ask` and
 ADR-0044 proposals behave byte-identically. Rollback: unmount the new routes; the
 00010 tables are inert (nothing else reads them) and stay in place per ADR-0013 — no
 down-migration, no transcript loss at risk because only the new routes write them.
+
+## Amendment 1 (2026-10-21) — per-turn caps for the conversation runner
+
+Accepted. The runner kept reusing the v1 one-shot broker's caps
+(`MaxModelCalls = 4`, `MaxToolCalls = 8` — deliberately constants in
+`docs/design/assistant-v1.md` § Tools, because "the bounded turn is the
+safety property"). On the lab (acceptance journey step f, real model) a
+multi-step draft edit — `palette.search` → `draft.get` → `draft.apply` →
+a retry after a refused proposal → the answer — needs 4–6 model calls and
+refused with "the turn reached the 4 completion cap without an answer".
+
+The v2 conversation runner now keeps its own constants, `MaxRunnerModelCalls
+= 8` and `MaxRunnerToolCalls = 16` (`internal/assistant/assistant.go`), used
+only by `runner.go`. Why v1's 4 is too small: one honest draft-edit turn is a
+chain of four tool rounds plus the answer, and a single refused proposal adds
+a retry — 4 completions cannot finish it. The turn is still bounded (a
+hard cap on completions and on tool results per turn; the refusal names the
+v2 number, and a tool result past the budget is a visible
+`tool_cap_exceeded` row that makes zero store calls, the v1 rule at the v2
+budget). They remain constants, not configuration, with the same rationale
+as v1: widening them is a design change that comes back through this ADR,
+not an operator knob. The v1 `POST /assistant/ask` route is untouched and
+still refuses at 4.
+
+Relies on this ADR's decision 2 (bounded model loop) and the v1 design's
+Tools section; amends only the caps the runner applies — no API,
+persistence, security boundary or recovery change. Verified: `go test -race
+./internal/assistant/...` — a scripted turn needing six completions
+succeeds, the ninth is refused with the v2 message, `/assistant/ask`
+still refuses at 4.

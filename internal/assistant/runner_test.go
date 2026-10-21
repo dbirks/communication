@@ -508,3 +508,109 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// --- v2 runner caps (ADR-0050, Amendment 1) ------------------------------
+
+// A draft edit is a multi-step turn (palette.search -> draft.get ->
+// draft.apply -> a retry after a refused proposal -> the answer), so the
+// conversation runner keeps its own caps: MaxRunnerModelCalls completions
+// and MaxRunnerToolCalls tool results. v1's ask route keeps MaxModelCalls = 4
+// unchanged.
+func TestRunnerCaps(t *testing.T) {
+	t.Run("a turn needing six completions succeeds", func(t *testing.T) {
+		// Five tool rounds (a search chain, as a draft edit would look) plus
+		// the final answer: six completions, past v1's cap of 4.
+		steps := make([]step, 0, 6)
+		for i := 0; i < 5; i++ {
+			steps = append(steps, step{toolCalls: []toolCallRequest{
+				toolCall("palette.search", map[string]any{"needle": "runs"}),
+			}})
+		}
+		steps = append(steps, step{text: "here are the runs waiting on you"})
+		model := newFakeModel(t, steps...)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		res := runOne(t, r, TrustAskRisky)
+		if res.Answer == nil || res.Answer.AnswerMarkdown == "" {
+			t.Fatalf("the turn that fit under the v2 cap got no answer: %+v", res)
+		}
+		if got := model.bodyCount(); got != 6 {
+			t.Fatalf("completions = %d, want 6", got)
+		}
+		for _, c := range res.Answer.ToolCalls {
+			if !c.OK || c.Reason != "" {
+				t.Fatalf("every call should have run, got %+v", c)
+			}
+		}
+	})
+
+	t.Run("the ninth completion is refused with the v2 cap message", func(t *testing.T) {
+		// Eight tool rounds and no answer: the ninth completion is refused
+		// against MaxRunnerModelCalls, naming the v2 number — not v1's 4.
+		steps := make([]step, 0, MaxRunnerModelCalls)
+		for i := 0; i < MaxRunnerModelCalls; i++ {
+			steps = append(steps, step{toolCalls: []toolCallRequest{
+				toolCall("palette.search", map[string]any{"needle": "runs"}),
+			}})
+		}
+		model := newFakeModel(t, steps...)
+		r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+		_, f := r.RunTurn(context.Background(), TurnRequest{
+			Caller: testCaller, Text: "go", TrustLevel: TrustAskRisky,
+		})
+		if f == nil || f.Code != FailCallCap {
+			t.Fatalf("failure = %+v, want %s", f, FailCallCap)
+		}
+		want := "the turn reached the " + fmt.Sprint(MaxRunnerModelCalls) +
+			" completion cap without an answer"
+		if f.Detail != want {
+			t.Fatalf("detail = %q, want %q", f.Detail, want)
+		}
+		if got := model.bodyCount(); got != MaxRunnerModelCalls {
+			t.Fatalf("completions = %d, want the cap %d", got, MaxRunnerModelCalls)
+		}
+		if got := f.Status; got != 503 {
+			t.Fatalf("status = %d, want 503", got)
+		}
+	})
+}
+
+// TestRunnerToolCap refuses the calls past MaxRunnerToolCalls with a
+// visible tool_cap_exceeded row and zero store calls for them (the v1
+// rule, at the v2 budget).
+func TestRunnerToolCap(t *testing.T) {
+	// One response asking for the whole tool budget plus two: the two
+	// extras are refused, not silently dropped.
+	want := MaxRunnerToolCalls + 2
+	calls := make([]toolCallRequest, 0, want)
+	for i := 0; i < want; i++ {
+		calls = append(calls, toolCall("palette.search", map[string]any{"needle": "runs"}))
+	}
+	model := newFakeModel(t,
+		step{toolCalls: calls},
+		step{text: "done"},
+	)
+	r := newMatrixRunner(t, model, newFakeDraftService(), nil)
+	res := runOne(t, r, TrustAskRisky)
+	ok := 0
+	refused := 0
+	if len(res.Answer.ToolCalls) != want {
+		t.Fatalf("tool_calls rows = %d, want %d (refusals included)",
+			len(res.Answer.ToolCalls), want)
+	}
+	for _, c := range res.Answer.ToolCalls {
+		if c.Reason == "tool_cap_exceeded" {
+			refused++
+			if c.Summary == "" {
+				t.Fatalf("cap refusal carries no summary: %+v", c)
+			}
+		} else if c.OK {
+			ok++
+		}
+	}
+	if ok != MaxRunnerToolCalls {
+		t.Fatalf("executed calls = %d, want the cap %d", ok, MaxRunnerToolCalls)
+	}
+	if refused != want-MaxRunnerToolCalls {
+		t.Fatalf("cap refusals = %d, want %d", refused, want-MaxRunnerToolCalls)
+	}
+}

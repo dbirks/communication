@@ -37,6 +37,26 @@ const (
 	DefaultModel = "qwen3-8-27b"
 )
 
+// The v2 conversation runner's (ADR-0050) caps. Same "constants, not
+// configuration" rationale as the v1 ones above: the bounded turn is the
+// safety property, and an operator widening it is changing the design, not
+// tuning it. But the budget is larger, because a conversation turn is not
+// one-shot — a single draft edit is a multi-step turn (palette.search,
+// draft.get, draft.apply, a retry after a refused proposal, then the
+// answer), which v1's 4 completions cannot finish (Amendment 1, docs/adr/
+// ADR-0050-assistant-v2.md). The v1 ask route keeps its smaller caps
+// exactly as designed.
+const (
+	// MaxRunnerModelCalls bounds completions per conversation turn: a full
+	// draft-edit chain with one refused-proposal retry plus the answer.
+	MaxRunnerModelCalls = 8
+	// MaxRunnerToolCalls bounds tool results per conversation turn (twice the
+	// completion budget, as v1's ratio allows one call per completion).
+	MaxRunnerToolCalls = 16
+)
+
+// (continuation of the v1 caps)
+
 // Errors the ask route maps onto problem+json statuses.
 var (
 	// ErrNotConfigured is the honest refusal: with no COMMUNICATION_ASSISTANT_*

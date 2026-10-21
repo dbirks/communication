@@ -318,6 +318,7 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 	trust := NormalizeTrustLevel(req.TrustLevel)
 	messages := r.conversationEnvelope(req)
 	modelRuns := 0
+	toolRuns := 0
 	var (
 		calls    []ToolCall
 		results  []toolOutcome
@@ -327,9 +328,12 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		question *TurnQuestion
 	)
 	for {
-		if modelRuns >= MaxModelCalls {
+		// Amendment 1 (docs/adr/ADR-0050-assistant-v2.md): the conversation
+		// runner keeps its own bounded caps (MaxRunnerModelCalls / MaxRunnerToolCalls);
+		// v1's ask route keeps its smaller MaxModelCalls / MaxToolCalls.
+		if modelRuns >= MaxRunnerModelCalls {
 			return nil, failure(FailCallCap,
-				"the turn reached the "+fmt.Sprint(MaxModelCalls)+" completion cap without an answer", 503)
+				"the turn reached the "+fmt.Sprint(MaxRunnerModelCalls)+" completion cap without an answer", 503)
 		}
 		cr := chatRequest{Model: r.b.cfg.Model, Messages: messages, Tools: r.allToolSpecs(), ToolChoice: "auto"}
 		if err := scanForSecrets(cr); err != nil {
@@ -358,6 +362,17 @@ func (r *ConversationRunner) RunTurn(ctx context.Context, req TurnRequest) (*Tur
 		results = nil
 		stop := false
 		for _, call := range ans.ToolCalls {
+			if toolRuns >= MaxRunnerToolCalls {
+				// The cap is a refusal, not a silent drop: the model is told the
+				// call was not made and makes zero store calls (the v1 rule).
+				name := r.decodeName(claimedName(nil, call))
+				refused := ToolCall{Name: name, OK: false, Reason: "tool_cap_exceeded",
+					Summary: refusedSummary("tool_cap_exceeded")}
+				calls = append(calls, refused)
+				results = append(results, toolOutcome{call: refused})
+				continue
+			}
+			toolRuns++
 			out := r.execOne(ctx, req, trust, call, &links, &changes)
 			// ADR-0050: every tool_calls row carries a short server-supplied
 			// summary. The executors set the detail line when they know it;
