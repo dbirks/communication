@@ -123,7 +123,7 @@ var toolRegistry = func() map[string]tool {
 			return []Link{{Label: "Open pipeline " + short(id), Href: "/workflows/" + id}}
 		})
 
-	add("palette.search", "Search the caller's own navigation index (projects, pipelines, runs, agent profiles) for a name or fragment.",
+	add("palette.search", "Search the app's navigation index — the top-level pages (home, inbox, board, threads, workflows, steps, agent profiles, operations, settings) plus the caller's own projects, pipelines, runs and agent profiles — for a name or fragment.",
 		map[string]any{"needle": stringArg("case-insensitive substring to match")}, []string{"needle"},
 		func(t *turn, args map[string]any) (json.RawMessage, error) {
 			return t.paletteSearch(args["needle"].(string))

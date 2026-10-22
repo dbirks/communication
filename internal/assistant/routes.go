@@ -66,13 +66,39 @@ var allowedRoutes = []*regexp.Regexp{
 // extracted the v1 validation there); this file owns the allowlist it
 // matches against.
 
-// paletteSearch is the palette's own read fan: the caller's projects, pipelines
-// and agent profiles plus each project's runs, matched case-insensitively
-// against the needle. Every row that survives carries a "to" the allowlist
-// already accepted, which is how a search hit becomes a jump button.
+// staticPalettePage is one top-level app-shell page in the palette's own
+// static corpus (the C1 canonical routes). The client-supplied palette index
+// is whatever the UI chose to forward — which today is nothing — and the
+// entity fan only names the caller's rows, so without this table "take me
+// to the board" would find 0 matches for a page that exists. Synonyms live
+// in the secondary line: matching is a case-insensitive substring over the
+// whole row, so every synonym is a needle that hits. Every To must be on the
+// allowlist; add() below re-checks, so a drift cannot leak a dead link.
+var staticPalettePages = []struct {
+	label     string
+	secondary string
+	to        string
+}{
+	{"Home", "page · overview · dashboard", "/"},
+	{"Inbox", "page · approvals · decisions · attention", "/inbox"},
+	{"Board", "page · kanban · runs board", "/board"},
+	{"Threads", "page · one-off conversations · threads", "/threads"},
+	{"Workflows", "page · pipelines · pipeline library", "/workflows"},
+	{"Steps", "page · node templates · saved steps", "/steps"},
+	{"Agent profiles", "page · agents · agent profiles", "/profiles"},
+	{"Operations", "page · ops · workers · replicas", "/ops"},
+	{"Settings", "page · preferences · trust level · layout", "/settings/layout"},
+}
+
+// paletteSearch is the palette's own read fan: the app-shell's own pages, the
+// caller's projects, pipelines and agent profiles plus each project's runs,
+// matched case-insensitively against the needle. Every row that survives
+// carries a "to" the allowlist already accepted, which is how a search hit
+// becomes a jump button.
 func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 	lower := strings.ToLower(needle)
 	var out []map[string]any
+	seenPage := map[string]bool{}
 	add := func(entry map[string]any, to string) {
 		if entry == nil || to == "" {
 			return
@@ -87,10 +113,29 @@ func (t *turn) paletteSearch(needle string) (json.RawMessage, error) {
 		entry["to"] = to
 		out = append(out, entry)
 	}
+	// addPage is add plus one-row-per-(label, route) for the two page passes
+	// (entity rows have no label, so they never go through it).
+	addPage := func(entry map[string]any, to string) {
+		key := strings.ToLower(entry["label"].(string)) + "\x00" + to
+		if seenPage[key] {
+			return
+		}
+		seenPage[key] = true
+		add(entry, to)
+	}
 
-	// The client-supplied index first: it is what the caller is looking at.
+	// The app-shell's own top-level pages first: they exist regardless of
+	// what the caller's workspace contains. The client's own jump list can
+	// name the same page again (an "Inbox" row pointing at /inbox from
+	// both), so the two page passes share one seen map; the entity fan below
+	// keeps its one-row-per-hit shape (every profile links at /profiles).
+	for _, page := range staticPalettePages {
+		addPage(map[string]any{"label": page.label, "secondary": page.secondary}, page.to)
+	}
+
+	// The client-supplied index second: it is what the caller is looking at.
 	for _, e := range t.qc.Palette {
-		add(map[string]any{"label": e.Label, "secondary": e.Secondary}, e.To)
+		addPage(map[string]any{"label": e.Label, "secondary": e.Secondary}, e.To)
 	}
 
 	projects, err := t.b.store.ListProjects(t.ctx, t.caller)

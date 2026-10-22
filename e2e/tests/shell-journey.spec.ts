@@ -85,7 +85,6 @@ const STEP_INSTRUCTION =
 const NEW_NODE_ID = "journey_step";
 /** The assistant's change target (step f), asserted through the draft YAML. */
 const ASSISTANT_STEP_NAME = "journey_check";
-const ASSISTANT_ASK = `Add a human approval step named ${ASSISTANT_STEP_NAME} after plan in feature-development's draft`;
 /** One node step is worker polls plus sleep inputs, not milliseconds. */
 const NODE_STEP_TIMEOUT_MS = Number(process.env.E2E_NODE_STEP_TIMEOUT_MS ?? 420_000);
 /** Two real agent turns (plan, then the new journey step) precede the gate. */
@@ -186,6 +185,91 @@ async function draftsContaining(
   marker: string,
 ): Promise<{ id: string; yaml: string }[]> {
   return (await recentDrafts(request, state.pipeline.id)).filter((d) => d.yaml.includes(marker));
+}
+
+interface DocNode {
+  id: string;
+  dependsOn: string[];
+  block: string;
+}
+
+/** Line-level read of a document YAML: the top-level node list (the one
+ * holding `plan`), each node's dependsOn and its raw block. The server
+ * marshals documents with alphabetized keys and 4-space indents (a node
+ * item starts `- config:` and its `id:` sorts later), so the node list is
+ * found structurally: the first `nodes:` key, then the first sequence dash
+ * below it. Enough to see which successors bind a node's outputs — the
+ * guarded-edge rule. */
+function parseTopLevelNodes(yaml: string): DocNode[] {
+  const lines = yaml.split("\n");
+  const ni = lines.findIndex((l) => /^\s*nodes:\s*$/.test(l));
+  if (ni < 0) return [];
+  let dash = -1;
+  for (let i = ni + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)- /);
+    if (m) {
+      dash = m[1].length;
+      break;
+    }
+  }
+  if (dash < 0) return [];
+  const starts: number[] = [];
+  for (let i = ni + 1; i < lines.length; i++) {
+    if (/^\s*\S/.test(lines[i]) && lines[i].match(/^(\s*)/)![1].length < dash) break;
+    if (lines[i].startsWith(" ".repeat(dash) + "- ")) starts.push(i);
+  }
+  return starts
+    .map((s, k) => {
+      const end = k + 1 < starts.length ? starts[k + 1] : lines.length;
+      const block = lines.slice(s, end).join("\n");
+      const id = block.match(new RegExp(`^ {${dash + 2}}id: ([A-Za-z0-9_.-]+)$`, "m"))?.[1];
+      if (!id) return null;
+      const dependsOn: string[] = [];
+      const flow = block.match(new RegExp(`^ {${dash + 2}}dependsOn:\s*\\[([^\\]]*)\\]`, "m"));
+      if (flow) {
+        flow[1].split(",").forEach((s) => {
+          const v = s.trim().replace(/^['"]|['"]$/g, "");
+          if (v) dependsOn.push(v);
+        });
+      } else {
+        const dl = lines.slice(s, end);
+        const bi = dl.findIndex((l) => l === " ".repeat(dash + 2) + "dependsOn:");
+        for (let i = bi + 1; bi >= 0 && i < dl.length; i++) {
+          const dm = dl[i].match(new RegExp(`^ {${dash + 4}}- ([A-Za-z0-9_.-]+)\s*$`));
+          if (dm) dependsOn.push(dm[1]);
+          else if (dl[i].trim() !== "") break;
+        }
+      }
+      return { id, dependsOn, block } satisfies DocNode;
+    })
+    .filter((n): n is DocNode => n !== null);
+}
+
+/** The step-f anchor: a node with an outgoing edge no successor guards —
+ * the successor's config binds no `nodes.<x>.*` output of the node and the
+ * edge carries no `when` guard naming it. The journey's own journey_step
+ * is preferred when its journey_step→approve edge is open (approve binds
+ * nodes.plan.*, not journey_step's outputs). */
+function unguardedAnchor(nodes: DocNode[]): { anchor: string; successor: string } | null {
+  const edgesOf = (id: string) => nodes.filter((n) => n.dependsOn.includes(id));
+  const openOf = (x: DocNode) =>
+    edgesOf(x.id).filter(
+      (s) => !s.block.includes(`nodes.${x.id}.`) && !/when[^\n]*\b${x.id}\b/.test(s.block),
+    );
+  const pick = (x: DocNode) => {
+    const open = openOf(x);
+    return open.length ? { anchor: x.id, successor: open[0].id } : null;
+  };
+  const journey = nodes.find((n) => n.id === NEW_NODE_ID);
+  if (journey) {
+    const p = pick(journey);
+    if (p) return p;
+  }
+  for (const n of nodes) {
+    const p = pick(n);
+    if (p) return p;
+  }
+  return null;
 }
 
 /** Raw YAML of a revision's document (the Studio's own fetch). */
@@ -740,7 +824,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
 
     // One prompt in the composer; the agent replies.
     const before = await page.getByTestId("transcript-item").count();
-    await page.getByTestId("dock-composer-input").fill("Say hello and stop.");
+    await page
+      .getByTestId("dock-composer-input")
+      .fill("Say hello to acknowledge, then carry on with your original task.");
     await page.getByTestId("dock-composer-send").click();
     await expect
       .poll(async () => page.getByTestId("transcript-item").count(), {
@@ -755,7 +841,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await evidence(
       page,
       `journey-e-prompt-${STAMP}`,
-      `admin is in control of ${node.node_id}: one prompt (“Say hello and stop.”) got a live agent reply in the dock`,
+      `admin is in control of ${node.node_id}: one prompt (“Say hello to acknowledge, then carry on with your original task.”) got a live agent reply in the dock`,
     );
 
     // Hand back: the accepted takeover semantics — a new attempt of the step is
@@ -837,27 +923,91 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     const popover = page.getByTestId("assistant-popover");
     if (!(await popover.isVisible().catch(() => false))) await page.keyboard.press("Control+k");
     await expect(popover).toBeVisible({ timeout: 10_000 });
+
+    // Fresh context: the popover auto-loads the user's LATEST conversation —
+    // the run shared with earlier specs (the lab's 78-message conversation)
+    // confuses the model. The header's New-conversation control clears it
+    // (p7-wire); with an empty conversation the body is also not scrollable,
+    // so the a11y pass that follows stays meaningful.
+    const fresh = page.getByTestId("assistant-new-conversation");
+    if (!(await fresh.isVisible().catch(() => false)))
+      throw new Error(
+        "the popover header has no New-conversation control (assistant-new-conversation) — the lab build predates the p7-wire fix; the reused conversation would poison the ask",
+      );
+    await fresh.click();
     await checkShellScreen(page, "assistant-popover", stopWatching ?? undefined);
 
-    await page.getByTestId("assistant-composer-input").fill(ASSISTANT_ASK);
+    // The marker must not predate the ask (a crashed earlier journey run).
+    const stale = await draftsContaining(page.request, ASSISTANT_STEP_NAME);
+    if (stale.length > 0)
+      throw new Error(
+        `pre-existing lab state: draft(s) ${stale
+          .map((d) => d.id)
+          .join(
+            ", ",
+          )} already contain ${ASSISTANT_STEP_NAME} — the marker would not be this ask's proof`,
+      );
+
+    // Compute the anchor from the NEWEST published document (the draft the
+    // assistant edits is built from it): a node whose outgoing edge no
+    // successor guards — no `nodes.<x>.*` binding in the successor's config,
+    // no `when` guard naming it. (plan→approve is guarded: approve reads
+    // nodes.plan.*)
+    const doc = await revisionDocument(page, state.revisionDigest);
+    const anchor = unguardedAnchor(parseTopLevelNodes(doc));
+    if (!anchor)
+      throw new Error(
+        `no unguarded outgoing edge among the newest revision's nodes: ${
+          parseTopLevelNodes(doc)
+            .map((n) => n.id)
+            .join(", ") || "none parsed"
+        } — cannot pick a safe insert position`,
+      );
+    console.log(`journey f: anchor ${anchor.anchor} → ${anchor.successor} (unguarded)`);
+    const ask = `Add a human approval step named ${ASSISTANT_STEP_NAME} after ${anchor.anchor} in ${PIPELINE_SLUG}'s draft`;
+    await page.getByTestId("assistant-composer-input").fill(ask);
     await page.getByTestId("assistant-send").click();
 
-    // Follow the assistant until the change is REAL — a draft's YAML carries
-    // journey_check (via API). The change chip is NOT the gate: the popover
-    // loads the user's latest conversation, and a previous run's chip would
-    // break the loop before this ask lands (the marker is the proof). The
-    // journey's card contract is followed as demanded: a model-written
-    // option on any question card, confirm on any approval card. (A
-    // question the model asks in plain text — no card — is not a card to
-    // click; the turn ends and the deadline reports it honestly.)
+    // Follow the assistant's cards, bounded to 3 follow-up turns. A question
+    // card is answered by clicking the model-written option that best
+    // matches the ask (preferring the anchor's name) — and the next user
+    // message must carry the option's label VERBATIM as plain text (spec 08
+    // / ADR-0050). An approval card gets Retry: at trust ask_risky a draft
+    // edit should not be approval-gated. The loop breaks only when the change
+    // is REAL — a draft's YAML carries journey_check (via API). The change
+    // chip is asserted afterwards, not as the gate: a previous run's chip
+    // would otherwise look like success.
+    let followUps = 0;
+    let capRetried = false;
     const deadline = Date.now() + AGENT_TURN_TIMEOUT_MS;
     for (;;) {
       const error = page.getByTestId("assistant-error");
-      if (await error.isVisible().catch(() => false))
+      if (await error.isVisible().catch(() => false)) {
+        const errorText = ((await error.textContent()) ?? "(no text)").trim();
+        // Model variance: a turn can end at its completion cap without
+        // landing the change. A user would simply say "continue" — bounded to
+        // ONE such follow-up, and it counts against the same 3-turn budget
+        // (never more than 3 assistant turns total).
+        if (!capRetried && /completion cap/i.test(errorText) && followUps < 3) {
+          capRetried = true;
+          followUps += 1;
+          console.log(
+            `journey f: turn hit the completion cap — one plain follow-up (turn ${followUps}/3)`,
+          );
+          await page
+            .getByTestId("assistant-composer-input")
+            .fill("Please continue and make the change.");
+          await page.getByTestId("assistant-send").click();
+          await expect(page.getByTestId("assistant-error")).toBeHidden({ timeout: 15_000 });
+          continue;
+        }
         throw new Error(
-          `the assistant errored: ${
-            (await error.textContent()) ?? "(no text)"
-          } — is the assistant tool loop (be-as-loop) / popover wiring (p7-wire) live in this lab?`,
+          `the assistant errored: ${errorText} — is the assistant tool loop (be-as-loop) / popover wiring (p7-wire) live in this lab?`,
+        );
+      }
+      if (followUps >= 3)
+        throw new Error(
+          `the assistant still has not landed ${ASSISTANT_STEP_NAME} after 3 follow-up turns`,
         );
       if (
         await page
@@ -865,7 +1015,32 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           .isVisible()
           .catch(() => false)
       ) {
-        await page.getByTestId("assistant-question-option").first().click();
+        const options = page.getByTestId("assistant-question-option");
+        const count = await options.count();
+        if (count === 0) throw new Error("the question card rendered no options to click");
+        const labels = await Promise.all(
+          Array.from({ length: count }, async (_, i) =>
+            ((await options.nth(i).textContent()) ?? "").trim(),
+          ),
+        );
+        const idx = labels.findIndex((l) => l.toLowerCase().includes(anchor.anchor.toLowerCase()));
+        const best = idx >= 0 ? idx : 0;
+        const label = labels[best];
+        const userBefore = await page.getByTestId("assistant-msg-user").count();
+        await options.nth(best).click();
+        // The reply travels as a plain-text user message equal to the label.
+        await expect
+          .poll(
+            async () => {
+              const msgs = page.getByTestId("assistant-msg-user");
+              return (await msgs.count()) === userBefore + 1
+                ? ((await msgs.nth(userBefore).textContent()) ?? "").trim()
+                : "";
+            },
+            { timeout: 15_000 },
+          )
+          .toBe(label);
+        followUps += 1;
         continue;
       }
       if (
@@ -874,7 +1049,8 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           .isVisible()
           .catch(() => false)
       ) {
-        await page.getByTestId("assistant-approval-confirm").click();
+        await page.getByTestId("assistant-approval-confirm").click(); // Retry
+        followUps += 1;
         continue;
       }
       if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;

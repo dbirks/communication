@@ -336,3 +336,22 @@ persistence, security boundary or recovery change. Verified: `go test -race
 ./internal/assistant/...` — a scripted turn needing six completions
 succeeds, the ninth is refused with the v2 message, `/assistant/ask`
 still refuses at 4.
+
+## Amendment 2 (2026-10-21) — raise `MaxRunnerModelCalls` 8 → 12
+
+Accepted. On the lab (acceptance journey's assistant step, real qwen3-8-27b)
+a turn refused twice with "the turn reached the 8 completion cap without an
+answer". This model issues exactly ONE tool call per completion, so a draft
+edit is a chain of completions — `palette.search` → project/pipeline lookup
+→ `draft.get` → `draft.apply` (refused once with a corrective message,
+ae76f2d) → `draft.get` → `draft.apply` → the answer — about 7–8
+completions, leaving no headroom. `MaxRunnerModelCalls` is raised to 12
+(`internal/assistant/assistant.go`); `MaxRunnerToolCalls = 16` is kept, and
+v1's 4/8 caps are untouched. The turn is still bounded: the worst case is 12
+completions, each limited by the per-call timeout, and every refusal is
+visible and names the v2 number. It remains a constant, not configuration —
+widening it further is a design change that comes back through this ADR.
+
+Verified: `go test -race ./internal/assistant/...` — a scripted
+10-completion turn succeeds; the 13th completion is refused with the v2
+message.

@@ -657,6 +657,60 @@ func TestPaletteSearchReadsTheCallersOwnIndex(t *testing.T) {
 	}
 }
 
+// TestPaletteSearchKnowsTheAppShellPages pins the static page corpus (the C1
+// canonical routes): "board" must return /board and "approvals" must return
+// /inbox even when the caller has no projects, pipelines, runs or profiles
+// at all and the client forwarded no palette index. Every synonym the brief
+// names is a needle: matching is a case-insensitive substring over the row.
+func TestPaletteSearchKnowsTheAppShellPages(t *testing.T) {
+	cases := []struct {
+		needle string
+		want   string
+	}{
+		{"board", "/board"},
+		{"kanban", "/board"},
+		{"runs board", "/board"},
+		{"inbox", "/inbox"},
+		{"approvals", "/inbox"},
+		{"decisions", "/inbox"},
+		{"threads", "/threads"},
+		{"conversations", "/threads"},
+		{"workflows", "/workflows"},
+		{"pipelines", "/workflows"},
+		{"steps", "/steps"},
+		{"node templates", "/steps"},
+		{"saved steps", "/steps"},
+		{"profiles", "/profiles"},
+		{"agents", "/profiles"},
+		{"operations", "/ops"},
+		{"ops", "/ops"},
+		{"workers", "/ops"},
+		{"settings", "/settings/layout"},
+		{"preferences", "/settings/layout"},
+		{"trust level", "/settings/layout"},
+		{"home", "/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.needle, func(t *testing.T) {
+			store := newFakeStore()
+			model := newFakeModel(t,
+				step{toolCalls: []toolCallRequest{toolCall("palette.search", map[string]any{"needle": tc.needle})}},
+				step{echo: true})
+			b := newTestBroker(t, model, store)
+			answer, bad := b.Ask(context.Background(), testCaller, "take me to the "+tc.needle, QuestionContext{})
+			if bad != nil {
+				t.Fatalf("Ask failed: %+v", bad)
+			}
+			for _, link := range answer.Links {
+				if link.Href == tc.want {
+					return
+				}
+			}
+			t.Fatalf("palette.search(%q) did not link to %s: links = %+v", tc.needle, tc.want, answer.Links)
+		})
+	}
+}
+
 // TestCapPayloadMarksTheCut: the ≤64 item / ≤2 KB rule must tell the model it
 // cut, or the model answers "there are no others".
 func TestCapPayloadMarksTheCut(t *testing.T) {

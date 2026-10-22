@@ -48,10 +48,13 @@ const (
 // exactly as designed.
 const (
 	// MaxRunnerModelCalls bounds completions per conversation turn: a full
-	// draft-edit chain with one refused-proposal retry plus the answer.
-	MaxRunnerModelCalls = 8
-	// MaxRunnerToolCalls bounds tool results per conversation turn (twice the
-	// completion budget, as v1's ratio allows one call per completion).
+	// draft-edit chain with a project/pipeline lookup, one refused-proposal
+	// retry plus the answer — one-tool-per-completion models (the lab's
+	// qwen3-8-27b) need ~8 of these, so 12 keeps headroom (Amendment 2,
+	// docs/adr/ADR-0050-assistant-v2.md).
+	MaxRunnerModelCalls = 12
+	// MaxRunnerToolCalls bounds tool results per conversation turn; at least
+	// the completion budget, as v1's ratio allows one call per completion.
 	MaxRunnerToolCalls = 16
 )
 

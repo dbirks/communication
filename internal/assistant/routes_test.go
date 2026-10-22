@@ -73,6 +73,36 @@ func joinDiff(what string, items []string) string {
 	return "\t" + what + ": " + strings.Join(items, " ") + "\n"
 }
 
+// TestStaticPalettePagesAreRealRoutes fails the build if the palette's static
+// page corpus (routes.go's staticPalettePages) names a route the UI does not
+// mount: a search hit that jumps nowhere is worse than a 0-match answer.
+func TestStaticPalettePagesAreRealRoutes(t *testing.T) {
+	want := map[string]bool{
+		"/": true, "/inbox": true, "/board": true, "/threads": true,
+		"/workflows": true, "/steps": true, "/profiles": true,
+		"/ops": true, "/settings/layout": true,
+	}
+	have := map[string]bool{}
+	for _, page := range staticPalettePages {
+		have[page.to] = true
+	}
+	b := (*Broker)(nil)
+	for to := range want {
+		if !have[to] {
+			t.Errorf("static palette corpus is missing the %s page", to)
+			continue
+		}
+		if _, ok := b.allowedHref(to); !ok {
+			t.Errorf("static palette page %s is not on the route allowlist", to)
+		}
+	}
+	for to := range have {
+		if !want[to] {
+			t.Errorf("static palette page %s is not a canonical app-shell page", to)
+		}
+	}
+}
+
 // TestApprovalLinkIsARealPage pins the approval.pending link behavior: a gate
 // inside a run points at that run's page, and a gate without a run falls back
 // to the inbox — both pages the UI actually renders.

@@ -517,11 +517,14 @@ func contains(list []string, s string) bool {
 // and MaxRunnerToolCalls tool results. v1's ask route keeps MaxModelCalls = 4
 // unchanged.
 func TestRunnerCaps(t *testing.T) {
-	t.Run("a turn needing six completions succeeds", func(t *testing.T) {
-		// Five tool rounds (a search chain, as a draft edit would look) plus
-		// the final answer: six completions, past v1's cap of 4.
-		steps := make([]step, 0, 6)
-		for i := 0; i < 5; i++ {
+	t.Run("a turn needing ten completions succeeds", func(t *testing.T) {
+		// Nine tool rounds — a draft edit on a one-tool-per-completion model:
+		// palette.search, project/pipeline lookup, draft.get, draft.apply
+		// (refused once with a corrective message), draft.get, draft.apply,
+		// then the answer — plus the final text: ten completions, still under
+		// the v2 cap (Amendment 2) and past v1's cap of 4.
+		steps := make([]step, 0, 10)
+		for i := 0; i < 9; i++ {
 			steps = append(steps, step{toolCalls: []toolCallRequest{
 				toolCall("palette.search", map[string]any{"needle": "runs"}),
 			}})
@@ -533,8 +536,8 @@ func TestRunnerCaps(t *testing.T) {
 		if res.Answer == nil || res.Answer.AnswerMarkdown == "" {
 			t.Fatalf("the turn that fit under the v2 cap got no answer: %+v", res)
 		}
-		if got := model.bodyCount(); got != 6 {
-			t.Fatalf("completions = %d, want 6", got)
+		if got := model.bodyCount(); got != 10 {
+			t.Fatalf("completions = %d, want 10", got)
 		}
 		for _, c := range res.Answer.ToolCalls {
 			if !c.OK || c.Reason != "" {
@@ -543,8 +546,8 @@ func TestRunnerCaps(t *testing.T) {
 		}
 	})
 
-	t.Run("the ninth completion is refused with the v2 cap message", func(t *testing.T) {
-		// Eight tool rounds and no answer: the ninth completion is refused
+	t.Run("the thirteenth completion is refused with the v2 cap message", func(t *testing.T) {
+		// Twelve tool rounds and no answer: the thirteenth completion is refused
 		// against MaxRunnerModelCalls, naming the v2 number — not v1's 4.
 		steps := make([]step, 0, MaxRunnerModelCalls)
 		for i := 0; i < MaxRunnerModelCalls; i++ {
@@ -612,5 +615,60 @@ func TestRunnerToolCap(t *testing.T) {
 	}
 	if refused != want-MaxRunnerToolCalls {
 		t.Fatalf("cap refusals = %d, want %d", refused, want-MaxRunnerToolCalls)
+	}
+}
+
+// TestGatedDraftEditBouncesInvalid: under ask_all, a draft.apply whose op
+// would leave the draft not validating (a human.approval node with no
+// config block — the schema requires one) is NOT carded. The gate runs the
+// same read/validate the confirm path runs and, on refusal, feeds the
+// proposal_invalid result back to the model (which retries within the turn)
+// instead of recording a card the caller can never confirm. Only the model's
+// corrected op is gated. (Dress rehearsal shell-p789 T5: the invalid op was
+// carded and Retry answered the generic "permissions" 409 forever.)
+func TestGatedDraftEditBouncesInvalid(t *testing.T) {
+	invalidApply := toolCall("draft.apply", map[string]any{
+		"draft_id": "d-1", "version": "1", "op": "insert_after",
+		"after": "check", "kind": "human.approval", "id": "trust_check",
+	})
+	validApply := toolCall("draft.apply", map[string]any{
+		"draft_id": "d-1", "version": "1", "op": "insert_after",
+		"after": "check", "kind": "human.approval", "id": "trust_check",
+		"config": `{"summary":"approve the plan"}`,
+	})
+	model := newFakeModel(t,
+		step{toolCalls: []toolCallRequest{invalidApply}},
+		step{toolCalls: []toolCallRequest{validApply}},
+	)
+	draft := newFakeDraftService()
+	r := newMatrixRunner(t, model, draft, nil)
+	res := runOne(t, r, TrustAskAll)
+
+	// The invalid op is refused (proposal_invalid) and fed back to the
+	// model; the model's corrected op is the one gated into the card.
+	if res.Approval == nil || res.Approval.Tool != "draft.apply" {
+		t.Fatalf("the corrected draft edit was not gated: approval = %+v, calls = %+v",
+			res.Approval, res.Answer.ToolCalls)
+	}
+	if _, hasConfig := res.Approval.Args["config"]; !hasConfig {
+		t.Fatalf("the carded op is the uncorrected one (no config): args = %v", res.Approval.Args)
+	}
+	// A gated edit executes nothing.
+	if draft.replaceCalls != 0 || len(res.Changes) != 0 {
+		t.Fatalf("a gated edit executed: %d writes, %d changes", draft.replaceCalls, len(res.Changes))
+	}
+	// The model saw the refusal then the gate (no third call: the gate stops).
+	if model.bodyCount() != 2 {
+		t.Fatalf("the turn made %d model calls, want 2 (refusal then gate)", model.bodyCount())
+	}
+	tcs := res.Answer.ToolCalls
+	if len(tcs) != 2 {
+		t.Fatalf("tool calls = %+v, want refusal + gated", tcs)
+	}
+	if tcs[0].OK || tcs[0].Reason != "proposal_invalid" {
+		t.Fatalf("first call = %+v, want a proposal_invalid refusal", tcs[0])
+	}
+	if tcs[1].OK || tcs[1].Reason != "awaiting_approval" {
+		t.Fatalf("second call = %+v, want awaiting_approval", tcs[1])
 	}
 }

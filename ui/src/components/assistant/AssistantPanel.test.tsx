@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import AssistantPanel, { type AssistantPanelProps } from "./AssistantPanel";
+import AssistantPanel, {
+  type AssistantPanelProps,
+  type RecentConversation,
+} from "./AssistantPanel";
 import type { AssistantMessage } from "./types";
 
 afterEach(() => {
@@ -148,5 +151,107 @@ describe("AssistantPanel (expanded)", () => {
     expect(screen.getByTestId("assistant-thinking").textContent).toBe("thinking…");
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * ui-newconv: the header's `New conversation` control and the Recent menu
+ * (the caller's last 5 conversations by title + age, newest first).
+ */
+describe("AssistantPanel header controls (ui-newconv)", () => {
+  const recent: RecentConversation[] = [
+    { id: "c1", title: "Fix the board", lastMessageAt: "2026-07-07T09:00:00Z" },
+    { id: "c2", title: null, lastMessageAt: null },
+  ];
+
+  it("popover: the compact New control is a ghost button and reports the callback", () => {
+    const onNew = vi.fn();
+    renderPanel({ onNewConversation: onNew });
+    const button = screen.getByTestId("assistant-new-conversation") as HTMLButtonElement;
+    expect(button.className).toContain("ds-btn--ghost");
+    expect(button.title).toBe("New conversation");
+    expect(button.textContent).toBe("＋ New");
+    fireEvent.click(button);
+    expect(onNew).toHaveBeenCalledTimes(1);
+    // No Recent menu without the switch callback.
+    expect(screen.queryByTestId("assistant-history")).toBeNull();
+  });
+
+  it("expanded: the full New conversation wording", () => {
+    const onNew = vi.fn();
+    render(<AssistantPanel variant="expanded" {...panelProps} onNewConversation={onNew} />);
+    const button = screen.getByTestId("assistant-new-conversation");
+    expect(button.textContent).toBe("New conversation");
+    fireEvent.click(button);
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it("Recent lists the conversations by title + age and switches on click", () => {
+    const onSwitch = vi.fn();
+    renderPanel({
+      onSwitchConversation: onSwitch,
+      recentConversations: recent,
+      activeConversationId: "c1",
+    });
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    const items = screen.getAllByTestId("assistant-history-item");
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("✓");
+    expect(items[0].textContent).toContain("Fix the board");
+    expect(items[1].textContent).toContain("Untitled");
+    expect(items[1].textContent).not.toContain("✓");
+    fireEvent.click(items[1]);
+    expect(onSwitch).toHaveBeenCalledTimes(1);
+    expect(onSwitch).toHaveBeenCalledWith("c2");
+  });
+
+  it("Recent caps at 5 rows and shows the honest empty line when there are none", () => {
+    const many: RecentConversation[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `c${i}`,
+      title: `conv ${i}`,
+      lastMessageAt: "2026-07-07T00:00:00Z",
+    }));
+    renderPanel({ onSwitchConversation: () => {}, recentConversations: many });
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    expect(screen.getAllByTestId("assistant-history-item")).toHaveLength(5);
+    cleanup();
+    renderPanel({ onSwitchConversation: () => {}, recentConversations: [] });
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    expect(screen.getByTestId("assistant-history-menu").textContent).toContain(
+      "No conversations yet",
+    );
+  });
+
+  it("esc in the Recent menu closes only the menu, then the panel", () => {
+    const onClose = vi.fn();
+    renderPanel({
+      onClose,
+      onSwitchConversation: () => {},
+      recentConversations: recent,
+      activeConversationId: "c1",
+    });
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    expect(screen.getByTestId("assistant-history-menu")).toBeTruthy();
+    fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "Escape" });
+    expect(screen.queryByTestId("assistant-history-menu")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Recent is keyboard reachable: arrows move, Enter picks", () => {
+    const onSwitch = vi.fn();
+    renderPanel({
+      onSwitchConversation: onSwitch,
+      recentConversations: recent,
+      activeConversationId: "c1",
+    });
+    fireEvent.click(screen.getByTestId("assistant-history"));
+    const items = screen.getAllByTestId("assistant-history-item");
+    items[0].focus();
+    fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items[1]);
+    fireEvent.keyDown(screen.getByTestId("assistant-history-menu"), { key: "Enter" });
+    expect(onSwitch).toHaveBeenCalledWith("c2");
   });
 });

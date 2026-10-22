@@ -145,8 +145,15 @@ export default function AssistantPopover() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
+  /**
+   * ui-newconv: the user pressed New conversation — the newest conversation
+   * must NOT be re-adopted; the next send creates a fresh one and clears
+   * the flag. The change chip resets automatically: it reads the
+   * conversation's changes, and a fresh conversation has none.
+   */
+  const [awaitingNew, setAwaitingNew] = useState(false);
 
-  const conversations = useAssistantConversations(1, open);
+  const conversations = useAssistantConversations(5, open);
   const createConversation = useCreateAssistantConversation();
   const messagesQuery = useAssistantMessages(conversationId);
   const post = usePostAssistantMessage();
@@ -154,8 +161,11 @@ export default function AssistantPopover() {
   const undoChange = useUndoAssistantChange();
   const undoAll = useUndoAllAssistantChanges();
 
-  // The server's transcript is the source of truth; adopted on load and after
-  // a refetch (the post's own rows are already in it by then).
+  // The server's transcript is the source of truth; adopted while there is
+  // nothing on screen for the current conversation (first open, a New
+  // conversation, a Recent-menu switch — the switch handlers clear the
+  // transcript state first). Once rows are on screen, a post appends its own
+  // rows and a later refetch must not clobber them.
   useEffect(() => {
     if (conversationId !== null && messagesQuery.data && messages.length === 0) {
       setMessages(messagesQuery.data);
@@ -176,6 +186,7 @@ export default function AssistantPopover() {
             const created = await createConversation.mutateAsync();
             id = created.id;
             setConversationId(id);
+            setAwaitingNew(false);
           }
           const result = await post.mutateAsync({
             conversationId: id,
@@ -188,6 +199,28 @@ export default function AssistantPopover() {
       })();
     },
     [conversationId, createConversation, post, location.pathname],
+  );
+
+  /** ui-newconv: `New conversation` — clear the panel; the next send
+   * creates the fresh conversation (no transcript, no change chip). */
+  const startNew = useCallback(() => {
+    setConversationId(null);
+    setMessages([]);
+    setSendError(null);
+    setAwaitingNew(true);
+  }, []);
+
+  /** ui-newconv: the Recent menu's switch — adopt that conversation's
+   * transcript (and its change chip) once its rows load. */
+  const switchConversation = useCallback(
+    (id: string) => {
+      if (id === conversationId) return;
+      setMessages([]);
+      setConversationId(id);
+      setSendError(null);
+      setAwaitingNew(false);
+    },
+    [conversationId],
   );
 
   // ⌘K: closed opens the popover; open (either size) hands the chord to the
@@ -217,11 +250,13 @@ export default function AssistantPopover() {
 
   // The conversation survives page changes: the newest one the caller has,
   // adopted while the popover is open; a fresh one is created on first send.
+  // A pending New conversation suppresses the adoption (the user chose to
+  // leave the old history behind — re-adopting it is the bug this fixes).
   useEffect(() => {
-    if (!open || conversationId) return;
+    if (!open || conversationId || awaitingNew) return;
     const latest = conversations.data?.conversations[0];
     if (latest) setConversationId(latest.id);
-  }, [open, conversationId, conversations.data]);
+  }, [open, conversationId, awaitingNew, conversations.data]);
 
   /** `Retry` / `Not now` on a pending approval_request (ADR-0050 Decision 4).
    * The decision post carries ONLY the request id — `{confirm: <id>}` or
@@ -238,6 +273,7 @@ export default function AssistantPopover() {
           const created = await createConversation.mutateAsync();
           id = created.id;
           setConversationId(id);
+          setAwaitingNew(false);
         }
         const result = await post.mutateAsync({
           conversationId: id,
@@ -252,6 +288,13 @@ export default function AssistantPopover() {
 
   const close = useCallback(() => setOpen(false), []);
   const shrink = useCallback(() => setExpanded(false), []);
+
+  /** ui-newconv: the Recent menu's rows, newest first (the API's order). */
+  const recentConversations = (conversations.data?.conversations ?? []).map((c) => ({
+    id: c.id,
+    title: c.title,
+    lastMessageAt: c.last_message_at,
+  }));
 
   if (!open) return null;
 
@@ -282,6 +325,10 @@ export default function AssistantPopover() {
             onConfirmApproval={(messageId) => answerApproval(messageId, true)}
             onDismissApproval={(messageId) => answerApproval(messageId, false)}
             onGo={(route) => navigate(route)}
+            onNewConversation={startNew}
+            recentConversations={recentConversations}
+            activeConversationId={conversationId}
+            onSwitchConversation={switchConversation}
             onShrink={shrink}
             onClose={shrink}
             busy={post.isPending || createConversation.isPending}
@@ -316,6 +363,10 @@ export default function AssistantPopover() {
             onConfirmApproval={(messageId) => answerApproval(messageId, true)}
             onDismissApproval={(messageId) => answerApproval(messageId, false)}
             onGo={(route) => navigate(route)}
+            onNewConversation={startNew}
+            recentConversations={recentConversations}
+            activeConversationId={conversationId}
+            onSwitchConversation={switchConversation}
             onExpand={() => setExpanded(true)}
             onClose={close}
             busy={post.isPending || createConversation.isPending}

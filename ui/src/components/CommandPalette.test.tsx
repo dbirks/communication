@@ -196,9 +196,9 @@ describe("CommandPalette", () => {
       expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-0"),
     );
 
-    // Inbox is first; one step down is Projects at "/projects".
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-1");
+    // Projects is the fifth page (after Home, Inbox, Board and Threads) at "/projects".
+    for (let i = 0; i < 4; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input.getAttribute("aria-activedescendant")).toBe("palette-option-4");
     expect(screen.getByRole("option", { selected: true }).textContent).toContain("Projects");
 
     fireEvent.keyDown(input, { key: "Enter" });

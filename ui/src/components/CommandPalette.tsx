@@ -2,9 +2,9 @@
  * PALETTE-A — the quick-jump half of the app bar's Ask box (the ask half is
  * the assistant popover, `assistant/AssistantPopover.tsx`, since ADR-0050).
  *
- * The jump list lists only surfaces the user can already see — the five
- * sections, projects and their sub-pages, library pipelines, recent runs,
- * agent profiles. The Ask row no longer posts to the v1 broker: it hands the
+ * The jump list lists only surfaces the user can already see — the app-shell
+ * pages (home, inbox, board, threads, settings, plus every section), projects
+ * and their sub-pages, library pipelines, recent runs, agent profiles. The Ask row no longer posts to the v1 broker: it hands the
  * question to the assistant popover (which carries it over and sends it) and
  * gets out of the way. ⌘K belongs to the popover; the palette opens from
  * `openPalette()` — the popover's ⌘K-while-open path and, on the phone,
@@ -37,9 +37,36 @@ export interface PaletteItem {
   to: string;
 }
 
-/** The sections from `App.tsx`'s routes, in the app bar's own order. */
+/** The app-shell pages and sections, in the app bar's own order. */
 const PAGES: PaletteItem[] = [
-  { id: "page-inbox", group: "Pages", label: "Inbox", secondary: "page · attention", to: "/inbox" },
+  {
+    id: "page-home",
+    group: "Pages",
+    label: "Home",
+    secondary: "page · overview",
+    to: routes.home(),
+  },
+  {
+    id: "page-inbox",
+    group: "Pages",
+    label: "Inbox",
+    secondary: "page · approvals · decisions",
+    to: routes.inbox(),
+  },
+  {
+    id: "page-board",
+    group: "Pages",
+    label: "Board",
+    secondary: "page · kanban · runs board",
+    to: routes.board(),
+  },
+  {
+    id: "page-threads",
+    group: "Pages",
+    label: "Threads",
+    secondary: "page · one-off conversations",
+    to: routes.threads(),
+  },
   {
     id: "page-projects",
     group: "Pages",
@@ -55,6 +82,13 @@ const PAGES: PaletteItem[] = [
     to: routes.workflows(),
   },
   {
+    id: "page-steps",
+    group: "Pages",
+    label: "Steps",
+    secondary: "page · node templates",
+    to: routes.steps(),
+  },
+  {
     id: "page-agents",
     group: "Pages",
     label: "Agents",
@@ -66,7 +100,14 @@ const PAGES: PaletteItem[] = [
     group: "Pages",
     label: "Operations",
     secondary: "page · replicas and workers",
-    to: "/ops",
+    to: routes.ops(),
+  },
+  {
+    id: "page-settings",
+    group: "Pages",
+    label: "Settings",
+    secondary: "page · preferences · trust level",
+    to: routes.settings(),
   },
 ];
 

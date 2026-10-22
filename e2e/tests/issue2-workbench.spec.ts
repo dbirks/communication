@@ -801,7 +801,37 @@ test.describe.serial("issue2 workbench (A4 A5 A6 + reload + narrow)", () => {
     await expect(bobDock).toBeVisible({ timeout: NODE_STEP_TIMEOUT_MS });
     const take = bob.getByTestId("dock-take-control");
     await expect(take).toBeEnabled({ timeout: NODE_STEP_TIMEOUT_MS });
+    // Take control is a TWO-STEP handoff (ADR-0043): the first click opens
+    // the confirm card; the takeover only happens when its confirm is clicked.
     await take.click();
+    const takeCard = bob.getByTestId("take-control-card");
+    await expect(takeCard).toBeVisible({ timeout: 15_000 });
+    await expect(bob.getByTestId("take-control-card-heading")).toContainText(state.acpSlug);
+    const takeCopy = (await takeCard.textContent()) ?? "";
+    expect(takeCopy, "the card states what a takeover does").toMatch(/stops and the run pauses/);
+    expect(takeCopy, "the card states what a hand-back does").toMatch(/new attempt/i);
+    // Bounded: the card is transient in-DOM state. A missed click must fail
+    // fast (and re-open the card), not ride the test timeout.
+    for (let round = 0; ; round += 1) {
+      try {
+        await bob.getByTestId("take-control-confirm").click({ timeout: 20_000 });
+        break;
+      } catch (err) {
+        const badge =
+          (await bob
+            .getByTestId("dock-controller")
+            .textContent()
+            .catch(() => "")) ?? "";
+        if (/you are in control/i.test(badge)) break; // the click landed after all
+        if (round >= 1)
+          throw new Error(
+            `the take-control confirm click missed twice (the card closed?) — ${String(err)}`,
+          );
+        await take.click({ timeout: 20_000 });
+        await expect(takeCard).toBeVisible({ timeout: 15_000 });
+        await expect(bob.getByTestId("take-control-card-heading")).toContainText(state.acpSlug);
+      }
+    }
     // The badge is written in words: on bob's own page it reads "You are in
     // control" (the name "Controlled by Bob" is what OTHER pages show).
     await expect(bob.getByTestId("dock-controller")).toContainText(/you are in control/i, {

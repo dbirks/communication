@@ -41,7 +41,6 @@ import {
   openProjectBySlug,
   selectByOptionText,
   shot,
-  shortRefOf,
   signIn,
   testidOf,
 } from "./helpers.js";
@@ -89,6 +88,34 @@ function attemptPane(page: Page, attemptNumber: number): Locator {
  * has none and the served panel is the whole record. */
 function dockAttemptTabs(page: Page): Locator {
   return page.locator('button[role="tab"][data-testid^="dock-attempt-"]');
+}
+
+/**
+ * The pending gate row for `runId`, read from the API instead of the page:
+ * the redesigned inbox card (`ui/src/components/inbox/InboxCard.tsx`) no
+ * longer prints "run <short>", so a card cannot be picked by that text. The
+ * cross-project list (`GET /api/v1/approvals?status=pending`, ADR-0047)
+ * carries a `run_id` on every row, and `approval_requests` admits one pending
+ * row per node execution (ADR-0023 § 9) — exactly one row for the run is
+ * exactly one decision card in the inbox. Polls the API (bounded) so a row
+ * still being written is waited for, not failed.
+ */
+async function pendingGateFor(page: Page, runId: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await page.request.get("/api/v1/approvals", { params: { status: "pending" } });
+    if (res.status() !== 200) {
+      throw new Error(`GET /api/v1/approvals (pending) answered ${res.status()}`);
+    }
+    const body = (await res.json()) as { approvals: { id: string; run_id: string }[] };
+    const mine = body.approvals.filter((a) => a.run_id === runId);
+    if (mine.length === 1) return mine[0].id;
+    if (Date.now() > deadline)
+      throw new Error(
+        `expected exactly one pending gate for run ${runId.slice(0, 8)}…, found ${mine.length}`,
+      );
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  }
 }
 
 /**
@@ -592,12 +619,13 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("the Inbox shows it under NEEDS YOUR DECISION", async () => {
       await gotoApp(alice, "/inbox");
       await expect(alice.getByTestId("inbox-decisions")).toBeVisible({ timeout: 60_000 });
-      const row = alice
-        .getByTestId("inbox-decisions")
-        .locator('[data-testid^="inbox-decision-"]')
-        .filter({ hasText: `run ${shortRefOf(runId)}` });
-      await expect(row).toHaveCount(1);
-      await expect(row).toContainText("approve");
+      // Picked by the gate row's own id (via the API), not by printed text:
+      // the redesigned card no longer shows "run <short>". Exactly one gate
+      // row for this run is exactly one decision card here.
+      const gateId = await pendingGateFor(alice, runId, 60_000);
+      const row = alice.getByTestId(`inbox-decision-${testidOf(gateId)}`);
+      await expect(row).toBeVisible({ timeout: 15_000 });
+      await expect(row).toContainText(/approve/i);
       await shot(alice, "m5-05-inbox-needs-your-decision");
     });
     await test.step("the gate card carries a plan a person can read", async () => {
@@ -910,13 +938,12 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // node execution (ADR-0023 § 9), so the row named now is the row 14e8ff5
       // has to re-arm later — a second row would carry a different id.
       await gotoApp(alice, "/inbox");
-      const openAsk = alice
-        .getByTestId("inbox-decisions")
-        .locator('[data-testid^="inbox-decision-"]')
-        .filter({ hasText: `run ${shortRefOf(gateRunId)}` });
-      await expect(openAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
-      askedRow = (await openAsk.getAttribute("data-testid")) ?? "";
+      const gateId = await pendingGateFor(alice, gateRunId, DECISION_TIMEOUT_MS);
+      askedRow = `inbox-decision-${testidOf(gateId)}`;
       expect(askedRow).toMatch(/^inbox-decision-[0-9a-z]{13}$/);
+      await expect(
+        alice.getByTestId("inbox-decisions").locator(`[data-testid="${askedRow}"]`),
+      ).toBeVisible({ timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-08-scratch-gate-open");
     });
 
@@ -980,10 +1007,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // The run left STALLED and came back to the human as a decision — on the
       // row read before the deadline passed, which is the one-per-node-
       // execution model made visible: the gate was re-asked THROUGH its row.
-      const reAsk = alice
-        .getByTestId("inbox-decisions")
-        .locator(`[data-testid="${askedRow}"]`)
-        .filter({ hasText: `run ${shortRefOf(gateRunId)}` });
+      // (Selected by the row's stable test id: the redesigned card no longer
+      // prints "run <short>", and askedRow is this run's own gate row.)
+      const reAsk = alice.getByTestId("inbox-decisions").locator(`[data-testid="${askedRow}"]`);
       await expect(reAsk).toHaveCount(1, { timeout: DECISION_TIMEOUT_MS });
       await shot(alice, "m5-08-inbox-re-asked");
     });

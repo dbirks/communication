@@ -576,7 +576,7 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 		return r.execNavigate(name, call)
 	case ClassDraftEdit:
 		if trust.Gates(class) {
-			return r.gated(name, call)
+			return r.gatedDraftApply(ctx, req.Caller, name, call)
 		}
 		return r.runDraftApply(ctx, req.Caller, name, call)
 	case ClassRisky:
@@ -811,30 +811,60 @@ func (r *ConversationRunner) runDraftApply(ctx context.Context, c Caller, name s
 		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"}}
 	}
 	summary, change, aerr := r.applyDraft(ctx, c, args)
+	if aerr != nil {
+		return r.draftApplyRefusal(name, args, aerr)
+	}
+	return execOutcome{
+		call:    ToolCall{Name: name, Args: stringArgView(args), OK: true, Summary: bounded(summary, 200)},
+		payload: json.RawMessage(`{"status":"applied"}`),
+		change:  change,
+	}
+}
+
+// draftApplyRefusal maps one failed draft.apply onto the model-facing
+// refusal the loop retries on (not_found / forbidden / proposal_invalid /
+// draft_moved). The refusal travels to the MODEL, not just the record:
+// the payload names what was wrong and the valid alternatives, so the
+// loop can retry within the same turn (bounded by the existing tool cap).
+// A stale version (or any CAS miss) is the draft moving under the edit:
+// reported to the model so it re-reads, never forced. The trust gate's
+// pre-card validation reuses the very same mapping, so a gated edit and
+// an ungated one refuse identically.
+func (r *ConversationRunner) draftApplyRefusal(name string, args map[string]string, aerr error) execOutcome {
 	switch {
-	case aerr == nil:
-		return execOutcome{
-			call:    ToolCall{Name: name, Args: stringArgView(args), OK: true, Summary: bounded(summary, 200)},
-			payload: json.RawMessage(`{"status":"applied"}`),
-			change:  change,
-		}
 	case errors.Is(aerr, ErrDraftGone):
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "not_found"}}
 	case errors.Is(aerr, ErrDraftDenied):
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "forbidden"}}
 	case errors.Is(aerr, ErrDraftInvalid):
-		// The refusal travels to the MODEL, not just the record: the
-		// payload names what was wrong and the valid alternatives, so
-		// the loop can retry within the same turn (bounded by the
-		// existing tool cap).
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "proposal_invalid"},
 			payload: proposalInvalidPayload(aerr)}
 	default:
-		// A stale version (or any CAS miss) is the draft moving under the
-		// edit: reported to the model so it re-reads, never forced.
 		return execOutcome{call: ToolCall{Name: name, Args: stringArgView(args), OK: false, Reason: "draft_moved"},
 			payload: json.RawMessage(`{"error":"draft_moved","detail":"the draft moved since it was read; call draft.get for the current version and retry"}`)}
 	}
+}
+
+// gatedDraftApply is the trust gate for draft.apply (ADR-0050 decision 4's
+// gate mechanics, validated): BEFORE recording the approval card it runs
+// the same read/validate the confirm path runs (planDraftEdit), so a
+// structurally invalid op — one that would leave the draft not validating,
+// like a human.approval node with no config block — is refused back to the
+// model (draftApplyRefusal, no card) instead of becoming a card the caller
+// can never confirm. Only an op that would cleanly apply at the draft's
+// current version is gated. (Dress rehearsal shell-p789 T5: the invalid op
+// was carded unvalidated and Retry answered the generic "permissions" 409
+// forever.)
+func (r *ConversationRunner) gatedDraftApply(ctx context.Context, c Caller, name string, call toolCallRequest) execOutcome {
+	tl, _ := r.localTool(name)
+	args, err := parseToolArgs(tl, call.Function.Arguments)
+	if err != nil {
+		return execOutcome{call: ToolCall{Name: name, OK: false, Reason: "bad_arguments"}}
+	}
+	if _, perr := r.planDraftEdit(ctx, c, args); perr != nil {
+		return r.draftApplyRefusal(name, args, perr)
+	}
+	return r.gated(name, call)
 }
 
 // proposalInvalidPayload is the tool result a refused draft.apply returns
@@ -858,20 +888,38 @@ func proposalInvalidPayload(err error) json.RawMessage {
 	return json.RawMessage(bounded(string(blob), maxDraftGetBytes))
 }
 
-// applyDraft is the shared draft-edit path: the loop's ungated draft.apply
-// and the confirm path's gated draft.apply both run the op here, so a
-// confirmed edit and an unasked one execute identically — ADR-0044's
-// closed op set, the server's canonicalize/validate, the version-checked
-// PUT as the caller, and the closed inverse recorded for undo.
-func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[string]string) (string, *ChangeRecord, error) {
+// plannedDraft is a draft edit that has been read as the caller, checked
+// against the draft's current version, structurally validated, and
+// re-validated after the op was applied to the document — but not yet
+// written. Both the ungated/confirm apply and the trust gate's pre-card
+// validation plan one, so a gated edit and an applied edit validate
+// identically (ADR-0044: the server validates the proposal against the
+// draft before anything acts on it).
+type plannedDraft struct {
+	draftID   string
+	out       []byte
+	version   int
+	summary   string
+	undo      json.RawMessage
+	projectID *string
+}
+
+// planDraftEdit runs ADR-0044's closed op set read-only: the version-checked
+// read as the caller, the server's canonicalize/validate (the validator's
+// own detail kept in the error chain), and the op's application to the
+// document with its full re-validation. It writes nothing — the caller
+// either PUTs the result (applyDraft) or records the approval card for it
+// (gatedDraftApply). An error here is one of ErrDraftGone / ErrDraftDenied /
+// ErrDraftInvalid or a bare "the draft moved" refusal.
+func (r *ConversationRunner) planDraftEdit(ctx context.Context, c Caller, args map[string]string) (*plannedDraft, error) {
 	if r.draft == nil {
-		return "", nil, errors.New("no draft service is wired into this deployment")
+		return nil, errors.New("no draft service is wired into this deployment")
 	}
 	if args == nil {
 		args = map[string]string{}
 	}
 	if args["draft_id"] == "" || args["version"] == "" || args["op"] == "" {
-		return "", nil, errors.New("draft_id, version and op are required")
+		return nil, errors.New("draft_id, version and op are required")
 	}
 	p := Proposal{
 		Op:     args["op"],
@@ -886,27 +934,27 @@ func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[
 	if args["config"] != "" {
 		var cfg map[string]any
 		if err := json.Unmarshal([]byte(args["config"]), &cfg); err != nil {
-			return "", nil, errors.New("config is not a json object")
+			return nil, errors.New("config is not a json object")
 		}
 		p.Config = cfg
 	}
 	version, err := parseDraftVersion(args["version"])
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	doc, err := r.draft.GetDocument(ctx, c, args["draft_id"])
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
-			return "", nil, fmt.Errorf("%w: %v", ErrDraftDenied, err)
+			return nil, fmt.Errorf("%w: %v", ErrDraftDenied, err)
 		}
-		return "", nil, fmt.Errorf("%w: %v", ErrDraftGone, err)
+		return nil, fmt.Errorf("%w: %v", ErrDraftGone, err)
 	}
 	if doc.Version != version {
-		return "", nil, fmt.Errorf("the draft moved since it was read (version %d, expected %d)", doc.Version, version)
+		return nil, fmt.Errorf("the draft moved since it was read (version %d, expected %d)", doc.Version, version)
 	}
 	d, err := LoadDraftDoc(doc.Document)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: the draft document does not load", ErrDraftInvalid)
+		return nil, fmt.Errorf("%w: the draft document does not load", ErrDraftInvalid)
 	}
 	prevPrompt := ""
 	if p.Op == "update_prompt" {
@@ -917,18 +965,11 @@ func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[
 	if vErr := ValidateProposal(d, p); vErr != nil {
 		// %w keeps the *ProposalError in the chain: the tool result and the
 		// confirm path can both name the validator's own detail.
-		return "", nil, fmt.Errorf("%w: %w", ErrDraftInvalid, vErr)
+		return nil, fmt.Errorf("%w: %w", ErrDraftInvalid, vErr)
 	}
 	out, err := applyDraftOp(doc.Document, p)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: %s", ErrDraftInvalid, firstDiagErr(err))
-	}
-	newVersion, err := r.draft.ReplaceDocument(ctx, c, args["draft_id"], out, version)
-	if err != nil {
-		if errors.Is(err, ErrForbidden) {
-			return "", nil, fmt.Errorf("%w: %v", ErrDraftDenied, err)
-		}
-		return "", nil, fmt.Errorf("the draft moved since it was read (version %d)", version)
+		return nil, fmt.Errorf("%w: %s", ErrDraftInvalid, firstDiagErr(err))
 	}
 	summary := p.Summary
 	if summary == "" {
@@ -945,13 +986,38 @@ func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[
 	if proj := doc.ProjectID; proj != "" {
 		projectID = &proj
 	}
-	_ = newVersion
-	return bounded(summary, 300), &ChangeRecord{
+	return &plannedDraft{
+		draftID:   args["draft_id"],
+		out:       out,
+		version:   version,
+		summary:   bounded(summary, 300),
+		undo:      undo,
+		projectID: projectID,
+	}, nil
+}
+
+// applyDraft is the shared draft-edit path: the loop's ungated draft.apply
+// and the confirm path's gated draft.apply both run the op here, so a
+// confirmed edit and an unasked one execute identically — the plan/validate
+// (planDraftEdit) plus the version-checked PUT as the caller, with the
+// closed inverse recorded for undo (decision 5).
+func (r *ConversationRunner) applyDraft(ctx context.Context, c Caller, args map[string]string) (string, *ChangeRecord, error) {
+	pl, err := r.planDraftEdit(ctx, c, args)
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := r.draft.ReplaceDocument(ctx, c, pl.draftID, pl.out, pl.version); err != nil {
+		if errors.Is(err, ErrForbidden) {
+			return "", nil, fmt.Errorf("%w: %v", ErrDraftDenied, err)
+		}
+		return "", nil, fmt.Errorf("the draft moved since it was read (version %d)", pl.version)
+	}
+	return pl.summary, &ChangeRecord{
 		Kind:        "draft_edit",
-		ProjectID:   projectID,
-		TargetRef:   "draft:" + args["draft_id"],
-		Summary:     bounded(summary, 300),
-		UndoPayload: undo,
+		ProjectID:   pl.projectID,
+		TargetRef:   "draft:" + pl.draftID,
+		Summary:     pl.summary,
+		UndoPayload: pl.undo,
 	}, nil
 }
 
