@@ -130,6 +130,10 @@ type ConversationRunner struct {
 	b       *Broker
 	draft   DraftService
 	actions map[string]ActionExecutor
+	// locator is the DraftLocator face the wired DraftService may or
+	// may not carry (NewConversationRunner type-asserts it); nil keeps
+	// workflow.draft out of the announced set, like every absent service.
+	locator DraftLocator
 
 	wireToReg map[string]string
 	toolSpecs []toolSpec
@@ -151,6 +155,12 @@ func NewConversationRunner(d ConversationRunnerDeps) *ConversationRunner {
 		b:       d.Broker,
 		draft:   d.Draft,
 		actions: d.Actions,
+	}
+	// The workflow.draft lookup rides on the wired draft service when it
+	// carries the locator face (the api wiring's draft service does);
+	// without it the tool is not announced, so the model never asks.
+	if loc, ok := d.Draft.(DraftLocator); ok {
+		r.locator = loc
 	}
 	r.wireToReg = map[string]string{}
 	r.registerTools()
@@ -231,6 +241,14 @@ func (r *ConversationRunner) registerTools() {
 			require: []string{"draft_id", "version", "op"},
 		})
 	}
+	if r.locator != nil {
+		reg(runnerTool{
+			name:    "workflow.draft",
+			desc:    "Look up a workflow (pipeline) by its id, slug or display name and report its open draft (draft_id, version, status, updated_at; null when there is none) and its latest published revision (number, version_label). Read-only. Use it to find the draft id before draft.get / draft.apply; when there is no open draft, draft.get or draft.apply with the pipeline id opens one from the latest published revision.",
+			props:   map[string]any{"pipeline": stringProp("the pipeline id, slug or display name")},
+			require: []string{"pipeline"},
+		})
+	}
 	for _, name := range []string{"run.start", "run.retry", "approval.decide", "permission.allow", "pipeline.publish"} {
 		if r.actions[name] == nil {
 			continue // an absent service means the tool is not announced
@@ -267,7 +285,7 @@ Rules you must not break:
 - Never name a project, run, node or person that did not appear in a tool result. An empty or refused tool means you cannot see it: say so plainly.
 - When two or more concrete choices would lead to different actions and you cannot tell which the user means, call ui.question once with 2-4 short options. Do not guess.
 - To open a page, call ui.navigate with an app route; never write a URL yourself.
-- When the user asks for a change the tools can make (draft edit, navigation, start/retry a run, a decision), do it in the same turn: locate the target (palette.search → the workflow's open draft or latest revision), read it (draft.get), apply (draft.apply), and answer with what changed.
+- When the user asks for a change the tools can make (draft edit, navigation, start/retry a run, a decision), do it in the same turn: locate the target (workflow.draft for a named workflow, else palette.search → the workflow's open draft or latest revision), read it (draft.get), apply (draft.apply), and answer with what changed.
 - Only ask a follow-up question (ui.question) when the target or intent is genuinely ambiguous; never answer an edit request with a description of search results.
 - Reply in short markdown (under 1500 characters). Do not write links: the app renders its own jump buttons from the data you saw.
 `
@@ -562,6 +580,9 @@ func (r *ConversationRunner) execOne(ctx context.Context, req TurnRequest, trust
 	case ClassRead:
 		if name == "draft.get" {
 			return r.execDraftGet(ctx, req.Caller, call, name)
+		}
+		if name == "workflow.draft" {
+			return r.execWorkflowDraft(ctx, req.Caller, call, name)
 		}
 		// The v1 read registry: its own arg parsing, store call with the
 		// caller, links and 404 rule — unchanged.

@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dbirks/communication/internal/assistant"
 )
@@ -42,7 +43,8 @@ import (
 
 // assistantDraftStore is the draft face: reads are the caller's own
 // (an invisible draft is ErrPipelineNotFound, never a peek), writes are
-// the CAS PUT.
+// the CAS PUT. ListPipelines is the caller's own pipeline list the
+// workflow.draft lookup resolves a slug or display name against.
 type assistantDraftStore interface {
 	GetDraft(ctx context.Context, c Caller, draftID string) (DraftView, error)
 	ReplaceDraft(ctx context.Context, c Caller, draftID, documentYAML, sourceSHA256 string, expectedVersion int) (DraftView, error)
@@ -50,6 +52,7 @@ type assistantDraftStore interface {
 	ListPipelineRevisions(ctx context.Context, c Caller, pipelineID string) ([]RevisionSummaryView, error)
 	GetRevision(ctx context.Context, c Caller, digestOrID string) (RevisionView, error)
 	CreateDraft(ctx context.Context, c Caller, pipelineID string, in DraftCreateInput) (DraftView, error)
+	ListPipelines(ctx context.Context, c Caller) ([]PipelineSummaryView, error)
 }
 
 // assistantRunActions is the run face: the two lifecycle calls the
@@ -189,6 +192,104 @@ func (s *assistantDraftService) GetDocument(ctx context.Context, c assistant.Cal
 		return assistant.DraftDoc{}, err
 	}
 	return draftDoc(d), nil
+}
+
+// PipelineDraft implements assistant.DraftLocator: the workflow.draft
+// lookup. It resolves the reference against the caller's OWN pipeline
+// list — the exact id first, then the slug, then the display name
+// (case-insensitive), then a fragment of either (the model often holds a
+// fragment, not the full name); a reference the caller cannot see is
+// not in the list, so the not-found sentinel keeps existence hidden —
+// then reads the pipeline's drafts and revisions with the caller's own
+// reads. The open draft is the newest non-published one (a published
+// draft is a revision's audit trail, not an open one), and the latest
+// revision the newest published one, exactly as resolveDraft's create
+// path chooses them.
+func (s *assistantDraftService) PipelineDraft(ctx context.Context, c assistant.Caller, ref string) (assistant.PipelineDraftView, error) {
+	caller := ac(c)
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return assistant.PipelineDraftView{}, ErrPipelineNotFound
+	}
+	pipelines, err := s.store.ListPipelines(ctx, caller)
+	if err != nil {
+		return assistant.PipelineDraftView{}, err
+	}
+	lower := strings.ToLower(ref)
+	var hit *PipelineSummaryView
+	for i := range pipelines {
+		if pipelines[i].ID == ref {
+			hit = &pipelines[i]
+			break
+		}
+	}
+	if hit == nil {
+		for i := range pipelines {
+			if strings.ToLower(pipelines[i].Slug) == lower {
+				hit = &pipelines[i]
+				break
+			}
+		}
+	}
+	if hit == nil {
+		for i := range pipelines {
+			if strings.ToLower(pipelines[i].DisplayName) == lower {
+				hit = &pipelines[i]
+				break
+			}
+		}
+	}
+	if hit == nil {
+		for i := range pipelines {
+			if strings.Contains(strings.ToLower(pipelines[i].Slug), lower) ||
+				strings.Contains(strings.ToLower(pipelines[i].DisplayName), lower) {
+				hit = &pipelines[i]
+				break
+			}
+		}
+	}
+	if hit == nil {
+		return assistant.PipelineDraftView{}, ErrPipelineNotFound
+	}
+	out := assistant.PipelineDraftView{
+		PipelineID:  hit.ID,
+		Slug:        hit.Slug,
+		DisplayName: hit.DisplayName,
+	}
+	drafts, err := s.store.ListPipelineDrafts(ctx, caller, hit.ID)
+	if err != nil {
+		return assistant.PipelineDraftView{}, err
+	}
+	for i := range drafts {
+		d := drafts[i]
+		if d.Status == "published" {
+			continue
+		}
+		if out.Draft == nil || d.UpdatedAt.After(out.Draft.UpdatedAt) {
+			out.Draft = &assistant.OpenDraft{
+				DraftID:   d.ID,
+				Version:   d.Version,
+				Status:    d.Status,
+				UpdatedAt: d.UpdatedAt,
+			}
+		}
+	}
+	revs, err := s.store.ListPipelineRevisions(ctx, caller, hit.ID)
+	if err != nil {
+		return assistant.PipelineDraftView{}, err
+	}
+	for i := range revs {
+		if revs[i].Status != "published" {
+			continue
+		}
+		if out.LatestRev == nil || revs[i].RevisionNumber > out.LatestRev.Number {
+			out.LatestRev = &assistant.PublishedRevision{
+				Number:       revs[i].RevisionNumber,
+				VersionLabel: revs[i].VersionLabel,
+			}
+		}
+	}
+	return out, nil
 }
 
 // ReplaceDocument implements assistant.DraftService: the same

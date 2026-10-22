@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -199,6 +200,18 @@ func (s *wiringPipeStore) CreateDraft(_ context.Context, _ Caller, pipelineID st
 	id := fmt.Sprintf("d-auto-%d", s.created)
 	s.drafts[id] = wiringDraft{id: id, doc: in.DocumentYAML, version: 1}
 	return DraftView{ID: id, DocumentYAML: in.DocumentYAML, Version: 1, Status: "draft"}, nil
+}
+
+// ListPipelines is the caller's own pipeline list the workflow.draft
+// lookup resolves a slug or display name against: one visible pipeline
+// (pl-1); anything else is not in the list, so the not-found sentinel
+// keeps its existence hidden.
+func (s *wiringPipeStore) ListPipelines(_ context.Context, _ Caller) ([]PipelineSummaryView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return []PipelineSummaryView{{
+		ID: "pl-1", Slug: "feature-development", DisplayName: "Feature Development",
+	}}, nil
 }
 
 // currentDoc reports the open draft's bytes and version for the asserts.
@@ -621,4 +634,89 @@ func TestAssistantWiringDraftCreatedFromLatestRevision(t *testing.T) {
 	if _, err := svc.GetDocument(context.Background(), caller, "does-not-exist"); err == nil {
 		t.Fatalf("a nonsense reference resolved, want the not-found sentinel")
 	}
+}
+
+// TestAssistantWiringPipelineDraftLookup: the workflow.draft service face
+// — the "what is the open draft of workflow X?" read. It resolves the
+// reference by id, by slug and by display name (case-insensitive),
+// answers a null draft for a workflow with none open (the tool's hint
+// then names the create-from-latest-revision behaviour), and keeps an
+// invisible pipeline's existence hidden behind the not-found sentinel.
+func TestAssistantWiringPipelineDraftLookup(t *testing.T) {
+	t.Parallel()
+	caller := as.Caller{UserID: "u-1", OrganizationID: "o-1"}
+
+	// locator asserts the DraftLocator face the api's draft service
+	// carries (the runner's type-assertion finds it through the very
+	// same NewAssistantDraftService in production).
+	locator := func(t *testing.T, svc as.DraftService) as.DraftLocator {
+		t.Helper()
+		loc, ok := svc.(as.DraftLocator)
+		if !ok {
+			t.Fatalf("the api's draft service does not carry the DraftLocator face")
+		}
+		return loc
+	}
+
+	t.Run("by_id_slug_and_display_name", func(t *testing.T) {
+		t.Parallel()
+		for _, ref := range []string{"pl-1", "feature-development", "Feature Development", "feature"} {
+			pipe := newWiringPipeStore(true)
+			loc := locator(t, NewAssistantDraftService(pipe))
+			view, err := loc.PipelineDraft(context.Background(), caller, ref)
+			if err != nil {
+				t.Fatalf("ref %q: %v", ref, err)
+			}
+			if view.PipelineID != "pl-1" || view.Slug != "feature-development" || view.DisplayName != "Feature Development" {
+				t.Fatalf("ref %q: view = %+v, want the resolved workflow", ref, view)
+			}
+			if view.Draft == nil || view.Draft.DraftID != "d-1" || view.Draft.Version != 1 {
+				t.Fatalf("ref %q: draft = %+v, want the open draft", ref, view.Draft)
+			}
+			if view.LatestRev == nil || view.LatestRev.Number != 1 {
+				t.Fatalf("ref %q: latest revision = %+v, want the published one", ref, view.LatestRev)
+			}
+		}
+	})
+
+	t.Run("no_open_draft_is_null", func(t *testing.T) {
+		t.Parallel()
+		pipe := newWiringPipeStore(false)
+		loc := locator(t, NewAssistantDraftService(pipe))
+		view, err := loc.PipelineDraft(context.Background(), caller, "pl-1")
+		if err != nil {
+			t.Fatalf("PipelineDraft: %v", err)
+		}
+		if view.Draft != nil {
+			t.Fatalf("draft = %+v, want null (the tool's hint names the create behaviour)", view.Draft)
+		}
+		if view.LatestRev == nil || view.LatestRev.Number != 1 {
+			t.Fatalf("latest revision = %+v, want the published one", view.LatestRev)
+		}
+	})
+
+	t.Run("no_published_revision_is_null", func(t *testing.T) {
+		t.Parallel()
+		pipe := newWiringPipeStore(false)
+		pipe.revision.Status = "deprecated" // nothing published to draft from
+		loc := locator(t, NewAssistantDraftService(pipe))
+		view, err := loc.PipelineDraft(context.Background(), caller, "pl-1")
+		if err != nil {
+			t.Fatalf("PipelineDraft: %v", err)
+		}
+		if view.LatestRev != nil {
+			t.Fatalf("latest revision = %+v, want null", view.LatestRev)
+		}
+	})
+
+	t.Run("another_orgs_pipeline_is_not_found", func(t *testing.T) {
+		t.Parallel()
+		pipe := newWiringPipeStore(true)
+		loc := locator(t, NewAssistantDraftService(pipe))
+		for _, ref := range []string{"pl-2", "other-org-pipeline"} {
+			if _, err := loc.PipelineDraft(context.Background(), caller, ref); !errors.Is(err, ErrPipelineNotFound) {
+				t.Fatalf("ref %q: err = %v, want the not-found sentinel (existence hidden)", ref, err)
+			}
+		}
+	})
 }

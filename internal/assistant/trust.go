@@ -41,8 +41,8 @@ const (
 )
 
 // toolClasses is the closed table of decision 4. The v1 read registry's
-// six names plus draft.get, the navigation tool, the draft-edit tool and
-// the five risky actions.
+// six names plus draft.get and the workflow.draft lookup, the navigation
+// tool, the draft-edit tool and the five risky actions.
 var toolClasses = map[string]ToolClass{
 	"project.list":       ClassRead,
 	"run.list":           ClassRead,
@@ -51,6 +51,7 @@ var toolClasses = map[string]ToolClass{
 	"pipeline.revisions": ClassRead,
 	"palette.search":     ClassRead,
 	"draft.get":          ClassRead,
+	"workflow.draft":     ClassRead,
 	"ui.navigate":        ClassNavigate,
 	"ui.question":        ClassNavigate,
 	"draft.apply":        ClassDraftEdit,
