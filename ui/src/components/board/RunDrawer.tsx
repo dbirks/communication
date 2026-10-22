@@ -32,12 +32,14 @@ import { Input } from "../ds/Field";
 import { RUN_STATE, STATES, stateOf } from "../ds/states";
 import {
   formatAge,
+  runTitle,
+  runTriggerBadge,
   shortId,
   stepGlyph,
   STEP_SEGMENT_CLASS,
-  runTitle,
   type CrossProjectRun,
 } from "./columns";
+import { RunTriggerBadge } from "./TriggerBadge";
 
 export interface RunDrawerProps {
   /** The run `?run=` names. */
@@ -178,6 +180,12 @@ export function RunDrawer({ runId, boardRun, onClose }: RunDrawerProps) {
   if (boardRun?.project_name) meta.push(boardRun.project_name);
   if (age) meta.push(startedIso ? `started ${age}` : `queued ${age}`);
 
+  // The run's trigger badge (ADR-0056 part 1): how this run was started — a
+  // `schedule`, an issue start or a thread hand-off — or none for a manual
+  // run. The detail read wins when it has arrived, the board row stands in.
+  const badgeSource = run.data ?? boardRun;
+  const triggerBadge = badgeSource ? runTriggerBadge(badgeSource) : null;
+
   // “Read the full plan” opens the gate's own detail page (ADR-0052, 4g):
   // the plan artifact is rendered there, beside the model summary and the
   // decider rail. A waiting run with no pending gate is just the run.
@@ -283,6 +291,11 @@ export function RunDrawer({ runId, boardRun, onClose }: RunDrawerProps) {
             {title}
           </h2>
           <p className="mt-0.5 truncate font-mono text-[10.5px] text-faint">{meta.join(" · ")}</p>
+          {triggerBadge ? (
+            <div className="px-3 pb-2" data-testid="run-drawer-trigger">
+              <RunTriggerBadge badge={triggerBadge} />
+            </div>
+          ) : null}
         </div>
 
         {/* The step strip: one cell per top-level step of the pinned

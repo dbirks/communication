@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- ParseRepository ----------------------------------------------------
@@ -220,5 +221,36 @@ func TestListIssuesSkipsPullRequests(t *testing.T) {
 	}
 	if got[0].Number != 1 || got[1].Number != 3 {
 		t.Errorf("numbers = %d, %d, want 1 and 3", got[0].Number, got[1].Number)
+	}
+}
+
+// --- ADR-0056 part 2: issue-trigger poll query parameters -----------------
+
+func TestListIssuesPassesSinceAndSortForTheIssuePoll(t *testing.T) {
+	c, stub := ghiClient(t, 0, nil, `[]`)
+	since := time.Unix(1760000000, 0)
+	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{State: "open", Sort: "updated", Since: since, PerPage: 100}); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if got := stub.gotQuery.Get("sort"); got != "updated" {
+		t.Errorf("sort = %q, want updated", got)
+	}
+	if got := stub.gotQuery.Get("since"); got != "1760000000" {
+		t.Errorf("since = %q, want 1760000000", got)
+	}
+	if got := stub.gotQuery.Get("per_page"); got != "100" {
+		t.Errorf("per_page = %q, want 100", got)
+	}
+}
+
+func TestListIssuesPassesAnyOfLabelsForTheIssuePoll(t *testing.T) {
+	c, stub := ghiClient(t, 0, nil, `[]`)
+	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{State: "open", Labels: []string{"bug", "docs"}, PerPage: 100}); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if got := stub.gotQuery.Get("labels"); got != "bug,docs" {
+		t.Errorf("labels = %q, want bug,docs", got)
 	}
 }

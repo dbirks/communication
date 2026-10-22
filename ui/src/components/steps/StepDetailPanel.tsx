@@ -2,7 +2,7 @@
  * The Steps page's 360px detail panel (design 3b): description, key/value
  * facts from the LATEST revision, USED IN N WORKFLOWS (workflow name → link,
  * the nodes that reference it, the workflow's revision chip and the honest
- * up-to-date flag from `TemplateUsage`), and the two writes —
+ * source / revision state from the usage report), and the two writes —
  * "Edit for all N → version" and "Duplicate as a new step…".
  *
  * Unknown id (the API's 404 sentinel) gets its own copy, not a red error.
@@ -11,9 +11,10 @@ import { Link } from "react-router";
 import { Alert } from "../ds/Alert";
 import { Button } from "../ds/Button";
 import { StatusChip } from "../ds/Row";
-import { FormError } from "../Feedback";
+import { FormError, Spinner } from "../Feedback";
 import { ApiError } from "../../api/client";
-import type { NodeTemplateDetail, TemplateUsage } from "../../api/nodeTemplates";
+import { useNodeTemplateUsage, type Usage } from "../../api/useUsage";
+import type { NodeTemplateDetail } from "../../api/nodeTemplates";
 import { bumpSemver } from "./kindFamily";
 import { routes } from "../../lib/routes";
 
@@ -47,21 +48,35 @@ function facts(latest: NodeTemplateDetail["revisions"][number]) {
   return rows;
 }
 
-function UsageRow({ usage }: { usage: TemplateUsage }) {
+function UsageRow({ usage }: { usage: Usage }) {
+  const href =
+    usage.source === "draft" && usage.draft_id != null
+      ? routes.draft(usage.pipeline_id, usage.draft_id)
+      : routes.workflow(usage.pipeline_id);
   return (
-    <li className="flex min-h-[26px] flex-wrap items-center gap-x-[6px] gap-y-[2px] py-[3px]">
+    <li
+      className="flex min-h-[26px] flex-wrap items-center gap-x-[6px] gap-y-[2px] py-[3px]"
+      data-testid="step-usage-row"
+    >
       <Link
         className="text-[12px] font-medium underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-        to={routes.workflow(usage.pipeline_id)}
+        to={href}
+        data-testid={`step-usage-workflow-${usage.pipeline_id}`}
       >
-        {usage.pipeline_display_name}
+        {usage.pipeline_name}
       </Link>
-      <span className="font-mono text-[10.5px] text-muted">as {usage.node_ids.join(", ")}</span>
-      <span className="font-mono text-[10px] text-muted">r{usage.revision_number}</span>
-      <StatusChip
-        state={usage.up_to_date ? "done" : "info"}
-        label={usage.up_to_date ? "up to date" : "older version"}
-      />
+      <span className="font-mono text-[10.5px] text-muted">
+        {usage.node_label ?? usage.node_id}
+      </span>
+      {usage.source === "draft" ? (
+        <StatusChip
+          state="info"
+          label="draft"
+          labelProps={{ "data-testid": `step-usage-source-${usage.pipeline_id}-${usage.node_id}` }}
+        />
+      ) : (
+        <span className="font-mono text-[10px] text-muted">v{usage.revision_number}</span>
+      )}
     </li>
   );
 }
@@ -81,6 +96,12 @@ export function StepDetailPanel({
   onEdit,
   onDuplicate,
 }: StepDetailPanelProps) {
+  const usageQuery = useNodeTemplateUsage(detail?.template.id ?? "");
+  const usage = usageQuery.data;
+  const workflowCount = usage?.workflow_count ?? 0;
+  const usedInHeading = usage
+    ? `USED IN ${workflowCount} WORKFLOW${workflowCount === 1 ? "" : "S"}`
+    : "USED IN …";
   if (loading) {
     return (
       <p className="text-[12.5px] text-muted" data-testid="step-detail-loading">
@@ -141,20 +162,33 @@ export function StepDetailPanel({
         </dl>
       ) : null}
 
-      <section className="mt-[12px]">
+      <section className="mt-[12px]" data-testid="step-usage">
         <h3 className="font-mono text-[10px] font-bold tracking-[.08em] text-muted">
-          USED IN {usages.length} WORKFLOW{usages.length === 1 ? "" : "S"}
+          {usedInHeading}
         </h3>
-        {usages.length === 0 ? (
+        {usageQuery.isPending ? (
+          <Spinner label="Loading usage" />
+        ) : usageQuery.isError ? (
+          <p className="mt-[4px] text-[11.5px] text-muted" data-testid="step-usage-error">
+            usage unavailable — the workflows that use this step could not be read
+          </p>
+        ) : (usage?.uses.length ?? 0) === 0 ? (
           <p className="mt-[4px] text-[11.5px] text-muted" data-testid="step-detail-unused">
             not used yet — published workflows reference it as {template.slug}
           </p>
         ) : (
-          <ul className="mt-[4px] divide-y divide-line" data-testid="step-detail-usages">
-            {usages.map((usage) => (
-              <UsageRow key={usage.pipeline_id} usage={usage} />
-            ))}
-          </ul>
+          <>
+            <ul className="mt-[4px] divide-y divide-line" data-testid="step-detail-usages">
+              {usage?.uses.map((use) => (
+                <UsageRow key={`${use.pipeline_id}:${use.source}:${use.node_id}`} usage={use} />
+              ))}
+            </ul>
+            {usage?.truncated ? (
+              <p className="mt-[4px] text-[11px] text-faint" data-testid="step-usage-truncated">
+                showing first 200
+              </p>
+            ) : null}
+          </>
         )}
       </section>
 

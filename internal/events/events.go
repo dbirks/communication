@@ -235,6 +235,12 @@ const (
 const (
 	TypeAgentProfileCreated = "agent.profile.created"
 	TypeAgentProfileUpdated = "agent.profile.updated"
+	// TypeAgentProfileAPMLocked is the server-side lock result (ADR-0054): the
+	// worker resolved a package ref into a lock digest and the control plane
+	// recorded it, in the same transaction as the profile write. It is the org-
+	// scoped twin of agent.profile.updated — the profile has no project, so the
+	// journal row carries organization_id alone and project_id stays NULL.
+	TypeAgentProfileAPMLocked = "agent.profile.apm_locked"
 )
 
 // Controller kinds for conversation_control.controller_kind and the transfer
@@ -1005,6 +1011,22 @@ type AgentProfileUpdatedPayload struct {
 	APMTarget     string `json:"apm_target,omitempty"`
 	APMLockDigest string `json:"apm_lock_digest,omitempty"`
 	APMPinCleared bool   `json:"apm_pin_cleared"`
+}
+
+// AgentProfileAPMLockedPayload is agent.profile.apm_locked: the worker's
+// resolve answered for one profile. It carries the identity of the lock (ids,
+// digest, ref, commit) and nothing else — never the lock file body, file paths,
+// prompts or values (ADR-0054's result-payload rule). The names-only contents
+// summary rides on agent_profiles.apm_contents_summary instead, where it is
+// display state; this event is the attribution record.
+type AgentProfileAPMLockedPayload struct {
+	ProfileID     string `json:"profile_id"`
+	APMPackageRef string `json:"apm_package_ref,omitempty"`
+	APMTarget     string `json:"apm_target,omitempty"`
+	APMLockDigest string `json:"apm_lock_digest"`
+	ResolvedRef   string `json:"resolved_ref,omitempty"`
+	Commit        string `json:"commit,omitempty"`
+	APMVersion    string `json:"apm_version,omitempty"`
 }
 
 // -------------------------------------------------------- M3 enum values ---
@@ -1862,4 +1884,29 @@ type ScheduleFiredPayload struct {
 	// replica that was down for a day fires once for the latest slot). 0 is
 	// the on-time answer.
 	LateFireCount int `json:"late_fire_count"`
+}
+
+// ------------------------------------------------------------ M6: issue triggers
+
+// TypeIssueTriggerFired is part 2's trigger audit row (ADR-0056 § 5): one per
+// issue that created a run, appended in the fire transaction that also advanced
+// the issue trigger's cursor. Like schedule.fired it is the honest record of a
+// fire that happened; the refusal paths (assignment disabled at fire time,
+// ceiling full) write nothing and the tick's log line carries the reason.
+const TypeIssueTriggerFired = "issue_trigger.fired"
+
+// IssueTriggerFiredPayload is issue_trigger.fired's shape. Per § 3's rules it
+// is an object carrying project_id plus the ids it correlates on, and nothing
+// else: the trigger's inputs are on the run's run_inputs rows, never copied
+// here (an input can be pointed at a secret), and the fired issue travels as
+// issue_number plus issue_url — the number is the idempotency key's suffix and
+// the url is what an operator clicks to open the issue; the issue BODY never
+// rides the journal (ADR-0021 Security).
+type IssueTriggerFiredPayload struct {
+	ProjectID    string `json:"project_id"`
+	TriggerID    string `json:"trigger_id"`
+	AssignmentID string `json:"assignment_id"`
+	RunID        string `json:"run_id"`
+	IssueNumber  int    `json:"issue_number"`
+	IssueURL     string `json:"issue_url"`
 }

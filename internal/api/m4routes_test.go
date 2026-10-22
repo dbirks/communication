@@ -294,6 +294,12 @@ func (f *m4Runs) ListProjectRuns(_ context.Context, _ Caller, projectID string) 
 	}
 	return f.runs, nil
 }
+func (f *m4Runs) ListProjectRunsFiltered(_ context.Context, _ Caller, projectID string, trigger string) ([]RunSummaryView, error) {
+	if projectID != "p-1" {
+		return nil, ErrProjectNotFound
+	}
+	return f.runs, nil
+}
 func (f *m4Runs) ListRunNodes(_ context.Context, _ Caller, runID string) ([]NodeExecutionView, error) {
 	if f.run.ID == "" || f.run.ID != runID {
 		return nil, ErrRunNotFound

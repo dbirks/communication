@@ -96,6 +96,10 @@ type CnvProfile struct {
 	APMPackageRef string
 	APMTarget     string
 	APMLockDigest string
+	// APMLockContents is the names-only lock summary from apm_contents_summary
+	// (migration 00013), read back as JSON text; nil while the profile has no
+	// resolved lock — the honest "not locked" state, not an empty list.
+	APMLockContents *apmLockContentsJSON
 }
 
 // CnvControl is the one-row-per-conversation controller lock. UserID is "" for
@@ -276,7 +280,7 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 		return nil, err
 	}
 	rows, err := s.Pool.Query(ctx, `
-		SELECT `+cnvProfileColumns+`
+		SELECT `+cnvProfileColumns+`, apm_contents_summary
 		FROM agent_profiles
 		WHERE organization_id = $1::uuid
 		ORDER BY name, id`, c.OrganizationID)
@@ -288,12 +292,21 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 	out := make([]CnvProfile, 0, 2)
 	for rows.Next() {
 		var p CnvProfile
+		var contents *string
 		if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest); err != nil {
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents); err != nil {
 			return nil, fmt.Errorf("postgres: scan agent profile: %w", err)
 		}
 		p.CreatedAt = p.CreatedAt.UTC()
+		p.APMLockContents = nil
+		if contents != nil {
+			var lock apmLockContentsJSON
+			if uerr := json.Unmarshal([]byte(*contents), &lock); uerr != nil {
+				return nil, fmt.Errorf("postgres: decode apm lock contents: %w", uerr)
+			}
+			p.APMLockContents = &lock
+		}
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -2312,7 +2325,9 @@ func cnvAPIRunLink(l *CnvRunLink) *api.ConversationRunLinkView {
 
 // cnvProfileView turns a row into the AgentProfile schema. The three apm columns
 // are NULL-or-value in the database and ""-or-value in the row type, so the
-// nulls are restored here rather than leaking "" as if it were a target.
+// nulls are restored here rather than leaking "" as if it were a target. The
+// lock summary is null while the profile has no resolved lock; a locked one
+// carries the names-only contents (ADR-0054).
 func cnvProfileView(p CnvProfile) api.AgentProfileView {
 	null := func(v string) *string {
 		if v == "" {
@@ -2320,7 +2335,7 @@ func cnvProfileView(p CnvProfile) api.AgentProfileView {
 		}
 		return &v
 	}
-	return api.AgentProfileView{
+	view := api.AgentProfileView{
 		ID:             p.ID,
 		Name:           p.Name,
 		LauncherID:     p.LauncherID,
@@ -2330,6 +2345,16 @@ func cnvProfileView(p CnvProfile) api.AgentProfileView {
 		APMTarget:      null(p.APMTarget),
 		APMLockDigest:  null(p.APMLockDigest),
 	}
+	if p.APMLockContents != nil {
+		contents := &api.AgentProfileContentsView{
+			Skills:       p.APMLockContents.Skills,
+			Instructions: p.APMLockContents.Instructions,
+			MCPServers:   p.APMLockContents.MCPServers,
+			Truncated:    p.APMLockContents.Truncated,
+		}
+		view.APMContents = contents
+	}
+	return view
 }
 
 // cnvProfileAPIErr translates the profile store's errors into the api sentinels
@@ -2383,4 +2408,34 @@ func (a APIConversationStore) PatchAgentProfileAPM(ctx context.Context, c api.Ca
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}
 	return cnvProfileView(profile), nil
+}
+
+// CreateAPMLockRequest implements api.ProfileStore: POST
+// /api/v1/agent-profiles/{profileId}/apm/lock. It queues the resolve — the
+// worker is the only process that can run it (ADR-0054 Option B) — and the
+// caller gets the 202 with the new request's id.
+func (a APIConversationStore) CreateAPMLockRequest(ctx context.Context, c api.Caller, profileID string) (api.APMLockRequestView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.APMLockRequestView{}, err
+	}
+	req, err := s.CreateAPMLockRequest(ctx, prjAPICaller(c), profileID)
+	if err != nil {
+		return api.APMLockRequestView{}, cnvProfileAPIErr(err)
+	}
+	return api.APMLockRequestView{RequestID: req.RequestID, Status: req.Status, Error: req.Error}, nil
+}
+
+// GetAPMLockRequest implements api.ProfileStore: GET
+// /api/v1/agent-profiles/{profileId}/apm/lock — the latest lock request status.
+func (a APIConversationStore) GetAPMLockRequest(ctx context.Context, c api.Caller, profileID string) (api.APMLockRequestView, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.APMLockRequestView{}, err
+	}
+	req, err := s.GetAPMLockRequest(ctx, prjAPICaller(c), profileID)
+	if err != nil {
+		return api.APMLockRequestView{}, cnvProfileAPIErr(err)
+	}
+	return api.APMLockRequestView{RequestID: req.RequestID, Status: req.Status, Error: req.Error}, nil
 }

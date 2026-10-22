@@ -261,6 +261,13 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 		repoSnapshot = source.RepoSnapshot
 		artifactIDs = source.ArtifactIDs
 	}
+	// ADR-0056: a run the caller starts by hand is 'manual'; a run handed from
+	// a thread (ADR-0053) is a 'thread' start — the thread is the trigger
+	// context, and the run keeps source_conversation_id for the reverse read.
+	triggerKind, triggerRef := "manual", ""
+	if in.Source != nil {
+		triggerKind = "thread"
+	}
 	newRun := NewRun{
 		OrganizationID:       c.OrganizationID,
 		ProjectID:            pin.projectID,
@@ -275,6 +282,8 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 		RepoSnapshot:         repoSnapshot,
 		Depth:                0,
 		TriggeredBy:          in.TriggeredBy,
+		TriggerKind:          triggerKind,
+		TriggerRef:           triggerRef,
 		Inputs:               inputs,
 		Key:                  in.Key,
 		RequestSHA:           in.RequestSHA,
@@ -348,17 +357,19 @@ func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool,
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
-			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority)
+			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
+			 trigger_kind, trigger_ref)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
-		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15)
+		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority))
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef))
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
@@ -1298,7 +1309,12 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 		Priority:           req.Priority,
 		Depth:              req.Depth,
 		ParentRunID:        parent.ID,
-		Inputs:             inputs,
+		// ADR-0056: a child run inherits its parent's trigger — a schedule
+		// fire's children and a thread handoff's children both carry the
+		// fact that started them.
+		TriggerKind: parent.TriggerKind,
+		TriggerRef:  parent.TriggerRef,
+		Inputs:      inputs,
 		Event: &RunEvent{
 			Type: events.TypeRunCreated, ActorKind: kind, ActorID: actor,
 			Payload: events.RunCreatedPayload{

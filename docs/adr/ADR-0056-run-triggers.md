@@ -1,0 +1,120 @@
+# ADR-0056 — Run triggers, part 1: how a run was started (manual / schedule / issue / thread)
+
+- **Date:** 2026-10-22
+- **Status:** Accepted (part 1: trigger recording + the run-list filter; the issue-polling fire itself is part 2 and is specified here, not implemented here)
+- **Owners:** control-plane API + scheduler maintainers
+- **Related decisions / contracts:** ADR-0013 (forward-only migrations), ADR-0014 (§3 invisible resource / uniform 404), ADR-0023 (§12 idempotency keys, §5 run shape), ADR-0031 (GitHub issue listing is read-only, not a trigger), ADR-0032 (schedules, cron UTC, `schedule-<id>-<slot>` idempotency key), ADR-0047 (§5 cross-project runs list), ADR-0053 (`RunCreate.source`, `runs.source_conversation_id`), design handoff `docs/design/handoff-app-shell/gaps/home-board.md` §2/§4/§5/§9 (the Board's `from issues` / `scheduled` chips and the drawer card's "from issue #512" meta), `communication-spec/07` (GitHub integration), `communication-spec/12` (test layers)
+
+## Context
+
+The app-shell redesign (artboards 2d/3c, PO handoff) asks every run to say **how it was
+started**: the Board's filter chips **from issues / scheduled**, the drawer card's meta
+**from issue #512**, the Home briefing's running rows. Today the only record is
+`runs.triggered_by` (a nullable user — ADR-0023 §5; NULL for system/child starts) and the
+schedule table's `last_run_id` (ADR-0032 §5) — which names a run but not why it fired, and
+keeps no per-trigger cursor. Nothing distinguishes a manual start, a schedule fire, a thread
+handoff or an issue start, so the chips have no data behind them and the drawer has nothing
+honest to render for "from issue #512".
+
+Schedules already fire today (`internal/store/postgres/schedules.go` `TickSchedules` →
+`fireSchedule`, keyed `schedule-<scheduleId>-<slot>` in `run_idempotency_keys`, ADR-0032 §4);
+the fire writes through the same create path as a manual `POST /runs` (`APIRunStore.createRunPinned`)
+and stamps `triggered_by = NULL` (a system start). What is missing is exactly the
+`trigger_kind`/`trigger_ref` pair that names the trigger.
+
+Issue triggering does not exist yet (ADR-0031 keeps the issues listing read-only and explicitly
+not a trigger; the M6 tables and dedupe the PO deferred are now the `issue_triggers` table of
+this ADR's migration). This ADR therefore fixes the vocabulary and the recording contract
+first; the GitHub poll that turns an `issue_triggers` row into a run is designed here and lands
+as part 2.
+
+## Options considered
+
+| Option | Advantages | Disadvantages | Evidence |
+|---|---|---|---|
+| A: `runs.trigger_kind` + `runs.trigger_ref` columns, backfilled, filterable | one column per fact; the run row is the run's own record (ADR-0023's "the run is the truth") and needs no join to recover the trigger later | a new migration (forward-only, ADR-0013) plus a new table for issue triggers | `00005` runs shape, `00006` schedules, design handoff |
+| B: a `runs.trigger_id` uuid only | one column | loses the kind/ref split (schedule id vs `owner/repo#num`), cannot distinguish a manual start from a thread handoff, cannot answer "from issue #512" | |
+| C: derive the trigger from `triggered_by` + idempotency keys at read time | zero migration | the keys are a write-side dedupe ledger keyed `schedule-<id>-<slot>`, not a trigger ledger; issue triggers have no key yet; deriving is re-implementing the backfill | |
+
+## Decision
+
+1. **`runs` gains `trigger_kind text NOT NULL DEFAULT 'manual' CHECK (trigger_kind IN
+   ('manual','schedule','issue','thread'))` and `trigger_ref text NULL`** in migration
+   `00012_run_triggers.sql`, written in the same create transaction as the run when the trigger
+   is known (the column is NOT NULL so a row can never be trigger-less again — the default is
+   the honest manual answer for every pre-existing writer, which the backfill corrects).
+2. **`trigger_ref`** names the trigger: the schedule id for `schedule`; `owner/repo#<number>`
+   for `issue`; NULL for `manual` and `thread` (a thread start keeps `source_conversation_id`,
+   ADR-0053 — the thread IS the trigger context, and the reverse read is the conversation's
+   `linked_runs`).
+3. **Backfill (migration 00012, forward-only):** `source_conversation_id IS NOT NULL` →
+   `trigger_kind = 'thread'`; runs whose idempotency key row matches `schedule-%` →
+   `trigger_kind = 'schedule'` with `trigger_ref` = the schedule id parsed from the key
+   (`schedule-<uuid>-<slot>`; the uuid is the second `split_part` field, the slot being
+   compact-RFC3339 UTC per ADR-0032 §4). Everything else — manual starts, thread starts whose
+   conversation row is gone — is `manual`/`thread` via the default and stays as written.
+4. **`issue_triggers` table** (migration 00012): one row per (project, assignment, repository)
+   issue-trigger intent — `event` (`opened`|`labeled`), `labels text[] NOT NULL DEFAULT '{}'`
+   (any-of, case-insensitive; empty = every issue), `inputs jsonb NOT NULL DEFAULT '{}'`
+   (template values; strings may carry `{{issue.number}} {{issue.title}} {{issue.body}}
+   {{issue.url}} {{issue.labels}}`), `enabled`, `cursor_at`/`last_polled_at`/`last_error`,
+   `version` (config-edit counter, a fire never bumps it, ADR-0032 §3), plus the two composite
+   FKs to `assignments (id, project_id)` and `repositories (id, project_id)` (the latter
+   needing the `repositories (id, project_id)` UNIQUE the migration adds, exactly as 00006 added
+   the assignments one). Supporting index on `enabled` for the poll pass.
+5. **Firing rule (decided here, implemented in part 2):** one serve-side tick polls GitHub's
+   public issues list (`GET /projects/{p}/repos/{r}/issues`-shaped, `since=cursor_at`,
+   `state=open`, `sort=updated`, anonymous unless a later ADR adds a token — ADR-0031's client),
+   one run per (trigger, issue number) via idempotency key `issue-<trigger id>-<number>`; `labeled`
+   fires when the issue now carries any of the trigger's labels, `opened` for issues created
+   after the trigger was created (never backfills old issues); event `issue_trigger.fired`;
+   rate-limit → `last_error`, no crash; poll interval 60 s, ≤ 100 triggers per pass, FOR UPDATE
+   SKIP LOCKED like `TickSchedules`.
+6. **API:** `GET/POST /api/v1/projects/{projectId}/issue-triggers`,
+   `PATCH /api/v1/issue-triggers/{id}` — same roles/404/audit rules as the schedules routes
+   (`schedule.list/create/update` on the assignment's project, viewer+ to read, maintainer+
+   to write). **Part 1 adds only the run-side surface**: the run lists accept
+   `?trigger=manual|schedule|issue|thread` (unknown → 400 `invalid_trigger`), and the run JSON
+   carries `trigger: {kind, ref}`.
+
+## Consequences
+
+- The run row now records how it started, in the same transaction that writes it (a mutation
+  writes state + its journal event in one transaction, ADR-0023 §12), so no second ledger can
+  disagree with the run.
+- Manual starts (`POST /projects/{projectId}/runs`, the handler stamps `manual` — or `thread`
+  when the request carried `source`, ADR-0053) and schedule fires (`fireSchedule` stamps
+  `schedule` + the schedule id; the child runs the engine starts through `pipeline.invoke`
+  inherit the parent's trigger) all record honestly; retry re-opens the same row, so it keeps
+  the original trigger.
+- The Board's `from issues` / `scheduled` chips and the drawer's `from issue #512` meta have
+  their backend data (`trigger` on the run summaries the Board reads); the UI wiring is the
+  app-shell redesign's own brief and is out of this task's scope.
+- New public API + a new persisted state ⇒ this ADR is required by the house rules; the
+  migration is forward-only (ADR-0013).
+
+## Security/privacy
+
+No trust-boundary change. A run the control plane starts from a GitHub issue is still a
+system start (`triggered_by` NULL, the pinned revision and the validated inputs — no caller
+elevation); the trigger row is per-project/per-assignment/per-repository and the poll reads
+GitHub's *public* issue list anonymously (ADR-0031), so no credentials or scopes enter the
+control plane for the read half.
+
+## Verification
+
+- `go test -race ./internal/store/postgres/... -count=1` — migration 00012 applies on a database
+  with existing runs and backfills `thread` (source conversation) and `schedule`
+  (idempotency-key-led) rows; each create path writes its kind (manual / schedule / thread);
+  the run-list filters return only matching runs and never another org's.
+- `go test -race ./internal/api/... -count=1` — the `?trigger=` validation (unknown → 400
+  `invalid_trigger`, bad values never reach SQL) and the run JSON shape.
+- OpenAPI: `npx @redocly/cli@2.63.0 lint api/openapi.yaml` clean; `pnpm --dir ui gen:api` (the
+  generated client picks the new `trigger` member and the new query param up).
+
+## Migration/rollback
+
+`00012_run_triggers.sql` (additive: two columns on `runs` + one index, the `issue_triggers`
+table + its indexes, and the supporting `repositories (id, project_id)` UNIQUE). `migrate down`
+rolls the table back; the columns go with the table in the same file, forward-only per ADR-0013.
+Part 2 wires the poll and the issue-trigger routes.

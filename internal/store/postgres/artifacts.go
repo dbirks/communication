@@ -90,7 +90,9 @@ const artSelectScope = `
 	       AND ($3::boolean OR m.user_id IS NOT NULL))`
 
 // ListArtifacts returns the project's `ready` artifacts the caller's role may
-// see, newest first (api/openapi.yaml listProjectArtifacts).
+// see, newest first (api/openapi.yaml listProjectArtifacts). An empty
+// conversationID answers the project-wide list; a set one answers the
+// artifacts of that one conversation (see the thread filter below).
 //
 // The sensitivity table (ADR-0020 D3) is applied **here**, in SQL:
 //
@@ -101,7 +103,16 @@ const artSelectScope = `
 // label exists so the policy has a place to grow, and listing it would be the
 // leak the label is meant to prevent. Filtering after the query would make the
 // answer depend on which handler remembered to call which helper.
-func (s *ArtifactStore) ListArtifacts(ctx context.Context, c Caller, projectID string) ([]Artifact, error) {
+//
+// The optional conversationID is the thread filter the thread-rail redesign
+// asks for (docs/design/handoff-app-shell/gaps/threads.md, W3): it names the
+// conversation whose artifacts are wanted — the rows its own turns captured
+// plus the rows its started runs captured (`runs.source_conversation_id`,
+// ADR-0053) — and it resolves first, so a conversation the caller may not see
+// is the same invisible answer as a project they may not see: not-found, never
+// an empty list that would confirm the project exists (`12-test-strategy`
+// case 15).
+func (s *ArtifactStore) ListArtifacts(ctx context.Context, c Caller, projectID string, conversationID string) ([]Artifact, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return nil, err
 	}
@@ -114,7 +125,30 @@ func (s *ArtifactStore) ListArtifacts(ctx context.Context, c Caller, projectID s
 	if _, err := prjGetProject(ctx, s.Pool, c, projectID); err != nil {
 		return nil, err
 	}
-	rows, err := s.Pool.Query(ctx, `
+	// The thread filter must resolve through the same project-scoped predicate
+	// as the list itself. A conversation that is unknown, in another project, or
+	// invisible to the caller answers not-found here (the handler maps it to the
+	// not-found sentinel and audits the denial); a conversation that resolved is
+	// a real answer, even when it turns out to hold no artifacts yet.
+	if conversationID != "" {
+		if !prjValidUUID(conversationID) {
+			return nil, ErrArtifactNotFound
+		}
+		convProject, _, _, err := cnvResolveProject(ctx, s.Pool, c, conversationID)
+		if err != nil {
+			return nil, ErrArtifactNotFound
+		}
+		// The thread must be *this* project's thread: a conversation that exists
+		// but belongs to another project is not this list's subject, and the
+		// not-found answer covers that too.
+		if convProject != projectID {
+			return nil, ErrArtifactNotFound
+		}
+	}
+	var rows pgx.Rows
+	var err error
+	if conversationID == "" {
+		rows, err = s.Pool.Query(ctx, `
 		`+artArtifactColumns+artRoleWithCaller+`
 		  AND a.project_id = $4::uuid
 		  AND a.state = 'ready'
@@ -123,7 +157,24 @@ func (s *ArtifactStore) ListArtifacts(ctx context.Context, c Caller, projectID s
 		       OR $3::boolean OR m.role = 'maintainer')
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT $5`,
-		c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID, artListLimit)
+			c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID, artListLimit)
+	} else {
+		rows, err = s.Pool.Query(ctx, `
+		`+artArtifactColumns+artRoleWithCaller+`
+		  AND a.project_id = $4::uuid
+		  AND a.state = 'ready'
+		  AND a.sensitivity <> 'secret'
+		  AND (a.sensitivity <> 'restricted'
+		       OR $3::boolean OR m.role = 'maintainer')
+		  AND (a.conversation_id = $5::uuid
+		       OR a.run_id IN (
+		           SELECT r.id FROM runs r
+		           WHERE r.source_conversation_id = $5::uuid
+		       ))
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT $6`,
+			c.UserID, c.OrganizationID, c.IsOrgAdmin, projectID, conversationID, artListLimit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list artifacts: %w", err)
 	}

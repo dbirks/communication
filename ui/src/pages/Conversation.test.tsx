@@ -44,6 +44,11 @@ function routes(conversation: Conversation, extra: RouteStub[] = []): RouteStub[
     { path: projectPath, method: "GET", body: projectFixture },
     { path: "/api/v1/users", method: "GET", body: { items: [] } },
     { path: conversationPath, method: "GET", body: conversation },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/artifacts`,
+      method: "GET",
+      body: { artifacts: [] },
+    },
   ];
 }
 
@@ -627,10 +632,14 @@ describe("the thread page is a transcript column with a context rail", () => {
     expect(meta.textContent).toContain(projectFixture.name);
     expect(meta.textContent).toContain(claudeProfile.name);
     expect(screen.getByTestId("thread-age").textContent).toMatch(/\d+[smhd]/);
-    // 4f: ARTIFACTS says not available yet; NEXT offers the handoff (now live)
-    // and, for the controller, the draft-PR ask. The thread has no runs yet,
-    // so the linked-runs list stays hidden.
-    expect(within(rail).getByTestId("artifacts-rail").textContent).toContain("Not available yet");
+    // 4f: ARTIFACTS lists this thread's own artifacts through the filtered
+    // project list; the fixture thread has none, so the honest empty copy
+    // shows. NEXT offers the handoff (now live) and, for the controller, the
+    // draft-PR ask. The thread has no runs yet, so the linked-runs list stays
+    // hidden.
+    expect(within(rail).getByTestId("artifacts-rail").textContent).toContain(
+      "No artifacts from this thread yet",
+    );
     const handoff = within(rail).getByTestId("hand-to-workflow");
     expect((handoff as HTMLButtonElement).disabled).toBe(false);
     expect(within(rail).queryByTestId("thread-linked-runs")).toBeNull();

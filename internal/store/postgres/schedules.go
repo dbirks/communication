@@ -679,9 +679,13 @@ func (s *ScheduleStore) fireSchedule(ctx context.Context, id string, now time.Ti
 		PoliciesSnapshot:   m4PoliciesSnapshot(pin.plan, pin.budgetOver),
 		Depth:              0,
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
-		Inputs:             inputs,
-		Key:                key,
-		RequestSHA:         scheduleRequestSHA(key, pin.revisionID, values),
+		// ADR-0056: the fire is a 'schedule' start and names the trigger it
+		// came from; a retried slot replays the same row, keeping this trigger.
+		TriggerKind: "schedule",
+		TriggerRef:  sc.ID,
+		Inputs:      inputs,
+		Key:         key,
+		RequestSHA:  scheduleRequestSHA(key, pin.revisionID, values),
 		Event: &RunEvent{
 			Type: events.TypeRunCreated, ActorKind: events.ActorKindSystem, ActorID: "system",
 			Payload: events.RunCreatedPayload{

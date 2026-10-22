@@ -19,11 +19,13 @@ import {
   formatAge,
   progressAriaLabel,
   runTitle,
+  runTriggerBadge,
   shortId,
   STEP_SEGMENT_CLASS,
   stepGlyph,
   type CrossProjectRun,
 } from "./columns";
+import { RunTriggerBadge } from "./TriggerBadge";
 import { routes } from "../../lib/routes";
 
 export interface RunCardProps {
@@ -40,6 +42,7 @@ export function RunCard({ run, onOpenRun, now = new Date() }: RunCardProps) {
   const needsYou = column === "needs-you";
   const failed = column === "failed";
   const title = runTitle(run);
+  const triggerBadge = runTriggerBadge(run);
 
   return (
     <article
@@ -106,6 +109,12 @@ export function RunCard({ run, onOpenRun, now = new Date() }: RunCardProps) {
           ) : null}
         </span>
       </button>
+
+      {triggerBadge ? (
+        <div className="px-3 pb-2 pt-1">
+          <RunTriggerBadge badge={triggerBadge} testId={`board-trigger-badge-${run.id}`} />
+        </div>
+      ) : null}
 
       {needsYou ? (
         <div

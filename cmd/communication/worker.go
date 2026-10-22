@@ -596,6 +596,18 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		log.Error("invalid attempt loop configuration", slog.String("error", err.Error()))
 		return 2
 	}
+	// ADR-0054 amendment 1 (server-side APM lock): the lock-request queue's
+	// worker half. The control plane inserts queued apm_lock_requests rows; this
+	// loop claims one, resolves it in a fresh scratch dir via the packaged-context
+	// seam, and reports back — the control plane writes the digest + contents
+	// summary and journals agent.profile.apm_locked on the reported result.
+	apmLockStager := apmStager(log)
+	apmLockLoop, apmLockErr := worker.NewAPMLockLoop(&postgres.TurnStore{Pool: pool}, apmLockStager, w.ID, worker.WithAPMLockLogger(log))
+	if apmLockErr != nil {
+		stop()
+		log.Error("invalid apm lock loop configuration", slog.String("error", apmLockErr.Error()))
+		return 2
+	}
 	registry := &postgres.WorkerRegistry{Pool: pool, Capacity: opts.attemptCapacity}
 	w.Registered = func(ctx context.Context, workerID string) {
 		// Registration-time writes, in this order and before any claim:
@@ -642,9 +654,16 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		if err := loop.Start(ctx); err != nil {
 			log.Warn("turn loop stopped", slog.String("error", err.Error()))
 		}
+		if apmLockStager != nil {
+			go func() {
+				if err := apmLockLoop.Start(ctx); err != nil {
+					log.Warn("apm lock loop stopped", slog.String("error", err.Error()))
+				}
+			}()
+		}
 	}
 	w.Drain = func(ctx context.Context) error {
-		return errors.Join(loop.Drain(ctx), attemptLoop.Drain(ctx))
+		return errors.Join(loop.Drain(ctx), attemptLoop.Drain(ctx), apmLockLoop.Drain(ctx))
 	}
 
 	log.Info("worker starting",

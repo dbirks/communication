@@ -41,6 +41,12 @@ type procExecFixture struct {
 	layout wsgit.Layout
 	proc   *ProcExec
 	sink   *recordingSink
+	// launcher is the REAL launcher behind the Sandbox seam, wired only by the
+	// real-sandbox tests (procexec_nono_test.go). It exists so the real-nono
+	// secrets tests can read back the audit surface the launch produced
+	// (FindSessionByMarker / audit list / audit show) — the ADR-0040 argv and
+	// journal guards that need the real backend, not the recording fake.
+	launcher *nono.Launcher
 }
 
 // procExecScratch mirrors the lab scratch rule from the unit tests: real

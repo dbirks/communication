@@ -169,9 +169,10 @@ describe("/profiles", () => {
     expect(screen.getByTestId("agents-disclaimer").textContent).toContain(
       "APM staging is not isolation",
     );
-    // Used-by claims nothing it cannot measure.
+    // Used-by: no usage report was mounted for this profile, so the read
+    // errored — never a "0", never a claim the backend cannot support.
     expect(screen.getByTestId("profiles-usage-unavailable").textContent).toBe(
-      "usage tracking not available yet",
+      "usage unavailable — the workflows that use this profile could not be read",
     );
     // Clicking the codex row navigates to /profiles/:id and selects it.
     fireEvent.click(codexRow);
@@ -179,6 +180,129 @@ describe("/profiles", () => {
     expect(within(codexDetail).getByTestId(`agent-apm-none-${codexProfile.id}`).textContent).toBe(
       "no skill package",
     );
+  });
+
+  it("lists the workflows that use a profile, with their revision facts", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
+        method: "GET",
+        body: {
+          workflow_count: 1,
+          step_count: 1,
+          uses: [
+            {
+              pipeline_id: "01987b20-0000-7000-8000-abcdef012345",
+              pipeline_name: "Widget review",
+              source: "revision",
+              revision_number: 3,
+              draft_id: null,
+              node_id: "implement",
+              node_label: "Claude Code",
+            },
+          ],
+          truncated: false,
+        },
+      },
+    ]);
+    const usage = await screen.findByTestId("profile-usage");
+    expect(usage.textContent).toContain("Used by 1 workflows · 1 steps");
+    const row = await screen.findByTestId("profile-usage-row");
+    expect(row.textContent).toContain("Widget review");
+    expect(row.textContent).toContain("v3");
+    const workflowLink = screen.getByTestId(
+      "profile-usage-workflow-01987b20-0000-7000-8000-abcdef012345",
+    );
+    expect(workflowLink.getAttribute("href")).toBe(
+      "/workflows/01987b20-0000-7000-8000-abcdef012345",
+    );
+  });
+
+  it("links a draft use to the draft route and marks the row draft", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
+        method: "GET",
+        body: {
+          workflow_count: 1,
+          step_count: 1,
+          uses: [
+            {
+              pipeline_id: "01987b20-0000-7000-8000-abcdef012345",
+              pipeline_name: "Widget review",
+              source: "draft",
+              revision_number: null,
+              draft_id: "01987b30-0000-7000-8000-abcdef012345",
+              node_id: "implement",
+              node_label: "Claude Code",
+            },
+          ],
+          truncated: false,
+        },
+      },
+    ]);
+    const row = await screen.findByTestId("profile-usage-row");
+    expect(row.textContent).toContain("draft");
+    expect(row.textContent).not.toContain("v3");
+    const workflowLink = screen.getByTestId(
+      "profile-usage-workflow-01987b20-0000-7000-8000-abcdef012345",
+    ) as HTMLAnchorElement;
+    expect(workflowLink.getAttribute("href")).toBe(
+      "/workflows/01987b20-0000-7000-8000-abcdef012345/drafts/01987b30-0000-7000-8000-abcdef012345",
+    );
+  });
+
+  it("says not used by any workflow yet when the report has no uses", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
+        method: "GET",
+        body: { workflow_count: 0, step_count: 0, uses: [], truncated: false },
+      },
+    ]);
+    const usage = await screen.findByTestId("profile-usage");
+    expect(usage.textContent).toContain("Not used by any workflow yet");
+  });
+
+  it("renders the muted usage-unavailable copy when the report cannot be read", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
+        method: "GET",
+        status: 500,
+        body: { title: "Internal Server Error", status: 500, detail: "usage store down" },
+      },
+    ]);
+    expect(await screen.findByTestId("profiles-usage-unavailable")).toBeTruthy();
+    expect(screen.getByTestId("profiles-usage-unavailable").textContent).toContain(
+      "usage unavailable",
+    );
+  });
+
+  it("says showing first 200 when the report is truncated", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${claudeProfile.id}/usage`,
+        method: "GET",
+        body: {
+          workflow_count: 201,
+          step_count: 201,
+          uses: [
+            {
+              pipeline_id: "01987b20-0000-7000-8000-abcdef012345",
+              pipeline_name: "Widget review",
+              source: "revision",
+              revision_number: 3,
+              draft_id: null,
+              node_id: "implement",
+              node_label: "Claude Code",
+            },
+          ],
+          truncated: true,
+        },
+      },
+    ]);
+    expect(await screen.findByTestId("profile-usage-truncated")).toBeTruthy();
   });
 
   it("shows an unregistered launcher as a row fact, not an error", async () => {

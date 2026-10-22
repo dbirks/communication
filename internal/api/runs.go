@@ -151,6 +151,29 @@ type RunSummaryView struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	StartedAt          *time.Time `json:"started_at"`
 	FinishedAt         *time.Time `json:"finished_at"`
+	// Trigger (ADR-0056) is how this run was started: manual, schedule, issue
+	// or thread, with the trigger's own identifier in Ref (the schedule id, the
+	// `owner/repo#<number>`, or null for a manual/thread start — the thread is
+	// the trigger context, ADR-0053).
+	Trigger *RunTriggerView `json:"trigger"`
+}
+
+// RunTriggerView is the run JSON's `trigger` member (ADR-0056): the kind how
+// the run was started and the trigger's own identifier. `ref` is null for a
+// 'manual' or 'thread' start — the context is the thread itself — and names
+// the schedule id or `owner/repo#<number>` for a 'schedule' or 'issue' start.
+type RunTriggerView struct {
+	Kind string  `json:"kind"`
+	Ref  *string `json:"ref"`
+}
+
+// runTriggerKinds is the ADR-0056 trigger vocabulary the run lists accept as
+// the `trigger` filter (and the run JSON's kind field).
+var runTriggerKinds = map[string]bool{
+	"manual":   true,
+	"schedule": true,
+	"issue":    true,
+	"thread":   true,
 }
 
 // RunSummaryListView is the RunSummaryList envelope.
@@ -429,6 +452,10 @@ type RunStore interface {
 	// from a memory and never names the worker.
 	GetRun(ctx context.Context, c Caller, runID string) (RunView, error)
 	ListProjectRuns(ctx context.Context, c Caller, projectID string) ([]RunSummaryView, error)
+	// ListProjectRunsFiltered is route 21's ADR-0056 read: the project's runs,
+	// optionally kept only to the started-by trigger kind (validated by the
+	// handler before it reaches the store).
+	ListProjectRunsFiltered(ctx context.Context, c Caller, projectID string, trigger string) ([]RunSummaryView, error)
 	// ListRunNodes returns every node execution ordered by
 	// node_instance_key (route 24).
 	ListRunNodes(ctx context.Context, c Caller, runID string) ([]NodeExecutionView, error)
@@ -788,7 +815,15 @@ func (h *rnHandlers) listRuns(w http.ResponseWriter, r *http.Request) {
 	if !h.requireProjectRole(w, r, c, projectID, "run.list", rnView) {
 		return
 	}
-	items, err := h.store.ListProjectRuns(r.Context(), c, projectID)
+	// ADR-0056: the run-list trigger filter (manual|schedule|issue|thread),
+	// validated here so a malformed probe never reaches SQL.
+	trigger := r.URL.Query().Get("trigger")
+	if trigger != "" && !runTriggerKinds[trigger] {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_trigger: trigger must be one of manual, schedule, issue, thread.")
+		return
+	}
+	items, err := h.store.ListProjectRunsFiltered(r.Context(), c, projectID, trigger)
 	if err != nil {
 		h.fail(w, r, c, projectID, "run.list", err)
 		return

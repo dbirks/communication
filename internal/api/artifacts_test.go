@@ -25,23 +25,25 @@ import (
 // behaviour is docs/m3-contract.md case 16's Playwright leg.
 
 const (
-	artTestProject  = "11111111-1111-4111-8111-111111111111"
-	artTestID       = "33333333-3333-4333-8333-333333333333"
-	artTestDigest   = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	artTestKey      = artTestProject + "/json/e3/" + artTestDigest + ".json"
-	artPreviewHost  = "preview.localhost:18084"
-	artPreviewBase  = "http://preview.localhost:18084"
-	artPublicOrigin = "http://localhost:18080"
+	artTestProject        = "11111111-1111-4111-8111-111111111111"
+	artTestID             = "33333333-3333-4333-8333-333333333333"
+	artTestDigest         = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	artTestKey            = artTestProject + "/json/e3/" + artTestDigest + ".json"
+	artPreviewHost        = "preview.localhost:18084"
+	artPreviewBase        = "http://preview.localhost:18084"
+	artPublicOrigin       = "http://localhost:18080"
+	artTestConversationID = "44444444-4444-4444-8444-444444444444"
 )
 
 type artFakeStore struct {
-	views      map[string]ArtifactView
-	lists      map[string][]ArtifactView
-	denials    []artDenial
-	accesses   []string
-	err        error
-	listErr    error
-	previewErr error
+	views                map[string]ArtifactView
+	lists                map[string][]ArtifactView
+	denials              []artDenial
+	accesses             []string
+	err                  error
+	listErr              error
+	previewErr           error
+	lastListConversation string
 }
 
 type artDenial struct {
@@ -66,7 +68,8 @@ func (f *artFakeStore) put(v ArtifactView) {
 	f.lists[v.ProjectID] = append(f.lists[v.ProjectID], v)
 }
 
-func (f *artFakeStore) ListArtifacts(ctx context.Context, c Caller, projectID string) ([]ArtifactView, error) {
+func (f *artFakeStore) ListArtifacts(ctx context.Context, c Caller, projectID string, conversationID string) ([]ArtifactView, error) {
+	f.lastListConversation = conversationID
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -227,6 +230,53 @@ func TestListArtifactsNonMemberIs404AndAudited(t *testing.T) {
 	}
 	if body := rec.Body.String(); strings.Contains(body, artTestKey) || strings.Contains(body, artTestDigest) {
 		t.Errorf("the 404 body leaked something: %s", body)
+	}
+}
+
+func TestListArtifactsConversationFilter(t *testing.T) {
+	// The design handoff's thread-rail ask (W3): `?conversation_id=` narrows
+	// the project's artifact list to one thread's artifacts. Three halves live
+	// here: a malformed uuid is a 400 before the store is called, a well-formed
+	// one is forwarded to the store, and a conversation the store answers
+	// not-found for is the 404 the rest of the invisible-resource answers use —
+	// never an empty list that would confirm the project exists.
+	store := artNewFakeStore()
+	store.lists[artTestProject] = []ArtifactView{artView("markdown", "standard", "ready", "maintainer")}
+	s := artNewServer(t, store, newArtFakeBytes(), PreviewConfig{}, nil)
+
+	rec := do(t, s, artRequest(http.MethodGet,
+		"http://localhost:18080/api/v1/projects/"+artTestProject+"/artifacts?conversation_id="+artTestConversationID, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET ?conversation_id=<thread> = %d (%s)", rec.Code, rec.Body)
+	}
+	if got := store.lastListConversation; got != artTestConversationID {
+		t.Errorf("store received conversation %q, want %q", got, artTestConversationID)
+	}
+	var listed ArtifactList
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode ArtifactList: %v", err)
+	}
+	if len(listed.Artifacts) != 1 || listed.Artifacts[0].Name != "report" {
+		t.Errorf("listed = %+v, want the one thread artifact", listed.Artifacts)
+	}
+
+	rec = do(t, s, artRequest(http.MethodGet,
+		"http://localhost:18080/api/v1/projects/"+artTestProject+"/artifacts?conversation_id=not-a-uuid", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET ?conversation_id=not-a-uuid = %d, want 400", rec.Code)
+	}
+	if prob := decodeProblem(t, rec); !strings.Contains(prob.Detail, "invalid_conversation_id") {
+		t.Errorf("detail = %q, want it to name invalid_conversation_id", prob.Detail)
+	}
+
+	store.listErr = ErrArtifactNotFound
+	rec = do(t, s, artRequest(http.MethodGet,
+		"http://localhost:18080/api/v1/projects/"+artTestProject+"/artifacts?conversation_id="+artTestConversationID, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET ?conversation_id=<thread> for an invisible thread = %d, want 404", rec.Code)
+	}
+	if len(store.denials) != 1 || store.denials[0].action != "artifact.list" {
+		t.Errorf("denials = %+v, want one artifact.list", store.denials)
 	}
 }
 

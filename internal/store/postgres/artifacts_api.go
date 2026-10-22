@@ -55,12 +55,12 @@ func artAPIErr(err error) error {
 }
 
 // ListArtifacts implements api.ArtifactStore.
-func (a APIArtifactStore) ListArtifacts(ctx context.Context, c api.Caller, projectID string) ([]api.ArtifactView, error) {
+func (a APIArtifactStore) ListArtifacts(ctx context.Context, c api.Caller, projectID string, conversationID string) ([]api.ArtifactView, error) {
 	s, err := a.store()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.ListArtifacts(ctx, artCaller(c), projectID)
+	rows, err := s.ListArtifacts(ctx, artCaller(c), projectID, conversationID)
 	if err != nil {
 		return nil, artAPIErr(err)
 	}

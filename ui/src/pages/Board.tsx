@@ -12,7 +12,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { problemOf } from "../api/client";
-import { useBoardLiveUpdates, useBoardRuns } from "../api/board";
+import { useBoardLiveUpdates, useBoardRuns, type RunTriggerKind } from "../api/board";
 import { useProjects } from "../api/queries";
 import { routes } from "../lib/routes";
 import { VARIANT_CLASS } from "../components/ds/Button";
@@ -119,10 +119,11 @@ export default function Board() {
   const [groupBy, setGroupBy] = useState<GroupBy>("state");
   const [projectId, setProjectId] = useState("");
   const [mine, setMine] = useState(false);
+  const [trigger, setTrigger] = useState<RunTriggerKind | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const projects = useProjects();
-  const runs = useBoardRuns({ projectId: projectId || undefined, mine });
+  const runs = useBoardRuns({ projectId: projectId || undefined, mine, trigger });
   // Live updates: run.*/approval.* frames invalidate the board list (batched
   // to at most one invalidation per second inside the hook).
   useBoardLiveUpdates();
@@ -207,8 +208,11 @@ export default function Board() {
         </div>
 
         {/* Filters: all projects (the select) / mine / from issues /
-            scheduled. The last two have no data behind them yet (no
-            trigger-source column, ADR-0031) — honest and disabled. */}
+            scheduled. The last two used to be disabled chips with a "not
+            available yet" title (ADR-0031 had no trigger-source data); ADR-0056
+            part 1 recorded the run trigger and `GET /runs` learned `?trigger=`,
+            so they are live now and combine with the project select and `mine`
+            exactly like the mine toggle. */}
         <select
           data-testid="board-project-select"
           aria-label="Filter by project"
@@ -238,17 +242,27 @@ export default function Board() {
         </button>
         <button
           type="button"
-          disabled
-          title="not available yet"
-          className="h-[26px] cursor-default rounded-[4px] border border-line bg-disabled-bg px-2 text-[11px] text-disabled-fg"
+          data-testid="board-filter-issue"
+          aria-pressed={trigger === "issue"}
+          onClick={() => setTrigger((current) => (current === "issue" ? null : "issue"))}
+          className={`h-[26px] rounded-[4px] border px-2 text-[11px] ${
+            trigger === "issue"
+              ? "border-accent-edge bg-accent-tint font-semibold text-accent-text"
+              : "border-line bg-surface text-ink-2"
+          }`}
         >
           from issues
         </button>
         <button
           type="button"
-          disabled
-          title="not available yet"
-          className="h-[26px] cursor-default rounded-[4px] border border-line bg-disabled-bg px-2 text-[11px] text-disabled-fg"
+          data-testid="board-filter-scheduled"
+          aria-pressed={trigger === "schedule"}
+          onClick={() => setTrigger((current) => (current === "schedule" ? null : "schedule"))}
+          className={`h-[26px] rounded-[4px] border px-2 text-[11px] ${
+            trigger === "schedule"
+              ? "border-accent-edge bg-accent-tint font-semibold text-accent-text"
+              : "border-line bg-surface text-ink-2"
+          }`}
         >
           scheduled
         </button>
@@ -285,9 +299,19 @@ export default function Board() {
         </div>
       ) : runs.data && runs.data.runs.length === 0 ? (
         <div className="max-w-[560px]">
-          <p className="text-[12px] text-muted" data-testid="board-empty">
-            No runs to show here yet.
-          </p>
+          {trigger === "schedule" ? (
+            <p className="text-[12px] text-muted" data-testid="board-empty-schedule">
+              No scheduled runs
+            </p>
+          ) : trigger === "issue" ? (
+            <p className="text-[12px] text-muted" data-testid="board-empty-issue">
+              No runs started from issues
+            </p>
+          ) : (
+            <p className="text-[12px] text-muted" data-testid="board-empty">
+              No runs to show here yet.
+            </p>
+          )}
           <Link
             className={`ds-btn ${VARIANT_CLASS.primary} mt-3 inline-flex h-[28px] items-center rounded-[4px] px-3 text-[12px]`}
             to={startRunTo}

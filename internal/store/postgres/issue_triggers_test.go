@@ -1,0 +1,482 @@
+package postgres
+
+// The ADR-0056 part-2 issue-trigger tests: the fire's promises against a
+// PostgreSQL that actually ran 00012, driven through the REAL github client
+// pointed at a local httptest server (the fake lister the task names).
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dbirks/communication/internal/api"
+	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/integrations/github"
+)
+
+type itFixture struct {
+	*m4Fixture
+	triggers   *IssueTriggerStore
+	assignment string
+	repository string
+	triggerID  string
+	caller     Caller
+}
+
+// itSetup seeds the m4 fixture plus one assignment, one repository and one
+// issue trigger (event "opened", no labels, no inputs).
+func itSetup(t *testing.T) *itFixture {
+	t.Helper()
+	ctx := testCtx(t)
+	f := m4Setup(t)
+	var assignID, repoID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO assignments (project_id, pipeline_id, pinned_revision_id, max_concurrent_runs, created_by)
+		VALUES ($1, $2, $3, 4, $4) RETURNING id`,
+		f.projectID, f.pipelineID, f.revisionID, f.userID).Scan(&assignID); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO repositories (project_id, name, git_url, created_by)
+		VALUES ($1, 'octo/widgets', 'https://github.com/octo/widgets.git', $2) RETURNING id`,
+		f.projectID, f.userID).Scan(&repoID); err != nil {
+		t.Fatalf("insert repository: %v", err)
+	}
+	triggers := &IssueTriggerStore{Pool: f.pool, Runs: f.runs}
+	enabled := true
+	it, err := triggers.Create(ctx, NewIssueTrigger{
+		ProjectID: f.projectID, AssignmentID: assignID, RepositoryID: repoID,
+		Event: "opened", Labels: []string{}, Inputs: json.RawMessage(`{}`), Enabled: &enabled, CreatedBy: f.userID,
+	})
+	if err != nil {
+		t.Fatalf("create issue trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		for _, step := range []string{
+			`DELETE FROM issue_triggers WHERE project_id = $1`,
+			`DELETE FROM repositories WHERE project_id = $1`,
+		} {
+			if _, err := f.pool.Exec(bg, step, f.projectID); err != nil {
+				t.Errorf("issue-trigger cleanup %q: %v", step, err)
+			}
+		}
+	})
+	return &itFixture{m4Fixture: f, triggers: triggers, assignment: assignID, repository: repoID, triggerID: it.ID, caller: Caller{UserID: f.userID, OrganizationID: f.orgID, IsOrgAdmin: true}}
+}
+
+// itDropTriggers removes every issue trigger of the fixture project so a
+// test can author exactly one.
+func (f *itFixture) itDropTriggers(t *testing.T, ctx context.Context) {
+	t.Helper()
+	if _, err := f.pool.Exec(ctx, `DELETE FROM issue_triggers WHERE project_id = $1::uuid`, f.projectID); err != nil {
+		t.Fatalf("drop issue triggers: %v", err)
+	}
+}
+
+// itWireIssue is the wire shape the fake server answers with (GitHub's own
+// member names), including the `pull_request` marker a real PR listing carries.
+type itWireIssue struct {
+	Number    int             `json:"number"`
+	Title     string          `json:"title"`
+	Body      string          `json:"body"`
+	State     string          `json:"state"`
+	HTMLURL   string          `json:"html_url"`
+	CreatedAt string          `json:"created_at"`
+	UpdatedAt string          `json:"updated_at"`
+	Labels    []itWireLabel   `json:"labels"`
+	PR        json.RawMessage `json:"pull_request"`
+}
+type itWireLabel struct {
+	Name string `json:"name"`
+}
+
+func itWireToIssue(in itWireIssue) github.Issue {
+	out := github.Issue{
+		Number:    in.Number,
+		Title:     in.Title,
+		Body:      in.Body,
+		Labels:    []string{},
+		HTMLURL:   in.HTMLURL,
+		State:     in.State,
+		CreatedAt: time.Time{},
+		UpdatedAt: time.Time{},
+	}
+	if len(in.Labels) > 0 {
+		for _, l := range in.Labels {
+			out.Labels = append(out.Labels, l.Name)
+		}
+	}
+	out.CreatedAt, _ = time.Parse(time.RFC3339, in.CreatedAt)
+	out.UpdatedAt, _ = time.Parse(time.RFC3339, in.UpdatedAt)
+	return out
+}
+
+// itIssueLister is the github.IssueLister the real client answers from a local
+// httptest server, honouring the `since` / `labels` query params the poll sends.
+type itIssueLister struct {
+	client  *github.Client
+	server  *httptest.Server
+	handler http.HandlerFunc
+}
+
+func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLister {
+	if handler == nil {
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			var out []itWireIssue
+			for _, it := range issues {
+				if since := q.Get("since"); since != "" {
+					if ts, err := strconv.ParseInt(since, 10, 64); err == nil {
+						if t, terr := time.Parse(time.RFC3339, it.UpdatedAt); terr == nil && t.Unix() < ts {
+							continue
+						}
+					}
+				}
+				if len(q["labels"]) > 0 {
+					matched := false
+					for _, l := range q["labels"] {
+						for _, il := range it.Labels {
+							if len(l) > 0 && len(il.Name) > 0 && strings.EqualFold(l, il.Name) {
+								matched = true
+							}
+						}
+					}
+					if !matched {
+						continue
+					}
+				}
+				out = append(out, it)
+			}
+			_ = json.NewEncoder(w).Encode(out)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/octo/widgets/issues", handler)
+	srv := httptest.NewServer(mux)
+	c := github.New()
+	c.BaseURL = srv.URL
+	c.HTTP = &http.Client{Timeout: 5 * time.Second}
+	return &itIssueLister{client: c, server: srv, handler: handler}
+}
+
+func (l *itIssueLister) ListIssues(ctx context.Context, repo github.Repository, q github.IssueQuery) ([]github.Issue, error) {
+	return l.client.ListIssues(ctx, repo, q)
+}
+
+func (l *itIssueLister) Close() { l.server.Close() }
+
+// itIssueFires is the store-side helper: create an issue trigger for the
+// fixture's assignment/repository with the given intent.
+func (f *itFixture) itIssueFires(ctx context.Context, event string, labels []string, inputs json.RawMessage, enabled *bool) (IssueTrigger, error) {
+	en := enabled
+	if en == nil {
+		en = boolPtr(true)
+	}
+	return f.triggers.Create(ctx, NewIssueTrigger{
+		ProjectID: f.projectID, AssignmentID: f.assignment, RepositoryID: f.repository,
+		Event: event, Labels: labels, Inputs: inputs, Enabled: en, CreatedBy: f.userID,
+	})
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// itOtherOrg is a caller from a second organization: an issue-trigger read or
+// edit from there is invisible to the fixture's project.
+func (f *itFixture) itOtherOrg(t *testing.T, ctx context.Context) api.Caller {
+	t.Helper()
+	token := migFixtureToken(t)
+	var orgID, userID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO organizations (slug, name) VALUES ('it-ap-org-' || $1, 'it api issue triggers other')
+		RETURNING id`, token).Scan(&orgID); err != nil {
+		t.Fatalf("seed other org: %v", err)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO users (organization_id, display_name) VALUES ($1, 'it-ap-other-' || $2)
+		RETURNING id`, orgID, token).Scan(&userID); err != nil {
+		t.Fatalf("seed other user: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		if _, err := f.pool.Exec(bg, `DELETE FROM users WHERE id = $1`, userID); err != nil {
+			t.Errorf("cleanup other user: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `DELETE FROM organizations WHERE id = $1`, orgID); err != nil {
+			t.Errorf("cleanup other org: %v", err)
+		}
+	})
+	return api.Caller{UserID: userID, OrganizationID: orgID}
+}
+
+// itIssueFiredEvent reads the single issue_trigger.fired row for one run.
+func itIssueFiredEvent(t *testing.T, ctx context.Context, f *itFixture, runID string) events.IssueTriggerFiredPayload {
+	t.Helper()
+	rows, err := f.pool.Query(ctx, `
+		SELECT payload FROM domain_events WHERE type = $1 AND project_id = $2::uuid AND run_id = $3::uuid
+		ORDER BY global_seq`, events.TypeIssueTriggerFired, f.projectID, runID)
+	if err != nil {
+		t.Fatalf("read issue_trigger.fired rows: %v", err)
+	}
+	defer rows.Close()
+	var out []events.IssueTriggerFiredPayload
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan issue_trigger.fired payload: %v", err)
+		}
+		var p events.IssueTriggerFiredPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("decode issue_trigger.fired payload %s: %v", raw, err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read issue_trigger.fired rows: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("issue_trigger.fired rows = %d, want 1", len(out))
+	}
+	return out[0]
+}
+
+func itIssueRunFor(t *testing.T, ctx context.Context, f *itFixture, ref string) (string, string) {
+	t.Helper()
+	var runID, kind string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT id::text, trigger_kind FROM runs WHERE trigger_ref = $1`, ref).Scan(&runID, &kind); err != nil {
+		t.Fatalf("read the fired issue run for %q: %v", ref, err)
+	}
+	return runID, kind
+}
+
+func itIssuePrompt(t *testing.T, ctx context.Context, f *itFixture, runID string) string {
+	t.Helper()
+	var raw sql.NullString
+	if err := f.pool.QueryRow(ctx, `SELECT value FROM run_inputs WHERE run_id = $1::uuid AND name = 'prompt'`, runID).Scan(&raw); err != nil {
+		t.Fatalf("read the fired run's prompt input: %v", err)
+	}
+	var prompt string
+	if err := json.Unmarshal([]byte(raw.String), &prompt); err != nil {
+		t.Fatalf("decode the fired run's prompt input %q: %v", raw.String, err)
+	}
+	return prompt
+}
+
+// TestIssueTriggerOpenedFiresPerNewIssue: the `opened` arm fires only for
+// issues created after the trigger was authored, once per (trigger, issue).
+func TestIssueTriggerOpenedFiresPerNewIssue(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{"prompt":"Fix {{issue.number}}: {{issue.title}}"}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	createdAt := trigger.CreatedAt
+
+	newIssue := itWireIssue{Number: 7, Title: "Crash on boot", Body: "it crashes", State: "open",
+		HTMLURL: "https://github.com/octo/widgets/issues/7", CreatedAt: createdAt.Add(time.Hour).Format(time.RFC3339),
+		UpdatedAt: createdAt.Add(2 * time.Hour).Format(time.RFC3339), Labels: []itWireLabel{{Name: "bug"}}}
+	oldIssue := itWireIssue{Number: 3, Title: "Old thing", Body: "old", State: "open",
+		HTMLURL: "https://github.com/octo/widgets/issues/3", CreatedAt: createdAt.Add(-2 * time.Hour).Format(time.RFC3339),
+		UpdatedAt: createdAt.Add(-time.Hour).Format(time.RFC3339), Labels: []itWireLabel{{Name: "bug"}}}
+	lister := newITIssueLister([]itWireIssue{oldIssue, newIssue}, nil)
+	defer lister.Close()
+
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 1 {
+		t.Fatalf("TickIssueTriggers = (%d, %v), want one fire (old issue never)", fired, err)
+	}
+	runID, kind := itIssueRunFor(t, ctx, f, "octo/widgets#7")
+	if kind != "issue" {
+		t.Fatalf("fired run kind = %s, want issue", kind)
+	}
+	if got := itIssuePrompt(t, ctx, f, runID); got != "Fix 7: Crash on boot" {
+		t.Errorf("prompt = %q, want the rendered template value", got)
+	}
+	p := itIssueFiredEvent(t, ctx, f, runID)
+	if p.IssueNumber != 7 || p.IssueURL != newIssue.HTMLURL || p.TriggerID != trigger.ID {
+		t.Errorf("issue_trigger.fired payload = %+v", p)
+	}
+}
+
+// TestIssueTriggerLabeledFiresOnlyOnMatchingLabel: the any-of label rule is
+// case-insensitive, and an empty trigger label set means "every issue".
+func TestIssueTriggerLabeledFiresOnlyOnMatchingLabel(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	if _, err := f.itIssueFires(ctx, "labeled", []string{"Bug"}, json.RawMessage(`{}`), nil); err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	issues := []itWireIssue{
+		{Number: 5, Title: "A", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/5",
+			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "bug"}}},
+		{Number: 6, Title: "B", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/6",
+			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "Feature"}}},
+		{Number: 8, Title: "C", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/8",
+			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{}},
+	}
+	lister := newITIssueLister(issues, nil)
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 1 {
+		t.Fatalf("TickIssueTriggers = (%d, %v), want one fire on the matching label", fired, err)
+	}
+	if _, kind := itIssueRunFor(t, ctx, f, "octo/widgets#5"); kind != "issue" {
+		t.Fatalf("fired run kind = %s, want issue", kind)
+	}
+}
+
+func TestIssueTriggerRepollDoesNotDoubleFire(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	issue := itWireIssue{Number: 7, Title: "Crash on boot", Body: "it crashes", State: "open",
+		HTMLURL: "https://github.com/octo/widgets/issues/7", CreatedAt: trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339),
+		UpdatedAt: trigger.CreatedAt.Add(2 * time.Hour).Format(time.RFC3339), Labels: []itWireLabel{{Name: "bug"}}}
+	lister := newITIssueLister([]itWireIssue{issue}, nil)
+	defer lister.Close()
+	now := time.Now().UTC()
+	if fired, err := f.triggers.TickIssueTriggers(ctx, now, lister); err != nil || fired != 1 {
+		t.Fatalf("first tick = (%d, %v), want one fire", fired, err)
+	}
+	if fired, err := f.triggers.TickIssueTriggers(ctx, now.Add(time.Minute), lister); err != nil || fired != 0 {
+		t.Fatalf("second tick = (%d, %v), want no double fire", fired, err)
+	}
+}
+
+// TestIssueTriggerSkipsPullRequests: a pull request is not an issue, through
+// the real client (the `pull_request` marker is dropped before any fire).
+func TestIssueTriggerSkipsPullRequests(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	if _, err := f.itIssueFires(ctx, "labeled", []string{}, json.RawMessage(`{}`), nil); err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	issues := []itWireIssue{
+		{Number: 9, Title: "A PR", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/pull/9",
+			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "bug"}},
+			PR: json.RawMessage(`{"url":"https://api.github.com/repos/octo/widgets/pulls/9"}`)},
+	}
+	lister := newITIssueLister(issues, nil)
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 0 {
+		t.Fatalf("tick over a PR-only list = (%d, %v), want no fire", fired, err)
+	}
+}
+
+// TestIssueTriggerRateLimitRecordsErrorAndTickContinues: a rate-limited poll
+// writes last_error (bounded) plus last_polled_at and leaves the tick green.
+func TestIssueTriggerRateLimitRecordsErrorAndTickContinues(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	var lastErr sql.NullString
+	var lastPolled sql.NullTime
+	if err := f.pool.QueryRow(ctx, `
+		SELECT last_error, last_polled_at FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&lastErr, &lastPolled); err != nil {
+		t.Fatalf("read trigger poll state: %v", err)
+	}
+	if lastPolled.Valid || lastErr.Valid || lastErr.String != "" {
+		t.Fatalf("fresh trigger polled state = (%q, valid=%v), want NULL/empty", lastErr.String, lastPolled.Valid)
+	}
+
+	lister := newITIssueLister(nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+	})
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 0 {
+		t.Fatalf("TickIssueTriggers under a rate limit = (%d, %v), want no fire and no tick error", fired, err)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		SELECT last_error, last_polled_at FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&lastErr, &lastPolled); err != nil {
+		t.Fatalf("read trigger poll state: %v", err)
+	}
+	if !lastPolled.Valid || !lastErr.Valid || lastErr.String == "" {
+		t.Errorf("trigger poll state = (%q, valid=%v), want a bounded last_error and a last_polled_at", lastErr.String, lastPolled.Valid)
+	}
+}
+
+// TestIssueTriggerDisabledNeverPolls: a disabled trigger is never due.
+func TestIssueTriggerDisabledNeverPolls(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	disabled := false
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{}`), &disabled)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	lister := newITIssueLister(nil, nil)
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 0 {
+		t.Fatalf("tick of a disabled trigger = (%d, %v), want no fire", fired, err)
+	}
+	var lastPolled sql.NullTime
+	if err := f.pool.QueryRow(ctx, `SELECT last_polled_at FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&lastPolled); err != nil || lastPolled.Valid {
+		t.Errorf("disabled trigger polled: last_polled_at valid=%v (%v), want NULL", lastPolled.Valid, err)
+	}
+}
+
+// TestIssueTriggerTemplateRendering: the `{{issue.*}}` placeholders fill the
+// fired issue's values into the run inputs.
+func TestIssueTriggerTemplateRendering(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{"prompt":"Fix {{issue.number}}: {{issue.title}} {{issue.labels}}"}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	issue := itWireIssue{Number: 7, Title: "Crash on boot", Body: "it crashes", State: "open",
+		HTMLURL: "https://github.com/octo/widgets/issues/7", CreatedAt: trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339),
+		UpdatedAt: trigger.CreatedAt.Add(2 * time.Hour).Format(time.RFC3339), Labels: []itWireLabel{{Name: "bug"}}}
+	lister := newITIssueLister([]itWireIssue{issue}, nil)
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 1 {
+		t.Fatalf("tick = (%d, %v), want one fire", fired, err)
+	}
+	runID, _ := itIssueRunFor(t, ctx, f, "octo/widgets#7")
+	if got := itIssuePrompt(t, ctx, f, runID); got != "Fix 7: Crash on boot bug" {
+		t.Errorf("prompt = %q, want the rendered template value", got)
+	}
+}
+
+// TestIssueTriggerOtherOrganizationCannotListOrPatch: another organization's
+// caller reads and edits nothing of this project's triggers.
+func TestIssueTriggerOtherOrganizationCannotListOrPatch(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	adapter := APIIssueTriggerStore{S: f.triggers}
+	other := f.itOtherOrg(t, ctx)
+	if items, err := adapter.ListProjectIssueTriggers(ctx, other, f.projectID); err != nil || len(items) != 0 {
+		t.Errorf("another org lists = (%d, %v), want an empty list", len(items), err)
+	}
+	if _, err := adapter.UpdateIssueTrigger(ctx, other, f.triggerID, api.IssueTriggerPatchInput{Version: 1}); !errors.Is(err, api.ErrIssueTriggerNotFound) {
+		t.Errorf("another org patches = %v, want the not-found sentinel", err)
+	}
+}

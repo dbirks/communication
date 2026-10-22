@@ -180,6 +180,18 @@ describe("RunDrawer", () => {
     expect(meta).toContain("started 2h");
   });
 
+  it("shows the run's trigger badge when the run was started from an issue", () => {
+    mocks.run = {
+      data: runDetail({ trigger: { kind: "issue", ref: "acme/api#512" } }),
+      isPending: false,
+    };
+    mocks.approvals = { data: { approvals: [] }, isPending: false };
+    renderDrawer(boardRun());
+    expect(screen.getByTestId("run-drawer-trigger")).toBeTruthy();
+    const badge = screen.getByTestId("run-drawer-trigger").querySelector("a");
+    expect(badge?.getAttribute("href")).toBe("https://github.com/acme/api/issues/512");
+  });
+
   it("renders one labelled cell per top-level step, coloured by the step state", () => {
     mocks.run = { data: runDetail(), isPending: false };
     mocks.approvals = { data: { approvals: [approval()] }, isPending: false };

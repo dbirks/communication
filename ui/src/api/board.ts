@@ -37,11 +37,16 @@ export const BOARD_RUN_STATUSES = [
 /** Page size: the board is a glance, one page of the newest runs. */
 const BOARD_RUN_LIMIT = 200;
 
+/** ADR-0056 (part 1): the run's trigger kind — how it was started. */
+export type RunTriggerKind = components["schemas"]["RunTrigger"]["kind"];
+
 export interface BoardRunFilter {
   /** Keep one project's runs; absent = every project the caller belongs to. */
   projectId?: string;
   /** `mine=true` — runs the caller started. */
   mine?: boolean;
+  /** ADR-0056: keep only runs started by this trigger kind; absent = no filter. */
+  trigger?: RunTriggerKind | null;
 }
 
 /** The query string a filter builds; exported so tests pin the wire shape. */
@@ -51,6 +56,7 @@ export function boardRunQuery(filter: BoardRunFilter): string {
   params.set("limit", String(BOARD_RUN_LIMIT));
   if (filter.projectId) params.set("project_id", filter.projectId);
   if (filter.mine) params.set("mine", "true");
+  if (filter.trigger) params.set("trigger", filter.trigger);
   return params.toString();
 }
 
@@ -58,7 +64,7 @@ export function boardRunQuery(filter: BoardRunFilter): string {
 export const boardRunsKey = (filter: BoardRunFilter): readonly unknown[] => [
   "board",
   "runs",
-  { projectId: filter.projectId ?? "", mine: filter.mine ?? false },
+  { projectId: filter.projectId ?? "", mine: filter.mine ?? false, trigger: filter.trigger ?? "" },
 ];
 
 /**

@@ -107,8 +107,11 @@ type CrossProjectRunsFilter struct {
 	// UpdatedSince asks for "changed since": COALESCE(finished_at,
 	// created_at) >= the value — done-today and just-created rows.
 	UpdatedSince *time.Time
-	Limit        int
-	Cursor       string
+	// Trigger (ADR-0056) keeps only the runs that were started by that kind
+	// (manual|schedule|issue|thread); empty = no filter.
+	Trigger string
+	Limit   int
+	Cursor  string
 }
 
 // Shared page limits (keyset pagination, ADR-0047 § 5).
@@ -250,6 +253,15 @@ func (h *cpHandlers) listRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.UpdatedSince = &t
+	}
+	if v := q.Get("trigger"); v != "" {
+		// ADR-0056: the run-list trigger filter (manual|schedule|issue|thread),
+		// validated here so a malformed probe never reaches SQL.
+		if !runTriggerKinds[v] {
+			h.badRequest(w, "invalid_trigger: trigger must be one of manual, schedule, issue, thread.")
+			return
+		}
+		f.Trigger = v
 	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)

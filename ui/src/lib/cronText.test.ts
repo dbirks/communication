@@ -14,6 +14,11 @@ describe("cronInWords — the plain-English reading of a schedule's cron", () =>
     expect(cronInWords("0 8 * * 6")).toBe("weekly Saturday 08:00 UTC");
   });
 
+  it("translates the monthly and yearly cadences", () => {
+    expect(cronInWords("0 0 1 1 *")).toBe("yearly on Jan 1 at 00:00 UTC");
+    expect(cronInWords("30 0 15 * *")).toBe("monthly on the 15th at 00:30 UTC");
+  });
+
   it("normalises stray whitespace before reading it", () => {
     expect(cronInWords("  0   9 * * 1 ")).toBe("weekly Monday 09:00 UTC");
   });

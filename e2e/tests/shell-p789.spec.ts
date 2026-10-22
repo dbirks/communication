@@ -1,8 +1,8 @@
 // P7–P9 acceptance: the rows `docs/design/handoff-app-shell/acceptance.md`
 // still marks NOT COVERED. The sidebar's Inbox flag rises from the org event
 // stream (ADR-0048) with NO timer poll (row: "live flags … NOT COVERED"),
-// the Board "mine" filter matches `GET /runs?mine=true` while the issue /
-// scheduled chips stay honestly disabled (row: board filters), a Studio
+// the Board "mine" filter matches `GET /runs?mine=true` and the from issues /
+// scheduled chips are enabled and filter `GET /runs` by trigger (ADR-0056), a Studio
 // agent node saved "as a reusable step" appears in `GET /node-templates`
 // and on /steps (row: 3349840), the ⌘K mic drives a fake SpeechRecognition
 // into an editable composer with nothing sent until Send (row: mic), the
@@ -558,7 +558,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     );
   });
 
-  test("2. board: the 'mine' count equals GET /runs?mine=true; issue/scheduled chips are disabled", async ({
+  test("2. board: the 'mine' count equals GET /runs?mine=true; the from-issues/scheduled chips filter by trigger", async ({
     page,
   }) => {
     await signIn(page, "admin");
@@ -581,24 +581,54 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await mineChip.click();
     await expect(mineChip).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator(CARD_ROOT)).toHaveCount(mineCount, { timeout: 15_000 });
-    const disabledChips = page.locator('button[title="not available yet"]');
-    expect(
-      await disabledChips.count(),
-      "exactly the 'from issues' and 'scheduled' chips are honestly disabled",
-    ).toBe(2);
-    const labels: string[] = [];
-    for (let i = 0; i < 2; i += 1) {
-      const chip = disabledChips.nth(i);
-      expect(await chip.isDisabled(), `chip ${labels.join(", ") || i} is disabled`).toBe(true);
-      labels.push((await chip.innerText()).trim());
-    }
-    expect(labels.sort()).toEqual(["from issues", "scheduled"]);
+    const issueChip = page.getByTestId("board-filter-issue");
+    const scheduledChip = page.getByTestId("board-filter-scheduled");
+    await expect(issueChip).toBeVisible();
+    await expect(scheduledChip).toBeVisible();
+    await expect(issueChip).toBeEnabled();
+    await expect(scheduledChip).toBeEnabled();
+    await expect(issueChip).toHaveAttribute("aria-pressed", "false");
+    await expect(scheduledChip).toHaveAttribute("aria-pressed", "false");
     await checkShellScreen(page, "board with the mine filter", stopWatching);
     await evidence(
       page,
       "shell-p789-board-mine",
-      `board cards without the filter equal GET /api/v1/runs (${allCards} of ${allRuns.length}), with 'mine' pressed the ${mineCount} cards equal GET /api/v1/runs?mine=true, and the 'from issues' + 'scheduled' chips are disabled with the 'not available yet' title (ADR-0031: no trigger-source data)`,
+      `board cards without the filter equal GET /api/v1/runs (${allCards} of ${allRuns.length}), with 'mine' pressed the ${mineCount} cards equal GET /api/v1/runs?mine=true, and the from issues / scheduled chips are enabled and idle (ADR-0056)`,
     );
+
+    // The scheduled chip now filters the board list by the run's trigger.
+    const scheduledRequestPromise = page.waitForRequest(
+      (req) => req.url().includes("/api/v1/runs") && req.url().includes("trigger=schedule"),
+    );
+    await scheduledChip.click();
+    const scheduledRequest = await scheduledRequestPromise;
+    expect(scheduledRequest.url()).toContain("trigger=schedule");
+    await expect(scheduledChip).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
+    const scheduledResponse = await request.get(
+      BASE_URL + "/api/v1/runs?limit=100&trigger=schedule",
+    );
+    expect(scheduledResponse.status(), "GET /api/v1/runs?trigger=schedule -> 200").toBe(200);
+    const scheduledBody = (await scheduledResponse.json()) as {
+      runs?: { id: string; trigger?: { kind: string } }[];
+    };
+    const scheduledIds = new Set(
+      (scheduledBody.runs ?? [])
+        .filter((row) => row.trigger?.kind === "schedule")
+        .map((row) => row.id),
+    );
+    const cards = page.locator(CARD_ROOT);
+    const cardCount = await cards.count();
+    const cardIds: string[] = [];
+    for (let i = 0; i < cardCount; i += 1) {
+      const testid = await cards.nth(i).getAttribute("data-testid");
+      if (typeof testid === "string" && testid.startsWith("board-card-")) {
+        cardIds.push(testid.slice("board-card-".length));
+      }
+    }
+    for (const id of cardIds) {
+      expect(scheduledIds.has(id), `rendered card ${id} is a scheduled run`).toBe(true);
+    }
   });
 
   test("3. studio: 'also save as a reusable step' lands in GET /node-templates and on /steps", async ({

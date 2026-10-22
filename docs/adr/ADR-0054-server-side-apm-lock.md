@@ -133,3 +133,42 @@ Forward-only migration adds `apm_contents_summary` (nullable; existing rows stay
 unlocked — no backfill, the digest column is unchanged and stays authoritative). Rollback =
 stop advertising the route; the column is inert, the manual `PATCH` triple remains fully
 functional, and the launch-time digest check is independent of this ADR entirely.
+
+## Amendment 1 (2026-10-22) — implementation
+
+The design above is implemented as accepted; nothing in the Accepted text is reopened.
+The concrete mechanism the control plane, worker and API landed on:
+
+1. **Dispatch.** `POST /api/v1/agent-profiles/{profileId}/apm/lock` answers `202` with the
+   queued request id; `GET .../apm/lock` answers the latest request status (`none` when no
+   request was ever queued). The control plane queues an `apm_lock_requests` row
+   (migration `00013_apm_lock.sql`: `apm_contents_summary jsonb` on `agent_profiles` plus
+   the queue table); the worker claims it through the family-wide `FOR UPDATE SKIP LOCKED` +
+   lease idiom (`internal/worker/apmlock.go`) and resolves in a fresh scratch dir via the
+   `APMTyper.Resolve` seam (`internal/agent/apm/resolve.go`). The resolve deadline is
+   `worker.DefaultAPMLockResolveTimeout` (5 min); a wedged resolve leaves the lease to be
+   re-claimed.
+2. **One transaction.** The worker-reported result lands through
+   `TurnStore.CompleteAPMLockRequest`: on success it writes `apm_lock_digest` +
+   `apm_contents_summary` and appends `agent.profile.apm_locked` in one transaction
+   (ADR-0013); on failure it marks the request failed and writes nothing.
+3. **Event.** `agent.profile.apm_locked` (`events.TypeAgentProfileAPMLocked`) carries the
+   worker-attributed payload — ids, digest, ref, resolved ref, commit, version — and never a
+   contents body.
+4. **API.** `AgentProfileView.apm_contents` (`{skills, instructions, mcp_servers,
+   truncated}`, null while unlocked) sits beside the existing triple; the 202/status GET
+   answers the `APMLockRequest` view. The OpenAPI contract gained the two routes, the
+   `APMLockRequest` schema and the `apm_contents` field; `pnpm --dir ui gen:api` passes.
+5. **Egress.** The resolve child runs the pinned `apm` binary with a fresh HOME in a scratch
+   dir; the worker's environment/egress allowlist must permit `github.com` for the pinned
+   `#<ref>`.
+
+## Verification
+
+- Store (`internal/store/postgres/apm_lock_test.go`): queue → claim → complete writes the
+  digest, contents summary and journal event in one transaction; failure path; cross-org
+  profile is not found.
+- Worker (`internal/worker/apmlock_test.go`): resolve → report through the store; failure.
+- API (`internal/api/apm_lock_test.go`): 202 shape, status GET, CSRF gate, anonymous arm;
+  precondition refusals (404 / `apm_pin_incomplete`) ride the shared store-error mapping.
+- OpenAPI: `redocly lint` clean for the new paths; `pnpm --dir ui gen:api:check` passes.

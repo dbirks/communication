@@ -79,7 +79,10 @@ export const queryKeys = {
   workspace: (workspaceId: string) => ["workspace", workspaceId] as const,
   workspaceRepoStatus: (workspaceId: string, repositoryId: string) =>
     ["workspace", workspaceId, "repos", repositoryId] as const,
-  artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
+  artifacts: (projectId: string, conversationId?: string) =>
+    conversationId
+      ? (["project", projectId, "artifacts", "conversation", conversationId] as const)
+      : (["project", projectId, "artifacts"] as const),
   artifact: (artifactId: string) => ["artifact", artifactId] as const,
   systemSandbox: ["system", "sandbox"] as const,
   turnSandbox: (turnId: string) => ["turn", turnId, "sandbox"] as const,

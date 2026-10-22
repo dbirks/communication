@@ -69,6 +69,18 @@ describe("boardRunQuery — the wire shape the server 400-checks", () => {
     expect(query.get("project_id")).toBe("p1");
     expect(query.get("mine")).toBe("true");
   });
+
+  it("adds the trigger kind only when the filter says so", () => {
+    const query = new URLSearchParams(boardRunQuery({ trigger: "schedule" }));
+    expect(query.get("trigger")).toBe("schedule");
+    const issueQuery = new URLSearchParams(boardRunQuery({ trigger: "issue" }));
+    expect(issueQuery.get("trigger")).toBe("issue");
+  });
+
+  it("omits the trigger when the filter has none", () => {
+    const query = new URLSearchParams(boardRunQuery({}));
+    expect(query.get("trigger")).toBeNull();
+  });
 });
 
 describe("useBoardRuns", () => {

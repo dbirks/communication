@@ -19,6 +19,9 @@ import (
 
 const ntURL = "http://localhost:8080/api/v1/node-templates"
 
+// ntTTemplate is a canonical uuid-shaped template id for the usage routes.
+const ntTTemplate = "01987a71-3333-7000-8000-abcdef012345"
+
 type ntFakeStore struct {
 	list     []NodeTemplateView
 	detail   NodeTemplateDetailView
@@ -72,6 +75,13 @@ func (f *ntFakeStore) DuplicateTemplate(_ context.Context, _ Caller, id, _, _ st
 func (f *ntFakeStore) RecordDenied(context.Context, Caller, string, string) error {
 	f.calls = append(f.calls, "denied")
 	return nil
+}
+func (f *ntFakeStore) Usage(_ context.Context, _ Caller, templateID string) (NodeTemplateUsage, error) {
+	f.calls = append(f.calls, "usage:"+templateID)
+	if f.err != nil {
+		return NodeTemplateUsage{}, f.err
+	}
+	return NodeTemplateUsage{}, nil
 }
 func (f *ntFakeStore) NodeFromDraft(_ context.Context, _ Caller, draftID, nodeID string) (string, json.RawMessage, error) {
 	f.calls = append(f.calls, "node-from-draft:"+draftID+":"+nodeID)

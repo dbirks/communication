@@ -17,6 +17,7 @@ import {
 import { useConversationSession } from "../components/conversation/useConversationSession";
 import { WorkspaceWidget } from "../components/Workspaces";
 import { TurnSandboxPanel } from "../components/Sandbox";
+import { ThreadArtifacts } from "../components/threads/ThreadArtifacts";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
@@ -360,9 +361,10 @@ export default function ConversationPage({
             )}
           </div>
         </section>
-        {/* 4f ARTIFACTS: the artifact API cannot be filtered by thread, so
-            this page cannot tell this thread's files from another thread's —
-            the honest answer is to say so, not to list the project's files. */}
+        {/* 4f ARTIFACTS: the thread's own artifacts, up to a rail page of five —
+            the project's artifact list filtered by conversation
+            (`?conversation_id=`, which resolves the thread before filtering), via
+            the shared ThreadArtifacts rail section. */}
         <section aria-labelledby="artifacts-rail-heading" className="space-y-2">
           <h2
             id="artifacts-rail-heading"
@@ -370,10 +372,7 @@ export default function ConversationPage({
           >
             Artifacts
           </h2>
-          <p className="text-[12.5px] text-muted" data-testid="artifacts-rail">
-            Not available yet — the artifact API cannot list just this thread's files, so this page
-            won't guess which saved files are yours.
-          </p>
+          <ThreadArtifacts projectId={projectId} conversationId={conversationId} />
           <Link
             to={routes.projectTab(projectId, "artifacts")}
             className="inline-block font-mono text-[11px] text-accent-text hover:text-ink"

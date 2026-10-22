@@ -6,16 +6,22 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Board from "./Board";
 import type { CrossProjectRun } from "../components/board/columns";
 
+const { useBoardRunsMock } = vi.hoisted(() => ({ useBoardRunsMock: vi.fn() }));
+
 vi.mock("../api/board", () => ({
-  useBoardRuns: () => ({ data: { runs: [ROW] }, isPending: false, error: null }),
+  useBoardRuns: (filter: unknown) => useBoardRunsMock(filter),
   useBoardLiveUpdates: () => undefined,
 }));
 vi.mock("../api/queries", () => ({
-  useProjects: () => ({ data: { items: [] }, isPending: false, error: null }),
+  useProjects: () => ({
+    data: { items: [{ id: "p1", name: "acme-api" }] },
+    isPending: false,
+    error: null,
+  }),
 }));
 vi.mock("../api/runs", () => ({
   useRun: () => ({ data: null, isPending: false, error: null }),
@@ -66,6 +72,10 @@ const ROW: CrossProjectRun = {
 
 afterEach(cleanup);
 
+beforeEach(() => {
+  useBoardRunsMock.mockReturnValue({ data: { runs: [ROW] }, isPending: false, error: null });
+});
+
 function renderBoard(initial = "/board") {
   return render(
     <MemoryRouter initialEntries={[initial]}>
@@ -107,5 +117,74 @@ describe("Board header bands — contrast (never dilute a token fg with opacity)
       expect(band.className).not.toMatch(/opacity/);
       expect(badge.className).not.toMatch(/opacity/);
     }
+  });
+});
+
+describe("Board — the from issues / scheduled trigger filters (ADR-0056 part 1)", () => {
+  it("the from issues and scheduled chips are enabled and idle by default", () => {
+    renderBoard();
+    const issue = screen.getByTestId("board-filter-issue") as HTMLButtonElement;
+    const scheduled = screen.getByTestId("board-filter-scheduled") as HTMLButtonElement;
+    expect(issue.disabled).toBe(false);
+    expect(scheduled.disabled).toBe(false);
+    expect(issue.getAttribute("aria-pressed")).toBe("false");
+    expect(scheduled.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("pressing a trigger chip sends that trigger to the run list and toggles aria-pressed", () => {
+    renderBoard();
+    const scheduled = screen.getByTestId("board-filter-scheduled") as HTMLButtonElement;
+    fireEvent.click(scheduled);
+    expect(scheduled.getAttribute("aria-pressed")).toBe("true");
+    expect(useBoardRunsMock).toHaveBeenLastCalledWith({
+      projectId: undefined,
+      mine: false,
+      trigger: "schedule",
+    });
+    fireEvent.click(scheduled);
+    expect(scheduled.getAttribute("aria-pressed")).toBe("false");
+    expect(useBoardRunsMock).toHaveBeenLastCalledWith({
+      projectId: undefined,
+      mine: false,
+      trigger: null,
+    });
+  });
+
+  it("a trigger chip combines with the project select and the mine filter", () => {
+    renderBoard();
+    fireEvent.change(screen.getByTestId("board-project-select"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByTestId("board-filter-mine"));
+    fireEvent.click(screen.getByTestId("board-filter-issue"));
+    expect(useBoardRunsMock).toHaveBeenLastCalledWith({
+      projectId: "p1",
+      mine: true,
+      trigger: "issue",
+    });
+  });
+});
+
+describe("Board — honest empty states for a trigger filter", () => {
+  it("an empty scheduled filter shows the honest empty state", () => {
+    useBoardRunsMock.mockReturnValue({ data: { runs: [] }, isPending: false, error: null });
+    renderBoard();
+    fireEvent.click(screen.getByTestId("board-filter-scheduled"));
+    const empty = screen.getByTestId("board-empty-schedule");
+    expect(empty).toBeTruthy();
+    expect(empty.textContent).toBe("No scheduled runs");
+  });
+
+  it("an empty from-issues filter shows the honest empty state", () => {
+    useBoardRunsMock.mockReturnValue({ data: { runs: [] }, isPending: false, error: null });
+    renderBoard();
+    fireEvent.click(screen.getByTestId("board-filter-issue"));
+    const empty = screen.getByTestId("board-empty-issue");
+    expect(empty).toBeTruthy();
+    expect(empty.textContent).toBe("No runs started from issues");
+  });
+
+  it("no filter and no runs keeps the generic empty state", () => {
+    useBoardRunsMock.mockReturnValue({ data: { runs: [] }, isPending: false, error: null });
+    renderBoard();
+    expect(screen.getByTestId("board-empty")).toBeTruthy();
   });
 });

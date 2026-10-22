@@ -17,7 +17,13 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
-import { useProject, useRepositories, useWorkspaces, useWorkspaceRepoStatus } from "../api/queries";
+import {
+  useProject,
+  useRepositories,
+  useWorkspaces,
+  useWorkspaceRepoStatus,
+  useConversation,
+} from "../api/queries";
 import { useProjectRuns } from "../api/runs";
 import { usePipelines } from "../api/pipelines";
 import { isNotGitHubRepository, useRepoIssues, type GitHubIssue } from "../api/issues";
@@ -212,6 +218,15 @@ function RepoWorkspaceRow({
   const branch = entry?.run_ref ?? "";
   const dirty = status.data?.dirty ?? false;
 
+  // What the workspace belongs to: a run it was created for, or the thread it
+  // was opened in. The owning id stays a `title` attribute only — the row
+  // names the run or the thread, never the bare uuid.
+  const runId = workspace.scope_kind === "run" ? (workspace.run_id ?? null) : null;
+  const conversationId =
+    workspace.scope_kind === "conversation" ? (workspace.conversation_id ?? null) : null;
+  const conversation = useConversation(conversationId ?? "");
+  const threadTitle = conversation.data?.title ?? null;
+
   return (
     <Row data-testid={`repo-workspace-${workspace.id}`}>
       <StatusChip state={state} label={workspace.state} />
@@ -230,6 +245,25 @@ function RepoWorkspaceRow({
           )}
         </span>
       </span>
+      {runId ? (
+        <Link
+          to={routes.run(runId)}
+          title={workspace.id}
+          className="font-mono text-[11px] text-accent underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          data-testid={`repo-workspace-run-${workspace.id}`}
+        >
+          run #{shortId(runId)}
+        </Link>
+      ) : conversationId ? (
+        <Link
+          to={routes.thread(conversationId)}
+          title={workspace.id}
+          className="font-mono text-[11px] text-accent underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          data-testid={`repo-workspace-thread-${workspace.id}`}
+        >
+          thread {threadTitle ?? shortId(conversationId)}
+        </Link>
+      ) : null}
     </Row>
   );
 }

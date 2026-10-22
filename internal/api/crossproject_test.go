@@ -148,13 +148,17 @@ func TestCrossProjectRunListFilters(t *testing.T) {
 	rec := cpReq(t, s,
 		"/api/v1/runs?status=running,waiting_human,running"+
 			"&project_id="+m4UUID+"&pipeline_id="+m4UUID2+
-			"&mine=true&updated_since="+since+"&limit=7&cursor="+cursor)
+			"&mine=true&updated_since="+since+"&limit=7&cursor="+cursor+
+			"&trigger=manual")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	f := fx2.runsFilter
 	if len(f.Statuses) != 2 || f.Statuses[0] != "running" || f.Statuses[1] != "waiting_human" {
 		t.Fatalf("statuses = %v, want the deduplicated csv", f.Statuses)
+	}
+	if f.Trigger != "manual" {
+		t.Fatalf("trigger = %q, want manual (ADR-0056)", f.Trigger)
 	}
 	if f.ProjectID != m4UUID || f.PipelineID != m4UUID2 {
 		t.Fatalf("ids = %q %q, want the uuid filters", f.ProjectID, f.PipelineID)
@@ -178,6 +182,8 @@ func TestCrossProjectRunListValidation(t *testing.T) {
 		{"?pipeline_id=not-a-uuid", "invalid_pipeline_id"},
 		{"?mine=yes", "invalid_mine"},
 		{"?updated_since=yesterday", "invalid_updated_since"},
+		{"?trigger=bogus", "invalid_trigger"},
+		{"?trigger=running", "invalid_trigger"},
 		{"?limit=0", "invalid_limit"},
 		{"?limit=201", "invalid_limit"},
 		{"?limit=abc", "invalid_limit"},

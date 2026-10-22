@@ -23,7 +23,9 @@ function steps(states: CrossProjectRunStep["state"][]): CrossProjectRunStep[] {
   }));
 }
 
-function run(overrides: Partial<CrossProjectRun> = {}): CrossProjectRun {
+function run(
+  overrides: Partial<CrossProjectRun> & { source_conversation_id?: string | null } = {},
+): CrossProjectRun {
   return {
     id: "9c1eaaaa-bbbb-cccc-dddd-eeeeeeee0000",
     project_id: "p1",
@@ -108,5 +110,49 @@ describe("RunCard", () => {
     expect(retry.getAttribute("href")).toBe("/runs/9c1eaaaa-bbbb-cccc-dddd-eeeeeeee0000");
     expect(fix.getAttribute("href")).toBe("/runs/9c1eaaaa-bbbb-cccc-dddd-eeeeeeee0000");
     expect(onOpenRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("RunCard — trigger badge", () => {
+  const badgeId = "board-trigger-badge-9c1eaaaa-bbbb-cccc-dddd-eeeeeeee0000";
+
+  it("a manual run renders no badge", () => {
+    renderCard(run({ trigger: { kind: "manual", ref: null } }));
+    expect(screen.queryByTestId(badgeId)).toBeNull();
+  });
+
+  it("a scheduled run renders the ⏱ scheduled badge", () => {
+    renderCard(run({ trigger: { kind: "schedule", ref: "sch-12" } }));
+    const badge = screen.getByTestId(badgeId);
+    expect(badge.textContent).toContain("scheduled");
+  });
+
+  it("an issue run renders the #number badge linking to the GitHub issue when the ref parses", () => {
+    renderCard(run({ trigger: { kind: "issue", ref: "acme/api#512" } }));
+    const badge = screen.getByTestId(badgeId);
+    expect(badge.getAttribute("href")).toBe("https://github.com/acme/api/issues/512");
+    expect(badge.textContent).toContain("#512");
+  });
+
+  it("an unparseable issue ref renders no badge", () => {
+    renderCard(run({ trigger: { kind: "issue", ref: "not-a-ref" } }));
+    expect(screen.queryByTestId(badgeId)).toBeNull();
+  });
+
+  it("a thread run renders the ↩ from thread badge linking to the thread", () => {
+    renderCard(
+      run({
+        trigger: { kind: "thread", ref: null },
+        source_conversation_id: "conv-1",
+      }),
+    );
+    const badge = screen.getByTestId(badgeId);
+    expect(badge.getAttribute("href")).toBe("/threads/conv-1");
+    expect(badge.textContent).toContain("from thread");
+  });
+
+  it("a thread run without a source conversation renders no badge", () => {
+    renderCard(run({ trigger: { kind: "thread", ref: null } }));
+    expect(screen.queryByTestId(badgeId)).toBeNull();
   });
 });

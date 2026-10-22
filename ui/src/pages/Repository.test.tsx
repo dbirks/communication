@@ -169,4 +169,37 @@ describe("/p/:projectId/:repo", () => {
     const row = await screen.findByTestId(`repo-workspace-${workspaceId}`);
     await waitFor(() => expect(row.textContent).toContain("dirty"), { timeout: 8000 });
   });
+
+  it("names the workspace's owning run instead of showing a raw id", async () => {
+    const runWorkspace: Workspace = {
+      ...workspace,
+      id: "01987a76-7777-7000-8000-abcdef012345",
+      run_id: "01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c",
+    };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: [
+        { path: "/api/v1/me", body: meFixture },
+        { path: `/api/v1/projects/${projectFixture.id}`, body: projectFixture },
+        { path: `/api/v1/projects/${projectFixture.id}/repos`, body: { items: [repository] } },
+        {
+          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
+          body: { workspaces: [runWorkspace] },
+        },
+        {
+          path: `/api/v1/workspaces/${runWorkspace.id}/repos/${repositoryId}/status`,
+          body: workspaceStatus,
+        },
+        { path: `/api/v1/projects/${projectFixture.id}/runs`, body: { runs: [run] } },
+        { path: "/api/v1/pipelines", body: wirePipelineList },
+      ],
+    });
+
+    const row = await screen.findByTestId(`repo-workspace-${runWorkspace.id}`);
+    const runLink = await screen.findByTestId(`repo-workspace-run-${runWorkspace.id}`);
+    expect(runLink.getAttribute("href")).toBe("/runs/01987b11-2b5b-7e4c-8f20-3d4e5f6a7b8c");
+    expect(runLink.textContent).toContain("run #");
+    // The bare id stays a title attribute, never a label in the row text.
+    expect(row.textContent).not.toContain(runWorkspace.id);
+  });
 });

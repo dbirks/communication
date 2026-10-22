@@ -54,6 +54,7 @@ type rawIssue struct {
 	Body      string          `json:"body"`
 	State     string          `json:"state"`
 	HTMLURL   string          `json:"html_url"`
+	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
 	Labels    []rawLabel      `json:"labels"`
 	PR        json.RawMessage `json:"pull_request"`
@@ -115,8 +116,16 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery) 
 		"state":    []string{state},
 		"per_page": []string{strconv.Itoa(per)},
 	}
-	if label := strings.TrimSpace(q.Label); label != "" {
+	if sort := strings.TrimSpace(q.Sort); sort != "" {
+		query.Set("sort", sort)
+	}
+	if len(q.Labels) > 0 {
+		query.Set("labels", strings.Join(q.Labels, ","))
+	} else if label := strings.TrimSpace(q.Label); label != "" {
 		query.Set("labels", label)
+	}
+	if !q.Since.IsZero() {
+		query.Set("since", strconv.FormatInt(q.Since.Unix(), 10))
 	}
 	target := c.base() + "/repos/" + url.PathEscape(repo.Owner) + "/" +
 		url.PathEscape(repo.Name) + "/issues?" + query.Encode()
@@ -162,6 +171,7 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery) 
 			Labels:        labelNames(it.Labels),
 			HTMLURL:       it.HTMLURL,
 			State:         it.State,
+			CreatedAt:     parseTime(it.CreatedAt),
 			UpdatedAt:     parseTime(it.UpdatedAt),
 			BodyTruncated: truncated,
 		})

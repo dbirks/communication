@@ -13,15 +13,18 @@
  *   is no API that returns one).
  * - FROM APM PACKAGE: the pinned triple plus the pin form the old single
  *   page had (moved, not rewritten — every testid travels).
- * - USED BY: "usage tracking not available yet" — a "0" would be a claim
- *   no endpoint can support.
+ * - USED BY: `GET /api/v1/agent-profiles/{profileId}/usage` — the workflows
+ *   that reference this profile in their latest published revision or an open
+ *   draft, with the honest empty, loading and error states.
  */
 import { useState } from "react";
 import { useQueryClient, useQueries } from "@tanstack/react-query";
+import { Link } from "react-router";
 import { Panel } from "../ds/Panel";
 import { Button } from "../ds/Button";
 import { Field, Input, Select } from "../ds/Field";
 import { Alert } from "../ds/Alert";
+import { StatusChip } from "../ds/Row";
 import { STATES } from "../ds/states";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { apiFetch, ApiError, problemOf } from "../../api/client";
@@ -33,6 +36,7 @@ import {
 } from "../../api/queries";
 import type { AgentProfileAPMPatch } from "../../api/queries";
 import { ENFORCEMENT_COPY } from "../../api/sandbox";
+import { useAgentProfileUsage, type Usage } from "../../api/useUsage";
 import type { AgentProfile, Project, Secret, SecretList } from "../../api/types";
 import {
   capabilityCell,
@@ -45,6 +49,7 @@ import {
   type SystemSandbox,
 } from "../../lib/profiles";
 import { shortDigest } from "../../lib/pipeline/yamlPointer";
+import { routes } from "../../lib/routes";
 import { Chip } from "./ProfileList";
 
 const CAPABILITY_TONE: Record<string, string> = {
@@ -112,6 +117,8 @@ export default function ProfileDetail({
   const entry = launcherEntry(launchers, profile.launcher_id);
   const sandboxQuery = useSystemSandbox();
   const accounts = useProfileAccounts(profile.id);
+  const usageQuery = useAgentProfileUsage(profile.id);
+  const usage = usageQuery.data;
   const [duplicateProblem, setDuplicateProblem] = useState<unknown>(null);
 
   /**
@@ -320,14 +327,85 @@ export default function ProfileDetail({
       </Panel>
 
       <Panel title="USED BY" headingId={`profile-usage-${profile.id}`} headingLevel={3}>
-        <p
-          className="p-[10px] font-mono text-[11px] text-muted"
-          data-testid="profiles-usage-unavailable"
-        >
-          usage tracking not available yet
-        </p>
+        <div data-testid="profile-usage">
+          {usageQuery.isPending ? (
+            <Spinner label="Loading usage" />
+          ) : usageQuery.isError ? (
+            <p
+              className="p-[10px] font-mono text-[11px] text-muted"
+              data-testid="profiles-usage-unavailable"
+            >
+              usage unavailable — the workflows that use this profile could not be read
+            </p>
+          ) : (usage?.uses.length ?? 0) === 0 ? (
+            <p className="p-[10px] font-mono text-[11px] text-muted">
+              Not used by any workflow yet
+            </p>
+          ) : (
+            <>
+              <p
+                className="p-[10px] font-mono text-[11px] text-muted"
+                data-testid="profile-usage-summary"
+              >
+                Used by {usage?.workflow_count} workflows · {usage?.step_count} steps
+              </p>
+              <ul className="divide-y divide-line" data-testid="profile-usage-list">
+                {usage?.uses.map((use) => (
+                  <ProfileUsageRow
+                    key={`${use.pipeline_id}:${use.source}:${use.node_id}`}
+                    use={use}
+                  />
+                ))}
+              </ul>
+              {usage?.truncated ? (
+                <p
+                  className="p-[10px] font-mono text-[11px] text-faint"
+                  data-testid="profile-usage-truncated"
+                >
+                  showing first 200
+                </p>
+              ) : null}
+            </>
+          )}
+        </div>
       </Panel>
     </div>
+  );
+}
+
+/** One row of the USED BY report: the workflow that references this profile
+ * (its latest published revision, or an open draft) and the node that carries
+ * the reference. The workflow name is the link; the source says whether the
+ * use is a revision or a draft, and only then is the revision / draft id part
+ * of the answer. */
+function ProfileUsageRow({ use }: { use: Usage }) {
+  const href =
+    use.source === "draft" && use.draft_id != null
+      ? routes.draft(use.pipeline_id, use.draft_id)
+      : routes.workflow(use.pipeline_id);
+  return (
+    <li
+      className="flex flex-wrap items-center gap-x-[6px] gap-y-[2px] py-[3px]"
+      data-testid="profile-usage-row"
+    >
+      <Link
+        className="text-[12px] font-medium underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        to={href}
+        data-testid={`profile-usage-workflow-${use.pipeline_id}`}
+      >
+        {use.pipeline_name}
+      </Link>
+      <span className="font-mono text-[10.5px] text-muted">{use.node_label ?? use.node_id}</span>
+      {use.source === "draft" ? (
+        <StatusChip
+          state="info"
+          label="draft"
+          labelProps={{ "data-testid": `profile-usage-source-${use.pipeline_id}-${use.node_id}` }}
+        />
+      ) : (
+        <span className="font-mono text-[10px] text-muted">v{use.revision_number}</span>
+      )}
+    </li>
   );
 }
 

@@ -119,6 +119,25 @@ func m4RunSummary(r Run) api.RunSummaryView {
 	v.FailedCause = m4RunReadPtr(r.FailedCause)
 	v.ParentRunID = m4RunReadPtr(r.ParentRunID)
 	v.TriggeredBy = m4RunReadPtr(r.TriggeredBy)
+	v.Trigger = m4RunTrigger(r)
+	return v
+}
+
+// m4RunTrigger projects the ADR-0056 trigger fact onto the run JSON: the
+// kind how the run was started ('manual' for a hand start, 'thread' for a
+// handoff start, 'schedule' for a fire, 'issue' for an issue start) and the
+// trigger's own identifier in Ref (the schedule id, the `owner/repo#<n>`, or
+// null when the kind is 'manual'/'thread' and the context is the thread).
+func m4RunTrigger(r Run) *api.RunTriggerView {
+	kind := r.TriggerKind
+	if kind == "" {
+		kind = "manual"
+	}
+	v := &api.RunTriggerView{Kind: kind}
+	if r.TriggerRef != "" {
+		ref := r.TriggerRef
+		v.Ref = &ref
+	}
 	return v
 }
 
@@ -270,8 +289,20 @@ func m4RunReadInputs(ctx context.Context, pool *pgxpool.Pool, runID string) ([]a
 
 // ListProjectRuns is route 21: the project's runs newest-first. An invisible
 // project answers api.ErrProjectNotFound (the handler's own project gate
-// agrees), never an empty list that pretends the project has no runs.
+// agrees), never an empty list that pretends the project has no runs. The
+// assistant's read surface reuses it with no trigger filter.
 func (a APIRunStore) ListProjectRuns(ctx context.Context, c api.Caller, projectID string) ([]api.RunSummaryView, error) {
+	return a.listProjectRuns(ctx, c, projectID, "")
+}
+
+// ListProjectRunsFiltered is route 21's ADR-0056 trigger-filtered read: the
+// project's runs, optionally kept only to the started-by kind (the handler
+// validates the kind before it reaches the store).
+func (a APIRunStore) ListProjectRunsFiltered(ctx context.Context, c api.Caller, projectID string, trigger string) ([]api.RunSummaryView, error) {
+	return a.listProjectRuns(ctx, c, projectID, trigger)
+}
+
+func (a APIRunStore) listProjectRuns(ctx context.Context, c api.Caller, projectID, trigger string) ([]api.RunSummaryView, error) {
 	pool, err := m4RunReadPool(a)
 	if err != nil {
 		return nil, err
@@ -279,7 +310,7 @@ func (a APIRunStore) ListProjectRuns(ctx context.Context, c api.Caller, projectI
 	if _, err := m4RunReadProjectScope(ctx, pool, c, projectID); err != nil {
 		return nil, err
 	}
-	runs, err := a.Runs.ListProjectRuns(ctx, projectID)
+	runs, err := a.Runs.ListProjectRuns(ctx, projectID, trigger)
 	if err != nil {
 		return nil, err
 	}

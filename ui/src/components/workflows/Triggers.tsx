@@ -188,6 +188,9 @@ function ScheduleRow({
   const patch = usePatchSchedule(group.project.id);
   const stateText = schedule.enabled ? "on" : "paused";
   const nextFire = nextFireText(schedule);
+  const words = cronInWords(schedule.cron_expr);
+  const cronRaw = schedule.cron_expr.trim();
+  const cronEnglish = words.trim() === cronRaw ? cronRaw : words.trim();
   return (
     <li
       className="flex flex-wrap items-center gap-[10px]"
@@ -203,7 +206,7 @@ function ScheduleRow({
         className="font-mono text-[11px] text-ink-2"
         data-testid={`trigger-cron-words-${schedule.id}`}
       >
-        {cronInWords(schedule.cron_expr)}
+        {cronEnglish}
       </span>
       <span
         className="font-mono text-[11px] text-faint"

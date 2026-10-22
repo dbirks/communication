@@ -232,6 +232,61 @@ export function formatAge(iso: string, now: Date): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/* ----------------------------------------------------------- trigger */
+
+/** ADR-0056 (part 1): the run's trigger kind — how it was started. */
+export type RunTriggerKind = components["schemas"]["RunTrigger"]["kind"];
+
+/** The run-row shape the trigger reads: the board summary's `trigger` plus the
+ *  detail's thread link (the drawer reads both from the same row source). */
+export interface RunTriggerSource {
+  trigger?: { kind?: string | null; ref?: string | null } | null;
+}
+
+/** The trigger's own identifier for a non-manual kind: the schedule id, or `owner/repo#<number>`. */
+export function triggerRef(run: RunTriggerSource): string | null {
+  const ref = run.trigger?.ref;
+  return typeof ref === "string" && ref !== "" ? ref : null;
+}
+
+/** The thread a `thread`-kind run was started from (ADR-0053), when the row carries it. */
+export function triggerConversationId(run: RunTriggerSource): string | null {
+  const id = (run as { source_conversation_id?: string | null }).source_conversation_id;
+  return id ?? null;
+}
+
+/** The badge state for a run's trigger; null for a `manual` (or trigger-less) run. */
+export type RunTriggerBadgeState =
+  | { kind: "schedule"; scheduleId: string | null }
+  | { kind: "issue"; owner: string; repo: string; number: string }
+  | { kind: "thread"; conversationId: string };
+
+/**
+ * The badge the board cards and the run drawer render for a run's trigger
+ * (ADR-0056 part 1; artboards 2d / 3c). A `manual` run — or a row that carries
+ * no trigger at all — gets no badge; the honest absence is no badge. An issue
+ * ref that does not parse into `owner/repo#<number>` renders no badge either.
+ */
+export function runTriggerBadge(run: RunTriggerSource): RunTriggerBadgeState | null {
+  const kind = run.trigger?.kind;
+  if (kind === "manual") return null;
+  if (kind === "schedule") {
+    const ref = run.trigger?.ref ?? null;
+    return { kind: "schedule", scheduleId: ref };
+  }
+  if (kind === "issue") {
+    const match = /^([^/#]+)\/([^/#]+)#(\d+)$/.exec(run.trigger?.ref ?? "");
+    if (!match) return null;
+    return { kind: "issue", owner: match[1], repo: match[2], number: match[3] };
+  }
+  if (kind === "thread") {
+    const conversationId = triggerConversationId(run);
+    if (!conversationId) return null;
+    return { kind: "thread", conversationId };
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------ groupings */
 
 export interface BoardRowGroup {

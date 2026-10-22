@@ -128,7 +128,7 @@ func TestArtifactListRequiresProjectVisibility(t *testing.T) {
 		artDigest("r1"), "ready", "standard")
 
 	// A member sees the row.
-	list, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project)
+	list, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, "")
 	if err != nil {
 		t.Fatalf("member ListArtifacts: %v", err)
 	}
@@ -138,15 +138,15 @@ func TestArtifactListRequiresProjectVisibility(t *testing.T) {
 
 	// A non-member's query returns an error, not an empty page: the handler
 	// turns it into 404 + audit (case 15).
-	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, outsider, orgID, false), project); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, outsider, orgID, false), project, ""); !errors.Is(err, ErrProjectNotFound) {
 		t.Errorf("non-member ListArtifacts = %v, want ErrProjectNotFound", err)
 	}
 	// A garbage id is the same answer, and no cast error.
-	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), "not-a-uuid"); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), "not-a-uuid", ""); !errors.Is(err, ErrProjectNotFound) {
 		t.Errorf("bad project id = %v, want ErrProjectNotFound", err)
 	}
 	// An org admin with no membership sees it too (authz.CanView's rule).
-	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, outsider, orgID, true), project); err != nil {
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, outsider, orgID, true), project, ""); err != nil {
 		t.Errorf("org admin ListArtifacts: %v", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestArtifactListSensitivityIsFilteredInSQL(t *testing.T) {
 			artDigest(s), "ready", s)
 	}
 
-	viewerList, err := store.ListArtifacts(ctx, artCallOf(t, pool, viewer, orgID, false), project)
+	viewerList, err := store.ListArtifacts(ctx, artCallOf(t, pool, viewer, orgID, false), project, "")
 	if err != nil {
 		t.Fatalf("viewer list: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestArtifactListSensitivityIsFilteredInSQL(t *testing.T) {
 		}
 	}
 
-	maintainerList, err := store.ListArtifacts(ctx, artCallOf(t, pool, maintainer, orgID, false), project)
+	maintainerList, err := store.ListArtifacts(ctx, artCallOf(t, pool, maintainer, orgID, false), project, "")
 	if err != nil {
 		t.Fatalf("maintainer list: %v", err)
 	}
@@ -216,12 +216,99 @@ func TestArtifactListHidesRowsThatAreNotReady(t *testing.T) {
 		artInsert(t, pool, orgID, project, state+".md", "markdown", "text/markdown",
 			artDigest(state), state, "standard")
 	}
-	list, err := store.ListArtifacts(ctx, artCallOf(t, pool, owner, orgID, false), project)
+	list, err := store.ListArtifacts(ctx, artCallOf(t, pool, owner, orgID, false), project, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(list) != 1 || list[0].State != "ready" {
 		t.Errorf("listing = %s, want the one ready row", artNames(list))
+	}
+}
+
+// artInsertForConversation is artInsert with the conversation correlation
+// the thread filter reads: the artifact belongs to that thread's turn.
+func artInsertForConversation(t *testing.T, pool *pgxpool.Pool, orgID, projectID, conversationID, name, kind, mediaType, digest, state, sensitivity string) string {
+	t.Helper()
+	var id string
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO artifacts (organization_id, project_id, conversation_id, name, kind, media_type, sha256,
+			size_bytes, storage_backend, storage_key, sensitivity, state, created_by, ready_at)
+		VALUES ($1::uuid, $2::uuid, NULLIF($3,'')::uuid, $4, $5, $6, $7, 12, 'local', $8, $9, $10, 'worker',
+			CASE WHEN $10 = 'ready' THEN now() ELSE NULL END)
+		RETURNING id::text`,
+		orgID, projectID, conversationID, name, kind, mediaType, digest,
+		artKey(t, projectID, kind, digest, mediaType), sensitivity, state).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert artifact %s/%s: %v", name, sensitivity, err)
+	}
+	return id
+}
+
+// TestArtifactListByConversation is the design handoff's thread-rail ask
+// (docs/design/handoff-app-shell/gaps/threads.md, W3) at the database level: the
+// `?conversation_id=` filter must answer the thread's own artifacts — the rows
+// its turns captured plus the rows its started runs captured — while an unknown
+// or invisible conversation must answer not-found rather than an empty list.
+func TestArtifactListByConversation(t *testing.T) {
+	store, projects, orgID, pool := artFixture(t)
+	ctx := testCtx(t)
+	owner := prjUser(t, pool, orgID, "owner")
+	member := prjUser(t, pool, orgID, "member")
+	project := artProject(t, projects, owner, orgID, "Thread artifacts", "thread-artifacts")
+	artMember(t, pool, project, member, "contributor")
+	cnv := &CnvStore{Pool: pool}
+	var profileID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM agent_profiles WHERE organization_id = $1 AND name = 'Claude Code'`, orgID).Scan(&profileID); err != nil {
+		t.Fatalf("seeded profile lookup (migration 00003): %v", err)
+	}
+	threadA, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Fix the flaky spec", "please")
+	threadB, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Add retry logging", "please")
+
+	artInsertForConversation(t, pool, orgID, project, threadA.ID, "report.md", "markdown", "text/markdown", artDigest("a"), "ready", "standard")
+	artInsertForConversation(t, pool, orgID, project, threadA.ID, "notes.md", "markdown", "text/markdown", artDigest("b"), "ready", "standard")
+	artInsertForConversation(t, pool, orgID, project, threadB.ID, "retry.log", "markdown", "text/markdown", artDigest("c"), "ready", "standard")
+
+	list, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadA.ID)
+	if err != nil {
+		t.Fatalf("thread A list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("thread A sees %d rows (%s), want its two artifacts", len(list), artNames(list))
+	}
+
+	bList, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadB.ID)
+	if err != nil {
+		t.Fatalf("thread B list: %v", err)
+	}
+	if len(bList) != 1 || bList[0].Name != "retry.log" {
+		t.Fatalf("thread B sees %s, want only its own artifact", artNames(bList))
+	}
+
+	// A thread with no artifacts yet is a real (empty) answer, not an error.
+	threadEmpty, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Empty thread", "")
+	emptyList, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadEmpty.ID)
+	if err != nil {
+		t.Fatalf("empty thread list: %v", err)
+	}
+	if len(emptyList) != 0 {
+		t.Fatalf("empty thread sees %d rows, want none", len(emptyList))
+	}
+
+	// An unknown conversation is the invisible answer (404 upstream), never an
+	// empty list that would confirm the project exists.
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrArtifactNotFound) {
+		t.Errorf("unknown conversation = %v, want ErrArtifactNotFound", err)
+	}
+	// A malformed conversation id is refused before any cast, same as a bad
+	// artifact id.
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, "not-a-uuid"); !errors.Is(err, ErrArtifactNotFound) {
+		t.Errorf("bad conversation id = %v, want ErrArtifactNotFound", err)
+	}
+	// A conversation in another project is not this project's thread either.
+	projectB := artProject(t, projects, owner, orgID, "Other threads", "other-threads")
+	threadElsewhere, err := cnv.CreateConversation(ctx, artCallOf(t, pool, owner, orgID, false), projectB, profileID, "Elsewhere", "please")
+	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadElsewhere.ID); !errors.Is(err, ErrArtifactNotFound) {
+		t.Errorf("foreign-project conversation = %v, want ErrArtifactNotFound", err)
 	}
 }
 
@@ -414,7 +501,7 @@ func TestAPIArtifactStoreConversionDrivesTheHandlers(t *testing.T) {
 		t.Errorf("the adapter filled a preview_url the handler is meant to decide: %s", raw)
 	}
 
-	list, err := apiStore.ListArtifacts(ctx, c, project)
+	list, err := apiStore.ListArtifacts(ctx, c, project, "")
 	if err != nil {
 		t.Fatalf("adapter ListArtifacts: %v", err)
 	}
@@ -434,7 +521,7 @@ func TestAPIArtifactStoreConversionDrivesTheHandlers(t *testing.T) {
 	if _, err := apiStore.GetArtifact(ctx, c, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, api.ErrArtifactNotFound) {
 		t.Errorf("missing artifact = %v, want api.ErrArtifactNotFound", err)
 	}
-	if _, err := apiStore.ListArtifacts(ctx, api.Caller{UserID: owner}, project); err == nil {
+	if _, err := apiStore.ListArtifacts(ctx, api.Caller{UserID: owner}, project, ""); err == nil {
 		t.Error("a caller with no organization was accepted")
 	}
 }

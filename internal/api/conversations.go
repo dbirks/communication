@@ -88,6 +88,32 @@ type AgentProfileView struct {
 	APMPackageRef *string `json:"apm_package_ref"`
 	APMTarget     *string `json:"apm_target"`
 	APMLockDigest *string `json:"apm_lock_digest"`
+	// APMContents is the lock's names-only contents summary (ADR-0054): the
+	// skills/instructions/MCP names the resolved package deploys, plus the
+	// truncation flag. Null while the profile has no resolved lock — the honest
+	// "not locked yet", never a fabricated empty list.
+	APMContents *AgentProfileContentsView `json:"apm_contents"`
+}
+
+// AgentProfileContentsView is the names-only lock summary the API reports
+// after a worker-resolved lock (ADR-0054): what the package would deploy, by
+// name, and whether the list was cut at the summary cap. It is a lock summary,
+// not a payload — no lock file body, no paths beyond the names, no prompts or
+// values.
+type AgentProfileContentsView struct {
+	Skills       []string `json:"skills"`
+	Instructions []string `json:"instructions"`
+	MCPServers   []string `json:"mcp_servers"`
+	Truncated    bool     `json:"truncated"`
+}
+
+// APMLockRequestView is the state of one apm_lock_requests row as the API
+// answers it: the request id and status a client switches on, plus the bounded
+// failure detail when the resolve failed.
+type APMLockRequestView struct {
+	RequestID string `json:"request_id"`
+	Status    string `json:"status"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ConversationControlView is the ConversationControl schema. Version is the CAS
@@ -304,6 +330,18 @@ type ProfileStore interface {
 	ListAgentProfiles(ctx context.Context, c Caller) ([]AgentProfileView, error)
 	CreateAgentProfile(ctx context.Context, c Caller, in AgentProfileCreateInput) (AgentProfileView, error)
 	PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, in AgentProfileAPMPatch) (AgentProfileView, error)
+	// Usage is GET /api/v1/agent-profiles/{profileId}/usage: the workflows
+	// that reference this profile, from the latest published revision plus
+	// the open drafts (the app-shell's Used-by panel; read-only, any org
+	// member, org-scoped in the store's SQL, invisible subject → 404).
+	Usage(ctx context.Context, c Caller, profileID string) (AgentProfileUsage, error)
+	// CreateAPMLockRequest is POST /api/v1/agent-profiles/{profileId}/apm/lock:
+	// the control-plane half of the server-side lock (ADR-0054). It queues a
+	// worker-side resolve and answers 202 with the new request's id.
+	CreateAPMLockRequest(ctx context.Context, c Caller, profileID string) (APMLockRequestView, error)
+	// GetAPMLockRequest is GET /api/v1/agent-profiles/{profileId}/apm/lock: the
+	// latest lock request status for one profile.
+	GetAPMLockRequest(ctx context.Context, c Caller, profileID string) (APMLockRequestView, error)
 }
 
 // Validation limits, the tighter of api/openapi.yaml and the schema CHECKs.
@@ -324,6 +362,12 @@ func RegisterConversations(s *Server, store ConversationStore, profiles ProfileS
 		// ADR-0030: profiles are writable by the organization's library role.
 		s.HandleAuthed("POST /api/v1/agent-profiles", http.HandlerFunc(h.createProfile))
 		s.HandleAuthed("PATCH /api/v1/agent-profiles/{profileId}", http.HandlerFunc(h.patchProfile))
+		// The app-shell's Used-by panel (design handoff W5): the workflows
+		// that reference this profile, from the latest published revision plus
+		// the open drafts.
+		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/usage", http.HandlerFunc(h.getProfileUsage))
+		s.HandleAuthed("POST /api/v1/agent-profiles/{profileId}/apm/lock", http.HandlerFunc(h.postAgentProfileAPMLock))
+		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/apm/lock", http.HandlerFunc(h.getAgentProfileAPMLock))
 	}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.listConversations))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.createConversation))

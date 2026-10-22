@@ -112,7 +112,7 @@ type PreviewTokenResponse struct {
 // sensitive query includes project permission predicate"), and answers with
 // the sentinel errors above.
 type ArtifactStore interface {
-	ListArtifacts(ctx context.Context, c Caller, projectID string) ([]ArtifactView, error)
+	ListArtifacts(ctx context.Context, c Caller, projectID string, conversationID string) ([]ArtifactView, error)
 	GetArtifact(ctx context.Context, c Caller, artifactID string) (ArtifactView, error)
 	RecordDenied(ctx context.Context, c Caller, projectID, action string) error
 }
@@ -223,7 +223,18 @@ func (h *artHandlers) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectID := r.PathValue("projectId")
-	list, err := h.store.ListArtifacts(r.Context(), c, projectID)
+	// The design handoff's thread-rail ask (docs/design/handoff-app-shell/
+	// gaps/threads.md, W3): `?conversation_id=` narrows the project's artifact
+	// list to one thread's artifacts. The value is validated before any store
+	// call so a malformed id answers 400 in the file's problem shape instead of
+	// reaching a cast.
+	conversationID := r.URL.Query().Get("conversation_id")
+	if conversationID != "" && !validUUID(conversationID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request",
+			"invalid_conversation_id: conversation_id must be a uuid.")
+		return
+	}
+	list, err := h.store.ListArtifacts(r.Context(), c, projectID, conversationID)
 	if err != nil {
 		h.fail(w, r, c, projectID, "artifact.list", err)
 		return

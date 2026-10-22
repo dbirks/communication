@@ -214,6 +214,10 @@ type NodeTemplateStore interface {
 	NodeFromDraft(ctx context.Context, c Caller, draftID, nodeID string) (kind string, config json.RawMessage, err error)
 	// RecordDenied writes the audit row for a refused read or mutation.
 	RecordDenied(ctx context.Context, c Caller, resourceID, action string) error
+	// Usage is GET /api/v1/node-templates/{templateId}/usage: the workflows
+	// that reference this step template (the design's Used-by panel; read-only,
+	// any org member, org-scoped in the store's SQL, invisible subject → 404).
+	Usage(ctx context.Context, c Caller, templateID string) (NodeTemplateUsage, error)
 }
 
 // --- request bodies -----------------------------------------------------------
@@ -258,6 +262,10 @@ func RegisterNodeTemplates(s *Server, store NodeTemplateStore) {
 	s.HandleAuthed("GET /api/v1/node-templates", http.HandlerFunc(h.list))
 	s.HandleAuthed("POST /api/v1/node-templates", http.HandlerFunc(h.create))
 	s.HandleAuthed("GET /api/v1/node-templates/{templateId}", http.HandlerFunc(h.get))
+	// The design's Used-by panel (handoff W5): the workflows that reference
+	// this step template, from the latest published revision plus the open
+	// drafts.
+	s.HandleAuthed("GET /api/v1/node-templates/{templateId}/usage", http.HandlerFunc(h.getNodeTemplateUsage))
 	// The ADR-0049 prose writes `POST /node-templates/{id}:duplicate`; the
 	// Go 1.22 ServeMux wildcard must be a whole segment, so the route is
 	// the `/duplicate` action-segment the house already uses for

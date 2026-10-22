@@ -93,6 +93,16 @@ type Run struct {
 	CreatedAt            time.Time
 	StartedAt            *time.Time
 	FinishedAt           *time.Time
+
+	// Trigger (ADR-0056) is how this run was started: 'manual', 'schedule',
+	// 'issue' or 'thread'. Empty string is the honest default a pre-trigger
+	// writer still carries after the 00012 backfill ('manual'); a schedule fire
+	// names its schedule in TriggerRef, an issue start its `owner/repo#<n>`.
+	TriggerKind string
+	// TriggerRef names the trigger: the schedule id for 'schedule', the
+	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
+	// thread start keeps source_conversation_id, ADR-0053).
+	TriggerRef string
 }
 
 // NodeExecution is one runtime occurrence of a node in a run, identified by
@@ -176,7 +186,8 @@ const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revis
 	repo_snapshot, status, failed_cause, paused_reason, cancel_requested_at, depth,
 	COALESCE(parent_run_id::text, ''), COALESCE(triggered_by::text, ''),
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
-	priority, expression_evaluations, created_at, started_at, finished_at`
+	priority, expression_evaluations, created_at, started_at, finished_at,
+	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, '')`
 
 func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 	var (
@@ -191,7 +202,8 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		&r.AssignmentID, &r.SourceConversationID, &r.RevisionDigest, &r.PlanDigest, &plan, &polic, &repo,
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
-		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished)
+		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished,
+		&r.TriggerKind, &r.TriggerRef)
 	if err != nil {
 		return Run{}, err
 	}
@@ -225,6 +237,15 @@ type NewRun struct {
 	Depth                int
 	ParentRunID          string
 	TriggeredBy          string // "" ⇒ NULL (child or system start)
+	// Trigger (ADR-0056) is how this run was started: 'manual', 'schedule',
+	// 'issue' or 'thread'. Empty string is the honest default a pre-trigger
+	// writer still carries after the 00012 backfill ('manual'); a schedule fire
+	// names its schedule in TriggerRef, an issue start its `owner/repo#<n>`.
+	TriggerKind string
+	// TriggerRef names the trigger: the schedule id for 'schedule', the
+	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
+	// thread start keeps source_conversation_id, ADR-0053).
+	TriggerRef string
 	// Inputs are validated against spec.inputs by the caller; the store
 	// writes one run_inputs row per entry.
 	Inputs map[string]RunInput
@@ -289,18 +310,20 @@ func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run R
 	if run, err = s.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
-			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
-			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority)
+				source_conversation_id, revision_digest, plan_digest, plan_snapshot,
+				policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
+				trigger_kind, trigger_ref)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
-		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15)
+		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority)); err != nil {
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef)); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
 
@@ -373,11 +396,20 @@ func (s *RunStore) GetRun(ctx context.Context, id string) (Run, error) {
 	return r, nil
 }
 
-// ListProjectRuns returns a project's runs, newest first (route 21).
-func (s *RunStore) ListProjectRuns(ctx context.Context, projectID string) ([]Run, error) {
+// ListProjectRuns returns a project's runs, newest first (route 21). An
+// optional trigger (ADR-0056, validated by the handler) keeps only the runs
+// that were started by that kind; an empty value is the no-filter answer.
+func (s *RunStore) ListProjectRuns(ctx context.Context, projectID string, trigger string) ([]Run, error) {
+	where := `WHERE project_id = $1::uuid`
+	args := []any{projectID}
+	if trigger != "" {
+		where += `
+  AND trigger_kind = $2::text`
+		args = append(args, trigger)
+	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT `+runColumns+` FROM runs
-		WHERE project_id = $1::uuid ORDER BY created_at DESC, id DESC`, projectID)
+		`+where+` ORDER BY created_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list runs for project %s: %w", projectID, err)
 	}

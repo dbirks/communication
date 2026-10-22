@@ -70,6 +70,15 @@ type cnvFakeStore struct {
 	// unchanged.
 	lastListOrigin string
 	lastListQuery  string
+	// usage is the scripted answer for GET /api/v1/agent-profiles/{id}/usage;
+	// usageErr answers ErrProfileNotFound (the invisible-subject arm) when set.
+	usage      AgentProfileUsage
+	usageErr   error
+	usageCalls []string
+	// apmLockCalls / apmLockReads record the lock dispatch + status reads the
+	// handler made, so a test can prove the store was (or was not) asked.
+	apmLockCalls []cnvCreateLockCall
+	apmLockReads []string
 }
 
 type cnvCreateCall struct{ projectID, profileID, title, prompt string }
@@ -83,6 +92,10 @@ type cnvDenial struct {
 }
 type cnvDecideCall struct {
 	conversationID, requestID, optionID string
+}
+
+type cnvCreateLockCall struct {
+	profileID string
 }
 
 func cnvNewFakeStore() *cnvFakeStore {
@@ -180,6 +193,30 @@ func (f *cnvFakeStore) ListAgentProfiles(context.Context, Caller) ([]AgentProfil
 		return nil, f.customErr
 	}
 	return f.profiles, nil
+}
+
+func (f *cnvFakeStore) Usage(_ context.Context, _ Caller, profileID string) (AgentProfileUsage, error) {
+	f.usageCalls = append(f.usageCalls, profileID)
+	if f.usageErr != nil {
+		return AgentProfileUsage{}, f.usageErr
+	}
+	return f.usage, nil
+}
+
+func (f *cnvFakeStore) CreateAPMLockRequest(_ context.Context, c Caller, profileID string) (APMLockRequestView, error) {
+	if !f.visible(c) {
+		return APMLockRequestView{}, ErrProfileNotFound
+	}
+	f.apmLockCalls = append(f.apmLockCalls, cnvCreateLockCall{profileID})
+	return APMLockRequestView{RequestID: "apm-lock-queued", Status: "queued"}, nil
+}
+
+func (f *cnvFakeStore) GetAPMLockRequest(_ context.Context, c Caller, profileID string) (APMLockRequestView, error) {
+	if !f.visible(c) {
+		return APMLockRequestView{}, ErrProfileNotFound
+	}
+	f.apmLockReads = append(f.apmLockReads, profileID)
+	return APMLockRequestView{RequestID: "apm-lock-queued", Status: "done"}, nil
 }
 
 func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error) {

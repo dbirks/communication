@@ -46,6 +46,7 @@ func realProcExec(t *testing.T) *procExecFixture {
 	f.proc.Sandbox = launcher
 	f.proc.SandboxPath = bin
 	f.proc.Checkpoints = stubCheckpoints{}
+	f.launcher = launcher
 	return f
 }
 

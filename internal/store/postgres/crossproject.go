@@ -58,6 +58,7 @@ const xpRunSelect = `
 	       COALESCE(r.assignment_id::text, ''), r.status, COALESCE(r.failed_cause, ''),
 	       r.depth, COALESCE(r.parent_run_id::text, ''),
 	       COALESCE(r.triggered_by::text, ''), r.priority,
+	       COALESCE(r.trigger_kind, ''), COALESCE(r.trigger_ref, ''),
 	       r.created_at, r.started_at, r.finished_at
 	FROM runs r
 	JOIN projects p ON p.id = r.project_id
@@ -99,6 +100,11 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 	if f.UpdatedSince != nil {
 		addCond(fmt.Sprintf("COALESCE(r.finished_at, r.created_at) >= $%d::timestamptz", len(args)+1),
 			f.UpdatedSince.UTC())
+	}
+	if f.Trigger != "" {
+		// ADR-0056: the run-list trigger filter (manual|schedule|issue|thread);
+		// validated by the handler before it reaches the store.
+		addCond(fmt.Sprintf("r.trigger_kind = $%d::text", len(args)+1), f.Trigger)
 	}
 	if f.Cursor != "" {
 		cur, err := api.ParseCrossProjectCursor(f.Cursor)
@@ -149,6 +155,7 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 			&pipelineSlug, &pipelineName, &r.PipelineRevisionID, &r.RevisionDigest,
 			&r.PlanDigest, &r.PlanSnapshot, &r.AssignmentID, &r.Status, &r.FailedCause,
 			&r.Depth, &r.ParentRunID, &r.TriggeredBy, &r.Priority,
+			&r.TriggerKind, &r.TriggerRef,
 			&r.CreatedAt, &r.StartedAt, &r.FinishedAt); err != nil {
 			return nil, "", fmt.Errorf("postgres: scan visible run: %w", err)
 		}

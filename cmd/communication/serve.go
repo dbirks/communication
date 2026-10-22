@@ -209,6 +209,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	issueTriggerTick, err := serveIssueTriggerTick(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	assistantCfg, err := serveAssistantConfig(os.Getenv)
 	if err != nil {
 		// ADR-0034 gives serve a new egress site, so the endpoint it points at is
@@ -275,6 +280,7 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		WorkerHeartbeat:      workerHeartbeat,
 		PipelineSchedulerOff: pipelineSchedulerOff,
 		ScheduleTick:         scheduleTick,
+		IssueTriggerTick:     issueTriggerTick,
 		API: api.Config{
 			ReplicaName: replica,
 			Version:     version,
@@ -493,6 +499,15 @@ type serveStackDeps struct {
 	// due rows. Zero means the 30 s default.
 	ScheduleTick time.Duration
 
+	// IssueTriggerTick is COMMUNICATION_ISSUE_TRIGGER_TICK resolved
+	// (serveIssueTriggerTick): how often the ADR-0056 part-2 issue-trigger
+	// poll tick fires due triggers. Zero means the 60 s default.
+	IssueTriggerTick time.Duration
+
+	// issueTriggerTickRunner overrides the issue-trigger ticker loop; nil
+	// means production's runIssueTriggerTicker over a postgres.IssueTriggerStore.
+	issueTriggerTickRunner func(ctx context.Context) error
+
 	// Assistant is the resolved COMMUNICATION_ASSISTANT_* egress triple
 	// (serveAssistantConfig). The zero value keeps the feature absent: the ask
 	// route answers 503 assistant_not_configured and the palette stays jump-only
@@ -577,6 +592,33 @@ func serveScheduleTick(getenv func(string) string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return 0, fmt.Errorf("%s must be positive, got %s", envScheduleTick, d)
+	}
+	return d, nil
+}
+
+// envIssueTriggerTick and serveIssueTriggerTick are ADR-0056 part 2's tick
+// cadence: how often the issue-trigger poll pass fires due triggers. The
+// default is the ADR's own 60 s, the same minute-granularity family the schedule
+// tick sits in; a tick cadence the process cannot parse is a startup refusal,
+// not a silent fallback to the default — an operator who typed it wrong must
+// not quietly change the poll's cadence.
+const envIssueTriggerTick = "COMMUNICATION_ISSUE_TRIGGER_TICK"
+
+// defaultIssueTriggerTick is ADR-0056 part 2's poll cadence: a trigger whose
+// cursor is NULL or older than this is due.
+const defaultIssueTriggerTick = 60 * time.Second
+
+func serveIssueTriggerTick(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envIssueTriggerTick))
+	if raw == "" {
+		return defaultIssueTriggerTick, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration: %w", envIssueTriggerTick, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be positive, got %s", envIssueTriggerTick, d)
 	}
 	return d, nil
 }
@@ -675,6 +717,49 @@ func runScheduleTicker(ctx context.Context, st scheduleTicker, every time.Durati
 			}
 			if n > 0 {
 				log.InfoContext(ctx, "schedules fired",
+					slog.Int("runs_created", n), slog.String("every", every.String()))
+			}
+		}
+	}
+}
+
+// issueTriggerTicker is the slice of the issue-trigger store the serve-side
+// tick loop needs — one method, so the loop's logging and cancellation are
+// unit-testable against a recorder instead of a database.
+type issueTriggerTicker interface {
+	TickIssueTriggers(ctx context.Context, now time.Time, lister github.IssueLister) (int, error)
+}
+
+// runIssueTriggerTicker is ADR-0056 part 2's serve-side tick: every `every`,
+// fire the due issue triggers. A failed tick is logged and retried next beat
+// (the due-row claim is idempotent, so a retry cannot double-fire); fired runs
+// are logged at INFO only when there were runs, so a healthy idle replica
+// stays quiet. Same shape as runScheduleTicker, which is why it lives beside it.
+func runIssueTriggerTicker(ctx context.Context, st issueTriggerTicker, lister github.IssueLister, every time.Duration, log *slog.Logger) error {
+	if st == nil {
+		return errors.New("serve: issue trigger ticker has no store")
+	}
+	if every <= 0 {
+		every = defaultIssueTriggerTick
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			n, err := st.TickIssueTriggers(ctx, time.Now(), lister)
+			if err != nil {
+				log.ErrorContext(ctx, "issue trigger tick failed; retrying next tick",
+					slog.String("error", err.Error()))
+				continue
+			}
+			if n > 0 {
+				log.InfoContext(ctx, "issue triggers fired",
 					slog.Int("runs_created", n), slog.String("every", every.String()))
 			}
 		}
@@ -848,6 +933,9 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	api.RegisterSchedules(handler,
 		postgres.APIScheduleStore{S: &postgres.ScheduleStore{Pool: d.Pool}},
 		apiProjects)
+	api.RegisterIssueTriggers(handler,
+		postgres.APIIssueTriggerStore{S: &postgres.IssueTriggerStore{Pool: d.Pool}},
+		apiProjects)
 	api.RegisterApprovals(handler, postgres.APIApprovalStore{R: m4Runtime},
 		apiProjects, m4Trigger)
 	// ADR-0052's approval summarization pass and free-text interpretation:
@@ -1016,6 +1104,30 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 			log.Info("schedule ticker stopped")
 		}()
 	}
+
+	// The ADR-0056 part-2 issue-trigger poll tick: the same due-row claim and
+	// FOR UPDATE SKIP LOCKED mutex as the schedule tick above, on its own
+	// cadence (COMMUNICATION_ISSUE_TRIGGER_TICK, default 60 s). Two replicas may
+	// tick together; TickIssueTriggers' FOR UPDATE SKIP LOCKED claim is the
+	// mutex, so no advisory lock here.
+	issueTriggerStore := &postgres.IssueTriggerStore{
+		Pool: d.Pool,
+		Log:  log.With(slog.String("component", "issue-tick")),
+	}
+	issueTriggerRunner := d.issueTriggerTickRunner
+	if issueTriggerRunner == nil {
+		issueTriggerRunner = func(ctx context.Context) error {
+			return runIssueTriggerTicker(ctx, issueTriggerStore, github.New(), d.IssueTriggerTick,
+				log.With(slog.String("component", "issue-tick")))
+		}
+	}
+	go func() {
+		if err := issueTriggerRunner(tickCtx); err != nil {
+			log.Error("issue trigger ticker stopped", slog.String("error", err.Error()))
+			return
+		}
+		log.Info("issue trigger ticker stopped")
+	}()
 
 	var closeOnce sync.Once
 	closeStack := func() {

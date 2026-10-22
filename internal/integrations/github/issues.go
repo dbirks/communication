@@ -89,6 +89,11 @@ type Issue struct {
 	Labels  []string
 	HTMLURL string
 	State   string
+	// CreatedAt is GitHub's `created_at`, which is the `opened` arm of an
+	// issue trigger's fire rule (ADR-0056 § 5: only issues created after the
+	// trigger was authored fire). A value GitHub sent unparseably stays the
+	// zero Time.
+	CreatedAt time.Time
 	// UpdatedAt is GitHub's `updated_at`, which is also its comment-sorted
 	// listing key. A value GitHub sent unparseably stays the zero Time.
 	UpdatedAt time.Time
@@ -106,6 +111,16 @@ type IssueQuery struct {
 	Label string
 	// PerPage is rows to fetch in one request, 1..100; 0 means 50.
 	PerPage int
+	// Since is the lower bound on `updated_at`: only issues updated at or
+	// after it are returned. The issue-trigger poll's cursor (ADR-0056 § 5)
+	// rides this parameter.
+	Since time.Time
+	// Labels is the any-of label set a listing may ask for; empty means no
+	// filter. The names are joined with commas into GitHub's `labels` param.
+	Labels []string
+	// Sort is the GitHub listing sort key (e.g. "updated"); empty means the
+	// endpoint default.
+	Sort string
 }
 
 // IssueLister is the query surface: read issues, change nothing. It is the
