@@ -23,6 +23,7 @@ import Operations from "./pages/Operations";
 import Project from "./pages/Project";
 import ProjectPipelines from "./pages/ProjectRunsPipelines";
 import ProjectRuns from "./pages/ProjectRuns";
+import Repository from "./pages/Repository";
 import RunWorkbench from "./pages/RunWorkbench";
 import ProjectSettings from "./pages/ProjectSettings";
 import Projects from "./pages/Projects";
@@ -233,9 +234,14 @@ export default function App() {
             </RequireAuth>
           }
         />
-        {/* A dedicated repo page does not exist yet: phase 1 lands on the
-            overview, which carries the repo table. */}
-        <Route path="/p/:projectId/:repo" element={<ProjectRedirect />} />
+        <Route
+          path="/p/:projectId/:repo"
+          element={
+            <RequireAuth>
+              <Repository />
+            </RequireAuth>
+          }
+        />
 
         <Route
           path="/workflows"
@@ -388,10 +394,4 @@ export default function App() {
       </Routes>
     </Shell>
   );
-}
-
-/** `/p/:projectId/:repo` — phase 1: the overview carries the repo table. */
-function ProjectRedirect() {
-  const { projectId = "" } = useParams();
-  return <Redirect to={routes.project(projectId)} />;
 }

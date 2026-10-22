@@ -292,7 +292,7 @@ function Repositories({ project }: { project: Project }) {
             <ul className="space-y-[4px]" data-testid="repo-list">
               {items.map((repo) => (
                 <li key={repo.id} data-testid={`repo-row-${repo.name}`}>
-                  <Row>
+                  <Row to={routes.repository(project.id, repo.name)}>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12.5px] font-semibold">
                         {repo.name}

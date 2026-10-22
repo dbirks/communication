@@ -41,6 +41,9 @@ export const routes = {
   project: (id: string): string => `/p/${encode(id)}`,
   /** A project tab: `/p/:projectId/{runs|pipelines|artifacts|conversations|settings}`. */
   projectTab: (id: string, tab: ProjectTab): string => `/p/${encode(id)}/${tab}`,
+  /** A repository page: `/p/:projectId/:repo` (the repository's own name). */
+  repository: (projectId: string, repo: string): string =>
+    `/p/${encode(projectId)}/${encode(repo)}`,
   workflows: (): string => "/workflows",
   workflow: (id: string): string => `/workflows/${encode(id)}`,
   draft: (pipelineId: string, draftId: string): string =>

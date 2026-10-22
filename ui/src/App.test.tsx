@@ -318,8 +318,8 @@ describe("legacy route redirects", () => {
     expect(probe.textContent).toBe("/inbox?tab=attention");
   });
 
-  it("sends /p/:projectId/:repo to the project overview in phase 1", async () => {
+  it("mounts the repository page at /p/:projectId/:repo instead of redirecting", async () => {
     const probe = renderAt("/p/p-1/widgets");
-    await waitFor(() => expect(probe.textContent).toBe("/p/p-1"), { timeout: 5_000 });
+    await waitFor(() => expect(probe.textContent).toBe("/p/p-1/widgets"), { timeout: 5_000 });
   });
 });
