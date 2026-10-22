@@ -512,6 +512,16 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 			*redactHook = materialized.Redact
 			sink = redactingAttemptSink{inner: sink, redact: materialized.Redact}
 		}
+		// ADR-0045: a GitHub token delivered for this attempt makes push possible
+		// — but only while the egress allowlist admits the GitHub hosts. Warn, never
+		// claim: the token cannot push until the operator widens
+		// COMMUNICATION_AGENT_EGRESS_ALLOW.
+		if gitEnv := GitPushEnv(materialized.Env); len(gitEnv) > 0 {
+			if net, hosts, err := agentEgressAllow(a.EgressAllow); err == nil && net == nono.NetworkAllowlisted && !hostAllowed(hosts, "github.com") && !hostAllowed(hosts, "api.github.com") {
+				a.logger().Warn("the agent holds a GitHub token but the egress allowlist does not admit the GitHub hosts: push will fail, add github.com,api.github.com to COMMUNICATION_AGENT_EGRESS_ALLOW",
+					slog.String("attempt_id", c.AttemptID), slog.String("egress_allow", strings.Join(hosts, ",")))
+			}
+		}
 	}
 
 	credDirs, auth, err := a.credentialAuth(launcher)
@@ -528,6 +538,16 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "resolve launcher long-lived token: "+a.redact(err.Error())), nil
 	}
 	required := a.enforcement() == domain.EnforceRequired
+	// The env-delivered mounts join the child environment here and nowhere else:
+	// not the journal, not an artifact, not a log line (seams.go's rule for `env`
+	// values, ADR-0018 D4). They go last on purpose — what the platform
+	// authorized for this attempt outranks anything the launcher sets for itself —
+	// and they travel through the launch environment (SecretEnv), never through
+	// the adapter env the launcher's `env` hop renders into argv (ADR-0040).
+	delivered := []string(nil)
+	if materialized != nil {
+		delivered = materialized.Env
+	}
 	adapterEnv, err := acp.LaunchEnv(acp.EnvRequest{
 		Home:    homeDir,
 		Scratch: tmpDir,
@@ -536,6 +556,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		OmitHome:    required,
 		GitIdentity: a.GitIdentity,
 		Auth:        auth,
+		SecretEnv:   delivered,
 		Extra: []string{
 			"COMMUNICATION_RUN_ID=" + c.RunID,
 			// The name below is also the egress-audit marker (egressaudit.go):
@@ -547,13 +568,6 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	})
 	if err != nil {
 		return failedResult(ErrorClassInfra, "build agent environment: "+bounded(err.Error(), 400)), nil
-	}
-	// The env-delivered mounts join the child environment here and nowhere else:
-	// not the journal, not an artifact, not a log line (seams.go's rule for `env`
-	// values, ADR-0018 D4). They go last on purpose — what the platform
-	// authorized for this attempt outranks anything the launcher sets for itself.
-	if materialized != nil {
-		adapterEnv = append(adapterEnv, materialized.Env...)
 	}
 
 	plan := wsgit.LaunchPlan{
@@ -595,7 +609,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
 	}
 
-	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, oauthKV, required, workspaceID)
+	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, delivered, oauthKV, required, workspaceID)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -1137,13 +1151,16 @@ func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (Attemp
 // non-required modes run the adapter directly and LABEL themselves. The
 // agent-turn profile carries network_enforced=false and stays labelled that
 // way (M3's label, § 4 step 5).
-func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
+func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, delivered []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
 	if !required {
-		// Unsandboxed: the token joins the child's real exec environment —
-		// an environment, not argv (ADR-0040).
+		// Unsandboxed: the token and the env-delivered mounts join the child's
+		// real exec environment — an environment, not argv (ADR-0040).
 		env := adapterEnv
 		if oauthKV != "" {
 			env = append(append([]string{}, adapterEnv...), oauthKV)
+		}
+		if gitEnv := GitPushEnv(delivered); len(gitEnv) > 0 {
+			env = append(env, gitEnv...)
 		}
 		return acp.LaunchPlan{
 			Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: plan.Cwd,
@@ -1162,7 +1179,7 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 	}
 	spec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: a.LauncherHome,
-		AdapterPath: launcher.Executable, AdapterArgs: launcher.Args, AdapterEnv: adapterEnv,
+		AdapterPath: launcher.Executable, AdapterArgs: launcher.Args, AdapterEnv: argvBoundEnv(adapterEnv, delivered),
 		// BlockNet stays false: egress denial is the COMMAND profile's claim;
 		// the agent-turn profile reports network_enforced=false honestly.
 	}
@@ -1198,6 +1215,14 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 	if oauthKV != "" {
 		env = append(env, oauthKV)
 	}
+	// ADR-0045 / ADR-0040: a GitHub token delivered by a secret mount joins this
+	// process environment — the same place the launcher's long-lived token rides —
+	// and never the argv `env` hop, whose verbatim recording is the audit journal
+	// (ADR-0040). The exec'd process is the `env` binary from the argv, so the
+	// entries here reach the agent and its git children without touching argv; the
+	// merge dedupes so each name appears once with the authorized value (ADR-0018
+	// D4: an authorized mount outranks launcher env, which is why it goes last).
+	env = execEnv(env, GitPushEnv(delivered), delivered)
 	return acp.LaunchPlan{
 		Path: a.nonoBinary(), Args: argv, Env: env, Dir: plan.Cwd,
 		Verified: verification(res, plan),

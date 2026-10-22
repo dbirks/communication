@@ -519,6 +519,14 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 		// secrets and the audit journal records argv verbatim.
 		env = append(env, kv)
 	}
+	if u.Materialized != nil {
+		// ADR-0040: the env-delivered secret mounts ride the launched process's
+		// environment (execEnv), never the argv `env` hop the audit journal
+		// records verbatim; GitPushEnv derives the GitHub token wiring from the
+		// delivered entries. Later additions win, so an authorized mount outranks
+		// launcher env (ADR-0018 D4).
+		env = execEnv(env, GitPushEnv(u.Materialized.Env), u.Materialized.Env)
+	}
 	return acp.LaunchPlan{
 		Path:     bin,
 		Args:     argv,
@@ -545,9 +553,16 @@ func (u *Unit) launchSpec(launcher acp.Launcher) (nono.LaunchSpec, error) {
 	if err != nil {
 		return nono.LaunchSpec{}, err
 	}
+	// The argv-bound half of the ADR-0040 rule: the adapter env the launcher's
+	// `env` hop renders into argv carries no delivered secret entry — the
+	// delivered mounts ride the exec environment (the plan's Env) instead.
+	delivered := []string(nil)
+	if u.Materialized != nil {
+		delivered = u.Materialized.Env
+	}
 	return nono.LaunchSpec{
 		Profile: prof, Plan: u.Plan, LauncherHome: u.svc.LauncherHome,
-		AdapterPath: launcher.Executable, AdapterArgs: launcher.Args, AdapterEnv: env,
+		AdapterPath: launcher.Executable, AdapterArgs: launcher.Args, AdapterEnv: argvBoundEnv(env, delivered),
 	}, nil
 }
 
@@ -615,6 +630,11 @@ func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string) acp
 		// Unsandboxed (ADR-0040): the token joins the adapter's real exec
 		// environment — an environment, not argv.
 		env = append(env, oauthKV)
+	}
+	if u.Materialized != nil {
+		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
+		// join the exec environment; the unsandboxed plan carries no argv hop.
+		env = execEnv(env, GitPushEnv(u.Materialized.Env), u.Materialized.Env)
 	}
 	return acp.LaunchPlan{
 		Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: u.Plan.Cwd,

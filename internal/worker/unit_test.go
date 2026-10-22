@@ -782,3 +782,63 @@ func TestSandboxedLaunchGetsATempDirInsideItsGrants(t *testing.T) {
 		t.Fatalf("TMPDIR does not exist before launch (%v): a grant to a nonexistent path grants nothing (C-FC3)", err)
 	}
 }
+
+// TestUnitEnvMountSentinelNeverRidesTheLaunchArgv is the ADR-0040 guard at the
+// conversation-path launch: a fake env-delivered secret mount whose value is a
+// unique sentinel must ride the exec environment of the verified plan and
+// nowhere in the rendered argv or the argv-bound adapter env.
+func TestUnitEnvMountSentinelNeverRidesTheLaunchArgv(t *testing.T) {
+	const sentinel = "sentinel-unit-required-2b7e91"
+
+	fx := newUnitFixture(t)
+	fx.svc.Secrets = &gitPushSecretsStub{env: []string{"DATABASE_URL=" + sentinel}, allow: map[string]bool{"m4-implementer": true}}
+	fx.axes.AgentProfileID = "m4-implementer"
+	unit := fx.preparedUnit(t)
+
+	plan, err := unit.Verify(context.Background(), testLauncher())
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !strings.Contains(strings.Join(plan.Env, "\x00"), "DATABASE_URL="+sentinel) {
+		t.Fatalf("the env-delivered secret must ride the launch environment, got %v", plan.Env)
+	}
+	argv := strings.Join(plan.Args, "\x00")
+	if strings.Contains(argv, sentinel) || strings.Contains(argv, "DATABASE_URL=") {
+		t.Fatalf("the env-delivered secret value reached the launch argv: %q", argv)
+	}
+	fx.sandbox.mu.Lock()
+	specs := append([]nono.LaunchSpec(nil), fx.sandbox.specs...)
+	fx.sandbox.mu.Unlock()
+	if len(specs) != 1 {
+		t.Fatalf("the sandbox saw %d specs, want 1: %v", len(specs), specs)
+	}
+	for _, kv := range specs[0].AdapterEnv {
+		if strings.HasPrefix(kv, "DATABASE_URL=") {
+			t.Fatalf("the env-delivered secret reached the argv-bound adapter env: %q", kv)
+		}
+	}
+}
+
+// TestUnitEnvMountSentinelUnsandboxedStaysInExecEnv is the same guard on the
+// configured-non-required arm: the exec environment carries the mount, the plan
+// argv stays clean of it.
+func TestUnitEnvMountSentinelUnsandboxedStaysInExecEnv(t *testing.T) {
+	const sentinel = "sentinel-unit-unsandboxed-41cc06"
+
+	fx := newUnitFixture(t)
+	fx.svc.Enforcement = domain.EnforcePermissiveDev
+	fx.svc.Secrets = &gitPushSecretsStub{env: []string{"DATABASE_URL=" + sentinel}, allow: map[string]bool{"m4-implementer": true}}
+	fx.axes.AgentProfileID = "m4-implementer"
+	unit := fx.preparedUnit(t)
+
+	plan, err := unit.Verify(context.Background(), testLauncher())
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !strings.Contains(strings.Join(plan.Env, "\x00"), "DATABASE_URL="+sentinel) {
+		t.Fatalf("the env-delivered secret must ride the exec environment, got %v", plan.Env)
+	}
+	if argv := strings.Join(plan.Args, "\x00"); strings.Contains(argv, sentinel) {
+		t.Fatalf("the env-delivered secret value reached the plan argv: %q", argv)
+	}
+}

@@ -1,9 +1,13 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -449,4 +453,151 @@ func redactedEnvList(envText string) []string {
 		out = append(out, name+"=<elided>")
 	}
 	return out
+}
+
+// TestProcExecEnvMountSentinelNeverRidesTheLaunchArgv is the ADR-0040 guard at
+// process.exec: a fake env-delivered secret mount whose value is a unique
+// sentinel must ride the launched process's exec environment — never the argv
+// the launcher's `env` hop would render into a sandboxed launch.
+func TestProcExecEnvMountSentinelNeverRidesTheLaunchArgv(t *testing.T) {
+	const sentinel = "sentinel-procexec-unsandboxed-77e4d2"
+
+	t.Run("unsandboxed: the sentinel rides the exec environment, never argv", func(t *testing.T) {
+		f := newProcExecFixture(t, domain.EnforceDisabled)
+		f.proc.Checkpoints = stubCheckpoints{}
+		procExecProfiled(f, "m4-implementer")
+		f.proc.Secrets = &procExecSecretsStub{
+			envName: "DATABASE_URL", value: sentinel,
+			allowlist: map[string]bool{"m4-implementer": true},
+			repos:     []MaterializeRepo{{ID: "repo-1", Name: "registry"}},
+		}
+
+		res, err := f.proc.Execute(context.Background(), f.claim(execArgs("env")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("res = %+v, want succeeded", res)
+		}
+		got := childEnv(t, f)
+		if !strings.Contains(got, "DATABASE_URL="+sentinel) {
+			t.Fatalf("the env-delivered secret must ride the exec environment, got %s", redactedEnvList(got))
+		}
+	})
+}
+
+// TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv is the ADR-0040
+// guard on the sandboxed arm of process.exec, and it is a REAL launch: the fake
+// resolver delivers an env-mounted secret whose value is a unique sentinel, the
+// command reads it back through the environment, and the sentinel must then be
+// absent from the launch argv and from every file of the nono audit journal for
+// the session the launch produced.
+func TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv(t *testing.T) {
+	const sentinel = "sentinel-procexec-sandboxed-84bd3e"
+
+	f := realProcExec(t)
+	f.proc.Checkpoints = stubCheckpoints{}
+	procExecProfiled(f, "m4-implementer")
+	f.proc.Secrets = &procExecSecretsStub{
+		envName: "SENTINEL_SECRET", value: sentinel,
+		allowlist: map[string]bool{"m4-implementer": true},
+		repos:     []MaterializeRepo{{ID: "repo-1", Name: "registry"}},
+	}
+
+	res, err := f.proc.Execute(context.Background(), f.claim(map[string]any{
+		"argv": []any{"/bin/sh", "-c", `printf "%s" "$SENTINEL_SECRET" > seen.txt`},
+		"cwd":  f.layout.Scratch,
+	}), f.sink)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != AttemptStatusSucceeded {
+		t.Fatalf("res = %+v, want succeeded", res)
+	}
+	got, rerr := os.ReadFile(filepath.Join(f.layout.Scratch, "seen.txt"))
+	if rerr != nil {
+		t.Fatalf("the sandboxed command never wrote its output: %v", rerr)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("the sandboxed child did not receive the env-delivered secret through real nono: seen.txt = %q", got)
+	}
+
+	// ADR-0040: the sentinel must not be anywhere the launch argv or the audit
+	// journal can carry it — the argv is what `nono audit` records verbatim.
+	ctx := context.Background()
+	marker := egressMarker(fakeAttemptID)
+	listCmd := exec.CommandContext(ctx, f.launcher.Binary, "audit", "list", "--json", "--recent", "50")
+	listCmd.Dir = f.proc.LauncherHome
+	listCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + f.proc.LauncherHome}
+	var listBuf bytes.Buffer
+	listCmd.Stdout, listCmd.Stderr = &listBuf, &listBuf
+	if err := listCmd.Run(); err != nil {
+		t.Fatalf("nono audit list: %v: %s", err, listBuf.String())
+	}
+	var entries []struct {
+		SessionID string   `json:"session_id"`
+		Command   []string `json:"command"`
+	}
+	if err := json.Unmarshal(listBuf.Bytes(), &entries); err != nil {
+		t.Fatalf("parse the audit listing: %v", err)
+	}
+	own := -1
+	for i := range entries {
+		for _, arg := range entries[i].Command {
+			if arg == marker {
+				own = i
+			}
+		}
+	}
+	if own < 0 {
+		t.Fatalf("no audited session carries the launch marker %q: %s", marker, listBuf.String())
+	}
+	for _, arg := range entries[own].Command {
+		if strings.Contains(arg, sentinel) {
+			t.Fatalf("the env-delivered secret value reached the launch argv the audit journal records verbatim: %q", arg)
+		}
+	}
+	if strings.Contains(listBuf.String(), sentinel) {
+		t.Fatalf("the env-delivered secret value reached the audit listing: %s", listBuf.String())
+	}
+	sessionID := entries[own].SessionID
+
+	auditCmd := exec.CommandContext(ctx, f.launcher.Binary, "audit", "show", sessionID, "--json")
+	auditCmd.Dir = f.proc.LauncherHome
+	auditCmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + f.proc.LauncherHome}
+	var auditBuf bytes.Buffer
+	auditCmd.Stdout, auditCmd.Stderr = &auditBuf, &auditBuf
+	if err := auditCmd.Run(); err != nil {
+		t.Fatalf("nono audit show: %v: %s", err, auditBuf.String())
+	}
+	if strings.Contains(auditBuf.String(), sentinel) {
+		t.Fatalf("the env-delivered secret value reached the nono audit journal: %s", auditBuf.String())
+	}
+
+	// The audit journal is nono's own state dir under the launcher's home
+	// ($XDG_STATE_HOME/nono/audit, default <home>/.local/state/nono/audit).
+	auditDir := filepath.Join(f.proc.LauncherHome, ".local", "state", "nono", "audit")
+	var auditFiles []string
+	walkErr := filepath.WalkDir(auditDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		auditFiles = append(auditFiles, path)
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk the nono audit journal dir %s: %v", auditDir, walkErr)
+	}
+	for _, file := range auditFiles {
+		raw, rerr := os.ReadFile(file)
+		if rerr != nil {
+			t.Fatalf("read the audit journal file %s: %v", file, rerr)
+		}
+		if strings.Contains(string(raw), sentinel) {
+			t.Fatalf("the env-delivered secret value reached the nono audit journal at %s: %s", file, raw)
+		}
+	}
 }

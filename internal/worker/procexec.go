@@ -422,13 +422,24 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 		adapterEnv = append(adapterEnv, materialized.Env...)
 	}
 
+	delivered := []string(nil)
+	if materialized != nil {
+		delivered = materialized.Env
+	}
+
 	path, args, env := spec.argv[0], spec.argv[1:], adapterEnv
 	if required {
-		res, refusal := p.verifyThenWrap(ctx, sink, c, plan, spec, adapterEnv)
+		res, refusal := p.verifyThenWrap(ctx, sink, c, plan, spec, adapterEnv, delivered)
 		if refusal != nil {
 			return *refusal, nil
 		}
 		path, args, env = p.nonoBinary(), res.argv, p.nonoLauncherEnv()
+	}
+	if materialized != nil {
+		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
+		// join the exec environment; the exec'd process is the `env` binary the
+		// argv hop rendered, so the entries reach the command without touching argv.
+		env = execEnv(env, GitPushEnv(materialized.Env), materialized.Env)
 	}
 
 	outcome, startErr := p.run(ctx, path, args, env, cwd, capDir)
@@ -609,7 +620,7 @@ func (p *ProcExec) cleanupSecrets(c AttemptClaim, m *Materialized, layout wsgit.
 		}
 	}
 }
-func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string) (*wrappedLaunch, *AttemptResult) {
+func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string, delivered []string) (*wrappedLaunch, *AttemptResult) {
 	if p.Sandbox == nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail,
 			"enforcement is required but no sandbox backend is configured: refusing to exec unsandboxed (ADR-0019 D6, no fallback exists)")
@@ -622,7 +633,7 @@ func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c Attem
 	}
 	nspec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: p.LauncherHome,
-		AdapterPath: spec.argv[0], AdapterArgs: spec.argv[1:], AdapterEnv: adapterEnv,
+		AdapterPath: spec.argv[0], AdapterArgs: spec.argv[1:], AdapterEnv: argvBoundEnv(adapterEnv, delivered),
 		// § 4 step 5's grant set is the workspace the command works ON; the
 		// program it IS needs its own read (which is what nono's Landlock
 		// ruleset pairs with exec). A resolved path outside the granted tree —
