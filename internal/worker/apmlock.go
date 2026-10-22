@@ -4,7 +4,9 @@ package worker
 // request queue's worker half. The control plane (api) is the only writer of
 // profile state; a worker is the only process that resolves a package ref, so
 // the lock flow is: the control plane inserts a queued `apm_lock_requests` row
-// and the worker claims it, resolves it in a sandboxed scratch dir, and reports
+// and the worker claims it, resolves it in a sandboxed child of the worker —
+// the pinned apm CLI under the apm-resolve sandbox (scratch work dir + scratch
+// home rw, package-source egress allowlist, never --block-net), and reports
 // the result back — which the control plane records as the profile's lock
 // digest + contents summary and journals `agent.profile.apm_locked`.
 //
@@ -17,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +32,20 @@ import (
 // flow that can be slow or hung; the lease a claim takes must not outlive the
 // deadline, or a wedged resolve would hold a claim forever.
 const DefaultAPMLockResolveTimeout = 5 * time.Minute
+
+// DefaultAPMLockScratchRoot names the directory the APM lock resolve's scratch
+// work dir + scratch home are created under: a directory INSIDE the worker-owned
+// workspace volume (`<workspace root>/.apm-lock`). The resolve's scratch is a
+// sandbox grant, and the grant rules refuse a writable grant under the temp tree
+// the sandbox layers by default (probe C-TMP1), so the root may not be the temp
+// tree; workspace paths are what agent turns get granted, so a workspace-rooted
+// root is grantable. The workspace root's own PARENT is not guaranteed writable
+// inside the container (the lab's worker mounts the volume at /workspaces, whose
+// parent / is not), which is how the lock loop came to default to a root that
+// never came to exist.
+func DefaultAPMLockScratchRoot(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, ".apm-lock")
+}
 
 // APMLockClaim is one lock request won by APMLockStore.ClaimAPMLockRequest:
 // the lease triple (request id, worker id, lease deadline) plus the pin the
@@ -63,6 +80,26 @@ type APMLockStore interface {
 	CompleteAPMLockRequest(ctx context.Context, c APMLockClaim, result *apm.ResolveResult, resolveErr error) error
 }
 
+// APMLockResolveWrap is the worker-supplied launcher wrapper shape for one APM
+// lock resolve: it takes the resolving install's argv and the apm child
+// environment and returns the exec'd (path, args, env) — the worker answers with
+// a nono-sandboxed launch (ADR-0054 §B.2), so the resolve never execs the pinned
+// apm CLI as a plain worker child.
+type APMLockResolveWrap func(argv []string, env []string) (string, []string, []string, error)
+
+// APMLockResolver is the lock flow's resolve seam from the loop's side: it runs
+// one claimed lock's resolve through the worker's sandbox discipline (ADR-0054
+// §B.2) and answers plainly when the worker's enforcement mode does not require
+// one. The worker implements it with APMSandbox; the plain APMTyper-shaped seam is
+// the fallback that answers plainly.
+type APMLockResolver interface {
+	// Resolve runs one resolve and reports its result.
+	Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.ResolveResult, error)
+	// Wrap answers one resolve's launcher-wrapper request; nil when the resolve
+	// may run plain.
+	Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, error)
+}
+
 // APMLockLoop claims queued APM lock requests and drives the resolve. It is
 // the worker-side twin of the turn/attempt loops: claims, runs, closes —
 // but a lock is a single short-lived job (one resolve, no transcript), so the
@@ -73,12 +110,23 @@ type APMLockLoop struct {
 	workerID func() string
 	log      *slog.Logger
 
+	// sandbox runs the claimed lock's resolve through the worker's sandbox
+	// discipline (ADR-0054 §B.2). Nil keeps the loop on the plain resolve seam.
+	sandbox APMLockResolver
+	// scratchRoot is where the resolve's scratch dirs live; empty means the temp
+	// tree, which a sandboxed resolve may not grant (probe C-TMP1).
+	scratchRoot string
+
 	mu     sync.Mutex
 	stopCh chan struct{}
 	closed bool
 
 	inflight atomic.Int64
 	running  sync.WaitGroup
+
+	// cfg tunes the claim cadence; clock drives it (tests inject a fake).
+	cfg   APMLockConfig
+	clock Clock
 }
 
 // APMLockOption customises the loop.
@@ -91,6 +139,60 @@ func WithAPMLockLogger(l *slog.Logger) APMLockOption {
 			loop.log = l
 		}
 	}
+}
+
+// WithAPMLockClock replaces the loop's clock (tests drive cadence).
+func WithAPMLockClock(c Clock) APMLockOption {
+	return func(loop *APMLockLoop) {
+		if c != nil {
+			loop.clock = c
+		}
+	}
+}
+
+// WithAPMLockSandbox replaces the resolve seam the loop drives; the resolve then
+// runs through the worker's sandbox when the enforcement mode requires it
+// (ADR-0054 §B.2), and answers plainly when it does not.
+func WithAPMLockSandbox(s APMLockResolver) APMLockOption {
+	return func(loop *APMLockLoop) {
+		if s != nil {
+			loop.sandbox = s
+		}
+	}
+}
+
+// WithAPMLockScratchRoot names the directory the resolve's scratch dirs are
+// created under. It must live outside the temp tree the sandbox refuses to grant
+// (a /tmp grant is denied by omission, probe C-TMP1), so a required-mode resolve
+// can never be refused for its own scratch location; the worker wiring defaults
+// it to DefaultAPMLockScratchRoot — a directory inside the worker-owned workspace
+// volume — overridable via COMMUNICATION_APM_LOCK_SCRATCH for a worker whose
+// workspace root is not writable.
+func WithAPMLockScratchRoot(dir string) APMLockOption {
+	return func(loop *APMLockLoop) {
+		if loop != nil {
+			loop.scratchRoot = dir
+		}
+	}
+}
+
+// APMLockConfig tunes the lock-claim loop; zero values take the defaults.
+type APMLockConfig struct {
+	// ClaimInterval is how often the loop scans the due queue while idle — the
+	// lock half of the worker family's claim cadence (the turn loop's
+	// DefaultClaimInterval: a 1 s poll). The queue is not watched, it is polled,
+	// so an idle loop has to keep asking until a row lands or shutdown arrives;
+	// without the tick the loop claims once and then parks in its shutdown
+	// select forever, and a lock queued after startup is never picked up.
+	ClaimInterval time.Duration
+}
+
+// normalise fills in the default claim interval.
+func (c APMLockConfig) normalise() (APMLockConfig, error) {
+	if c.ClaimInterval <= 0 {
+		c.ClaimInterval = DefaultClaimInterval
+	}
+	return c, nil
 }
 
 // NewAPMLockLoop validates its ports and returns an idle loop. workerID is
@@ -108,10 +210,17 @@ func NewAPMLockLoop(store APMLockStore, apm APMTyper, workerID func() string, op
 		workerID: workerID,
 		log:      slog.Default(),
 		stopCh:   make(chan struct{}),
+		cfg:      APMLockConfig{},
+		clock:    realClock{},
 	}
 	for _, o := range opts {
 		o(l)
 	}
+	norm, err := l.cfg.normalise()
+	if err != nil {
+		return nil, err
+	}
+	l.cfg = norm
 	return l, nil
 }
 
@@ -134,13 +243,18 @@ func (l *APMLockLoop) Start(ctx context.Context) error {
 			return nil
 		}
 		c, ok, err := l.store.ClaimAPMLockRequest(ctx, workerID)
-		if err != nil {
+		switch {
+		case err != nil:
 			if ctx.Err() != nil || l.stopping() {
 				return nil
 			}
-			l.log.Warn("apm lock claim failed", slog.String("error", err.Error()))
-		}
-		if ok {
+			l.log.Error("apm lock claim failed",
+				slog.String("worker_id", workerID), slog.String("error", err.Error()))
+		case ok:
+			l.log.Info("apm lock claimed",
+				slog.String("request_id", c.RequestID),
+				slog.String("profile_id", c.ProfileID),
+				slog.String("worker_id", c.WorkerID))
 			l.inflight.Add(1)
 			go func() {
 				defer func() { l.inflight.Add(-1) }()
@@ -155,41 +269,68 @@ func (l *APMLockLoop) Start(ctx context.Context) error {
 				}
 			}
 		}
+		// Idle: wait for the next claim tick, shutdown, or stop. The tick is what
+		// keeps the queue scanned — without it the loop parks here forever after
+		// its first (empty) claim and never picks up a lock queued later.
+		timer := l.clock.After(l.cfg.ClaimInterval)
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-l.stopCh:
 			return nil
+		case <-timer:
 		}
 	}
 }
 
 // run executes one claimed lock: a fresh scratch dir + fresh HOME for the
-// resolve child, the seam's Resolve, then the report back through the store.
+// resolve child, the resolver's Resolve (which runs the resolve through the
+// worker's sandbox under ADR-0054 §B.2 when the mode requires it), then the
+// report back through the store.
 // The scratch dirs are removed when the resolve is done, whether it succeeded
 // or failed — a resolve owns its scratch dir and never leaves content behind.
 func (l *APMLockLoop) run(ctx context.Context, c APMLockClaim) {
 	l.running.Add(1)
 	defer l.running.Done()
-	workdir, err := os.MkdirTemp("", "apm-lock-")
+	workdir, err := os.MkdirTemp(l.scratchRoot, "apm-lock-")
 	if err != nil {
 		l.settle(ctx, c, nil, err)
 		return
 	}
 	defer os.RemoveAll(workdir)
-	home, err := os.MkdirTemp("", "apm-lock-home-")
+	home, err := os.MkdirTemp(l.scratchRoot, "apm-lock-home-")
 	if err != nil {
 		l.settle(ctx, c, nil, err)
 		return
 	}
 	defer os.RemoveAll(home)
-	res, err := l.apm.Resolve(ctx, apm.ResolveRequest{
+	res, err := l.apmResolve(ctx, c, workdir, home)
+	l.settle(ctx, c, res, err)
+}
+
+// apmResolve drives one claimed lock's resolve. The control plane owns the
+// queue and the report; the worker owns the exec, which — under its required
+// enforcement mode — runs through the sandboxed launcher wrapper (ADR-0054 §B.2),
+// never as a plain worker child. Under a mode that does not require a sandboxed
+// resolve the loop keeps the plain seam and the result reports Sandboxed=false.
+func (l *APMLockLoop) apmResolve(ctx context.Context, c APMLockClaim, workdir, home string) (*apm.ResolveResult, error) {
+	req := apm.ResolveRequest{
 		PackageRef: c.PackageRef,
 		Target:     c.Target,
 		WorkDir:    workdir,
 		Home:       home,
-	})
-	l.settle(ctx, c, res, err)
+		Timeout:    DefaultAPMLockResolveTimeout,
+	}
+	if l.sandbox != nil {
+		wrap, err := l.sandbox.Wrap(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if wrap != nil {
+			req.Wrap = wrap
+		}
+	}
+	return l.apm.Resolve(ctx, req)
 }
 
 // settle reports the resolve outcome for one claimed lock. A resolve that did
@@ -197,9 +338,17 @@ func (l *APMLockLoop) run(ctx context.Context, c APMLockClaim) {
 // store writes the failed status and nothing else.
 func (l *APMLockLoop) settle(ctx context.Context, c APMLockClaim, res *apm.ResolveResult, err error) {
 	if err != nil {
+		l.log.Warn("apm lock resolve failed",
+			slog.String("request_id", c.RequestID),
+			slog.String("profile_id", c.ProfileID),
+			slog.String("error", err.Error()))
 		_ = l.store.CompleteAPMLockRequest(ctx, c, nil, err)
 		return
 	}
+	l.log.Info("apm lock resolve completed",
+		slog.String("request_id", c.RequestID),
+		slog.String("profile_id", c.ProfileID),
+		slog.Bool("sandboxed", res != nil && res.Sandboxed))
 	_ = l.store.CompleteAPMLockRequest(ctx, c, res, nil)
 }
 

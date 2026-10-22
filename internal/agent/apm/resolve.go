@@ -78,6 +78,16 @@ type ResolveRequest struct {
 	// Timeout bounds one apm invocation. A hung resolve would otherwise hold
 	// a lease doing nothing.
 	Timeout time.Duration
+	// Wrap optionally supplies the launcher wrapper for this resolve. The
+	// worker answers with a wrapper that builds a nono-sandboxed launch (ADR-0054
+	// §B.2: an untrusted package ref is fetched by the pinned apm CLI in a
+	// sandboxed child, never as a plain worker child), so the resolve never execs
+	// the binary directly when a sandboxed child is required. The wrapper is
+	// invoked with the resolving install's argv and the apm child environment and
+	// returns the exec'd (path, args, env): the worker answers with the launch
+	// it verified. Nil runs the binary directly (tests, unsandboxed modes), and
+	// then the result reports Sandboxed=false.
+	Wrap func(argv []string, env []string) (execPath string, execArgs []string, execEnv []string, err error)
 }
 
 // Contents is the lock summary a resolve reports: the package's names, by
@@ -115,6 +125,12 @@ type ResolveResult struct {
 	APMVersion string
 	// Contents is the names-only summary of the resolved package.
 	Contents Contents
+	// Sandboxed reports whether this resolve ran through the caller's launcher
+	// wrapper (a nono-sandboxed child, ADR-0054 §B.2) or directly. The worker
+	// supplies the wrapper only under its `required` enforcement mode and the
+	// result records the answer honestly — never a green claim about a run that
+	// did not happen.
+	Sandboxed bool
 }
 
 // Resolve locks a package ref and reports the lock digest plus contents. It
@@ -184,9 +200,21 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 	if bin == "" {
 		bin = Binary
 	}
-	cmd := exec.CommandContext(cctx, bin, args...) //nolint:gosec // argv only
+	var execPath string
+	var execArgs []string
+	var childEnv []string
+	if req.Wrap != nil {
+		var wrapErr error
+		execPath, execArgs, childEnv, wrapErr = req.Wrap(args, apmChildEnv(req.Home))
+		if wrapErr != nil {
+			return nil, fmt.Errorf("apm: resolve %s: %w", req.PackageRef, wrapErr)
+		}
+	} else {
+		execPath, execArgs, childEnv = bin, args, apmChildEnv(req.Home)
+	}
+	cmd := exec.CommandContext(cctx, execPath, execArgs...) //nolint:gosec // argv only
 	cmd.Dir = req.WorkDir
-	cmd.Env = apmChildEnv(req.Home)
+	cmd.Env = childEnv
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) || cctx.Err() != nil {
@@ -218,6 +246,7 @@ func Resolve(ctx context.Context, req ResolveRequest) (*ResolveResult, error) {
 		Commit:      resolvedCommit(lock),
 		APMVersion:  lock.APMVersion,
 		Contents:    contents,
+		Sandboxed:   req.Wrap != nil,
 	}, nil
 }
 

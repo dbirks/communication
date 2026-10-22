@@ -35,7 +35,7 @@ func TestSystemConfigReadsIsThePinnedFileSet(t *testing.T) {
 // --allow-file for single files"), which is why the grant lives in the
 // profile file's filesystem.read_file block like /etc/gitconfig does.
 func TestEveryProfileKindCarriesTheShellStartupReads(t *testing.T) {
-	for _, kind := range []string{ProfileAgentTurn, ProfileEgressDenied, ProfileCommand} {
+	for _, kind := range []string{ProfileAgentTurn, ProfileEgressDenied, ProfileCommand, ProfileAPMResolve} {
 		data, err := ProfileJSON(kind)
 		if err != nil {
 			t.Fatalf("ProfileJSON(%s): %v", kind, err)

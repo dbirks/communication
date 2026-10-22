@@ -258,8 +258,8 @@ func TestAgentProfileAPMRefusals(t *testing.T) {
 	t.Run("partial triple", func(t *testing.T) {
 		for _, in := range []api.AgentProfileAPMPatch{
 			{APMPackageRef: ptr("mattpocock/skills#v1.3.1")},
-			{APMPackageRef: ptr("mattpocock/skills#v1.3.1"), APMTarget: ptr("claude")},
 			{APMTarget: ptr("claude"), APMLockDigest: ptr(digest)},
+			{APMLockDigest: ptr(digest)},
 		} {
 			err := func() error {
 				_, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID, in)
@@ -380,6 +380,82 @@ func TestAgentProfileAPMRefusals(t *testing.T) {
 	}
 }
 
+// TestAgentProfileAPMUnlockedPin is the lab's blocker fixed at the source: an
+// UNLOCKED pin (ref + target, no digest) is accepted, the digest alone is a
+// partial pin, and changing the ref on a locked profile clears the digest and
+// the contents summary in the same write.
+func TestAgentProfileAPMUnlockedPin(t *testing.T) {
+	f := profWSetup(t)
+	ctx := testCtx(t)
+	prof, err := f.api.CreateAgentProfile(ctx, f.caller(f.alice, true),
+		api.AgentProfileCreateInput{Name: f.profWName("unlocked"), LauncherID: "claude"})
+	if err != nil {
+		t.Fatalf("CreateAgentProfile: %v", err)
+	}
+	ref := "mattpocock/skills#v1.3.1"
+
+	// Unlocked: the ref and the target travel, the digest does not — legal.
+	unlocked, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID,
+		api.AgentProfileAPMPatch{APMPackageRef: ptr(ref), APMTarget: ptr("claude")})
+	if err != nil {
+		t.Fatalf("unlocked pin refused: %v", err)
+	}
+	if unlocked.APMPackageRef == nil || *unlocked.APMPackageRef != ref ||
+		unlocked.APMTarget == nil || *unlocked.APMTarget != "claude" ||
+		unlocked.APMLockDigest != nil || unlocked.APMContents != nil {
+		t.Errorf("unlocked pin view = %s", profJSON(t, unlocked))
+	}
+
+	// The digest alone is a partial pin, not a pin.
+	if _, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID,
+		api.AgentProfileAPMPatch{APMLockDigest: ptr("sha256:" + strings.Repeat("e", 64))}); err == nil {
+		t.Fatal("a digest without a ref must be refused as a partial pin")
+	} else {
+		var problem *api.AgentProfileProblemError
+		if !errors.As(err, &problem) || problem.Code != ProfileCodeAPMIncomplete {
+			t.Errorf("digest-only pin: err = %v, want %q", err, ProfileCodeAPMIncomplete)
+		}
+	}
+
+	// Locked, then re-pinned at another ref: the digest and the contents clear in
+	// the same write — a digest for another ref must never survive.
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if _, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID,
+		api.AgentProfileAPMPatch{APMPackageRef: ptr(ref), APMTarget: ptr("claude"), APMLockDigest: ptr(digest)}); err != nil {
+		t.Fatalf("locked pin: %v", err)
+	}
+	items, err := f.api.ListAgentProfiles(ctx, f.caller(f.alice, true))
+	if err != nil {
+		t.Fatalf("ListAgentProfiles: %v", err)
+	}
+	var seen *api.AgentProfileView
+	for i := range items {
+		if items[i].ID == prof.ID {
+			seen = &items[i]
+		}
+	}
+	if seen == nil || seen.APMLockDigest == nil || *seen.APMLockDigest != digest {
+		t.Fatalf("locked pin view = %+v", seen)
+	}
+	otherRef := "mattpocock/skills#v1.3.0"
+	if _, err := f.api.PatchAgentProfileAPM(ctx, f.caller(f.alice, true), prof.ID,
+		api.AgentProfileAPMPatch{APMPackageRef: ptr(otherRef), APMTarget: ptr("claude")}); err != nil {
+		t.Fatalf("ref change: %v", err)
+	}
+	items, err = f.api.ListAgentProfiles(ctx, f.caller(f.alice, true))
+	if err != nil {
+		t.Fatalf("ListAgentProfiles: %v", err)
+	}
+	for i := range items {
+		if items[i].ID == prof.ID {
+			seen = &items[i]
+		}
+	}
+	if seen == nil || seen.APMLockDigest != nil || seen.APMContents != nil {
+		t.Errorf("after the ref change: digest=%v contents=%+v, want both cleared", seen.APMLockDigest, seen.APMContents)
+	}
+}
+
 // TestAgentProfileWriteFeedsTheWorkerRead is the point of the whole feature: a
 // pin written through the API must be the pin the worker stages, and the rule the
 // API enforces (all three or none) must be exactly the rule the worker's read
@@ -448,8 +524,8 @@ func TestAgentProfileWriteFeedsTheWorkerRead(t *testing.T) {
 	}
 	if _, err := reader.ProfileFor(ctx, chat.ID); err == nil {
 		t.Fatal("the worker read accepted a ref with no digest; the API's refusal would be theatre")
-	} else if !strings.Contains(err.Error(), "no apm_lock_digest") {
-		t.Errorf("refusal err = %v, want the unverifiable-pin sentence", err)
+	} else if !strings.Contains(err.Error(), "not locked yet") {
+		t.Errorf("refusal err = %v, want the not-locked-yet sentence", err)
 	}
 
 	// Clearing the triple through the API makes the profile launchable again.

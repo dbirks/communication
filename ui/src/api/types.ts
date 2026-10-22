@@ -33,6 +33,7 @@ export type EventActorKind = EventEnvelope["actor"]["kind"];
 export type AgentProfile = components["schemas"]["AgentProfile"];
 export type AgentProfileList = components["schemas"]["AgentProfileList"];
 export type AgentProfilePermissionMode = AgentProfile["permission_mode"];
+export type APMLockRequest = components["schemas"]["APMLockRequest"];
 export type Conversation = components["schemas"]["Conversation"];
 export type ConversationSummary = components["schemas"]["ConversationSummary"];
 export type ConversationSummaryList = components["schemas"]["ConversationSummaryList"];

@@ -88,6 +88,7 @@ func TestProfileBuilderRefusesUnreadableEgressPolicies(t *testing.T) {
 		{"url entry", ProfileAgentTurn, NetworkAllowlisted, []string{"https://example.com/allowed/**"}, "not a hostname"},
 		{"sneaked separator", ProfileAgentTurn, NetworkAllowlisted, []string{"a.com b.com"}, "not a hostname"},
 		{"open command kind", ProfileCommand, NetworkOpen, nil, "cannot be authored with network"},
+		{"open apm-resolve kind", ProfileAPMResolve, NetworkOpen, nil, "cannot be authored with network"},
 		{"unknown kind", "communication-bogus", NetworkAllowlisted, []string{"example.com"}, "unknown profile kind"},
 	}
 	for _, tc := range cases {
@@ -230,4 +231,39 @@ func sortedCopy(in []string) []string {
 		panic(err)
 	}
 	return out
+}
+
+// TestAPMResolveProfileShipsThePackageSourceAllowlist is the ADR-0054 §B.2
+// policy half: the apm-resolve kind is authored allowlisted with the shipped
+// package-source host set, so a resolve's policy digest commits to which hosts
+// a pinned ref may be fetched from — and the launch shape never --block-net's it
+// (a resolve must fetch).
+func TestAPMResolveProfileShipsThePackageSourceAllowlist(t *testing.T) {
+	hosts := []string{"github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com"}
+	prof, err := WriteProfileNetwork(t.TempDir(), ProfileAPMResolve, NetworkAllowlisted, hosts)
+	if err != nil {
+		t.Fatalf("WriteProfileNetwork(%s): %v", ProfileAPMResolve, err)
+	}
+	if prof.NetworkEnforced != NetworkAllowlisted {
+		t.Fatalf("apm-resolve profile claims %q, want %q", prof.NetworkEnforced, NetworkAllowlisted)
+	}
+	if strings.Join(prof.EgressHosts, ",") != strings.Join(sortedCopy(hosts), ",") {
+		t.Errorf("egress hosts = %v, want %v", prof.EgressHosts, sortedCopy(hosts))
+	}
+	if prof.ProfileVersion != profileVersion {
+		t.Errorf("apm-resolve profile version = %q, want %q", prof.ProfileVersion, profileVersion)
+	}
+	if err := prof.AssertOwnBytes(); err != nil {
+		t.Fatalf("AssertOwnBytes: %v", err)
+	}
+	data, err := json.Marshal(readProfileMap(t, prof.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"allow_domain"`) {
+		t.Errorf("the apm-resolve profile file carries no allow_domain list: %s", data)
+	}
+	if strings.Contains(string(data), `"block"`) {
+		t.Errorf("the apm-resolve profile carries a `block` member: --block-net must stay the egress-denied kinds' mechanism")
+	}
 }

@@ -82,7 +82,8 @@ type StageRequest struct {
 	PackageRef string
 	// LockDigest is agent_profiles.apm_lock_digest, "sha256:<hex>", recorded for
 	// this target. It is the launch gate: a moved digest means the packaged
-	// context a reviewer approved is not the one about to run.
+	// context a reviewer approved is not the one about to run; an empty digest
+	// means the pin is unlocked and the gate above already refused.
 	LockDigest string
 	// Home is the per-attempt HOME (<agent_root>/home), never the worker's.
 	// APM.md T4 / probe A2: apm writes .apm and .cache/apm into whatever HOME it
@@ -165,6 +166,14 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	}
 	if req.PackageRef == "" {
 		return &StagedContext{Target: req.Target, Skipped: "no_package_ref"}, ErrNothingStaged
+	}
+	// ADR-0030's invariant, restated for an UNLOCKED pin (ADR-0054 amendment 2):
+	// a pin that names a package without a lock digest is not yet locked, and a
+	// launch with one is refused. There is nothing to compare the staged content
+	// against, so staging anyway would install unverified content behind a
+	// refusal that never arrives — the failure has to name the remedy.
+	if req.LockDigest == "" {
+		return nil, fmt.Errorf("apm: profile pins %s but the APM pin is not locked yet — Lock it on the profile", req.PackageRef)
 	}
 	for _, path := range []string{req.Checkout, req.Home} {
 		if !filepath.IsAbs(path) || strings.Contains(path, "..") {

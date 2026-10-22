@@ -39,6 +39,15 @@ const (
 	// profile. It carries --block-net exactly like the case-13 kind, so the
 	// egress claim and the recorded digest can never disagree.
 	ProfileCommand = "communication-command"
+	// ProfileAPMResolve is the policy for an APM lock resolve's sandboxed child
+	// (ADR-0054 §B.2): the same filesystem shape as the agent turn — grants are
+	// per-run CLI flags, the static shape lives in the file — with the egress
+	// axis the resolve must carry, an allowlist of the package-source hosts a
+	// pinned ref may be fetched from. A resolve must fetch (never --block-net), so
+	// its kind is allowlisted rather than egress-denied; the host set rides in the
+	// profile file and therefore in the digest, exactly as ADR-0035 amended for
+	// the agent turn.
+	ProfileAPMResolve = "communication-apm-resolve"
 )
 
 // Profile is one Communication-owned nono policy file: where it is, what it
@@ -169,7 +178,9 @@ const GrantModelNote = "static policy in the profile file (mediation, the Landlo
 // 3.4.0 adds the `network` member: the agent kind is authored with an egress
 // allowlist by default, so the policy digest now commits to a host set
 // (ADR-0035 amending ADR-0019 D3). The egress-denied kinds keep --block-net as
-// a CLI flag and their file shape only changes by version string.
+// a CLI flag and their file shape only changes by version string. (The apm-resolve
+// kind added below ships on this same policy revision: the version names the
+// policy body, and the new kind is authored from the same builder shape.)
 const profileVersion = "3.4.0"
 
 // systemConfigReads are single system-scoped files the toolchain must be able
@@ -279,14 +290,19 @@ var profileAllows = []string{"/proc/self/fd", "/dev/pts"}
 // the two egress-denied kinds keep --block-net semantics.
 func resolveNetwork(kind string, net NetworkEnforcement, allow []string) (NetworkEnforcement, []string, error) {
 	switch kind {
-	case ProfileAgentTurn, ProfileEgressDenied, ProfileCommand:
+	case ProfileAgentTurn, ProfileEgressDenied, ProfileCommand, ProfileAPMResolve:
 	default:
-		return "", nil, fmt.Errorf("sandbox: unknown profile kind %q (want %s, %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied, ProfileCommand)
+		return "", nil, fmt.Errorf("sandbox: unknown profile kind %q (want %s, %s, %s or %s)", kind, ProfileAgentTurn, ProfileEgressDenied, ProfileCommand, ProfileAPMResolve)
 	}
 	if net == "" {
 		if kind == ProfileAgentTurn {
 			if len(allow) == 0 {
 				allow = DefaultEgressHosts()
+			}
+			net = NetworkAllowlisted
+		} else if kind == ProfileAPMResolve {
+			if len(allow) == 0 {
+				allow = DefaultAPMEgressHosts()
 			}
 			net = NetworkAllowlisted
 		} else {
@@ -303,8 +319,8 @@ func resolveNetwork(kind string, net NetworkEnforcement, allow []string) (Networ
 		}
 		return NetworkOpen, nil, nil
 	case NetworkAllowlisted:
-		if kind != ProfileAgentTurn {
-			return "", nil, fmt.Errorf("sandbox: profile %s is an egress-denied policy: an allowlist belongs on the agent-turn kind, and --block-net with --allow-domain is the contradiction nono's own parser refuses (measured: \"--block-net and --allow-domain are contradictory: domain filtering requires proxy mode\")", kind)
+		if kind != ProfileAgentTurn && kind != ProfileAPMResolve {
+			return "", nil, fmt.Errorf("sandbox: profile %s is an egress-denied policy: an allowlist belongs on the agent-turn or apm-resolve kind, and --block-net with --allow-domain is the contradiction nono's own parser refuses (measured: \"--block-net and --allow-domain are contradictory: domain filtering requires proxy mode\")", kind)
 		}
 		hosts, err := NormalizeEgressHosts(allow)
 		if err != nil {

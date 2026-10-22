@@ -14,9 +14,11 @@
  *   the chosen secret's `allowed_agent_profile_ids` to grant it.
  * - NAME: suggested from agent + step, kept unique against the existing
  *   list, always editable.
- * - SKILLS: the optional APM triple (ref + target + digest), all-or-nothing
- *   — the existing PATCH semantics; `Lock it` is disabled because
- *   server-side digest computation does not exist yet (planned ADR).
+ * - SKILLS: the optional APM pin (ref + target; the lock digest is optional
+ *   and only a hand paste or the server-side lock flow records it), written as
+ *   one PATCH after the create — an unlocked pin is ref + target with no digest.
+ *   The lock itself is offered by the profile page (`Lock it`), which POSTs the
+ *   worker-side resolve.
  * - Defaults bar: only claims that hold for profiles today —
  *   `permission_mode` is always `ask` (ADR-0009) and the sandbox wording
  *   reflects what the live workers actually report (ADR-0035: the egress
@@ -206,9 +208,14 @@ function DialogBody({
   const suggestedName = suggestProfileName(selectedAgent.display, forStep, takenNames);
   const nameValue = nameTouched ? name : suggestedName;
 
-  const apmFields = [apmRef.trim(), apmTarget, apmDigest.trim()];
-  const apmFilled = apmFields.filter((value) => value !== "").length;
-  const apmPartial = apmFilled > 0 && apmFilled < 3;
+  const apmRefFilled = apmRef.trim() !== "";
+  const apmTargetFilled = apmTarget !== "";
+  const apmDigestFilled = apmDigest.trim() !== "";
+  // A pin is either ref + target (unlocked — the digest is the operator's to
+  // record through the lock flow) or ref + target + digest (locked); none is the
+  // clear. The digest alone, or a half pin, is refused by the backend.
+  const apmPinComplete = apmRefFilled && apmTargetFilled;
+  const apmPartial = !apmPinComplete && (apmRefFilled || apmTargetFilled || apmDigestFilled);
 
   // Focus trap + escape, the accessible-modal contract (see
   // NewConversationDialog for the same pattern).
@@ -275,13 +282,15 @@ function DialogBody({
     }
     setFollowing(true);
     try {
-      if (apmFilled === 3) {
+      // An unlocked pin is written as ref + target with no digest; a locked one
+      // carries the pasted digest. Either way the triple travels as one unit.
+      if (apmRefFilled && apmTargetFilled) {
         await apiFetch<AgentProfile>(`/api/v1/agent-profiles/${created.id}`, {
           method: "PATCH",
           json: {
             apm_package_ref: apmRef.trim(),
             apm_target: apmTarget as "claude" | "codex",
-            apm_lock_digest: apmDigest.trim(),
+            apm_lock_digest: apmDigestFilled ? apmDigest.trim() : null,
           },
         });
       }
@@ -592,22 +601,16 @@ function DialogBody({
                   data-testid="new-profile-apm-digest"
                 />
               </Field>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled
-                title="Computing the lock digest server-side is not available yet"
-                data-testid="new-profile-lock"
-              >
-                Lock it
-              </Button>
             </div>
-            <p className="font-mono text-[11px] text-muted">
-              · computing the lock digest server-side is not available yet — paste it by hand
-            </p>
+            {apmRefFilled && apmTargetFilled && !apmDigestFilled ? (
+              <p className="font-mono text-[11px] text-muted" data-testid="new-profile-lock">
+                · unlocked pin — Lock it from the profile page to record the lock digest
+              </p>
+            ) : null}
             {apmPartial ? (
               <p className="font-mono text-[11px] text-st-waiting-tag-fg" role="alert">
-                ! ref, target and digest travel together — fill all three or leave all empty
+                ! a pin needs the ref and target (the digest is optional) — fill both or leave all
+                empty
               </p>
             ) : null}
           </section>

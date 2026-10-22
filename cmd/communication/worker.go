@@ -107,6 +107,14 @@ environment:
                                  means profiles that pin packaged context
                                  refuse their turns rather than running a
                                  different agent than configured
+  COMMUNICATION_APM_LOCK_SCRATCH  APM lock resolve scratch root (default:
+                                 "<workspace root>/.apm-lock": a directory
+                                 inside the worker-owned workspace volume,
+                                 which the apm-resolve sandbox grants accept;
+                                 override to move it). The worker creates it
+                                 at startup; a claimed resolve runs its
+                                 scratch in a fresh subdirectory and removes
+                                 it after
   COMMUNICATION_CLAUDE_OAUTH_TOKEN_FILE
                                  ADR-0040: path to a FILE holding the owner's
                                  long-lived 'claude setup-token' value (prefix
@@ -142,6 +150,14 @@ type workerOptions struct {
 	// trees share a device and differ only by inode, so a path-prefix relationship
 	// would have made one measurement look like two.
 	reposRoot string
+	// apmLockScratchRoot is the directory the APM lock resolves run their
+	// scratch in (ADR-0054 amendment 1): a directory INSIDE the worker-owned
+	// workspace volume, which the apm-resolve sandbox grants accept and the
+	// sandbox refuses to grant under the temp tree instead (probe C-TMP1). Default
+	// `<workspace root>/.apm-lock` (worker.DefaultAPMLockScratchRoot), override
+	// via COMMUNICATION_APM_LOCK_SCRATCH for a worker whose workspace root is
+	// not writable.
+	apmLockScratchRoot string
 	// sandboxEnforcement is this worker's configured mode. `required` is the
 	// default because 05 defines it as the only mode that may be described as
 	// sandboxed; the others are reachable only by explicit configuration, and a
@@ -255,6 +271,11 @@ func workerOptionsFromEnv(getenv func(string) string) (workerOptions, error) {
 		// conversation that used it) and AssertNothingBut refuses foreign entries
 		// in a workspace root, which nesting would guarantee.
 		o.reposRoot = filepath.Join(filepath.Dir(o.workspaceRoot), "repos")
+	}
+
+	o.apmLockScratchRoot = strings.TrimSpace(getenv("COMMUNICATION_APM_LOCK_SCRATCH"))
+	if o.apmLockScratchRoot == "" {
+		o.apmLockScratchRoot = worker.DefaultAPMLockScratchRoot(o.workspaceRoot)
 	}
 
 	o.sandboxEnforcement = domain.EnforcementMode(strings.TrimSpace(getenv("COMMUNICATION_SANDBOX_ENFORCEMENT")))
@@ -602,7 +623,20 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	// seam, and reports back — the control plane writes the digest + contents
 	// summary and journals agent.profile.apm_locked on the reported result.
 	apmLockStager := apmStager(log)
-	apmLockLoop, apmLockErr := worker.NewAPMLockLoop(&postgres.TurnStore{Pool: pool}, apmLockStager, w.ID, worker.WithAPMLockLogger(log))
+	apmLockSandbox := &worker.APMSandbox{
+		Sandbox:      units.Sandbox,
+		LauncherHome: opts.sandboxLauncherHome,
+		PolicyDir:    opts.policyDir,
+		SandboxPath:  nonoPath(),
+		Enforcement:  opts.sandboxEnforcement,
+		Binary:       apmStagerBinary(log),
+		Timeout:      worker.DefaultAPMLockResolveTimeout,
+	}
+	apmLockLoop, apmLockErr := worker.NewAPMLockLoop(&postgres.TurnStore{Pool: pool}, apmLockStager, w.ID,
+		worker.WithAPMLockLogger(log),
+		worker.WithAPMLockSandbox(apmLockSandbox),
+		worker.WithAPMLockScratchRoot(opts.apmLockScratchRoot),
+	)
 	if apmLockErr != nil {
 		stop()
 		log.Error("invalid apm lock loop configuration", slog.String("error", apmLockErr.Error()))
@@ -651,15 +685,21 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 				log.Warn("attempt loop stopped", slog.String("error", err.Error()))
 			}
 		}()
-		if err := loop.Start(ctx); err != nil {
-			log.Warn("turn loop stopped", slog.String("error", err.Error()))
-		}
+		// The APM lock loop starts on the far side of the same SweepUncleaned
+		// gate and BEFORE the turn loop's blocking Start: the turn loop owns
+		// this goroutine for the worker's whole lifetime, so a lock loop that
+		// only started after loop.Start returned would sit dead until shutdown
+		// and never claim an apm_lock_requests row.
 		if apmLockStager != nil {
 			go func() {
+				log.Info("apm lock loop started", slog.String("worker_id", workerID))
 				if err := apmLockLoop.Start(ctx); err != nil {
 					log.Warn("apm lock loop stopped", slog.String("error", err.Error()))
 				}
 			}()
+		}
+		if err := loop.Start(ctx); err != nil {
+			log.Warn("turn loop stopped", slog.String("error", err.Error()))
 		}
 	}
 	w.Drain = func(ctx context.Context) error {
@@ -671,6 +711,11 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		slog.String("version", version),
 		slog.String("heartbeat", opts.cfg.Heartbeat.String()),
 	)
+	if err := os.MkdirAll(opts.apmLockScratchRoot, 0o700); err != nil {
+		log.Error("apm lock scratch root could not be created; claimed apm lock resolves will fail until it is writable",
+			slog.String("path", opts.apmLockScratchRoot), slog.String("error", err.Error()))
+	}
+
 	if err := w.Run(ctx); err != nil {
 		stop()
 		log.Error("worker stopped", slog.String("error", err.Error()))
@@ -1192,6 +1237,20 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 // its turns (unit.stageAPM), because running without the packaged context the
 // profile promises is running a different agent than the one configured.
 func apmStager(log *slog.Logger) worker.APMTyper {
+	binary := apmStagerBinary(log)
+	if binary == "" {
+		log.Warn("no apm binary on PATH or at /opt/apm/apm: profiles that pin packaged context will refuse their turns",
+			slog.Bool("apm_staging_available", false))
+		return nil
+	}
+	return &worker.APMStager{Binary: binary, Timeout: 2 * time.Minute}
+}
+
+// apmStagerBinary resolves the packaged-context binary path: COMMUNICATION_APM_BINARY
+// when set, else the apm on PATH, else the vendored /opt/apm/apm — the same
+// resolution the seam above answers with, kept separate so the lock resolve's
+// sandbox can name the binary it must run the pinned apm CLI under.
+func apmStagerBinary(log *slog.Logger) string {
 	binary := strings.TrimSpace(os.Getenv("COMMUNICATION_APM_BINARY"))
 	if binary == "" {
 		if found, err := exec.LookPath("apm"); err == nil {
@@ -1203,9 +1262,8 @@ func apmStager(log *slog.Logger) worker.APMTyper {
 	if binary == "" {
 		log.Warn("no apm binary on PATH or at /opt/apm/apm: profiles that pin packaged context will refuse their turns",
 			slog.Bool("apm_staging_available", false))
-		return nil
 	}
-	return &worker.APMStager{Binary: binary, Timeout: 2 * time.Minute}
+	return binary
 }
 
 // launcherCredentialDirs resolves the credential directories a launcher declares

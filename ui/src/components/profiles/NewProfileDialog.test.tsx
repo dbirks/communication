@@ -180,7 +180,19 @@ describe("NewProfileDialog (5b)", () => {
     expect(Array.from(otherSelect.options).map((option) => option.value)).toEqual(["gemini"]);
     // Defaults bar: real claims only — no egress wording.
     await screen.findByText("permission ask · sandbox: required · verified");
-    expect((screen.getByTestId("new-profile-lock") as HTMLButtonElement).disabled).toBe(true);
+    // No pin was filled: no unlocked-pin note in the dialog (the lock flow lives
+    // on the profile page — ADR-0054 amendment 2).
+    expect(screen.queryByTestId("new-profile-lock")).toBeNull();
+  });
+
+  it("offers the unlocked-pin Lock it note once the ref and target are filled", async () => {
+    mount();
+    expect(screen.queryByTestId("new-profile-lock")).toBeNull();
+    fireEvent.change(screen.getByTestId("new-profile-apm-ref"), {
+      target: { value: "mattpocock/skills#v1.3.1" },
+    });
+    fireEvent.change(screen.getByTestId("new-profile-apm-target"), { target: { value: "claude" } });
+    expect(await screen.findByTestId("new-profile-lock")).not.toBeNull();
   });
 
   it("creates the selected profile and calls onCreated with the created row", async () => {
@@ -267,7 +279,7 @@ describe("NewProfileDialog (5b)", () => {
     fireEvent.change(screen.getByTestId("new-profile-apm-ref"), {
       target: { value: "mattpocock/skills#v1.3.1" },
     });
-    expect(screen.getByText(/ref, target and digest travel together/)).not.toBeNull();
+    expect(screen.getByText(/ref and target \(the digest is optional\)/)).not.toBeNull();
     expect((screen.getByTestId("agents-new-submit") as HTMLButtonElement).disabled).toBe(true);
   });
 

@@ -23,9 +23,13 @@ package postgres
 //     unverifiable pin outright (workspaces.go's ProfileAxes read). A half pin
 //     written through this API would turn that refusal into a launch-time
 //     surprise for somebody else's conversation, so it is a 422 here.
+//   - An UNLOCKED pin (ADR-0054 amendment 2) is the ref + target without the
+//     digest; the lock flow is what records the digest, and the launch gate
+//     refuses an unlocked pin at launch.
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -58,8 +62,9 @@ const (
 	ProfileCodeNameInvalid = "profile_name_invalid"
 	// ProfileCodeLauncherInvalid: launcher_id breaks the registry grammar.
 	ProfileCodeLauncherInvalid = "launcher_id_invalid"
-	// ProfileCodeAPMIncomplete: the three apm columns must be set or cleared
-	// together — the half-pin refusal described in the header.
+	// ProfileCodeAPMIncomplete: the APM pin is not a legal shape — all three
+	// set (locked), just the ref + target (unlocked, ADR-0054 amendment 2), or all
+	// three cleared (the clear). A partial pin is refused with this code.
 	ProfileCodeAPMIncomplete = "apm_pin_incomplete"
 	// ProfileCodeAPMRefInvalid: apm_package_ref is not an apm git dependency.
 	ProfileCodeAPMRefInvalid = "apm_package_ref_invalid"
@@ -175,28 +180,34 @@ func ValidAPMPackageRef(ref string) bool {
 }
 
 // checkAPMPin validates one write of the triple. All three absent means "this
-// profile stages no packaged context" and is legal; anything else is a half pin
-// and is refused with apm_pin_incomplete.
+// profile stages no packaged context" and is legal; a ref plus a target with no
+// digest is an UNLOCKED pin (ADR-0054 amendment 2) and is legal too — the
+// operator records the digest by locking, which is the only way the content is
+// resolved and checked; anything else is a half pin and is refused with
+// apm_pin_incomplete.
 //
 // Why the rule is here rather than only at launch: internal/agent/apm's Stage
 // compares sha256(apm.lock.yaml) against the recorded digest, and the worker's
-// profile read refuses a ref with no digest outright (workspaces.go). A pin
-// written without a digest would therefore be accepted by the API and then make
-// every conversation using that profile fail to launch — a delayed, anonymous
-// refusal for the next reader instead of an immediate, named one for the writer.
+// profile read refuses an unlocked pin outright (workspaces.go's unlocked-pin
+// rule, restated at the launch gate in stage.go). A pin written without a digest
+// would therefore be accepted by the API and then make every conversation using
+// that profile fail to launch — a delayed, anonymous refusal for the next reader
+// instead of an immediate, named one for the writer.
 func checkAPMPin(ref, target, digest *string) error {
-	set := 0
-	for _, v := range []*string{ref, target, digest} {
-		if v != nil && *v != "" {
-			set++
-		}
-	}
-	if set == 0 {
-		return nil
-	}
-	if set != 3 {
+	hasRef := ref != nil && *ref != ""
+	hasTarget := target != nil && *target != ""
+	hasDigest := digest != nil && *digest != ""
+	switch {
+	case !hasRef && !hasTarget && !hasDigest:
+		return nil // the clear: staging nothing
+	case hasRef && hasTarget && hasDigest:
+		// Locked: the operator recorded a digest for this exact ref + target.
+	case hasRef && hasTarget:
+		// Unlocked (ADR-0054 amendment 2): the ref and the target are the pin,
+		// the digest is the operator's to record through the lock flow.
+	default:
 		return profileRefused(ProfileCodeAPMIncomplete,
-			"apm_package_ref, apm_target and apm_lock_digest must be set together, or all three cleared to remove the pin.")
+			"an apm pin is either all three set (locked) or just the ref and target (unlocked); a partial pin is refused.")
 	}
 	if !ValidAPMPackageRef(*ref) {
 		return profileRefused(ProfileCodeAPMRefInvalid,
@@ -207,7 +218,7 @@ func checkAPMPin(ref, target, digest *string) error {
 			fmt.Sprintf("apm_target must be one of %s/%s; internal/agent/apm installs for nothing else.",
 				apm.TargetClaude, apm.TargetCodex))
 	}
-	if !cnvDigestPattern.MatchString(*digest) {
+	if hasDigest && !cnvDigestPattern.MatchString(*digest) {
 		return profileRefused(ProfileCodeAPMDigestInvalid,
 			"apm_lock_digest must be sha256:<64 lowercase hex> — the sha256 of the apm.lock.yaml the operator recorded.")
 	}
@@ -344,19 +355,24 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		return *v
 	}
 	var p CnvProfile
-	// $4 is the library role: the UPDATE itself refuses rather than trusting the
-	// caller to have checked, because every other writer in this package is a
-	// future caller too.
+	var contents *string
+	// The library-role predicate is part of the UPDATE's own WHERE ($7): the write
+	// refuses rather than trusting the caller to have checked, because every other
+	// writer in this package is a future caller too.
+	//
+	// apm_contents_summary rides the same write as apm_lock_digest: a pin that is
+	// unlocked or cleared leaves both null, so a digest (and the names-only
+	// contents summary that came with it) can never survive a ref/target change.
 	err = tx.QueryRow(ctx, `
 		UPDATE agent_profiles
-		SET apm_package_ref = $4, apm_target = $5, apm_lock_digest = $6
-		WHERE id = $1::uuid AND organization_id = $2::uuid AND $3::boolean
-		RETURNING `+cnvProfileColumns,
-		profileID, c.OrganizationID, c.IsOrgAdmin,
-		null(ref), null(target), null(digest)).
+		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3, apm_contents_summary = $4
+		WHERE id = $5::uuid AND organization_id = $6::uuid AND $7::boolean
+		RETURNING `+cnvProfileColumns+", apm_contents_summary",
+		null(ref), null(target), null(digest), nil,
+		profileID, c.OrganizationID, c.IsOrgAdmin).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
 			&p.PermissionMode, &p.CreatedAt,
-			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
+			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
 	}
@@ -370,6 +386,14 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		return CnvProfile{}, fmt.Errorf("postgres: patch agent profile apm: %w", err)
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
+	p.APMLockContents = nil
+	if contents != nil {
+		var lock apmLockContentsJSON
+		if uerr := json.Unmarshal([]byte(*contents), &lock); uerr != nil {
+			return CnvProfile{}, fmt.Errorf("postgres: decode apm lock contents: %w", uerr)
+		}
+		p.APMLockContents = &lock
+	}
 
 	if _, err := AppendEvent(ctx, tx, events.New{
 		Type:           events.TypeAgentProfileUpdated,

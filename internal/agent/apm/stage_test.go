@@ -213,6 +213,27 @@ func TestStageMaterializesObjectFormForSubdirRef(t *testing.T) {
 	}
 }
 
+// An unlocked pin — a ref that names a package, no lock digest — is refused at
+// the launch gate (ADR-0030's invariant, restated per ADR-0054 amendment 2): there
+// is nothing to compare the staged content against, so the refusal must name the
+// remedy rather than let an install run unverified.
+func TestStageRefusesUnlockedPin(t *testing.T) {
+	checkout, home := newCheckout(t)
+	bin, logPath := writeFakeAPM(t, fakeLockBody)
+
+	_, err := Stage(t.Context(), stageRequest(checkout, home, bin, "mattpocock/skills#v1.3.1", ""))
+	if err == nil {
+		t.Fatal("a launch with an unlocked pin (ref set, digest empty) must refuse")
+	} else if !strings.Contains(err.Error(), "not locked yet") {
+		t.Fatalf("err = %v, want the not-locked-yet refusal", err)
+	} else if !strings.Contains(err.Error(), "Lock it on the profile") {
+		t.Fatalf("err = %v, want the Lock it remedy", err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("apm must not run for an unlocked pin: %s", readFile(t, logPath))
+	}
+}
+
 // A ref that cannot be pinned is refused before apm is ever run.
 func TestStageRefusesUnparsableRefWhenManifestNeeded(t *testing.T) {
 	checkout, home := newCheckout(t)

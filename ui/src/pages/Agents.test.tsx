@@ -32,6 +32,14 @@ const pinned: AgentProfile = {
   apm_lock_digest: `sha256:${"1a".repeat(32)}`,
 };
 
+const unlockedProfile: AgentProfile = {
+  ...claudeProfile,
+  name: "Claude Code (unlocked skills)",
+  apm_package_ref: "mattpocock/skills#v1.3.1",
+  apm_target: "claude",
+  apm_lock_digest: null,
+};
+
 const listPath = "/api/v1/agent-profiles";
 const pinPath = `/api/v1/agent-profiles/${pinned.id}`;
 
@@ -375,6 +383,38 @@ describe("/profiles", () => {
     });
   });
 
+  it("saves the unlocked pin as ref plus target with no digest", async () => {
+    const { requests } = mount(
+      [
+        { path: listPath, method: "GET", body: { items: [unlockedProfile, codexProfile] } },
+        {
+          path: `/api/v1/agent-profiles/${unlockedProfile.id}/apm/lock`,
+          method: "GET",
+          body: { request_id: "", status: "none" },
+        },
+      ],
+      `/profiles/${unlockedProfile.id}`,
+    );
+    fireEvent.click(await screen.findByTestId(`agent-edit-${unlockedProfile.id}`));
+    const save = screen.getByTestId(`agents-apm-save-${unlockedProfile.id}`) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH"),
+      ).toHaveLength(1),
+    );
+    const body = JSON.parse(
+      requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}`, "PATCH")[0].body ?? "{}",
+    );
+    // An unlocked pin travels without a digest; the digest field is optional.
+    expect(body).toEqual({
+      apm_package_ref: "mattpocock/skills#v1.3.1",
+      apm_target: "claude",
+      apm_lock_digest: null,
+    });
+  });
+
   it("clears the whole triple on Remove package", async () => {
     const cleared: AgentProfile = {
       ...pinned,
@@ -522,5 +562,88 @@ describe("/profiles", () => {
     const worker = screen.getByTestId("profile-worker-01987a74-5555-7000-8000-abcdef012345");
     expect(worker.textContent).toContain("required");
     expect(worker.textContent).toContain("✓ verified");
+  });
+
+  it("offers Lock it for an unlocked pin and shows the queued lock chip", async () => {
+    const unlocked: AgentProfile = {
+      ...claudeProfile,
+      name: "Claude Code (unlocked skills)",
+      apm_package_ref: "mattpocock/skills#v1.3.1",
+      apm_target: "claude",
+      apm_lock_digest: null,
+    };
+    const { requests } = mount(
+      [
+        { path: listPath, method: "GET", body: { items: [unlocked, codexProfile] } },
+        {
+          path: `/api/v1/agent-profiles/${unlocked.id}/apm/lock`,
+          method: "GET",
+          body: { request_id: "req-unlocked-1", status: "queued" },
+        },
+      ],
+      `/profiles/${unlocked.id}`,
+    );
+    const detail = await screen.findByTestId(`profile-detail-${unlocked.id}`);
+    // Unlocked pin: the contents are the honest "lock it" prompt, not a
+    // fabricated list.
+    expect(within(detail).getByTestId(`agent-apm-unlocked-${unlocked.id}`).textContent).toContain(
+      "Lock the pin to see its contents",
+    );
+    // The pin form is closed until the operator opens it; the list row's Edit
+    // opens it. With ref + target saved the Lock it button is enabled.
+    fireEvent.click(await screen.findByTestId(`agent-edit-${unlocked.id}`));
+    const lockButton = screen.getByTestId("profile-apm-lock") as HTMLButtonElement;
+    expect(lockButton.disabled).toBe(false);
+    fireEvent.click(lockButton);
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/agent-profiles/${unlocked.id}/apm/lock`, "POST"),
+      ).toHaveLength(1),
+    );
+    const chip = await screen.findByTestId(`profile-apm-lock-status-${unlocked.id}`);
+    expect(chip.textContent).toContain("queued");
+  });
+
+  it("shows the done lock chip with the recorded digest after a resolve", async () => {
+    mount([
+      {
+        path: `/api/v1/agent-profiles/${pinned.id}/apm/lock`,
+        method: "GET",
+        body: { request_id: "req-pinned-1", status: "done", error: null },
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId(`agent-edit-${pinned.id}`));
+    const chip = await screen.findByTestId(`profile-apm-lock-status-${pinned.id}`);
+    expect(chip.textContent).toContain("locked ✓ sha256:");
+  });
+
+  it("renders the lock contents lists when a resolve reported them", async () => {
+    const withContents: AgentProfile = {
+      ...pinned,
+      apm_contents: {
+        skills: ["ask-matt"],
+        instructions: ["README.md"],
+        mcp_servers: ["github"],
+        truncated: false,
+      },
+    };
+    mount(
+      [
+        { path: listPath, method: "GET", body: { items: [withContents, codexProfile] } },
+        {
+          path: `/api/v1/agent-profiles/${withContents.id}/apm/lock`,
+          method: "GET",
+          body: { request_id: "", status: "none" },
+        },
+      ],
+      `/profiles/${withContents.id}`,
+    );
+    const detail = await screen.findByTestId(`profile-detail-${withContents.id}`);
+    const contents = within(detail).getByTestId(`agent-apm-contents-${withContents.id}`);
+    expect(contents.textContent).toContain("ask-matt");
+    expect(contents.textContent).toContain("README.md");
+    expect(contents.textContent).toContain("github");
+    expect(contents.textContent).toContain("MCP SERVERS");
+    expect(contents.textContent).not.toContain("truncated");
   });
 });

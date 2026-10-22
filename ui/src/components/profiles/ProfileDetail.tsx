@@ -35,6 +35,7 @@ import {
   useSystemSandbox,
 } from "../../api/queries";
 import type { AgentProfileAPMPatch } from "../../api/queries";
+import { useApmLockStatus, usePostApmLock } from "../../api/useApmLock";
 import { ENFORCEMENT_COPY } from "../../api/sandbox";
 import { useAgentProfileUsage, type Usage } from "../../api/useUsage";
 import type { AgentProfile, Project, Secret, SecretList } from "../../api/types";
@@ -120,6 +121,8 @@ export default function ProfileDetail({
   const usageQuery = useAgentProfileUsage(profile.id);
   const usage = usageQuery.data;
   const [duplicateProblem, setDuplicateProblem] = useState<unknown>(null);
+  const unlocked = profile.apm_package_ref != null && profile.apm_lock_digest == null;
+  const contents = profile.apm_contents;
 
   /**
    * `Duplicate…`: `POST` a copy named `<name> copy` (the route takes name +
@@ -305,9 +308,51 @@ export default function ProfileDetail({
             <div className="text-faint" data-testid={`agent-apm-digest-${profile.id}`}>
               {shortDigest(profile.apm_lock_digest)}
             </div>
-            <p className="pt-1 font-sans text-[11px] text-muted">
-              Contents available after the package is staged — not available yet.
-            </p>
+            {unlocked ? (
+              <p
+                className="pt-1 font-sans text-[11px] text-muted"
+                data-testid={`agent-apm-unlocked-${profile.id}`}
+              >
+                Lock the pin to see its contents
+              </p>
+            ) : contents ? (
+              <div
+                className="pt-1 font-sans text-[11px] text-muted"
+                data-testid={`agent-apm-contents-${profile.id}`}
+              >
+                <div>SKILLS · {(contents.skills ?? []).length}</div>
+                <ul className="mt-0.5 list-disc pl-4">
+                  {(contents.skills ?? []).map((skill) => (
+                    <li key={skill}>{skill}</li>
+                  ))}
+                </ul>
+                <div>INSTRUCTIONS · {(contents.instructions ?? []).length}</div>
+                <ul className="mt-0.5 list-disc pl-4">
+                  {(contents.instructions ?? []).map((instruction) => (
+                    <li key={instruction}>{instruction}</li>
+                  ))}
+                </ul>
+                <div>MCP SERVERS · {(contents.mcp_servers ?? []).length}</div>
+                <ul className="mt-0.5 list-disc pl-4">
+                  {(contents.mcp_servers ?? []).map((server) => (
+                    <li key={server}>{server}</li>
+                  ))}
+                </ul>
+                {contents.truncated ? (
+                  <p
+                    className="pt-1 font-mono text-[10.5px] text-faint"
+                    data-testid={`agent-apm-contents-truncated-${profile.id}`}
+                  >
+                    showing first 200
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="pt-1 font-sans text-[11px] text-muted">
+                the pin is locked, but no lock resolve has reported its contents yet — check the
+                lock status
+              </p>
+            )}
           </div>
         ) : (
           <p
@@ -559,20 +604,37 @@ export function ProblemCode({ error, testid }: { error: unknown; testid: string 
 }
 
 /**
- * The APM triple for one profile, edited as one unit. `Save` sends all three
+ * The APM pin for one profile, edited as one unit. `Save` sends all three
  * values; `Remove package` sends the cleared triple — there is no route to
- * change one column, because a ref without a digest would stage whatever the
+ * change one column, because a pin without a digest would stage whatever the
  * ref points at today (`ADR-0030` §4, APM.md probe A5b).
+ *
+ * The digest is optional: saving a ref + target without one writes an UNLOCKED
+ * pin (`apm_lock_digest: null`), which the backend accepts and the launch gate
+ * refuses until the operator Locks it (ADR-0054 amendment 2). The digest itself
+ * is only ever pasted as the "advanced" override.
  */
 export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone: () => void }) {
   const patch = usePatchAgentProfile(profile.id);
+  const lockStatus = useApmLockStatus(profile.id);
+  const lockProfile = usePostApmLock();
   const [ref, setRef] = useState(profile.apm_package_ref ?? "");
   const [target, setTarget] = useState<"claude" | "codex">(profile.apm_target ?? "claude");
   const [digest, setDigest] = useState(profile.apm_lock_digest ?? "");
 
   const trimmedRef = ref.trim();
   const trimmedDigest = digest.trim();
+  const trimmedTarget = String(target);
   const digestLooksOff = trimmedDigest !== "" && !LOCK_DIGEST_PATTERN.test(trimmedDigest);
+  const lockReady = trimmedRef !== "" && trimmedTarget !== "";
+  const lockInFlight =
+    lockProfile.isPending ||
+    lockStatus.data?.status === "queued" ||
+    lockStatus.data?.status === "claimed";
+  const lockChipProps = {
+    role: "status",
+    "aria-live": "polite" as const,
+  };
 
   async function save(body: AgentProfileAPMPatch) {
     try {
@@ -591,7 +653,9 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
         void save({
           apm_package_ref: trimmedRef,
           apm_target: target,
-          apm_lock_digest: trimmedDigest,
+          // An empty digest writes the UNLOCKED pin (ADR-0054 amendment 2): the
+          // ref + target travel, the digest does not.
+          apm_lock_digest: trimmedDigest === "" ? null : trimmedDigest,
         });
       }}
       data-testid={`agent-apm-form-${profile.id}`}
@@ -642,7 +706,8 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
               </span>
             ) : (
               <span className="font-mono text-[11px] text-muted">
-                sha256: + 64 hex from <code>apm lock</code> after a real install
+                sha256: + 64 hex from <code>apm lock</code> after a real install — optional; leave
+                it empty for an unlocked pin
               </span>
             )
           }
@@ -676,7 +741,40 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
         >
           Remove package
         </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!lockReady || lockInFlight}
+          onClick={() => void lockProfile.mutateAsync(profile.id).catch(() => {})}
+          data-testid="profile-apm-lock"
+        >
+          {lockInFlight ? "Locking…" : "Lock it"}
+        </Button>
       </div>
+      {lockStatus.data?.status === "queued" ||
+      lockStatus.data?.status === "claimed" ||
+      lockStatus.data?.status === "done" ||
+      lockStatus.data?.status === "failed" ? (
+        <div className="pt-1" data-testid={`profile-apm-lock-status-${profile.id}`}>
+          {lockStatus.data.status === "queued" ? (
+            <StatusChip state="queued" label="queued" labelProps={lockChipProps} />
+          ) : lockStatus.data.status === "claimed" ? (
+            <StatusChip state="running" label="resolving…" labelProps={lockChipProps} />
+          ) : lockStatus.data.status === "done" ? (
+            <StatusChip
+              state="done"
+              label={`locked ✓ sha256:${shortDigest(profile.apm_lock_digest)}`}
+              labelProps={lockChipProps}
+            />
+          ) : (
+            <StatusChip
+              state="failed"
+              label={`failed: ${lockStatus.data.error ?? ""}`}
+              labelProps={lockChipProps}
+            />
+          )}
+        </div>
+      ) : null}
       {patch.isError ? (
         <ProblemCode error={patch.error} testid={`agents-apm-problem-${profile.id}`} />
       ) : null}

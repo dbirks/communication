@@ -12,11 +12,14 @@ package api
 //   - the sandbox / workspace / commit axes. They are separate grant decisions
 //     with separate evidence.
 //
-// What IS writable is the APM triple, all three columns at once: a package ref
-// with no recorded lock digest stages whatever the upstream points at today
-// (probe A5b), so a half pin is not a partial success — it is a launch-time
-// refusal for somebody else's conversation. The store refuses it and so does the
-// handler, before either touches a database.
+// What IS writable is the APM pin: all three columns at once (a locked pin —
+// the operator recorded a digest), just the ref + target (an UNLOCKED pin,
+// ADR-0054 amendment 2 — the digest is the operator's to record through the
+// lock flow), or all three cleared (the clear). A package ref with no recorded
+// lock digest stages whatever the upstream points at today (probe A5b), so a
+// pin that is not locked is not a partial success — it is a launch-time refusal
+// for somebody else's conversation. The store refuses the partial shapes and
+// the handler does the same, before either touches a database.
 
 import (
 	"encoding/json"
@@ -84,15 +87,22 @@ type AgentProfileAPMPatch struct {
 
 // apmPinComplete is the all-or-nothing rule as the handler states it. The store
 // re-checks it (it must: it is the last thing between a request and the column).
+// A pin is either all three set (locked — the operator recorded a digest), just
+// the ref + target (unlocked, ADR-0054 amendment 2 — the digest is the
+// operator's to record through the lock flow), or all three cleared (the clear).
+// Any other shape is a half pin and is 422.
 func apmPinComplete(in AgentProfileAPMPatch) bool {
-	set := func(v *string) bool { return v != nil && *v != "" }
-	n := 0
-	for _, v := range []*string{in.APMPackageRef, in.APMTarget, in.APMLockDigest} {
-		if set(v) {
-			n++
-		}
+	hasRef := in.APMPackageRef != nil && *in.APMPackageRef != ""
+	hasTarget := in.APMTarget != nil && *in.APMTarget != ""
+	hasDigest := in.APMLockDigest != nil && *in.APMLockDigest != ""
+	switch {
+	case !hasRef && !hasTarget && !hasDigest:
+		return true // the clear
+	case hasRef && hasTarget:
+		return true // locked (all three) or unlocked (ref + target, digest optional)
+	default:
+		return false // partial
 	}
-	return n == 0 || n == 3
 }
 
 // --- handlers -----------------------------------------------------------
@@ -144,7 +154,7 @@ func (h *cnvHandlers) patchProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if !apmPinComplete(body) {
 		profProblem(w, ProfileCodeAPMIncomplete,
-			"apm_package_ref, apm_target and apm_lock_digest must be set together, or all three cleared to remove the pin.")
+			"an apm pin is either all three set (locked) or just the ref and target (unlocked); a partial pin is refused.")
 		return
 	}
 	if !validUUID(profileID) {

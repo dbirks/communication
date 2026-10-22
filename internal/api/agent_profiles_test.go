@@ -200,13 +200,45 @@ func TestPatchAgentProfileAPMTriple(t *testing.T) {
 	t.Fatalf("pinned profile %s missing from %s", cnvTProfile, list.Body)
 }
 
+func TestPatchAgentProfileUnlockedPinIsAccepted(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, profAdminCaller("admin"))
+
+	// An unlocked pin — ref + target, no digest — is the legal shape the lock
+	// flow exists to serve (ADR-0054 amendment 2): the digest is the operator's to
+	// record through Lock it.
+	rec := profSend(t, s, http.MethodPatch, profURL+"/"+cnvTProfile, map[string]string{
+		"apm_package_ref": "mattpocock/skills#v1.3.1",
+		"apm_target":      "claude",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unlocked PATCH = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var view AgentProfileView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if view.APMPackageRef == nil || *view.APMPackageRef != "mattpocock/skills#v1.3.1" {
+		t.Errorf("unlocked view apm_package_ref = %v, want the ref", view.APMPackageRef)
+	}
+	if view.APMTarget == nil || *view.APMTarget != "claude" {
+		t.Errorf("unlocked view apm_target = %v, want claude", view.APMTarget)
+	}
+	if view.APMLockDigest != nil {
+		t.Errorf("unlocked view apm_lock_digest = %v, want null", view.APMLockDigest)
+	}
+	if view.APMContents != nil {
+		t.Errorf("unlocked view apm_contents = %+v, want null", view.APMContents)
+	}
+}
+
 func TestPatchAgentProfilePartialTripleIsRefused(t *testing.T) {
-	// Every partial shape: the whole point of the rule is that no subset of two
-	// columns can be written, because a ref without a digest stages whatever the
-	// upstream points at today (probe A5b) and the worker refuses it at launch.
+	// Every partial shape: the whole point of the rule is that no subset of one
+	// column without its partner can be written. An UNLOCKED pin is the legal
+	// ref + target pair (the digest is optional, ADR-0054 amendment 2), so the
+	// partials are the singles and the digest-only shapes.
 	for _, body := range []string{
 		`{"apm_package_ref":"mattpocock/skills#v1.3.1"}`,
-		`{"apm_package_ref":"mattpocock/skills#v1.3.1","apm_target":"claude"}`,
 		`{"apm_target":"claude","apm_lock_digest":"sha256:` + strings.Repeat("b", 64) + `"}`,
 		`{"apm_lock_digest":"sha256:` + strings.Repeat("b", 64) + `"}`,
 	} {

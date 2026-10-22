@@ -552,11 +552,14 @@ func (p *ProfileReader) ProfileFor(ctx context.Context, conversationID string) (
 	out.APMTarget = apmTarget.String
 	out.APMLockDigest = apmLockDigest.String
 	if apmRef.String != "" && !apmLockDigest.Valid {
-		// A profile that stages packaged context without a recorded lock digest
+		// ADR-0030's invariant, restated for an UNLOCKED pin (ADR-0054 amendment 2):
+		// a profile that stages packaged context without a recorded lock digest
 		// cannot be checked against probe A5's finding (an install whose content
 		// moved while --frozen reported success). Staging it anyway would be a
-		// silent "we trust whatever apm put there today".
-		return worker.ProfileAxes{}, fmt.Errorf("postgres: profile %s pins apm_package_ref=%s with no apm_lock_digest: refusing to stage unverifiable packaged context", out.AgentProfileID, apmRef.String)
+		// silent "we trust whatever apm put there today". The refusal names the
+		// remedy — the pin is not locked yet — because the next step for such a pin
+		// is for the operator to Lock it.
+		return worker.ProfileAxes{}, fmt.Errorf("postgres: profile %s pins apm_package_ref=%s but the APM pin is not locked yet — Lock it on the profile", out.AgentProfileID, apmRef.String)
 	}
 	return out, nil
 }

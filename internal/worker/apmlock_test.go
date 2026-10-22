@@ -3,6 +3,9 @@ package worker
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,12 +22,14 @@ type fakeAPMLockStore struct {
 	last       APMLockClaim
 	lastResult *apm.ResolveResult
 	lastErr    error
+	claims     int
 }
 
 func (f *fakeAPMLockStore) ClaimAPMLockRequest(ctx context.Context, workerID string) (APMLockClaim, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.last = f.claim
+	f.claims++
 	if f.claimed {
 		f.claimed = false
 		return f.claim, true, f.claimErr
@@ -39,6 +44,14 @@ func (f *fakeAPMLockStore) CompleteAPMLockRequest(ctx context.Context, c APMLock
 	f.lastResult = result
 	f.lastErr = resolveErr
 	return nil
+}
+
+// armClaim makes the next claim the scripted one, so a test can queue a claim
+// after the loop has already gone idle.
+func (f *fakeAPMLockStore) armClaim() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimed = true
 }
 
 // fakeAPMTyper is an APMTyper whose Resolve records its request and answers with
@@ -156,5 +169,203 @@ func TestAPMLockLoopIdlesWithoutClaims(t *testing.T) {
 	cancel()
 	if err := l.Drain(context.Background()); err != nil {
 		t.Fatalf("Drain: %v", err)
+	}
+}
+
+// TestAPMLockLoopPollsAfterIdleClaim is the regression test for the lab's stuck
+// queue: the loop must keep scanning the due queue on its claim tick after its
+// first (empty) claim, or a lock queued after startup is never picked up.
+func TestAPMLockLoopPollsAfterIdleClaim(t *testing.T) {
+	store := &fakeAPMLockStore{claimed: false}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel() })
+	l, err := NewAPMLockLoop(store, &fakeAPMTyper{}, func() string { return "w-1" })
+	if err != nil {
+		t.Fatalf("NewAPMLockLoop: %v", err)
+	}
+	go func() { _ = l.Start(ctx) }()
+
+	// First pass: nothing due. The loop claims once, finds nothing, and idles on
+	// its tick — the pass has to happen before the queue holds a lock.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		passes := store.claims
+		store.mu.Unlock()
+		if passes >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	store.mu.Lock()
+	passes := store.claims
+	store.mu.Unlock()
+	if passes != 1 {
+		t.Fatalf("claim passes = %d, want 1 before arming", passes)
+	}
+
+	// Now something is queued: the next poll tick must claim it.
+	store.mu.Lock()
+	store.claim = APMLockClaim{RequestID: "lock-1", ProfileID: "p-1", OrganizationID: "o-1", PackageRef: "mattpocock/skills#v1.3.1", Target: apm.TargetClaude, WorkerID: "w-1"}
+	store.mu.Unlock()
+	store.armClaim()
+	claimDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(claimDeadline) {
+		store.mu.Lock()
+		last := store.last
+		store.mu.Unlock()
+		if last.RequestID == "lock-1" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.last.RequestID != "lock-1" {
+		t.Fatalf("never claimed the queued lock: last claim = %+v", store.last)
+	}
+}
+
+// fakeAPMLockResolver is the APMLockResolver the loop drives: it answers the
+// wrapper question (nil here, so the loop resolves plainly through the APM seam)
+// and records what it was asked.
+type fakeAPMLockResolver struct {
+	wrapCalls int
+	result    *apm.ResolveResult
+	err       error
+}
+
+func (f *fakeAPMLockResolver) Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.ResolveResult, error) {
+	return f.result, f.err
+}
+
+func (f *fakeAPMLockResolver) Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, error) {
+	f.wrapCalls++
+	return nil, f.err
+}
+
+// TestAPMLockLoopResolvesThroughTheSandboxResolver pins the ADR-0054 §B.2 wiring
+// from the loop's side: a claimed lock resolves through the worker-supplied
+// resolver, which answers the wrapper question, and the resolve it drove carried
+// the scratch work dir + scratch home.
+func TestAPMLockLoopResolvesThroughTheSandboxResolver(t *testing.T) {
+	store := &fakeAPMLockStore{claimed: true, claim: APMLockClaim{
+		RequestID: "lock-3", ProfileID: "p-1", OrganizationID: "o-1",
+		PackageRef: "mattpocock/skills#v1.3.1", Target: apm.TargetClaude, WorkerID: "w-1",
+	}}
+	resolve := &fakeAPMTyper{result: &apm.ResolveResult{LockDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+	sandbox := &fakeAPMLockResolver{result: &apm.ResolveResult{LockDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel() })
+	l, err := NewAPMLockLoop(store, resolve, func() string { return "w-1" },
+		WithAPMLockSandbox(sandbox), WithAPMLockScratchRoot(t.TempDir()))
+	if err != nil {
+		t.Fatalf("NewAPMLockLoop: %v", err)
+	}
+	go func() { _ = l.Start(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		done := store.lastResult != nil
+		store.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastErr != nil {
+		t.Fatalf("resolve error = %v, want nil", store.lastErr)
+	}
+	if sandbox.wrapCalls != 1 {
+		t.Errorf("sandbox wrapper answers = %d, want 1 (the loop asks the resolver)", sandbox.wrapCalls)
+	}
+	if resolve.request.Wrap != nil {
+		t.Error("resolve wrapped = ..., want nil (the resolver answered plainly)")
+	}
+	if resolve.request.WorkDir == "" || resolve.request.Home == "" {
+		t.Errorf("resolve workdir/home not carried: %q %q", resolve.request.WorkDir, resolve.request.Home)
+	}
+}
+
+// TestDefaultAPMLockScratchRoot pins the APM lock resolve scratch root's
+// default: a directory INSIDE the worker-owned workspace volume
+// (<workspace root>/.apm-lock), which the apm-resolve sandbox grants accept —
+// workspace paths are what agent turns get granted, and a writable grant under
+// the temp tree the sandbox layers by default is refused by omission (probe
+// C-TMP1) — rather than the workspace root's parent, which is not writable
+// inside the container.
+func TestDefaultAPMLockScratchRoot(t *testing.T) {
+	for _, tc := range []struct{ root, want string }{
+		{"/var/lib/communication/workspaces", "/var/lib/communication/workspaces/.apm-lock"},
+		{"/workspaces", "/workspaces/.apm-lock"},
+		{"/ws/", "/ws/.apm-lock"},
+	} {
+		if got := DefaultAPMLockScratchRoot(tc.root); got != tc.want {
+			t.Errorf("DefaultAPMLockScratchRoot(%q) = %q, want %q", tc.root, got, tc.want)
+		}
+	}
+}
+
+// TestAPMLockLoopResolveScratchIsFreshAndCleaned pins the resolve's scratch
+// shape from the loop's side: the claimed resolve runs in a fresh subdirectory
+// under the loop's scratch root and removes it once the resolve settles — a
+// resolve owns its scratch dir and never leaves content behind, so the next
+// resolve starts from an empty one again.
+func TestAPMLockLoopResolveScratchIsFreshAndCleaned(t *testing.T) {
+	root := t.TempDir()
+	store := &fakeAPMLockStore{claimed: true, claim: APMLockClaim{
+		RequestID: "lock-4", ProfileID: "p-1", OrganizationID: "o-1",
+		PackageRef: "mattpocock/skills#v1.3.1", Target: apm.TargetClaude, WorkerID: "w-1",
+	}}
+	resolve := &fakeAPMTyper{result: &apm.ResolveResult{LockDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel() })
+	l, err := NewAPMLockLoop(store, resolve, func() string { return "w-1" }, WithAPMLockScratchRoot(root))
+	if err != nil {
+		t.Fatalf("NewAPMLockLoop: %v", err)
+	}
+	go func() { _ = l.Start(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		done := store.lastResult != nil
+		store.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastErr != nil {
+		t.Fatalf("resolve error = %v, want nil", store.lastErr)
+	}
+	if resolve.request.WorkDir == "" || resolve.request.Home == "" {
+		t.Fatalf("resolve workdir/home not carried: %q %q", resolve.request.WorkDir, resolve.request.Home)
+	}
+	for _, p := range []string{resolve.request.WorkDir, resolve.request.Home} {
+		if !strings.HasPrefix(p, root+string(filepath.Separator)) {
+			t.Errorf("resolve path %q is not under the scratch root %q", p, root)
+		}
+	}
+	if resolve.request.WorkDir == resolve.request.Home {
+		t.Errorf("resolve workdir %q and home %q must be distinct", resolve.request.WorkDir, resolve.request.Home)
+	}
+	if _, err := os.Stat(resolve.request.WorkDir); !os.IsNotExist(err) {
+		t.Errorf("resolve workdir %q was not removed after the resolve: %v", resolve.request.WorkDir, err)
+	}
+	if _, err := os.Stat(resolve.request.Home); !os.IsNotExist(err) {
+		t.Errorf("resolve home %q was not removed after the resolve: %v", resolve.request.Home, err)
 	}
 }

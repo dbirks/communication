@@ -72,6 +72,26 @@ var defaultEgressHosts = []string{"api.anthropic.com"}
 // copies of it.
 func DefaultEgressHosts() []string { return append([]string(nil), defaultEgressHosts...) }
 
+// defaultAPMEgressHosts is the shipped apm-resolve allowlist (ADR-0054 §B.2,
+// ADR-0035): the GitHub source hosts a pinned package ref is fetched from.
+// github.com is the git endpoint, api.github.com the API, and the
+// objects.githubusercontent.com / raw.githubusercontent.com hosts the git
+// smart-HTTP / raw-content transports answer on; apm 0.33's measured needs are
+// covered by this set, and any future source host has to be added here (a worker
+// override rides the same allowlist field).
+var defaultAPMEgressHosts = []string{
+	"github.com",
+	"api.github.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
+	"raw.githubusercontent.com",
+}
+
+// DefaultAPMEgressHosts returns the shipped apm-resolve allowlist, so the
+// worker, `doctor`, and a test all read the same host set rather than three
+// copies of it.
+func DefaultAPMEgressHosts() []string { return append([]string(nil), defaultAPMEgressHosts...) }
+
 // NormalizeEgressHosts validates and canonicalizes an allowlist.
 //
 // The rules are fail-closed on purpose: a mistyped entry in an egress policy

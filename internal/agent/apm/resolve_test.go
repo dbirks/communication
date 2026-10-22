@@ -361,3 +361,84 @@ func TestResolveRealLockDigest(t *testing.T) {
 		t.Errorf("Resolve(mattpocock/skills#v1.3.0).LockDigest = %s, want a different digest", res2.LockDigest)
 	}
 }
+
+// A resolve that runs through the caller's launcher wrapper execs the wrapper's
+// answer (the worker answers with a nono-sandboxed launch) and reports the run
+// as sandboxed.
+func TestResolveRunsThroughTheLauncherWrapper(t *testing.T) {
+	workdir := t.TempDir()
+	home := t.TempDir()
+	bin, logPath := writeResolveFakeAPM(t, resolveLockBody)
+
+	var gotArgv, gotEnv []string
+	wrap := func(argv []string, env []string) (string, []string, []string, error) {
+		gotArgv, gotEnv = argv, env
+		return bin, argv, env, nil
+	}
+	res, err := Resolve(t.Context(), ResolveRequest{
+		PackageRef: "mattpocock/skills#v1.3.1",
+		Target:     TargetClaude,
+		WorkDir:    workdir,
+		Home:       home,
+		APMPath:    bin,
+		Timeout:    0,
+		Wrap:       wrap,
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !res.Sandboxed {
+		t.Error("a resolve that ran through the wrapper must report Sandboxed=true")
+	}
+	if strings.Join(gotArgv, " ") != "install --target claude" {
+		t.Errorf("wrapper argv = %v, want the resolving install", gotArgv)
+	}
+	if gotEnv[0] != "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" && !strings.HasPrefix(gotEnv[0], "PATH=") {
+		t.Errorf("wrapper env = %v, want the from-scratch apm child env", gotEnv)
+	}
+	if !strings.Contains(readFile(t, logPath), "install --target claude") {
+		t.Errorf("the wrapper answer was not exec'd: %s", readFile(t, logPath))
+	}
+}
+
+// A wrapper that refuses fails the resolve; the answer it would have given is
+// never exec'd.
+func TestResolveWrapperRefusalFailsTheResolve(t *testing.T) {
+	workdir := t.TempDir()
+	home := t.TempDir()
+	bin, _ := writeResolveFakeAPM(t, resolveLockBody)
+	wrapErr := errFakeWrap
+	res, err := Resolve(t.Context(), ResolveRequest{
+		PackageRef: "mattpocock/skills#v1.3.1",
+		Target:     TargetClaude,
+		WorkDir:    workdir,
+		Home:       home,
+		APMPath:    bin,
+		Timeout:    0,
+		Wrap:       func(argv []string, env []string) (string, []string, []string, error) { return "", nil, nil, wrapErr },
+	})
+	if err == nil {
+		t.Fatal("a refusing wrapper must fail the resolve")
+	}
+	if res != nil {
+		t.Errorf("a failed resolve must not report a result: %+v", res)
+	}
+}
+
+// Without a wrapper the resolve runs the binary directly and reports the run as
+// not sandboxed (the tests' and unsandboxed modes' honest answer).
+func TestResolveWithoutWrapperReportsNotSandboxed(t *testing.T) {
+	workdir := t.TempDir()
+	home := t.TempDir()
+	bin, _ := writeResolveFakeAPM(t, resolveLockBody)
+	res, err := Resolve(t.Context(), resolveRequest(workdir, home, bin, "mattpocock/skills#v1.3.1", 0))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Sandboxed {
+		t.Error("a resolve without a wrapper must report Sandboxed=false")
+	}
+}
+
+// errFakeWrap is the error a test wrapper refuses with.
+var errFakeWrap = errors.New("apm: resolve wrapper refused the install")

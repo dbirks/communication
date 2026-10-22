@@ -11,10 +11,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbirks/communication/internal/agent/apm"
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
+	"github.com/dbirks/communication/internal/worker"
 )
 
 // apmLockTestProfile creates a profile with a complete APM pin — the state a
@@ -195,5 +197,87 @@ func TestAPMLockRequestCrossOrgInvisible(t *testing.T) {
 	}
 	if _, err := f.api.GetAPMLockRequest(ctx, otherOrgCaller, profileID); !errors.Is(err, api.ErrProfileNotFound) {
 		t.Fatalf("cross-org GetAPMLockRequest err = %v, want ErrProfileNotFound", err)
+	}
+}
+
+// apmLockResolveStub is the APMTyper the real-loop integration test drives: it
+// answers one resolve with a fixed result, so the worker loop's claim → resolve →
+// report path runs against the real Postgres queue without an apm binary.
+type apmLockResolveStub struct {
+	result *apm.ResolveResult
+	err    error
+}
+
+func (s *apmLockResolveStub) Stage(ctx context.Context, req apm.StageRequest) (*apm.StagedContext, error) {
+	return nil, errors.New("apm: stage not under test")
+}
+
+func (s *apmLockResolveStub) Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.ResolveResult, error) {
+	return s.result, s.err
+}
+
+// TestAPMLockLoopClaimsThroughRealStore runs the worker loop against the real
+// Postgres lock queue end to end: the loop starts (its first claim finds an
+// empty queue and idles), a lock is then queued through the store's own create
+// path, and the loop's next claim tick must pick it up, resolve it, and complete
+// it — reaching the done status with the digest written.
+func TestAPMLockLoopClaimsThroughRealStore(t *testing.T) {
+	f := profWSetup(t)
+	ctx := testCtx(t)
+	profileID := apmLockTestProfile(t, f, ctx, "loop")
+
+	loop, err := worker.NewAPMLockLoop(&TurnStore{Pool: f.pool}, &apmLockResolveStub{result: &apm.ResolveResult{
+		LockDigest:  "sha256:" + strings.Repeat("a", 64),
+		ResolvedRef: "v1.3.1",
+		Commit:      "abc123def456",
+		APMVersion:  "0.33.0",
+		Contents: apm.Contents{
+			Skills:       []string{"engineering"},
+			Instructions: []string{"AGENTS.md"},
+			MCPServers:   []string{"memory"},
+		},
+	}}, func() string { return f.worker })
+	if err != nil {
+		t.Fatalf("NewAPMLockLoop: %v", err)
+	}
+	go func() { _ = loop.Start(ctx) }()
+
+	// Let the loop's first (empty) claim pass complete so the queue is genuinely
+	// empty before the lock is queued — the scenario the lab hit.
+	time.Sleep(100 * time.Millisecond)
+
+	req, err := f.api.CreateAPMLockRequest(ctx, f.caller(f.alice, true), profileID)
+	if err != nil {
+		t.Fatalf("CreateAPMLockRequest: %v", err)
+	}
+	if req.Status != "queued" || req.RequestID == "" {
+		t.Fatalf("queued request = %+v", req)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var status string
+		if err := f.pool.QueryRow(ctx, `SELECT status FROM apm_lock_requests WHERE id = $1::uuid`, req.RequestID).Scan(&status); err == nil && status == "done" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := loop.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	var status string
+	if err := f.pool.QueryRow(ctx, `SELECT status FROM apm_lock_requests WHERE id = $1::uuid`, req.RequestID).Scan(&status); err != nil {
+		t.Fatalf("read final lock status: %v", err)
+	}
+	if status != "done" {
+		t.Fatalf("apm lock status = %q, want done — the loop never claimed the queued lock", status)
+	}
+	var digest string
+	if err := f.pool.QueryRow(ctx, `SELECT apm_lock_digest FROM agent_profiles WHERE id = $1::uuid`, profileID).Scan(&digest); err != nil {
+		t.Fatalf("read profile digest: %v", err)
+	}
+	if digest != "sha256:"+strings.Repeat("a", 64) {
+		t.Errorf("apm_lock_digest = %q, want the resolve's digest", digest)
 	}
 }

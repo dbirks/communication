@@ -172,3 +172,36 @@ The concrete mechanism the control plane, worker and API landed on:
 - API (`internal/api/apm_lock_test.go`): 202 shape, status GET, CSRF gate, anonymous arm;
   precondition refusals (404 / `apm_pin_incomplete`) ride the shared store-error mapping.
 - OpenAPI: `redocly lint` clean for the new paths; `pnpm --dir ui gen:api:check` passes.
+
+## Amendment 2 (2026-10-22) — unlocked pins are usable
+
+The orchestrator's lab finding: the committed lock flow could never be used, because the
+ADR-0030 all-or-nothing pin rule refused a `{ref, target}` without a digest — the exact shape
+an operator reaches for first, and the one "Lock it" exists to remove.
+
+Amended:
+
+1. **Unlocked pins are legal** (`internal/store/postgres/agent_profiles_write.go`,
+   `internal/api/agent_profiles.go`). A write carrying the ref and the target with no digest is
+   an UNLOCKED pin and is accepted; the digest alone, or a ref/target without its partner, is a
+   partial pin and stays `422 apm_pin_incomplete`. Clearing the pin (all three absent) is the
+   only other legal write.
+2. **Changing ref or target clears the digest and the contents** (`PatchAgentProfileAPM` writes
+   `apm_contents_summary` alongside `apm_lock_digest` in one transaction, so a digest recorded
+   for a previous ref/target cannot survive a change).
+3. **A launch with an unlocked pin is refused** with the named remedy: the worker-side profile
+   read (`internal/store/postgres/workspaces.go`) and the launch gate
+   (`internal/agent/apm/stage.go`) both answer an empty lock digest with a ref set
+   ("…the APM pin is not locked yet — Lock it on the profile"). The invariant from ADR-0030 is
+   therefore unchanged; the refusal moved from the half-pin rejection to the not-locked-yet
+   state, because the latter is the state an operator actually reaches for.
+4. **The lock flow itself is unchanged**: `POST …/apm/lock` still queues a worker-side resolve,
+   and the resolve is what writes the digest + contents summary.
+
+## Verification
+
+- Store (`internal/store/postgres/m4_agent_profiles_write_test.go`): an unlocked pin is
+  accepted; changing the ref on a locked profile clears the digest and the contents summary in
+  the same write; a digest without a ref is refused as a partial pin.
+- Launch gate (`internal/agent/apm/stage_test.go`): a stage with a ref and an empty digest
+  refuses with the not-locked-yet remedy.

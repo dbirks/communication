@@ -93,6 +93,51 @@ func TestWorkerOptionsFromEnvOverrides(t *testing.T) {
 	}
 }
 
+// TestWorkerOptionsFromEnvAPMLockScratch pins the APM lock resolve scratch
+// root: the default is a directory INSIDE the worker-owned workspace volume
+// (<workspace root>/.apm-lock) — not the workspace root's parent, which is not
+// writable inside the container and is what the lab's worker used to point the
+// lock loop at — and COMMUNICATION_APM_LOCK_SCRATCH overrides it.
+func TestWorkerOptionsFromEnvAPMLockScratch(t *testing.T) {
+	with := func(kv map[string]string) map[string]string {
+		out := map[string]string{
+			"COMMUNICATION_DATABASE_URL":        "postgres://x",
+			"COMMUNICATION_SANDBOX_ENFORCEMENT": sandboxMode,
+		}
+		for k, v := range kv {
+			out[k] = v
+		}
+		return out
+	}
+
+	opts, err := workerOptionsFromEnv(env(with(nil)))
+	if err != nil {
+		t.Fatalf("default scratch root: %v", err)
+	}
+	if opts.apmLockScratchRoot != "/var/lib/communication/workspaces/.apm-lock" {
+		t.Errorf("default apm lock scratch root = %q, want %q", opts.apmLockScratchRoot, "/var/lib/communication/workspaces/.apm-lock")
+	}
+
+	opts, err = workerOptionsFromEnv(env(with(map[string]string{"COMMUNICATION_WORKSPACE_ROOT": "/workspaces"})))
+	if err != nil {
+		t.Fatalf("workspace-rooted scratch: %v", err)
+	}
+	if opts.apmLockScratchRoot != "/workspaces/.apm-lock" {
+		t.Errorf("workspace-rooted apm lock scratch root = %q, want %q", opts.apmLockScratchRoot, "/workspaces/.apm-lock")
+	}
+
+	opts, err = workerOptionsFromEnv(env(with(map[string]string{
+		"COMMUNICATION_WORKSPACE_ROOT":   "/workspaces",
+		"COMMUNICATION_APM_LOCK_SCRATCH": "/scratch/apm-lock",
+	})))
+	if err != nil {
+		t.Fatalf("overridden apm lock scratch: %v", err)
+	}
+	if opts.apmLockScratchRoot != "/scratch/apm-lock" {
+		t.Errorf("overridden apm lock scratch root = %q, want %q", opts.apmLockScratchRoot, "/scratch/apm-lock")
+	}
+}
+
 func TestWorkerOptionsFromEnvRejectsBadConfig(t *testing.T) {
 	tests := []struct {
 		name string
