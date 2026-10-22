@@ -428,6 +428,31 @@ async function waitForAgentRunning(request: APIRequestContext, runId: string): P
   }
 }
 
+/**
+ * Wait for an assistant turn to reach its own completion: the popover's
+ * in-flight indicator (`assistant-thinking`) clears, or a new assistant
+ * message appears — whichever the turn's state settles in — with a ceiling
+ * of 240 s (the lab's per-completion deadline is COMMUNICATION_ASSISTANT_TIMEOUT=180s;
+ * this bound is generous but finite). Every wait for an assistant turn in
+ * this journey goes through here instead of a fixed window.
+ */
+async function waitForAssistantTurn(page: Page, timeoutMs = 240_000): Promise<void> {
+  const thinking = page.getByTestId("assistant-thinking");
+  const assistantMsg = page.getByTestId("assistant-msg-assistant");
+  await expect
+    .poll(
+      async () => {
+        const inFlight = await thinking.isVisible().catch(() => false);
+        const messages = await assistantMsg.count();
+        const latest = messages > 0 ? ((await assistantMsg.last().textContent()) ?? "").trim() : "";
+        const settled = !inFlight && (messages > 0 ? latest.length > 0 : true);
+        return settled;
+      },
+      { timeout: timeoutMs, intervals: [1_000] },
+    )
+    .toBe(true);
+}
+
 test.describe.serial("shell journey — the app-shell acceptance journey end to end", () => {
   test.skip(!JOURNEY_ENABLED, JOURNEY_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
@@ -1003,7 +1028,8 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
             .getByTestId("assistant-composer-input")
             .fill("Please continue and make the change.");
           await page.getByTestId("assistant-send").click();
-          await expect(page.getByTestId("assistant-error")).toBeHidden({ timeout: 15_000 });
+          // The retry is a NEW turn — bound the wait on its own completion.
+          await waitForAssistantTurn(page);
           continue;
         }
         throw new Error(
@@ -1033,7 +1059,10 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         const label = labels[best];
         const userBefore = await page.getByTestId("assistant-msg-user").count();
         await options.nth(best).click();
-        // The reply travels as a plain-text user message equal to the label.
+        // The reply travels as a plain-text user message equal to the label, and
+        // the answer turn lands that row only when it completes — so the wait is
+        // bounded by the turn's own completion, then the label asserts verbatim.
+        await waitForAssistantTurn(page);
         await expect
           .poll(
             async () => {
@@ -1056,6 +1085,8 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           .catch(() => false)
       ) {
         await page.getByTestId("assistant-approval-confirm").click(); // Retry
+        // The Retry re-runs the turn — bound the wait on its own completion.
+        await waitForAssistantTurn(page);
         followUps += 1;
         console.log(`journey f: approval card retried (turn ${followUps}/3)`);
         continue;
@@ -1073,10 +1104,9 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       // ONE plain user follow-up.
       const composer = page.getByTestId("assistant-composer-input");
       // The turn that produced this state has settled (no error / card above):
-      // wait for the composer to be live again before following up — the same
-      // “composer is enabled once no turn is in flight” signal the question
-      // loops use.
-      await expect(composer).toBeEnabled({ timeout: AGENT_TURN_TIMEOUT_MS });
+      // wait for the turn's own completion — the popover's in-flight indicator
+      // clears / a new assistant message appears — before following up.
+      await waitForAssistantTurn(page);
       // The turn may have landed while we waited; the draft is the gate.
       if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;
       followUps += 1;
@@ -1089,7 +1119,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         throw new Error(
           `no draft of ${PIPELINE_SLUG} carries ${ASSISTANT_STEP_NAME} after the ask — the assistant never landed the change (assistant tool loop be-as-loop?)`,
         );
-      await sleep(3_000);
+      await waitForAssistantTurn(page);
     }
 
     // The change chip counts its change(s) — expanded, so its rows show
