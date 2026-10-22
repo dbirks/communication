@@ -8,6 +8,51 @@ NOT COVERED) and to an evidence slot filled from the final lab runs' `EVIDENCE` 
 (see **Run provenance**). Like `docs/design/issue2-acceptance.md`, screenshots stay
 outside git; only `EVIDENCE` lines and this record are in the tree.
 
+## Round 2 evidence — 2026-10-22 (run tag `p10b`)
+
+On the lab rebuilt from the working tree content at `c5ef3d7` (Round 2), run tag `p10b`
+(evidence dir `~/.cache/communication-lab/shell/p10b/ev`):
+
+- **shell-p10-gaps: 4/4 passed** (`rc=0`, 19.2s) — workflow triggers (add + pause a weekdays
+  09:00 UTC schedule and clean-up), repository page (`/p/<id>/<repo>` sections render, unknown repo
+  not-found, fits at 390px), usage (USED BY equals the profile usage report), thread artifacts
+  (the thread rail lists the thread's artifacts).
+- **shell-p789: 9/9 passed** (`rc=0`, 3.4m) — live flag, board mine + from-issues/scheduled chips
+  enabled, save-step, mic, trust journeys, approval detail/narrow, ops, settings.
+
+EVIDENCE lines (`grep EVIDENCE`) from `~/.cache/communication-lab/shell/p10b/*.out`:
+
+```
+EVIDENCE shell-p10-gaps-triggers-add: the feature-development page's Triggers section added a "weekdays 09:00 UTC" schedule: the row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron
+EVIDENCE shell-p10-gaps-triggers-pause: toggling the schedule's pause flipped the server's enabled flag to false (GET /api/v1/projects/{id}/schedules: enabled=false, state "paused") and the scratch schedule was cleaned up disabled
+EVIDENCE shell-p10-gaps-repository: from the project page the repo link "app" opened /p/01a1658e-5d41-7d47-8647-dc0c493eb36b/app and the repository page renders its header, STATUS, ISSUES and RECENT RUNS sections
+EVIDENCE shell-p10-gaps-repository-narrow: at 390px the repository page renders its sections without sideways scroll
+EVIDENCE shell-p10-gaps-usage: the profile m4-reviewer's USED BY panel reads "Used by 1 workflows · 1 steps" from GET /api/v1/agent-profiles/01a1658e-65e7-762f-96e5-cb3c206ec1f0/usage, with no "usage unavailable" state, and the step's USED IN panel answers GET /api/v1/node-templates/01a16592-24a7-70ee-a3fc-993f040741ba/usage
+EVIDENCE shell-p10-gaps-thread-artifacts: the thread 01a1658e's artifacts rail renders its section and lists 0 artifact row(s) == GET /api/v1/projects/{id}/artifacts?conversation_id=<id> (capped at 5)
+EVIDENCE shell-p789-live-flag: the sidebar Inbox flag rose from 2 to 3 within 10 s of run 01a16592 entering waiting_human, with ZERO /runs|/approvals GETs during the 8 s idle window, 6 invalidation refetch(es) after the run, and 141 SSE frame(s) captured on /api/v1/events — every refetch timestamped after the first frame
+EVIDENCE shell-p789-board-mine: board cards without the filter equal GET /api/v1/runs (3 of 3), with 'mine' pressed the 1 cards equal GET /api/v1/runs?mine=true, and the from issues / scheduled chips are enabled and idle (ADR-0056)
+EVIDENCE shell-p789-save-step: selecting the agent node in the p789-step-1792705470971 draft and arming 'also save as a reusable step' POSTed the node as template 01a16592 — it is listed by GET /api/v1/node-templates and shows on /steps
+EVIDENCE shell-p789-mic: the fake SpeechRecognition's interim + final results drove the listening bar and landed 'change the build please' in the composer, where ' and ship it' was typed on top — and ZERO non-GET requests reached /api/v1/assistant/ before Send
+EVIDENCE shell-p789-trust-ask-all: with trust level ask_all the assistant's draft edit ('add a human approval step named trust_check after plan in p789-trust-1792705479792') surfaced a confirm card carrying the server risk line, and GET /api/v1/drafts/01a16592 still holds the document WITHOUT trust_check at version 1
+EVIDENCE shell-p789-trust-retry: clicking Retry re-ran the gated draft.apply through the version-checked draft PUT: GET /api/v1/drafts/{id} now contains the trust_check node
+EVIDENCE shell-p789-trust-navigate: DOCUMENTED SECONDARY CHECK (no assertion on model choice): under ask_all 'take me to the board' neither called ui.navigate nor named the board in its answer
+EVIDENCE shell-p789-question-roundtrip: the model's follow-up card appeared after 'change the workflow'; the option click POSTed the LABEL 'Add a node' verbatim as the body's plain-text 'text' field (no value, no structured payload, no confirm/dismiss) — the answer's user row had not landed when the 120 s bounded confirmation window closed (the answer turn, 180 s per completion at the lab, was still running); the POST body is the round-trip proof
+EVIDENCE shell-p789-approval-detail: the amber 'NEEDS YOUR DECISION' strip, the model summary card, the plan section and the 'Not available yet' files note all rendered for gate a67219f9d8e15; the free-text reply produced a proposed decision and its confirm step, which the journey cancelled — the API still lists the approval pending
+EVIDENCE shell-p789-approval-narrow: at 390px the strip, the files note and the decide rail stack without sideways scroll and stay axe-clean; the gate is still pending (the journey cancelled, never decided)
+EVIDENCE shell-p789-ops: the health line reads 'replica: api-b · queue: 0 queued, 0 leased · oldest queued: queue empty', the workers table holds 2 rows == GET /api/v1/workers, and every capability cell matches GET /api/v1/launchers (✓ observed only where result=observed: claude:acp_session, claude:resume, claude:permission_prompts, claude:nono_required, codex:acp_session, codex:resume, codex:permission_prompts)
+EVIDENCE shell-p789-settings: settings → assistant shows all three trust levels with the stored one (ask_risky) checked, matching GET /me/preferences, and the settings footer's Operations entry links to /ops
+```
+
+Plus the Round 2 real (non-lab) evidence:
+
+- Real APM resolve test: `mattpocock/skills#v1.3.1` resolved by apm → lock digest
+  `sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33`; `#v1.3.0` → a
+  different digest.
+- Real-nono secret sentinel tests: `TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv`
+  (process.exec) and `TestAgentTurnEnvMountSentinelUnderRealNonoStaysInTheExecEnv` (agent turn) —
+  the exec-delivered secret reaches the real sandboxed child and never rides the launch argv
+  (fixed in `b58404e`).
+
 ## Final acceptance run — final4 (HEAD 606b36e)
 
 Provenance: lab reset from HEAD `606b36e` (CI green), run dirs

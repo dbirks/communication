@@ -40,8 +40,10 @@ Rule: real data only. Where the backend cannot supply something, render an hones
 
 ## ADR register
 
-Updated 2026-10-21 (through `d2708cb` — the final lab runs final3 / final3-m5 / jr015620,
-HEAD `d2708cb` of the final acceptance run; all work committed, no pending items).
+Updated 2026-10-22 (through `c5ef3d7` — Round 2: workflow triggers, repo page, usage, thread
+artifacts, APM lock API, security fix `b58404e`, APM resolve `1147e8a`, workflow triggers UI
+`7d25772`; the final lab runs final3 / final3-m5 / jr015620, HEAD `d2708cb`, remain the earlier
+acceptance record).
 "Shipped" cites the commit that landed it.
 
 | ADR | Topic | Status | Motivated by |
@@ -55,8 +57,9 @@ HEAD `d2708cb` of the final acceptance run; all work committed, no pending items
 | ADR-0051 | Launcher registry + observed-capability evidence: `GET /api/v1/launchers`; `result` ONLY from recorded probe evidence, else `not_tested` | **Accepted — shipped** (`80033b6`, `acp-observed.json` transcribed from recorded probes only) | [profiles §4.2](gaps/profiles.md), [workbench §4.2](gaps/workbench.md) |
 | ADR-0052 | Inbox summarization pass — `POST /approvals/{id}/summary` → `{summary, actions:[{label,intent,risk}]}` (+ free-text interpretation); model writes, human decides | **Accepted — shipped** (`6222d01`) | [inbox-ops §3 (W1/W2)](gaps/inbox-ops.md), [home-board §3](gaps/home-board.md) |
 | ADR-0053 | Run from a thread branch — `RunCreate.source`, the thread branch as pinned run base, `handoff_summary` input, run↔thread link | **Accepted — shipped** (`6222d01`, migration 00011) | [threads §3 (W4b)](gaps/threads.md) |
-| ADR-0054 | Server-side APM lock digest — "Lock it" (`POST /agent-profiles/{id}/apm/lock`); the digest is pasted by hand today | **Accepted (design; implementation later)** — not implemented, UI renders the honest "paste it by hand" state | [profiles §3 (W7)](gaps/profiles.md) |
+| ADR-0054 | Server-side APM lock digest — "Lock it" (`POST /agent-profiles/{id}/apm/lock`); the digest is pasted by hand today | **Accepted (design)** — amended by **Amendment 1 (2026-10-22)**: implemented as accepted — `POST/GET /agent-profiles/{id}/apm/lock` queues a lock request (`c5ef3d7`, migration 00013) that a worker claims, resolves via the worker-side `APMTyper.Resolve` (`1147e8a`) and reports back in one transaction; the Lock it UI wiring, unlocked pins and sandboxed resolve remain in progress | [profiles §3 (W7)](gaps/profiles.md) |
 | ADR-0055 | Pause-before-next-step — takeover pauses at a step boundary (5c semantics); today it interrupts the current attempt | **Proposed (evaluated and deferred)** — the redesign keeps the current interrupt-and-rerun semantics and says so in the confirm card (`126af18`) | [workbench §4.1](gaps/workbench.md) |
+| ADR-0056 | Run triggers — how a run started: `runs.trigger_kind` + `trigger_ref` (`manual|schedule|issue|thread`) + the `issue_triggers` poll (ADR-0031's GitHub listing stays read-only, not a trigger); Board `from issues` / `scheduled` chips + drawer run cards carry the trigger badge | **Accepted (2026-10-22)** — part 1 (trigger recording + run-list filter) shipped (`c5ef3d7`, migration 00012); the GitHub poll + CRUD API shipped (`c5ef3d7`); the issue-trigger UI shipped (`d120cd3`) | [home-board §2/§4/§5/§9](gaps/home-board.md) |
 | (next number) | Worker identity in the browser — worker name on attempt lines; amends ADR-0016 §8 | **planned — not started** (reason: `worker_id` may never appear in a browser-facing body; the UI therefore renders no worker name at all — `RunHeader.tsx:15`; the amending ADR is only needed if a name is ever exposed) | [workbench §4.2](gaps/workbench.md) |
 
 ## Per-phase table (build order: `GOAL.md` phases 1–9)
@@ -67,13 +70,13 @@ block the real version of a feature; the third column is what must render meanwh
 | Phase | UI on existing API | Needs backend | Honest empty states |
 |---|---|---|---|
 | **1 Shell** [shell §3](gaps/shell.md) | Sidebar v3 from `ds/` primitives; old-route redirects (`/workflows*`, `/profiles`, `/p/*`, `/runs/:id`); live flags via per-project SSE fan-out + `lib/attention.ts` fallback; Ask placement; `esc`/focus trap | user-prefs store + `GET/PATCH /me/preferences` (ADR-0046); org-level stream (ADR-0048; fan-out fallback); folder entity for sidebar Workflows | `Steps (0)` and link-only Workflows until the template store + folders land; muted flag slots from the same source as Inbox (never `! 0`); repo flags mirror the project flag | 
-| **2 Home + Board** [home-board §3](gaps/home-board.md) | Home counts from `lib/attention.ts`; run drawer (`/runs/{id}`, `/nodes`, `/events`, approvals); `mine` via `triggered_by`; Approve / Retry-from-step / Read plan / Fix the workflow (all exist); `ds/ProgressStrip` J/K already built; Start-run picker → `POST /projects/{p}/runs` | cross-project board runs endpoint (ADR-0047) with per-step progress aggregated **per step template** (loops aggregate, not per execution); later: model summaries, issue/scheduled triggers | one-line empty copy per column + `Start run`; `from issues` / `scheduled` chips disabled (ADR-0031: "not a trigger"); the static gate `summary` labeled "from workflow", never "written by the model"; `✓ done` instead of a PR number |
+| **2 Home + Board** [home-board §3](gaps/home-board.md) | Home counts from `lib/attention.ts`; run drawer (`/runs/{id}`, `/nodes`, `/events`, approvals); `mine` via `triggered_by`; Approve / Retry-from-step / Read plan / Fix the workflow (all exist); `ds/ProgressStrip` J/K already built; Start-run picker → `POST /projects/{p}/runs` | cross-project board runs endpoint (ADR-0047) with per-step progress aggregated **per step template** (loops aggregate, not per execution); later: model summaries on board rows; issue/scheduled triggers shipped via ADR-0056 (`c5ef3d7`) | one-line empty copy per column + `Start run`; the static gate `summary` labeled "from workflow", never "written by the model"; `✓ done` instead of a PR number; `from issues` / `scheduled` chips now **live** (ADR-0056, `c5ef3d7`) with the run cards + drawer carrying the trigger badge |
 | **3 Run workbench** [workbench §3](gaps/workbench.md) | ⤢ full-screen + step strip (`?full=1`); tab set with Artifacts (client-side count); take-control confirm card with the real semantics; tool-row timing from `occurred_at`; header meta from `RunDetail` | worker name (ADR-0016 §8 amendment); PROMPT card (node inputs not exposed, only `inputs_digest`); diffstat (no structured event field); started-by (no creator on `RunDetail`) | `attempt k of m` only — never a placeholder `w-1`; timing only, no diffstat parsed out of prose; PROMPT card only when the seeded message exists; artifacts count = client-side sum of `artifact_refs`, labeled "referenced" |
 | **4 Library** [library §3](gaps/library.md) | `/workflows*` rename + redirects; 3a rows (revision chip, step chain, assignment fan-out, cron/manual trigger, open draft, client-side duplicate); editor chrome tabs; step picker (no Publish, 5 kind cards); new-agent-step inspector (SUGGESTED default, sandbox status via `/system/sandbox` join) | node-template registry + versioning; workflow folders; later: edit-for-all via drafts, server-side duplicate endpoint | Steps page = static `STEP_LIBRARY` catalogue with `—` version/usage + M5 note; YOUR SAVED STEPS 0 items; manual/cron only — no `label:ready`; single `✓ PUBLISHED rN` chip (no BETA/STABLE); the real editor name, never "by assistant" |
-| **5 Agent profiles** [profiles §3](gaps/profiles.md) | `/profiles` list/detail + `/agents` redirect; sandbox chips via `/system/sandbox` + registry set; account section via `allowed_agent_profile_ids`; APM pin (exists; digest pasted by hand); New-profile dialog with 5 agent cards | ADR-0045 (GitHub token + egress allowlist); server-side APM digest ("Lock it") + contents listing; profile usage endpoint; profile versioning (ADR-0030) | pi / antigravity cards read "no launcher registered" — never green "verified"; APM contents "not available yet"; usage "not available yet", never "0"; no version glyph until the ADR |
+| **5 Agent profiles** [profiles §3](gaps/profiles.md) | `/profiles` list/detail + `/agents` redirect; sandbox chips via `/system/sandbox` + registry set; account section via `allowed_agent_profile_ids`; APM pin (server-side `apm/lock` landed via ADR-0054 Amendment 1 — `c5ef3d7`; Lock it UI wiring + unlocked pins in progress); New-profile dialog with 5 agent cards | ADR-0045 (GitHub token + egress allowlist); server-side APM digest ("Lock it") + contents listing (ADR-0054); profile usage endpoint (`c5ef3d7`); profile versioning (ADR-0030) | pi / antigravity cards read "no launcher registered" — never green "verified"; APM contents names-only from the resolved lock (`c5ef3d7`/`1147e8a`) until the Lock it UI is wired; usage now real via the usage endpoints (`c5ef3d7`), never a fake "0" |
 | **6 Threads** [threads §3](gaps/threads.md) | wording rename (API stays `conversations`); header meta (repo + age); WORKSPACE/ARTIFACTS/NEXT rail; permission-card restyle (feature exists, ADR-0039); hand-to-workflow dialog once the backend lands | artifact `conversation_id` filter; run-from-branch ADR (`RunCreate.source` + base, `runs.source_conversation_id`); draft PR (ADR-0045 + push integration) | NEXT panel omits "Open a draft PR" until the backend lands; clean-branch handoff says "starts from the default branch"; plan summary prefilled from the last agent message — no model label unless the model produced it |
 | **7 Assistant v2** [assistant §3](gaps/assistant.md) | 400px popover shell (⌘K, `esc`, context chip); mic via Web Speech (hidden when unsupported); follow-up question widget (reply sent as plain text); expanded 680px view; "FOR THIS PAGE" chips only where the six existing tools + ADR-0044 back them | ADR amending ADR-0034 + tables (conversations/messages/changes); multi-turn ask; change log + undo endpoints; trust level in the tool loop (ADR-0046 route); `assistant.*` journal events | change chip is in-session only ("undo works until you leave the page") until the backend lands; mic button absent when `webkitSpeechRecognition` is missing; footer line ("just for you · never reads secret values …") is true by construction |
-| **8 Inbox + approvals** [inbox-ops §3](gaps/inbox-ops.md) | 4g approval detail (plan.md inline via `/artifacts/{id}/content`); phone cards (44px buttons, 2-line clamp); note field on decision rows (`comments` already on the wire); inline permission decide + named-node retry (`node_instance_keys`) | summarization pass (`/approvals/{id}/summary`, `/interpret`); `/settings/:tab` + trust-level persistence (ADR-0046); question-kind inbox items | FILES IT WILL TOUCH omitted without a real manifest; on `503 assistant_not_configured` fall back to the gate's own `summary` + "model summaries not configured"; no fabricated question items — only `approval|permission|failed` |
+| **8 Inbox + approvals** [inbox-ops §3](gaps/inbox-ops.md) | 4g approval detail (plan.md inline via `/artifacts/{id}/content`); phone cards (44px buttons, 2-line clamp); note field on decision rows (`comments` already on the wire); inline permission decide + named-node retry (`node_instance_keys`) | summarization pass (`/approvals/{id}/summary`, `/interpret`); `/settings/:tab` + trust-level persistence (ADR-0046); question-kind inbox items | FILES IT WILL TOUCH design written, awaiting product decision (`docs/design/approval-files.md`); on `503 assistant_not_configured` fall back to the gate's own `summary` + "model summaries not configured"; no fabricated question items — only `approval|permission|failed` |
 | **9 Operations + settings** [inbox-ops §3](gaps/inbox-ops.md) | health line + merged workers table (existing endpoints); static capability matrix from `docs/compatibility/ACP.md` with probe date + link; Settings → Layout/Assistant tabs; interrupted callout from `lease_expirations` | `GET /system/interrupted` (names actual attempts for the 4h callout); probe-results API (later); preferences persistence (ADR-0046) | no interrupted callout at zero expirations; `not tested` default matrix cells — never prefilled PASS; trust options carry the "nothing to gate yet" note |
 
 (Phase 10 — assistant tours, `{route, targetSelector, title, body}` spotlight steps, is a later phase; [assistant §1](gaps/assistant.md) marks them out of scope for phases 1–9.)
@@ -91,7 +94,7 @@ One line each; file:line quoted as the reports quote it.
 7. **Profile `v3` / `Save as v4` vs ADR-0030:62** — "No optimistic `version` token"; versioned profile history is a new persisted-state surface → ADR. — **Unresolved** — no version glyph in the UI today; the ADR is still to be written.
 8. **"egress allowlist from the project" (4c) vs ADR-0035** — the allowlist is worker/deployment-level configuration, not a project setting; a security-semantic change. — **Resolved: the UI shows no egress setting** — ADR-0045 cites ADR-0035 (per-profile `network.allow_domain`, operator-controlled); no project-level knob exists or is drawn.
 9. **Pi card (5b) vs launcher registry** — no `pi` entry (`launchers.go:77-110`); `docs/compatibility/ACP.md:25` "no ACP adapter for `pi` on this host"; POST of an unregistered id is accepted today and fails only at launch. — **Resolved: ADR-0051** — `GET /launchers` always carries the five ids; unregistered launchers render "no launcher registered" and the New-profile dialog disables the card with that reason.
-10. **`from issue #512` + `from issues`/`scheduled` chips vs ADR-0031** — `openapi.yaml:545`: the issues route "is not a trigger"; `runs` has no trigger-source column. — **Resolved: chips disabled with the reason** — "not available yet" (`Board.tsx:204,235,243`); no trigger-source data is faked.
+10. **`from issue #512` + `from issues`/`scheduled` chips vs ADR-0031** — `openapi.yaml:545`: the issues route "is not a trigger"; `runs` has no trigger-source column. — **Resolved: chips disabled with the reason** — "not available yet" (`Board.tsx:204,235,243`); no trigger-source data is faked; **superseded (2026-10-22)**: ADR-0056 (`c5ef3d7`) added `trigger_kind`/`trigger_ref` + the `issue_triggers` poll and the chips shipped live.
 11. **Model-written summary / buttons vs ADR-0034** — the broker is "one bounded turn … read-only … nothing is stored" (`openapi.yaml:3804-3820`); the gate `summary` is static author text (`advancer.go:823`). — **Resolved: ADR-0052** — model summaries only via the summarization pass; the gate's own static text is labelled as its own, never "written by the model".
 12. **Assistant persistence vs ADR-0034:51** — "v1 stores nothing" vs spec 08:40 "Persist assistant transcript and action trace"; the confirmation gate and change log must be server-side. Also ADR-0034 is still Status: Proposed (`ADR-0034-….md:4`) although implemented. — **Resolved (design): ADR-0050** — persistence + change log + undo shipped server-side (`6222d01`); tool-loop gating shipped (`618420f`, e2e-proven by `shell-p789` + journey f). *Remaining:* ADR-0034's status line was not updated in this wave.
 13. **Decider note (3f)** — the reply "goes to implement as a note on the plan" vs `comments` "never enters the journal" (`openapi.yaml:3723`). — **Unresolved — default kept: the reply stays a note** (rendered as such, never claimed to enter the journal). — [inbox-ops §4.3](gaps/inbox-ops.md)
@@ -104,11 +107,51 @@ One line each; file:line quoted as the reports quote it.
 
 No conflict found (per the reports): dropping the top app bar is permitted (spec 10:9, :79 — navigation is the designer's); the 4e read-only pinned graph matches ADR-0043; the thread handoff touches no revision immutability ([threads §4.3](gaps/threads.md)); `origin=manual` permission semantics match ADR-0039 / ADR-0016 §5 ([threads §4.4](gaps/threads.md)).
 
+## Round 2 (2026-10-22)
+
+Recorded this round (`docs-round`; commits `7d25772` workflow Triggers: schedules, `1147e8a` APM
+Resolve, `d7b716a` repo page, `c5ef3d7` run triggers + issue triggers + Board filters + usage +
+thread artifacts + APM lock API, `b58404e` secret argv security fix + GitHub token delivery, `d120cd3`
+issue-trigger UI).
+
+**What landed**:
+- Workflow Triggers UI on the workflow page — list/add/edit/pause cron schedules (presets, UTC
+  cadence, plain-English cron, server-validated expression, version-checked toggle).
+- Issue triggers: opened/labeled with any-of labels, polled every 60 s from GitHub's public API, one
+  run per issue per trigger (`c5ef3d7`); Triggers section lists/adds/pauses them, server 422 for a
+  non-GitHub repo shown inline (`d120cd3`).
+- Run triggers backend + Board wiring — `runs.trigger_kind`/`trigger_ref` + `issue_triggers`
+  (`c5ef3d7`, migration 00012; ADR-0056), Board `from issues` / `scheduled` chips now live with run
+  cards + drawer carrying the trigger badge; usage endpoints `GET /agent-profiles/{id}/usage` +
+  `/node-templates/{id}/usage` (`c5ef3d7`); thread artifacts via
+  `GET /projects/{id}/artifacts?conversation_id=…` (`c5ef3d7`); server-side APM lock API
+  `POST/GET /agent-profiles/{id}/apm/lock` + ADR-0054 Amendment 1 (`c5ef3d7`); worker-side APM
+  resolve (`1147e8a`).
+- Repository page at `/p/:project/:repo` (`d7b716a`) — header, STATUS, issues, run-from-issue, recent
+  runs; unknown repo not-found; project page repo rows link to it.
+- Security: env-delivered secrets no longer ride nono's launch argv (ADR-0040) — fixed `b58404e` (agent
+  turn + process.exec + Unit); operator action: rotate any `delivery_mode: env` secret to a sandboxed
+  agent before this fix and purge the affected entries from the nono audit journal
+  (`docs/design/agent-push.md`).
+
+**Remaining gaps (as of 2026-10-22)**:
+- Lock-it UI / unlocked APM pins — **in progress**.
+- Sandboxed APM resolve — **in progress** (the lock request is dispatched and resolved by a worker
+  since `c5ef3d7`, but the `apm install` child is not yet under nono).
+- Approval "files it will touch" — design written (`docs/design/approval-files.md`), awaiting product
+  decision (migration renumbered to `00014_approval_gate_changes.sql`; ADR-0057 kept Proposed).
+- Real push/draft-PR proof — needs a fine-grained token for a test repo.
+- `gh` and `curl` are absent from the worker image — agents can push with the delivered token, but
+  have no tool to open a PR; needs an image decision.
+- APM gaps from `logs/apm-research/REPORT.md` §4 — MCP servers, targets beyond claude/codex, caching,
+  private repos, `apm audit`, apm 0.34.0.
+
 ## Status log
 
-Updated 2026-10-21 (through `d2708cb` — the final lab runs final3 / final3-m5 / jr015620,
-HEAD `d2708cb` of the final acceptance run; all work committed, no pending items).
-"Shipped" cites the commit that landed it (`6222d01` = app-shell phases 1–6 + backend for
+Updated 2026-10-22 (through `c5ef3d7` — Round 2 landed: run triggers, repo page, usage, thread
+artifacts, APM lock API, security fix `b58404e`, APM resolve `1147e8a`, workflow triggers UI
+`7d25772`; the final lab runs final3 / final3-m5 / jr015620, HEAD `d2708cb`, remain the earlier
+acceptance record; see the Round 2 section below). "Shipped" cites the commit that landed it (`6222d01` = app-shell phases 1–6 + backend for
 4–8; `80033b6` = backend batch: prefs, cross-project reads, org stream, launchers, step
 registry p1; `3349840`/`c3cf02f`/`5198c90`/`0c42aec`/`126af18`/`cf5af0e`/`8db926c` =
 ADRs + focused UI). Commits since `c3d6a23` added: phases 4–8 wiring (`5c4f6c9`), M1/M2
@@ -152,8 +195,11 @@ render loop when the query had no data). E2E-proven: `shell-p1` 7/7 + `shell-p78
 - The phase-1 stubs "`Steps (0)` and link-only Workflows" are now **shipped** — the Steps page and
   Workflows index are real (phase 4 below).
 
-**Next:** dedicated repo page (`/p/:p/:r` currently redirects; status, workspaces, issues is later
-work per the Decisions section).
+**Shipped (`d7b716a`)** — the dedicated repo page now lives at `/p/:project/:repo` (replaces the
+redirect): header with branch + git URL, STATUS of the workspaces touching the repo, open GitHub
+issues with an honest rate-limited / not-a-GitHub-remote state, run-from-issue, the project's recent
+runs labelled as such; project page repo rows link to it; unknown repo → not-found. Follow-ups: fine-
+g-grained token for a real push proof.
 
 ### Phase 2 — shipped / stubbed / next
 
@@ -166,20 +212,19 @@ group-by, filters, 440px run drawer (`components/board/*`); `mine` via `triggere
 picker → `POST /projects/{p}/runs`; Approve / Retry-from-step / Read plan / Fix the workflow.
 Since: `f38c5df` — column count badges keep full-opacity text on solid status fills (the
 failed red composited to 4.21:1). E2E-proven: `shell-p2` 5/5 + `shell-p789-board-mine` (the
-`mine` filter now equals `GET /api/v1/runs?mine=true`; `from issues`/`scheduled` disabled).
+`mine` filter now equals `GET /api/v1/runs?mine=true`); the `from issues` / `scheduled` chips
+shipped live via ADR-0056 (`c5ef3d7`) — the board-filters step asserts the chips are enabled and
+idle, and `shell-p10-gaps` ran the triggers/repo-page/usage/thread-artifacts suites on the same
+rebuilt lab.
 
 **Stubbed / honest empty states**:
-- `from issues` / `scheduled` filter chips are **disabled with the reason** — `runs` has no
-  trigger-source column and the issues route "is not a trigger" (ADR-0031);
-  `title="not available yet"` (`Board.tsx:204,235,243`).
 - One-line empty copy per column + `Start run`.
 - The pending gate shows its own static `summary` — never labelled "written by the model".
 - Run drawer "Ask about this run…" composer is **disabled with that reason** on `503
   assistant_not_configured` — never a fake answer (`RunDrawer.tsx:492`).
 - `✓ done` instead of a PR number (no draft-PR link from the board yet).
 
-**Next:** issue/schedule triggers as run sources (needs an ADR amending ADR-0031); model summaries
-on board rows beyond the approval page.
+**Next:** model summaries on board rows beyond the approval page.
 
 ### Phase 3 — shipped / stubbed / next
 
@@ -255,17 +300,22 @@ dialog).
   "verified" (`NewProfileDialog.tsx:102,116,373`).
 - `/launchers` 404 (old image): muted **"status not available yet"** chip (`lib/profiles.ts:83`,
   `ProfileDetail.tsx:198`, `NewProfileDialog.tsx:102,116,373`) — never a claim.
-- **APM contents: "Contents available after the package is staged — not available yet."**
-  (`ProfileDetail.tsx:302`).
-- **APM "Lock it": disabled** — "computing the lock digest server-side is not available yet —
-  paste it by hand" (`NewProfileDialog.tsx:601-608`); ADR-0054 is Accepted (design) and not
-  implemented.
-- **Profile usage: "usage tracking not available yet"** — never a fake "0"
-  (`ProfileDetail.tsx:327`).
+- **APM contents: names-only from the resolved lock** — `POST /agent-profiles/{id}/apm/lock` +
+  worker-side resolve (`APMTyper.Resolve`, `1147e8a`) landed under ADR-0054 Amendment 1 (`c5ef3d7`),
+  migration 00013; the `apm_contents` summary (`{skills, instructions, mcp_servers}`) lands on the
+  profile in the lock transaction. Until the Lock it UI is wired and a lock is stored, the pre-lock
+  honest state still renders ("Contents available after the package is staged — not available yet").
+- **APM "Lock it": implemented server-side (ADR-0054 Amendment 1, `c5ef3d7`, migration 00013);
+  dialog wiring + unlocked pins in progress** — the digest computes via the worker resolve and the
+  summary lands in one transaction; an operator with an unlocked pin pastes the digest by hand (the
+  ADR-0030 triple) or queues the lock.
+- **Profile usage: real** — `GET /agent-profiles/{id}/usage` + `GET /node-templates/{id}/usage`
+  (`c5ef3d7`) answer USED BY / USED IN from the latest revision + open drafts; no "usage tracking not
+  available yet", never a fake "0".
 - Codex/other cells without recorded probe evidence read `not tested`, never "verified".
 
-**Next:** ADR-0054 implementation (worker-side sandboxed resolve + stored digest); profile
-versioning (conflict 7, ADR still to write); profile-usage endpoint.
+**Next:** sandboxed APM resolve (ADR-0054's sandboxed child); Lock it UI wiring + unlocked APM pins;
+profile versioning (conflict 7, ADR still to write).
 
 ### Phase 6 — shipped / stubbed / next
 
@@ -281,16 +331,19 @@ pinned run base, `handoff_summary` input, run↔thread link (ADR-0053, migration
 (feature exists, ADR-0039).
 
 **Stubbed / honest empty states**:
-- **Artifacts by thread: "Not available yet — the artifact API cannot list just this thread's
-  files"** (`Conversation.tsx:374`) — the rail says so instead of listing project files.
-- **Draft PR is a prompt to the agent**: "A draft PR exists only [if the agent says so]" — no push
-  integration yet (`Conversation.tsx:486`); non-controllers see "Take control to ask the agent"
-  (`Conversation.tsx:502`).
+- **Artifacts by thread: shipped** — the artifact list answers
+  `GET /api/v1/projects/{id}/artifacts?conversation_id=<id>` (`c5ef3d7`); the thread rail lists the
+  thread's artifacts (EVIDENCE `shell-p10-gaps-thread-artifacts`).
+- **Draft PR is still a prompt to the agent**: "A draft PR exists only [if the agent says so]" — no
+  push integration yet (`Conversation.tsx:486`); the agent pushes with the profile-authorized GitHub
+  token delivered through the exec env (ADR-0045, `b58404e`), but the real push/draft-PR proof needs a
+  fine-grained token for a test repo.
+- Non-controllers see "Take control to ask the agent" (`Conversation.tsx:502`).
 - Clean-branch handoff copy: "starts from the default branch"; the `thread/<slug>` label is
   display-only (conflict 17 resolved).
 
-**Next:** push integration for draft PRs (ADR-0045 delivery path); an artifact
-`conversation_id` filter so the rail can list real files.
+**Next:** real push/draft-PR proof in the lab (fine-grained token for a test repo); the ADR-0045
+ delivery path (token via exec env, `b58404e`) remains to be exercised end to end.
 
 ### Phase 7 — shipped / stubbed / next
 
@@ -346,8 +399,10 @@ so the ADR-0050 confirm path is reachable from the UI. E2E-proven: `shell-p789-a
 journey cancelled — the gate stayed pending).
 
 **Stubbed / honest empty states**:
-- **FILES IT WILL TOUCH: "Not available yet — the API carries no diff or file manifest for this
-gate."** (`Approval.tsx:461`).
+- **FILES IT WILL TOUCH: design written, awaiting product decision** — `docs/design/approval-files.md`
+  (migration renumbered to `00014_approval_gate_changes.sql`; ADR-0057 kept Proposed; status: design,
+  awaiting product decision (2026-10-22)); the UI's honest "not available yet" state holds until the
+  decision lands the change.
 - `503 assistant_not_configured`: **"Model summaries not configured on this server — the gate's own
 text below."** (`Approval.tsx:231,251`) — the static gate `summary` is labelled as its own.
 - No fabricated question items — only `approval|permission|failed` (conflict 15, unresolved by
@@ -355,7 +410,8 @@ text below."** (`Approval.tsx:231,251`) — the static gate `summary` is labelle
 - Decider note stays a note — `comments` never enter the journal (conflict 13, default kept).
 - PERMISSION cards: non-controllers get "Open to decide", not buttons that would 409 (conflict 14).
 
-**Next:** question-kind inbox items (needs the wire); a real file manifest/diff on gates.
+**Next:** question-kind inbox items (needs the wire); the approval-files design (awaiting the
+product decision) as the real file manifest/diff on gates.
 
 ### Phase 9 — shipped / stubbed / next
 
