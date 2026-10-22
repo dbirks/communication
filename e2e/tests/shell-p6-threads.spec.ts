@@ -52,15 +52,6 @@ async function apiConversationsWithManual(
   return conversations;
 }
 
-/** The row key, exactly as ui/src/components/Conversations.tsx computes it. */
-function titleSlug(title: string, id: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || id.slice(-8);
-}
-
 test.describe("shell p6 — threads: cross-project list and thread page", () => {
   test.skip(!SHELL_ENABLED, SHELL_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
@@ -79,17 +70,13 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
     await expect(rows.first()).toBeVisible({ timeout: 30_000 });
     expect(await rows.count(), "one row per one-off conversation").toBe(manual.length);
     for (const conversation of manual) {
-      await expect(
-        page.getByTestId(`thread-row-${titleSlug(conversation.title, conversation.id)}`),
-      ).toBeVisible();
+      await expect(page.getByTestId(`thread-row-${conversation.id}`)).toBeVisible();
     }
     // Lifting the one-off filter shows the full cross-project list.
     await page.getByTestId("threads-one-off-filter").click();
     expect(await rows.count(), "one row per conversation summary").toBe(conversations.length);
     for (const conversation of conversations) {
-      await expect(
-        page.getByTestId(`thread-row-${titleSlug(conversation.title, conversation.id)}`),
-      ).toBeVisible();
+      await expect(page.getByTestId(`thread-row-${conversation.id}`)).toBeVisible();
     }
     await checkShellScreen(page, "threads list", stopWatching);
     await evidence(

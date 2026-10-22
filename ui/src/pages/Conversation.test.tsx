@@ -720,6 +720,34 @@ describe("the thread page is a transcript column with a context rail", () => {
     expect(screen.getByTestId("tool-preview-output").textContent).toContain("line five");
     expect(within(row).getByText("status: in_progress")).toBeTruthy();
   });
+
+  it("ellipsizes a long tool title and keeps the full text in the title", async () => {
+    renderApp({ path, routes: routes(conversationFixture) });
+    await screen.findByTestId("conversation-title");
+
+    const longTitle = "bash: npm run build -- --minify --source-map --target es2022";
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.tool.call", {
+          tool_call_id: "toolu_long",
+          title: longTitle,
+          kind: "execute",
+          status: "in_progress",
+        }),
+      );
+    });
+
+    const row = screen.getByTestId("tool-row-toolu_long");
+    const title = within(row).getByText(longTitle);
+    // Long tool text is one line: ellipsized in the row, full text in the title.
+    expect(title.getAttribute("title")).toBe(longTitle);
+    expect(title.className).toContain("truncate");
+    expect(title.className).toContain("min-w-0");
+    // The chevron + timing row keeps its own slot instead of pushing content out.
+    const timing = screen.getByTestId("tool-timing-toolu_long");
+    expect(timing.className).toContain("w-[72px]");
+    expect(timing.className).toContain("shrink");
+  });
 });
 
 /** Turn a factory attempt's ids onto the stream the way the worker stamps them. */

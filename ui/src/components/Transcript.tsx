@@ -150,8 +150,15 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
         <span className="w-[54px] shrink-0 truncate font-mono text-[10px] uppercase tracking-[.04em] text-muted">
           {item.toolKind || "tool"}
         </span>
-        {/* One line, ellipsized: the full command is one click away below. */}
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">
+        {/* One line, ellipsized: the full command is one click away below. The
+            basis is content (`flex-auto`, i.e. grow+shrink+auto) — not `flex-1`
+            (basis 0%), which would leave nothing to shrink when the fixed chip /
+            timing / chevron row no longer fits and push the chevron out of the
+            column. `min-w-0` lets the title truncate under them. */}
+        <span
+          className="min-w-0 flex-auto truncate font-mono text-[11.5px] text-ink"
+          title={item.title}
+        >
           {item.title}
         </span>
         {item.truncated ? (
@@ -166,7 +173,7 @@ function ToolRow({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) 
         {timing ? (
           <span
             data-testid={`tool-timing-${item.toolCallId}`}
-            className="w-[72px] shrink-0 text-right font-mono text-[11px] text-muted"
+            className="min-w-4 w-[72px] shrink text-right font-mono text-[11px] text-muted"
           >
             {timing}
           </span>

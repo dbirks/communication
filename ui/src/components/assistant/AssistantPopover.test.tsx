@@ -213,6 +213,36 @@ describe("approval decision post body (ui-confirm)", () => {
 });
 
 /**
+ * Honest failure lines: a transient upstream cause answers with the retry
+ * line (the broker already retried), never the bare status and never the
+ * not-configured sentence.
+ */
+describe("assistant send failure honesty (503 degraded mapping)", () => {
+  it("a transient upstream degraded cause shows the retry line on the send error", async () => {
+    stubFetch(() =>
+      json(
+        {
+          type: "https://communication.dev/errors/assistant-degraded",
+          title: "Assistant unavailable",
+          status: 503,
+          detail: "the model endpoint returned 503",
+          degraded: "model_unreachable",
+        },
+        503,
+      ),
+    );
+    renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    fireEvent.change(input, { target: { value: "what is failing?" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    expect((await screen.findByTestId("assistant-error")).textContent).toContain(
+      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
+    );
+  });
+});
+
+/**
  * ui-newconv: the header's `New conversation` control and the Recent menu
  * (ADR-0050 part 1 stores many conversations per user; the popover used to
  * adopt the caller's newest one and never let go of it).

@@ -18,12 +18,28 @@ export interface ApiRequestInit extends Omit<RequestInit, "body"> {
   json?: unknown;
 }
 
+/**
+ * A problem body plus the assistant's stable `degraded` cause when the server
+ * named one — the assistant problem's extra member (`assistant_not_configured`,
+ * `model_unreachable`, ...) that the UI branches on instead of the bare status.
+ * The base `Problem` shape does not carry it (yet), so it is optional here.
+ */
+type ProblemBody = components["schemas"]["Problem"] & { degraded?: string | null };
+
 /** An `application/problem+json` error response. */
 export class ApiError extends Error {
   readonly status: number;
   readonly title: string;
   readonly detail: string;
   readonly type: string;
+  /**
+   * The stable cause the server named on the problem body — the assistant
+   * problem's `degraded` member (`assistant_not_configured`, `model_unreachable`,
+   * `model_timeout`, ...) — or null when the body carries none. The UI branches
+   * on this code rather than on the bare status: a 503 that meant "the upstream
+   * model is down" used to be read as "the assistant is not configured".
+   */
+  readonly degraded: string | null;
   /**
    * The parsed body as it arrived. RFC 9457 members aside, a conversation `409`
    * carries the live `control` (and sometimes `active_turn`) — see
@@ -32,13 +48,14 @@ export class ApiError extends Error {
    */
   readonly body: unknown;
 
-  constructor(body: components["schemas"]["Problem"], rawBody: unknown) {
+  constructor(body: ProblemBody, rawBody: unknown) {
     super(body.detail ? `${body.title}: ${body.detail}` : body.title);
     this.name = "ApiError";
     this.status = body.status;
     this.title = body.title;
     this.detail = body.detail ?? "";
     this.type = body.type;
+    this.degraded = typeof body.degraded === "string" ? body.degraded : null;
     this.body = rawBody;
   }
 }
@@ -71,6 +88,21 @@ export function problemOf(error: unknown): components["schemas"]["Problem"] {
   };
 }
 
+/**
+ * The honest one-line answer for a failed assistant turn whose `degraded` cause
+ * was a transient upstream failure: the broker already retried within its
+ * budget (ADR-0023 § 7), so the endpoint was tried and failed — the caller should
+ * try again, not be told the assistant is unconfigured. Returns null when the
+ * cause is not transient; the caller keeps its own honest line.
+ */
+export function assistantTransientErrorLine(error: unknown): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const degraded = error.degraded;
+  if (degraded !== "model_unreachable" && degraded !== "model_timeout") return null;
+  const detail = error.detail ? ` ${error.detail}` : "";
+  return `The assistant's model is unavailable right now — try again.${detail}`;
+}
+
 let csrfToken: string | null = null;
 
 /** Remember the CSRF token from `GET /api/v1/me` (null on sign-out). */
@@ -82,15 +114,17 @@ export function getCsrfToken(): string | null {
   return csrfToken;
 }
 
-function asProblem(status: number, value: unknown): components["schemas"]["Problem"] {
+function asProblem(status: number, value: unknown): ProblemBody {
   if (value && typeof value === "object") {
-    const candidate = value as Partial<components["schemas"]["Problem"]>;
+    const candidate = value as Partial<components["schemas"]["Problem"]> & { degraded?: unknown };
     if (typeof candidate.title === "string") {
+      const degraded = typeof candidate.degraded === "string" ? candidate.degraded : null;
       return {
         type: candidate.type ?? "about:blank",
         title: candidate.title,
         status: typeof candidate.status === "number" ? candidate.status : status,
         detail: typeof candidate.detail === "string" ? candidate.detail : "",
+        degraded,
       };
     }
   }
@@ -99,6 +133,7 @@ function asProblem(status: number, value: unknown): components["schemas"]["Probl
     title: `HTTP ${status}`,
     status,
     detail: typeof value === "string" ? value : "",
+    degraded: null,
   };
 }
 

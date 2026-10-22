@@ -21,7 +21,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent }
 import { Link, useNavigate } from "react-router";
 import { assistantNotConfigured, useAssistantAsk, type AssistantAnswer } from "../../api/assistant";
 import { useDecideApproval, useProjectApprovals } from "../../api/approvals";
-import { problemOf } from "../../api/client";
+import { assistantTransientErrorLine, problemOf } from "../../api/client";
 import { useCreateDraft } from "../../api/pipelines";
 import { useRunEvents } from "../../api/runEvents";
 import { useRun, useRunNodes, useRetryRun } from "../../api/runs";
@@ -221,10 +221,17 @@ export function RunDrawer({ runId, boardRun, onClose }: RunDrawerProps) {
       {
         onSuccess: (sent) => setAnswer(sent),
         onError: (error) => {
-          // 503 assistant_not_configured is a deployment fact, not a
-          // failure of the question: the composer says so and stays shut.
+          // A deployment fact (no assistant) disables the composer; a transient
+          // upstream failure gets the retry line. Both branch on the problem's
+          // `degraded` code, never the bare status, and neither fabricates an
+          // answer.
           if (assistantNotConfigured(error)) setAssistantUnavailable(true);
-          else setAskError(problemOf(error).title ?? "The question could not be answered.");
+          else
+            setAskError(
+              assistantTransientErrorLine(error) ??
+                problemOf(error).title ??
+                "The question could not be answered.",
+            );
         },
       },
     );

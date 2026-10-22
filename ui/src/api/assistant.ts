@@ -60,9 +60,7 @@ export function assistantAskBody(question: string, route: string): AssistantAsk 
 /** `degraded` off any problem body (assistant route or not), else null. */
 export function degradedOf(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null;
-  const body = error.body as Partial<AssistantProblem> | null;
-  if (!body || typeof body !== "object") return null;
-  return typeof body.degraded === "string" ? body.degraded : null;
+  return error.degraded;
 }
 
 /** True when the server said the assistant is simply not configured. */

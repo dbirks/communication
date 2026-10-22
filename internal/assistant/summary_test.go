@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 )
@@ -132,5 +133,43 @@ func TestNewTextOnlyNotConfigured(t *testing.T) {
 	}
 	if _, err := NewTextOnly(Config{BaseURL: "ftp://bad"}); err == nil {
 		t.Fatal("expected a config validation error")
+	}
+}
+
+func TestSummarizeApprovalRetriesTransientUntilSuccess(t *testing.T) {
+	// The approval-summary text-only broker must go through the SAME retrying
+	// completion the ask/proposal paths use (ADR-0034/ADR-0023 §7): a transient
+	// upstream failure (here: 503) is retried within the broker's budget before
+	// the failure is named.
+	var calls int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+		if atomic.AddInt64(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream down"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{
+			"message":       map[string]any{"role": "assistant", "content": `{"summary":"First. Second.","actions":[{"label":"Approve","intent":"approve","risk":"proceed"},{"label":"Reject","intent":"reject","risk":"refuse"}]}`},
+			"finish_reason": "stop",
+		}}})
+	}))
+	t.Cleanup(srv.Close)
+	b, err := NewTextOnly(Config{BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatalf("NewTextOnly: %v", err)
+	}
+	out, fail := b.SummarizeApproval(context.Background(), "gate summary", "")
+	if fail != nil {
+		t.Fatalf("SummarizeApproval after a transient retry: %v", fail)
+	}
+	if out.Summary != "First. Second." {
+		t.Fatalf("summary = %q, want the retried completion's answer", out.Summary)
+	}
+	if got := atomic.LoadInt64(&calls); got != 2 {
+		t.Fatalf("model calls = %d, want 2 (one retry)", got)
 	}
 }

@@ -31,6 +31,7 @@ import {
 } from "../api/approvals";
 import type { ApprovalSummary, ApprovalInterpretation } from "../api/approvals";
 import { assistantNotConfigured } from "../api/assistant";
+import { assistantTransientErrorLine } from "../api/client";
 import { useArtifacts, useProjects, useMe } from "../api/queries";
 import { Button } from "../components/ds/Button";
 import { Alert } from "../components/ds/Alert";
@@ -256,7 +257,9 @@ function SummaryCard({
       state={notConfigured ? undefined : "failed"}
     >
       {!notConfigured && summary.isError ? (
-        <p className="px-3 pt-2 text-[12px] text-st-failed-pale-fg">{problemText(summary.error)}</p>
+        <p className="px-3 pt-2 text-[12px] text-st-failed-pale-fg">
+          {assistantTransientErrorLine(summary.error) ?? problemText(summary.error)}
+        </p>
       ) : null}
       <p
         className="whitespace-pre-wrap p-3 text-[13.5px] leading-[1.5] text-ink"

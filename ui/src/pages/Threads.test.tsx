@@ -67,7 +67,7 @@ describe("/threads (cross-project thread list)", () => {
       ),
     });
 
-    const row = await screen.findByTestId("thread-row-refactor-billing");
+    const row = await screen.findByTestId(`thread-row-${conversationId}`);
     expect(row.getAttribute("href")).toBe(`/threads/${conversationId}`);
     expect(row.textContent).toContain(projectFixture.name);
     expect(row.textContent).toContain("Claude Code");
@@ -81,13 +81,13 @@ describe("/threads (cross-project thread list)", () => {
 
     const chip = await screen.findByTestId("threads-one-off-filter");
     expect(chip.getAttribute("aria-pressed")).toBe("true");
-    expect(await screen.findByTestId("thread-row-refactor-billing")).toBeTruthy();
-    expect(screen.queryByTestId("thread-row-review-loop-for-the-release-run")).toBeNull();
+    expect(await screen.findByTestId(`thread-row-${conversationId}`)).toBeTruthy();
+    expect(screen.queryByTestId(`thread-row-${runLinked.id}`)).toBeNull();
 
     fireEvent.click(chip);
-    expect(await screen.findByTestId("thread-row-review-loop-for-the-release-run")).toBeTruthy();
+    expect(await screen.findByTestId(`thread-row-${runLinked.id}`)).toBeTruthy();
     expect(
-      within(screen.getByTestId("thread-row-review-loop-for-the-release-run")).getByTestId(
+      within(screen.getByTestId(`thread-row-${runLinked.id}`)).getByTestId(
         "conversation-origin-run",
       ),
     ).toBeTruthy();

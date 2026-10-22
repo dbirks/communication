@@ -171,6 +171,24 @@ describe("approval detail (4g)", () => {
     expect(textOf(screen.getByTestId(`approval-detail-closed-${T}`))).toContain("Decided approved");
   });
 
+  it("shows the retry line when the model summary hit a transient upstream failure", async () => {
+    renderApprovalPage([
+      {
+        path: SUMMARY_PATH,
+        method: "POST",
+        status: 503,
+        body: { ...NOT_CONFIGURED, degraded: "model_unreachable" },
+      },
+      { path: ARTIFACTS_PATH, body: { artifacts: [] } },
+    ]);
+
+    expect(await screen.findByTestId(`approval-detail-summary-fallback-${T}`)).toBeTruthy();
+    expect(screen.getByText(/The assistant's model is unavailable right now/)).toBeTruthy();
+    // The gate's own summary still backs the decider — never a blocked gate.
+    const fallbackText = textOf(screen.getByTestId(`approval-detail-summary-fallback-${T}`));
+    expect(fallbackText).toContain(wireApproval.summary);
+  });
+
   it("shows the model summary, risk-colored actions and the plan inline", async () => {
     renderApprovalPage([
       {

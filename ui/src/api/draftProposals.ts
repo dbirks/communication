@@ -16,7 +16,9 @@
  *  - `422` `assistant_proposal_invalid` — the model output failed the
  *    structural check; `detail` names the reason, and the model is not
  *    re-asked.
- *  - `503` `assistant_not_configured` — no assistant broker on this server.
+ *  - `503` `assistant_not_configured` — no assistant broker on this server;
+ *    the degraded code names it. A 503 that named a transient upstream cause
+ *    instead is the retry line, not this one.
  *
  * The request/response types are hand-written here on purpose: the canvas
  * applies the op through `lib/pipeline/proposalOps`' `ProposalOp` (which
@@ -25,7 +27,8 @@
  * `AssistantDraftProposalRequest` / `AssistantDraftProposal`.
  */
 import { useMutation } from "@tanstack/react-query";
-import { ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch, assistantTransientErrorLine } from "./client";
+import { assistantNotConfigured } from "./assistant";
 import type { ProposalOp } from "../lib/pipeline/proposalOps";
 
 /** The one route this module speaks. */
@@ -58,12 +61,15 @@ export type DraftProposalProblem =
 
 /**
  * What the UI should say when a proposal request fails — the mapping the
- * Studio box renders, straight off the problem body (status + detail).
+ * Studio box renders, straight off the problem body's `degraded` code (never
+ * the bare status: a 503 that meant the upstream model was down is a transient
+ * failure and gets the retry line, not the not-configured one).
  */
 export function draftProposalErrorOf(error: unknown): string {
   if (!(error instanceof ApiError)) return "The assistant could not be reached.";
-  if (error.status === 503 || error.type.includes("assistant_not_configured"))
-    return "The assistant is not configured on this server.";
+  if (assistantNotConfigured(error)) return "The assistant is not configured on this server.";
+  const transient = assistantTransientErrorLine(error);
+  if (transient) return transient;
   if (error.status === 409 || error.type.includes("stale_draft_version"))
     return "The draft changed — reload before asking.";
   if (error.status === 422 || error.type.includes("assistant_proposal_invalid"))

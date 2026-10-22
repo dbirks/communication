@@ -16,7 +16,7 @@ import { useAgentProfiles, useProjects } from "../api/queries";
 import type { ConversationSummary } from "../api/types";
 import type { components } from "../api/schema";
 import NewConversationDialog from "../components/NewConversationDialog";
-import { OriginBadge, titleSlug } from "../components/Conversations";
+import { OriginBadge } from "../components/Conversations";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
@@ -145,7 +145,7 @@ export default function Threads() {
                   <li key={conversation.id}>
                     <Row
                       to={routes.thread(conversation.id)}
-                      data-testid={`thread-row-${titleSlug(conversation.title, conversation.id)}`}
+                      data-testid={`thread-row-${conversation.id}`}
                     >
                       <StatusChip
                         state={stateOf(CONVERSATION_STATE[conversation.status])}

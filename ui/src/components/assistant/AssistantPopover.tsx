@@ -22,7 +22,7 @@ import AssistantPanel from "./AssistantPanel";
 import { sectionOf } from "../Shell";
 import { shortId } from "../../api/names";
 import { useAssistantPrefs } from "../../lib/prefs";
-import { problemOf } from "../../api/client";
+import { assistantTransientErrorLine, problemOf } from "../../api/client";
 import {
   assistantContextOf,
   assistantNotConfigured,
@@ -131,6 +131,8 @@ function failureLine(error: unknown): string {
   if (assistantNotConfigured(error)) {
     return "The assistant isn't configured on this server — your question was not sent.";
   }
+  const transient = assistantTransientErrorLine(error);
+  if (transient) return transient;
   const problem = problemOf(error);
   return problem.detail || problem.title;
 }

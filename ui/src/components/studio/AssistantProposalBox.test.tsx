@@ -61,13 +61,20 @@ vi.mock("../../api/draftProposals", async (importOriginal) => {
   };
 });
 
-function problem(status: number, type: string, detail: string): components["schemas"]["Problem"] {
-  return {
+function problem(
+  status: number,
+  type: string,
+  detail: string,
+  degraded = "",
+): components["schemas"]["Problem"] {
+  const body: components["schemas"]["Problem"] & { degraded?: string } = {
     type: `https://communication.dev/problems/${type}`,
     title: detail,
     status,
     detail,
   };
+  if (degraded) body.degraded = degraded;
+  return body;
 }
 
 function proposalResponse(): DraftProposalResponse {
@@ -112,6 +119,7 @@ beforeEach(() => {
               504,
               "model_timeout",
               "no completion from llm-collective.e-gineering.com within 30s",
+              "model_timeout",
             ),
             null,
           ),
@@ -214,13 +222,13 @@ describe("AssistantProposalBox", () => {
     expect(findNode(parsed.model, "tests")?.dependsOn).toEqual(["code_reviewer"]);
   });
 
-  it("shows the 504 model-timeout detail and does not preview", () => {
+  it("shows the 504 model-timeout retry line and does not preview", () => {
     state.outcome = "timeout504";
     const { onPreview } = renderBox();
     propose();
     expect(onPreview).not.toHaveBeenCalled();
     expect(screen.getByTestId("assistant-proposal-error").textContent).toBe(
-      "no completion from llm-collective.e-gineering.com within 30s",
+      "The assistant's model is unavailable right now — try again. no completion from llm-collective.e-gineering.com within 30s",
     );
   });
 
@@ -235,9 +243,25 @@ describe("AssistantProposalBox", () => {
   it("maps 503 assistant_not_configured to the not-configured line", () => {
     expect(
       draftProposalErrorOf(
-        new ApiError(problem(503, "assistant_not_configured", "no assistant"), null),
+        new ApiError(
+          problem(503, "assistant_not_configured", "no assistant", "assistant_not_configured"),
+          null,
+        ),
       ),
     ).toBe("The assistant is not configured on this server.");
+  });
+
+  it("maps a transient upstream degraded code to the retry line, not the not-configured one", () => {
+    expect(
+      draftProposalErrorOf(
+        new ApiError(
+          problem(503, "model_unreachable", "the model endpoint returned 503", "model_unreachable"),
+          null,
+        ),
+      ),
+    ).toBe(
+      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
+    );
   });
 
   it("maps 409 to the reload-before-asking line", () => {

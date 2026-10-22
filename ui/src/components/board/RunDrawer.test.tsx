@@ -377,10 +377,11 @@ describe("RunDrawer", () => {
       options?.onError?.(
         new ApiError(
           {
-            type: "https://communication.example/problems/assistant",
+            type: "https://communication.dev/errors/assistant",
             title: "Assistant unavailable",
             status: 503,
             detail: "",
+            degraded: "assistant_not_configured",
           } as never,
           { degraded: "assistant_not_configured" },
         ),
@@ -391,5 +392,37 @@ describe("RunDrawer", () => {
     );
     expect((screen.getByTestId("run-drawer-ask-input") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByTestId("run-drawer-ask-submit") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("ask: a transient upstream degraded cause gets the retry line, not a disabled composer", () => {
+    mocks.run = { data: runDetail(), isPending: false };
+    mocks.approvals = { data: { approvals: [approval()] }, isPending: false };
+    renderDrawer(boardRun());
+    const input = screen.getByTestId("run-drawer-ask-input");
+    fireEvent.change(input, { target: { value: "hello?" } });
+    let options: { onError?: (error: Error) => void } | undefined;
+    mocks.ask.mutate.mockImplementation((_arg: unknown, opts?: unknown) => {
+      options = opts as typeof options;
+    });
+    fireEvent.submit(screen.getByTestId("run-drawer-ask"));
+    act(() => {
+      options?.onError?.(
+        new ApiError(
+          {
+            type: "https://communication.dev/errors/assistant-degraded",
+            title: "Assistant unavailable",
+            status: 503,
+            detail: "the model endpoint returned 503",
+            degraded: "model_unreachable",
+          },
+          null,
+        ),
+      );
+    });
+    expect(screen.getByTestId("run-drawer-ask-error").textContent).toBe(
+      "The assistant's model is unavailable right now — try again. the model endpoint returned 503",
+    );
+    expect((screen.getByTestId("run-drawer-ask-input") as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByTestId("run-drawer-ask-submit") as HTMLButtonElement).disabled).toBe(false);
   });
 });
