@@ -8,6 +8,37 @@ NOT COVERED) and to an evidence slot filled from the final lab runs' `EVIDENCE` 
 (see **Run provenance**). Like `docs/design/issue2-acceptance.md`, screenshots stay
 outside git; only `EVIDENCE` lines and this record are in the tree.
 
+## Final acceptance run — final4 (HEAD 606b36e)
+
+Provenance: lab reset from HEAD `606b36e` (CI green), run dirs
+`~/.cache/communication-lab/shell/final4/` and `final4-m5/`, lab assistant model
+`qwen3-8-27b-amd`, date 2026-10-22.
+
+| Suite | Result |
+|---|---|
+| journey | 6/6 |
+| shell-p1 | 7/7 |
+| shell-p2 | 5/5 |
+| shell-p3 | 3/3 |
+| shell-p4 | 4/4 |
+| shell-p5 | 4/4 |
+| shell-p6 | 3/3 |
+| shell-p789 | 9/9 |
+| issue2-studio | 7/7 |
+| issue2-workbench | 5/5 |
+| issue2-conversations | 3/3 |
+| m5-agents-schedules | 3/3 |
+| m5-assistant | 3/3 |
+| m5-inbox | 6/6 |
+| m5-issue-run | 5/5 |
+| m5-journey | 10/10 + 1 pre-existing skip |
+| m5-layout | 20/20 |
+| m5-prompt-edit | 6/6 |
+
+This run supersedes the earlier d2708cb runs (final3, jr015620) cited in the
+requirement rows below; every EVIDENCE name in those rows also appears in
+final4 with the final4 stamp — see Appendix A.
+
 ## How to re-run
 
 With a lab stack running and its UI reachable (`E2E_BASE_URL`), from the repo root:
@@ -235,22 +266,22 @@ journey on the same lab/HEAD and passed 6/6; the steps below are from `jr015620/
 
 Filled from the final lab runs (Run provenance above):
 
-- **Shell per-phase suites** (final3): shell-p1 7/7 (11.4s), shell-p2 5/5 (10.6s),
-  shell-p3 3/3 (40.0s), shell-p4 4/4 (14.4s), shell-p5 4/4 (8.6s), shell-p6 3/3 (5.7s),
-  shell-p789 9/9 (3.6m).
-- **Journey**: `jr015620/` 6/6 (7.6m) — the final acceptance journey on the lab reset from
-  HEAD `d2708cb`; the `final3/` journey run (5/6) failed only at step f on the assistant
-  turn and was superseded by `jr015620/`.
-- **Issue #2**: final3 issue2-studio 7/7 (23.4s), issue2-workbench 5/5 (8.5m),
-  issue2-conversations 3/3 (39.3s).
-- **M5**: final3-m5: m5-journey 10 passed + 1 skipped (1.4m), m5-layout 20/20 (36.2s),
-  m5-inbox 6/6 (9.9s), m5-assistant 3/3 (9.6s), m5-agents-schedules 3/3 (16.1s),
-  m5-issue-run 5/5 (7.8s), m5-prompt-edit 6/6 (4.5s).
+- **Journey**: `final4/` 6/6 — the final acceptance journey on the lab reset from
+  HEAD `606b36e`; step f landed on the first assistant turn (the workflow.draft
+  tool, `606b36e`).
+- **Shell per-phase suites** (final4): shell-p1 7/7, shell-p2 5/5, shell-p3 3/3,
+  shell-p4 4/4, shell-p5 4/4, shell-p6 3/3, shell-p789 9/9.
+- **Issue #2** (final4): issue2-studio 7/7, issue2-workbench 5/5,
+  issue2-conversations 3/3.
+- **M5** (final4-m5): m5-journey 10 passed + 1 pre-existing skip, m5-layout 20/20,
+  m5-inbox 6/6, m5-assistant 3/3, m5-agents-schedules 3/3, m5-issue-run 5/5,
+  m5-prompt-edit 6/6.
 - **A11y**: every `A11Y <page>` line in the runs' `.out` files reads `0 violations` at
   1500x950 and 390x844.
-- **Totals**: final3 shell suites (35 passed) + final3 issue2 (15 passed) + final3-m5 (53 passed, 1 skipped) + final3 journey (5 passed, 1 failed) + jr015620 journey (6 passed) → the final acceptance evidence set: **114 passed, 1 skipped (m5-journey)**; the one failure is the final3 journey step f (the assistant did not land the edit within 3 turns — model variance), superseded by the jr015620 journey 6/6 on the same lab and HEAD; all other suites 0 failed. The final acceptance journey `jr015620/` is **6/6 passed (7.6m)**.
-- **Screenshots**: `final3/ev/` (shell p1–p789 + issue2), `jr015620/ev/` (journey 0–f) —
-  outside git, as recorded in Known limitations.
+- **Totals**: 113 passed, 1 skipped (m5-journey, pre-existing), 0 failed — one run,
+  one lab build.
+- **Screenshots**: `final4/ev/` (shell p1–p789 + issue2 + journey) — outside git, as
+  recorded in Known limitations.
 
 ## Bugs found and fixed by the journeys
 
@@ -288,6 +319,7 @@ phase-commit rows.
 | `7bf54bb` | Assistant popover re-adopted the newest old conversation on remount / reload, so a New conversation was replaced by re-adopting the newest old one | the started conversation choice (`{conversationId, awaitingNew}`) lives in sessionStorage, so the popover keeps the started conversation across remounts and reloads (`7bf54bb`) |
 | `5c1a6f1` | Assistant model client had no retry for transient upstream failures (429, 502, 503, model-loading 404, transport errors), so transient blips failed the turn outright | up to 3 attempts with jittered exponential backoff, Retry-After honoured, always inside the per-call deadline and the caller's context; other 4xx never retried (`5c1a6f1`) |
 | `d2708cb` | Honest 503 mapping on the assistant surface, thread row ids, transcript overflow | honest `503 assistant_not_configured` mapping + unique thread row ids + transcript overflow fix landed in the final HEAD (`d2708cb`) |
+| `606b36e` | Assistant spent turns hunting the open draft | workflow.draft read tool (`606b36e`) |
 
 ## Known limitations
 
@@ -299,10 +331,127 @@ All stubs and honest empty states are registered with `path:line` in
 - **ADR-0055 (pause-before-next-step) is Proposed** — the workbench keeps the accepted interrupt-and-rerun takeover and the confirm card says exactly that (GAPS.md §3, conflict 5).
 - **Board filters "from issues" / "scheduled" are honestly disabled** (ADR-0031: "not a trigger"); the `mine` filter is now e2e-covered (`shell-p789-board-mine`).
 - **GitHub anonymous rate limit** can throttle the live GitHub calls `m5-issue-run` makes (tracker prefill, issue events) — a red GitHub on the lab can fail that suite without any app regression.
-- **The assistant step depends on the live model** — on this lab it landed the edit in 1 of 2 consecutive runs (`final3` vs `jr015620`); the model spent several calls locating the workflow's open draft — follow-up: a direct open-draft lookup tool.
+- **The assistant step depends on the live model** — earlier d2708cb runs landed the edit in 1 of 2 runs; the workflow.draft lookup tool (606b36e) removed the draft hunt, and in the final run it landed on the first turn.
 - **Model variance on assistant turns** — the model is not deterministic; the runner caps (`7c40979`, `2c999c9`) bound the worst case so the bounded confirmation windows (shell-p789, journey f) stay honest rather than racing a slow turn.
 - **Takeover keeps the interrupt semantics** — hand-back re-runs the interrupted step as a new attempt (ADR-0043 / ADR-0055 as recorded); the confirm card says so.
 - **Takeover hand-back attempt-2 wait** — once in the `final2/` run the takeover hand-back's attempt 2 never queued within the 900 s ceiling ("attempt 2 of /build_until_verified[1]/code_review never queued within 900000ms"); bounded by the turn-bounded journey waits (`aaa50e0`).
 - **Lab authorization is single-tenant** — cross-project scoping (ADR-0047) is proven against the lab's seeded memberships, not a multi-org deployment.
 - **M1/M2 journeys** run in CI's e2e job on every push (`pnpm --dir e2e test` against a fresh e2e stack) and are green on `d2708cb`; they are not part of the lab evidence set.
-- **Screenshots live outside git** — final-run evidence lands in `~/.cache/communication-lab/shell/{final3,jr015620}/ev/` (gitignored); only `EVIDENCE` lines and this record are in the tree.
+- **Screenshots live outside git** — final-run evidence lands in `~/.cache/communication-lab/shell/final4/ev/` (gitignored); only `EVIDENCE` lines and this record are in the tree.
+
+## Appendix A — EVIDENCE lines of the final run (final4)
+
+    EVIDENCE conv-a7-dialog: New conversation dialog opened from the m4-exit overview header with the project pinned, profile m4-implementer and the first prompt filled — no pipeline field exists
+    EVIDENCE conv-a7-filter-run-hides-manual: filtering the list to "From runs" hides the manual conversation
+    EVIDENCE conv-a7-global-menu: the global New menu (new-menu → new-menu-conversation) opened the same dialog with a working project picker set to M4 Exit
+    EVIDENCE conv-a7-list-manual: searching "issue2 one-off" lists the row with the Manual badge (conversation-origin-manual)
+    EVIDENCE conv-a7-manual-label: the conversation page shows the "Manual conversation" label and has no part-of-run-link or node reference
+    EVIDENCE conv-a7-reply: conversation "issue2 one-off final4" landed on its page and the m4-implementer turn completed with an agent reply containing "pong"
+    EVIDENCE conv-narrow-dialog: at 390x844 the new-conversation dialog sits inside the viewport and the document does not scroll horizontally
+    EVIDENCE conv-run-badge: a run-linked conversation row's "From run" badge is a deep link into the Run Workbench with a ?node= parameter (/runs/01a1627a-3e93-76ce-9265-d584eab9d937?node=code_review&instance=34ced53f-46fa-543e-8845-7474ddefadc7&attempt=1)
+    EVIDENCE conv-run-conversation-page: the conversation page's part-of-run-link points at the same workbench deep link as the list badge (/runs/01a1627a-3e93-76ce-9265-d584eab9d937?node=code_review&instance=34ced53f-46fa-543e-8845-7474ddefadc7&attempt=1)
+    EVIDENCE conv-run-linkback: the part-of-run link landed on the Run Workbench with the source node selected in the graph and the conversation open in the dock
+    EVIDENCE journey-0-shell-final4: signed in; the sidebar exists and no header[aria-label=Primary] top bar is present
+    EVIDENCE journey-a-ambiguity-final4: guarded-edge dialog before the insert: “approve reads nodes.plan.*” — the insert is accepted with the target's guard kept (issue #2 A3)
+    EVIDENCE journey-a-dialog-final4: New-profile dialog open: the Claude Code card, name journey-final4, and the footer reads “Create and use in <step>” (contract C6)
+    EVIDENCE journey-a-step-final4: agent.acp step journey_step inserted after plan, profile journey-final4 created through the dialog and now selected, instruction set, draft saved
+    EVIDENCE journey-b-published-final4: draft validated (“valid — 0 findings”) and published — revision 1 → 2 (sha256:caa8b1efd3e8…), asserted via the API
+    EVIDENCE journey-c-run-final4: run 01a1626e-268e-7a1a-830d-e7f6749be48b started from the new revision r2 caa8b1 (sha256:caa8b1efd3e8…) and the workbench opened on it
+    EVIDENCE journey-d-decided-final4: the gate was approved from the phone-width Inbox; the run's approve step is succeeded via the API and the card left the Inbox
+    EVIDENCE journey-d-inbox-final4: at 390x844 the Inbox decision card for the run's gate is open with its confirm step armed (approval …b7075f33)
+    EVIDENCE journey-e-confirm-final4: the take-control confirm card names journey_step and says the attempt stops, the run pauses, and the hand-back re-runs the step as a new attempt (ADR-0043)
+    EVIDENCE journey-e-handed-back-final4: control returned to the factory: a new attempt of journey_step is queued (attempt_count ≥ 2 via the API) — the accepted takeover semantics (ADR-0043/ADR-0055)
+    EVIDENCE journey-e-live-final4: the workbench is pinned to agent step journey_step (status leased via the API) with its live conversation in the dock
+    EVIDENCE journey-e-prompt-final4: admin is in control of journey_step: one prompt (“Say hello to acknowledge, then carry on with your original task.”) got a live agent reply in the dock
+    EVIDENCE journey-f-changed-final4: the assistant's change chip counts its change(s), and the draft …fd768a13's YAML now contains journey_check (via the API)
+    EVIDENCE journey-f-undone-final4: undo all: no draft of feature-development contains journey_check any more (via the API)
+    EVIDENCE shell-p1-ask-floating: choosing the floating ask placement renders the ask-float control on the home page
+    EVIDENCE shell-p1-drawer-esc: at 390x844 Escape closes the drawer and the page stays without sideways scroll
+    EVIDENCE shell-p1-drawer-open: at 390x844 the menu button opens the sidebar drawer with the nav rows inside
+    EVIDENCE shell-p1-palette-esc: Escape closes the command palette
+    EVIDENCE shell-p1-palette-open: ⌘K (Ctrl+K in this lab) opens the global ask surface (the ADR-0050 assistant popover)
+    EVIDENCE shell-p1-palette-second-press: a second ⌘K while the assistant is open opens the jump palette
+    EVIDENCE shell-p1-redirects: all 5 legacy URLs (library, agents, projects/<id>, projects/<id>/runs/<run>?view=timeline, projects/<id>/conversations/<c>) land on their canonical C1 URLs with query state preserved
+    EVIDENCE shell-p1-settings-layout: the Settings → Layout tab renders the projects-mode, ask-placement and workflow-folder groups
+    EVIDENCE shell-p1-sidebar: the sidebar is present, the old header[aria-label=Primary] app bar is gone, and all seven nav rows link to the canonical C1 routes
+    EVIDENCE shell-p1-switcher-mode: choosing the switcher projects mode re-renders the sidebar's project block as the project switcher
+    EVIDENCE shell-p1-tree-expand: expanding "M4 Exit" PATCHes /api/v1/me/preferences (layout.expanded), the GET returns it, and the expansion is still applied after a reload
+    EVIDENCE shell-p2-board-columns: board column counts equal the API's per-status counts (queued=0, running=0, needs-you=2, failed=0, done=1 of 3 runs)
+    EVIDENCE shell-p2-board-group-repo: grouping by repo re-groups the same 3 cards into 1 group row(s), each labelled with its count
+    EVIDENCE shell-p2-board-group-workflow: grouping by workflow re-groups all 3 cards into 2 group row(s)
+    EVIDENCE shell-p2-drawer-approve-cancelled: cancelling the confirm step returns to the Approve button without any POST /api/v1/approvals — the gate is still pending
+    EVIDENCE shell-p2-drawer-approve-confirm: the drawer's Approve button shows a confirm step before any decision is recorded
+    EVIDENCE shell-p2-drawer-focus-esc: focus starts inside the drawer and 25 Tab presses never escape it; Escape closes the drawer and drops ?run=
+    EVIDENCE shell-p2-drawer-open: clicking the run card opens the 440px drawer and the URL carries ?run=01a1626e…
+    EVIDENCE shell-p2-drawer-phone-approve-confirm: at 390x844 the drawer's Approve shows its confirm step, and the journey cancels it
+    EVIDENCE shell-p2-drawer-phone: at 390x844 the run drawer fits the viewport and the page does not scroll sideways
+    EVIDENCE shell-p2-home-callouts: home shows one decision callout per pending approval from GET /api/v1/approvals?status=pending (2 callout(s))
+    EVIDENCE shell-p2-home-count-line: home count line equals GET /api/v1/runs per-column counts (2 need you, 0 failed, 0 running, 0 queued); zero segments are omitted
+    EVIDENCE shell-p3-fullscreen-restore: ⤡ show graph clears ?full=1 and restores the split view with the graph visible
+    EVIDENCE shell-p3-fullscreen-strip: ⤢ full screen sets ?full=1 and the step strip shows exactly 8 cell(s), one per top-level step of the pinned revision
+    EVIDENCE shell-p3-take-control-cancelled: Escape and Just watch both close the confirm card and no POST …/take-control is sent — control stays with the agent
+    EVIDENCE shell-p3-take-control-card: the dock's Take control shows its confirm card (heading: "TAKE CONTROL OF /P3TAKE?") with a truthful copy and a Just watch option
+    EVIDENCE shell-p3-workbench-graph: /runs/<id> renders the run title and the four tabs (Graph, Timeline, Artifacts, Diagnostics) with Graph selected
+    EVIDENCE shell-p3-workbench-tabs: clicking each tab updates the URL (?view=timeline|artifacts|diagnostics) and the selected tab state
+    EVIDENCE shell-p3-workbench-view-artifacts: deep-linking /runs/<id>?view=artifacts lands on the Artifacts tab
+    EVIDENCE shell-p4-agent-step-profile: picking the Agent kind opens the inspector's profile select with its SUGGESTED hint and sandbox-chip option labels
+    EVIDENCE shell-p4-duplicate: duplicating feature-development created feature-development-copy (API count 4 → 5) and the journey landed on the copy's draft editor
+    EVIDENCE shell-p4-duplicate-list: the /workflows list now carries the new row feature-development-copy (5 rows = the API's count)
+    EVIDENCE shell-p4-edit-for-all: Edit for all on "p4-seed-mvj7fzys" created a new revision and the API's latest revision now carries the version label "1.0.1"
+    EVIDENCE shell-p4-new-profile-from-step: the profile select's + New profile… option opens the shared NewProfileDialog
+    EVIDENCE shell-p4-step-picker: the edge + opens the step picker with exactly five primary kind cards (Agent, Command, Approval, Loop, Workflow) and no Publish card
+    EVIDENCE shell-p4-steps-registry: /steps lists the 1 registry rows grouped by family, each with its used-in line from GET /api/v1/node-templates
+    EVIDENCE shell-p4-workflows-list: /workflows lists exactly the 4 pipelines from GET /api/v1/pipelines and every revision chip reads from the API (PUBLISHED r<N> or DRAFT ONLY)
+    EVIDENCE shell-p5-created-dialog: creating "shell p5 mvj7gc19" through the dialog closes it (the caller acts on onCreated) and lands on the new profile's detail page
+    EVIDENCE shell-p5-created-list: GET /api/v1/agent-profiles and the /profiles list both carry the new row "shell p5 mvj7gc19" (id 01a16275…)
+    EVIDENCE shell-p5-created-phone: at 390x844 the profile "shell p5 mvj7gc19 phone" is created through the dialog and exists in the API
+    EVIDENCE shell-p5-detail: the Claude Code detail page shows its sections and every capability cell equals the launcher's recorded evidence (observed / not supported / not tested)
+    EVIDENCE shell-p5-dialog-disabled-cards: in the New profile dialog the unregistered Pi and Antigravity cards are disabled with their reasons, while the registered Claude and Codex cards stay selectable
+    EVIDENCE shell-p5-dialog-phone: at 390x844 the New profile dialog fits the viewport without sideways scroll
+    EVIDENCE shell-p5-list: /profiles lists the 6 API profiles; every launcher line and sandbox chip matches C5 (/api/v1/launchers) plus /api/v1/system/sandbox
+    EVIDENCE shell-p6-draft-pr: the 'Open a draft PR' NEXT entry is controller-only; clicking shows the confirm card and cancelling it sends nothing (ADR-0045)
+    EVIDENCE shell-p6-thread-header: the /threads/<id> page header shows the conversation title "P6 one-off thread mvj7gjbc" and its meta line
+    EVIDENCE shell-p6-thread-phone: at 390x844 the thread page renders its header without sideways scroll
+    EVIDENCE shell-p6-thread-rail: the thread rail shows the honest artifacts note and the "Hand to a workflow…" follow-up offered (never fake state)
+    EVIDENCE shell-p6-threads-list: /threads shows the 1 one-off threads by default and, with the one-off filter lifted, exactly the 7 cross-project summaries from GET /api/v1/conversations
+    EVIDENCE shell-p789-approval-detail: the amber 'NEEDS YOUR DECISION' strip, the model summary card, the plan section and the 'Not available yet' files note all rendered for gate bcc7233e1ba65; the free-text reply produced a proposed decision and its confirm step, which the journey cancelled — the API still lists the approval pending
+    EVIDENCE shell-p789-approval-narrow: at 390px the strip, the files note and the decide rail stack without sideways scroll and stay axe-clean; the gate is still pending (the journey cancelled, never decided)
+    EVIDENCE shell-p789-board-mine: board cards without the filter equal GET /api/v1/runs (5 of 5), with 'mine' pressed the 3 cards equal GET /api/v1/runs?mine=true, and the 'from issues' + 'scheduled' chips are disabled with the 'not available yet' title (ADR-0031: no trigger-source data)
+    EVIDENCE shell-p789-live-flag: the sidebar Inbox flag rose from 2 to 3 within 10 s of run 01a16276 entering waiting_human, with ZERO /runs|/approvals GETs during the 8 s idle window, 6 invalidation refetch(es) after the run, and 663 SSE frame(s) captured on /api/v1/events — every refetch timestamped after the first frame
+    EVIDENCE shell-p789-mic: the fake SpeechRecognition's interim + final results drove the listening bar and landed 'change the build please' in the composer, where ' and ship it' was typed on top — and ZERO non-GET requests reached /api/v1/assistant/ before Send
+    EVIDENCE shell-p789-ops: the health line reads 'replica: api-b · queue: 0 queued, 0 leased · oldest queued: queue empty', the workers table holds 2 rows == GET /api/v1/workers, and every capability cell matches GET /api/v1/launchers (✓ observed only where result=observed: claude:acp_session, claude:resume, claude:permission_prompts, claude:nono_required, codex:acp_session, codex:resume, codex:permission_prompts)
+    EVIDENCE shell-p789-question-roundtrip: the model's follow-up card appeared after 'change the workflow'; the option click POSTed the LABEL 'feature-development' verbatim as the body's plain-text 'text' field (no value, no structured payload, no confirm/dismiss) — the answer's user row had not landed when the 120 s bounded confirmation window closed (the answer turn, 180 s per completion at the lab, was still running); the POST body is the round-trip proof
+    EVIDENCE shell-p789-save-step: selecting the agent node in the p789-step-1792653273531 draft and arming 'also save as a reusable step' POSTed the node as template 01a16276 — it is listed by GET /api/v1/node-templates and shows on /steps
+    EVIDENCE shell-p789-settings: settings → assistant shows all three trust levels with the stored one (ask_risky) checked, matching GET /me/preferences, and the settings footer's Operations entry links to /ops
+    EVIDENCE shell-p789-trust-ask-all: with trust level ask_all the assistant's draft edit ('add a human approval step named trust_check after plan in p789-trust-1792653277875') surfaced a confirm card carrying the server risk line, and GET /api/v1/drafts/01a16276 still holds the document WITHOUT trust_check at version 1
+    EVIDENCE shell-p789-trust-navigate: DOCUMENTED SECONDARY CHECK (no assertion on model choice): under ask_all 'take me to the board' neither called ui.navigate nor named the board in its answer
+    EVIDENCE shell-p789-trust-retry: clicking Retry re-ran the gated draft.apply through the version-checked draft PUT: GET /api/v1/drafts/{id} now contains the trust_check node
+    EVIDENCE studio-a1b-inspector-a11y: desktop inspector audited by axe with the agent.acp node (code_review) and the process.exec node (review) selected one at a time — zero serious/critical on both
+    EVIDENCE studio-a1-inserted: agent.acp node agent inserted on the test → review edge and configured entirely in the inspector: profile m4-reviewer, review prompt, id code_review, on-failure continue
+    EVIDENCE studio-a1-yaml: YAML view proves the inspector's work: id: code_review (kind agent.acp, profile m4-reviewer), review's dependsOn now names code_review, on-failure continue — untouched by any YAML editing
+    EVIDENCE studio-a2-published: the draft was saved, validated (server verdict: valid — 0 findings) and published — published as r2 2.0.0; the diff listed code_review and the until until scope before publish
+    EVIDENCE studio-a2-reopened: reopened r2 from the pipeline page: the definition graph shows the new until Repeat until scope and the regenerated YAML shows kind: until with maxIterations: 2
+    EVIDENCE studio-a2-wrapped: three steps added at the root tail (two echo Run-command steps → the m4-reviewer agent), multi-selected by shift+click and wrapped in a Repeat until scope (until) from the selection toolbar — the YAML carries kind: until with passWhen true and maxIterations: 2
+    EVIDENCE studio-a3-ambiguity: the guarded verdict → publish edge's own + raised the AmbiguityDialog naming the condition (when) guard before anything changed
+    EVIDENCE studio-a3-preview: dragging 'Human approval' over the plan → approve edge shows the insert-preview on that edge
+    EVIDENCE studio-a3-undo: drag-to-insert of a Human approval step on the plan → approve edge (insert preview, drop, guard confirm): inserted, undone (YAML byte-identical to before) and redone (YAML restored with kind: human.approval)
+    EVIDENCE studio-a8-applied: Apply saved the assistant's edit: draft version 1 → 2, while the pipeline's revision count stayed at 2 (no publish)
+    EVIDENCE studio-a8-proposed: the assistant's proposal previews on the canvas (highlighted node + caption) with the draft still at version 1 on the server — nothing saved, nothing published
+    EVIDENCE studio-loaded: Studio opened on a fresh draft of feature-development-deterministic cloned from its newest revision — the graph canvas (with the seeded build_until_verified scope) is on stage, not a YAML textarea
+    EVIDENCE studio-narrow: at 390x844 the Studio drops the React Flow canvas for the step outline; selecting 'plan' opens the inspector and the page does not scroll horizontally
+    EVIDENCE wb-a4-acp-live: the agent.acp node code_review is selected and the dock shows its live conversation transcript (agent messages / tool events)
+    EVIDENCE wb-a4-approval: the approve human gate was selected in the graph and approved from the dock's approval card
+    EVIDENCE wb-a4-graph-default: the run page opens graph-first: graph tab selected, react-flow canvas visible (no definition table), the attention node auto-selected and docked
+    EVIDENCE wb-a5-bob-control: bob (contributor) took control while /build_until_verified[1]/code_review was running — the badge reads "You are in control" and the run is paused for human_takeover (the attempt was interrupted)
+    EVIDENCE wb-a5-carol-readonly: carol (viewer) sees Take control disabled (with the composer explainer) and a disabled composer on the same ACP node
+    EVIDENCE wb-a5-returned: bob returned control to the factory — on the conversation he drove (attempt 1 tab) the badge names the pipeline run, the run resumed (not paused), and a NEW attempt (attempt 2) of code_review was queued and reached succeeded (attempt tabs: 1 + 2)
+    EVIDENCE wb-a5-timeline: the workbench timeline lists the control handoffs — run.paused (human_takeover) and run.resumed with bob as actor
+    EVIDENCE wb-a6-attempts: fan-out item 13 (the child that exits 1) — its child run's implement step shows more than one attempt — attempt tabs or 'attempt k of m' with m > 1
+    EVIDENCE wb-a6-exec: a process.exec node (test) is selected; the dock shows its exit code and captured stdout/stderr
+    EVIDENCE wb-a6-fanout: the for_each scope shows 14 items with per-state counts; items 1-4 were selected and the dock followed the picks
+    EVIDENCE wb-a6-iter1: the until scope's picker selects iteration 1 — iteration 1 · attempt 1 of 2
+    EVIDENCE wb-a6-iter2: the until scope's picker selects iteration 2 — iteration 2
+    EVIDENCE wb-narrow: at 390x844 the workbench is the graph with the dock below it as a sheet (back-to-graph control) and no horizontal scroll
+    EVIDENCE wb-setup-run-started: the run started with fanout=14, hold_seconds=20
+
+Screenshot dir: `~/.cache/communication-lab/shell/final4/ev/`
