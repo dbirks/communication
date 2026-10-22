@@ -968,15 +968,20 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await page.getByTestId("assistant-composer-input").fill(ask);
     await page.getByTestId("assistant-send").click();
 
-    // Follow the assistant's cards, bounded to 3 follow-up turns. A question
-    // card is answered by clicking the model-written option that best
-    // matches the ask (preferring the anchor's name) — and the next user
-    // message must carry the option's label VERBATIM as plain text (spec 08
-    // / ADR-0050). An approval card gets Retry: at trust ask_risky a draft
-    // edit should not be approval-gated. The loop breaks only when the change
-    // is REAL — a draft's YAML carries journey_check (via API). The change
-    // chip is asserted afterwards, not as the gate: a previous run's chip
-    // would otherwise look like success.
+    // Follow the assistant's bounded loop, at most 3 assistant turns: the ask
+    // is turn 1 and every follow-up (a plain “make that change now”, a
+    // completion-cap nudge, an answered question, a retried approval) is the
+    // next turn. A question card is answered by clicking the model-written
+    // option that best matches the ask (preferring the anchor's name) — and
+    // the next user message must carry the option's label VERBATIM as plain
+    // text (spec 08 / ADR-0050). An approval card gets Retry: at trust
+    // ask_risky a draft edit should not be approval-gated. The loop breaks
+    // only when the change is REAL — a draft's YAML carries journey_check
+    // (via API). The change chip is asserted afterwards, not as the gate: a
+    // previous run's chip would otherwise look like success. e2e-jf2: a turn
+    // that ends WITHOUT acting (no error, no question card, no approval card,
+    // draft lacks the marker) gets ONE plain user follow-up — “Please make that
+    // change now.” — a real user would.
     let followUps = 0;
     let capRetried = false;
     const deadline = Date.now() + AGENT_TURN_TIMEOUT_MS;
@@ -1041,6 +1046,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
           )
           .toBe(label);
         followUps += 1;
+        console.log(`journey f: question answered with "${label}" (turn ${followUps}/3)`);
         continue;
       }
       if (
@@ -1051,9 +1057,34 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       ) {
         await page.getByTestId("assistant-approval-confirm").click(); // Retry
         followUps += 1;
+        console.log(`journey f: approval card retried (turn ${followUps}/3)`);
         continue;
       }
+      const landed = (await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0;
+      if (landed) {
+        console.log(`journey f: the assistant landed ${ASSISTANT_STEP_NAME} — loop done`);
+        break;
+      }
+      // e2e-jf2: the turn ended WITHOUT acting — no error, no question card and
+      // no approval card (all handled above) and the draft still lacks the
+      // marker. Lab evidence (model flint): a turn can end by describing what
+      // it found WITHOUT changing anything and without a question/approval
+      // card. A real user would simply say “please make that change now”: send
+      // ONE plain user follow-up.
+      const composer = page.getByTestId("assistant-composer-input");
+      // The turn that produced this state has settled (no error / card above):
+      // wait for the composer to be live again before following up — the same
+      // “composer is enabled once no turn is in flight” signal the question
+      // loops use.
+      await expect(composer).toBeEnabled({ timeout: AGENT_TURN_TIMEOUT_MS });
+      // The turn may have landed while we waited; the draft is the gate.
       if ((await draftsContaining(page.request, ASSISTANT_STEP_NAME)).length > 0) break;
+      followUps += 1;
+      console.log(
+        `journey f: turn ended without acting — one plain follow-up (turn ${followUps}/3)`,
+      );
+      await composer.fill("Please make that change now.");
+      await page.getByTestId("assistant-send").click();
       if (Date.now() > deadline)
         throw new Error(
           `no draft of ${PIPELINE_SLUG} carries ${ASSISTANT_STEP_NAME} after the ask — the assistant never landed the change (assistant tool loop be-as-loop?)`,
