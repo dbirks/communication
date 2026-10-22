@@ -333,4 +333,64 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
       `the thread ${conversation.id.slice(0, 8)}'s artifacts rail renders its section and lists ${apiCount} artifact row(s) == GET /api/v1/projects/{id}/artifacts?conversation_id=<id> (capped at 5)`,
     );
   });
+
+  test("workflow issue triggers: add one on the lab repo, and answer the not-a-GitHub 422", async ({
+    page,
+  }) => {
+    test.setTimeout(10 * 60_000);
+    await signIn(page, "admin");
+    const stopWatching = watchPageErrors(page);
+    const request = page.request;
+    const pipelines = await apiPipelines(request);
+    const pipeline = pipelines.find((row) => row.slug === "feature-development");
+    if (!pipeline)
+      throw new Error("the seeded feature-development pipeline must be in the library");
+
+    await page.goto(BASE_URL + `/workflows/${pipeline.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("workflow-triggers")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("trigger-add-issue")).toBeVisible({ timeout: 30_000 });
+
+    await page.getByTestId("trigger-add-issue").click();
+    const dialog = page.getByTestId("trigger-add-issue-dialog");
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    const repoSelect = page.getByTestId("trigger-add-issue-repository");
+    await expect(repoSelect).toBeVisible({ timeout: 30_000 });
+    const optionValues = await repoSelect
+      .locator("option")
+      .evaluateAll((els: HTMLOptionElement[]) => els.map((e) => e.value));
+    const repoValue = optionValues.find((value) => value && value !== "");
+    expect(repoValue, "the dialog's repository offers a repository").toBeTruthy();
+    await repoSelect.selectOption(repoValue ?? "");
+    const goal = page.getByTestId("trigger-add-issue-input-goal");
+    await expect(goal).toBeVisible({ timeout: 30_000 });
+    await goal.fill(`P10 issue trigger ${STAMP}`);
+    const confirm = page.getByTestId("trigger-add-issue-confirm");
+    await expect(confirm).toBeEnabled({ timeout: 30_000 });
+    const post = page.waitForResponse(
+      (response) =>
+        response.url().includes("/api/v1/projects/") &&
+        response.url().includes("/issue-triggers") &&
+        response.request().method() === "POST",
+      { timeout: 30_000 },
+    );
+    await confirm.click();
+    const postResponse = await post;
+    expect(
+      postResponse.status(),
+      `POST /api/v1/projects/{id}/issue-triggers -> ${postResponse.status()}`,
+    ).toBe(422);
+    const problem = (await postResponse.json()) as { detail?: string };
+    expect(problem.detail).toContain("not a GitHub repository");
+    await expect(dialog).toBeVisible();
+    const alert = page.getByTestId("trigger-add-issue-error");
+    await expect(alert).toContainText("Not A GitHub Repository");
+
+    await checkShellScreen(page, "workflow issue triggers", stopWatching);
+    await evidence(
+      page,
+      "shell-p10-gaps-issue-trigger-422",
+      `the issue-trigger dialog POSTed to /api/v1/projects/{id}/issue-triggers against the lab's file:// repository and answered the server's 422 not_a_github_repository inline`,
+    );
+  });
 });

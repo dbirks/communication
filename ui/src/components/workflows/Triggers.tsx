@@ -1,6 +1,8 @@
 /**
  * The "Triggers" section of a workflow page (`/workflows/:pipelineId`) — the
- * product owner's "add as a trigger to this whole workflow … a certain time, cron".
+ * product owner's "add as a trigger to this whole workflow … a certain time, cron"
+ * plus the ADR-0056 part-2 "when an issue shows up" half: a schedule fires on a
+ * cron, an issue trigger fires on a GitHub issue.
  *
  * A schedule belongs to a project ASSIGNMENT (ADR-0032), not to a pipeline
  * directly, so the section reads the same per-project fan-out the workflows
@@ -10,6 +12,11 @@
  * ADR-0032 routes; the server stays the authority for the cron grammar and the
  * fixed run inputs, and its `422 invalid_cron` / `409 …` answers surface inline
  * rather than being dressed up as a saved state.
+ *
+ * An issue trigger answers the same assignment question through the
+ * ADR-0056 part-2 routes (`GET/POST /projects/{id}/issue-triggers`,
+ * `PATCH /issue-triggers/{id}`): one intent per (assignment, repository),
+ * `opened` vs `labeled` with an any-of label set, polled every 60 s.
  */
 import { useState } from "react";
 import { Link } from "react-router";
@@ -21,12 +28,21 @@ import { ProblemBanner, Spinner } from "../Feedback";
 import { apiFetch, ApiError, problemOf } from "../../api/client";
 import { queryKeys, useProjects } from "../../api/queries";
 import { usePatchSchedule, schedulesQueryOptions, type Schedule } from "../../api/pipelines";
-import type { Assignment, AssignmentList, Project } from "../../api/types";
+import type {
+  Assignment,
+  AssignmentList,
+  Project,
+  Repository,
+  RepositoryList,
+} from "../../api/types";
 import { cronInWords } from "../../lib/cronText";
 import { formatClock, formatRemaining } from "../../lib/format";
 import { routes } from "../../lib/routes";
 import { shortId } from "../../api/names";
+import { IssueTriggerRow } from "./IssueTriggerRow";
 import { TriggersDialog } from "./TriggersDialog";
+import { IssueTriggerDialog } from "./IssueTriggerDialog";
+import type { IssueTrigger, IssueTriggerList } from "../../api/useIssueTriggers";
 
 /** One project that pins this workflow, with the schedules its assignment
  * carries. `canManage` is the caller-side read of `assignment.create`
@@ -35,12 +51,22 @@ export interface TriggerGroup {
   project: Project;
   assignment: Assignment;
   schedules: Schedule[];
+  /** The issue-trigger intents this assignment carries (ADR-0056 part 2). */
+  issueTriggers: IssueTrigger[];
+  /** The project's repositories — the issue rows name the watched repo by
+   * `owner/repo`. */
+  repositories: Repository[];
   canManage: boolean;
 }
 
 export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<{ group: TriggerGroup; schedule: Schedule } | null>(null);
+  const [issueDialogOpen, setIssueDialogOpen] = useState(false);
+  const [issueEditing, setIssueEditing] = useState<{
+    group: TriggerGroup;
+    trigger: IssueTrigger;
+  } | null>(null);
 
   const projects = useProjects();
   const projectItems = projects.data?.items ?? [];
@@ -60,6 +86,21 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
       ),
     ),
   });
+  const repoLists = useQueries({
+    queries: projectItems.map((project) => ({
+      queryKey: queryKeys.repos(project.id),
+      queryFn: () => apiFetch<RepositoryList>(`/api/v1/projects/${project.id}/repos`),
+    })),
+  });
+  const issueTriggerLists = useQueries({
+    queries: projectItems.map((project, index) => ({
+      queryKey: ["project", project.id, "issue-triggers"] as const,
+      queryFn: () => apiFetch<IssueTriggerList>(`/api/v1/projects/${project.id}/issue-triggers`),
+      enabled: (assignmentLists[index]?.data?.assignments ?? []).some(
+        (candidate) => candidate.pipeline_id === pipelineId,
+      ),
+    })),
+  });
 
   // Groups: one per project that pins this pipeline, in the caller's own
   // project order. A list that has not arrived yet contributes nothing — the
@@ -74,6 +115,10 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
       project,
       assignment,
       schedules: scheduleLists[index]?.data?.schedules ?? [],
+      issueTriggers: (issueTriggerLists[index]?.data?.issue_triggers ?? []).filter(
+        (candidate) => candidate.assignment_id === assignment.id,
+      ),
+      repositories: repoLists[index]?.data?.items ?? [],
       canManage: project.my_role === "maintainer",
     });
   });
@@ -81,6 +126,8 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
 
   const assignmentsPending = projectItems.some((_, index) => assignmentLists[index]?.isPending);
   const assignmentsError = projectItems.some((_, index) => assignmentLists[index]?.isError);
+  const issueTriggersPending = projectItems.some((_, index) => issueTriggerLists[index]?.isPending);
+  const issueTriggersError = projectItems.some((_, index) => issueTriggerLists[index]?.isError);
 
   return (
     <section data-testid="workflow-triggers" className="space-y-[6px]">
@@ -157,8 +204,74 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
           ) : null}
         </div>
       ))}
-      <div data-testid="trigger-issue-placeholder">
-        <span className="block font-mono text-[11px] text-faint">Issue triggers — coming next</span>
+      <div data-testid="workflow-issue-triggers">
+        <div className="flex items-center justify-between gap-2">
+          <h3
+            id="workflow-issue-triggers-heading"
+            className="font-mono text-[11px] font-semibold uppercase tracking-[.04em] text-muted"
+          >
+            Issue triggers
+          </h3>
+          <Button
+            variant="secondary"
+            compact
+            data-testid="trigger-add-issue"
+            onClick={() => {
+              setIssueDialogOpen(true);
+            }}
+          >
+            Add issue trigger
+          </Button>
+        </div>
+        {issueTriggersPending ? <Spinner label="Loading issue triggers" /> : null}
+        {issueTriggersError ? (
+          <ProblemBanner
+            error={
+              projectItems
+                .map((_, index) => issueTriggerLists[index]?.error)
+                .find((error): error is Error => error !== undefined) ?? null
+            }
+            fallback="The issue triggers could not be read."
+          />
+        ) : null}
+        {!issueTriggersPending &&
+        !issueTriggersError &&
+        groups.every((group) => group.issueTriggers.length === 0) ? (
+          <div data-testid="trigger-issue-placeholder">
+            <span className="block font-mono text-[11px] text-faint">
+              No issue triggers yet — watch a GitHub repository for an issue to fire this workflow.
+            </span>
+          </div>
+        ) : null}
+        {groups.flatMap((group) =>
+          group.issueTriggers.map((trigger) => (
+            <div
+              key={trigger.id}
+              className="space-y-[2px]"
+              data-testid={`trigger-issue-group-${group.assignment.id}`}
+            >
+              <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                {group.project.name}
+              </span>
+              <ul
+                className="divide-y divide-line"
+                data-testid={`trigger-issue-rows-${group.assignment.id}`}
+              >
+                <IssueTriggerRow
+                  group={group}
+                  trigger={trigger}
+                  onEdit={(edited) => {
+                    setIssueEditing({ group, trigger: edited });
+                    setIssueDialogOpen(true);
+                  }}
+                />
+              </ul>
+            </div>
+          )),
+        )}
+        <p className="font-mono text-[10.5px] text-faint" data-testid="trigger-issue-note">
+          Checked every minute · public GitHub repositories only
+        </p>
       </div>
       <TriggersDialog
         open={dialogOpen}
@@ -168,6 +281,15 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
         }}
         assignments={manageable}
         editing={editing}
+      />
+      <IssueTriggerDialog
+        open={issueDialogOpen}
+        onClose={() => {
+          setIssueDialogOpen(false);
+          setIssueEditing(null);
+        }}
+        assignments={manageable}
+        editing={issueEditing}
       />
     </section>
   );
@@ -283,7 +405,7 @@ function nextFireText(schedule: Schedule, now = Date.now()): string {
 
 /** The toggle/edit failure line: a version-stale 409 says the schedule moved
  * under the caller and to re-read; anything else keeps the server's own words. */
-function patchErrorText(error: unknown): string {
+export function patchErrorText(error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
     const detail = error.detail ? ` ${error.detail}` : "";
     return `changed elsewhere, reload —${detail}`;
