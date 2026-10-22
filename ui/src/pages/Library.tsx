@@ -64,6 +64,7 @@ import { routes } from "../lib/routes";
 import { useLayoutPrefs } from "../lib/prefs";
 import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/WorkflowRow";
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
+import { WorkflowTriggers } from "../components/workflows/Triggers";
 import {
   hasLibraryRole,
   LIBRARY_AUTHORING_HINT,
@@ -1108,6 +1109,7 @@ export function PipelinePage() {
         {revision.isPending && selectedRevisionKey ? (
           <Spinner label="Loading the revision document" />
         ) : null}
+        <WorkflowTriggers pipelineId={pipelineId} />
       </div>
     </div>
   );

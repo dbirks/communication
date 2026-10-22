@@ -33,6 +33,7 @@ import {
   wireProjectId,
 } from "../test/fixtures/m4/wire";
 import { validValidation, w8DraftYaml, w8Validation } from "../test/fixtures/m4/w8Draft";
+import type { Schedule } from "../api/pipelines";
 
 const admin: Me = { ...meFixture, is_org_admin: true };
 const pipelinePath = `/api/v1/pipelines/${WIRE_PIPELINE_ID}`;
@@ -43,6 +44,42 @@ const revisionPath = `/api/v1/revisions/${WIRE_REVISION_ID}`;
 const digest = wirePipeline.revisions[0].revision_digest;
 const validatePath = `${draftPath}/validate`;
 const publishPath = `${draftPath}/publish`;
+const SCHEDULE_ID = "01987b22-0003-7000-8000-abcdef012345";
+const SCHEDULE_LAST_RUN_ID = "01987b22-0004-7000-8000-abcdef012345";
+const schedulesPath = `/api/v1/projects/${wireProjectId}/schedules`;
+const schedulePatchPath = `/api/v1/schedules/${SCHEDULE_ID}`;
+const reposPath = `/api/v1/projects/${wireProjectId}/repos`;
+
+/** One repository the pinned revision's `repository` input can name. */
+const appRepository = {
+  id: "01987b22-0002-7000-8000-abcdef012345",
+  project_id: wireProjectId,
+  name: "app",
+  git_url: "https://example.invalid/app.git",
+  default_branch: "main",
+  created_at: "2026-07-30T09:00:00Z",
+};
+
+/** One ADR-0032 schedule as the wire serializes it — the trigger the Triggers
+ * section lists, edits and pauses. */
+function wireSchedule(overrides: Partial<Schedule> = {}): Schedule {
+  return {
+    id: SCHEDULE_ID,
+    project_id: wireProjectId,
+    assignment_id: WIRE_ASSIGNMENT_ID,
+    cron_expr: "0 9 * * *",
+    inputs: { goal: "nightly sweep", repository: "app" },
+    enabled: true,
+    next_run_at: "2099-01-02T09:00:00Z",
+    last_run_at: "2026-06-18T09:00:00Z",
+    last_run_id: SCHEDULE_LAST_RUN_ID,
+    version: 4,
+    created_by: "01987b22-0005-7000-8000-abcdef012345",
+    created_at: "2026-06-01T09:00:00Z",
+    updated_at: "2026-06-18T09:00:00Z",
+    ...overrides,
+  };
+}
 
 /** The second org workflow in the wire list, as a DRAFT ONLY definition. */
 const childPipeline: Pipeline = {
@@ -1165,6 +1202,126 @@ describe("/library/:pipelineId", () => {
       ).toContain("checking");
       expect(screen.queryByTestId(`assign-pick-${maintainerProject2.id}`)).toBeNull();
     });
+  });
+});
+
+describe("/library/:pipelineId — Triggers", () => {
+  const detail = `/library/${WIRE_PIPELINE_ID}`;
+
+  it("lists the workflow's schedules grouped by project, with next fire and last run", async () => {
+    mount(detail, [{ path: schedulesPath, body: { schedules: [wireSchedule()] } }]);
+    const section = await screen.findByTestId("workflow-triggers");
+    expect(section).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-cron-${SCHEDULE_ID}`)).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-cron-words-${SCHEDULE_ID}`)).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-next-${SCHEDULE_ID}`)).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-last-run-${SCHEDULE_ID}`)).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-enabled-${SCHEDULE_ID}`)).toBeTruthy();
+    expect(await within(section).findByTestId(`trigger-state-${SCHEDULE_ID}`)).toBeTruthy();
+  });
+
+  it("adds a schedule through the dialog and posts the preset cron with the assignment's inputs", async () => {
+    const { requests } = mount(detail, [
+      { path: schedulesPath, method: "POST", status: 201, body: wireSchedule() },
+      { path: reposPath, body: { items: [appRepository] } },
+    ]);
+    fireEvent.click(await screen.findByTestId("trigger-add-schedule"));
+    fireEvent.change(await screen.findByTestId("trigger-add-cron"), {
+      target: { value: "0 9 * * *" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
+      target: { value: "nightly sweep" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
+      target: { value: "app" },
+    });
+    const confirm = await screen.findByTestId("trigger-add-confirm");
+    await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(requestsTo(requests, schedulesPath, "POST")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, schedulesPath, "POST")[0].body ?? "{}");
+    expect(body.assignment_id).toBe(WIRE_ASSIGNMENT_ID);
+    expect(body.cron_expr).toBe("0 9 * * *");
+    expect(body.enabled).toBe(true);
+  });
+
+  it("toggles a schedule through PATCH with the row's version", async () => {
+    const { requests } = mount(detail, [
+      { path: schedulesPath, body: { schedules: [wireSchedule()] } },
+      {
+        path: schedulePatchPath,
+        method: "PATCH",
+        status: 200,
+        body: wireSchedule({ enabled: false, version: 5 }),
+      },
+    ]);
+    const toggle = await screen.findByTestId(`trigger-enabled-${SCHEDULE_ID}`);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(requestsTo(requests, schedulePatchPath, "PATCH")).toHaveLength(1));
+    const body = JSON.parse(requestsTo(requests, schedulePatchPath, "PATCH")[0].body ?? "{}");
+    expect(body).toEqual({ version: 4, enabled: false });
+  });
+
+  it("says changed elsewhere, reload when the toggle's PATCH loses its version race", async () => {
+    mount(detail, [
+      { path: schedulesPath, body: { schedules: [wireSchedule()] } },
+      {
+        path: schedulePatchPath,
+        method: "PATCH",
+        status: 409,
+        body: {
+          type: "https://communication.dev/errors/schedule_version_stale",
+          title: "Schedule Version Stale",
+          status: 409,
+          detail:
+            "The schedule changed since you read it; re-read and replay your edit against the current version.",
+        },
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId(`trigger-enabled-${SCHEDULE_ID}`));
+    const alert = await screen.findByTestId(`trigger-error-${SCHEDULE_ID}`);
+    expect(alert.textContent).toContain("changed elsewhere, reload");
+  });
+
+  it("shows the server's invalid_cron 422 inline and keeps the dialog open", async () => {
+    mount(detail, [
+      {
+        path: schedulesPath,
+        method: "POST",
+        status: 422,
+        body: {
+          title: "Validation Failed",
+          status: 422,
+          detail: "cron_expr must be a 5-field cron expression, UTC",
+          field: "cron_expr",
+        },
+      },
+      { path: reposPath, body: { items: [appRepository] } },
+    ]);
+    fireEvent.click(await screen.findByTestId("trigger-add-schedule"));
+    fireEvent.change(await screen.findByTestId("trigger-add-cron"), {
+      target: { value: "@daily" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-goal"), {
+      target: { value: "sweep" },
+    });
+    fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
+      target: { value: "app" },
+    });
+    fireEvent.click(await screen.findByTestId("trigger-add-confirm"));
+    const alert = await screen.findByTestId("trigger-add-error");
+    expect(alert.textContent).toContain("5-field cron");
+    expect(screen.getByTestId("trigger-add-schedule-form")).toBeTruthy();
+  });
+
+  it("shows the honest empty state when no project assignment is visible", async () => {
+    mount(detail, [{ path: "/api/v1/projects", body: { items: [] } }]);
+    const empty = await screen.findByTestId("triggers-empty");
+    expect(empty.textContent).toContain("assign this workflow to a project first");
+    fireEvent.click(await screen.findByTestId("trigger-add-schedule"));
+    const dialog = await screen.findByTestId("trigger-add-schedule-dialog");
+    expect(within(dialog).getByTestId("trigger-add-empty")).toBeTruthy();
+    expect(screen.queryByTestId("trigger-add-cron")).toBeNull();
   });
 });
 
