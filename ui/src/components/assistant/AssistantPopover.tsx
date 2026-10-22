@@ -135,14 +135,59 @@ function failureLine(error: unknown): string {
   return problem.detail || problem.title;
 }
 
+/**
+ * ui-convfix: the popover session's conversation choice, kept in
+ * sessionStorage. The state is plain component state, so a remount (or a
+ * page reload) would reset it and the adopt-newest effect below would
+ * re-adopt the caller's newest conversation — over a `New conversation`
+ * the user already started (the follow-up would land in the wrong
+ * history). The choice — including a pending New — therefore survives a
+ * remount until `New conversation` is pressed again.
+ */
+const SESSION_KEY = "communication.assistant.popover";
+
+interface SessionChoice {
+  conversationId: string | null;
+  awaitingNew: boolean;
+}
+
+function readChoice(): SessionChoice | null {
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as Partial<SessionChoice>;
+    if (parsed.conversationId !== null && typeof parsed.conversationId !== "string") return null;
+    return {
+      conversationId: parsed.conversationId ?? null,
+      awaitingNew: parsed.awaitingNew === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeChoice(choice: SessionChoice): void {
+  try {
+    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(choice));
+  } catch {
+    // storage unavailable (private mode): the choice stays in memory only.
+  }
+}
+
 export default function AssistantPopover() {
   const location = useLocation();
   const navigate = useNavigate();
   const { trustLevel, setTrustLevel } = useAssistantPrefs();
 
+  // ui-convfix: the persisted choice seeds the session state — a fresh
+  // mount resumes the conversation (or the pending New) instead of
+  // re-adopting the caller's newest one.
+  const [choice] = useState(readChoice);
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    choice?.conversationId ?? null,
+  );
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   /**
@@ -151,7 +196,13 @@ export default function AssistantPopover() {
    * the flag. The change chip resets automatically: it reads the
    * conversation's changes, and a fresh conversation has none.
    */
-  const [awaitingNew, setAwaitingNew] = useState(false);
+  const [awaitingNew, setAwaitingNew] = useState(choice?.awaitingNew ?? false);
+
+  // ui-convfix: keep the choice in sessionStorage — a remount (or a page
+  // reload) must not re-adopt the caller's newest conversation over it.
+  useEffect(() => {
+    writeChoice({ conversationId, awaitingNew });
+  }, [conversationId, awaitingNew]);
 
   const conversations = useAssistantConversations(5, open);
   const createConversation = useCreateAssistantConversation();
@@ -252,6 +303,8 @@ export default function AssistantPopover() {
   // adopted while the popover is open; a fresh one is created on first send.
   // A pending New conversation suppresses the adoption (the user chose to
   // leave the old history behind — re-adopting it is the bug this fixes).
+  // A persisted choice (ui-convfix) suppresses it the same way: both a
+  // resumed conversation id and a resumed pending New guard the effect.
   useEffect(() => {
     if (!open || conversationId || awaitingNew) return;
     const latest = conversations.data?.conversations[0];

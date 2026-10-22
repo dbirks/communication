@@ -75,13 +75,45 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
+/** A plain-text turn row (the user message the server echoes first). */
+const WIRE_USER = {
+  id: "msg-user-1",
+  kind: "user",
+  payload: { kind: "user", text: "A", context: null },
+  created_at: "2026-07-07T00:00:01Z",
+};
+/** A follow-up question the model wrote (ui-convfix: option click test). */
+const WIRE_QUESTION = {
+  id: "msg-q-1",
+  kind: "question",
+  payload: {
+    kind: "question",
+    turn_id: "t-1",
+    prompt: "Which change should I apply?",
+    options: [
+      { label: "Update an agent node's prompt", value: "update_prompt" },
+      { label: "Insert a new node", value: "insert_node" },
+    ],
+    allow_free_text: true,
+    answered_by: null,
+  },
+  created_at: "2026-07-07T00:00:02Z",
+};
+
 interface Stub {
   posted: { conversationId: string; body: string }[];
   created: number;
 }
 
-function stubFetch(postResponse: () => Response): Stub {
+/**
+ * `postResponses` is a queue (or single) of turn responses: the n-th POST
+ * gets the n-th response — the question test's first turn ends with a
+ * question card, the option's turn is a plain one.
+ */
+function stubFetch(postResponses: (() => Response) | (() => Response)[]): Stub {
+  const queue = Array.isArray(postResponses) ? postResponses : [postResponses];
   const stub: Stub = { posted: [], created: 0 };
+  let postCount = 0;
   const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -101,7 +133,9 @@ function stubFetch(postResponse: () => Response): Stub {
     const post = /^\/api\/v1\/assistant\/conversations\/([^/]+)\/messages$/.exec(url);
     if (method === "POST" && post) {
       stub.posted.push({ conversationId: post[1], body: String(init?.body) });
-      return postResponse();
+      const responder = queue[Math.min(postCount, queue.length - 1)];
+      postCount += 1;
+      return responder();
     }
     return json({ title: "Not Found", status: 404, detail: `unstubbed ${method} ${url}` }, 404);
   });
@@ -113,13 +147,14 @@ function renderPopover() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <AssistantPopover />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...result, queryClient };
 }
 
 /** Open the popover and wait until the pending approval card is actable. */
@@ -132,6 +167,9 @@ async function openToApproval() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  // ui-convfix: the session choice lives in sessionStorage — a test must
+  // not inherit a previous test's conversation (or pending New).
+  window.sessionStorage.clear();
 });
 
 describe("approval decision post body (ui-confirm)", () => {
@@ -242,5 +280,112 @@ describe("new conversation + recent menu (ui-newconv)", () => {
     expect(screen.getByTestId("assistant-popover")).toBeTruthy();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByTestId("assistant-popover")).toBeNull();
+  });
+});
+
+/**
+ * ui-convfix: the lab's step-f journey (fk224808) lost the ask between
+ * turns — the follow-up landed in a conversation whose history did not
+ * carry the first turn, and a question option click did not reach the
+ * model. The wire truth: every send must post to the SAME conversation
+ * the first send created, across turns, list refetches, expand/shrink
+ * and remounts; an option click posts its LABEL as a plain-text user
+ * message (the server stamps the question's answered_by).
+ */
+describe("conversation continuity across turns (ui-convfix)", () => {
+  /** Open, press New conversation, send `text`, wait for the turn to settle. */
+  async function newConversationSend(stub: Stub, text: string) {
+    const rendered = renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    // The turn settles (busy clears, the user row is on screen) before
+    // the next send — the composer is enabled again.
+    await waitFor(() => expect(screen.getAllByTestId("assistant-msg-user").length).toBe(1));
+    return rendered;
+  }
+
+  it("New conversation → send A → send B: both post to the SAME new id, no re-adopt", async () => {
+    const stub = stubFetch([() => json({ messages: [WIRE_USER], next_cursor: null })]);
+    const { queryClient } = await newConversationSend(stub, "A");
+    // Between turns the conversations list refetches (a fresh page — the
+    // newest row is still the caller's old conversation, not the new one):
+    // the adopt effect must not clobber the active id with it.
+    void queryClient.invalidateQueries({ queryKey: ["assistant", "conversations", 5] });
+    const input = screen.getByTestId("assistant-composer-input");
+    await waitFor(() => expect((input as HTMLInputElement).disabled).toBe(false));
+    fireEvent.change(input, { target: { value: "B" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(stub.posted).toHaveLength(2));
+    expect(stub.created).toBe(1); // exactly one conversation, ever
+    expect(stub.posted[0].conversationId).toBe(NEW_CONV);
+    expect(stub.posted[1].conversationId).toBe(NEW_CONV);
+  });
+
+  it("a question option click posts the LABEL as plain text to the same conversation", async () => {
+    const stub = stubFetch([
+      () => json({ messages: [WIRE_USER, WIRE_QUESTION], next_cursor: null }),
+      () => json({ messages: [WIRE_USER], next_cursor: null }),
+    ]);
+    await newConversationSend(stub, "A");
+    // The turn ended with the model's question card; click an option
+    // (the card renders one button per option — same testid on each).
+    const [option] = await screen.findAllByTestId("assistant-question-option");
+    expect(option.textContent).toBe("Update an agent node's prompt");
+    fireEvent.click(option);
+    await waitFor(() => expect(stub.posted).toHaveLength(2));
+    // The reply travels as a plain-text user message to the SAME
+    // conversation — exactly like typing it (no value, no special body).
+    expect(stub.posted[1].conversationId).toBe(NEW_CONV);
+    const body = JSON.parse(stub.posted[1].body);
+    expect(body.text).toBe("Update an agent node's prompt");
+    expect(body.confirm).toBeUndefined();
+    expect(body.dismiss).toBeUndefined();
+  });
+
+  it("a remount does not re-adopt: the next send posts to the same new id", async () => {
+    const stub = stubFetch([() => json({ messages: [WIRE_USER], next_cursor: null })]);
+    const first = await newConversationSend(stub, "A");
+    first.unmount(); // e.g. the shell remounts (a page reload, a key change)
+    // Fresh mount, fresh query cache — the session choice must come from
+    // sessionStorage, not from the adopt-newest effect.
+    const second = renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    // Give the (refetched) conversations list a chance to land: the adopt
+    // effect must not take the caller's newest conversation back.
+    await waitFor(() =>
+      expect(second.queryClient.getQueryData(["assistant", "conversations", 5])).toBeTruthy(),
+    );
+    fireEvent.change(input, { target: { value: "B" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(stub.posted).toHaveLength(2));
+    expect(stub.created).toBe(1); // no second conversation after the remount
+    expect(stub.posted[1].conversationId).toBe(NEW_CONV);
+  });
+
+  it("a remount keeps a pending New conversation: the first send creates, not adopts", async () => {
+    const stub = stubFetch([() => json({ messages: [WIRE_USER], next_cursor: null })]);
+    const first = renderPopover();
+    act(() => openAssistantPopover());
+    await screen.findByTestId("assistant-composer-input");
+    fireEvent.click(screen.getByTestId("assistant-new-conversation"));
+    first.unmount();
+    const second = renderPopover();
+    act(() => openAssistantPopover());
+    const input = await screen.findByTestId("assistant-composer-input");
+    await waitFor(() =>
+      expect(second.queryClient.getQueryData(["assistant", "conversations", 5])).toBeTruthy(),
+    );
+    fireEvent.change(input, { target: { value: "A" } });
+    fireEvent.click(screen.getByTestId("assistant-send"));
+    await waitFor(() => expect(stub.posted).toHaveLength(1));
+    // The pending New survived the remount: the send created a fresh
+    // conversation instead of adopting the caller's newest (CONV).
+    expect(stub.created).toBe(1);
+    expect(stub.posted[0].conversationId).toBe(NEW_CONV);
   });
 });
