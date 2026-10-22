@@ -22,6 +22,23 @@ const DefaultTimeout = 30 * time.Second
 // modelChatBodyMax.
 const BodyLimit = 4 << 20
 
+// MaxAttempts caps one completion across transient upstream failures: the
+// first attempt plus at most MaxAttempts-1 retries, so a single rate limit, a
+// gateway hiccup or a model reload cannot kill a whole turn (the lab's llm-
+// collective failures: 429 rate-limit, http 502, http 503, reload-404). Mirrors
+// ADR-0023 § 7's retry.maxAttempts.
+const MaxAttempts = 3
+
+// RetryBackoff is the assistant client's egress retry policy constants (the
+// ADR-0023 § 7 `retry {maxAttempts, backoff {baseSeconds, multiplier, maxSeconds,
+// jitter}}` block): the delay before retry n is baseSeconds * multiplier^(n-1),
+// clamped to maxSeconds, ±20% jitter.
+const (
+	RetryBackoffBaseSeconds = 2
+	RetryBackoffMultiplier  = 3
+	RetryBackoffMaxSeconds  = 15
+)
+
 // Config is serve's assistant egress triple (ADR-0034: separate names from the
 // worker's COMMUNICATION_MODEL_CHAT_* so one process's endpoint and cost budget
 // is not silently another's).
@@ -42,6 +59,10 @@ type Config struct {
 	// Logger receives egress outcomes. The key is never logged, and neither is
 	// prompt or answer content.
 	Logger *slog.Logger
+	// Sleep is the backoff wait between completion attempts, injected for
+	// tests; nil means a context-aware time.Sleep. The per-call deadline and
+	// the caller's context are the hard ceiling on retrying.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // Validate applies the worker's COMMUNICATION_MODEL_CHAT_* rules verbatim
@@ -162,4 +183,20 @@ func (b *Broker) timeout() time.Duration {
 		return b.cfg.Timeout
 	}
 	return DefaultTimeout
+}
+
+// sleep waits out a backoff; the context deadline and the caller's context
+// are the ceiling, so a cancelled context never sleeps past its deadline.
+func (b *Broker) sleep(ctx context.Context, d time.Duration) error {
+	if b.cfg.Sleep != nil {
+		return b.cfg.Sleep(ctx, d)
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

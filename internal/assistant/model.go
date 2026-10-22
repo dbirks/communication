@@ -7,7 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math/rand"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,19 +96,56 @@ type modelAnswer struct {
 	Finished  bool
 }
 
-// complete issues ONE POST. The body has already been secret-scanned by the
-// caller; nothing here rewrites it, and the API key never leaves a header.
+// complete issues ONE POST, retried on transient upstream conditions — HTTP
+// 429, a 502/503 gateway or upstream failure, and a 404 whose body says the
+// model is not currently available/loading (the lab's "the model was
+// reloading" turn-killer) — plus connection errors: up to MaxAttempts attempts
+// with exponential backoff and jitter (Retry-After honoured), never past the
+// per-call deadline or the caller's context. The user-facing error after the
+// last attempt is the one a single attempt would have produced, and answers
+// that are not transient (other 4xx, malformed envelopes) are never retried.
 func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *Failure) {
+	ctx, cancel := context.WithTimeout(ctx, b.timeout())
+	defer cancel()
+
+	var (
+		ans        modelAnswer
+		bad        *Failure
+		retryAfter time.Duration
+		retry      bool
+	)
+	for attempt := 1; ; attempt++ {
+		ans, bad, retryAfter, retry = b.completeOnce(ctx, req)
+		if !retry || attempt >= MaxAttempts {
+			return ans, bad
+		}
+		b.logger().Info("assistant completion retrying after a transient upstream failure",
+			slog.String("endpoint", b.EndpointHost()),
+			slog.Int("attempt", attempt+1))
+		if err := b.sleep(ctx, retryAfter); err != nil {
+			// Context cancelled (or its deadline hit) while backing off: the
+			// per-call deadline and the caller's context are the ceiling, so stop
+			// retrying rather than fire into the void.
+			return modelAnswer{}, failure(FailModelTimeout, b.EndpointHost()+" stopped before its next completion attempt", http.StatusGatewayTimeout)
+		}
+	}
+}
+
+// completeOnce is ONE completion attempt: build the request, send it, map the
+// outcome to a *Failure, and report whether the condition was transient and how
+// long to wait before the next attempt. Transient answers come back with a
+// retry verdict; the retry budget lives in complete.
+func (b *Broker) completeOnce(ctx context.Context, req chatRequest) (modelAnswer, *Failure, time.Duration, bool) {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout())
 	defer cancel()
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return modelAnswer{}, failure(FailBadModelResponse, "cannot serialize the request: "+err.Error(), http.StatusInternalServerError)
+		return modelAnswer{}, failure(FailBadModelResponse, "cannot serialize the request: "+err.Error(), http.StatusInternalServerError), 0, false
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, b.cfg.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return modelAnswer{}, failure(FailModelUnreachable, "could not build the request for "+b.EndpointHost(), http.StatusServiceUnavailable)
+		return modelAnswer{}, failure(FailModelUnreachable, "could not build the request for "+b.EndpointHost(), http.StatusServiceUnavailable), 0, false
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -117,24 +158,123 @@ func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *F
 		// err.Error() quotes the URL, and an endpoint that echoes a header into
 		// its error text must not put the key in a browser-visible detail, so
 		// only the host is named.
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return modelAnswer{}, failure(FailModelTimeout, fmt.Sprintf("no completion from %s within %s", b.EndpointHost(), b.timeout().Truncate(time.Millisecond)), http.StatusGatewayTimeout)
+		if ctx.Err() != nil {
+			// Cancelled (shutdown / cancel-requested) or its deadline hit: not a
+			// transient condition, so never retry.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				return modelAnswer{}, failure(FailModelTimeout, fmt.Sprintf("no completion from %s within %s", b.EndpointHost(), b.timeout().Truncate(time.Millisecond)), http.StatusGatewayTimeout), 0, false
+			}
+			return modelAnswer{}, failure(FailModelUnreachable, "request to "+b.EndpointHost()+" failed", http.StatusServiceUnavailable), 0, false
 		}
-		return modelAnswer{}, failure(FailModelUnreachable, "request to "+b.EndpointHost()+" failed", http.StatusServiceUnavailable)
+		// Transport-level failure (connection refused/reset mid-flight, TLS
+		// reset): transient from the turn's point of view, back off and retry.
+		return modelAnswer{}, failure(FailModelUnreachable, "request to "+b.EndpointHost()+" failed", http.StatusServiceUnavailable), retryBackoff(1), true
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, BodyLimit+1))
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return modelAnswer{}, failure(FailModelTimeout, b.EndpointHost()+" stopped mid-response", http.StatusGatewayTimeout)
+		if ctx.Err() != nil {
+			// Cancelled/deadline mid-response: the per-call deadline or the
+			// caller's context ended it, not the endpoint.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				return modelAnswer{}, failure(FailModelTimeout, b.EndpointHost()+" stopped mid-response", http.StatusGatewayTimeout), 0, false
+			}
+			return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable), 0, false
 		}
-		return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable)
+		// The connection dropped mid-response: transient, back off and retry.
+		return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable), retryBackoff(1), true
 	}
 	if len(raw) > BodyLimit {
-		return modelAnswer{}, failure(FailBadModelResponse, fmt.Sprintf("%s sent a response over %d bytes", b.EndpointHost(), BodyLimit), http.StatusBadGateway)
+		return modelAnswer{}, failure(FailBadModelResponse, fmt.Sprintf("%s sent a response over %d bytes", b.EndpointHost(), BodyLimit), http.StatusBadGateway), 0, false
 	}
-	return parseCompletion(resp.StatusCode, raw, b.EndpointHost())
+	retryAfter, retry := transientRetry(resp.StatusCode, raw, resp.Header.Get("Retry-After"))
+	if retry {
+		_, bad := parseCompletion(resp.StatusCode, raw, b.EndpointHost())
+		return modelAnswer{}, bad, retryAfter, true
+	}
+	ans, bad := parseCompletion(resp.StatusCode, raw, b.EndpointHost())
+	return ans, bad, 0, false
+}
+
+// transientRetry reports whether a completion answered with a transient
+// upstream condition should be attempted again, and how long to wait before the
+// next attempt. Retriable: 429 (rate limited), 502/503 (gateway/upstream
+// failure), and a 404 whose body says the model is not currently available or
+// loading (the "model was reloading" turn-killer); transport-level failures
+// are retried by the caller. Any other 4xx is a rejected request, not a
+// transient condition, and never retried.
+func transientRetry(status int, raw []byte, retryAfter string) (time.Duration, bool) {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
+		return retryAfterOrBackoff(retryAfter, 1), true
+	}
+	if status == http.StatusNotFound && modelUnavailable(string(raw)) {
+		return retryAfterOrBackoff(retryAfter, 1), true
+	}
+	return 0, false
+}
+
+// retryAfterOrBackoff honours the endpoint's Retry-After when it offered one and
+// otherwise computes the exponential backoff for the next retry.
+func retryAfterOrBackoff(retryAfter string, attempt int) time.Duration {
+	if d, ok := retryAfterDelay(retryAfter); ok && d > 0 {
+		return d
+	}
+	return retryBackoff(attempt)
+}
+
+// retryBackoff is the delay before retry `attempt` (the 1-based number of the
+// failed attempt): baseSeconds * multiplier^(attempt-1), clamped to maxSeconds,
+// ±20% jitter — the ADR-0023 § 7 retry backoff formula.
+func retryBackoff(attempt int) time.Duration {
+	d := time.Duration(RetryBackoffBaseSeconds)
+	for i := 1; i < attempt; i++ {
+		d *= time.Duration(RetryBackoffMultiplier)
+	}
+	if d > time.Duration(RetryBackoffMaxSeconds)*time.Second {
+		d = time.Duration(RetryBackoffMaxSeconds) * time.Second
+	}
+	return d * time.Duration(0.8+rand.Float64()*0.4)
+}
+
+// retryAfterDelay reads a Retry-After header: delay-seconds or an HTTP-date.
+func retryAfterDelay(header string) (time.Duration, bool) {
+	v := strings.TrimSpace(header)
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d, true
+		}
+	}
+	return 0, false
+}
+
+// modelUnavailable reports whether a 404 completion refusal means the model is
+// not currently available (e.g. reloading) — retryable — rather than a bad
+// request. The refusal travels in the gateway-style error envelope.
+func modelUnavailable(raw string) bool {
+	var env struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil || env.Error == nil {
+		return false
+	}
+	joined := strings.ToLower(env.Error.Message + " " + env.Error.Type)
+	for _, marker := range []string{"loading", "reload", "unavailable", "not available", "not currently available"} {
+		if strings.Contains(joined, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCompletion(status int, raw []byte, host string) (modelAnswer, *Failure) {
