@@ -40,7 +40,9 @@ Rule: real data only. Where the backend cannot supply something, render an hones
 
 ## ADR register
 
-Updated 2026-10-21 (post-`6222d01`, plus the in-flight working tree). "Shipped" cites the commit that landed it.
+Updated 2026-10-21 (through `d2708cb` — the final lab runs final3 / final3-m5 / jr015620,
+HEAD `d2708cb` of the final acceptance run; all work committed, no pending items).
+"Shipped" cites the commit that landed it.
 
 | ADR | Topic | Status | Motivated by |
 |---|---|---|---|
@@ -49,7 +51,7 @@ Updated 2026-10-21 (post-`6222d01`, plus the in-flight working tree). "Shipped" 
 | ADR-0047 | Cross-project reads: `GET /runs` (top-level steps from the pinned revision, one query) / `approvals` / `conversations`, scoped per membership | **Accepted — shipped** (`80033b6`) | [home-board §3 (U1)](gaps/home-board.md) |
 | ADR-0048 | Org-level event stream `GET /api/v1/events`, `Last-Event-ID` resume; client `useOrgEvents` | **Accepted — shipped** (`80033b6`) | [shell §3](gaps/shell.md), [home-board §4.3](gaps/home-board.md) |
 | ADR-0049 | Node-template (Step) registry + versioning — immutable revisions, `slug@semver` refs fail-closed at compile, usage refs at publish, "edit for all" → new revision + adopt drafts — and workflow folders (`pipelines.folder`) | **Accepted — shipped** (`3349840` part 1; `80033b6` + `6222d01` part 2) | [library §4.2](gaps/library.md), [library §3](gaps/library.md) |
-| ADR-0050 | Assistant v2 — persisted conversations/messages/changes + undo, multi-turn questions, trust-level gating in the tool loop; amends ADR-0034 | **Accepted (design only)** — storage + API + popover shipped (`c3cf02f` ADR, `6222d01`, migration 00010); tool-loop gating **in progress** (be-as-loop) | [assistant §4](gaps/assistant.md) |
+| ADR-0050 | Assistant v2 — persisted conversations/messages/changes + undo, multi-turn questions, trust-level gating in the tool loop; amends ADR-0034 | **Accepted — shipped** — storage + API + popover (`c3cf02f` ADR, `6222d01`, migration 00010); tool loop with trust gating + undo (`618420f`), confirm-id-only approval cards (`c257026`), bounded runner caps (`7c40979`), assistant step f end to end: New conversation / navigation index / validated gated edits / runner cap 12 (`2c999c9`), runner prompt acts on requests (`bd2b4c6`), popover conversation persistence (`7bf54bb`), turn-bounded journey waits (`aaa50e0`), transient-error retries (`5c1a6f1`), honest 503 / thread row ids / transcript overflow (`d2708cb`) | [assistant §4](gaps/assistant.md) |
 | ADR-0051 | Launcher registry + observed-capability evidence: `GET /api/v1/launchers`; `result` ONLY from recorded probe evidence, else `not_tested` | **Accepted — shipped** (`80033b6`, `acp-observed.json` transcribed from recorded probes only) | [profiles §4.2](gaps/profiles.md), [workbench §4.2](gaps/workbench.md) |
 | ADR-0052 | Inbox summarization pass — `POST /approvals/{id}/summary` → `{summary, actions:[{label,intent,risk}]}` (+ free-text interpretation); model writes, human decides | **Accepted — shipped** (`6222d01`) | [inbox-ops §3 (W1/W2)](gaps/inbox-ops.md), [home-board §3](gaps/home-board.md) |
 | ADR-0053 | Run from a thread branch — `RunCreate.source`, the thread branch as pinned run base, `handoff_summary` input, run↔thread link | **Accepted — shipped** (`6222d01`, migration 00011) | [threads §3 (W4b)](gaps/threads.md) |
@@ -91,7 +93,7 @@ One line each; file:line quoted as the reports quote it.
 9. **Pi card (5b) vs launcher registry** — no `pi` entry (`launchers.go:77-110`); `docs/compatibility/ACP.md:25` "no ACP adapter for `pi` on this host"; POST of an unregistered id is accepted today and fails only at launch. — **Resolved: ADR-0051** — `GET /launchers` always carries the five ids; unregistered launchers render "no launcher registered" and the New-profile dialog disables the card with that reason.
 10. **`from issue #512` + `from issues`/`scheduled` chips vs ADR-0031** — `openapi.yaml:545`: the issues route "is not a trigger"; `runs` has no trigger-source column. — **Resolved: chips disabled with the reason** — "not available yet" (`Board.tsx:204,235,243`); no trigger-source data is faked.
 11. **Model-written summary / buttons vs ADR-0034** — the broker is "one bounded turn … read-only … nothing is stored" (`openapi.yaml:3804-3820`); the gate `summary` is static author text (`advancer.go:823`). — **Resolved: ADR-0052** — model summaries only via the summarization pass; the gate's own static text is labelled as its own, never "written by the model".
-12. **Assistant persistence vs ADR-0034:51** — "v1 stores nothing" vs spec 08:40 "Persist assistant transcript and action trace"; the confirmation gate and change log must be server-side. Also ADR-0034 is still Status: Proposed (`ADR-0034-….md:4`) although implemented. — **Resolved (design): ADR-0050** — persistence + change log + undo shipped server-side (`6222d01`); tool-loop gating in progress. *Remaining:* ADR-0034's status line was not updated in this wave.
+12. **Assistant persistence vs ADR-0034:51** — "v1 stores nothing" vs spec 08:40 "Persist assistant transcript and action trace"; the confirmation gate and change log must be server-side. Also ADR-0034 is still Status: Proposed (`ADR-0034-….md:4`) although implemented. — **Resolved (design): ADR-0050** — persistence + change log + undo shipped server-side (`6222d01`); tool-loop gating shipped (`618420f`, e2e-proven by `shell-p789` + journey f). *Remaining:* ADR-0034's status line was not updated in this wave.
 13. **Decider note (3f)** — the reply "goes to implement as a note on the plan" vs `comments` "never enters the journal" (`openapi.yaml:3723`). — **Unresolved — default kept: the reply stays a note** (rendered as such, never claimed to enter the journal). — [inbox-ops §4.3](gaps/inbox-ops.md)
 14. **PERMISSION cards vs controller-only decide** — `openapi.yaml:1428` "Controller only (409 …)". — **Resolved: non-controllers get "Open to decide"**, never buttons that would 409 (`6222d01`). — [inbox-ops §4.4](gaps/inbox-ops.md)
 15. **`inboxItem.kind: 'question'` has no wire** — approval `kind` is only `pipeline_gate | promotion_deferred` (`openapi.yaml:8030`). — **Unresolved — default kept: no fabricated question items**; Inbox renders only `approval|permission|failed`.
@@ -104,13 +106,29 @@ No conflict found (per the reports): dropping the top app bar is permitted (spec
 
 ## Status log
 
-Updated 2026-10-21. "Shipped" cites the commit that landed it (`6222d01` = app-shell phases 1–6 +
-backend for 4–8; `80033b6` = backend batch: prefs, cross-project reads, org stream, launchers, step
-registry p1; `3349840`/`c3cf02f`/`5198c90`/`0c42aec`/`126af18`/`cf5af0e`/`8db926c` = ADRs + focused UI).
-In progress at time of writing: assistant v2 tool loop with trust gating and undo (be-as-loop, uncommitted
-in the working tree) and the acceptance suites.
+Updated 2026-10-21 (through `d2708cb` — the final lab runs final3 / final3-m5 / jr015620,
+HEAD `d2708cb` of the final acceptance run; all work committed, no pending items).
+"Shipped" cites the commit that landed it (`6222d01` = app-shell phases 1–6 + backend for
+4–8; `80033b6` = backend batch: prefs, cross-project reads, org stream, launchers, step
+registry p1; `3349840`/`c3cf02f`/`5198c90`/`0c42aec`/`126af18`/`cf5af0e`/`8db926c` =
+ADRs + focused UI). Commits since `c3d6a23` added: phases 4–8 wiring (`5c4f6c9`), M1/M2
+journeys on the shell (`a5f82d2`, `3443432`, `c6d6725`), the assistant v2 tool loop
+(`618420f`), assistant transparency + spec re-pointing (`f74af5e`, `e4f0556`), regression
+suites on the shell (`4f3543e`), a11y fixes (`1896916`, `e99c339`), the ops link in settings
+(`ab1c057`), the C6 profile dialog (`682428c`, `4c72e87`), the acceptance suites (`8a25de6`),
+board count contrast (`f38c5df`), the assistant timeout (`5479538`), change invalidation
+(`0f4c880`), confirm-id-only approval cards (`c257026`), journey hardening (`b9a78dc`),
+the draft-edit tool contract (`ae76f2d`), scrollable-region focus (`f916f3a`), the runner
+caps (`7c40979`), the assistant step f end to end (`2c999c9`), the runner prompt act on
+requests (`bd2b4c6`), the popover conversation persistence (`7bf54bb`), the turn-bounded
+journey waits (`aaa50e0`), the transient-error retries (`5c1a6f1`) and the honest 503 /
+thread row ids / transcript overflow fix (`d2708cb`). Acceptance record: `acceptance.md`
+(evidence filled from the final runs final3 / final3-m5 / jr015620; all suites green).
 
 ### Phase 1 — shipped / stubbed / next
+
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
 
 **Shipped** (`80033b6`, `6222d01`): Sidebar v3 (`components/Sidebar.tsx`) — cross-project nav (Home,
 Inbox, Board, Threads), LIBRARY (Workflows, Steps, Agent profiles), user footer, phone off-canvas
@@ -119,7 +137,11 @@ ADR-0048 — no polling); PROJECTS tree default (all projects, repos nested) wit
 per-user setting, SVG chevrons, persisted expand state; canonical routes + every old-route redirect
 (`lib/routes.ts`; `/p/:projectId/:repo` → `/p/:projectId`, `/agents` → `/profiles`); Settings →
 Layout and Assistant on `/settings/:tab` (ADR-0046); backends: `/me/preferences` (migration 00008),
-cross-project reads (ADR-0047), org stream (ADR-0048).
+cross-project reads (ADR-0047), org stream (ADR-0048). Fixes since: `4c72e87` — the sidebar
+applies the persisted expand state once preferences load (it froze its initial state, with a
+render loop when the query had no data). E2E-proven: `shell-p1` 7/7 + `shell-p789-live-flag`
+(flag rose 2→3 with zero cross-project GETs during the idle window, 804 SSE frames on
+`/api/v1/events`).
 
 **Stubbed / honest empty states**:
 - Sidebar flag slots are driven by the same cross-project reads as Home/Inbox — never a `! 0`
@@ -135,10 +157,16 @@ work per the Decisions section).
 
 ### Phase 2 — shipped / stubbed / next
 
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
+
 **Shipped** (`6222d01`): Home briefing — counts, decision callouts (confirm before approve),
 running-now with per-step progress (ADR-0047 `steps`), recent threads; Board — five state columns,
 group-by, filters, 440px run drawer (`components/board/*`); `mine` via `triggered_by`; Start-run
 picker → `POST /projects/{p}/runs`; Approve / Retry-from-step / Read plan / Fix the workflow.
+Since: `f38c5df` — column count badges keep full-opacity text on solid status fills (the
+failed red composited to 4.21:1). E2E-proven: `shell-p2` 5/5 + `shell-p789-board-mine` (the
+`mine` filter now equals `GET /api/v1/runs?mine=true`; `from issues`/`scheduled` disabled).
 
 **Stubbed / honest empty states**:
 - `from issues` / `scheduled` filter chips are **disabled with the reason** — `runs` has no
@@ -154,6 +182,9 @@ picker → `POST /projects/{p}/runs`; Approve / Retry-from-step / Read plan / Fi
 on board rows beyond the approval page.
 
 ### Phase 3 — shipped / stubbed / next
+
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
 
 **Shipped** (`0c42aec`, `126af18`, `6222d01`): workbench tab set (Graph/Timeline/Artifacts/
 Diagnostics) with Artifacts (client-side count, labelled "referenced"); header meta from `RunDetail`
@@ -177,6 +208,9 @@ node inputs for the PROMPT card.
 
 ### Phase 4 — shipped / stubbed / next
 
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
+
 **Shipped** (`3349840`, `5198c90`, `80033b6`, `6222d01`): Workflows index — revision chip
 (`✓ PUBLISHED rN`), step chain, assignment fan-out, cron/manual trigger, open draft, Duplicate,
 Import YAML; **folders** via `pipelines.folder` (ADR-0049) with the `showWorkflowFolders` pref;
@@ -186,7 +220,9 @@ Approval, Loop, Workflow) then MORE, **Publish kinds hidden** from picker and pa
 sandbox chips, + New profile…, "Also save as a reusable step" + `Save as step` — 4b, unchecked
 default, `StudioInspector.tsx:383`); **Steps page on the real step registry** (ADR-0049) —
 `USED IN N WORKFLOWS` (`StepDetailPanel.tsx:146`), edit for all → new immutable version + adopt
-drafts (never rewrites a published revision), duplicate.
+drafts (never rewrites a published revision), duplicate. Since: `8a25de6` — the save-as-reusable
+step path is e2e-proven (`shell-p789-save-step`: the armed checkbox POSTs the node as a
+node-template revision that appears on `/steps`).
 
 **Stubbed / honest empty states**:
 - Single `✓ PUBLISHED rN` chip — **no BETA/STABLE channels** (M6 vocabulary the wire doesn't carry;
@@ -201,11 +237,18 @@ BETA/STABLE if M6 lands.
 
 ### Phase 5 — shipped / stubbed / next
 
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
+
 **Shipped** (`80033b6`, `6222d01`): profiles list/detail (`/profiles`, `/agents` redirect);
 sandbox/readiness chips **evidence-backed** from `GET /api/v1/launchers` (ADR-0051 — `result` only
 from recorded probe evidence); New profile dialog with the **five agent cards** (claude, codex, pi,
 antigravity + "Other ACP agent" catch-all), POSTs `/agent-profiles` itself, APM triple on create;
-account section via `allowed_agent_profile_ids`; APM pin with digest display.
+account section via `allowed_agent_profile_ids`; APM pin with digest display. Since:
+`682428c` — the dialog follows contract C6 (POST 201 → `onCreated(profile)` → the caller
+closes it; errors keep it open with the API's message) and `4c72e87` — it really POSTs before
+confirming. E2E-proven: `shell-p5` 4/4 (list/detail/dialog at both widths, create through the
+dialog).
 
 **Stubbed / honest empty states**:
 - **pi / antigravity cards: "no launcher registered" — disabled with that reason**, never green
@@ -225,6 +268,9 @@ account section via `allowed_agent_profile_ids`; APM pin with digest display.
 versioning (conflict 7, ADR still to write); profile-usage endpoint.
 
 ### Phase 6 — shipped / stubbed / next
+
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
 
 **Shipped** (`6222d01`, ADR-0053): Threads list (cross-project, `/threads`) + thread page with the
 WORKSPACE / ARTIFACTS / NEXT rail and header meta (repo + age, branch label display-only);
@@ -248,6 +294,9 @@ pinned run base, `handoff_summary` input, run↔thread link (ADR-0053, migration
 
 ### Phase 7 — shipped / stubbed / next
 
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
+
 **Shipped** (`c3cf02f`, `6222d01`): ADR-0050 (Accepted, design only at commit); **Assistant v2
 storage + API** — conversations/messages/changes, per-change undo (inverse op for draft edits),
 undo-all, `trust_level` read from prefs (migration 00010; `openapi.yaml:4652-4947`); assistant route
@@ -256,8 +305,23 @@ allowlist on the canonical routes; **UI** — the popover (⌘K, `esc`, context 
 ask_risky / no_ask — "the pill never claims to gate anything itself"), mic via Web Speech
 (`MicButton`/`ListeningBar`, `lib/speech.ts`), `ApprovalRequestCard`.
 
-**In progress (uncommitted in the working tree at time of writing):** assistant v2 tool loop with
-trust gating and undo (be-as-loop); the acceptance suites.
+**Shipped since (`618420f`, `c257026`, `0f4c880`, `5479538`, `ae76f2d`, `7c40979`,
+`2c999c9`, `bd2b4c6`, `7bf54bb`, `aaa50e0`, `5c1a6f1`, `d2708cb`):**
+assistant v2 tool loop with trust gating and undo — reads, navigation, draft edits through
+the ADR-0044 proposal ops (opening a draft from the latest revision when none is open),
+risky actions executed only after confirmation per the caller's trust level from
+`/me/preferences`; draft-edit undoer through the version-checked draft PUT; org-scoped
+change rows store a NULL project. Approval cards post only the request id (Retry →
+`{confirm}`, Not now → `{dismiss}`) so the confirm path is reachable. Every change-recording
+or undoing mutation invalidates the conversation's changes and the drafts it touched (chip +
+open Studio drafts update without a remount). `COMMUNICATION_ASSISTANT_TIMEOUT` makes the
+per-completion deadline configurable (default 30s). The draft-edit tool contract:
+`draft.apply` enumerates the node kinds it may add (publish kinds excluded per ADR-0045), a
+refused proposal says what was wrong + the valid alternatives, `draft.get` returns a compact
+structural view. The v2 runner has its own bounded caps (8 completions, 16 tool calls;
+`/assistant/ask` keeps 4/8) so a draft edit with one refused-proposal retry fits. E2E-proven:
+`shell-p789` trust journey under ask_all (draft unchanged until Retry, chip updates in place,
+undo restores) and journey f (change via ⌘K, undo all) — 6/6 in `jr015620`.
 
 **Stubbed / honest empty states**:
 - Mic button absent when `webkitSpeechRecognition` is missing (`lib/speech.ts`).
@@ -265,15 +329,21 @@ trust gating and undo (be-as-loop); the acceptance suites.
 - The trust pill reports the choice; gating is server-side ("the pill never claims to gate anything
   itself", `TrustPill.tsx:10-11`).
 
-**Next:** land the tool-loop trust gating + undo (be-as-loop); `assistant.*` journal events.
+**Next:** `assistant.*` journal events.
 
 ### Phase 8 — shipped / stubbed / next
+
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
 
 **Shipped** (`6222d01`, ADR-0052): Inbox cards (`InboxCard`, risk styling, note field on decision
 rows — `comments` already on the wire); approval detail page (`Approval.tsx`) — plan.md inline,
 **model summaries via ADR-0052** (`POST /approvals/{id}/summary` → `summary` + action chips) and
 free-text **interpret** (`/interpret`); inline permission decide + named-node retry
-(`node_instance_keys`).
+(`node_instance_keys`). Since: `c257026` — assistant approval cards post only the request id
+so the ADR-0050 confirm path is reachable from the UI. E2E-proven: `shell-p789-approval-detail`
+(desktop: strip, model summary card, plan, files note, free-text interpret with a confirm the
+journey cancelled — the gate stayed pending).
 
 **Stubbed / honest empty states**:
 - **FILES IT WILL TOUCH: "Not available yet — the API carries no diff or file manifest for this
@@ -289,10 +359,17 @@ text below."** (`Approval.tsx:231,251`) — the static gate `summary` is labelle
 
 ### Phase 9 — shipped / stubbed / next
 
+**Final status (through `d2708cb` — final runs final3 / final3-m5 / jr015620): shipped as recorded
+below; stubs unchanged unless shipped.**
+
 **Shipped** (`80033b6`, `6222d01`): Operations — health line, merged workers table (existing
 endpoints), **interrupted callout** from `GET /api/v1/runs?status=interrupted` (real attempts +
 stalled top-level steps), **agent × capability matrix from recorded probes only** (ADR-0051,
 `CapabilityMatrix.tsx`); Settings → Layout / Assistant tabs on `/me/preferences` (ADR-0046).
+Since: `ab1c057` — a Settings footer Operations entry links to `/ops`. E2E-proven:
+`shell-p789-ops` (health line, workers == `GET /api/v1/workers`, capability cells ==
+`GET /api/v1/launchers`) and `shell-p789-settings` (three trust levels, stored one checked,
+footer link).
 
 **Stubbed / honest empty states**:
 - Capability matrix cells default to **"not tested — no recorded compatibility probe"** — never
