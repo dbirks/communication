@@ -211,18 +211,7 @@ func Stage(ctx context.Context, req StageRequest) (*StagedContext, error) {
 	// either, and its HOME is the only HOME in play (probe A1/A2).
 	cmd := exec.CommandContext(cctx, bin, args...) //nolint:gosec // argv only
 	cmd.Dir = req.Checkout
-	cmd.Env = []string{
-		"PATH=" + envOr("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
-		"HOME=" + req.Home,
-		"XDG_CONFIG_HOME=" + filepath.Join(req.Home, ".config"),
-		"XDG_CACHE_HOME=" + filepath.Join(req.Home, ".cache"),
-		"XDG_DATA_HOME=" + filepath.Join(req.Home, ".local", "share"),
-		"XDG_STATE_HOME=" + filepath.Join(req.Home, ".local", "state"),
-		// No GIT_AUTHOR_*: apm does not commit, and a package that shells out to
-		// git must fail loudly rather than attribute to a human.
-		"GIT_TERMINAL_PROMPT=0",
-		"TERM=xterm-256color",
-	}
+	cmd.Env = apmChildEnv(req.Home)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		return nil, fmt.Errorf("apm %s in %s: %w (%s)",
@@ -392,6 +381,23 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// apmChildEnv builds the child environment apm runs under: a scratch HOME, no
+// worker environment in play, no git attribution.
+func apmChildEnv(home string) []string {
+	return []string{
+		"PATH=" + envOr("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
+		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		// No GIT_AUTHOR_*: apm does not commit, and a package that shells out to
+		// git must fail loudly rather than attribute to a human.
+		"GIT_TERMINAL_PROMPT=0",
+		"TERM=xterm-256color",
+	}
 }
 
 func bounded(s string, n int) string {

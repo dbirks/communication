@@ -176,10 +176,13 @@ type CaptureRequest struct {
 // probe A5's finding — can be tested without an apm binary.
 type APMTyper interface {
 	Stage(context.Context, apm.StageRequest) (*apm.StagedContext, error)
+	// Resolve locks a package ref and reports its lock digest + contents
+	// summary (ADR-0054 Option B, part 1) without deploying anything.
+	Resolve(context.Context, apm.ResolveRequest) (*apm.ResolveResult, error)
 }
 
-// APMStager wraps apm.Stage with the binary pin, so a refusal is produced in one
-// place with one reason.
+// APMStager wraps apm.Stage and apm.Resolve with the binary pin, so every
+// packaged-context operation is produced in one place with one reason.
 type APMStager struct {
 	// Binary is the apm executable — vendored at 0.33.0 in the worker image
 	// (ADR-0008 D1). Its absence while a profile pins a package is a launch
@@ -201,6 +204,18 @@ func (a *APMStager) Stage(ctx context.Context, req apm.StageRequest) (*apm.Stage
 		req.Timeout = a.Timeout
 	}
 	return apm.Stage(ctx, req)
+}
+
+// Resolve locks a package ref and reports the lock digest it resolved to plus
+// the names-only contents summary. The binary pin and timeout mirror Stage's.
+func (a *APMStager) Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.ResolveResult, error) {
+	if a.Binary != "" {
+		req.APMPath = a.Binary
+	}
+	if req.Timeout == 0 && a.Timeout > 0 {
+		req.Timeout = a.Timeout
+	}
+	return apm.Resolve(ctx, req)
 }
 
 // quarantineReason maps a failure kind onto the only quarantine reasons the event

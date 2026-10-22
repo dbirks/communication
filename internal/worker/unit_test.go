@@ -240,6 +240,14 @@ func (a *apmStub) Stage(context.Context, apm.StageRequest) (*apm.StagedContext, 
 	return &apm.StagedContext{Target: "claude", LockDigest: "sha256:stub", GeneratedPaths: []string{".claude/skills"}}, nil
 }
 
+func (a *apmStub) Resolve(context.Context, apm.ResolveRequest) (*apm.ResolveResult, error) {
+	a.calls++
+	if a.err != nil {
+		return nil, a.err
+	}
+	return &apm.ResolveResult{LockDigest: "sha256:stub", Contents: apm.Contents{Skills: []string{"stub"}}}, nil
+}
+
 func TestUnitPrepareRecordsBothVolumes(t *testing.T) {
 	fx := newUnitFixture(t)
 	_, err := fx.svc.Prepare(context.Background(), fx.request())
@@ -507,9 +515,10 @@ func TestUnitAPMBinaryMissingRefuses(t *testing.T) {
 	}
 }
 
-// fakeAPM satisfies apm.Stage's seam inside the unit service.
+// fakeAPM satisfies apm.Stage's and apm.Resolve's seam inside the unit service.
 type fakeAPM interface {
 	Stage(context.Context, apm.StageRequest) (*apm.StagedContext, error)
+	Resolve(context.Context, apm.ResolveRequest) (*apm.ResolveResult, error)
 }
 
 func TestUnitAPMDigestMismatchRefuses(t *testing.T) {
