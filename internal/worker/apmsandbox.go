@@ -133,7 +133,7 @@ func (s *APMSandbox) launchResolve(ctx context.Context, req apm.ResolveRequest, 
 	}
 	// The lab's real-image resolve died with `WARN apm lock resolve failed … error: "apm: resolve failed: env: '/usr/local/bin/apm': Permission denied"`:
 	// the worker image ships the pinned apm as a symlink (/usr/local/bin/apm ->
-	// /opt/apm/apm) and apm 0.33 is a PyInstaller onedir bundle (apm + _internal/),
+	// /opt/apm/apm) and apm 0.34 is a PyInstaller onedir bundle (apm + _internal/),
 	// and Landlock checks exec/read on the RESOLVED target, so a grant on the
 	// symlink's own directory (/usr/local/bin) never reached /opt/apm/apm nor its
 	// libraries, and the exec came back Permission denied. Resolve before the

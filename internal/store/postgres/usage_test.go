@@ -73,6 +73,7 @@ func usageSetup(t *testing.T) (ctx context.Context, pool *pgxpool.Pool, orgID st
 		pool.Exec(bg, `DELETE FROM pipeline_drafts WHERE pipeline_id IN
 			(SELECT id FROM pipelines WHERE organization_id = $1::uuid)`, orgID)
 		pool.Exec(bg, `DELETE FROM pipelines WHERE organization_id = $1::uuid`, orgID)
+		pool.Exec(bg, `DELETE FROM agent_profile_versions WHERE organization_id = $1::uuid`, orgID)
 		pool.Exec(bg, `DELETE FROM agent_profiles WHERE organization_id = $1::uuid`, orgID)
 		pool.Exec(bg, `DELETE FROM node_templates WHERE organization_id = $1::uuid`, orgID)
 		pool.Exec(bg, `DELETE FROM users WHERE id = $1::uuid`, userID)

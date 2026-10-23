@@ -1,6 +1,9 @@
 package worker
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // GitHub push / draft-PR delivery (ADR-0045) on top of the ADR-0040 delivery
 // rule: a secret value must reach the agent process through an environment, never
@@ -62,6 +65,41 @@ func GitPushEnv(delivered []string) []string {
 		"GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo password=$GH_TOKEN; }; f",
 	)
 	return out
+}
+
+// GitPushToolEnv returns the GitHub CLI (gh) launch-environment entries that a
+// sandboxed agent turn holding a GitHub token needs in order to open a draft PR
+// (ADR-0045, follow-up to its 2026-10-20 decision: the product owner decided
+// 2026-10-22 to make `gh` part of the worker image so agents can open draft PRs;
+// the token machinery itself is ADR-0045's).
+//
+// The entries are the writable config dir under the agent's HOME — the sandbox
+// HOME is the one tree the agent-home grant covers — plus the flags that keep the
+// CLI out of interactive prompts and update notifications:
+//
+//	GH_CONFIG_DIR=<home>/.config/gh   gh writes its config/state here
+//	GH_PROMPT_DISABLED=1               no interactive `gh auth login` prompt path
+//	GH_NO_UPDATE_NOTIFIER=1           no update check / notifier noise
+//
+// They travel through the same exec-environment channel GitPushEnv's token wiring
+// uses (execEnv into the launch env; the sandboxed path folds them into the
+// launcher's process environment that nono passes to the exec'd `env` binary), so
+// a config dir or a flag can never reach the launch argv the audit journal
+// records verbatim (ADR-0040).
+//
+// The caller folds this in only when GitPushEnv produced a token block for the
+// delivered set, so an attempt whose profile was never granted a GitHub token
+// gets no gh configuration at all — the CLI is only ever configured by the same
+// authorization that authorized the token.
+func GitPushToolEnv(home string) []string {
+	if strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return []string{
+		"GH_CONFIG_DIR=" + filepath.Join(home, ".config", "gh"),
+		"GH_PROMPT_DISABLED=1",
+		"GH_NO_UPDATE_NOTIFIER=1",
+	}
 }
 
 // execEnv folds the launcher's own process environment and the additions that

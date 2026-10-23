@@ -43,6 +43,12 @@ type cnvFakeStore struct {
 
 	profileCreated []AgentProfileCreateInput
 	profilePatched []cnvProfilePatchCall
+	// restoredVersions records the restore writes the handler made (ADR-0058:
+	// restore version n is a new write whose snapshot equals version n's).
+	restoredVersions []cnvVersionRestoreCall
+	// versionConflict makes the fake answer a restore the way the real store
+	// answers a stale optimistic-concurrency token (ADR-0058).
+	versionConflict bool
 
 	myRole     string
 	controller string
@@ -98,6 +104,11 @@ type cnvCreateLockCall struct {
 	profileID string
 }
 
+type cnvVersionRestoreCall struct {
+	profileID string
+	version   int
+}
+
 func cnvNewFakeStore() *cnvFakeStore {
 	controller := cnvTUserA
 	previous := ""
@@ -106,8 +117,8 @@ func cnvNewFakeStore() *cnvFakeStore {
 		controller: cnvTUserA,
 		version:    1,
 		profiles: []AgentProfileView{
-			{ID: cnvTProfile, Name: "Claude Code", LauncherID: "claude", PermissionMode: "ask", CreatedAt: prjFixedTime},
-			{ID: "p-2", Name: "Codex", LauncherID: "codex", PermissionMode: "ask", CreatedAt: prjFixedTime},
+			{ID: cnvTProfile, Name: "Claude Code", LauncherID: "claude", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
+			{ID: "p-2", Name: "Codex", LauncherID: "codex", PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1},
 		},
 		chat: ConversationView{
 			ID:               cnvTConv,
@@ -217,6 +228,83 @@ func (f *cnvFakeStore) GetAPMLockRequest(_ context.Context, c Caller, profileID 
 	}
 	f.apmLockReads = append(f.apmLockReads, profileID)
 	return APMLockRequestView{RequestID: "apm-lock-queued", Status: "done"}, nil
+}
+
+func (f *cnvFakeStore) ListAgentProfileVersions(_ context.Context, c Caller, profileID string) ([]AgentProfileVersion, error) {
+	if !f.visible(c) {
+		return nil, ErrProfileNotFound
+	}
+	if f.customErr != nil {
+		return nil, f.customErr
+	}
+	p := f.findProfile(profileID)
+	if p == nil {
+		return nil, ErrProfileNotFound
+	}
+	snap, err := json.Marshal(map[string]any{
+		"name":            p.Name,
+		"launcher_id":     p.LauncherID,
+		"permission_mode": p.PermissionMode,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentProfileVersion, 0, p.Version)
+	for v := 1; v <= p.Version; v++ {
+		createdBy := "01987a71-2222-7000-8000-abcdef012345"
+		out = append(out, AgentProfileVersion{
+			ProfileID: p.ID, Version: v,
+			Snapshot:  json.RawMessage(snap),
+			CreatedBy: createdBy, CreatedAt: p.CreatedAt, Note: nil,
+		})
+	}
+	return out, nil
+}
+
+func (f *cnvFakeStore) GetAgentProfileVersion(_ context.Context, c Caller, profileID string, version int) (AgentProfileVersion, error) {
+	if !f.visible(c) {
+		return AgentProfileVersion{}, ErrProfileNotFound
+	}
+	if f.customErr != nil {
+		return AgentProfileVersion{}, f.customErr
+	}
+	p := f.findProfile(profileID)
+	if p == nil || version < 1 || version > p.Version {
+		return AgentProfileVersion{}, ErrAgentProfileVersionNotFound
+	}
+	snap, err := json.Marshal(map[string]any{
+		"name":            p.Name,
+		"launcher_id":     p.LauncherID,
+		"permission_mode": p.PermissionMode,
+	})
+	if err != nil {
+		return AgentProfileVersion{}, err
+	}
+	return AgentProfileVersion{
+		ProfileID: p.ID, Version: version, Snapshot: json.RawMessage(snap),
+		CreatedBy: "01987a71-2222-7000-8000-abcdef012345", CreatedAt: p.CreatedAt, Note: nil,
+	}, nil
+}
+
+func (f *cnvFakeStore) RestoreAgentProfileVersion(_ context.Context, c Caller, profileID string, version int) (AgentProfileView, int, error) {
+	if !f.visible(c) {
+		return AgentProfileView{}, 0, ErrProfileNotFound
+	}
+	p := f.findProfile(profileID)
+	if p == nil {
+		return AgentProfileView{}, 0, ErrProfileNotFound
+	}
+	if version < 1 || version > p.Version {
+		return AgentProfileView{}, 0, ErrAgentProfileVersionNotFound
+	}
+	if f.versionConflict {
+		return AgentProfileView{}, 0, ErrProfileVersionConflict
+	}
+	f.restoredVersions = append(f.restoredVersions, cnvVersionRestoreCall{profileID: profileID, version: version})
+	// A restore is a new write whose snapshot equals version n's: it lands as
+	// the next version and the token moves.
+	p.Version = version + 1
+	return *p, p.Version, nil
 }
 
 func (f *cnvFakeStore) ListConversations(ctx context.Context, c Caller, projectID, origin, query string) ([]ConversationSummaryView, error) {
@@ -513,8 +601,8 @@ func TestListAgentProfiles(t *testing.T) {
 	if out.Items[0]["permission_mode"] != "ask" {
 		t.Errorf("permission_mode = %v, want ask: no launcher has a verified sandbox", out.Items[0]["permission_mode"])
 	}
-	if _, ok := out.Items[0]["version"]; ok {
-		t.Errorf("profile exposed a version field: %v", out.Items[0])
+	if _, ok := out.Items[0]["version"]; !ok || out.Items[0]["version"] != float64(1) {
+		t.Errorf("version = %v, want 1 (ADR-0058): the current version is the optimistic-concurrency token", out.Items[0]["version"])
 	}
 }
 
@@ -1059,12 +1147,13 @@ type cnvProfilePatchCall struct {
 	target        *string
 	lockDigest    *string
 	askedOrgAdmin bool
+	version       *int
 }
 
 func (f *cnvFakeStore) createdProfile(name, launcher string) AgentProfileView {
 	return AgentProfileView{
 		ID: "p-" + name, Name: name, LauncherID: launcher,
-		PermissionMode: "ask", CreatedAt: prjFixedTime,
+		PermissionMode: "ask", CreatedAt: prjFixedTime, Version: 1,
 	}
 }
 
@@ -1131,7 +1220,10 @@ func (f *cnvFakeStore) PatchAgentProfileAPM(_ context.Context, c Caller, profile
 	set(&p.APMLockDigest, in.APMLockDigest)
 	f.profilePatched = append(f.profilePatched, cnvProfilePatchCall{
 		profileID: profileID, packageRef: in.APMPackageRef, target: in.APMTarget,
-		lockDigest: in.APMLockDigest, askedOrgAdmin: c.IsOrgAdmin,
+		lockDigest: in.APMLockDigest, askedOrgAdmin: c.IsOrgAdmin, version: in.Version,
 	})
+	if in.Version != nil {
+		p.Version = *in.Version + 1
+	}
 	return *p, nil
 }

@@ -50,6 +50,10 @@ func cnvM2Routes(t *testing.T) [][2]string {
 		// ADR-0030 added PATCH /api/v1/agent-profiles/{profileId}; an unfilled
 		// placeholder here is this test doing its job, so the fix is to fill it.
 		"{profileId}": user,
+		// ADR-0058 added the versioned surface (list / read / restore under
+		// /agent-profiles/{profileId}/versions...); versions are positive
+		// integers, so the placeholder maps to the first version.
+		"{version}": "1",
 	}
 
 	var out [][2]string

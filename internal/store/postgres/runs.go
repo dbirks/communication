@@ -103,6 +103,11 @@ type Run struct {
 	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
 	// thread start keeps source_conversation_id, ADR-0053).
 	TriggerRef string
+	// AgentProfileVersion (ADR-0058) is the profile version this run was pinned
+	// to at creation — the version its source conversation carried when the run
+	// was started from a thread, or the creation default for a direct start. It
+	// is the conversation's pin inherited by the run, never re-resolved.
+	AgentProfileVersion int
 }
 
 // NodeExecution is one runtime occurrence of a node in a run, identified by
@@ -187,7 +192,8 @@ const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revis
 	COALESCE(parent_run_id::text, ''), COALESCE(triggered_by::text, ''),
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
 	priority, expression_evaluations, created_at, started_at, finished_at,
-	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, '')`
+	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, ''),
+	agent_profile_version`
 
 func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 	var (
@@ -203,7 +209,7 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
 		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished,
-		&r.TriggerKind, &r.TriggerRef)
+		&r.TriggerKind, &r.TriggerRef, &r.AgentProfileVersion)
 	if err != nil {
 		return Run{}, err
 	}
@@ -307,23 +313,34 @@ func (s *RunStore) CreateRun(ctx context.Context, in NewRun) (run Run, created b
 
 // createRunTx is CreateRun's body on a transaction the caller owns.
 func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run Run, created bool, err error) {
+	// ADR-0058: a run pins the profile version its source conversation carried at
+	// creation; a direct start pins the creation default. The conversation is the
+	// resolution root, so the run inherits the pin rather than re-resolving it.
+	agentProfileVersion := 1
+	if in.SourceConversationID != "" {
+		if err := tx.QueryRow(ctx, `
+			SELECT agent_profile_version FROM conversations WHERE id = $1::uuid`,
+			in.SourceConversationID).Scan(&agentProfileVersion); err != nil {
+			return Run{}, false, fmt.Errorf("postgres: read source conversation %s for the profile version: %w", in.SourceConversationID, err)
+		}
+	}
 	if run, err = s.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 				source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 				policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-				trigger_kind, trigger_ref)
+				trigger_kind, trigger_ref, agent_profile_version)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, $18)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef)); err != nil {
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, agentProfileVersion)); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
 

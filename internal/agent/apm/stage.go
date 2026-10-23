@@ -38,7 +38,7 @@ import (
 	"time"
 )
 
-// Binary is the apm executable name; the worker image vendors 0.33.0 at a pinned
+// Binary is the apm executable name; the worker image vendors 0.34.0 at a pinned
 // digest (ADR-0008 D1), and the version string a Stage reports is whatever that
 // binary answers, never what the Dockerfile intended.
 const Binary = "apm"
@@ -48,7 +48,7 @@ const Binary = "apm"
 // this is not a hard gate in Stage: apm's absence already aborts, and the probe
 // evidence for the digest control is behavioural rather than
 // kernel-version-shaped. It is recorded so a mismatch is visible in the log.
-const PinnedVersion = "0.33.0"
+const PinnedVersion = "0.34.0"
 
 // Targets are the two APM install targets M3 knows about. A profile records one
 // digest per target, because apm keeps a single apm.lock.yaml per checkout:

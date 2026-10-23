@@ -46,7 +46,8 @@ EVIDENCE shell-p789-settings: settings → assistant shows all three trust level
 Plus the Round 2 real (non-lab) evidence:
 
 - Real APM resolve test: `mattpocock/skills#v1.3.1` resolved by apm → lock digest
-  `sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33`; `#v1.3.0` → a
+  `sha256:44cf8ba0ba5b34af878358795b4f0dbcbc5698ebfe72c7cfc162d5f7040cc55d` (apm
+  0.34.0, 2026-10-23); `#v1.3.0` → a
   different digest.
 - Real-nono secret sentinel tests: `TestProcExecEnvMountSentinelUnderRealNonoStaysInTheExecEnv`
   (process.exec) and `TestAgentTurnEnvMountSentinelUnderRealNonoStaysInTheExecEnv` (agent turn) —

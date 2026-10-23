@@ -367,7 +367,7 @@ is known good* (ADR-0009).
    `apm install --frozen --target <claude|codex>` into the run checkout, validate
    `sha256(apm.lock.yaml)` against `agent_profiles.apm_lock_digest` **per target** before launch, add
    the generated paths to `excluded_paths`, and refuse a launch on digest mismatch (case 14's stability
-   test). `apm` itself is vendored at `0.33.0` (ADR-0008 D1).
+   test). `apm` itself is vendored at `0.34.0` (ADR-0008 D1).
 3. **Materialize** (ADR-0018 D4, ordered exactly): validate → `git ls-files` check → append the path to
    `<mirror>/info/exclude` and `git check-ignore -v` confirm → `O_CREAT|O_EXCL` 0600 write →
    `secret.materialized`. `env` entries go into the launch `Env` list, which is **built from scratch**,
@@ -401,7 +401,7 @@ ADR-0016 pattern), and readiness that reports the sandbox mode it was configured
 
 | Change | Where | Why it is required by evidence |
 |---|---|---|
-| Vendor `nono 0.80.0` (tarball sha256 `6da665b6…f17037f`, binary sha256 `e02d003d…eff1287d`) and `apm 0.33.0` (sha256 `e6374402…492c6b0647ae9e881f`) into the worker image | `worker/Dockerfile` | ADR-0019 D1; the image has neither today, and `doctor`/`required` must run where the agent runs |
+| Vendor `nono 0.80.0` (tarball sha256 `6da665b6…f17037f`, binary sha256 `e02d003d…eff1287d`) and `apm 0.34.0` (sha256 `4487af55…cde8c`) into the worker image | `worker/Dockerfile` | ADR-0019 D1; the image has neither today, and `doctor`/`required` must run where the agent runs |
 | `worker/sandbox/profiles/communication-agent.json` + `worker/launchers.yaml` | new asset dirs (ADR-0007) | ADR-0009 D4 requires `-p <path>` over CLI flags (the built-in `default` profile is silently mixed in); `nono profile init` cannot author a path-named file (N3) |
 | Landlock probe of `node:22-bookworm-slim` under Docker 29.9.0 builtin seccomp | `docs/compatibility/probes/sandbox/` rerun | ADR-0019's biggest GAP: only `debian:trixie-slim` was probed |
 | Named volumes `repos` (mirror root, rw on worker only), `artifacts` (rw worker, **ro** both API replicas), `masterkeys` (ro everywhere, generated once by the `keyring-init` one-shot) — **landed in `compose.yml`** | `compose.yml` | ADR-0017 D1 (mirrors beside workspaces, and probe V5b's reason they are *measured separately*: one device, two inodes, one identity column could only name one), ADR-0020 (multi-replica reads), ADR-0018 D2.2 (keyring outside the DB, never an env var, never printed — the one-shot writes it under `umask 077` with `od` and logs only that it generated one) |

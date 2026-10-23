@@ -28,7 +28,7 @@ against an ADR line listed there without reading this file.
 | node | `v26.11.1` | `v22.23.3` |
 | curl | `8.22.0` | `7.88.1` |
 | nono | `0.80.0`, sha256 `e02d003d52b3f65e8c75358eb73e339ad952a2876529047e61183b46eff1287d`, `$HOME/.local/bin/nono` | same binary, bind-mounted read-only at `/opt/nono` — the image does **not** contain nono |
-| apm | `0.33.0`, `$HOME/.local/bin/apm` | same binary mounted at `/opt/apm`; **cannot execute** (see A0) |
+| apm | `0.34.0`, `$HOME/.local/bin/apm` | same binary mounted at `/opt/apm`; **cannot execute** (see A0) |
 | glibc | `GNU libc 2.44` | `Debian GLIBC 2.36-9+deb12u14` |
 | Image | — | `communication-worker:dev` `sha256:88cd4564d3cb…b8558c` |
 | Docker | client/server `29.9.0` (p5's volume measurements use `docker run --rm` only, no compose project, own `m3probe-*` volumes, removed by the probe) | — |
@@ -52,7 +52,7 @@ rm -rf "$SCR"; mkdir -p "$SCR"; chmod 0777 "$SCR"
 docker run --rm \
   -v "$SCR":/scratch \
   -v "$HOME/.local/share/communication-lab/nono/0.80.0":/opt/nono:ro \
-  -v "$HOME/.local/share/communication-lab/apm/0.33.0":/opt/apm:ro \
+  -v "$HOME/.local/share/communication-lab/apm/0.34.0":/opt/apm:ro \
   -v "$PWD/docs/compatibility/probes/m3":/probe:ro \
   --entrypoint bash \
   -e M3_NONO=/opt/nono/nono -e M3_APM=/opt/apm/apm -e M3_PROBE_ROOT_BASE=/scratch \
@@ -177,7 +177,7 @@ the arms disagree — different git versions).
 
 | id | claim | H | C |
 | --- | --- | --- | --- |
-| A0 | the vendored apm 0.33.0 binary runs in this environment | — (runs) | ~~GAP~~ → **PASS after the base image moves to trixie**: `node:22-bookworm-slim` has glibc 2.36 and apm's bundled `libpython3.12` needs `GLIBC_2.38`, so it died at import (`Failed to load Python shared library … version 'GLIBC_2.38' not found`). `node:22-trixie-slim` has 2.41. Two more runtime deps fell out of the same run and are now installed explicitly: **`libffi8`** (apm's Python imports `ctypes` → `ImportError: libffi.so.8`) and **`git`** (apm imports GitPython at startup → `ImportError: Failed to initialize: Bad git executable`, which means git is a dependency of *staging*, not only of the workspace step). Verified by executing the real binaries inside both candidate images, not by reading release notes: `apm --version` → `APM CLI version 0.33.0 (18c4c43)`, `exit=0`. nono 0.80.0 needs only `GLIBC_2.34` and ran on bookworm; the base is chosen by the stricter requirement. |
+| A0 | the vendored apm 0.34.0 binary runs in this environment | — (runs) | ~~GAP~~ → **PASS after the base image moves to trixie**: `node:22-bookworm-slim` has glibc 2.36 and apm's bundled `libpython3.12` needs `GLIBC_2.38`, so it died at import (`Failed to load Python shared library … version 'GLIBC_2.38' not found`). `node:22-trixie-slim` has 2.41. Two more runtime deps fell out of the same run and are now installed explicitly: **`libffi8`** (apm's Python imports `ctypes` → `ImportError: libffi.so.8`) and **`git`** (apm imports GitPython at startup → `ImportError: Failed to initialize: Bad git executable`, which means git is a dependency of *staging*, not only of the workspace step). Verified by executing the real binaries inside both candidate images, not by reading release notes: `apm --version` → `APM CLI version 0.34.0 (65b3b9f)`, `exit=0`. nono 0.80.0 needs only `GLIBC_2.34` and ran on bookworm; the base is chosen by the stricter requirement. |
 | A1 | `HOME=<ws>/home apm install --target claude` stages into the run checkout (contract § 4.2 step 2) | PASS | — |
 | A2 | apm writes `.apm` + `.cache/apm` into the per-run HOME (APM.md T4 — why `home/` exists) | PASS | — |
 | A4 | `install --frozen --target claude` reproduces the lock digest and tree for an unchanged upstream (C14d's stability half) | PASS | — |
@@ -359,10 +359,10 @@ as an ADR amendment** (13-decisions: protocol/persistence/deployment changes nee
 
 ### 10. `A0` + `G10` — the worker image cannot run the toolchain the contract assumes (C: GAP + FAIL)
 
-* **Sentence** — § 5: "Vendor `nono 0.80.0` … and `apm 0.33.0` … into the worker image | the image has
+* **Sentence** — § 5: "Vendor `nono 0.80.0` … and `apm 0.34.0` … into the worker image | the image has
   neither today", and ADR-0017's line listing "concurrent `Prepare` of two runs against one mirror"
   among the things to be settled.
-* **Observed** — apm 0.33.0 is a PyInstaller bundle: `[PYI-…:ERROR] Failed to load Python shared
+* **Observed** — apm 0.34.0 is a PyInstaller bundle: `[PYI-…:ERROR] Failed to load Python shared
   library … GLIBC_2.38' not found (required by …/libpython3.12.so.1.0)`; the image ships
   `Debian GLIBC 2.36-9+deb12u14`, so **the pinned apm cannot exec in the worker image at all** —
   the § 5 task is not merely undone, it is impossible on `node:22-bookworm-slim` as pinned.

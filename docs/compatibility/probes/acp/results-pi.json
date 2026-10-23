@@ -1,0 +1,1788 @@
+{
+  "label": "pi",
+  "adapter_package": "pi-acp",
+  "adapter_version": "0.0.34",
+  "harness_version": "unknown",
+  "os": "Linux 7.2.2-arch1-1",
+  "python": "3.14.7",
+  "probe": "acp_probe.py 0.0.3",
+  "probe_options": {
+    "steps": "streaming",
+    "mode_id": null,
+    "set_config": [
+      "model=collective/flint"
+    ],
+    "cancel_repeats": 1,
+    "cancel_after_seconds": 5.0,
+    "agent_cmd": "/home/david/.nvm/versions/node/v23.11.0/bin/pi-acp",
+    "workdir_root": "/home/david/.cache/communication-lab/m0-acp-probe"
+  },
+  "session_options": {
+    "currentModeId": "medium",
+    "availableModes": [
+      {
+        "id": "off",
+        "name": "Thinking: off",
+        "description": null
+      },
+      {
+        "id": "minimal",
+        "name": "Thinking: minimal",
+        "description": null
+      },
+      {
+        "id": "low",
+        "name": "Thinking: low",
+        "description": null
+      },
+      {
+        "id": "medium",
+        "name": "Thinking: medium",
+        "description": null
+      },
+      {
+        "id": "high",
+        "name": "Thinking: high",
+        "description": null
+      }
+    ],
+    "configOptions": [
+      {
+        "id": "model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "collective/qwen3-8-27b",
+        "values": [
+          "collective/apple-foundation",
+          "collective/qwen3-6-35b-a3b",
+          "collective/qwen3-8-27b-amd",
+          "collective/qwen3-8-flash-next",
+          "collective/qwen3-8-27b",
+          "collective/flint"
+        ]
+      },
+      {
+        "id": "thought_level",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "medium",
+        "values": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    ]
+  },
+  "started_at": "2026-10-23T02:27:51.752+00:00",
+  "finished_at": "2026-10-23T02:27:56.919+00:00",
+  "steps": [
+    {
+      "step": "initialize",
+      "result": "PASS",
+      "evidence": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "image": true,
+            "audio": false,
+            "embeddedContext": false
+          },
+          "sessionCapabilities": {
+            "list": {},
+            "delete": {}
+          }
+        },
+        "authMethods": [
+          {
+            "id": "pi_terminal_login",
+            "name": "Launch pi in the terminal",
+            "description": "Start pi in an interactive terminal to configure API keys or login",
+            "type": "terminal",
+            "args": [
+              "--terminal-login"
+            ],
+            "env": {}
+          }
+        ],
+        "agentInfo": {
+          "name": "pi-acp",
+          "title": "pi ACP adapter",
+          "version": "0.0.34"
+        }
+      }
+    },
+    {
+      "step": "session/new",
+      "result": "PASS",
+      "evidence": {
+        "sessionId_prefix": "01a16696\u2026",
+        "result_field_names": [
+          "_meta",
+          "configOptions",
+          "models",
+          "modes",
+          "sessionId"
+        ],
+        "currentModeId": "medium",
+        "availableModes": [
+          {
+            "id": "off",
+            "name": "Thinking: off",
+            "description": null
+          },
+          {
+            "id": "minimal",
+            "name": "Thinking: minimal",
+            "description": null
+          },
+          {
+            "id": "low",
+            "name": "Thinking: low",
+            "description": null
+          },
+          {
+            "id": "medium",
+            "name": "Thinking: medium",
+            "description": null
+          },
+          {
+            "id": "high",
+            "name": "Thinking: high",
+            "description": null
+          }
+        ],
+        "configOptions": [
+          {
+            "id": "model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "collective/qwen3-8-27b",
+            "values": [
+              "collective/apple-foundation",
+              "collective/qwen3-6-35b-a3b",
+              "collective/qwen3-8-27b-amd",
+              "collective/qwen3-8-flash-next",
+              "collective/qwen3-8-27b",
+              "collective/flint"
+            ]
+          },
+          {
+            "id": "thought_level",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": "medium",
+            "values": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": "session/set_config_option model",
+      "result": "PASS",
+      "evidence": {
+        "requested_value": "collective/flint",
+        "observed_currentValue": "collective/flint",
+        "config_option_update_notifications": [
+          2
+        ],
+        "configOptions": [
+          {
+            "id": "model",
+            "category": "model",
+            "type": "select",
+            "currentValue": "collective/flint",
+            "values": [
+              "collective/apple-foundation",
+              "collective/qwen3-6-35b-a3b",
+              "collective/qwen3-8-27b-amd",
+              "collective/qwen3-8-flash-next",
+              "collective/qwen3-8-27b",
+              "collective/flint"
+            ]
+          },
+          {
+            "id": "thought_level",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": "medium",
+            "values": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step": "streaming",
+      "result": "FAIL",
+      "evidence": {
+        "prompt": "create hello.txt",
+        "stopReason": "end_turn",
+        "session_update_counts": {
+          "session_info_update": 2,
+          "agent_thought_chunk": 77,
+          "tool_call": 2,
+          "tool_call_update": 7,
+          "usage_update": 1
+        },
+        "permission_requests": 0,
+        "permission_option_kinds": [],
+        "hello_txt_exists": true,
+        "hello_txt_is_hello": true,
+        "hello_txt_content_repr": "'hello\\n'",
+        "agent_message_chunks": 0
+      }
+    },
+    {
+      "step": "tool_calls",
+      "result": "PASS",
+      "evidence": {
+        "prompt": "create hello.txt",
+        "stopReason": "end_turn",
+        "session_update_counts": {
+          "session_info_update": 2,
+          "agent_thought_chunk": 77,
+          "tool_call": 2,
+          "tool_call_update": 7,
+          "usage_update": 1
+        },
+        "permission_requests": 0,
+        "permission_option_kinds": [],
+        "hello_txt_exists": true,
+        "hello_txt_is_hello": true,
+        "hello_txt_content_repr": "'hello\\n'",
+        "tool_calls": 2
+      }
+    },
+    {
+      "step": "permission (default flow)",
+      "result": "GAP",
+      "evidence": {
+        "prompt": "create hello.txt",
+        "stopReason": "end_turn",
+        "session_update_counts": {
+          "session_info_update": 2,
+          "agent_thought_chunk": 77,
+          "tool_call": 2,
+          "tool_call_update": 7,
+          "usage_update": 1
+        },
+        "permission_requests": 0,
+        "permission_option_kinds": [],
+        "hello_txt_exists": true,
+        "hello_txt_is_hello": true,
+        "hello_txt_content_repr": "'hello\\n'",
+        "reason": "agent did not request permission under the mode in effect (adapter default (no session/set_mode); session/set_config_option model=collective/flint)"
+      }
+    }
+  ],
+  "transcript_excerpt": [
+    {
+      "t": "2026-10-23T02:27:51.779+00:00",
+      "dir": "out",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": 1,
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            },
+            "terminal": false
+          },
+          "clientInfo": {
+            "name": "communication-acp-probe",
+            "version": "0.0.3"
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:51.962+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": 1,
+          "agentInfo": {
+            "name": "pi-acp",
+            "title": "pi ACP adapter",
+            "version": "0.0.34"
+          },
+          "authMethods": [
+            {
+              "id": "pi_terminal_login",
+              "name": "Launch pi in the terminal",
+              "description": "Start pi in an interactive terminal to configure API keys or login",
+              "type": "terminal",
+              "args": [
+                "--terminal-login"
+              ],
+              "env": {}
+            }
+          ],
+          "agentCapabilities": {
+            "loadSession": true,
+            "mcpCapabilities": {
+              "http": false,
+              "sse": false
+            },
+            "promptCapabilities": {
+              "image": true,
+              "audio": false,
+              "embeddedContext": false
+            },
+            "sessionCapabilities": {
+              "list": {},
+              "delete": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:51.962+00:00",
+      "dir": "out",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": {
+          "cwd": "/home/david/.cache/communication-lab/m0-acp-probe/pi-repo",
+          "mcpServers": []
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.790+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "configOptions": [
+            {
+              "type": "select",
+              "id": "model",
+              "category": "model",
+              "name": "Model",
+              "description": "Select the model for this session",
+              "currentValue": "collective/qwen3-8-27b",
+              "options": [
+                {
+                  "value": "collective/apple-foundation",
+                  "name": "collective/apple-foundation",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-6-35b-a3b",
+                  "name": "collective/qwen3-6-35b-a3b",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-27b-amd",
+                  "name": "collective/qwen3-8-27b-amd",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-flash-next",
+                  "name": "collective/qwen3-8-flash-next",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-27b",
+                  "name": "collective/qwen3-8-27b",
+                  "description": null
+                },
+                {
+                  "value": "collective/flint",
+                  "name": "collective/flint",
+                  "description": null
+                }
+              ]
+            },
+            {
+              "type": "select",
+              "id": "thought_level",
+              "category": "thought_level",
+              "name": "Thinking",
+              "description": "Set the reasoning effort for this session",
+              "currentValue": "medium",
+              "options": [
+                {
+                  "value": "off",
+                  "name": "Thinking: off",
+                  "description": null
+                },
+                {
+                  "value": "minimal",
+                  "name": "Thinking: minimal",
+                  "description": null
+                },
+                {
+                  "value": "low",
+                  "name": "Thinking: low",
+                  "description": null
+                },
+                {
+                  "value": "medium",
+                  "name": "Thinking: medium",
+                  "description": null
+                },
+                {
+                  "value": "high",
+                  "name": "Thinking: high",
+                  "description": null
+                }
+              ]
+            }
+          ],
+          "models": {
+            "availableModels": [
+              {
+                "modelId": "collective/apple-foundation",
+                "name": "collective/apple-foundation",
+                "description": null
+              },
+              {
+                "modelId": "collective/qwen3-6-35b-a3b",
+                "name": "collective/qwen3-6-35b-a3b",
+                "description": null
+              },
+              {
+                "modelId": "collective/qwen3-8-27b-amd",
+                "name": "collective/qwen3-8-27b-amd",
+                "description": null
+              },
+              {
+                "modelId": "collective/qwen3-8-flash-next",
+                "name": "collective/qwen3-8-flash-next",
+                "description": null
+              },
+              {
+                "modelId": "collective/qwen3-8-27b",
+                "name": "collective/qwen3-8-27b",
+                "description": null
+              },
+              {
+                "modelId": "collective/flint",
+                "name": "collective/flint",
+                "description": null
+              }
+            ],
+            "currentModelId": "collective/qwen3-8-27b"
+          },
+          "modes": {
+            "currentModeId": "medium",
+            "availableModes": [
+              {
+                "id": "off",
+                "name": "Thinking: off",
+                "description": null
+              },
+              {
+                "id": "minimal",
+                "name": "Thinking: minimal",
+                "description": null
+              },
+              {
+                "id": "low",
+                "name": "Thinking: low",
+                "description": null
+              },
+              {
+                "id": "medium",
+                "name": "Thinking: medium",
+                "description": null
+              },
+              {
+                "id": "high",
+                "name": "Thinking: high",
+                "description": null
+              }
+            ]
+          },
+          "_meta": {
+            "piAcp": {
+              "startupInfo": "pi v1.1.0\n---\n\n## Skills\n- /home/david/.agents/skills/timesheet-recap/SKILL.md\n- /home/david/.agents/skills/find-skills/SKILL.md\n- /home/david/.agents/skills/drive-pi-workers/SKILL.md\n- /home/david/.agents/skills/crush-session-repair/SKILL.md\n- /home/david/.agents/skills/add-pi-extension/SKILL.md\n\n## Extensions\n- npm:pi-subagents@0.76.1\n  - index.ts\n- npm:pi-web-access@0.38.0\n  - index.ts\n- npm:pi-goal-x@0.32.3\n  - index.ts\n\n---\nNew version available: v1.4.0 (installed v1.1.0). Run: `npm i -g @e...[TRUNCATED]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.791+00:00",
+      "dir": "out",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/set_config_option",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "configId": "model",
+          "value": "collective/flint"
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.791+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "pi v1.1.0\n---\n\n## Skills\n- /home/david/.agents/skills/timesheet-recap/SKILL.md\n- /home/david/.agents/skills/find-skills/SKILL.md\n- /home/david/.agents/skills/drive-pi-workers/SKILL.md\n- /home/david/.agents/skills/crush-session-repair/SKILL.md\n- /home/david/.agents/skills/add-pi-extension/SKILL.md\n\n## Extensions\n- npm:pi-subagents@0.76.1\n  - index.ts\n- npm:pi-web-access@0.38.0\n  - index.ts\n- npm:pi-goal-x@0.32.3\n  - index.ts\n\n---\nNew version available: v1.4.0 (installed v1.1.0). Run: `npm i -g @e...[TRUNCATED]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.830+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "used": 0,
+            "size": 262144
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.833+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [
+              {
+                "name": "council",
+                "description": "Run a bounded supervisor-mediated council of advisors and write a decision memo"
+              },
+              {
+                "name": "gather-context-and-clarify",
+                "description": "Use subagents to gather context, then ask clarifying questions"
+              },
+              {
+                "name": "parallel-cleanup",
+                "description": "Parallel cleanup review"
+              },
+              {
+                "name": "parallel-research",
+                "description": "Parallel subagents research"
+              },
+              {
+                "name": "parallel-review",
+                "description": "Parallel subagents review"
+              },
+              {
+                "name": "review-loop",
+                "description": "Review/fix loop until clean"
+              },
+              {
+                "name": "skill:add-pi-extension",
+                "description": "Safely add, install, upgrade, or vet a pi coding agent (pi.dev / @earendil-works/pi-coding-agent) extension or package. Use whenever the user asks to add/install/update/remove a pi extension or package (pi-subagents, pi-web-access, pi-mcp-adapter, anything matching npm pi-*, or a git pi package), or asks whether a pi package is safe/trusted. Pi packages run with full system access, so never install or upgrade one without quarantining, pinning an exact version, and auditing the source first."
+              },
+              {
+                "name": "skill:crush-session-repair",
+                "description": "Diagnose and repair Crush (and similar agent CLIs) chat sessions that are permanently bricked by their own stored history \u2014 every \"continue\" or new prompt fails with a provider 400 such as \"Assistant tool call function.arguments must be valid JSON\", \"Invalid chat format / tool_calls must be followed by tool messages\", or BadRequestError on replay. Use this skill whenever a user pastes a repeating Bad Request / 400 error from an agent session, says the session \"only errors now\", reports a session...[TRUNCATED]"
+              },
+              {
+                "name": "skill:drive-pi-workers",
+                "description": "Orchestrate a fleet of headless `pi` coding-agent workers (pi -p, usually on a self-hosted/collective model) to do the implementation work of a large task while you act as the lead \u2014 writing briefs, dispatching 4\u20138 workers in parallel, watching them, verifying their output on a clean export and in a real browser, and committing/pushing only verified units. Use whenever the user asks you to \"drive pi workers\", \"use pi workers\", \"orchestrate workers\", \"run N pi workers in parallel\", delegate a big...[TRUNCATED]"
+              },
+              {
+                "name": "skill:find-skills",
+                "description": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill."
+              },
+              {
+                "name": "skill:timesheet-recap",
+                "description": "Produce a day-by-day recap of the user's work activity across Slack, Outlook calendar, and Outlook email, organized so the user can fill out their timesheet. Use this skill whenever the user asks for a work recap, wants help reconstructing what they worked on, mentions catching up on or filling out their timesheet, asks \"what was I working on last week\", wants a summary of their activity, or otherwise wants to review their own recent work history. Trigger even when the user doesn't explicitly sa...[TRUNCATED]"
+              },
+              {
+                "name": "skill:council-mode",
+                "description": "Run a bounded supervisor-mediated advisor council. Use when the user asks for council mode, asks to convene advisors, debate a decision, cross-examine recommendations, or run /council."
+              },
+              {
+                "name": "skill:pi-subagents",
+                "description": "Technical guidance for operator-requested delegation to builtin or custom\nsubagents: bounded handoffs, parallel review, scripted workflows, async work,\nforked context, isolation, and coordinated execution."
+              },
+              {
+                "name": "compact",
+                "description": "Manually compact the session context",
+                "input": {
+                  "hint": "optional custom instructions"
+                }
+              },
+              {
+                "name": "autocompact",
+                "description": "Toggle automatic context compaction",
+                "input": {
+                  "hint": "on|off|toggle"
+                }
+              },
+              {
+                "name": "export",
+                "description": "Export session to an HTML file in the session cwd"
+              },
+              {
+                "name": "session",
+                "description": "Show session stats (messages, tokens, cost, session file)"
+              },
+              {
+                "name": "name",
+                "description": "Set session display name",
+                "input": {
+                  "hint": "<name>"
+                }
+              },
+              {
+                "name": "steering",
+                "description": "Get/set pi steering message delivery mode (how queued steering messages are delivered)",
+                "input": {
+                  "hint": "(no args to show) all | one-at-a-time"
+                }
+              },
+              {
+                "name": "follow-up",
+                "description": "Get/set pi follow-up message delivery mode (how queued follow-up messages are delivered)",
+                "input": {
+                  "hint": "(no args to show) all | one-at-a-time"
+                }
+              },
+              {
+                "name": "changelog",
+                "description": "Show pi changelog"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.834+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "current_mode_update",
+            "currentModeId": "medium"
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.834+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "config_option_update",
+            "configOptions": [
+              {
+                "type": "select",
+                "id": "model",
+                "category": "model",
+                "name": "Model",
+                "description": "Select the model for this session",
+                "currentValue": "collective/flint",
+                "options": [
+                  {
+                    "value": "collective/apple-foundation",
+                    "name": "collective/apple-foundation",
+                    "description": null
+                  },
+                  {
+                    "value": "collective/qwen3-6-35b-a3b",
+                    "name": "collective/qwen3-6-35b-a3b",
+                    "description": null
+                  },
+                  {
+                    "value": "collective/qwen3-8-27b-amd",
+                    "name": "collective/qwen3-8-27b-amd",
+                    "description": null
+                  },
+                  {
+                    "value": "collective/qwen3-8-flash-next",
+                    "name": "collective/qwen3-8-flash-next",
+                    "description": null
+                  },
+                  {
+                    "value": "collective/qwen3-8-27b",
+                    "name": "collective/qwen3-8-27b",
+                    "description": null
+                  },
+                  {
+                    "value": "collective/flint",
+                    "name": "collective/flint",
+                    "description": null
+                  }
+                ]
+              },
+              {
+                "type": "select",
+                "id": "thought_level",
+                "category": "thought_level",
+                "name": "Thinking",
+                "description": "Set the reasoning effort for this session",
+                "currentValue": "medium",
+                "options": [
+                  {
+                    "value": "off",
+                    "name": "Thinking: off",
+                    "description": null
+                  },
+                  {
+                    "value": "minimal",
+                    "name": "Thinking: minimal",
+                    "description": null
+                  },
+                  {
+                    "value": "low",
+                    "name": "Thinking: low",
+                    "description": null
+                  },
+                  {
+                    "value": "medium",
+                    "name": "Thinking: medium",
+                    "description": null
+                  },
+                  {
+                    "value": "high",
+                    "name": "Thinking: high",
+                    "description": null
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.834+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "used": 0,
+            "size": 262144
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.834+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "configOptions": [
+            {
+              "type": "select",
+              "id": "model",
+              "category": "model",
+              "name": "Model",
+              "description": "Select the model for this session",
+              "currentValue": "collective/flint",
+              "options": [
+                {
+                  "value": "collective/apple-foundation",
+                  "name": "collective/apple-foundation",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-6-35b-a3b",
+                  "name": "collective/qwen3-6-35b-a3b",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-27b-amd",
+                  "name": "collective/qwen3-8-27b-amd",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-flash-next",
+                  "name": "collective/qwen3-8-flash-next",
+                  "description": null
+                },
+                {
+                  "value": "collective/qwen3-8-27b",
+                  "name": "collective/qwen3-8-27b",
+                  "description": null
+                },
+                {
+                  "value": "collective/flint",
+                  "name": "collective/flint",
+                  "description": null
+                }
+              ]
+            },
+            {
+              "type": "select",
+              "id": "thought_level",
+              "category": "thought_level",
+              "name": "Thinking",
+              "description": "Set the reasoning effort for this session",
+              "currentValue": "medium",
+              "options": [
+                {
+                  "value": "off",
+                  "name": "Thinking: off",
+                  "description": null
+                },
+                {
+                  "value": "minimal",
+                  "name": "Thinking: minimal",
+                  "description": null
+                },
+                {
+                  "value": "low",
+                  "name": "Thinking: low",
+                  "description": null
+                },
+                {
+                  "value": "medium",
+                  "name": "Thinking: medium",
+                  "description": null
+                },
+                {
+                  "value": "high",
+                  "name": "Thinking: high",
+                  "description": null
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.834+00:00",
+      "dir": "out",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Create a file named hello.txt in the current directory containing exactly the word hello. Then reply DONE."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:53.837+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+              "piAcp": {
+                "queueDepth": 0,
+                "running": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.334+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "Simple"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.359+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " task"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.360+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.360+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " Create"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.363+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.371+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": ","
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.379+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " reply"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.385+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " DONE"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.393+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.517+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "chatcmpl-tool-a0d1690142156f28",
+            "title": "echo hello > hello.txt",
+            "kind": "execute",
+            "status": "pending",
+            "content": [
+              {
+                "type": "terminal",
+                "terminalId": "chatcmpl-tool-a0d1690142156f28"
+              }
+            ],
+            "_meta": {
+              "terminal_info": {
+                "terminal_id": "chatcmpl-tool-a0d1690142156f28",
+                "cwd": "/home/david/.cache/communication-lab/m0-acp-probe/pi-repo"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.517+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "chatcmpl-tool-a0d1690142156f28",
+            "title": "echo hello > hello.txt",
+            "kind": "execute",
+            "status": "in_progress"
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.521+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "chatcmpl-tool-a0d1690142156f28",
+            "status": "in_progress",
+            "_meta": {}
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.529+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "chatcmpl-tool-a0d1690142156f28",
+            "status": "completed",
+            "_meta": {
+              "terminal_output": {
+                "terminal_id": "chatcmpl-tool-a0d1690142156f28",
+                "data": "(no output)"
+              },
+              "terminal_exit": {
+                "terminal_id": "chatcmpl-tool-a0d1690142156f28",
+                "exit_code": 0,
+                "signal": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.853+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "The"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.860+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " command"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.866+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " ran"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.874+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.879+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " /"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.887+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "home"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.893+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "/d"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.901+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "avid"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.907+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "/."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.917+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "cache"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.923+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "/"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.929+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "communication"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:55.936+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "-lab"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.579+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": ".txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.586+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "`"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.593+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " containing"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.601+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " exactly"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.607+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " \""
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.614+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "hello"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.621+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "\""
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.628+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " in"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.635+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " the"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.644+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " current"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.651+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " directory"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.660+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": ","
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.668+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " and"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.676+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " verified"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.684+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " its"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.693+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": " contents"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.700+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {
+              "type": "text",
+              "text": "."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.720+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "used": 12027,
+            "size": 262144
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.720+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "01a16696-0cef-70bb-9fa1-d3e7aba3e447",
+          "update": {
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+              "piAcp": {
+                "queueDepth": 0,
+                "running": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": "2026-10-23T02:27:56.720+00:00",
+      "dir": "in",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "stopReason": "end_turn"
+        }
+      }
+    }
+  ]
+}

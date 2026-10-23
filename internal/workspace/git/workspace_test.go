@@ -291,7 +291,7 @@ func TestPrepareRealGitWorktreeAndMirror(t *testing.T) {
 	})
 }
 
-// TestDeclareExclusionsSkipsTrackedPaths is the apm.lock.yaml case (apm 0.33
+// TestDeclareExclusionsSkipsTrackedPaths is the apm.lock.yaml case (apm 0.34
 // probe A5): a pinned project *commits* its lockfile, and `install --frozen`
 // rewrites it in place. An exclude file can never hide tracked content, and
 // `check-ignore` honestly says so — declaring such a path used to fail the

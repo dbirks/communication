@@ -57,7 +57,7 @@ Adopt **A** as the source of truth, keeping the honest states elsewhere.
 
 ## Exact schema
 
-Draft migration `00014_approval_gate_changes.sql` (next free number after `00013_*`):
+Draft migration `00015_approval_gate_changes.sql` (next free number after `00013_*`):
 
 ```sql
 ALTER TABLE run_checkpoints
@@ -148,4 +148,4 @@ column; untracked-file accounting; cap policy.
 
 **Verification.** Worker capture seam tests, store/API tests, UI tests; real-git evidence required.
 
-**Migration/rollback.** `00014_approval_gate_changes.sql`; rollback drops the column.
+**Migration/rollback.** `00015_approval_gate_changes.sql`; rollback drops the column.

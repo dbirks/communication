@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -38,9 +39,18 @@ var (
 	ErrProfileNotFound  = errors.New("api: agent profile not found")
 	ErrProfileForbidden = errors.New("api: agent profile write not allowed")
 	ErrProfileConflict  = errors.New("api: agent profile name already exists")
+	// ErrProfileVersionConflict is ADR-0058's optimistic-concurrency refusal: a
+	// profile write carried a version the profile's row no longer has, so the
+	// write must not land and the caller must re-read the version history.
+	ErrProfileVersionConflict = errors.New("api: agent profile version conflict")
 	// ErrProfileValidation covers every named 422 in this file; the code travels
 	// inside *AgentProfileProblemError when there is one.
 	ErrProfileValidation = errors.New("api: agent profile request failed validation")
+	// ErrAgentProfileVersionNotFound answers a version read that named no such
+	// version of one profile (ADR-0058): the profile itself would answer not-found
+	// first (cross-organization profiles are invisible, ADR-0014 §3); this is the
+	// second arm for "the profile exists and is visible and this version does not".
+	ErrAgentProfileVersionNotFound = errors.New("api: agent profile version not found")
 )
 
 // AgentProfileProblemError is a 422 that names its ADR-0030 code, so a client
@@ -83,6 +93,12 @@ type AgentProfileAPMPatch struct {
 	APMPackageRef *string `json:"apm_package_ref"`
 	APMTarget     *string `json:"apm_target"`
 	APMLockDigest *string `json:"apm_lock_digest"`
+	// Version is the optimistic-concurrency token (ADR-0058): the profile
+	// version the caller last saw, which the write must match or answer 409.
+	// Optional because a client that never saw a version writes without a CAS
+	// check — the server still bumps and journals every write — but a client
+	// that does carry one must carry the right one.
+	Version *int `json:"version"`
 }
 
 // apmPinComplete is the all-or-nothing rule as the handler states it. The store
@@ -170,6 +186,106 @@ func (h *cnvHandlers) patchProfile(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, profile)
 }
 
+// --- profile version history (ADR-0058) ---------------------------------
+
+// listAgentProfileVersions is GET /api/v1/agent-profiles/{profileId}/versions:
+// the profile's version history, oldest first — the answer the app-shell's
+// version panel renders. Read-only; any member of the owning organization may
+// ask, and an invisible subject (another organization) is not-found.
+func (h *cnvHandlers) listAgentProfileVersions(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	profileID := r.PathValue("profileId")
+	if !validUUID(profileID) {
+		h.profileDenied(w, r, c, profileID, "profile.version.list", "malformed profile id")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile.")
+		return
+	}
+	items, err := h.profiles.ListAgentProfileVersions(r.Context(), c, profileID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrProfileNotFound):
+			h.profileDenied(w, r, c, profileID, "profile.version.list",
+				"no such agent profile, or it is not in your organization")
+			WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile.")
+		default:
+			h.serverError(w, r, cnvTarget{action: "profile.version.list"}, err)
+		}
+		return
+	}
+	if items == nil {
+		items = []AgentProfileVersion{}
+	}
+	WriteJSON(w, http.StatusOK, AgentProfileVersionList{Items: items})
+}
+
+// getAgentProfileVersion is GET /api/v1/agent-profiles/{profileId}/versions/{version}:
+// one frozen version of one profile. The version is a key into the append-only
+// history, not a mutable row; a version no profile carried answers not-found.
+func (h *cnvHandlers) getAgentProfileVersion(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	profileID := r.PathValue("profileId")
+	versionText := r.PathValue("version")
+	version, err := strconv.Atoi(versionText)
+	if !validUUID(profileID) || err != nil || version < 1 {
+		h.profileDenied(w, r, c, profileID, "profile.version.get", "malformed profile id or version")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile version.")
+		return
+	}
+	versionRow, err := h.profiles.GetAgentProfileVersion(r.Context(), c, profileID, version)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrProfileNotFound), errors.Is(err, ErrAgentProfileVersionNotFound):
+			h.profileDenied(w, r, c, profileID, "profile.version.get",
+				"no such agent profile, or it is not in your organization")
+			WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile version.")
+		default:
+			h.serverError(w, r, cnvTarget{action: "profile.version.get"}, err)
+		}
+		return
+	}
+	if versionRow.Version != version {
+		h.profileDenied(w, r, c, profileID, "profile.version.get", "no such agent profile version")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile version.")
+		return
+	}
+	WriteJSON(w, http.StatusOK, versionRow)
+}
+
+// restoreProfileVersion is POST /api/v1/agent-profiles/{profileId}/versions/{version}/restore
+// (ADR-0058): "restore version n" is a new write whose snapshot equals version n's
+// snapshot and lands as the profile's next version — history is append-only, so the
+// restore gains a version rather than rewriting one, and the version it restored from
+// becomes readable again as the state the new version froze. The write carries the
+// caller's current optimistic token, so a concurrent write between the read and the
+// write refuses with 409 and the client re-reads.
+func (h *cnvHandlers) restoreProfileVersion(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	profileID := r.PathValue("profileId")
+	versionText := r.PathValue("version")
+	version, err := strconv.Atoi(versionText)
+	if !validUUID(profileID) || err != nil || version < 1 {
+		h.profileDenied(w, r, c, profileID, "profile.version.restore", "malformed profile id or version")
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such agent profile version.")
+		return
+	}
+	profile, newVersion, err := h.profiles.RestoreAgentProfileVersion(r.Context(), c, profileID, version)
+	if err != nil {
+		h.profileFail(w, r, c, profileID, "profile.version.restore", err)
+		return
+	}
+	_ = newVersion
+	WriteJSON(w, http.StatusOK, profile)
+}
+
 // --- shared plumbing ----------------------------------------------------
 
 // cnvLauncherPattern is agent_profiles.launcher_id's CHECK, restated so a
@@ -242,6 +358,13 @@ func (h *cnvHandlers) profileFail(w http.ResponseWriter, r *http.Request, c Call
 		h.profileDenied(w, r, c, profileID, action, "an agent profile with that name already exists")
 		WriteProblem(w, http.StatusConflict, "Conflict",
 			"Your organization already has an agent profile with that name.")
+	case errors.Is(err, ErrProfileVersionConflict):
+		// ADR-0058: the write carried a version the profile's row no longer has;
+		// the conflict names what the client expected and what the server now
+		// holds, so the client re-reads the history instead of retrying blind.
+		h.profileDenied(w, r, c, profileID, action, "the profile version this write expected is stale")
+		WriteProblem(w, http.StatusConflict, "Conflict",
+			"The agent profile changed since this write was prepared; re-read the version history and retry.")
 	default:
 		h.serverError(w, r, cnvTarget{action: action}, err)
 	}

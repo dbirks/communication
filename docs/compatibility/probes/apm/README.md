@@ -15,18 +15,18 @@ Findings live in [`../../APM.md`](../../APM.md); raw observed output is
 
 ## Prerequisite: install pinned APM
 
-Never install "latest". Pin v0.33.0 and verify the published digest:
+Never install "latest". Pin v0.34.0 and verify the published digest:
 
 ```bash
-V=v0.33.0; BASE=https://github.com/microsoft/apm/releases/download/$V
+V=v0.34.0; BASE=https://github.com/microsoft/apm/releases/download/$V
 D=$HOME/.cache/communication-lab/m0-apm/download; mkdir -p "$D"; cd "$D"
 curl -sLO "$BASE/apm-linux-x86_64.tar.gz" -L -O "$BASE/apm-linux-x86_64.tar.gz.sha256"
 sha256sum -c apm-linux-x86_64.tar.gz.sha256   # expect: OK
-# published sha256 for this run: e6374402c74318f7c8bef97a90d8572d049fdab0dc3871492c6b0647ae9e881f
-DEST=$HOME/.local/share/communication-lab/apm/0.33.0; mkdir -p "$DEST"
+# published sha256 for this run: 4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c
+DEST=$HOME/.local/share/communication-lab/apm/0.34.0; mkdir -p "$DEST"
 tar -xzf apm-linux-x86_64.tar.gz -C "$DEST" --strip-components=1
 ln -sf "$DEST/apm" "$HOME/.local/bin/apm"
-apm --version   # Agent Package Manager (APM) CLI version 0.33.0 (18c4c43)
+apm --version   # Agent Package Manager (APM) CLI version 0.34.0 (65b3b9f)
 ```
 
 The tarball contains `apm` plus an `_internal/` directory (PyInstaller
@@ -41,7 +41,7 @@ Local-only packages so no network registry or git host is needed:
   `BETA-MARKER`.
 - `fixtures/consumer-a` depends only on `../pkg-alpha`;
   `fixtures/consumer-b` only on `../pkg-beta` (APM local-path dependencies,
-  string form `- ../pkg-alpha`, supported by v0.33.0).
+  string form `- ../pkg-alpha`, supported by v0.34.0).
 
 ## Run
 

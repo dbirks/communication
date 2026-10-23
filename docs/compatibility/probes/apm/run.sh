@@ -2,7 +2,7 @@
 # M0 APM staging spike: reproducibility, isolation and HOME-write probe.
 # See ../README.md (docs/compatibility/probes/apm/README.md).
 #
-# Prerequisite: apm v0.33.0 installed at $HOME/.local/bin/apm (see README).
+# Prerequisite: apm v0.34.0 installed at $HOME/.local/bin/apm (see README).
 set -euo pipefail
 
 APM_BIN="${APM_BIN:-$HOME/.local/bin/apm}"

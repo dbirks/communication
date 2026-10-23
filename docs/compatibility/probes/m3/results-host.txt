@@ -199,7 +199,7 @@ ENV fixture=/home/david/.cache/communication-lab/m3-probes/p6
 
 ENV glibc=ldd (GNU libc) 2.44 
 ENV apm_bin=/home/david/.local/bin/apm
-ENV apm_version=Agent Package Manager (APM) CLI version 0.33.0 (18c4c43)
+ENV apm_version=Agent Package Manager (APM) CLI version 0.34.0 (65b3b9f)
 
 CHECK A1 PASS contract § 4.2 step 2 shape: 'HOME=<workspace>/home apm install --target claude' staged into the run checkout (.claude/skills/alpha-skill/SKILL.md apm_modules/_local/pkg-alpha/apm.yml apm.lock.yaml .gitignore )
 CHECK A2 PASS APM.md T4 re-derived in the run HOME: apm wrote .gitconfig .cache .cache/apm .apm .apm/config.json into <workspace>/home — which is exactly why home/ exists (deviation D2) and why it must be deleted with the unit

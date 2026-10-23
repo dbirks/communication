@@ -439,7 +439,15 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
 		// join the exec environment; the exec'd process is the `env` binary the
 		// argv hop rendered, so the entries reach the command without touching argv.
-		env = execEnv(env, GitPushEnv(materialized.Env), materialized.Env)
+		gitEnv := GitPushEnv(materialized.Env)
+		env = execEnv(env, gitEnv, materialized.Env)
+		if len(gitEnv) > 0 {
+			// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub
+			// CLI the agent execs as its child needs a writable config dir under the
+			// agent's HOME plus the non-interactive flags — same exec-environment
+			// channel, and only for attempts that delivered a token.
+			env = execEnv(env, GitPushToolEnv(plan.AgentHome))
+		}
 	}
 
 	outcome, startErr := p.run(ctx, path, args, env, cwd, capDir)

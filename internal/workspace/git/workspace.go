@@ -587,7 +587,7 @@ func declareExclusions(ctx context.Context, r *Runner, mirror Mirror, checkout s
 	// report "not ignored" — so declaring one would fail the whole prepare at
 	// the confirmation step below. APM's apm.lock.yaml is exactly this case: it
 	// must be committed to pin a context, and `install --frozen` rewrites it in
-	// place (apm 0.33 probe A5). The real guarantee for a tracked file — that
+	// place (apm 0.34 probe A5). The real guarantee for a tracked file — that
 	// the packaged bytes are the pinned bytes — is the profile's lock-digest
 	// gate at staging time, not an exclude; and a rewritten lock lands on the
 	// run ref, the unit's own scratch lineage, never on main. Tracked paths

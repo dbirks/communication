@@ -18,6 +18,7 @@ const created: AgentProfile = {
   launcher_id: "claude",
   permission_mode: "ask",
   created_at: "2026-10-14T18:00:00Z",
+  version: 1,
 };
 
 const existing: AgentProfile[] = [
@@ -27,6 +28,7 @@ const existing: AgentProfile[] = [
     launcher_id: "claude",
     permission_mode: "ask",
     created_at: "2026-10-14T18:00:00Z",
+    version: 1,
   },
   {
     id: "01987a71-2222-7000-8000-abcdef0123ff",
@@ -34,6 +36,7 @@ const existing: AgentProfile[] = [
     launcher_id: "codex",
     permission_mode: "ask",
     created_at: "2026-10-14T18:00:00Z",
+    version: 1,
   },
 ];
 

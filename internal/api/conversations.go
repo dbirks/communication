@@ -81,6 +81,12 @@ type AgentProfileView struct {
 	LauncherID     string    `json:"launcher_id"`
 	PermissionMode string    `json:"permission_mode"`
 	CreatedAt      time.Time `json:"created_at"`
+	// Version is the profile's CURRENT version (ADR-0058, migration 00014): the
+	// optimistic-concurrency token the row carries and that writes must echo, and
+	// the latest entry of the version history. It is always present — a profile
+	// is never versionless — so the UI can render the version glyph without a
+	// separate lookup.
+	Version int `json:"version"`
 	// The APM triple (ADR-0030). Explicit nulls, because "this profile stages no
 	// packaged context" is an answer the UI has to be able to tell apart from a
 	// field it never read. A ref with no digest is impossible by construction: the
@@ -105,6 +111,28 @@ type AgentProfileContentsView struct {
 	Instructions []string `json:"instructions"`
 	MCPServers   []string `json:"mcp_servers"`
 	Truncated    bool     `json:"truncated"`
+}
+
+// AgentProfileVersion is one entry of a profile's version history (ADR-0058):
+// the version number, the frozen launch-descriptor snapshot it carried, the
+// writer, the optional note and the timestamp. The version is a key into the
+// append-only history — a version is a state, never a delta — and the snapshot
+// is the launch-descriptor state (name, launcher, permission mode, the APM
+// coordinates), never a secret value: a profile only ever references secrets,
+// it does not hold them.
+type AgentProfileVersion struct {
+	ProfileID string          `json:"profile_id"`
+	Version   int             `json:"version"`
+	Snapshot  json.RawMessage `json:"snapshot"`
+	CreatedBy string          `json:"created_by"`
+	CreatedAt time.Time       `json:"created_at"`
+	Note      *string         `json:"note,omitempty"`
+}
+
+// AgentProfileVersionList is the {items:[...]} envelope the version-history
+// routes answer (the same envelope every collection route returns).
+type AgentProfileVersionList struct {
+	Items []AgentProfileVersion `json:"items"`
 }
 
 // APMLockRequestView is the state of one apm_lock_requests row as the API
@@ -342,6 +370,24 @@ type ProfileStore interface {
 	// GetAPMLockRequest is GET /api/v1/agent-profiles/{profileId}/apm/lock: the
 	// latest lock request status for one profile.
 	GetAPMLockRequest(ctx context.Context, c Caller, profileID string) (APMLockRequestView, error)
+	// ListAgentProfileVersions is GET /api/v1/agent-profiles/{profileId}/versions
+	// (ADR-0058): the profile's version history, oldest first, for the app-shell's
+	// version panel. Read-only; any member of the owning organization may ask, the
+	// answer is the caller's own organization's history only, invisible subject →
+	// 404.
+	ListAgentProfileVersions(ctx context.Context, c Caller, profileID string) ([]AgentProfileVersion, error)
+	// GetAgentProfileVersion is GET /api/v1/agent-profiles/{profileId}/versions/{version}:
+	// one frozen version of one profile (ADR-0058). The version is a key into the
+	// append-only history, not a mutable row; a version no profile carried answers
+	// not-found.
+	GetAgentProfileVersion(ctx context.Context, c Caller, profileID string, version int) (AgentProfileVersion, error)
+	// RestoreAgentProfileVersion is POST /api/v1/agent-profiles/{profileId}/versions/{version}/restore
+	// (ADR-0058): "restore version n" is a new write whose snapshot equals version n's
+	// snapshot and lands as the profile's next version — history is append-only, so a
+	// restore gains a version rather than rewriting one. The write carries the caller's
+	// current optimistic token, so a concurrent write between the read and the write
+	// refuses with ErrProfileVersionConflict instead of silently overwriting.
+	RestoreAgentProfileVersion(ctx context.Context, c Caller, profileID string, version int) (AgentProfileView, int, error)
 }
 
 // Validation limits, the tighter of api/openapi.yaml and the schema CHECKs.
@@ -368,6 +414,12 @@ func RegisterConversations(s *Server, store ConversationStore, profiles ProfileS
 		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/usage", http.HandlerFunc(h.getProfileUsage))
 		s.HandleAuthed("POST /api/v1/agent-profiles/{profileId}/apm/lock", http.HandlerFunc(h.postAgentProfileAPMLock))
 		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/apm/lock", http.HandlerFunc(h.getAgentProfileAPMLock))
+		// ADR-0058 versioned agent profiles: the version history reads.
+		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/versions", http.HandlerFunc(h.listAgentProfileVersions))
+		s.HandleAuthed("GET /api/v1/agent-profiles/{profileId}/versions/{version}", http.HandlerFunc(h.getAgentProfileVersion))
+		// ADR-0058 versioned agent profiles: "restore version n" is a new write
+		// whose snapshot equals version n's (the design's "Save as v4").
+		s.HandleAuthed("POST /api/v1/agent-profiles/{profileId}/versions/{version}/restore", http.HandlerFunc(h.restoreProfileVersion))
 	}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.listConversations))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/conversations", http.HandlerFunc(h.createConversation))

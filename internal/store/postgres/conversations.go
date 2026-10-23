@@ -89,6 +89,10 @@ type CnvProfile struct {
 	LauncherID     string
 	PermissionMode string
 	CreatedAt      time.Time
+	// Version is the profile's CURRENT version (migration 00014, ADR-0058): the
+	// optimistic-concurrency token the row carries and that writes must echo, and
+	// the latest entry of the version history.
+	Version int
 	// The APM triple (ADR-0030). "" means the column is NULL, i.e. this profile
 	// stages no packaged context — the honest state, not a missing read. A ref
 	// with no digest is refused at the write path and again by the worker
@@ -234,6 +238,12 @@ type CnvConversation struct {
 	ActiveTurn         *CnvTurn
 	Binding            *CnvBinding
 	PendingPermissions []CnvPermission
+	// AgentProfileVersion is the profile version this conversation was created
+	// against (ADR-0058, migration 00014): the optimistic-concurrency token the
+	// conversation pins its runs to, resolved off the profile's current version
+	// at creation. A conversation never re-resolves it; a run sourced from it
+	// inherits this pin, and the worker reads the versioned snapshot through it.
+	AgentProfileVersion int
 	// Origin is "manual" or "run": run iff an attempt references the
 	// conversation; RunLink names that attempt's node for deep-linking.
 	Origin  string
@@ -294,7 +304,7 @@ func (s *CnvStore) ListAgentProfiles(ctx context.Context, c Caller) ([]CnvProfil
 		var p CnvProfile
 		var contents *string
 		if err := rows.Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt,
+			&p.PermissionMode, &p.CreatedAt, &p.Version,
 			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents); err != nil {
 			return nil, fmt.Errorf("postgres: scan agent profile: %w", err)
 		}
@@ -864,11 +874,12 @@ func (s *CnvStore) CreateConversation(ctx context.Context, c Caller, projectID, 
 	cv.LauncherID = profile.LauncherID
 	cv.MyRole = project.MyRole
 	cv.Status = "idle"
+	cv.AgentProfileVersion = profile.Version
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO conversations (project_id, agent_profile_id, title, status, created_by)
-		VALUES ($1::uuid, $2::uuid, $3, 'idle', $4::uuid)
+		INSERT INTO conversations (project_id, agent_profile_id, agent_profile_version, title, status, created_by)
+		VALUES ($1::uuid, $2::uuid, $3::int, $4, 'idle', $5::uuid)
 		RETURNING id::text, created_at, updated_at`,
-		projectID, profileID, title, c.UserID).
+		projectID, profileID, profile.Version, title, c.UserID).
 		Scan(&cv.ID, &cv.CreatedAt, &cv.UpdatedAt); err != nil {
 		return CnvConversation{}, fmt.Errorf("postgres: insert conversation: %w", err)
 	}
@@ -2341,6 +2352,7 @@ func cnvProfileView(p CnvProfile) api.AgentProfileView {
 		LauncherID:     p.LauncherID,
 		PermissionMode: p.PermissionMode,
 		CreatedAt:      p.CreatedAt,
+		Version:        p.Version,
 		APMPackageRef:  null(p.APMPackageRef),
 		APMTarget:      null(p.APMTarget),
 		APMLockDigest:  null(p.APMLockDigest),
@@ -2376,6 +2388,8 @@ func cnvProfileAPIErr(err error) error {
 		return fmt.Errorf("%w: %w", api.ErrProfileForbidden, err)
 	case errors.Is(err, ErrProfileConflict):
 		return fmt.Errorf("%w: %w", api.ErrProfileConflict, err)
+	case errors.Is(err, ErrProfileVersionConflict):
+		return fmt.Errorf("%w: %w", api.ErrProfileVersionConflict, err)
 	case errors.Is(err, ErrProfileValidation):
 		return fmt.Errorf("%w: %w", api.ErrProfileValidation, err)
 	default:
@@ -2403,7 +2417,7 @@ func (a APIConversationStore) PatchAgentProfileAPM(ctx context.Context, c api.Ca
 		return api.AgentProfileView{}, err
 	}
 	profile, err := s.PatchAgentProfileAPM(ctx, prjAPICaller(c), profileID,
-		in.APMPackageRef, in.APMTarget, in.APMLockDigest)
+		in.APMPackageRef, in.APMTarget, in.APMLockDigest, in.Version)
 	if err != nil {
 		return api.AgentProfileView{}, cnvProfileAPIErr(err)
 	}
@@ -2438,4 +2452,68 @@ func (a APIConversationStore) GetAPMLockRequest(ctx context.Context, c api.Calle
 		return api.APMLockRequestView{}, cnvProfileAPIErr(err)
 	}
 	return api.APMLockRequestView{RequestID: req.RequestID, Status: req.Status, Error: req.Error}, nil
+}
+
+// ListAgentProfileVersions implements api.ProfileStore: GET
+// /api/v1/agent-profiles/{profileId}/versions — the profile's version history,
+// oldest first (ADR-0058).
+func (a APIConversationStore) ListAgentProfileVersions(ctx context.Context, c api.Caller, profileID string) ([]api.AgentProfileVersion, error) {
+	s, err := a.store()
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.ListAgentProfileVersions(ctx, prjAPICaller(c), profileID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.AgentProfileVersion, 0, len(items))
+	for i := range items {
+		out = append(out, api.AgentProfileVersion{
+			ProfileID: items[i].ProfileID,
+			Version:   items[i].Version,
+			Snapshot:  items[i].Snapshot,
+			CreatedBy: items[i].CreatedBy,
+			CreatedAt: items[i].CreatedAt,
+			Note:      items[i].Note,
+		})
+	}
+	return out, nil
+}
+
+// GetAgentProfileVersion implements api.ProfileStore: GET
+// /api/v1/agent-profiles/{profileId}/versions/{version} — one frozen version
+// (ADR-0058).
+func (a APIConversationStore) GetAgentProfileVersion(ctx context.Context, c api.Caller, profileID string, version int) (api.AgentProfileVersion, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.AgentProfileVersion{}, err
+	}
+	v, err := s.GetAgentProfileVersion(ctx, prjAPICaller(c), profileID, version)
+	if err != nil {
+		return api.AgentProfileVersion{}, err
+	}
+	return api.AgentProfileVersion{
+		ProfileID: v.ProfileID,
+		Version:   v.Version,
+		Snapshot:  v.Snapshot,
+		CreatedBy: v.CreatedBy,
+		CreatedAt: v.CreatedAt,
+		Note:      v.Note,
+	}, nil
+}
+
+// RestoreAgentProfileVersion implements api.ProfileStore: POST
+// /api/v1/agent-profiles/{profileId}/versions/{version}/restore — "restore version n"
+// is a new write whose snapshot equals version n's (ADR-0058). It lands as the
+// profile's next version, under the caller's current optimistic token.
+func (a APIConversationStore) RestoreAgentProfileVersion(ctx context.Context, c api.Caller, profileID string, version int) (api.AgentProfileView, int, error) {
+	s, err := a.store()
+	if err != nil {
+		return api.AgentProfileView{}, 0, err
+	}
+	profile, newVersion, err := s.RestoreAgentProfileVersion(ctx, prjAPICaller(c), profileID, version)
+	if err != nil {
+		return api.AgentProfileView{}, 0, err
+	}
+	return cnvProfileView(profile), newVersion, nil
 }

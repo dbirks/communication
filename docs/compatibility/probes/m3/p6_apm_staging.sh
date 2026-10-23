@@ -4,7 +4,7 @@
 # `--frozen` across an upstream change, and the fact that APM's generated paths
 # are git-visible until the worker puts them in the project exclusion file.
 #
-# Needs apm 0.33.0 on PATH (host only — the worker image does not vendor it
+# Needs apm 0.34.0 on PATH (host only — the worker image does not vendor it
 # yet; that is docs/m3-contract.md § 5's own line, and this probe reports GAP
 # rather than pretending).
 #
@@ -35,7 +35,7 @@ echo "ENV apm_version=$apm_ver"
 echo
 
 if [ ! -x "$M3_APM" ]; then
-    check A0 GAP "apm not found at $M3_APM — ADR-0008 D1's vendored 0.33.0 is not in this environment (and not in communication-worker:dev, which is the point: docs/m3-contract.md § 5 still has to vendor it)"
+    check A0 GAP "apm not found at $M3_APM — ADR-0008 D1's vendored 0.34.0 is not in this environment (and not in communication-worker:dev, which is the point: docs/m3-contract.md § 5 still has to vendor it)"
     exit 0
 fi
 # A binary that exists but cannot execute is a missing precondition, not a

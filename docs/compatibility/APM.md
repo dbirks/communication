@@ -14,6 +14,30 @@ bash docs/compatibility/probes/apm/run.sh > docs/compatibility/probes/apm/result
 Raw observed output: [`probes/apm/results.txt`](probes/apm/results.txt).
 This is a preparation/dependency-plane probe, not a sandbox claim (D-017).
 
+## APM CLI upgrade 0.33.0 → 0.34.0 (2026-10-23)
+
+The worker image now vendors APM CLI **0.34.0** (`65b3b9f`), release tarball
+`apm-linux-x86_64.tar.gz` sha256
+`4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c`
+(verified against the release's own `.sha256` asset), Linux x86_64.
+`internal/agent/apm/stage.go` `PinnedVersion` moved to `0.34.0`.
+
+- **New lock digest** (measured 2026-10-23 with the real apm 0.34.0 binary via
+  `COMMUNICATION_APM_REAL=1` resolve of `mattpocock/skills#v1.3.1`):
+  `sha256:44cf8ba0ba5b34af878358795b4f0dbcbc5698ebfe72c7cfc162d5f7040cc55d`.
+  Old (0.33.0, 2026-10-16): `sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33`.
+- **A version bump invalidates existing locks**: `apm.lock.yaml` records
+  `apm_version`, so the same package content now hashes to a different lock
+  digest. Profiles that recorded the 0.33.0-era digest must **re-Lock** before a
+  launch; the launch gate refuses a mismatch (`Stage` returns `*DigestMismatch`
+  when the on-disk lock digest differs from the profile's pin).
+- **BREAKING (0.34.0)**: `apm install --frozen` no longer writes
+  `apm.lock.yaml`; a frozen install whose lockfile does not record every
+  deployed file now fails and names the missing paths instead of silently
+  repairing the lockfile. Checkouts that track a lock must have one that
+  records all deployed files; fresh checkouts keep bootstrapping the lock
+  through the resolving install / `apm lock`.
+
 ## Results
 
 | Target | T1 generated paths | T2 reproducible | T3 isolated | T4 HOME untouched | T6 harness picks it up |
@@ -31,7 +55,7 @@ though no network package was resolved.
 ```
 <project>/
   apm.yml                      # authored manifest (rewritten/normalized by apm)
-  apm.lock.yaml                # lockfile: lockfile_version '1', apm_version 0.33.0,
+  apm.lock.yaml                # lockfile: lockfile_version '1', apm_version 0.34.0,
                                # per-dep source coords + deployed_file_hashes
   .gitignore                   # created with "# APM dependencies / apm_modules/"
   apm_modules/_local/<pkg>/    # vendored copy of each local-path dependency
@@ -98,7 +122,7 @@ digest) differs per target because it records per-target `deployments`.
   an APM-generated path used to fail prepare outright;
   `internal/workspace/git` now drops tracked declarations (`TestDeclareExclusionsSkipsTrackedPaths`)
   and the rewritten lock simply rides the unit's run ref.
-- **The lock is generated with `apm lock`, not `apm install`** (0.33 CLI):
+- **The lock is generated with `apm lock`, not `apm install`** (0.34 CLI):
   `install` on an app whose `dependencies.apm[]` list is empty answers
   "No changes — install state already up to date" and writes no lock. The
   schema is `dependencies: {apm: [<path-or-source#ref>]}`; a

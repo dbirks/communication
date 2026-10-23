@@ -25,7 +25,7 @@
 # re-run against this image before shipping it.
 #
 # Base image: trixie, not bookworm, because of one measured dependency. APM
-# 0.33.0 bundles libpython3.12, which needs GLIBC_2.38; bookworm ships 2.36 and
+# 0.34.0 bundles libpython3.12, which needs GLIBC_2.38; bookworm ships 2.36 and
 # the binary dies at import with
 #   Failed to load Python shared library ... version `GLIBC_2.38' not found
 # trixie ships 2.41. This was verified by running the actual binary in both
@@ -48,10 +48,14 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/communication ./cm
 FROM node:22-trixie-slim AS npmdeps
 ARG CLAUDE_ACP_VERSION=0.90.0
 ARG CODEX_ACP_VERSION=2.2.2
+ARG PI_VERSION=1.4.0
+ARG PI_ACP_VERSION=0.0.34
 RUN --mount=type=cache,target=/root/.npm \
     npm install -g --omit=dev --no-update-check --no-fund --no-audit \
       "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
-      "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
+      "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+      "pi-acp@${PI_ACP_VERSION}"
 
 # Stage 2b: fetch and verify the execution-plane binaries.
 #
@@ -63,8 +67,12 @@ RUN --mount=type=cache,target=/root/.npm \
 #   nono v0.80.0  — matches the published SHA256SUMS.txt for that release and the
 #                   value recorded in docs/compatibility/SANDBOX.md ("nono tarball
 #                   sha256"), which is the build the probe matrix ran on.
-#   apm v0.33.0   — matches the release's own apm-linux-x86_64.tar.gz.sha256 and
+#   apm v0.34.0   — matches the release's own apm-linux-x86_64.tar.gz.sha256 and
 #                   docs/compatibility/APM.md's provenance line.
+#   gh v2.103.0   — matches the release's own gh_2.103.0_checksums.txt (cli/cli
+#                   v2.103.0, published 2026-10-21) and the digest pinned as
+#                   GH_SHA256 below; the pin came from that release's checksums
+#                   file, the same source the apm pin used.
 #
 # The musl nono build is deliberately NOT used even though it would have no glibc
 # dependency at all: the probe matrix ran against the gnu build, and ADR-0019's
@@ -74,8 +82,10 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM node:22-trixie-slim AS executionbin
 ARG NONO_VERSION=0.80.0
 ARG NONO_SHA256=6da665b61999570c10dffc7da78828fe1fb7f3cac53319e505cebecaef17037f
-ARG APM_VERSION=0.33.0
-ARG APM_SHA256=e6374402c74318f7c8bef97a90d8572d049fdab0dc3871492c6b0647ae9e881f
+ARG APM_VERSION=0.34.0
+ARG APM_SHA256=4487af55604b4fa6f4587f3ee6e833b44ce99c491f11069790e4e13e297cde8c
+ARG GH_VERSION=2.103.0
+ARG GH_SHA256=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
@@ -97,7 +107,17 @@ RUN set -eu; \
     # nested copy would look for templates one level too deep.
     mkdir -p /out/apm && tar -xzf apm.tgz -C /out/apm --strip-components=1; \
     test -x /out/apm/apm; test -d /out/apm/_internal; \
-    ls -l /out /out/apm
+    curl -fsSL -o gh.tgz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
+    printf '%s  gh.tgz\n' "${GH_SHA256}" | sha256sum -c -; \
+    # The gh release tarball carries a top-level directory (gh_2.103.0_linux_amd64/),
+    # so it is stripped the same way the apm one is: /out/gh/bin/gh is the real
+    # binary and /usr/local/bin/gh the PATH-visible one (a real file, not a
+    # symlink — the sandbox grants resolved paths, and a symlink would resolve
+    # into a tree no grant covers).
+    mkdir -p /out/gh && tar -xzf gh.tgz -C /out/gh --strip-components=1; \
+    test -x /out/gh/bin/gh; \
+    ls -l /out /out/apm /out/gh
 
 # Stage 3: runtime only. The node image's own layers (base OS, node binary,
 # npm, corepack) are re-emitted as one squashed filesystem layer with the
@@ -115,7 +135,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # openssh-client: private remotes over ssh (the keys are a runtime mount,
 # never baked in).
 #
-# libffi8 is here for exactly one reason and it is not tidiness: APM 0.33.0's
+# libffi8 is here for exactly one reason and it is not tidiness: APM 0.34.0's
 # bundled Python imports ctypes, which dlopens libffi.so.8. Without the package
 # `apm --version` fails with
 #   ImportError: libffi.so.8: cannot open shared object file
@@ -137,6 +157,20 @@ COPY --from=npmdeps /usr/local/lib/node_modules/@agentclientprotocol /usr/local/
 RUN ln -s ../lib/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js /usr/local/bin/claude-agent-acp \
  && ln -s ../lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js /usr/local/bin/codex-acp
 
+# pi — the second adapter family the npm stage installs. The runtime stage only
+# carries the @agentclientprotocol subtree (above), so the pi packages the same
+# npmdeps stage installed never reached the final image and neither `pi` nor
+# `pi-acp` was missing from /usr/local/bin there (the launcher registry names the
+# ACP entry point pi-acp, which spawns `pi --mode rpc` — pi itself must be on
+# PATH for the adapter to find it). Copy the pi-acp package and the whole
+# @earendil-works scope (pi-coding-agent and its hoisted @earendil-works/*
+# dependencies), then recreate the npm bin links, relative from /usr/local/bin
+# exactly as the @agentclientprotocol links above are written.
+COPY --from=npmdeps /usr/local/lib/node_modules/pi-acp /usr/local/lib/node_modules/pi-acp
+COPY --from=npmdeps /usr/local/lib/node_modules/@earendil-works /usr/local/lib/node_modules/@earendil-works
+RUN ln -s ../lib/node_modules/pi-acp/dist/index.js /usr/local/bin/pi-acp \
+ && ln -s ../lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js /usr/local/bin/pi
+
 # The sandbox and the package manager. nono goes on PATH because
 # internal/agent/acp resolves it with exec.LookPath, and because a
 # `required`-mode worker that could not find it must fail at startup rather
@@ -155,6 +189,11 @@ COPY --from=executionbin /out/nono /usr/local/bin/nono
 # writes into the checkout, not into the tool tree.
 COPY --from=executionbin /out/apm /opt/apm
 RUN ln -s /opt/apm/apm /usr/local/bin/apm
+# GitHub CLI (gh, ADR-0045 follow-up, product owner decision 2026-10-22): the
+# pinned release lands as a real file at /usr/local/bin/gh — no symlink, because
+# the sandbox grants resolved paths and a symlink's own directory would not be
+# granted.
+COPY --from=executionbin /out/gh/bin/gh /usr/local/bin/gh
 
 # Non-root: workspaces, mounted credentials and .env materialization all
 # need a stable uid (the dev harness mounts host configs readable by it).
@@ -188,7 +227,8 @@ ENV COMMUNICATION_WORKSPACE_ROOT=/workspaces \
 USER worker
 WORKDIR /workspaces
 
-# Smoke: both adapter entry points resolve, the harness runtimes the adapters
+# Smoke: the adapter entry points resolve (claude-agent-acp, codex-acp, and the
+# pi ACP pair: pi-acp + its `pi` prerequisite), the harness runtimes the adapters
 # actually spawn (their bundled binaries) are present, and — new for M3 — both
 # execution-plane binaries *run* under this image's glibc and library set.
 #
@@ -204,8 +244,11 @@ WORKDIR /workspaces
 RUN communication --help >/dev/null \
  && command -v claude-agent-acp \
  && command -v codex-acp \
+ && command -v pi-acp \
+ && command -v pi \
  && nono --version \
  && apm --version \
+ && gh --version \
  \
  && mkdir -p /workspaces/.smoke \
  && (cd /workspaces/.smoke && nono run -s --allow /workspaces/.smoke -- /bin/true) \

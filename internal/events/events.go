@@ -995,6 +995,10 @@ type AgentProfileCreatedPayload struct {
 	ProfileID  string `json:"profile_id"`
 	Name       string `json:"name"`
 	LauncherID string `json:"launcher_id"`
+	// Version is the profile version this creation landed as (ADR-0058): a new
+	// profile always writes version 1, and that version is what its history
+	// starts from.
+	Version int `json:"version"`
 	// PermissionMode is always "ask": the route cannot set it, because
 	// preapproved_within_sandbox requires a verified enforced sandbox for the
 	// launcher first (04-agent-runtime.md "Permission policy", ADR-0009).
@@ -1004,9 +1008,13 @@ type AgentProfileCreatedPayload struct {
 // AgentProfileUpdatedPayload is agent.profile.updated. It records the whole APM
 // triple as it stands after the write — not a diff — because the question the
 // row exists to answer is "what was this profile pinned to when it changed?",
-// and a reader must not have to replay history to know.
+// and a reader must not have to replay history to know. Version is the profile
+// version this write landed as (ADR-0058): the optimistic-concurrency token the
+// row carried before the write (the CAS loser gets a 409 instead of a rewrite) and
+// the version the frozen history row for it names.
 type AgentProfileUpdatedPayload struct {
 	ProfileID     string `json:"profile_id"`
+	Version       int    `json:"version"`
 	APMPackageRef string `json:"apm_package_ref,omitempty"`
 	APMTarget     string `json:"apm_target,omitempty"`
 	APMLockDigest string `json:"apm_lock_digest,omitempty"`

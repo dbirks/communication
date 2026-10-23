@@ -27,13 +27,21 @@ runs in.
 `GITHUB_TOKEN` is ever emitted as the pair a GitHub client reads.
 
 **Worker image (`worker/Dockerfile`):** `git` IS installed (runtime stage apt-get
-`ca-certificates git openssh-client libffi8`); the `gh` CLI is NOT installed and
-`curl` is deliberately absent (Dockerfile comment). So git is present, gh is not.
+`ca-certificates git openssh-client libffi8`); the `gh` CLI is NOW installed (pinned
+`GH_VERSION=2.103.0`, digest `GH_SHA256` checked against the release's own
+`gh_2.103.0_checksums.txt`, landed as a real file at `/usr/local/bin/gh`, added to the
+build smoke alongside `apm --version`); `curl` is deliberately absent (Dockerfile comment).
+So git and gh are both present, curl is not.
 
-**Git push authentication: none today.** The launch env sets `GIT_CONFIG_NOSYSTEM=1`,
-`GIT_TERMINAL_PROMPT=0` and the `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity
-(`internal/agent/acp/launchenv.go`); there is no `credential.*` configuration, so
-a sandboxed `git push` cannot authenticate.
+**Git push authentication: now wired for git and for `gh`.** The launch env sets
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0` and the `GIT_AUTHOR_*`/
+`GIT_COMMITTER_*` identity (`internal/agent/acp/launchenv.go`); `GitPushEnv`
+delivers the token under both `GH_TOKEN` / `GITHUB_TOKEN` and wires git through the
+`credential.https://github.com.helper`, and the follow-up added `GitPushToolEnv`,
+which delivers the GitHub CLI block for attempts that hold a token:
+`GH_CONFIG_DIR=<agent-home>/.config/gh` (a writable dir under the sandbox HOME the
+agent-home grant covers) plus `GH_PROMPT_DISABLED=1` and `GH_NO_UPDATE_NOTIFIER=1`.
+Both ride the exec environment (same channel as the token), never the launch argv.
 
 **Egress (`docs/design/agent-egress.md`, ADR-0035, `internal/worker/egress.go`):**
 the shipped agent-turn allowlist is `api.anthropic.com` only; an operator widens
@@ -58,6 +66,10 @@ value would have reached the journal.
   through the env; the token never enters argv.
 - Egress warning: when a GitHub token is delivered and `github.com` / `api.github.com`
   are not in the allowlist, the worker logs a warning that push will fail.
+- Worker image now ships the pinned `gh` CLI (v2.103.0, `GH_VERSION` + `GH_SHA256`
+  verified against the release's checksums file, real file at `/usr/local/bin/gh`);
+  `internal/worker/gitpush.go` gained `GitPushToolEnv` for the `gh` config-dir and
+  non-interactive flags.
 
 ## How to enable (operator)
 
@@ -66,14 +78,18 @@ value would have reached the journal.
 2. Add it as a project secret (`delivery_mode: env`, purpose e.g. `git_push`) whose
    `allowed_agent_profile_ids` names the agent profile(s) that may push.
 3. Set the worker env: `COMMUNICATION_AGENT_EGRESS_ALLOW=github.com,api.github.com`.
-4. Run `communication doctor` / check the sandbox report.
+4. Rebuild the worker image so the pinned `gh` binary is present:
+   `docker build -f worker/Dockerfile -t communication-worker:gh .` — the image now
+   ships `gh` v2.103.0 at `/usr/local/bin/gh` (real file, digest-verified).
+5. Run `communication doctor` / check the sandbox report.
 
 ## Not yet / NEXT
 
 - Real push proof in the lab: needs a real token; run a push turn under the widened
   allowlist and confirm the token is absent from logs/journal/UI.
-- The worker image does not ship `gh` (and `curl` is deliberately absent); agents
-  open PRs via the REST API with curl/gh if present.
+- The worker image now ships `gh`; the remaining lab proof is the real `gh` exec inside
+  the sandbox (draft-PR creation via `gh pr create --draft`) under a widened
+  allowlist — `gh pr create --draft` is the CLI shape the agent should use.
 
 ## Security finding (2026-10-22)
 

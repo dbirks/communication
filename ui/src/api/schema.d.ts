@@ -572,7 +572,7 @@ export interface paths {
     };
     /**
      * List the agent profiles this organization may launch
-     * @description Agent profiles in `name` order (there is no `display_name` column — `name` is the display text, unique per organization). M2 seeds exactly two in the `default` organization — "Claude Code" (launcher `claude`) and "Codex" (launcher `codex`) — both with `permission_mode: ask`, because no launcher has a verified enforced sandbox yet (`04-agent-runtime.md`: auto-approving ACP prompts is not a substitute for sandbox isolation). A profile is a launch descriptor, not a capability claim: whether a launcher actually works here is answered by `docs/compatibility/ACP.md` and `communication doctor --acp`, never by this route returning a row. Profiles carry no `version`/`updated_at` optimistic token (ADR-0030): the only writable fields are the three APM columns, they are written as one triple, and a lost race between two writers is therefore unobservable in the row. Creating and patching a profile are `POST`/`PATCH` below; the listing stays available to every member of the organization.
+     * @description Agent profiles in `name` order (there is no `display_name` column — `name` is the display text, unique per organization). M2 seeds exactly two in the `default` organization — "Claude Code" (launcher `claude`) and "Codex" (launcher `codex`) — both with `permission_mode: ask`, because no launcher has a verified enforced sandbox yet (`04-agent-runtime.md`: auto-approving ACP prompts is not a substitute for sandbox isolation). A profile is a launch descriptor, not a capability claim: whether a launcher actually works here is answered by `docs/compatibility/ACP.md` and `communication doctor --acp`, never by this route returning a row. The profile's CURRENT version is the optimistic concurrency token (ADR-0058, migration 00014) — the token the design's "Save as v4" replaced — and the only writable fields are the three APM columns, they are written as one triple, and a lost race between two writers is therefore observable as a `409` on the write that carries a stale token. Creating and patching a profile are `POST`/`PATCH` below; the listing stays available to every member of the organization.
      */
     get: operations["listAgentProfiles"];
     put?: never;
@@ -609,6 +609,66 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agent-profiles/{profileId}/versions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the version history of one agent profile
+     * @description Every version of one agent profile, oldest first, for the app-shell's version panel (ADR-0058). A version is a frozen launch-descriptor snapshot (`snapshot`), the writer and the optional note that recorded it; restoring version n is a new write whose snapshot equals n, so the history is append-only. Visible to any member of the owning organization (the listing is not a write); a profile of another organization is `404` — never a peek (ADR-0014 §3).
+     */
+    get: operations["listAgentProfileVersions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-profiles/{profileId}/versions/{version}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read one version of an agent profile
+     * @description One frozen version of one agent profile (ADR-0058): the version number, the snapshot it froze and the writer/note around it. The version is a key into the append-only history, not a mutable row; a version no profile carried is `404`.
+     */
+    get: operations["getAgentProfileVersion"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/agent-profiles/{profileId}/versions/{version}/restore": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Restore an agent profile version
+     * @description "Restore version n" (ADR-0058): a new write whose snapshot equals version n's snapshot, landed as the profile's next version — history is append-only, so the restore gains a version rather than rewriting one. The write carries the caller's current optimistic-concurrency token and a stale token answers `409`; the client re-reads the version history and retries. The restore is a write, so it answers with the profile as the restore landed it (the new version).
+     */
+    post: operations["restoreAgentProfileVersion"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agent-profiles/{profileId}": {
     parameters: {
       query?: never;
@@ -625,6 +685,7 @@ export interface paths {
     /**
      * Set or clear a profile's APM package pin
      * @description The **only** writable fields are `apm_package_ref`, `apm_target` and `apm_lock_digest`, and they move as one triple: either all three carry a value or all three are absent/empty (clearing the pin). Any partial triple is `422` with code `apm_pin_incomplete`.
+     *     The write carries the profile's optimistic-concurrency token (`version`: the current version the row held, ADR-0058) — the token the design's "Save as v4" replaced — and a write whose token is stale answers `409` rather than overwriting the version that won the race.
      *     Why the triple is atomic: `internal/agent/apm` stages a launch with `apm install --frozen --target <t>` and then refuses when `sha256(apm.lock.yaml)` differs from `apm_lock_digest`. Probe A5 showed `--frozen` proves the lockfile's *presence*, not its bytes — a mutated upstream still installed cleanly — and A5b showed the digest moves exactly when content moves. A ref recorded **without** a digest would therefore stage whatever the ref points at today, unverified; the worker refuses that state outright, so writing it through the API would turn an immediate, named refusal into a launch failure for somebody else's conversation. `docs/compatibility/APM.md` ("Git-tag sources") proves the pin holds: the lock records `resolved_commit`, and `--frozen` replays that commit offline, so a moved tag cannot change staged content under a recorded digest.
      *     **APM staging is not isolation** (`04-agent-runtime.md`): the staged trees are excluded from checkpoints because the worker wrote them before the grant set existed, not because a package was audited. Recording a digest makes the content *identifiable*; it asserts nothing about what the content does.
      *     Library role (ADR-0030). A profile of another organization is `404`.
@@ -2782,6 +2843,8 @@ export interface components {
       permission_mode: "ask" | "preapproved_within_sandbox" | "deny";
       /** Format: date-time */
       created_at: string;
+      /** @description The profile's current version (ADR-0058, migration 00014): the optimistic-concurrency token the row carries and that writes must echo, and the latest entry of the version history. Always present — a profile is never versionless. */
+      version: number;
       /** @description An apm git dependency string, pinned: `<owner>/<repo>[/<skill subdirectory>][#<tag|branch|commit>]` — e.g. `mattpocock/skills#v1.3.1`, or `mattpocock/skills/skills/engineering/ask-matt#v1.3.1` for one skill out of a multi-skill repo (`docs/compatibility/APM.md`, T-tag-5). The `#<ref>` is required: without it apm resolves the default branch, which is not a pin anything downstream can check. Null when this profile stages no packaged context. */
       apm_package_ref?: string | null;
       /**
@@ -2828,6 +2891,8 @@ export interface components {
       /** @enum {string|null} */
       apm_target?: "claude" | "codex" | null;
       apm_lock_digest?: string | null;
+      /** @description The optimistic-concurrency token (ADR-0058): the profile version the caller last saw, which the write must match or answer 409. Optional because a client that never saw a version writes without a CAS check — the server still bumps and journals every write — but a client that does carry one must carry the right one. `null` is the same answer as absent: no token was carried. */
+      version?: number | null;
     };
     /**
      * AgentProfileProblem
@@ -2846,6 +2911,37 @@ export interface components {
     /** AgentProfileList */
     AgentProfileList: {
       items: components["schemas"]["AgentProfile"][];
+    };
+    /**
+     * AgentProfileVersion
+     * @description One version of an agent profile's history (ADR-0058): the version number, the frozen launch-descriptor snapshot it carried, the writer and the optional note, and when it was recorded. The version is a key into the append-only history — a version is a state, never a delta — and the snapshot is the launch-descriptor state (name, launcher, permission mode, the APM coordinates), never a secret value: a profile only ever references secrets, it does not hold them.
+     */
+    AgentProfileVersion: {
+      /** Format: uuid */
+      profile_id: string;
+      /** @description The version number within its profile's history; positive integers only, and a version no profile carried answers `404`. */
+      version: number;
+      /** @description The launch-descriptor state the version froze: the profile's name, the launcher it drove, the permission mode and the APM coordinates — all identifiers or references, never a secret value. */
+      snapshot: {
+        name?: string;
+        launcher_id?: string;
+        /** @enum {string} */
+        permission_mode?: "ask" | "preapproved_within_sandbox" | "deny";
+        apm_package_ref?: string | null;
+        /** @enum {string|null} */
+        apm_target?: "claude" | "codex" | null;
+        apm_lock_digest?: string | null;
+      };
+      /** @description The user id (or worker id, for a lock-written version) that produced the version. */
+      created_by: string;
+      /** Format: date-time */
+      created_at: string;
+      /** @description Optional operator note on the version; null when the write recorded none. */
+      note?: string | null;
+    };
+    /** AgentProfileVersionList */
+    AgentProfileVersionList: {
+      items: components["schemas"]["AgentProfileVersion"][];
     };
     /**
      * APMLockRequest
@@ -6530,6 +6626,90 @@ export interface operations {
       404: components["responses"]["NotFound"];
     };
   };
+  listAgentProfileVersions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `agent_profiles` id. Profiles are organization-scoped, so a profile of another organization is `404` — never a peek (ADR-0014 §3). A member of the *same* organization who lacks the library role gets `403`, because the row is already list-visible to them and role is not existence information. */
+        profileId: components["parameters"]["ProfileId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The profile's versions, oldest first. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfileVersionList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  getAgentProfileVersion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `agent_profiles` id. Profiles are organization-scoped, so a profile of another organization is `404` — never a peek (ADR-0014 §3). A member of the *same* organization who lacks the library role gets `403`, because the row is already list-visible to them and role is not existence information. */
+        profileId: components["parameters"]["ProfileId"];
+        /** @description The version number to read. Versions are positive integers; a version below 1, or one no profile carried, is `404`. */
+        version: number;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The named version of the profile. */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfileVersion"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+    };
+  };
+  restoreAgentProfileVersion: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description An `agent_profiles` id. Profiles are organization-scoped, so a profile of another organization is `404` — never a peek (ADR-0014 §3). A member of the *same* organization who lacks the library role gets `403`, because the row is already list-visible to them and role is not existence information. */
+        profileId: components["parameters"]["ProfileId"];
+        /** @description The version to restore. Versions are positive integers; a version below 1, or one no profile carried, is `404`. */
+        version: number;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The profile as the restore landed it (the new version). */
+      200: {
+        headers: {
+          "X-Communication-Replica": components["headers"]["XCommunicationReplica"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentProfile"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
+    };
+  };
   patchAgentProfile: {
     parameters: {
       query?: never;
@@ -6559,6 +6739,7 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       403: components["responses"]["Forbidden"];
       404: components["responses"]["NotFound"];
+      409: components["responses"]["Conflict"];
       422: components["responses"]["AgentProfileAPMProblem"];
     };
   };

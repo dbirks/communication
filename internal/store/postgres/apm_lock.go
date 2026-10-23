@@ -188,12 +188,45 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 	if err != nil {
 		return fmt.Errorf("postgres: encode apm lock contents summary: %w", err)
 	}
+	// ADR-0058: recording a lock is a profile write — it lands the pin the
+	// resolve just verified (the digest it reported) and appends the version row
+	// in this same transaction, so a lock that lands also moves the token.
+	var lockP CnvProfile
+	if err := tx.QueryRow(ctx, `
+		SELECT id::text, organization_id::text, name, launcher_id, permission_mode, created_at, version,
+		       COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, '')
+		FROM agent_profiles
+		WHERE id = $1::uuid AND organization_id = $2::uuid`,
+		c.ProfileID, c.OrganizationID).Scan(&lockP.ID, &lockP.OrganizationID, &lockP.Name, &lockP.LauncherID,
+		&lockP.PermissionMode, &lockP.CreatedAt, &lockP.Version,
+		&lockP.APMPackageRef, &lockP.APMTarget, &lockP.APMLockDigest); err != nil {
+		return fmt.Errorf("postgres: read agent profile for apm lock %s: %w", c.RequestID, err)
+	}
+	lockVersion := lockP.Version + 1
+	lockSnapshot, err := AgentProfileSnapshot{
+		Name:           lockP.Name,
+		LauncherID:     lockP.LauncherID,
+		PermissionMode: lockP.PermissionMode,
+		APMPackageRef:  apmAnyToPtr(lockP.APMPackageRef),
+		APMTarget:      apmAnyToPtr(lockP.APMTarget),
+		APMLockDigest:  apmAnyToPtr(lockP.APMLockDigest),
+	}.Marshal()
+	if err != nil {
+		return fmt.Errorf("postgres: encode apm lock version snapshot: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE agent_profiles
-		SET apm_lock_digest = $1, apm_contents_summary = $2::jsonb
-		WHERE id = $3::uuid AND organization_id = $4::uuid`,
-		result.LockDigest, contentsJSON, c.ProfileID, c.OrganizationID); err != nil {
+		SET apm_lock_digest = $1, apm_contents_summary = $2::jsonb, version = $3
+		WHERE id = $4::uuid AND organization_id = $5::uuid`,
+		result.LockDigest, contentsJSON, lockVersion, c.ProfileID, c.OrganizationID); err != nil {
 		return fmt.Errorf("postgres: record apm lock %s: %w", c.RequestID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_profile_versions
+			(profile_id, organization_id, version, snapshot, created_by, created_at, note)
+		VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, now(), $6)`,
+		c.ProfileID, c.OrganizationID, lockVersion, lockSnapshot, c.WorkerID, nil); err != nil {
+		return fmt.Errorf("postgres: append apm lock version %s: %w", c.RequestID, err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE apm_lock_requests SET status = $2, error = NULL, updated_at = now() WHERE id = $1::uuid`,
@@ -215,6 +248,23 @@ func (s *TurnStore) CompleteAPMLockRequest(ctx context.Context, c worker.APMLock
 		},
 	}); err != nil {
 		return fmt.Errorf("postgres: append apm lock event %s: %w", c.RequestID, err)
+	}
+	// ADR-0058: the lock's digest write landed a version — recorded on the
+	// state event it moved, in the same transaction as the lock outcome.
+	if _, err := AppendEvent(ctx, tx, events.New{
+		Type:           events.TypeAgentProfileUpdated,
+		OrganizationID: c.OrganizationID,
+		Actor:          events.Actor{Kind: events.ActorKindWorker, ID: c.WorkerID},
+		Payload: events.AgentProfileUpdatedPayload{
+			ProfileID:     c.ProfileID,
+			Version:       lockVersion,
+			APMPackageRef: c.PackageRef,
+			APMTarget:     c.Target,
+			APMLockDigest: result.LockDigest,
+			APMPinCleared: c.PackageRef == "",
+		},
+	}); err != nil {
+		return fmt.Errorf("postgres: append apm lock version event %s: %w", c.RequestID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres: commit complete apm lock %s: %w", c.RequestID, err)

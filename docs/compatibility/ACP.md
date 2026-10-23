@@ -2,12 +2,14 @@
 
 ## Provenance
 
-- Date: 2026-10-14
+- Date: 2026-10-14 (baseline), pi row added 2026-10-23
 - Host OS/kernel: Linux 7.2.9-arch1-1 (Arch); Python 3.14.7; Node v26.11.1; npm 12.2.0
 - Probe: `docs/compatibility/probes/acp/acp_probe.py` (raw JSON-RPC 2.0 over stdio, stdlib only; baseline rows from probe v0.0.1, Permission/Cancel cells from v0.0.3). Rerun: see `docs/compatibility/probes/acp/README.md`.
 - Adapters under test (installed under `$HOME/.local/share/communication-lab/acp/`, exact pinned versions):
   - `@agentclientprotocol/claude-agent-acp@0.90.0` — `dist.integrity`: `sha512-XgbpMB0CIVDAxZKESwUPUiuXxdzlh8Ga1gT6pBufwkD38Zclo8/GP5khCTKssvLGad2T/8iASZusWcsDzlqpQQ==`
   - `@agentclientprotocol/codex-acp@2.2.2` — `dist.integrity`: `sha512-vNdeNV3jxbqaH7MYvVWzyB6cMOz+YGIV9W1xyBDsQfoii92DulZLM+ahCL2T2G6uohlaB1Yma347p2kLfAab2w==`
+  - `pi-acp@0.0.34` (community ACP adapter; spawns `pi --mode rpc`) — installed via `npm install -g pi-acp`; `pi` `v1.1.0` on PATH (the adapter's own prerequisite: pi >= 0.81.0; the installed 1.1.0 satisfies it)
+- Harness versions: `claude` 2.1.300 (Claude Code); `codex-cli` 0.162.1; pi `v1.1.0` (via `pi-acp`)
 - Harness versions: `claude` 2.1.300 (Claude Code); `codex-cli` 0.162.1
 - Auth mode: the harness's own local login of the developer machine — **NOT** organization-managed credentials; see 04 "Credential source".
 - Raw evidence (redacted): `docs/compatibility/probes/acp/results-claude.json`, `docs/compatibility/probes/acp/results-codex.json` (probe 0.0.1 baseline) and `docs/compatibility/probes/acp/results-claude-permission.json`, `docs/compatibility/probes/acp/results-codex-permission.json` (probe 0.0.3 permission + 5× cancel follow-up, run 2026-10-14). Transcripts/stderr under `$HOME/.cache/communication-lab/m0-acp-probe/` and `.../m0-acp-permission/`.
@@ -22,7 +24,7 @@ Columns match the protocol compatibility table in `communication-spec/12-test-st
 | Claude Code ACP adapter `@agentclientprotocol/claude-agent-acp@0.90.0` (claude 2.1.300) | PASS | PASS | PASS — with `session/set_mode modeId=default` (Manual) the adapter sent `session/request_permission` (`allow_once`/`allow_always`/`reject_once`); allow_once → `allowed.txt` created, reject_once → `rejected.txt` absent (`results-claude-permission.json`). Under the default `auto` mode it still never asks (baseline GAP) | PASS — 5/5 `stopReason=cancelled` <0.1 s after `session/cancel` sent 2 s into the turn, 5/5 with the turn still open (`results-claude-permission.json`); **timing-dependent**: at a 5 s delay the adapter sometimes auto-backgrounds `sleep 60` and closes the turn `end_turn` before the cancel lands (0/5 in that run) | PASS — `loadSession` advertised; 10 updates replayed | GAP — tested in separate M0 spikes | GAP — tested in separate M0 spikes |
 | Codex ACP adapter `@agentclientprotocol/codex-acp@2.2.2` (codex-cli 0.162.1) | PASS | PASS | PASS — with `session/set_mode modeId=read-only` the adapter sent `session/request_permission` (`allow_once`/`allow_always`/`reject_once`); allow_once → `allowed.txt` created, reject_once → `rejected.txt` absent (`results-codex-permission.json`). Under the default `agent` mode it still never asks (baseline GAP) | PASS — 5/5 `stopReason=cancelled` at 2 s into the turn (`results-codex-permission.json`) | PASS — `loadSession` advertised; 15 updates replayed | GAP — tested in separate M0 spikes | GAP — tested in separate M0 spikes |
 | Gemini ACP | GAP — `gemini` not installed on this host, no Google credentials | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason |
-| Pi ACP adapter | GAP — no ACP adapter for `pi` on this host | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason | GAP — same reason |
+| Pi ACP adapter (`pi-acp@0.0.34`, spawns `pi --mode rpc`; native `pi --mode acp` not shipped by any release — installed pi 1.1.0, npm latest 1.4.0, upstream main all validate `--mode` against `text|json|rpc`) | New session **PASS**; one prompt turn streamed **tool calls** (`hello.txt` created, 2 tool calls) against the LLM collective, with `session/set_config_option model=collective/flint` **PASS** | **tool_calls PASS** (agent emitted `agent_thought_chunk` ×77 + `tool_call` ×2 + `tool_call_update` ×7; `hello.txt` content `hello`) — the probe's `streaming` step FAILed only because pi emitted **no `agent_message_chunk`** (final answer text) during the turn, so the message-text expectation did not hold | **GAP** — no `session/request_permission` under the adapter default mode (the only observed mode surface) | GAP — not exercised | GAP — not exercised | GAP — not exercised | GAP — not exercised |
 
 Protocol negotiated by both probed adapters: `protocolVersion: 1` (v1 baseline; v2 not exercised).
 
@@ -77,10 +79,18 @@ Observed from `session/new` and confirmed by `session/set_mode` /
 - This probe speaks raw ACP with no SDK. It is the baseline the Go SDK adapter (`github.com/coder/acp-go-sdk`, evaluated in a later M0 task) must reproduce message-for-message; SDK results are only credible when they match `results-*.json` here.
 - Single-run results for the permission rounds; the 5× cancel repeat is the first reliability sample and it already shows timing sensitivity on Claude — the matrix needs repeated nightly runs (per 12-test-strategy CI note) before sign-off.
 - Both adapters accept `session/set_mode` **and** `session/set_config_option mode=…` with the same effect; neither sent a `current_mode_update` or `config_option_update` notification afterwards, so a client must read the mode from the call result rather than wait for a notification.
+- The pi adapter **does** send a `config_option_update` notification after a successful `session/set_config_option model=…` (the Claude/Codex probes observed none) — a client must tolerate the notification and read the value from the call result.
+
+### Pi (`pi-acp@0.0.34`, pi v1.1.0)
+
+- Registered as launcher `pi` (internal/agent/acp/launchers.go); the ACP entry point is the community adapter, which spawns `pi --mode rpc` — pi has no native `--mode acp` in any release (installed 1.1.0, npm latest 1.4.0 and upstream main all validate `--mode` against `text|json|rpc`; the ACP-mode PRs #241/#836 were closed unmerged and the changelog never mentions ACP).
+- Observed (2026-10-23 host probe, `results-pi.json`): `initialize` PASS at `protocolVersion: 1` with `loadSession` advertised; `session/new` PASS; one prompt turn streamed **tool calls** against the LLM collective with `session/set_config_option model=collective/flint` PASS.
+- Not observed: permission round-trips (the adapter never sent a `session/request_permission` in the default mode), cancel reliability, native restore via `session/load`, required-sandbox (nono) evaluation, APM target.
+- Auth: pi speaks to an OpenAI-compatible provider (`collective`, base `https://llm-collective.e-gineering.com/v1`); the API key rides the adapter→pi env (`LLMC_API_KEY` on this host). The worker-side delivery design (per-turn agent-home `models.json` + `COMMUNICATION_PI_API_KEY_FILE` → `OPENAI_API_KEY`) is recorded in the launcher entry.
 
 ## Worker container (M2, observed 2026-10-14)
 
-Image `communication-worker:dev` (worker/Dockerfile: golang:1.27.3-trixie build, node:22-bookworm-slim runtime, pinned `@agentclientprotocol/claude-agent-acp@0.90.0`, `@agentclientprotocol/codex-acp@2.2.2`, `@anthropic-ai/claude-code@2.1.300`, `@openai/codex@0.162.1`). Run under compose project `m2wrk` with the credential override `compose.harness.yml` (host uid; the image itself carries no credentials).
+Image `communication-worker:dev` (worker/Dockerfile: golang:1.27.3-trixie build, node:22-bookworm-slim runtime, pinned `@agentclientprotocol/claude-agent-acp@0.90.0`, `@agentclientprotocol/codex-acp@2.2.2`, `@earendil-works/pi-coding-agent@1.4.0`, `pi-acp@0.0.34`, `@anthropic-ai/claude-code@2.1.300`, `@openai/codex@0.162.1`). Run under compose project `m2wrk` with the credential override `compose.harness.yml` (host uid; the image itself carries no credentials).
 
 - `communication doctor --acp claude --acp-timeout 120s` **inside the worker container** against the real account:
   `acp:claude ok @agentclientprotocol/claude-agent-acp@0.90.0 protocol=1 loadSession=true session=81fe7d87 events=message_chunk:2,tool_call:1,tool_call_update:4,unknown:10 elapsed=8.3s` → **PASS** (the first claude row ever observed from a container, not just the host).

@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -110,6 +111,28 @@ func TestGitHubTokenDeliveryAuthorizedProfileIsEnvOnly(t *testing.T) {
 	}
 }
 
+// TestGitPushToolEnvCarriesTheGhConfigDir pins the GitHub CLI (gh) launch block:
+// a writable config dir under the agent's HOME plus the non-interactive flags,
+// and nothing else. It rides the exec-environment channel (never the launch
+// argv), and the caller folds it in only when a token was delivered.
+func TestGitPushToolEnvCarriesTheGhConfigDir(t *testing.T) {
+	home := "/workspaces/runs/run-1/home/attempt-1"
+	got := worker.GitPushToolEnv(home)
+	if got == nil {
+		t.Fatalf("GitPushToolEnv must return the gh block for a populated agent HOME: %v", got)
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "GH_CONFIG_DIR="+filepath.Join(home, ".config", "gh")) {
+		t.Fatalf("GitPushToolEnv lost the writable GH_CONFIG_DIR: %v", got)
+	}
+	if !strings.Contains(joined, "GH_PROMPT_DISABLED=1") || !strings.Contains(joined, "GH_NO_UPDATE_NOTIFIER=1") {
+		t.Fatalf("GitPushToolEnv lost the non-interactive flags: %v", got)
+	}
+	if worker.GitPushToolEnv("") != nil {
+		t.Fatalf("GitPushToolEnv must be nil without an agent HOME: %v", worker.GitPushToolEnv(""))
+	}
+}
+
 // TestGitHubTokenDeliveryUnauthorizedProfileIsAbsent pins the allowlist arm:
 // a profile the secret was not granted the token for gets nothing, not even the
 // git credential configuration.
@@ -125,5 +148,8 @@ func TestGitHubTokenDeliveryUnauthorizedProfileIsAbsent(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(plan.Env, "\n"), "GH_TOKEN="+gitPushTestToken) {
 		t.Fatalf("an unauthorized profile received the GitHub token: %v", plan.Env)
+	}
+	if strings.Contains(strings.Join(plan.Env, "\n"), "GH_CONFIG_DIR=") {
+		t.Fatalf("an unauthorized profile received the GitHub CLI config dir: %v", plan.Env)
 	}
 }

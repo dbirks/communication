@@ -665,6 +665,7 @@ func awProfile(t *testing.T, ctx context.Context, f *m4Fixture) (profileID, user
 		t.Fatalf("seed agent profile: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_profile_versions WHERE profile_id = $1`, profileID)
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_profiles WHERE id = $1`, profileID)
 	})
 	userID = f.userID

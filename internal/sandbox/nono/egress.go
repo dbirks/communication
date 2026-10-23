@@ -76,7 +76,7 @@ func DefaultEgressHosts() []string { return append([]string(nil), defaultEgressH
 // ADR-0035): the GitHub source hosts a pinned package ref is fetched from.
 // github.com is the git endpoint, api.github.com the API, and the
 // objects.githubusercontent.com / raw.githubusercontent.com hosts the git
-// smart-HTTP / raw-content transports answer on; apm 0.33's measured needs are
+// smart-HTTP / raw-content transports answer on; apm 0.34's measured needs are
 // covered by this set, and any future source host has to be added here (a worker
 // override rides the same allowlist field).
 var defaultAPMEgressHosts = []string{

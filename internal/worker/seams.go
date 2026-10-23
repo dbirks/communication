@@ -184,7 +184,7 @@ type APMTyper interface {
 // APMStager wraps apm.Stage and apm.Resolve with the binary pin, so every
 // packaged-context operation is produced in one place with one reason.
 type APMStager struct {
-	// Binary is the apm executable — vendored at 0.33.0 in the worker image
+	// Binary is the apm executable — vendored at 0.34.0 in the worker image
 	// (ADR-0008 D1). Its absence while a profile pins a package is a launch
 	// failure rather than a silent skip: running without the packaged context the
 	// profile promises would be a different agent than the one configured.

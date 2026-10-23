@@ -43,7 +43,7 @@ cat > apm.lock.yaml <<'LOCK'
 mkdir -p apm_modules/mattpocock/skills .claude/skills/grill-me .agents/skills .codex
 printf '# grill-me\n' > .claude/skills/grill-me/SKILL.md
 printf '# vendored\n' > apm_modules/mattpocock/skills/README.md
-echo '[+] fake-apm 0.33.0 mattpocock/skills #v1.3.1 @24fe0ef7'
+echo '[+] fake-apm 0.34.0 mattpocock/skills #v1.3.1 @24fe0ef7'
 `, logPath, lockBody)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake apm: %v", err)

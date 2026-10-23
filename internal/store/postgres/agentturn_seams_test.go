@@ -51,6 +51,9 @@ func atsProfile(t *testing.T, ctx context.Context, f *m4Fixture, orgID, name, la
 		t.Fatalf("seed agent profile %q: %v", name, err)
 	}
 	t.Cleanup(func() {
+		if _, err := f.pool.Exec(context.Background(), `DELETE FROM agent_profile_versions WHERE id = $1::uuid`, id); err != nil {
+			t.Errorf("cleanup profile version %s: %v", id, err)
+		}
 		if _, err := f.pool.Exec(context.Background(), `DELETE FROM agent_profiles WHERE id = $1::uuid`, id); err != nil {
 			t.Errorf("cleanup profile %s: %v", name, err)
 		}
@@ -475,6 +478,7 @@ func TestAgentProfilesResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_profile_versions WHERE organization_id = $1::uuid`, otherOrg)
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM agent_profiles WHERE organization_id = $1::uuid`, otherOrg)
 		_, _ = f.pool.Exec(context.Background(), `DELETE FROM organizations WHERE id = $1::uuid`, otherOrg)
 	})

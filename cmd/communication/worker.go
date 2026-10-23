@@ -103,7 +103,7 @@ environment:
                                  set and no models listed every node is refused
   COMMUNICATION_APM_BINARY       override for the packaged-context binary
                                  (default: apm on PATH, else /opt/apm/apm —
-                                 the vendored 0.33.0, ADR-0008 D1). Absent
+                                 the vendored 0.34.0, ADR-0008 D1). Absent
                                  means profiles that pin packaged context
                                  refuse their turns rather than running a
                                  different agent than configured
@@ -133,6 +133,35 @@ environment:
                                  fails the launch closed. Unset means the
                                  launcher authenticates through CLAUDE_CONFIG_DIR
                                  as before
+  COMMUNICATION_PI_BASE_URL      per-turn provider base URL for the pi
+                                 launcher, written into the agent-home pi
+                                 models.json (OpenAI-compatible server root;
+                                 e.g. https://host/v1). THIS IS AN EGRESS
+                                 PATH (ADR-0024 Security): node content leaves
+                                 the host. Unset means the pi launcher writes no
+                                 per-turn provider config and pi uses its own
+                                 default model.
+  COMMUNICATION_PI_MODEL        per-turn provider model id for the pi
+                                 launcher, written into the agent-home pi
+                                 models.json alongside COMMUNICATION_PI_BASE_URL
+                                 (e.g. "flint" or "qwen3-8-27b-amd").
+  COMMUNICATION_PI_API_KEY_FILE
+                                 ADR-0040 (API-key form): path to a FILE
+                                 holding the pi launcher's API key (the
+                                 OpenAI-compatible provider credential),
+                                 e.g. a mounted Secret key. NEVER the raw key
+                                 in an environment variable. The worker reads it
+                                 at each launch and hands it to the pi launcher
+                                 as the OPENAI_API_KEY entry through the
+                                 sandbox launcher's process environment (nono
+                                 inherits its own environment into the child)
+                                 — never argv (nono's audit journal records
+                                 argv verbatim), never a log or event field.
+                                 The file is read at each launch, so a rotated
+                                 Secret takes effect without a worker restart;
+                                 a missing/empty file fails the launch closed.
+                                 Unset means the pi launcher takes its key from
+                                 the launch environment as-is.
 
 migrations are applied separately: communication migrate up
 `
@@ -422,6 +451,11 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := resolveLauncherApiKeys(log); err != nil {
+		log.Error("launcher api key configuration failed", slog.String("error", err.Error()))
+		return 1
+	}
 
 	pool, err := openPool(ctx, opts.databaseURL, log)
 	if err != nil {
@@ -1264,6 +1298,37 @@ func apmStagerBinary(log *slog.Logger) string {
 			slog.Bool("apm_staging_available", false))
 	}
 	return binary
+}
+
+// resolveLauncherApiKeys sources the operator-configured per-launcher API key
+// files into the worker process environment under the launcher's declared API
+// key variable, so the turn loop's AuthEnvFor (which reads the launcher's
+// declared AuthEnvVars names out of the environment) hands the key to the
+// launch environment for the adapter — never argv, never a journalled file
+// (ADR-0040 delivery rule, mirrored for API keys; internal/agent/acp holds the
+// resolution, this is the worker-side sourcing step).
+func resolveLauncherApiKeys(log *slog.Logger) error {
+	for _, l := range acp.KnownLaunchers() {
+		if l.ApiKeyFileEnv == "" {
+			continue
+		}
+		tok, err := l.ApiKeyKV()
+		if err != nil {
+			return err
+		}
+		if tok == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(tok, "=")
+		if !ok || value == "" {
+			continue
+		}
+		if err := os.Setenv(name, value); err != nil {
+			return fmt.Errorf("agent %s: set %s in the worker environment: %w", l.ID, name, err)
+		}
+		log.Info("resolved launcher api key from operator file", slog.String("launcher", l.ID), slog.String("env_var", name), slog.String("source", l.ApiKeyFileEnv))
+	}
+	return nil
 }
 
 // launcherCredentialDirs resolves the credential directories a launcher declares

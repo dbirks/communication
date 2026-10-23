@@ -53,6 +53,10 @@ var (
 	ErrProfileForbidden  = errors.New("postgres: agent profile write requires the organization's library role")
 	ErrProfileConflict   = errors.New("postgres: an agent profile with that name already exists")
 	ErrProfileValidation = errors.New("postgres: agent profile request failed validation")
+	// ErrProfileVersionConflict is ADR-0058's optimistic-concurrency refusal: a
+	// profile write carried a version the profile's row no longer has, so the
+	// write must not land and the caller must re-read the version history.
+	ErrProfileVersionConflict = errors.New("postgres: agent profile version conflict")
 )
 
 // Named 422 codes (ADR-0030). A code is a stable string a client can switch on;
@@ -103,7 +107,7 @@ func profileRefused(code, detail string) error {
 // nullable apm columns plain strings here (NULL and "" mean the same thing: this
 // profile stages no packaged context); the API layer re-nulls them.
 const cnvProfileColumns = `id::text, organization_id::text, name, launcher_id,
-	permission_mode, created_at,
+	permission_mode, created_at, version,
 	COALESCE(apm_package_ref, ''), COALESCE(apm_target, ''), COALESCE(apm_lock_digest, '')`
 
 // cnvProfileRow reads one profile scoped to the caller's organization: a profile
@@ -120,7 +124,7 @@ func cnvProfileRow(ctx context.Context, q prjQuerier, profileID, orgID string) (
 		FROM agent_profiles
 		WHERE id = $1::uuid AND organization_id = $2::uuid`, profileID, orgID).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt,
+			&p.PermissionMode, &p.CreatedAt, &p.Version,
 			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileNotFound
@@ -149,7 +153,7 @@ func validAgentProfileName(s string) bool { return len(strings.TrimSpace(s)) >= 
 
 // ValidAPMPackageRef reports whether ref is an apm git dependency string of the
 // shape docs/compatibility/APM.md's "Git-tag sources" spike proved on apm
-// 0.33.0: `<owner>/<repo>[/<virtual-subdirectory>][#<ref>]`.
+// 0.34.0: `<owner>/<repo>[/<virtual-subdirectory>][#<ref>]`.
 //
 // The `#<ref>` part is required, which is stricter than apm: without it apm
 // resolves whatever the default branch points at today, and the recorded lock
@@ -275,7 +279,7 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 		RETURNING `+cnvProfileColumns,
 		c.OrganizationID, strings.TrimSpace(name), launcherID, c.IsOrgAdmin).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt,
+			&p.PermissionMode, &p.CreatedAt, &p.Version,
 			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
@@ -293,6 +297,27 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 	}
 	p.CreatedAt = p.CreatedAt.UTC()
 
+	// ADR-0058: the create lands version 1, frozen as the first entry of the
+	// history (the backfill migration 00014 did the same for pre-versioning
+	// rows), and the token on the row is 1.
+	var snapshot []byte
+	snap := AgentProfileSnapshot{
+		Name:           p.Name,
+		LauncherID:     p.LauncherID,
+		PermissionMode: p.PermissionMode,
+	}
+	snapshot, err = snap.Marshal()
+	if err != nil {
+		return CnvProfile{}, fmt.Errorf("postgres: encode agent profile version snapshot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_profile_versions
+			(profile_id, organization_id, version, snapshot, created_by, created_at, note)
+		VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, now(), $6)`,
+		p.ID, p.OrganizationID, p.Version, snapshot, c.UserID, nil); err != nil {
+		return CnvProfile{}, fmt.Errorf("postgres: append agent profile version %d: %w", p.Version, err)
+	}
+
 	if _, err := AppendEvent(ctx, tx, events.New{
 		Type:           events.TypeAgentProfileCreated,
 		OrganizationID: p.OrganizationID,
@@ -301,6 +326,7 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 			ProfileID:      p.ID,
 			Name:           p.Name,
 			LauncherID:     p.LauncherID,
+			Version:        p.Version,
 			PermissionMode: p.PermissionMode,
 		},
 	}); err != nil {
@@ -318,10 +344,15 @@ func (s *CnvStore) CreateAgentProfile(ctx context.Context, c Caller, name, launc
 // sandbox axis while "attaching a skills package" would be the easy way to widen
 // an agent's grant set without anyone reading a diff.
 //
+// The write lands on the version the caller saw (the row's current version,
+// ADR-0058's optimistic-concurrency token): a write whose expectedVersion is
+// stale answers ErrProfileVersionConflict and lands nothing, and a write that
+// lands bumps the token and appends its version row in the same transaction.
+//
 // A nil pointer means "this write does not carry the column", and checkAPMPin
 // refuses any partial triple, so the two legal calls are all three values and
 // all three nil-or-empty (the clear).
-func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, ref, target, digest *string) (CnvProfile, error) {
+func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID string, ref, target, digest *string, expectedVersion *int) (CnvProfile, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return CnvProfile{}, err
 	}
@@ -341,11 +372,19 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 	// The visibility read is also what separates 404 from 403: a profile in
 	// another organization does not exist for this caller at all, while one in
 	// this organization is list-visible and the failure is a missing role.
-	if _, err := cnvProfileRow(ctx, tx, profileID, c.OrganizationID); err != nil {
+	p, err := cnvProfileRow(ctx, tx, profileID, c.OrganizationID)
+	if err != nil {
 		return CnvProfile{}, err
 	}
 	if !c.IsOrgAdmin {
 		return CnvProfile{}, ErrProfileForbidden
+	}
+
+	// ADR-0058 optimistic concurrency: the expected version is the token the
+	// caller last saw; a write carrying a version the row no longer has refuses
+	// with ErrProfileVersionConflict instead of overwriting the winner's version.
+	if expectedVersion != nil && *expectedVersion != p.Version {
+		return CnvProfile{}, ErrProfileVersionConflict
 	}
 
 	null := func(v *string) any {
@@ -354,24 +393,24 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		}
 		return *v
 	}
-	var p CnvProfile
 	var contents *string
-	// The library-role predicate is part of the UPDATE's own WHERE ($7): the write
-	// refuses rather than trusting the caller to have checked, because every other
-	// writer in this package is a future caller too.
+	// The write's own WHERE carries the library-role predicate and the version
+	// CAS token: the write refuses rather than trusting the caller to have
+	// checked, because every other writer in this package is a future caller too.
 	//
 	// apm_contents_summary rides the same write as apm_lock_digest: a pin that is
 	// unlocked or cleared leaves both null, so a digest (and the names-only
 	// contents summary that came with it) can never survive a ref/target change.
 	err = tx.QueryRow(ctx, `
 		UPDATE agent_profiles
-		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3, apm_contents_summary = $4
-		WHERE id = $5::uuid AND organization_id = $6::uuid AND $7::boolean
+		SET apm_package_ref = $1, apm_target = $2, apm_lock_digest = $3, apm_contents_summary = $4,
+		    version = version + 1
+		WHERE id = $5::uuid AND organization_id = $6::uuid AND version = $7::int
 		RETURNING `+cnvProfileColumns+", apm_contents_summary",
 		null(ref), null(target), null(digest), nil,
-		profileID, c.OrganizationID, c.IsOrgAdmin).
+		profileID, c.OrganizationID, p.Version).
 		Scan(&p.ID, &p.OrganizationID, &p.Name, &p.LauncherID,
-			&p.PermissionMode, &p.CreatedAt,
+			&p.PermissionMode, &p.CreatedAt, &p.Version,
 			&p.APMPackageRef, &p.APMTarget, &p.APMLockDigest, &contents)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CnvProfile{}, ErrProfileForbidden
@@ -395,12 +434,38 @@ func (s *CnvStore) PatchAgentProfileAPM(ctx context.Context, c Caller, profileID
 		p.APMLockContents = &lock
 	}
 
+	// ADR-0058: the patch lands a version — the bumped token and its history row
+	// ride the same transaction as the UPDATE and the event below. The snapshot is
+	// the profile's whole launch descriptor at the new version (the fields the
+	// patch did not move are the row's own current ones, already read back via
+	// RETURNING), so a version records state, never a delta.
+	snap := AgentProfileSnapshot{
+		Name:           p.Name,
+		LauncherID:     p.LauncherID,
+		PermissionMode: p.PermissionMode,
+		APMPackageRef:  apmAnyToPtr(p.APMPackageRef),
+		APMTarget:      apmAnyToPtr(p.APMTarget),
+		APMLockDigest:  apmAnyToPtr(p.APMLockDigest),
+	}
+	snapshot, err := snap.Marshal()
+	if err != nil {
+		return CnvProfile{}, fmt.Errorf("postgres: encode agent profile version snapshot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO agent_profile_versions
+			(profile_id, organization_id, version, snapshot, created_by, created_at, note)
+		VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, now(), $6)`,
+		p.ID, c.OrganizationID, p.Version, snapshot, c.UserID, nil); err != nil {
+		return CnvProfile{}, fmt.Errorf("postgres: append agent profile version %d: %w", p.Version, err)
+	}
+
 	if _, err := AppendEvent(ctx, tx, events.New{
 		Type:           events.TypeAgentProfileUpdated,
 		OrganizationID: p.OrganizationID,
 		Actor:          events.Human(c.UserID),
 		Payload: events.AgentProfileUpdatedPayload{
 			ProfileID:     p.ID,
+			Version:       p.Version,
 			APMPackageRef: p.APMPackageRef,
 			APMTarget:     p.APMTarget,
 			APMLockDigest: p.APMLockDigest,

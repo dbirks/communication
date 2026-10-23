@@ -83,6 +83,7 @@ func xpSetup(t *testing.T) *xpFixture {
 			{`DELETE FROM memberships WHERE project_id = $1 AND user_id = $2`,
 				[]any{f.projectID, f.userID}},
 			{`DELETE FROM projects WHERE id = $1`, []any{fx.projectB}},
+			{`DELETE FROM agent_profile_versions WHERE profile_id = $1`, []any{fx.profile}},
 			{`DELETE FROM agent_profiles WHERE id = $1`, []any{fx.profile}},
 			{`DELETE FROM users WHERE id = $1`, []any{fx.userB}},
 		}

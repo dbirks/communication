@@ -525,7 +525,15 @@ func (u *Unit) Verify(ctx context.Context, launcher acp.Launcher) (acp.LaunchPla
 		// records verbatim; GitPushEnv derives the GitHub token wiring from the
 		// delivered entries. Later additions win, so an authorized mount outranks
 		// launcher env (ADR-0018 D4).
-		env = execEnv(env, GitPushEnv(u.Materialized.Env), u.Materialized.Env)
+		gitEnv := GitPushEnv(u.Materialized.Env)
+		env = execEnv(env, gitEnv, u.Materialized.Env)
+		if len(gitEnv) > 0 {
+			// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub CLI
+			// the agent execs as its child needs a writable config dir under the
+			// agent's HOME plus the non-interactive flags — same exec-environment
+			// channel, and only for attempts that delivered a token.
+			env = execEnv(env, GitPushToolEnv(u.Plan.AgentHome))
+		}
 	}
 	return acp.LaunchPlan{
 		Path:     bin,
@@ -634,7 +642,15 @@ func (u *Unit) plainPlan(launcher acp.Launcher, mode string, oauthKV string) acp
 	if u.Materialized != nil {
 		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
 		// join the exec environment; the unsandboxed plan carries no argv hop.
-		env = execEnv(env, GitPushEnv(u.Materialized.Env), u.Materialized.Env)
+		gitEnv := GitPushEnv(u.Materialized.Env)
+		env = execEnv(env, gitEnv, u.Materialized.Env)
+		if len(gitEnv) > 0 {
+			// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub CLI
+			// the agent execs as its child needs a writable config dir under the
+			// agent's HOME plus the non-interactive flags — same exec-environment
+			// channel, and only for attempts that delivered a token.
+			env = execEnv(env, GitPushToolEnv(u.Layout.Home))
+		}
 	}
 	return acp.LaunchPlan{
 		Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: u.Plan.Cwd,

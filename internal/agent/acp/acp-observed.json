@@ -66,6 +66,14 @@
       "observed_at": "2026-10-14T00:00:00Z",
       "evidence": "docs/compatibility/probes/acp/results-codex-permission.json",
       "note": "docs/compatibility/ACP.md 'Permission modes (Codex)' (probe v0.0.3): with session/set_mode modeId=read-only the adapter sent session/request_permission; allow_once and reject_once round-trips both observed. The adapter default mode agent never asks."
+    },
+    {
+      "launcher": "pi",
+      "capability": "acp_session",
+      "result": "observed",
+      "observed_at": "2026-10-23T02:28:26Z",
+      "evidence": "docs/compatibility/probes/acp/results-pi.json",
+      "note": "docs/compatibility/ACP.md pi row (host probe via pi-acp adapter 0.0.34, pi v1.1.0): initialize PASS (protocolVersion 1, loadSession advertised), session/new PASS, one prompt turn streamed tool calls (hello.txt created) against the LLM collective; session/set_config_option model=collective/flint answered PASS."
     }
   ]
 }

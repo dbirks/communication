@@ -46,9 +46,11 @@ func profWSetup(t *testing.T) *profWFixture {
 		// By token, not by prefix: the lab database is shared and another run's
 		// fixture is in it right now.
 		profiles := `SELECT id::text FROM agent_profiles WHERE organization_id = $1::uuid AND name LIKE 'profw-' || $2 || '-%'`
+		profilesUUID := `SELECT id::uuid FROM agent_profiles WHERE organization_id = $1::uuid AND name LIKE 'profw-' || $2 || '-%'`
 		for _, q := range []string{
 			`DELETE FROM outbox WHERE global_seq IN (SELECT global_seq FROM domain_events WHERE payload->>'profile_id' IN (` + profiles + `))`,
 			`DELETE FROM domain_events WHERE payload->>'profile_id' IN (` + profiles + `)`,
+			`DELETE FROM agent_profile_versions WHERE profile_id IN (` + profilesUUID + `)`,
 			`DELETE FROM agent_profiles WHERE organization_id = $1::uuid AND name LIKE 'profw-' || $2 || '-%'`,
 		} {
 			if _, err := f.pool.Exec(ctx, q, f.orgID, f.token); err != nil {
@@ -327,7 +329,7 @@ func TestAgentProfileAPMRefusals(t *testing.T) {
 		// the SQL level, and the row must not move.
 		_, err := f.store.PatchAgentProfileAPM(ctx,
 			Caller{UserID: f.bob, OrganizationID: f.orgID, IsOrgAdmin: false}, prof.ID,
-			ptr("mattpocock/skills#v1.3.1"), ptr("claude"), ptr(digest))
+			ptr("mattpocock/skills#v1.3.1"), ptr("claude"), ptr(digest), nil)
 		if !errors.Is(err, ErrProfileForbidden) {
 			t.Fatalf("non-admin store patch err = %v, want ErrProfileForbidden", err)
 		}
@@ -487,11 +489,23 @@ func TestAgentProfileWriteFeedsTheWorkerRead(t *testing.T) {
 				t.Errorf("conversation cleanup: %v", err)
 			}
 		}
-		// And the shared seeded profile goes back to staging nothing.
+		// And the shared seeded profile goes back to staging nothing and back to
+		// its version-1 token with only the backfill's v1 history row left — the
+		// patches above were real writes (ADR-0058: each lands a version), so the
+		// cleanup has to undo them or the next reader in the same run sees a stale
+		// token.
 		if _, err := f.pool.Exec(bg, `
 			UPDATE agent_profiles SET apm_package_ref = NULL, apm_target = NULL, apm_lock_digest = NULL
 			WHERE id = $1::uuid`, f.profile); err != nil {
 			t.Errorf("restore seeded profile: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `
+			DELETE FROM agent_profile_versions WHERE profile_id = $1::uuid AND version > 1`, f.profile); err != nil {
+			t.Errorf("clear seeded profile version history: %v", err)
+		}
+		if _, err := f.pool.Exec(bg, `
+			UPDATE agent_profiles SET version = 1 WHERE id = $1::uuid`, f.profile); err != nil {
+			t.Errorf("reset seeded profile version: %v", err)
 		}
 	})
 

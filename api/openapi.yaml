@@ -1021,12 +1021,13 @@ paths:
         for sandbox isolation). A profile is a launch descriptor, not a
         capability claim: whether a launcher actually works here is answered by
         `docs/compatibility/ACP.md` and `communication doctor --acp`, never by
-        this route returning a row. Profiles carry no `version`/`updated_at`
-        optimistic token (ADR-0030): the only writable fields are the three APM
+        this route returning a row. The profile's CURRENT version is the optimistic
+        concurrency token (ADR-0058, migration 00014) — the token the design's
+        "Save as v4" replaced — and the only writable fields are the three APM
         columns, they are written as one triple, and a lost race between two
-        writers is therefore unobservable in the row. Creating and patching a
-        profile are `POST`/`PATCH` below; the listing stays available to every
-        member of the organization.
+        writers is therefore observable as a `409` on the write that carries a
+        stale token. Creating and patching a profile are `POST`/`PATCH` below; the
+        listing stays available to every member of the organization.
       security:
         - sessionCookie: []
       responses:
@@ -1124,6 +1125,121 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /api/v1/agent-profiles/{profileId}/versions:
+    get:
+      operationId: listAgentProfileVersions
+      tags: [profiles]
+      summary: List the version history of one agent profile
+      description: >
+        Every version of one agent profile, oldest first, for the app-shell's
+        version panel (ADR-0058). A version is a frozen launch-descriptor
+        snapshot (`snapshot`), the writer and the optional note that recorded
+        it; restoring version n is a new write whose snapshot equals n, so the
+        history is append-only. Visible to any member of the owning organization
+        (the listing is not a write); a profile of another organization is `404` —
+        never a peek (ADR-0014 §3).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProfileId"
+      responses:
+        "200":
+          description: >
+            The profile's versions, oldest first.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentProfileVersionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/agent-profiles/{profileId}/versions/{version}:
+    get:
+      operationId: getAgentProfileVersion
+      tags: [profiles]
+      summary: Read one version of an agent profile
+      description: >
+        One frozen version of one agent profile (ADR-0058): the version number,
+        the snapshot it froze and the writer/note around it. The version is a key
+        into the append-only history, not a mutable row; a version no profile
+        carried is `404`.
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProfileId"
+        - name: version
+          in: path
+          required: true
+          description: >
+            The version number to read. Versions are positive integers; a
+            version below 1, or one no profile carried, is `404`.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: >
+            The named version of the profile.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentProfileVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/agent-profiles/{profileId}/versions/{version}/restore:
+    post:
+      operationId: restoreAgentProfileVersion
+      tags: [profiles]
+      summary: Restore an agent profile version
+      description: >
+        "Restore version n" (ADR-0058): a new write whose snapshot equals
+        version n's snapshot, landed as the profile's next version — history is
+        append-only, so the restore gains a version rather than rewriting one.
+        The write carries the caller's current optimistic-concurrency token and a
+        stale token answers `409`; the client re-reads the version history and
+        retries. The restore is a write, so it answers with the profile as the
+        restore landed it (the new version).
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/ProfileId"
+        - name: version
+          in: path
+          required: true
+          description: >
+            The version to restore. Versions are positive integers; a version
+            below 1, or one no profile carried, is `404`.
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: >
+            The profile as the restore landed it (the new version).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /api/v1/agent-profiles/{profileId}:
     patch:
       operationId: patchAgentProfile
@@ -1134,6 +1250,11 @@ paths:
         `apm_lock_digest`, and they move as one triple: either all three carry a
         value or all three are absent/empty (clearing the pin). Any partial
         triple is `422` with code `apm_pin_incomplete`.
+
+        The write carries the profile's optimistic-concurrency token (`version`:
+        the current version the row held, ADR-0058) — the token the design's
+        "Save as v4" replaced — and a write whose token is stale answers `409`
+        rather than overwriting the version that won the race.
 
         Why the triple is atomic: `internal/agent/apm` stages a launch with
         `apm install --frozen --target <t>` and then refuses when
@@ -1183,6 +1304,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/AgentProfileAPMProblem"
   /api/v1/agent-profiles/{profileId}/apm/lock:
@@ -6492,7 +6615,7 @@ components:
         works on this host — capability evidence lives in
         `docs/compatibility/ACP.md`.
       type: object
-      required: [id, name, launcher_id, permission_mode, created_at]
+      required: [id, name, launcher_id, permission_mode, created_at, version]
       properties:
         id:
           type: string
@@ -6518,6 +6641,14 @@ components:
         created_at:
           type: string
           format: date-time
+        version:
+          type: integer
+          minimum: 1
+          description: >
+            The profile's current version (ADR-0058, migration 00014): the
+            optimistic-concurrency token the row carries and that writes must echo,
+            and the latest entry of the version history. Always present — a
+            profile is never versionless.
         apm_package_ref:
           type: ["string", "null"]
           description: >
@@ -6628,6 +6759,15 @@ components:
         apm_lock_digest:
           type: ["string", "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
+        version:
+          type: ["integer", "null"]
+          description: >
+            The optimistic-concurrency token (ADR-0058): the profile version the
+            caller last saw, which the write must match or answer 409. Optional
+            because a client that never saw a version writes without a CAS check —
+            the server still bumps and journals every write — but a client that
+            does carry one must carry the right one. `null` is the same answer as
+            absent: no token was carried.
       example:
         apm_package_ref: mattpocock/skills#v1.3.1
         apm_target: claude
@@ -6662,6 +6802,74 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentProfile"
+    AgentProfileVersion:
+      title: AgentProfileVersion
+      description: >
+        One version of an agent profile's history (ADR-0058): the version number,
+        the frozen launch-descriptor snapshot it carried, the writer and the
+        optional note, and when it was recorded. The version is a key into the
+        append-only history — a version is a state, never a delta — and the
+        snapshot is the launch-descriptor state (name, launcher, permission
+        mode, the APM coordinates), never a secret value: a profile only ever
+        references secrets, it does not hold them.
+      type: object
+      required: [profile_id, version, snapshot, created_by, created_at]
+      properties:
+        profile_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+          description: >
+            The version number within its profile's history; positive integers
+            only, and a version no profile carried answers `404`.
+        snapshot:
+          type: object
+          description: >
+            The launch-descriptor state the version froze: the profile's name,
+            the launcher it drove, the permission mode and the APM coordinates —
+            all identifiers or references, never a secret value.
+          properties:
+            name:
+              type: string
+              maxLength: 200
+            launcher_id:
+              type: string
+              pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+            permission_mode:
+              type: string
+              enum: [ask, preapproved_within_sandbox, deny]
+            apm_package_ref:
+              type: ["string", "null"]
+            apm_target:
+              type: ["string", "null"]
+              enum: [claude, codex, null]
+            apm_lock_digest:
+              type: ["string", "null"]
+              pattern: "^sha256:[0-9a-f]{64}$"
+        created_by:
+          type: string
+          description: >
+            The user id (or worker id, for a lock-written version) that produced
+            the version.
+        created_at:
+          type: string
+          format: date-time
+        note:
+          type: ["string", "null"]
+          description: >
+            Optional operator note on the version; null when the write recorded
+            none.
+    AgentProfileVersionList:
+      title: AgentProfileVersionList
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentProfileVersion"
     APMLockRequest:
       title: APMLockRequest
       description: >

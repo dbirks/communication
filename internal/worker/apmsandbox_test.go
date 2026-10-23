@@ -385,7 +385,7 @@ func TestAPMSandboxRealResolveUnderNono(t *testing.T) {
 		if err != nil {
 			t.Fatalf("APMSandbox.Resolve(mattpocock/skills#v1.3.1) under real nono: %v", err)
 		}
-		want := "sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33"
+		want := "sha256:44cf8ba0ba5b34af878358795b4f0dbcbc5698ebfe72c7cfc162d5f7040cc55d"
 		if res.LockDigest != want {
 			t.Errorf("APMSandbox.Resolve(mattpocock/skills#v1.3.1).LockDigest = %s, want %s", res.LockDigest, want)
 		}
@@ -456,7 +456,7 @@ func TestAPMSandboxRealResolveUnderNono(t *testing.T) {
 		if err != nil {
 			t.Fatalf("APMSandbox.Resolve(mattpocock/skills#v1.3.1) through a symlinked apm: %v", err)
 		}
-		want := "sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33"
+		want := "sha256:44cf8ba0ba5b34af878358795b4f0dbcbc5698ebfe72c7cfc162d5f7040cc55d"
 		if res.LockDigest != want {
 			t.Errorf("APMSandbox.Resolve(mattpocock/skills#v1.3.1) through a symlinked apm: LockDigest = %s, want %s", res.LockDigest, want)
 		}

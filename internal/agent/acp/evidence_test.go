@@ -119,8 +119,24 @@ func TestObservedCapabilities(t *testing.T) {
 		t.Error("codex/nono_required carries date/evidence without a row")
 	}
 
-	// pi and antigravity: no row at all, not even a GAP row — all not_tested.
-	for _, id := range []string{"pi", "antigravity", "definitely-not-a-launcher"} {
+	// pi: the 2026-10-23 host probe (pi-acp adapter 0.0.34, pi v1.1.0) observed
+	// the acp_session cell end to end (initialize + session/new + a real prompt
+	// turn streamed tool calls against the LLM collective); the rest stay
+	// not_tested (no permission round-trip, no restore, no required sandbox yet).
+	// antigravity: not probed at all — all not_tested.
+	piCells := observed(t, "pi")
+	if piCells[CapabilityACPSession].Result != ResultObserved {
+		t.Errorf("pi/acp_session = %s, want observed", piCells[CapabilityACPSession].Result)
+	}
+	if piCells[CapabilityACPSession].ObservedAt == "" || piCells[CapabilityACPSession].Evidence == "" {
+		t.Errorf("pi/acp_session missing observed_at/evidence: %q/%q", piCells[CapabilityACPSession].ObservedAt, piCells[CapabilityACPSession].Evidence)
+	}
+	for _, cap := range []Capability{CapabilityResume, CapabilityPermissionPrompts, CapabilityNonoRequired} {
+		if piCells[cap].Result != ResultNotTested {
+			t.Errorf("pi/%s = %s, want not_tested", cap, piCells[cap].Result)
+		}
+	}
+	for _, id := range []string{"antigravity", "definitely-not-a-launcher"} {
 		m := observed(t, id)
 		for cap, cell := range m {
 			if cell.Result != ResultNotTested {

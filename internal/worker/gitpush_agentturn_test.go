@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,6 +36,15 @@ func TestGitHubTokenDeliveryAgentTurnEnvOnly(t *testing.T) {
 	}
 	if !strings.Contains(envJoined, "GIT_CONFIG_COUNT=1") {
 		t.Fatalf("the authorized attempt's launch env lacks the git credential helper: %v", plan.Env)
+	}
+	// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub CLI the
+	// agent execs as its child gets a writable config dir under the agent's HOME
+	// plus the non-interactive flags — same exec environment, never argv.
+	if !strings.Contains(envJoined, "GH_CONFIG_DIR="+filepath.Join(f.layout.Home, "attempts", fakeAttemptID, ".config", "gh")) {
+		t.Fatalf("the authorized attempt's launch env lacks the gh config dir: %v", plan.Env)
+	}
+	if !strings.Contains(envJoined, "GH_PROMPT_DISABLED=1") || !strings.Contains(envJoined, "GH_NO_UPDATE_NOTIFIER=1") {
+		t.Fatalf("the authorized attempt's launch env lacks the gh non-interactive flags: %v", plan.Env)
 	}
 	argv := strings.Join(plan.Args, "\x00")
 	if strings.Contains(argv, gitPushTestToken) || strings.Contains(argv, "GH_TOKEN=") || strings.Contains(argv, "GITHUB_TOKEN=") {

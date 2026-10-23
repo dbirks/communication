@@ -20,7 +20,7 @@ arms: this lab host and the real worker image (`communication-worker:dev`).
 | `p3_nono_policy.sh` | nono policy surface: N1–N6, `/tmp` writes, `AF_UNIX` mediation, cwd handling, egress shapes, fail-closed arms. |
 | `p4_secrets_env.sh` | `.env` materialization (case 12's probe form) and the cross-project denial scenario (nono + git + a planted secret, no Communication code). |
 | `p5_volume_identity.sh` | Worker volume identity: `st_dev`/`st_ino` of named volumes and binds in fresh containers. Needs the docker CLI; creates and removes only its own `m3probe-*` volumes. |
-| `p6_apm_staging.sh` | APM staging claims: per-run HOME, per-target lock digest, `--frozen` behaviour across an upstream mutation, generated paths vs `info/exclude`. Needs `apm` 0.33.0. |
+| `p6_apm_staging.sh` | APM staging claims: per-run HOME, per-target lock digest, `--frozen` behaviour across an upstream mutation, generated paths vs `info/exclude`. Needs `apm` 0.34.0. |
 | `helpers/m3-net.mjs` | Loopback TCP + `AF_UNIX` echo listener (node stdlib only) for the egress and socket arms. |
 
 ## Result words

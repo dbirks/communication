@@ -1,5 +1,5 @@
 == apm version ==
-Agent Package Manager (APM) CLI version 0.33.0 (18c4c43)
+Agent Package Manager (APM) CLI version 0.34.0 (65b3b9f)
 CHECK claude T1 PASS install ok; files created under consumer-a:
     ./apm.lock.yaml
     ./apm_modules

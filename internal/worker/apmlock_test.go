@@ -82,7 +82,7 @@ func TestAPMLockLoopResolvesAndReportsSuccess(t *testing.T) {
 	}}
 	resolve := &fakeAPMTyper{result: &apm.ResolveResult{
 		LockDigest:  "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		ResolvedRef: "v1.3.1", Commit: "abc123", APMVersion: "0.33.0",
+		ResolvedRef: "v1.3.1", Commit: "abc123", APMVersion: "0.34.0",
 		Contents: apm.Contents{Skills: []string{"engineering"}, Instructions: []string{"AGENTS.md"}, MCPServers: []string{"memory"}},
 	}}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -84,7 +84,7 @@ func TestAPMLockRequestClaimAndComplete(t *testing.T) {
 		LockDigest:  "sha256:" + strings.Repeat("a", 64),
 		ResolvedRef: "v1.3.1",
 		Commit:      "abc123def456",
-		APMVersion:  "0.33.0",
+		APMVersion:  "0.34.0",
 		Contents: apm.Contents{
 			Skills:       []string{"engineering"},
 			Instructions: []string{"AGENTS.md"},
@@ -110,6 +110,25 @@ func TestAPMLockRequestClaimAndComplete(t *testing.T) {
 	}
 	if digest == nil || *digest != result.LockDigest {
 		t.Errorf("apm_lock_digest = %v, want %q", digest, result.LockDigest)
+	}
+	// ADR-0058: the lock resolve landed a pin, which is a profile write — the
+	// version row rides the same transaction as the lock outcome and the token
+	// moves (create v1 + pin v2 + this lock v3).
+	var versions int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_profile_versions WHERE profile_id = $1::uuid`, profileID).Scan(&versions); err != nil {
+		t.Fatalf("count agent profile versions: %v", err)
+	}
+	if versions != 3 {
+		t.Errorf("agent_profile_versions rows = %d, want 3 (create + pin + lock)", versions)
+	}
+	var token int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT version FROM agent_profiles WHERE id = $1::uuid`, profileID).Scan(&token); err != nil {
+		t.Fatalf("read agent profile version: %v", err)
+	}
+	if token != 3 {
+		t.Errorf("agent_profiles.version = %d, want 3 (create + pin + lock)", token)
 	}
 	var contentsJSON *string
 	if err := f.pool.QueryRow(ctx,
@@ -184,6 +203,14 @@ func TestAPMLockRequestFailureMarksFailed(t *testing.T) {
 	if n := profWCountEvents(t, f, ctx, events.TypeAgentProfileAPMLocked, profileID); n != 0 {
 		t.Errorf("agent.profile.apm_locked rows = %d, want 0 on the failure path", n)
 	}
+	var versions int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_profile_versions WHERE profile_id = $1::uuid`, profileID).Scan(&versions); err != nil {
+		t.Fatalf("count agent profile versions: %v", err)
+	}
+	if versions != 2 {
+		t.Errorf("agent_profile_versions rows = %d, want 2 (create + pin, the failed resolve must not append)", versions)
+	}
 }
 
 func TestAPMLockRequestCrossOrgInvisible(t *testing.T) {
@@ -230,7 +257,7 @@ func TestAPMLockLoopClaimsThroughRealStore(t *testing.T) {
 		LockDigest:  "sha256:" + strings.Repeat("a", 64),
 		ResolvedRef: "v1.3.1",
 		Commit:      "abc123def456",
-		APMVersion:  "0.33.0",
+		APMVersion:  "0.34.0",
 		Contents: apm.Contents{
 			Skills:       []string{"engineering"},
 			Instructions: []string{"AGENTS.md"},

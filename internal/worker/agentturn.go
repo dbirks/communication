@@ -1161,6 +1161,11 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 		}
 		if gitEnv := GitPushEnv(delivered); len(gitEnv) > 0 {
 			env = append(env, gitEnv...)
+			// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub CLI
+			// the agent execs as its child needs a writable config dir under the
+			// agent's HOME plus the non-interactive flags — same exec-environment
+			// channel, and only for attempts that delivered a token.
+			env = append(env, GitPushToolEnv(plan.AgentHome)...)
 		}
 		return acp.LaunchPlan{
 			Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: plan.Cwd,
@@ -1222,7 +1227,15 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 	// entries here reach the agent and its git children without touching argv; the
 	// merge dedupes so each name appears once with the authorized value (ADR-0018
 	// D4: an authorized mount outranks launcher env, which is why it goes last).
-	env = execEnv(env, GitPushEnv(delivered), delivered)
+	gitEnv := GitPushEnv(delivered)
+	env = execEnv(env, gitEnv, delivered)
+	// ADR-0045 follow-up (2026-10-22, product owner decision): the GitHub CLI the
+	// agent execs as its child (`gh pr create --draft …`) needs a writable config
+	// dir under the agent's HOME plus the non-interactive flags. Same exec-
+	// environment channel, and only for attempts that delivered a token.
+	if len(gitEnv) > 0 {
+		env = execEnv(env, GitPushToolEnv(plan.AgentHome))
+	}
 	return acp.LaunchPlan{
 		Path: a.nonoBinary(), Args: argv, Env: env, Dir: plan.Cwd,
 		Verified: verification(res, plan),

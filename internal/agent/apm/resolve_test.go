@@ -18,7 +18,7 @@ import (
 // skill_subset/target_subset/deployed_files/deployed_file_hashes/source,
 // mcp_servers, mcp_configs, mcp_target_servers, lsp_servers).
 const resolveLockBody = `lockfile_version: '1'
-apm_version: 0.33.0
+apm_version: 0.34.0
 dependencies:
   - repo_url: mattpocock/skills
     resolved_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
@@ -76,7 +76,7 @@ cat > apm.lock.yaml <<'LOCK'
 mkdir -p apm_modules/mattpocock/skills/.apm/instructions .claude/skills/grill-me
 printf '# grill-me\n' > .claude/skills/grill-me/SKILL.md
 printf '# instructions\n' > apm_modules/mattpocock/skills/.apm/instructions/grill-me.instructions.md
-echo '[+] fake-apm 0.33.0 mattpocock/skills #v1.3.1 @24fe0ef7'
+echo '[+] fake-apm 0.34.0 mattpocock/skills #v1.3.1 @24fe0ef7'
 `, logPath, lockBody)
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake apm: %v", err)
@@ -131,8 +131,8 @@ func TestResolveReturnsLockDigestAndContents(t *testing.T) {
 	if res.Commit != "24fe0ef7737efae15c87225755e9f6f5965e4888" {
 		t.Errorf("Commit = %q, want 24fe0ef7737efae15c87225755e9f6f5965e4888", res.Commit)
 	}
-	if res.APMVersion != "0.33.0" {
-		t.Errorf("APMVersion = %q, want 0.33.0", res.APMVersion)
+	if res.APMVersion != "0.34.0" {
+		t.Errorf("APMVersion = %q, want 0.34.0", res.APMVersion)
 	}
 	if len(res.Contents.Skills) != 1 || res.Contents.Skills[0] != "grill-me" {
 		t.Errorf("Contents.Skills = %v, want [grill-me]", res.Contents.Skills)
@@ -281,8 +281,8 @@ func TestParseLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseLock: %v", err)
 	}
-	if lock.APMVersion != "0.33.0" {
-		t.Errorf("APMVersion = %q, want 0.33.0", lock.APMVersion)
+	if lock.APMVersion != "0.34.0" {
+		t.Errorf("APMVersion = %q, want 0.34.0", lock.APMVersion)
 	}
 	if len(lock.Dependencies) != 2 {
 		t.Fatalf("len(Dependencies) = %d, want 2", len(lock.Dependencies))
@@ -340,7 +340,7 @@ func TestResolveRealLockDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(mattpocock/skills#v1.3.1): %v", err)
 	}
-	want := "sha256:f6bfa2d63d31f7834824817efa6cbf4d8abbe9dc80dc77b6fd0645a5ccd14e33"
+	want := "sha256:44cf8ba0ba5b34af878358795b4f0dbcbc5698ebfe72c7cfc162d5f7040cc55d"
 	if res.LockDigest != want {
 		t.Errorf("Resolve(mattpocock/skills#v1.3.1).LockDigest = %s, want %s", res.LockDigest, want)
 	}

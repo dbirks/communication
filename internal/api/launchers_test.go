@@ -84,10 +84,11 @@ func TestLauncherListing(t *testing.T) {
 		t.Errorf("launcher fields = %v, want %v", fields, wantFields)
 	}
 
-	// Registry membership: claude/codex are built-ins, pi/antigravity are
-	// product card ids the registry does not know.
+	// Registry membership: claude/codex are built-ins, pi is now in the
+	// built-in registry (registered), antigravity is a product card id the
+	// registry does not know (unregistered → a profile naming it fails closed).
 	for id, registered := range map[string]bool{
-		"claude": true, "codex": true, "pi": false, "antigravity": false,
+		"claude": true, "codex": true, "pi": true, "antigravity": false,
 	} {
 		got := byID[id]["registered"]
 		if got != registered {
@@ -139,7 +140,11 @@ func TestLauncherListing(t *testing.T) {
 		"acp_session": "observed", "resume": "observed",
 		"permission_prompts": "observed", "nono_required": "not_tested",
 	})
-	for _, id := range []string{"pi", "antigravity"} {
+	assertCaps("pi", map[string]string{
+		"acp_session": "observed", "resume": "not_tested",
+		"permission_prompts": "not_tested", "nono_required": "not_tested",
+	})
+	for _, id := range []string{"antigravity"} {
 		assertCaps(id, map[string]string{
 			"acp_session": "not_tested", "resume": "not_tested",
 			"permission_prompts": "not_tested", "nono_required": "not_tested",
@@ -150,7 +155,7 @@ func TestLauncherListing(t *testing.T) {
 	if got := byID["claude"]["display_name"]; got != "Claude Code ACP adapter" {
 		t.Errorf("claude display_name = %v", got)
 	}
-	if got := byID["pi"]["display_name"]; got != "Pi" {
+	if got := byID["pi"]["display_name"]; got != "Pi Coding Agent" {
 		t.Errorf("pi display_name = %v", got)
 	}
 

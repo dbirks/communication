@@ -32,6 +32,7 @@ const PROFILES = vi.hoisted<AgentProfile[]>(() => [
     permission_mode: "ask",
     created_at: "2026-01-01T00:00:00Z",
     apm_package_ref: "acme/skills#v1.3.1",
+    version: 1,
   },
   {
     id: "01j-profile-bolt",
@@ -40,6 +41,7 @@ const PROFILES = vi.hoisted<AgentProfile[]>(() => [
     permission_mode: "ask",
     created_at: "2026-01-01T00:00:00Z",
     apm_package_ref: null,
+    version: 1,
   },
 ]);
 

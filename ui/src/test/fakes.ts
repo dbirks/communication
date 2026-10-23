@@ -240,6 +240,7 @@ export const claudeProfile: AgentProfile = {
   launcher_id: "claude",
   permission_mode: "ask",
   created_at: "2026-10-14T18:00:00Z",
+  version: 1,
 };
 
 export const codexProfile: AgentProfile = {
@@ -248,6 +249,7 @@ export const codexProfile: AgentProfile = {
   launcher_id: "codex",
   permission_mode: "ask",
   created_at: "2026-10-14T18:00:00Z",
+  version: 1,
 };
 
 /** A conversation the signed-in user (`meFixture`) controls. */

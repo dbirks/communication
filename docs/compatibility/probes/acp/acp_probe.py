@@ -68,6 +68,9 @@ ADAPTERS = {
     "codex": {"harness_cmd": "codex",
               "package": "@agentclientprotocol/codex-acp",
               "version": "2.2.2"},
+    "pi": {"harness_cmd": "pi-acp",
+           "package": "pi-acp",
+           "version": "0.0.34"},
 }
 
 SECRET_KEY_RE = re.compile(r"token|secret|key|authorization|cookie", re.I)

@@ -341,3 +341,88 @@ func TestPatchAgentProfileRolesAndMissingTargets(t *testing.T) {
 		}
 	})
 }
+
+// --- ADR-0058: the version-history reads and the restore write -----------
+
+// TestListAgentProfileVersions answers the version history the app-shell's
+// version panel renders: one profile's versions, oldest first, in the
+// {items:[...]} envelope. The fake answers from the profile's current version,
+// so the seeded profile's history is its single version-1 row.
+func TestListAgentProfileVersions(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, profAdminCaller("admin"))
+	rec := do(t, s, request(http.MethodGet, profURL+"/"+cnvTProfile+"/versions", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET versions = %d (%s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Items []AgentProfileVersion `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list: %v (%s)", err, rec.Body)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(out.Items))
+	}
+	if out.Items[0].ProfileID != cnvTProfile || out.Items[0].Version != 1 {
+		t.Errorf("item = %+v, want version 1 of %s", out.Items[0], cnvTProfile)
+	}
+}
+
+// TestGetAgentProfileVersion answers one frozen version of one profile, and
+// refuses the versions that were never written (ADR-0058: a version is a key
+// into the append-only history, not a mutable row).
+func TestGetAgentProfileVersion(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, profAdminCaller("admin"))
+
+	rec := do(t, s, request(http.MethodGet, profURL+"/"+cnvTProfile+"/versions/1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET version 1 = %d (%s)", rec.Code, rec.Body)
+	}
+	var v AgentProfileVersion
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatalf("decode version: %v (%s)", err, rec.Body)
+	}
+	if v.ProfileID != cnvTProfile || v.Version != 1 {
+		t.Errorf("version = %+v, want version 1 of %s", v, cnvTProfile)
+	}
+	// A version the profile never carried answers 404, not an empty success.
+	rec = do(t, s, request(http.MethodGet, profURL+"/"+cnvTProfile+"/versions/2", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET version 2 = %d, want 404 (%s)", rec.Code, rec.Body)
+	}
+	// A version number below 1 is refused the same way — never an answer.
+	rec = do(t, s, request(http.MethodGet, profURL+"/"+cnvTProfile+"/versions/0", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET version 0 = %d, want 404 (%s)", rec.Code, rec.Body)
+	}
+}
+
+// TestRestoreAgentProfileVersion is the "Save as v4" write: restoring version n
+// is a new write whose snapshot equals version n's, so the handler answers 200
+// with the new version the store landed.
+func TestRestoreAgentProfileVersion(t *testing.T) {
+	store := cnvNewFakeStore()
+	s := cnvMount(t, store, nil, profAdminCaller("admin"))
+	rec := profSend(t, s, http.MethodPost, profURL+"/"+cnvTProfile+"/versions/1/restore", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST restore = %d (%s)", rec.Code, rec.Body)
+	}
+	if len(store.restoredVersions) != 1 || store.restoredVersions[0].profileID != cnvTProfile || store.restoredVersions[0].version != 1 {
+		t.Fatalf("restores = %+v, want the version-1 restore", store.restoredVersions)
+	}
+}
+
+// TestRestoreAgentProfileVersionStaleIs409 proves the restore carries the
+// optimistic-concurrency token: a stale version refuses with 409 and lands
+// nothing (ADR-0058), so the client re-reads the history instead of retrying blind.
+func TestRestoreAgentProfileVersionStaleIs409(t *testing.T) {
+	store := cnvNewFakeStore()
+	store.versionConflict = true
+	s := cnvMount(t, store, nil, profAdminCaller("admin"))
+	rec := profSend(t, s, http.MethodPost, profURL+"/"+cnvTProfile+"/versions/1/restore", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale restore = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+}

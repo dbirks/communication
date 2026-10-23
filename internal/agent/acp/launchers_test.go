@@ -6,6 +6,7 @@ func TestLookupLauncherHit(t *testing.T) {
 	want := map[string][3]string{
 		"claude": {"claude-agent-acp", "0.90.0", "default"},
 		"codex":  {"codex-acp", "2.2.2", "read-only"},
+		"pi":     {"pi-acp", "0.0.34", ""},
 	}
 	for id, w := range want {
 		l, ok := LookupLauncher(id)
@@ -30,7 +31,7 @@ func TestLookupLauncherHit(t *testing.T) {
 }
 
 func TestLookupLauncherMiss(t *testing.T) {
-	for _, id := range []string{"", "gemini", "pi", "Claude", "unknown-xyz"} {
+	for _, id := range []string{"", "gemini", "Claude", "unknown-xyz"} {
 		if l, ok := LookupLauncher(id); ok {
 			t.Errorf("LookupLauncher(%q) = %+v, want not found", id, l)
 		}
@@ -39,7 +40,7 @@ func TestLookupLauncherMiss(t *testing.T) {
 
 func TestKnownLaunchersRegistry(t *testing.T) {
 	ls := KnownLaunchers()
-	if len(ls) != 2 {
+	if len(ls) != 3 {
 		t.Fatalf("KnownLaunchers() returned %d entries, want exactly 2: %+v", len(ls), ls)
 	}
 	for i, l := range ls {

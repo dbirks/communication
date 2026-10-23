@@ -198,8 +198,11 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00013 (ADR-0054 server-side APM
-// lock: apm_contents_summary + the apm_lock_requests queue) on top of
+// version every replica demands. Current head: 00014 (ADR-0058 versioned agent
+// profiles: agent_profile_versions + the agent_profiles.version optimistic
+// token, with the conversations/runs agent_profile_version pin) on top of
+// 00013 (ADR-0054 server-side APM lock: apm_contents_summary + the
+// apm_lock_requests queue) on top of
 // 00012 (ADR-0056 run triggers: runs.trigger_kind/trigger_ref + the
 // issue_triggers table) on top of
 // 00011 (ADR-0053 run-from-thread: runs.source_conversation_id + the partial
@@ -214,7 +217,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 13
+const migHeadVersion = 14
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
@@ -624,7 +627,7 @@ func TestMigrate0003SeededProfiles(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	rows, err := pool.Query(ctx, `
-		SELECT name, launcher_id, permission_mode FROM agent_profiles
+		SELECT name, launcher_id, permission_mode, version FROM agent_profiles
 		WHERE organization_id = (SELECT id FROM organizations WHERE slug = 'default')
 		ORDER BY name`)
 	if err != nil {
@@ -639,10 +642,16 @@ func TestMigrate0003SeededProfiles(t *testing.T) {
 	got := map[string][2]string{}
 	for rows.Next() {
 		var name, launcher, mode string
-		if err := rows.Scan(&name, &launcher, &mode); err != nil {
+		var version int
+		if err := rows.Scan(&name, &launcher, &mode, &version); err != nil {
 			t.Fatalf("scan profile: %v", err)
 		}
 		got[name] = [2]string{launcher, mode}
+		if version != 1 {
+			// ADR-0058: migration 00014 backfills version 1 for every pre-existing
+			// profile — the seeded rows are the backfill's first evidence.
+			t.Errorf("seeded profile %q version = %d, want 1", name, version)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read profiles: %v", err)
@@ -656,6 +665,18 @@ func TestMigrate0003SeededProfiles(t *testing.T) {
 		} else if g != w {
 			t.Errorf("profile %q = %v, want %v (launcher, permission_mode)", name, g, w)
 		}
+	}
+	// The backfill (migration 00014) wrote the version-1 history row for every
+	// pre-existing profile — exactly the two seeded rows, nothing else.
+	var history int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_profile_versions v
+		JOIN agent_profiles p ON p.id = v.profile_id
+		WHERE p.organization_id = (SELECT id FROM organizations WHERE slug = 'default')`).Scan(&history); err != nil {
+		t.Fatalf("count seeded version history: %v", err)
+	}
+	if history != len(want) {
+		t.Errorf("seeded version history rows = %d, want %d (one per seeded profile)", history, len(want))
 	}
 }
 
