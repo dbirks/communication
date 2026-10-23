@@ -97,7 +97,7 @@ test.describe("M2 shared conversation and control handoff", () => {
   test("the harness worker is registered and online", async () => {
     // Precondition for every turn below: with no worker claiming turns, the
     // first prompt would simply sit in `queued — waiting for a worker`.
-    await gotoApp(alice, "/ops");
+    await gotoApp(alice, "/settings/operations");
     await expect(alice.getByTestId("worker-row-worker-e2e")).toContainText(/status: online/, {
       timeout: 30_000,
     });

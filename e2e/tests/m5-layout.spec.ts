@@ -178,9 +178,9 @@ const screens: Screen[] = [
     why: "the agent profile table",
   },
   {
-    label: "/ops",
+    label: "/settings/operations",
     viewer: "admin",
-    path: () => "/ops",
+    path: () => "/settings/operations",
     anchor: "ops-resource-limits",
     why: "scheduler and worker tables",
   },

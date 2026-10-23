@@ -1403,7 +1403,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await signIn(page, "admin");
     const request = page.request;
     const stopWatching = watchPageErrors(page);
-    await page.goto(BASE_URL + "/ops", { waitUntil: "domcontentloaded" });
+    await page.goto(BASE_URL + "/settings/operations", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("ops-health-line")).toBeVisible();
     const healthText = (await page.getByTestId("ops-health-line").innerText()).trim();
     expect(healthText, "the health line is real text, not a placeholder").not.toBe("");
