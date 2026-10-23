@@ -131,7 +131,9 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     );
   });
 
-  test("New profile dialog: Pi and Antigravity are disabled with reasons", async ({ page }) => {
+  test("New profile dialog: registered launcher cards are enabled, unregistered ones are disabled with reasons", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const launchers = await apiLaunchers(page.request);
@@ -139,20 +141,22 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     await page.getByTestId("agents-new-open").click();
     const dialog = page.getByTestId("new-profile-dialog");
     await expect(dialog).toBeVisible();
-    for (const id of ["pi", "antigravity"]) {
+    // The truth per card comes from the registry read: registered => the card
+    // is enabled with no refusal reason; unregistered => disabled with one.
+    // (Pi is registered since ADR-0059; Antigravity is not.)
+    for (const id of ["claude", "codex", "pi", "antigravity"]) {
       const card = page.getByTestId(`new-profile-card-${id}`);
       await expect(card).toBeVisible();
       const registered = launchers.find((l) => l.id === id)?.registered ?? false;
-      expect(registered, "the API says this launcher is unregistered").toBe(false);
       const radio = card.locator("input[type=radio]");
-      expect(await radio.isDisabled(), `${id} card is disabled`).toBe(true);
       const reason = await card.getAttribute("data-reason");
-      expect(reason, `${id} card carries the reason`).toBeTruthy();
-    }
-    // The registered agents stay selectable.
-    for (const id of ["claude", "codex"]) {
-      const radio = page.getByTestId(`new-profile-card-${id}`).locator("input[type=radio]");
-      expect(await radio.isDisabled(), `${id} card is selectable`).toBe(false);
+      if (registered) {
+        expect(await radio.isDisabled(), `${id} card is selectable`).toBe(false);
+        expect(reason, `${id} card carries no reason`).toBeNull();
+      } else {
+        expect(await radio.isDisabled(), `${id} card is disabled`).toBe(true);
+        expect(reason, `${id} card carries the reason`).toBeTruthy();
+      }
     }
     await checkShellScreen(page, "new profile dialog", stopWatching);
     await evidence(
