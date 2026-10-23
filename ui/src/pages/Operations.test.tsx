@@ -54,8 +54,13 @@ function opsRoutes(scheduler: SchedulerStatus): RouteStub[] {
 }
 
 describe("/ops scheduler", () => {
-  it("renders every counter and each worker's active attempts over capacity", async () => {
+  it("redirects the legacy /ops URL to the /settings/operations Operations tab", async () => {
     renderApp({ path: "/ops", routes: opsRoutes(loaded) });
+    expect(await screen.findByTestId("ops-resource-limits")).toBeTruthy();
+  });
+
+  it("renders every counter and each worker's active attempts over capacity", async () => {
+    renderApp({ path: "/settings/operations", routes: opsRoutes(loaded) });
 
     for (const [testid, text] of [
       ["scheduler-attempts-queued", "attempts queued3"],
@@ -78,7 +83,7 @@ describe("/ops scheduler", () => {
 
   it("says a run is waiting for its worker when unbindable runs are queued", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: opsRoutes({ ...loaded, queued_unbindable_runs: 2 }),
     });
 
@@ -90,14 +95,14 @@ describe("/ops scheduler", () => {
   });
 
   it("stays quiet about waiting workers when nothing is unbindable", async () => {
-    renderApp({ path: "/ops", routes: opsRoutes(loaded) });
+    renderApp({ path: "/settings/operations", routes: opsRoutes(loaded) });
 
     await screen.findByTestId("scheduler-queued-unbindable");
     expect(screen.queryByTestId("scheduler-unbindable-note")).toBeNull();
   });
 
   it("states that resource limits are not implemented, in the contract's words", async () => {
-    renderApp({ path: "/ops", routes: opsRoutes(loaded) });
+    renderApp({ path: "/settings/operations", routes: opsRoutes(loaded) });
 
     const line = await screen.findByTestId("ops-resource-limits");
     expect(line.textContent).toContain(
@@ -107,7 +112,7 @@ describe("/ops scheduler", () => {
 
   it("still says resource limits are not implemented when the scheduler cannot be read", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: opsRoutes(loaded).filter((stub) => stub.path !== schedulerPath),
     });
 
@@ -118,7 +123,7 @@ describe("/ops scheduler", () => {
 
   it("reports a scheduler status it cannot read instead of an empty section", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: [
         ...opsRoutes(loaded).filter((stub) => stub.path !== schedulerPath),
         {
@@ -234,7 +239,7 @@ function ops4hRoutes(overrides: {
 
 describe("/ops 4h surfaces", () => {
   it("renders the health line: replica, queue depth, oldest queue age", async () => {
-    renderApp({ path: "/ops", routes: ops4hRoutes({}) });
+    renderApp({ path: "/settings/operations", routes: ops4hRoutes({}) });
 
     const line = await screen.findByTestId("ops-health-line");
     expect(line.textContent).toContain("replica: api-a");
@@ -243,7 +248,7 @@ describe("/ops 4h surfaces", () => {
   });
 
   it("keeps the workers table testids and adds leases, sandbox and heartbeat age", async () => {
-    renderApp({ path: "/ops", routes: ops4hRoutes({}) });
+    renderApp({ path: "/settings/operations", routes: ops4hRoutes({}) });
 
     const row = await screen.findByTestId("worker-row-w-1");
     expect(row.textContent).toContain("w-1");
@@ -257,7 +262,7 @@ describe("/ops 4h surfaces", () => {
 
   it("names interrupted runs with their steps and a Reclaim and retry link", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: ops4hRoutes({
         scheduler: { lease_expirations: 1 },
         runs: { runs: [interruptedRun], next_cursor: null },
@@ -280,7 +285,7 @@ describe("/ops 4h surfaces", () => {
 
   it("falls back to the lease count when no run is named", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: ops4hRoutes({
         scheduler: { lease_expirations: 4 },
         runs: { runs: [], next_cursor: null },
@@ -301,7 +306,7 @@ describe("/ops 4h surfaces", () => {
 
   it("renders no callout when nothing was interrupted", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: ops4hRoutes({
         scheduler: { lease_expirations: 0 },
         runs: { runs: [], next_cursor: null },
@@ -314,7 +319,7 @@ describe("/ops 4h surfaces", () => {
 
   it("says the run list is not served instead of a red banner on a 404 registry gap", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: ops4hRoutes({
         scheduler: { lease_expirations: 2 },
         runs: { runs: [], next_cursor: null },
@@ -385,7 +390,7 @@ describe("/ops 4h surfaces", () => {
         },
       ],
     };
-    renderApp({ path: "/ops", routes: ops4hRoutes({ launchers }) });
+    renderApp({ path: "/settings/operations", routes: ops4hRoutes({ launchers }) });
 
     expect((await screen.findByTestId("capability-cell-claude-acp_session")).textContent).toBe(
       "✓ observed 2025-06-01",
@@ -408,7 +413,7 @@ describe("/ops 4h surfaces", () => {
   });
 
   it("says the matrix is not available when the launcher registry is not served", async () => {
-    renderApp({ path: "/ops", routes: ops4hRoutes({}) });
+    renderApp({ path: "/settings/operations", routes: ops4hRoutes({}) });
 
     const line = await screen.findByTestId("capability-matrix-none");
     expect(line.textContent).toContain("not served by this server yet");

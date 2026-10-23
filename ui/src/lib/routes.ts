@@ -59,8 +59,13 @@ export const routes = {
    */
   run: (id: string, params?: Record<string, string>): string =>
     withParams(`/runs/${encode(id)}`, params),
-  ops: (): string => "/ops",
-  /** User settings: `/settings/:tab` (`layout`, `assistant`); `/settings` → `layout`. */
+  /**
+   * `/ops` — the legacy Operations URL. It now redirects to the real Settings
+   * tab (`/settings/operations`); the builder returns the canonical path.
+   */
+  ops: (): string => "/settings/operations",
+  /** User settings: `/settings/:tab` (`layout`, `assistant`, `operations`);
+      `/settings` → `layout`. */
   settings: (tab?: string): string => (tab ? `/settings/${encode(tab)}` : "/settings/layout"),
   /** `/approvals/:approvalId` — the 4g approval detail page (ADR-0052). */
   approval: (id: string): string => `/approvals/${encode(id)}`,

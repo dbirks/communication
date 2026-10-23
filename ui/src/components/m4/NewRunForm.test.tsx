@@ -92,8 +92,11 @@ describe("NewRunForm — fields come from spec.inputs", () => {
   it("renders the assignment's pipeline and one control per declared input", async () => {
     await openForm();
 
-    // The run is created against an assignment, which names the pinned revision.
-    expect(screen.getByTestId("new-run-assignment").textContent).toContain("feature-development");
+    // The run is created against an assignment, which names the pinned revision;
+    // the field renders once the assignment list has loaded.
+    expect((await screen.findByTestId("new-run-assignment")).textContent).toContain(
+      "feature-development",
+    );
 
     // `goal: {type: string, minLength: 1}` — a textarea, required.
     const goal = await screen.findByTestId("new-run-input-goal");

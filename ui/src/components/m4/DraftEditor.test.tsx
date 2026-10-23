@@ -163,10 +163,20 @@ afterEach(cleanup);
 const area = () => screen.getByTestId("draft-editor-input") as HTMLTextAreaElement;
 const field = (key: string) => screen.getByTestId(`draft-editor-field-${key}`) as HTMLInputElement;
 
+/**
+ * The textarea holds the served document. The node list and the per-node form
+ * render from the text one effect after the textarea appears, so a read of
+ * either races the seed; waiting on the value is what makes those reads safe.
+ */
+async function seeded(yaml: string = draftYaml) {
+  await screen.findByTestId("draft-editor-input");
+  await waitFor(() => expect(area().value).toBe(yaml));
+}
+
 describe("DraftEditor node form", () => {
   it("lists the nodes and edits the selected node's prompt back into the text", async () => {
     mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(screen.getByTestId("draft-editor-node-0").textContent).toBe("plan");
     expect(screen.getByTestId("draft-editor-node-1").textContent).toBe("gate");
     // plan is the default selection, and its prompt is a `|` block in the text.
@@ -185,7 +195,7 @@ describe("DraftEditor node form", () => {
 
   it("writes a string quoted and a number bare, and Save PUTs the whole text", async () => {
     const { requests } = mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     const profile = screen.getByTestId("draft-editor-field-profile") as HTMLInputElement;
     const timeout = screen.getByTestId("draft-editor-field-timeoutSeconds") as HTMLInputElement;
     expect(profile.value).toBe("m4-planner");
@@ -210,7 +220,7 @@ describe("DraftEditor node form", () => {
 
   it("says so when a kind has no editable fields", async () => {
     mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     // `pipeline.invoke` carries only nested config (pipeline / inputs /
     // childLimits): nothing the fixed table edits, so the pane admits it.
     fireEvent.click(screen.getByTestId("draft-editor-node-7"));
@@ -222,7 +232,7 @@ describe("DraftEditor node form", () => {
 
   it("points at the YAML for a key the document does not carry", async () => {
     mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.click(screen.getByTestId("draft-editor-node-2"));
     expect(field("model").value).toBe("a-model");
     expect(screen.getByTestId("draft-editor-field-missing").textContent).toContain(
@@ -236,7 +246,7 @@ describe("DraftEditor node form", () => {
 
   it("follows the textarea: a hand-edited document re-reads its fields", async () => {
     mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.change(area(), {
       target: { value: area().value.replace("profile: m4-planner", "profile: by-hand") },
     });
@@ -261,7 +271,7 @@ function mountWithValidation(validation: unknown, status: Draft["status"] = "dra
 describe("DraftEditor with an unvalidated draft", () => {
   it("says so when the draft carries no validation at all", async () => {
     mount("draft");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(screen.getByTestId("draft-editor-not-validated").textContent).toContain(
       "not validated yet",
     );
@@ -276,14 +286,14 @@ describe("DraftEditor with an unvalidated draft", () => {
 
   it("renders the empty validation block a new draft really served", async () => {
     mountWithValidation({});
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(screen.getByTestId("draft-editor-not-validated")).toBeDefined();
     expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("never validated");
   });
 
   it("does not crash on a verdict with no findings array behind it", async () => {
     mountWithValidation({ valid: false });
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(screen.getByTestId("draft-editor-findings")).toBeDefined();
     expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("0 findings");
     expect(screen.getByTestId("draft-editor-notes").textContent).toContain("no notes");
@@ -303,7 +313,7 @@ describe("DraftEditor with an unvalidated draft", () => {
       ],
       notes: [],
     });
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(screen.getByTestId("draft-editor-problem-0").textContent).toContain("unknown_profile");
     expect(screen.getByTestId("draft-editor-verdict").textContent).toBe("1 findings");
     expect(screen.queryByTestId("draft-editor-not-validated")).toBeNull();
@@ -319,7 +329,7 @@ describe("DraftEditor node form covers the whole library", () => {
   /** Select the node by its id and return the pane's field by key. */
   async function openNode(id: string) {
     mount();
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     const nodes = await screen.findByTestId("draft-editor-nodes");
     const button = [...nodes.querySelectorAll("button")].find(
       (element) => element.textContent === id,
@@ -427,7 +437,7 @@ describe("DraftEditor node form covers the whole library", () => {
       "",
     ].join("\n");
     mount("draft", [{ path: draftPath, body: draftBody("draft", yaml) }]);
-    await screen.findByTestId("draft-editor-input");
+    await seeded(yaml);
     const mode = screen.getByTestId("draft-editor-field-sessionMode") as HTMLSelectElement;
     expect(mode.value).toBe("new");
     fireEvent.change(mode, { target: { value: "resume_if_supported" } });
@@ -452,7 +462,7 @@ describe("DraftEditor node form covers the whole library", () => {
 describe("DraftEditor permissions", () => {
   it("is a read-only view for a caller without the library role", async () => {
     const { requests } = mount("valid", [], { canAuthor: false });
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     const input = area();
     expect(input.hasAttribute("readonly")).toBe(true);
 
@@ -476,14 +486,14 @@ describe("DraftEditor permissions", () => {
 
   it("disables the node form for a caller without the library role", async () => {
     mount("valid", [], { canAuthor: false });
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     expect(field("profile").hasAttribute("disabled")).toBe(true);
     expect(area().hasAttribute("readonly")).toBe(true);
   });
 
   it("keeps Save enabled for the library role, gated only on dirtiness", async () => {
     mount("valid");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     // Clean: nothing to save. Dirty: the role that holds it may save.
     expect(screen.getByTestId("draft-editor-save").hasAttribute("disabled")).toBe(true);
     fireEvent.change(area(), { target: { value: "# edited\n" } });
@@ -494,7 +504,7 @@ describe("DraftEditor permissions", () => {
 describe("DraftEditor unsaved-changes guard", () => {
   it("asks before a nav link discards the edit, and keeps the text on stay", async () => {
     mount("draft");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.change(area(), { target: { value: "spec:\n  nodes: []\n# keep me\n" } });
     expect(screen.getByTestId("draft-editor-dirty").textContent).toContain("unsaved");
 
@@ -514,7 +524,7 @@ describe("DraftEditor unsaved-changes guard", () => {
 
   it("leaves, discarding, when the caller confirms", async () => {
     mount("draft");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.change(area(), { target: { value: "spec:\n  nodes: []\n# throw me away\n" } });
     fireEvent.click(screen.getByText("Library"));
     fireEvent.click(screen.getByTestId("draft-editor-leave-discard"));
@@ -524,7 +534,7 @@ describe("DraftEditor unsaved-changes guard", () => {
 
   it("does not ask when there is nothing unsaved", async () => {
     mount("draft");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.click(screen.getByText("Library"));
     expect(screen.queryByTestId("draft-editor-leave-guard")).toBeNull();
     expect(screen.getByTestId("where").textContent).toBe("/library");
@@ -532,7 +542,7 @@ describe("DraftEditor unsaved-changes guard", () => {
 
   it("asks the browser before a reload or close throws the edit away", async () => {
     mount("draft");
-    await screen.findByTestId("draft-editor-input");
+    await seeded();
     fireEvent.change(area(), { target: { value: "# dirty\n" } });
     const event = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(event);

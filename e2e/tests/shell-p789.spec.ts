@@ -1477,7 +1477,10 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await expect(page.getByTestId("settings-page")).toBeVisible();
     const opsLink = page.getByTestId("settings-ops-link");
     await expect(opsLink, "Settings carries the Operations entry").toBeVisible();
-    expect(await opsLink.getAttribute("href"), "the Operations entry points at /ops").toBe("/ops");
+    const opsHref = await opsLink.getAttribute("href");
+    expect(opsHref, "the Operations entry points at the /settings/operations tab").toBe(
+      "/settings/operations",
+    );
     await page.goto(BASE_URL + "/settings/assistant", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("settings-assistant")).toBeVisible();
     const options = [
@@ -1502,7 +1505,46 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await evidence(
       page,
       "shell-p789-settings",
-      `settings → assistant shows all three trust levels with the stored one (${level}) checked, matching GET /me/preferences, and the settings footer's Operations entry links to /ops`,
+      `settings → assistant shows all three trust levels with the stored one (${level}) checked, matching GET /me/preferences, and the settings Operations tab entry links to /settings/operations`,
+    );
+  });
+
+  test("10. settings tabs switch client-side: layout → assistant → operations, no new document request", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    const stopWatching = watchPageErrors(page);
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (request.resourceType() === "document") documentRequests.push(url.pathname);
+    });
+    await page.goto(BASE_URL + "/settings", { waitUntil: "domcontentloaded" });
+    await expect(page, "/settings lands on the Layout tab").toHaveURL(/\/settings\/layout$/);
+    await expect(page.getByTestId("settings-page")).toBeVisible();
+    const documentCountAfterLoad = documentRequests.length;
+    await expect(page.getByTestId("settings-layout")).toBeVisible();
+
+    // Tab → client-side router navigation: Layout → Assistant → Operations.
+    await page.getByTestId("settings-tab-assistant").click();
+    await expect(page).toHaveURL(/\/settings\/assistant$/);
+    await expect(page.getByTestId("settings-assistant")).toBeVisible();
+    await expect(page.getByTestId("settings-layout")).toBeHidden();
+
+    await page.getByTestId("settings-ops-link").click();
+    await expect(page).toHaveURL(/\/settings\/operations$/);
+    await expect(page.getByTestId("ops-health-line")).toBeVisible({ timeout: 30_000 });
+
+    // The tab switches are router navigations, not document navigations: the
+    // document request count must not move after the first load.
+    expect(documentRequests.length, "settings tab switches must not reload the document").toBe(
+      documentCountAfterLoad,
+    );
+    await checkShellScreen(page, "settings operations tab", stopWatching);
+    await evidence(
+      page,
+      "shell-p789-settings-ops-tab",
+      "switching Settings Layout → Assistant → Operations through the tab bar made no new document request",
     );
   });
 });

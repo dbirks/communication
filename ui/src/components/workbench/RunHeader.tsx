@@ -118,15 +118,15 @@ export function RunHeader({
         <p className="min-w-0 font-mono text-[11px] text-muted" data-testid="run-header-meta">
           {slug} #{shortId(run.id)}
           {repoName ? <> · {repoName}</> : null} · revision{" "}
-          <a
-            href={routes.workflow(run.pipeline_id)}
+          <Link
+            to={routes.workflow(run.pipeline_id)}
             data-testid="run-pinned-revision"
             className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             {revision
               ? `r${revision.revision_number} ${shortDigest(revision.revision_digest).slice(0, 6)}`
               : shortDigest(run.revision_digest).slice(0, 6)}
-          </a>{" "}
+          </Link>{" "}
           (pinned) · started {formatAge(run.started_at ?? run.created_at)}
           {startedBy ? <> by {startedBy}</> : null}
         </p>

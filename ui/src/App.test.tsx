@@ -45,83 +45,95 @@ describe("auth", () => {
 
     await screen.findByRole("heading", { name: "Sign in" });
     const signIn = screen.getByTestId("sign-in");
-    // The legacy path redirects first, so the return target is the canonical one.
-    expect(signIn.getAttribute("href")).toBe("/auth/login?return_to=%2Fp%2Fp-1");
+    // The signed-out gate carries the deep link as return_to before any legacy
+    // redirect runs; after sign-in the legacy redirect lands on the canonical page.
+    expect(signIn.getAttribute("href")).toBe("/auth/login?return_to=%2Fprojects%2Fp-1");
     expect(screen.queryByTestId("project-name")).toBeNull();
   });
 
   it("shows the signed-in user and the replica that answered", async () => {
-    renderApp({ path: "/projects", routes: projectRoutes, replica: "replica-b" });
+    renderApp({ path: "/settings/layout", routes: projectRoutes, replica: "replica-b" });
 
-    const badge = await screen.findByTestId("user-badge");
+    const badge = await screen.findByTestId("user-badge", undefined, { timeout: READ_MS });
     expect(badge.textContent).toContain("Ada Lovelace");
-    // The badge holds the `X-Communication-Replica` header of the last response.
-    await waitFor(() =>
-      expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-b"),
+    // The About this server line (the replica moved off the sidebar footer)
+    // holds the `X-Communication-Replica` header of the last response.
+    await waitFor(
+      () => expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-b"),
+      { timeout: READ_MS },
     );
   });
 
-  it("follows the replica header across a navigation between API replicas", async () => {
-    // The load balancer round-robins, so a project opened after the index may
-    // be answered by a different replica; the badge must show the latest one.
-    // The board and the project page read the same conversations endpoint, so
-    // this stub answers from replica-a while the board is up and switches to
-    // replica-b for the post-navigation reads (the mock resolves `replica` per
-    // request).
-    const conversationsStub: RouteStub = {
-      path: `/api/v1/projects/${projectFixture.id}/conversations`,
-      body: { items: [] },
-    };
-    renderApp({
-      path: "/projects",
-      replica: "replica-a",
-      routes: [
-        me,
-        { path: "/api/v1/projects", method: "GET", body: { items: [projectFixture] } },
-        {
-          path: `/api/v1/projects/${projectFixture.id}`,
-          body: projectFixture,
-          replica: "replica-b",
-        },
-        {
-          path: `/api/v1/projects/${projectFixture.id}/repos`,
-          body: { items: [] },
-          replica: "replica-b",
-        },
-        {
-          path: `/api/v1/projects/${projectFixture.id}/members`,
-          body: { items: [] },
-          replica: "replica-b",
-        },
-        { path: "/api/v1/users", body: { items: [] }, replica: "replica-b" },
-        { path: "/api/v1/agent-profiles", body: { items: [] }, replica: "replica-b" },
-        conversationsStub,
-        // M3 reads the project page also makes, from the same replica.
-        {
-          path: `/api/v1/projects/${projectFixture.id}/workspaces`,
-          body: { workspaces: [] },
-          replica: "replica-b",
-        },
-        {
-          path: `/api/v1/projects/${projectFixture.id}/artifacts`,
-          body: { artifacts: [] },
-          replica: "replica-b",
-        },
-      ],
-    });
+  it(
+    "follows the replica header across a navigation between API replicas",
+    async () => {
+      // The load balancer round-robins, so a page opened after the index may
+      // be answered by a different replica; the About line must show the latest.
+      // The Preferences tab's own read answers from replica-a while the page is
+      // up, and the post-navigation read (the Operations health line) answers
+      // from replica-b — the mock resolves `replica` per request.
+      renderApp({
+        path: "/settings/layout",
+        replica: "replica-a",
+        routes: [
+          me,
+          { path: "/api/v1/projects", method: "GET", body: { items: [projectFixture] } },
+          {
+            path: "/api/v1/me/preferences",
+            body: {
+              layout: {
+                projects_mode: "tree",
+                ask_placement: "sidebar",
+                show_workflow_folders: true,
+                expanded: {},
+              },
+              assistant: { trust_level: "ask_risky" },
+              updated_at: null,
+            },
+          },
+          {
+            path: "/api/v1/system/health",
+            body: { status: "ok", replica: "replica-a", version: "0.1.0-m1" },
+            replica: "replica-b",
+          },
+          {
+            path: "/api/v1/system/readiness",
+            body: { status: "ready", schema_version: 1, expected_schema_version: 1 },
+            replica: "replica-b",
+          },
+          { path: "/api/v1/workers", body: { items: [] }, replica: "replica-b" },
+          {
+            path: "/api/v1/system/scheduler",
+            body: {
+              workers: [],
+              attempts_by_status: { queued: 0, leased: 0 },
+              oldest_queued_age_seconds: 0,
+              lease_expirations: [],
+            },
+            replica: "replica-b",
+          },
+          { path: "/api/v1/system/sandbox", body: { workers: [] }, replica: "replica-b" },
+        ],
+      });
 
-    await screen.findByTestId("project-list");
-    await waitFor(() =>
-      expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-a"),
-    );
+      await screen.findByTestId("replica-badge");
+      await waitFor(() =>
+        expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-a"),
+      );
 
-    conversationsStub.replica = "replica-b";
-    fireEvent.click(screen.getByTestId("project-link-widgets"));
-    await screen.findByTestId("project-name");
-    await waitFor(() =>
-      expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-b"),
-    );
-  });
+      // Navigate to the Operations tab: the page's own health read answers from
+      // a different replica, and the About line shows the latest one.
+      fireEvent.click(screen.getByTestId("settings-ops-link"));
+      await waitFor(() => expect(screen.getByTestId("ops-health-line")).toBeTruthy(), {
+        timeout: READ_MS,
+      });
+      await waitFor(
+        () => expect(screen.getByTestId("replica-badge").textContent).toBe("replica: replica-b"),
+        { timeout: READ_MS },
+      );
+    },
+    READ_MS * 3,
+  );
 
   it(
     "signs out through POST /auth/logout and lands on the login page",
@@ -131,7 +143,9 @@ describe("auth", () => {
         routes: [...projectRoutes, { path: "/auth/logout", method: "POST", status: 204 }],
       });
 
-      // The button exists only once `/api/v1/me` has answered.
+      // The sign-out lives in the footer's user menu; open the menu first.
+      const userMenu = await screen.findByTestId("user-menu", undefined, { timeout: READ_MS });
+      fireEvent.click(userMenu);
       const signOut = await screen.findByTestId("sign-out", undefined, { timeout: READ_MS });
       fireEvent.click(signOut);
       // ...and sign out navigates only after `POST /auth/logout` resolves, so the
@@ -155,7 +169,7 @@ describe("auth", () => {
 describe("/ops", () => {
   it("shows health, readiness and the empty workers table", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: [
         me,
         {
@@ -179,7 +193,7 @@ describe("/ops", () => {
 
   it("renders registered workers with their status as text", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: [
         me,
         {
@@ -215,7 +229,7 @@ describe("/ops", () => {
 
   it("shows the readiness problem detail when a replica is not ready", async () => {
     renderApp({
-      path: "/ops",
+      path: "/settings/operations",
       routes: [
         me,
         {
@@ -244,9 +258,9 @@ describe("/ops", () => {
 });
 
 describe("unknown routes", () => {
-  it("renders a not found page without requiring a session", async () => {
+  it("sends a signed-out visitor from any deep link to the sign-in screen", async () => {
     renderApp({ path: "/does-not-exist", routes: [unauthenticated] });
-    await screen.findByRole("heading", { name: "Not found" });
+    await screen.findByRole("heading", { name: "Sign in" });
   });
 });
 

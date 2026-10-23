@@ -4,7 +4,8 @@ import Shell from "./components/Shell";
 import RequireAuth from "./components/RequireAuth";
 import { Spinner } from "./components/Feedback";
 import { RunHeaderLoading } from "./components/workbench/RunHeader";
-import { useConversation } from "./api/queries";
+import { ApiError } from "./api/client";
+import { useConversation, useMe } from "./api/queries";
 import { useRun } from "./api/runs";
 import { routes } from "./lib/routes";
 import AgentsPage from "./pages/Agents";
@@ -19,7 +20,6 @@ import ProjectConversations from "./pages/ProjectConversations";
 import Inbox from "./pages/Inbox";
 import LibraryPage, { PipelinePage } from "./pages/Library";
 import NotFound from "./pages/NotFound";
-import Operations from "./pages/Operations";
 import Project from "./pages/Project";
 import ProjectPipelines from "./pages/ProjectRunsPipelines";
 import ProjectRuns from "./pages/ProjectRuns";
@@ -94,6 +94,7 @@ function ThreadDeepLink() {
 
 export default function App() {
   const { pathname, search } = useLocation();
+  const me = useMe({ enabled: !(M4PreviewPage && pathname === "/__m4-preview") });
 
   // The Run Workbench and the Workflow Studio own the whole viewport: no
   // 1000px content column around them — the studio's palette | canvas |
@@ -120,6 +121,25 @@ export default function App() {
           runId={params.get("run")}
         />
       </Suspense>
+    );
+  }
+
+  // The session gate (gh-3): a signed-out visitor sees ONLY the sign-in screen
+  // — no sidebar, no app chrome — for `/` and every deep link. The gate runs
+  // before the shell mounts, so the chrome never wraps the sign-in prompt;
+  // the login screen carries the current path as `return_to`, so a sign-in
+  // lands the visitor back on the page they asked for. A signed-out `/login`
+  // renders the screen directly; any other path hands off to it with the deep
+  // link preserved. A session that fails to load for a reason other than 401
+  // falls through to the route-level gate, which renders the session error.
+  // The dev-only M4 preview above stays outside this gate: it is a fixture
+  // surface and must not need a session to render.
+  if (me.isPending) return <Spinner label="Loading your session" />;
+  const signedOut = me.error instanceof ApiError && me.error.status === 401;
+  if (signedOut) {
+    if (pathname === "/login") return <Login />;
+    return (
+      <Navigate to={`/login?return_to=${encodeURIComponent(`${pathname}${search}`)}`} replace />
     );
   }
 
@@ -309,8 +329,8 @@ export default function App() {
             </RequireAuth>
           }
         />
-        {/* User settings (contract C1): `/settings/:tab` (`layout`, `assistant`)
-            with `/settings` landing on the default tab. */}
+        {/* User settings (contract C1): `/settings/:tab` (`layout`, `assistant`,
+            `operations`) with `/settings` landing on the default tab. */}
         <Route
           path="/settings/:tab"
           element={
@@ -320,14 +340,9 @@ export default function App() {
           }
         />
         <Route path="/settings" element={<Redirect to={routes.settings()} />} />
-        <Route
-          path="/ops"
-          element={
-            <RequireAuth>
-              <Operations />
-            </RequireAuth>
-          }
-        />
+        {/* Operations is a real Settings tab (`/settings/:tab` → `operations`);
+            the old `/ops` URL stays alive as a replace redirect to the tab. */}
+        <Route path="/ops" element={<Navigate to={routes.ops()} replace />} />
         <Route
           path="/artifacts/:artifactId"
           element={

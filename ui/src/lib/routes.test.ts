@@ -16,9 +16,10 @@ describe("route path builders", () => {
     expect(routes.workflows()).toBe("/workflows");
     expect(routes.steps()).toBe("/steps");
     expect(routes.profiles()).toBe("/profiles");
-    expect(routes.ops()).toBe("/ops");
+    expect(routes.ops()).toBe("/settings/operations");
     expect(routes.settings()).toBe("/settings/layout");
     expect(routes.settings("assistant")).toBe("/settings/assistant");
+    expect(routes.settings("operations")).toBe("/settings/operations");
   });
 
   it("builds the parameterised paths and percent-encodes ids", () => {

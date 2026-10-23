@@ -761,6 +761,10 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           ) : lockStatus.data.status === "claimed" ? (
             <StatusChip state="running" label="resolving…" labelProps={lockChipProps} />
           ) : lockStatus.data.status === "done" ? (
+            // The APMLockRequest view carries no digest (request_id + status +
+            // error only), so the pin answers from the profile row — the
+            // agent-profiles list the done transition invalidates (useApmLock).
+            // Until that refetch lands the chip honestly shows `sha256:—`.
             <StatusChip
               state="done"
               label={`locked ✓ sha256:${shortDigest(profile.apm_lock_digest)}`}

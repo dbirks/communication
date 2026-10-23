@@ -110,7 +110,12 @@ export const queryKeys = {
   scheduler: ["system", "scheduler"] as const,
 };
 
-export function useMe() {
+/**
+ * The signed-in session. `options.enabled` lets a surface that must not touch
+ * the network (the dev-only M4 fixture page, mounted outside the session gate)
+ * opt out — the query key and cache behaviour are otherwise identical.
+ */
+export function useMe(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.me,
     queryFn: async () => {
@@ -120,6 +125,7 @@ export function useMe() {
     },
     staleTime: 30_000,
     retry: false,
+    enabled: options?.enabled ?? true,
   });
 }
 

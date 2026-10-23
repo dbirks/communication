@@ -519,7 +519,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           // password or form is ever filled. Loop: /me decides; the link is
           // re-clicked only when the flow failed and /login shows it again.
           const providerLink = page.getByRole("link", {
-            name: /Sign in with your organization identity provider/,
+            name: /Sign in with OIDC/,
           });
           const meDeadline = Date.now() + 120_000;
           let me: { display_name?: string; name?: string } | undefined;

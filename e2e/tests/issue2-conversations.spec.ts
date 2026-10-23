@@ -93,12 +93,12 @@ function nodeFromUrl(page: Page): string | null {
 
 /**
  * A sign-in variant that does NOT rely on the `user-badge` span: that span
- * (and the `sign-out` button) live in the sidebar footer, and at the 390px
- * viewport the sidebar is the drawer behind the phone top strip's menu
+ * (and the user menu the footer opens) live in the sidebar footer, and at the
+ * 390px viewport the sidebar is the drawer behind the phone top strip's menu
  * button — both are `display:none` until the drawer opens. The sign-in chain
  * ends on the lab's own embedded UI origin (where the menu button does not
  * exist at all), so the variant navigates back to the app under test first,
- * then opens the drawer; the footer's `sign-out` button is the
+ * then opens the drawer and its user menu; the menu's `sign-out` is the
  * "signed in" signal at phone width.
  */
 async function signInNarrow(page: Page, subject: string): Promise<void> {
@@ -110,12 +110,12 @@ async function signInNarrow(page: Page, subject: string): Promise<void> {
   // per host across the lab's ports — is valid.
   await gotoApp(page, "/");
   // At 390px the sidebar (and its footer) sits behind the menu button:
-  // open the drawer before the footer's sign-out can be visible. The Shell
-  // renders the hidden desktop rail AND the drawer as two `sidebar` nodes —
-  // the drawer is the last one in the DOM.
+  // open the drawer, then open the footer's user menu to reach the sign-out.
   await page.getByTestId("sidebar-open").click();
   const drawer = page.getByTestId("sidebar").last();
   await expect(drawer).toBeVisible();
+  await drawer.getByTestId("user-menu").click();
+  await expect(drawer.getByTestId("user-menu-list")).toBeVisible();
   await expect(drawer.getByTestId("sign-out")).toBeVisible();
 }
 

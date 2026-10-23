@@ -181,9 +181,13 @@ describe("/inbox", () => {
     ]);
 
     const row = await screen.findByTestId(`inbox-decision-${testidOf(WIRE_APPROVAL_ID)}`);
-    // The model's second action is the reject word: risk `refuse` → the
-    // danger button, and the confirm step records `rejected`.
-    fireEvent.click(within(row).getByTestId(`inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`));
+    // The card's actions come from the model's lazy summary read; wait for
+    // the model's second action — the reject word: risk `refuse` → the
+    // danger button — before the confirm step records `rejected`.
+    const rejectAction = await within(row).findByTestId(
+      `inbox-card-action-${testidOf(WIRE_APPROVAL_ID)}-1`,
+    );
+    fireEvent.click(rejectAction);
     const confirm = await within(row).findByTestId(
       `inbox-card-confirm-${testidOf(WIRE_APPROVAL_ID)}`,
     );

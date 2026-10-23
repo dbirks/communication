@@ -64,9 +64,9 @@ export async function checkShellScreen(
 
 /**
  * Sign in at the 390px viewport. The shared `signIn` waits for `user-badge`,
- * but at phone width the sidebar (and its footer badge) hides behind the
- * drawer's menu button — so open the drawer and read the footer's `sign-out`
- * instead (the issue2 suite's same trick).
+ * but at phone width the sidebar (and its footer user menu) hides behind the
+ * drawer's menu button — so open the drawer, open the user menu, and read the
+ * menu's `sign-out` instead (the issue2 suite's same trick).
  */
 export async function signInNarrow(page: Page, subject: string): Promise<void> {
   await page.goto(BASE_URL + "/");
@@ -76,11 +76,14 @@ export async function signInNarrow(page: Page, subject: string): Promise<void> {
   // The IdP redirect chain lands on the API's own origin (the embedded dist);
   // come back to the dev origin the journey runs against before asserting.
   await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
-  // Two `sidebar`/`sign-out` elements exist in the DOM at phone width (the
-  // display:none desktop column plus the drawer); the drawer is last.
+  // At 390px the sidebar sits behind the phone top strip's menu button:
+  // open the drawer, then open the footer's user menu to reach the sign-out.
   await page.getByTestId("sidebar-open").click();
-  await expect(page.getByTestId("sidebar").last()).toBeVisible();
-  await expect(page.getByTestId("sign-out").last()).toBeVisible();
+  const drawer = page.getByTestId("sidebar").last();
+  await expect(drawer).toBeVisible();
+  await drawer.getByTestId("user-menu").click();
+  await expect(drawer.getByTestId("user-menu-list")).toBeVisible();
+  await expect(drawer.getByTestId("sign-out")).toBeVisible();
 }
 
 /** Sign in at 390px WITHOUT leaving the drawer open. */

@@ -6,10 +6,11 @@
  * come from the same reads Inbox runs (`useSidebarFlags` projects the
  * `lib/attention.ts` reduction, worst state per project); the library counts
  * are live pipeline/profile reads; the footer is the signed-in identity the
- * old bar carried (`user-badge`, `sign-out`, `replica-badge` move here). What
- * the backend cannot supply yet is simply absent — no fake folders under
- * Workflows, no count on Steps (there is no template store), no per-repo
- * flags.
+ * old bar carried (`user-badge` + the account menu: Settings, Operations,
+ * Sign out) — the replica name moved to Settings, the honest operations
+ * signal the footer used to carry. What the backend cannot supply yet is
+ * simply absent — no fake folders under Workflows, no count on Steps (there
+ * is no template store), no per-repo flags.
  *
  * The column has two placements: `panel` (desktop, a sticky screen-height
  * flex item) and `drawer` (phone, off-canvas; `Shell` owns the backdrop and
@@ -25,18 +26,16 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { Link, NavLink, useNavigate } from "react-router";
-import { problemOf } from "../api/client";
-import { useAgentProfiles, useLogout, useMe, useProjects, useRepositories } from "../api/queries";
+import { NavLink, useNavigate } from "react-router";
+import { useAgentProfiles, useMe, useProjects, useRepositories } from "../api/queries";
 import { UNFILED_FOLDER, usePipelines } from "../api/pipelines";
-import { useReplicaName } from "../api/replica";
 import { useLayoutPrefs } from "../lib/prefs";
 import { routes } from "../lib/routes";
 import type { Flag } from "../lib/sidebarFlags";
 import { useSidebarFlags } from "../lib/sidebarFlags";
-import { Button } from "./ds/Button";
 import { Mark } from "./ds/Mark";
 import NewMenu from "./NewMenu";
+import UserMenu from "./UserMenu";
 
 /**
  * The command palette owns its open state and its global ⌘K listener; the
@@ -490,68 +489,22 @@ function LibrarySection() {
 }
 
 /**
- * The footer the app bar used to carry: identity tile + name (`user-badge`),
- * the Settings link, sign out (`sign-out`) and the `replica-badge` line —
- * the last honest operations signal the shell carries.
+ * The footer the app bar used to carry: the signed-in user as the menu
+ * trigger (`user-badge`) over the account menu (`user-menu-list`: Settings,
+ * Operations, Sign out), plus the honest "not signed in" state. The replica
+ * name moved to Settings — the operator signal the footer used to carry — and
+ * the Operations page shows it too.
  */
 function Footer() {
   const me = useMe();
-  const logout = useLogout();
-  const replica = useReplicaName();
-  const navigate = useNavigate();
-
-  const onSignOut = () => {
-    logout.mutate(undefined, {
-      onSuccess: () => navigate("/login"),
-      onError: () => navigate("/login"),
-    });
-  };
-  const error = logout.error ? problemOf(logout.error).detail || "Sign out failed." : null;
 
   return (
     <div className="mt-auto border-t border-line px-1 pt-2">
       {me.data ? (
-        <div className="flex items-center gap-2">
-          <InitialsTile name={me.data.display_name} className="h-[26px] w-[26px] text-[10px]" />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-2">
-            <strong data-testid="user-badge" className="font-semibold text-ink">
-              {me.data.display_name}
-            </strong>
-          </span>
-          <Link
-            to={routes.settings("layout")}
-            className={`shrink-0 rounded-[3px] text-[12px] text-muted no-underline hover:text-ink ${FOCUS_RING}`}
-          >
-            Settings
-          </Link>
-        </div>
+        <UserMenu />
       ) : (
         <span className="font-mono text-[11px] text-faint">not signed in</span>
       )}
-      <div className="mt-1 flex items-center gap-2">
-        <Button
-          variant="secondaryPlain"
-          data-testid="sign-out"
-          onClick={onSignOut}
-          className="h-[22px] px-2 text-[11px]"
-        >
-          Sign out
-        </Button>
-        {error ? (
-          <span
-            role="alert"
-            className="min-w-0 truncate font-mono text-[11px] text-st-failed-tag-fg"
-          >
-            × {error}
-          </span>
-        ) : null}
-        <span
-          data-testid="replica-badge"
-          className="ml-auto shrink-0 font-mono text-[10.5px] text-faint"
-        >
-          replica: {replica}
-        </span>
-      </div>
     </div>
   );
 }

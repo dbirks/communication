@@ -251,4 +251,32 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       );
     });
   });
+
+  // gh-3: a signed-out visitor sees the sign-in screen alone — no sidebar, no
+  // app chrome — for `/` and every deep link, at desktop and phone width; the
+  // deep link rides along as `return_to` so a sign-in lands back on the page.
+  test("signed-out visitors see only the sign-in screen — no sidebar, no app chrome", async ({
+    page,
+  }) => {
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 800 });
+      for (const path of ["/", "/board"]) {
+        await page.goto(BASE_URL + path, { waitUntil: "domcontentloaded" });
+        const stopWatching = watchPageErrors(page);
+        const signIn = page.getByTestId("sign-in");
+        await expect(signIn).toBeVisible();
+        // No sidebar element at all — the shell chrome must not mount.
+        await expect(page.getByTestId("sidebar")).toHaveCount(0);
+        const expectedHref =
+          path === "/" ? "/auth/login?return_to=%2F" : "/auth/login?return_to=%2Fboard";
+        await expect(signIn).toHaveAttribute("href", expectedHref);
+        await checkShellScreen(page, `signed-out ${path}`, stopWatching);
+        await evidence(
+          page,
+          "shell-p1-signed-out",
+          `signed-out ${path} renders the sign-in screen only — no sidebar, no app chrome`,
+        );
+      }
+    }
+  });
 });

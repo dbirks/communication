@@ -11,6 +11,12 @@ export function safeReturnTo(value: string | null): string {
   return value;
 }
 
+/**
+ * The sign-in screen — the only thing a signed-out visitor sees (gh-3: the app
+ * shell renders around it no more). One product name, one primary action, one
+ * short muted line; the explanatory paragraphs of the pre-redesign screen are
+ * gone (gh-4).
+ */
 export default function Login() {
   const [params] = useSearchParams();
   const returnTo = safeReturnTo(params.get("return_to"));
@@ -19,30 +25,22 @@ export default function Login() {
   return (
     <section
       aria-labelledby="login-heading"
-      className="mx-auto max-w-[34rem] rounded-[3px] border border-line-strong bg-surface"
+      className="mx-auto w-full max-w-[34rem] rounded-[3px] border border-line-strong bg-surface"
     >
       <div className="flex items-center gap-3 border-b border-line px-5 py-6">
         <Mark size={44} />
         <Wordmark size={16} className="ml-1" />
       </div>
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-6 px-5 py-5">
         <h1 id="login-heading" className="text-title-xl font-bold">
           Sign in
         </h1>
-        <p className="text-body leading-[1.6] text-ink-2">
-          Communication signs you in with your organization&apos;s identity provider (OpenID
-          Connect, authorization code with PKCE). Sessions live in the shared database rather than
-          on one server, so a login can start on one API replica and finish on another.
-        </p>
-        <p className="text-small text-muted">
-          After signing in you will see only the projects you belong to, with the role the project
-          owner gave you.
-        </p>
         {/* Plain anchor: this leaves the app for the server-side OIDC redirect. */}
-        <p>
-          <ButtonLink data-testid="sign-in" href={href}>
-            Sign in with your organization identity provider
-          </ButtonLink>
+        <ButtonLink data-testid="sign-in" href={href} variant="primary">
+          Sign in with OIDC
+        </ButtonLink>
+        <p className="text-small text-muted">
+          You sign in through your organization&apos;s OpenID Connect provider.
         </p>
       </div>
     </section>

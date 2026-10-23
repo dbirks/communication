@@ -1,14 +1,14 @@
 /**
  * The shell's signed-in chrome (`components/Shell.tsx`) after the sidebar
  * swap: the "New" menu starts things — a conversation, a workflow, a run — so
- * it only exists for a member that is actually signed in, the identity rows
- * the old app bar carried (`user-badge`, `sign-out`, `replica-badge`) now sit
- * in the sidebar footer, and the Ask placement preference moves the Ask
+ * it only exists for a member that is actually signed in, the identity row
+ * the old app bar carried (`user-badge`) now sits in the sidebar footer as
+ * the account menu trigger, and the Ask placement preference moves the Ask
  * button between the sidebar row and a fixed corner button. The API is
  * mocked at the fetch boundary; the page content under the shell is not the
  * subject here.
  */
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { meFixture, type RouteStub } from "../test/fakes";
 import { renderApp } from "../test/render";
@@ -44,7 +44,10 @@ describe("the shell's New menu follows the session", () => {
 
   it("hides the New menu when nobody is signed in", async () => {
     renderApp({ path: "/inbox", routes: notSignedIn });
-    await screen.findByText("not signed in", undefined, { timeout: READ_MS });
+    // A signed-out visitor sees the sign-in screen only — no sidebar, no app
+    // chrome, no New menu — for the deep link they opened.
+    await screen.findByTestId("sign-in", undefined, { timeout: READ_MS });
+    expect(screen.queryByTestId("sidebar")).toBeNull();
     expect(screen.queryByTestId("new-menu")).toBeNull();
   });
 });
@@ -66,11 +69,19 @@ describe("the sidebar replaces the app bar", () => {
     expect(screen.getByTestId("sidebar-link-home").getAttribute("aria-current")).toBeNull();
   });
 
-  it("keeps the identity rows the old bar carried, in the sidebar footer", async () => {
+  it("keeps the identity row the old bar carried, in the sidebar footer", async () => {
     renderApp({ path: "/inbox", routes: signedIn });
-    expect(await screen.findByTestId("user-badge", undefined, { timeout: READ_MS })).toBeTruthy();
+    const user = await screen.findByTestId("user-badge", undefined, { timeout: READ_MS });
+    expect(user.textContent).toContain("Ada Lovelace");
+    // The footer now opens the account menu; the sign-out lives in it.
+    expect(screen.getByTestId("user-menu")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("user-menu"));
+    expect(
+      await screen.findByTestId("user-menu-list", undefined, { timeout: READ_MS }),
+    ).toBeTruthy();
     expect(screen.getByTestId("sign-out")).toBeTruthy();
-    expect(screen.getByTestId("replica-badge")).toBeTruthy();
+    // The replica name moved to Settings (the About this server line).
+    expect(screen.queryByTestId("replica-badge")).toBeNull();
     // The old bar's primary nav is gone; the top strip's drawer button is not.
     expect(screen.queryByRole("navigation", { name: "Primary" })).toBeNull();
     expect(screen.getByTestId("sidebar-open")).toBeTruthy();
