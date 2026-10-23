@@ -96,6 +96,31 @@ describe("WorkflowTriggers — the issue half", () => {
     );
   });
 
+  it("settles to the empty state when the workflow's only project has no assignment", async () => {
+    // The issue-trigger query is `enabled: false` for a project with no
+    // assignment of this workflow; a disabled React Query v5 query is
+    // `isPending: true` forever, so the section must gate on `isLoading`
+    // (or `fetchStatus`) or the spinner never clears (m5-layout lab: the
+    // page never settled and "· Loading issue triggers…" stayed up).
+    const { requests } = mount([
+      { path: `/api/v1/projects/${wireProjectId}/assignments`, body: { assignments: [] } },
+    ]);
+    // Wait for the fan-out to have actually run and settled: the
+    // assignments read must have happened, and the "Loading schedules"
+    // spinner (projects list or the assignments fan-out) must be gone.
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/projects/${wireProjectId}/assignments`)).toHaveLength(1),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: /Loading schedules/ })).toBeNull(),
+    );
+    expect(screen.getByTestId("triggers-empty").textContent).toContain(
+      "assign this workflow to a project first",
+    );
+    expect(screen.getByTestId("trigger-issue-placeholder")).toBeTruthy();
+    expect(screen.queryByRole("status", { name: /Loading issue triggers/ })).toBeNull();
+  });
+
   it("lists one issue trigger: repo, event, any-label chip, polled, toggle", async () => {
     mount([
       {

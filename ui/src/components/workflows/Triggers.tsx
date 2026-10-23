@@ -124,9 +124,9 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
   });
   const manageable = groups.filter((group) => group.canManage);
 
-  const assignmentsPending = projectItems.some((_, index) => assignmentLists[index]?.isPending);
+  const assignmentsPending = projectItems.some((_, index) => assignmentLists[index]?.isLoading);
   const assignmentsError = projectItems.some((_, index) => assignmentLists[index]?.isError);
-  const issueTriggersPending = projectItems.some((_, index) => issueTriggerLists[index]?.isPending);
+  const issueTriggersPending = projectItems.some((_, index) => issueTriggerLists[index]?.isLoading);
   const issueTriggersError = projectItems.some((_, index) => issueTriggerLists[index]?.isError);
 
   return (
