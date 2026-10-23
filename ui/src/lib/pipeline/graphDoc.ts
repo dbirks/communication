@@ -2,10 +2,13 @@
  * graphDoc.ts — pure document operations over canonical pipeline YAML text.
  *
  * The YAML text is the source of truth. Every op takes the document text and
- * returns new YAML text (doc.toString()), preserving comments and every
- * untouched node. No JSON round-trips are ever used for writing.
+ * returns new YAML text, preserving comments and every untouched node and
+ * serializing collections in block style (design 2d) — `doc.toString()` on a
+ * flow-style document would hand back flow. No JSON round-trips are ever used
+ * for writing.
  */
 import { Document, isMap, isSeq, parseDocument, YAMLMap, type YAMLSeq } from "yaml";
+import { toBlockString } from "./blockYaml";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -469,7 +472,7 @@ function withDoc(text: string, fn: (doc: Document) => string[]): OpResult {
   if ("error" in model) return { ok: false, error: model.error };
   try {
     const changed = fn(doc);
-    return { ok: true, text: doc.toString(), changed };
+    return { ok: true, text: toBlockString(doc), changed };
   } catch (e) {
     if (e instanceof AmbiguousOp) return { ok: false, ambiguous: true, reasons: e.reasons };
     if (e instanceof OpError) return { ok: false, error: e.message };

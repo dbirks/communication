@@ -15,12 +15,13 @@ kind: Pipeline
 metadata:
   name: plan-with-approval
   description: >-
-    Survey a repository checkout, draft an implementation plan for a goal with a chat
-    model, hold it behind a maintainer approval, and publish the approved-shape plan.
+    Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan.
 spec:
   inputs:
     type: object
-    required: [goal, repository]
+    required:
+      - goal
+      - repository
     properties:
       goal:
         type: string
@@ -32,9 +33,11 @@ spec:
         description: Project repository binding name, e.g. app.
   outputs:
     type: object
-    required: [plan]
+    required:
+      - plan
     properties:
-      plan: {type: string}
+      plan:
+        type: string
   policies:
     maxConcurrentNodes: 1
     maxDurationSeconds: 7200
@@ -43,114 +46,139 @@ spec:
     workspaceMode: worktree
     cancelPolicy: cascade
   nodes:
-  # 1. Deterministic survey: the file list and the head of the README. No model, no
-  #    credentials — git is in the worker image (worker/Dockerfile) and the checkout is
-  #    already there by the time a node runs (contract § 4 step 3).
-  - id: survey
-    kind: process.exec
-    timeoutSeconds: 300
-    retry:
-      maxAttempts: 2
-      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
-      retriableErrors: [infra, interrupted]
-    config:
-      executable: sh
-      args:
-      - -c
-      - |
-        # The checkout lands at work/repos/<binding name>; the attempt's default cwd is
-        # work/scratch/, so probe both depths rather than hardcoding a directory the
-        # input (not the schema, which keeps cwd literal) chooses.
-        for d in "repos/$REPO" "../repos/$REPO"; do
-          test -d "$d" && { REPO_DIR="$d"; break; }
-        done
-        test -n "$REPO_DIR" || { echo "no checkout for $REPO in the run workspace" >&2; exit 1; }
-        cd "$REPO_DIR" || exit 1
-        echo "== files =="
-        # git ls-files is tried first; in a linked worktree its objects live outside
-        # the sandbox grant, so find is the fallback, not decoration.
-        LIST=$(git ls-files 2>/dev/null)
-        test -n "$LIST" || LIST=$(find . -path './.git' -prune -o -type f -print | head -200)
-        printf '%s\n' "$LIST" | head -200
-        echo
-        echo "== README.md =="
-        head -80 README.md 2>/dev/null || echo '(no README.md)'
-      env:
-        REPO: ${{ inputs.repository }}
-      workspace:
-        mode: read_only
-        repositories: ['${{ inputs.repository }}']
-      outputExtraction: {mode: none}
-    outputs:
-      type: object
-      required: [exit_code, stdout_preview]
-      properties:
-        exit_code: {type: integer}
-        stdout_preview: {type: string}
-  # 2. The plan. One chat completion; the survey text is interpolated with the same
-  #    ${{ nodes.<id>.outputs.<name> }} binding the approval summary below uses
-  #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.plan.outputs.plan }}).
-  #    stdout_preview is the worker's bounded 8 KiB capture of the survey (contract § 6).
-  #    A ${{ … }} in a message content is a binding position (ADR-0029: messages are
-  #    typed {role, content}, content is bindingText) and the control plane interpolates
-  #    it at claim time (ADR-0027), so the model reads this run's goal, not the syntax.
-  - id: plan
-    kind: model.chat
-    dependsOn: [survey]
-    timeoutSeconds: 600
-    retry:
-      maxAttempts: 2
-      backoff: {baseSeconds: 10, multiplier: 2, maxSeconds: 120, jitter: true}
-      retriableErrors: [infra, timeout, invalid_output]
-    config:
-      model: qwen3-8-27b
-      temperature: 0.2
-      maxTokens: 16000  # reasoning models (qwen3-8-27b) spend part of this budget thinking before they answer
-      messages:
-      - role: system
-        content: >-
-          You are a software implementation planner. Reply with the plan in
-          markdown: numbered steps, the files each step touches, and one short
-          verification note per step. No preamble.
-      - role: user
-        content: |
-          Goal: ${{ inputs.goal }}
+    # 1. Deterministic survey: the file list and the head of the README. No model, no
+    #    credentials — git is in the worker image (worker/Dockerfile) and the checkout is
+    #    already there by the time a node runs (contract § 4 step 3).
+    - id: survey
+      kind: process.exec
+      timeoutSeconds: 300
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 5
+          multiplier: 2
+          maxSeconds: 60
+          jitter: false
+        retriableErrors:
+          - infra
+          - interrupted
+      config:
+        executable: sh
+        args:
+          - -c
+          - |
+            # The checkout lands at work/repos/<binding name>; the attempt's default cwd is
+            # work/scratch/, so probe both depths rather than hardcoding a directory the
+            # input (not the schema, which keeps cwd literal) chooses.
+            for d in "repos/$REPO" "../repos/$REPO"; do
+              test -d "$d" && { REPO_DIR="$d"; break; }
+            done
+            test -n "$REPO_DIR" || { echo "no checkout for $REPO in the run workspace" >&2; exit 1; }
+            cd "$REPO_DIR" || exit 1
+            echo "== files =="
+            # git ls-files is tried first; in a linked worktree its objects live outside
+            # the sandbox grant, so find is the fallback, not decoration.
+            LIST=$(git ls-files 2>/dev/null)
+            test -n "$LIST" || LIST=$(find . -path './.git' -prune -o -type f -print | head -200)
+            printf '%s\n' "$LIST" | head -200
+            echo
+            echo "== README.md =="
+            head -80 README.md 2>/dev/null || echo '(no README.md)'
+        env:
+          REPO: ${{ inputs.repository }}
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        outputExtraction:
+          mode: none
+      outputs:
+        type: object
+        required:
+          - exit_code
+          - stdout_preview
+        properties:
+          exit_code:
+            type: integer
+          stdout_preview:
+            type: string
+    # 2. The plan. One chat completion; the survey text is interpolated with the same
+    #    ${{ nodes.<id>.outputs.<name> }} binding the approval summary below uses
+    #    (docs/compatibility/probes/m4/pipeline.yaml: ${{ nodes.plan.outputs.plan }}).
+    #    stdout_preview is the worker's bounded 8 KiB capture of the survey (contract § 6).
+    #    A ${{ … }} in a message content is a binding position (ADR-0029: messages are
+    #    typed {role, content}, content is bindingText) and the control plane interpolates
+    #    it at claim time (ADR-0027), so the model reads this run's goal, not the syntax.
+    - id: plan
+      kind: model.chat
+      dependsOn:
+        - survey
+      timeoutSeconds: 600
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - timeout
+          - invalid_output
+      config:
+        model: qwen3-8-27b
+        temperature: 0.2
+        maxTokens: 16000 # reasoning models (qwen3-8-27b) spend part of this budget thinking before they answer
+        messages:
+          - role: system
+            content: >-
+              You are a software implementation planner. Reply with the plan in markdown: numbered steps, the files each step touches, and one short verification note per step. No preamble.
+          - role: user
+            content: |
+              Goal: ${{ inputs.goal }}
 
-          Repository binding: ${{ inputs.repository }}
+              Repository binding: ${{ inputs.repository }}
 
-          Survey (file list and README head) produced by the survey node:
-          ${{ nodes.survey.outputs.stdout_preview }}
-    outputs:
-      type: object
-      required: [text]
-      properties:
-        text: {type: string, minLength: 1}
-        model: {type: string}
-  # 3. A human decides. The plan is not executed by this pipeline — publishing it is
-  #    the deliverable, and the approval is what makes it a reviewed one.
-  - id: approve
-    kind: human.approval
-    dependsOn: [plan]
-    retry:
-      maxAttempts: 1
-    config:
-      summary: |
-        Plan for ${{ inputs.goal }} in repository ${{ inputs.repository }}
-        ${{ nodes.plan.outputs.text }}
-      approverRoles: [maintainer]
-      deadlineSeconds: 86400
-      onTimeout: fail
-  # 4. The artifact a reviewer can find after the run closes.
-  - id: publish_plan
-    kind: artifact.publish
-    dependsOn: [approve]
-    config:
-      name: plan.md
-      kind: markdown
-      mediaType: text/markdown
-      sensitivity: standard
-      from:
-        mode: output_json
-        value: ${{ nodes.plan.outputs }}
+              Survey (file list and README head) produced by the survey node:
+              ${{ nodes.survey.outputs.stdout_preview }}
+      outputs:
+        type: object
+        required:
+          - text
+        properties:
+          text:
+            type: string
+            minLength: 1
+          model:
+            type: string
+    # 3. A human decides. The plan is not executed by this pipeline — publishing it is
+    #    the deliverable, and the approval is what makes it a reviewed one.
+    - id: approve
+      kind: human.approval
+      dependsOn:
+        - plan
+      retry:
+        maxAttempts: 1
+      config:
+        summary: |
+          Plan for ${{ inputs.goal }} in repository ${{ inputs.repository }}
+          ${{ nodes.plan.outputs.text }}
+        approverRoles:
+          - maintainer
+        deadlineSeconds: 86400
+        onTimeout: fail
+    # 4. The artifact a reviewer can find after the run closes.
+    - id: publish_plan
+      kind: artifact.publish
+      dependsOn:
+        - approve
+      config:
+        name: plan.md
+        kind: markdown
+        mediaType: text/markdown
+        sensitivity: standard
+        from:
+          mode: output_json
+          value: ${{ nodes.plan.outputs }}
   resultBindings:
     plan: ${{ nodes.plan.outputs.text }}

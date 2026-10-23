@@ -1,3 +1,4 @@
+import { isBlockStyle } from "./blockYaml";
 import { parseDocument } from "yaml";
 import { describe, expect, it } from "vitest";
 import {
@@ -439,6 +440,42 @@ spec:
     expect(after.slice(0, before.length)).toEqual(before);
     expect(after.slice(before.length).join("\n")).toContain("id: c");
   });
+
+  it("adds a node to a block-style document, in block style", () => {
+    const text = `kind: Pipeline
+spec:
+  nodes:
+    - id: survey
+      kind: process.exec
+`;
+    const result = addNode(text, { kind: "human.approval", id: "signoff", scope: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Design 2d: the ops serialize block style — no flow collections, lists
+    // as `- item`. A block-style document stays block-style after the edit.
+    expect(isBlockStyle(result.text)).toBe(true);
+    expect(result.text).toContain("id: signoff");
+  });
+
+  it("converts a flow-style document to block style when an edit re-serializes it", () => {
+    const flowText = `kind: Pipeline
+spec:
+  inputs:
+    required: [goal, repository]
+  nodes:
+  - id: survey
+    kind: process.exec
+`;
+    const result = addNode(flowText, { kind: "human.approval", id: "signoff", scope: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Design 2d: the saved text is block style — the flow collections the user
+    // inherited are gone, the new node rides the block layout.
+    expect(isBlockStyle(result.text)).toBe(true);
+    expect(result.text).toContain("required:");
+    expect(result.text).toContain("- goal");
+    expect(result.text).toContain("- id: signoff");
+  });
 });
 
 describe("deleteNode", () => {
@@ -674,6 +711,14 @@ spec:
                 executable: sh
 `;
 
+/** A minimal block-style document: lists as `- item`, maps nested under keys. */
+const BLOCK_DOC = `kind: Pipeline
+spec:
+  nodes:
+    - id: a
+      kind: process.exec
+`;
+
 function modelOfText(text: string): GraphModel {
   const r = parseGraph(text);
   if (!r.ok) throw new Error(`must parse: ${r.error}`);
@@ -868,6 +913,14 @@ describe("insertAfter", () => {
     const result = insertAfter(EDGE_DOC, "a", { kind: "process.exec" });
     expect(result.ok).toBe(false);
     if (!result.ok && "error" in result) expect(result.error).toMatch(/insertOnEdge/);
+  });
+
+  it("inserts a node into a block-style document, in block style", () => {
+    const result = insertAfter(BLOCK_DOC, "a", { kind: "human.approval", id: "signoff" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(isBlockStyle(result.text)).toBe(true);
+    expect(result.text).toContain("id: signoff");
   });
 });
 

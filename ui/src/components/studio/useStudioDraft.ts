@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { isMap, isSeq, parseDocument, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { toBlockString } from "../../lib/pipeline/blockYaml";
 import {
   findNode,
   parseGraph,
@@ -70,7 +71,7 @@ export function withUILayout(text: string, layout: UiLayout): string {
     root.set("metadata", meta);
   }
   meta.set("ui", doc.createNode({ nodes }) as YAMLMap);
-  return doc.toString();
+  return toBlockString(doc);
 }
 
 /** A yaml AST node as plain JS (the layout only ever needs plain objects). */
@@ -117,7 +118,7 @@ function withDoc(text: string, fn: (doc: Document, model: GraphModel) => string[
   }
   try {
     const changed = fn(doc, parsed.model);
-    return { ok: true, text: doc.toString(), changed };
+    return { ok: true, text: toBlockString(doc), changed };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
