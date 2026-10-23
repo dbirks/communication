@@ -26,6 +26,8 @@ describe("the sign-in screen", () => {
   it("renders the product name, the one primary sign-in button and one muted line", async () => {
     renderApp({ path: "/login", routes: [unauthenticated] });
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    // The brand is the Mark + plain wordmark, not boxed letters (sidebar parity).
+    expect(screen.getByText("Communication")).toBeTruthy();
     const signIn = screen.getByTestId("sign-in");
     expect(signIn.textContent).toContain("Sign in with OIDC");
   });
