@@ -42,8 +42,8 @@
 //
 // NO HARD-CODED UUIDS: every id is read off the served page the way the other
 // specs do — a project by slug, the first run row's `data-testid`, the first
-// pipeline name button, the first conversation row (creating one through the
-// project's own form, with no first prompt, only if the lab has none).
+// pipeline name button, the conversation row the arm creates itself through the
+// API (with no first prompt, so no turn is queued).
 //
 // Skipped unless COMMUNICATION_E2E_M5=1, so CI is unaffected. Every wait is
 // bounded, and a failure names the widest element on the page (the DOM is
@@ -58,6 +58,7 @@ import {
 } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
+import { apiCreateConversation, apiCsrf, apiProjects, apiProfileId } from "./shell-helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -554,45 +555,34 @@ function measureDocument(page: Page): Promise<FitReport> {
 
 /**
  * A conversation to open, found the way a user finds one: the project page's own
- * CONVERSATIONS rows. Only when the lab has none does this arm create one, and
- * it creates it with no first prompt — the route makes `prompt` optional
- * (`api/openapi.yaml`, `ConversationCreate`), so nothing is queued, no worker
- * claims a turn, and the conversation page still renders its transcript,
- * composer and session meta, which is what this arm measures.
+ * CONVERSATIONS rows. The arm opens a thread it created itself through the API
+ * with no first prompt — the route makes `prompt` optional (`api/openapi.yaml`,
+ * `ConversationCreate`), so nothing is queued, no worker claims a turn, and the
+ * conversation page still renders its transcript, composer and session meta,
+ * which is what this arm measures. The row is located BY TITLE (`m5-layout-…`, the
+ * arm's own stamp) and clicked — never by list position: the lab accumulates
+ * run-linked conversations, and a "From run" row's badge deep-links into the Run
+ * Workbench, so an order-based first row stopped being a plain one-off thread the
+ * moment other suites created run-linked conversations (m5-layout r2rerun2: the
+ * click left /threads/).
  */
 async function firstConversationPath(page: Page, projectPath: string): Promise<string> {
+  const title = `m5-layout-${STAMP}`;
+  const rowTestid = `conversation-row-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const csrf = await apiCsrf(page.request);
+  const [project] = await apiProjects(page.request);
+  if (!project) throw new Error("the lab holds no project to open a thread in");
+  const profileId = await apiProfileId(page.request);
+  await apiCreateConversation(page.request, csrf, project.id, profileId, title);
   await gotoApp(page, projectPath);
-  const rows = page.locator('[data-testid^="conversation-row-"]');
-  await expect(
-    page.getByTestId("conversation-list").or(page.getByTestId("conversation-list-empty")).first(),
-  ).toBeVisible({ timeout: LOADED_TIMEOUT_MS });
-  if ((await rows.count()) > 0) {
-    await rows.first().click();
-    // The row's anchor is the standalone thread page (route contract C1).
-    await page.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
-    return new URL(page.url()).pathname;
-  }
-  // The create form lives in a dialog; open it before the fields exist.
-  await page.getByTestId("conversations-new-open").click();
-  await page.getByTestId("new-conversation-dialog").waitFor();
-  await page.getByTestId("conversation-new-title").fill(`m5-layout-${STAMP}`);
-  await pickFirstOption(page, "conversation-new-profile");
-  await page.getByTestId("conversation-new-submit").click();
-  await page.waitForURL(/\/threads\/[0-9a-f-]{36}$/, { timeout: 30_000 });
-  return new URL(page.url()).pathname;
-}
-
-/** Select the first real option of a `<select>` — the lab's data, not a name. */
-async function pickFirstOption(page: Page, testid: string): Promise<void> {
-  const select = page.getByTestId(testid);
-  const value = await select.locator("option").evaluateAll((options) => {
-    const first = options.find(
-      (option) => option instanceof HTMLOptionElement && option.value !== "",
-    );
-    return first instanceof HTMLOptionElement ? first.value : "";
+  const row = page.getByTestId(rowTestid);
+  await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({
+    timeout: LOADED_TIMEOUT_MS,
   });
-  expect(value, `${testid} offers no option — the lab has no agent profiles?`).not.toBe("");
-  await select.selectOption(value);
+  await row.click();
+  // The row's anchor is the standalone thread page (route contract C1).
+  await page.waitForURL(/\/threads\/[0-9a-f-]{36}/, { timeout: 30_000 });
+  return new URL(page.url()).pathname;
 }
 
 /** Collapse a browser message to one line so a failure stays readable. */
