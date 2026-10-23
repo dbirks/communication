@@ -152,8 +152,12 @@ test.describe("M2 shared conversation and control handoff", () => {
   });
 
   test("bob sees the same conversation live on replica B, read-only", async () => {
-    await bob.goto(`${API_B_URL}${conversationPath}`);
+    // The replica badge moved from the sidebar footer to Settings →
+    // "About this server" (#5); read it from /settings/layout on a direct
+    // replica URL, then return to the conversation page.
+    await bob.goto(`${API_B_URL}/settings/layout`);
     await expect(bob.getByTestId("replica-badge")).toHaveText("replica: api-b");
+    await bob.goto(`${API_B_URL}${conversationPath}`);
     await expect(bob.getByTestId("conversation-title")).toHaveText("Hello World onboarding");
     await expect(bob.getByTestId("controller-badge")).toHaveText(`Controlled by ${ALICE.name}`);
     // Watching is allowed, driving is not: the composer is inert and says why.

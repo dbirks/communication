@@ -83,6 +83,9 @@ test("both API replicas serve identical state", async () => {
     await expect(direct.getByTestId("project-name")).toHaveText("Customer Platform");
     await expect(direct.getByTestId(`repo-row-frontend`)).toBeVisible();
     await expect(direct.getByTestId(`repo-row-backend`)).toBeVisible();
+    // The replica badge moved from the sidebar footer to Settings →
+    // "About this server" (#5); read it from /settings/layout on a direct replica.
+    await direct.goto(`${url}/settings/layout`);
     await expect(direct.getByTestId("replica-badge")).toHaveText(`replica: ${replica}`);
     await direct.close();
   }
@@ -92,8 +95,12 @@ test("a repository added on replica B appears live on replica A's open page", as
   const pageA = await context.newPage();
   const pageB = await context.newPage();
   try {
-    await pageA.goto(`${API_A_URL}${projectPath}`);
+    // The replica badge moved from the sidebar footer to Settings →
+    // "About this server" (#5); read it from /settings/layout on a direct
+    // replica URL, then return to the project page for the live-update check.
+    await pageA.goto(`${API_A_URL}/settings/layout`);
     await expect(pageA.getByTestId("replica-badge")).toHaveText("replica: api-a");
+    await pageA.goto(`${API_A_URL}${projectPath}`);
     await expect(rowFor(pageA, "mobile")).toHaveCount(0);
 
     await addRepository(
