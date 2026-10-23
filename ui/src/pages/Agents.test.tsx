@@ -380,6 +380,7 @@ describe("/profiles", () => {
       apm_package_ref: "mattpocock/skills/skills/engineering/ask-matt#v1.3.1",
       apm_target: "claude",
       apm_lock_digest: `sha256:${"2b".repeat(32)}`,
+      version: pinned.version,
     });
   });
 
@@ -412,6 +413,7 @@ describe("/profiles", () => {
       apm_package_ref: "mattpocock/skills#v1.3.1",
       apm_target: "claude",
       apm_lock_digest: null,
+      version: unlockedProfile.version,
     });
   });
 
@@ -430,6 +432,7 @@ describe("/profiles", () => {
       apm_package_ref: null,
       apm_target: null,
       apm_lock_digest: null,
+      version: pinned.version,
     });
   });
 
@@ -485,6 +488,7 @@ describe("/profiles", () => {
       apm_package_ref: "mattpocock/skills#v1.3.1",
       apm_target: "claude",
       apm_lock_digest: `sha256:${"1a".repeat(32)}`,
+      version: copy.version,
     });
   });
 

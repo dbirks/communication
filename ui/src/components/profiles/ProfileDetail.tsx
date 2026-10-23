@@ -29,6 +29,7 @@ import { STATES } from "../ds/states";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { apiFetch, ApiError, problemOf } from "../../api/client";
 import {
+  queryKeys,
   useCreateAgentProfile,
   usePatchAgentProfile,
   useProjects,
@@ -36,6 +37,8 @@ import {
 } from "../../api/queries";
 import type { AgentProfileAPMPatch } from "../../api/queries";
 import { useApmLockStatus, usePostApmLock } from "../../api/useApmLock";
+import { agentProfileVersionsKey, useAgentProfileVersions } from "../../api/useProfileVersions";
+import ProfileHistory from "./ProfileHistory";
 import { ENFORCEMENT_COPY } from "../../api/sandbox";
 import { useAgentProfileUsage, type Usage } from "../../api/useUsage";
 import type { AgentProfile, Project, Secret, SecretList } from "../../api/types";
@@ -144,6 +147,7 @@ export default function ProfileDetail({
             apm_package_ref: profile.apm_package_ref,
             apm_target: profile.apm_target,
             apm_lock_digest: profile.apm_lock_digest,
+            version: created.version,
           },
         });
         await queryClient.invalidateQueries({ queryKey: ["agent-profiles"] });
@@ -159,7 +163,16 @@ export default function ProfileDetail({
     <div className="space-y-4" data-testid={`profile-detail-${profile.id}`}>
       <header className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-[15px] font-bold">{profile.name}</h2>
+          <h2 className="text-[15px] font-bold">
+            {profile.name}
+            <span
+              className="ml-2 font-mono text-[11px] text-muted"
+              data-testid="profile-version"
+              title="The profile's current version (ADR-0058): the optimistic-concurrency token a write must echo and the latest entry of its history."
+            >
+              v{profile.version}
+            </span>
+          </h2>
           <span className="font-mono text-[11px] text-muted">launcher: {profile.launcher_id}</span>
           <span
             className="font-mono text-[11px] text-faint"
@@ -414,6 +427,8 @@ export default function ProfileDetail({
           )}
         </div>
       </Panel>
+
+      <ProfileHistory profileId={profile.id} canWrite={canWrite} />
     </div>
   );
 }
@@ -618,6 +633,9 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
   const patch = usePatchAgentProfile(profile.id);
   const lockStatus = useApmLockStatus(profile.id);
   const lockProfile = usePostApmLock();
+  const queryClient = useQueryClient();
+  const versions = useAgentProfileVersions(profile.id);
+  const [staleNowVersion, setStaleNowVersion] = useState<number | null>(null);
   const [ref, setRef] = useState(profile.apm_package_ref ?? "");
   const [target, setTarget] = useState<"claude" | "codex">(profile.apm_target ?? "claude");
   const [digest, setDigest] = useState(profile.apm_lock_digest ?? "");
@@ -637,12 +655,26 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
   };
 
   async function save(body: AgentProfileAPMPatch) {
+    setStaleNowVersion(null);
     try {
-      await patch.mutateAsync(body);
+      // ADR-0058: the write carries the version it last saw; a stale token
+      // answers 409 and lands nothing, and the conflict is surfaced honestly.
+      await patch.mutateAsync({ ...body, version: profile.version });
       onDone();
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const items = versions.data?.items ?? [];
+        const latest = items.length > 0 ? items[items.length - 1].version : profile.version;
+        setStaleNowVersion(latest);
+      }
       // the problem renders below; the server owns validation
     }
+  }
+
+  /** The operator's way out of a stale write: re-read the profile + history. */
+  function reloadProfile() {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+    void queryClient.invalidateQueries({ queryKey: agentProfileVersionsKey(profile.id) });
   }
 
   return (
@@ -728,7 +760,7 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
           disabled={patch.isPending}
           data-testid={`agents-apm-save-${profile.id}`}
         >
-          {patch.isPending ? "Saving…" : "Save"}
+          {patch.isPending ? "Saving…" : `Save as v${profile.version + 1}`}
         </Button>
         <Button
           type="button"
@@ -778,6 +810,29 @@ export function ApmPinForm({ profile, onDone }: { profile: AgentProfile; onDone:
             />
           )}
         </div>
+      ) : null}
+      {staleNowVersion != null ? (
+        <Alert
+          state="failed"
+          label="CHANGED"
+          role="alert"
+          testid={`agent-apm-stale-${profile.id}`}
+          action={
+            <Button
+              variant="secondary"
+              compact
+              onClick={() => void reloadProfile()}
+              data-testid={`agent-apm-stale-reload-${profile.id}`}
+            >
+              Reload
+            </Button>
+          }
+        >
+          <span>
+            This profile changed since you opened it (now v{staleNowVersion}) — reload to see the
+            change
+          </span>
+        </Alert>
       ) : null}
       {patch.isError ? (
         <ProblemCode error={patch.error} testid={`agents-apm-problem-${profile.id}`} />

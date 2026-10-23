@@ -5,13 +5,13 @@
  * walks the lock flow: an unlocked pin in the list, a live lock status, a
  * resolve that finishes while the operator watches.
  */
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ProfileDetail from "./ProfileDetail";
 import { useAgentProfiles } from "../../api/queries";
-import type { AgentProfile, Me, SystemSandbox } from "../../api/types";
+import type { AgentProfile, AgentProfileVersion, Me, SystemSandbox } from "../../api/types";
 import type { Launcher } from "../../lib/profiles";
 import { claudeProfile, meFixture, mockFetch, requestsTo, type RouteStub } from "../../test/fakes";
 
@@ -115,6 +115,34 @@ function LockFlow({ profile }: { profile: AgentProfile }) {
 
 afterEach(cleanup);
 
+/** The version history entries the stale-write tests read back. */
+const versionV1: AgentProfileVersion = {
+  profile_id: unlockedProfile.id,
+  version: 1,
+  snapshot: {
+    name: "Claude Code (unlocked skills)",
+    launcher_id: "claude",
+    permission_mode: "ask",
+  },
+  created_by: admin.id,
+  created_at: "2026-10-14T18:00:00Z",
+};
+
+const versionV2: AgentProfileVersion = {
+  profile_id: unlockedProfile.id,
+  version: 2,
+  snapshot: {
+    name: "Claude Code (unlocked skills)",
+    launcher_id: "claude",
+    permission_mode: "deny",
+    apm_package_ref: "mattpocock/skills#v1.3.1",
+    apm_target: "claude",
+    apm_lock_digest: `sha256:${"1a".repeat(32)}`,
+  },
+  created_by: admin.id,
+  created_at: "2026-10-14T18:05:00Z",
+};
+
 describe("ProfileDetail — APM lock chip and contents", () => {
   it("refetches the agent-profiles list when the lock resolve finishes, then shows the digest and contents", async () => {
     vi.useFakeTimers();
@@ -217,4 +245,99 @@ describe("ProfileDetail — APM lock chip and contents", () => {
       vi.useRealTimers();
     }
   });
+});
+
+describe("ProfileDetail — version glyph and stale writes", () => {
+  it("shows the version glyph next to the profile name", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ProfileDetail
+            profile={unlockedProfile}
+            canWrite
+            launchers={launcherFixture.launchers}
+            sandbox={sandboxFixture}
+            apmOpen
+            onApmToggle={() => {}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const version = await screen.findByTestId("profile-version");
+    expect(version.textContent).toContain("v1");
+  });
+
+  it("shows the stale-write conflict and the reload action on a 409", async () => {
+    const stubs: RouteStub[] = [
+      { path: "/api/v1/me", body: admin },
+      { path: "/api/v1/projects", body: { items: [] } },
+      { path: "/api/v1/launchers", body: launcherFixture },
+      { path: "/api/v1/system/sandbox", body: sandboxFixture },
+      { path: LIST_PATH, method: "GET", body: { items: [unlockedProfile] } },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}/versions`,
+        method: "GET",
+        body: { items: [versionV1, versionV2] },
+      },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}`,
+        method: "PATCH",
+        status: 409,
+        body: {
+          type: "https://communication.dev/errors/conflict",
+          title: "Conflict",
+          status: 409,
+          detail:
+            "The agent profile changed since this write was prepared; re-read the version history and retry.",
+        },
+      },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}/usage`,
+        method: "GET",
+        body: { workflow_count: 0, step_count: 0, uses: [], truncated: false },
+      },
+    ];
+    const { requests } = mockFetch(stubs);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ProfileDetail
+            profile={unlockedProfile}
+            canWrite
+            launchers={launcherFixture.launchers}
+            sandbox={sandboxFixture}
+            apmOpen
+            onApmToggle={() => {}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const save = (await screen.findByTestId(
+      `agents-apm-save-${unlockedProfile.id}`,
+    )) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    // Let the version history read land before the write, so the conflict
+    // names the version the profile holds now.
+    await screen.findByTestId("profile-history-row-v2");
+    fireEvent.click(save);
+
+    const stale = await screen.findByTestId(`agent-apm-stale-${unlockedProfile.id}`);
+    expect(stale.textContent).toContain(
+      "This profile changed since you opened it (now v2) — reload to see the change",
+    );
+    fireEvent.click(screen.getByTestId(`agent-apm-stale-reload-${unlockedProfile.id}`));
+    // The reload re-reads the profile and the version history it invalidates.
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}/versions`, "GET").length,
+      ).toBeGreaterThan(1),
+    );
+  }, 20000);
 });

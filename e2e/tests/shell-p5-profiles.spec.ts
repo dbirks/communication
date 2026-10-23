@@ -202,6 +202,65 @@ test.describe("shell p5 — agent profiles: list, detail, new-profile dialog", (
     );
   });
 
+  test("versioned save: the glyph moves v<n> → v<n+1>, history lists both, restore lands v<n+2>", async ({
+    page,
+  }) => {
+    await signIn(page, "admin");
+    const stopWatching = watchPageErrors(page);
+    const versionName = `shell p5 version ${STAMP}`;
+    await page.goto(BASE_URL + "/profiles", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("agents-new-open").click();
+    const dialog = page.getByTestId("new-profile-dialog");
+    await expect(dialog).toBeVisible();
+    await page.getByTestId("new-profile-card-claude").click();
+    await page.getByTestId("agents-new-name-input").fill(versionName);
+    const post = page.waitForResponse(
+      (res) => res.url().includes("/agent-profiles") && res.request().method() === "POST",
+    );
+    await page.getByTestId("agents-new-submit").click();
+    expect((await post).status()).toBe(201);
+    await expect(dialog).toBeHidden();
+    await expect(page).toHaveURL(/\/profiles\/[^/?]+$/);
+    const profileId = /\/profiles\/([^/?]+)/.exec(page.url())?.[1] ?? "";
+    const version = page.getByTestId("profile-version");
+    // A created profile carries its first version: v1.
+    await expect(version).toHaveText("v1");
+    // Change the profile through the detail's save: the write carries the
+    // version it saw and lands v2 ("Save as v2").
+    const edit = page.getByTestId(`agent-apm-edit-${profileId}`);
+    await expect(edit).toBeVisible();
+    await edit.click();
+    const save = page.waitForResponse(
+      (res) => res.url().includes("/agent-profiles") && res.request().method() === "PATCH",
+    );
+    const saveButton = page.getByTestId(`agents-apm-save-${profileId}`);
+    await expect(saveButton).toHaveText("Save as v2");
+    await page.getByTestId(`agents-ref-input-${profileId}`).fill("mattpocock/skills#v1.3.1");
+    await page.getByTestId(`agents-target-select-${profileId}`).selectOption("claude");
+    await saveButton.click();
+    expect((await save).status()).toBe(200);
+    await expect(version).toHaveText("v2");
+    // The HISTORY panel lists both versions, newest first.
+    await expect(page.getByTestId("profile-history")).toBeVisible();
+    await expect(page.getByTestId("profile-history-row-v2")).toBeVisible();
+    await expect(page.getByTestId("profile-history-row-v1")).toBeVisible();
+    // Restore the older version: the restore lands a NEW version (v3).
+    const restore = page.waitForResponse(
+      (res) => res.url().includes("/versions/1/restore") && res.request().method() === "POST",
+    );
+    await page.getByTestId("profile-history-restore-v1").click();
+    await expect(page.getByTestId("profile-history-confirm")).toBeVisible();
+    await page.getByTestId("profile-history-restore-submit").click();
+    expect((await restore).status()).toBe(200);
+    await expect(version).toHaveText("v3");
+    await checkShellScreen(page, "profile version history", stopWatching);
+    await evidence(
+      page,
+      "shell-p5-profile-versions",
+      `the ${versionName} profile moved v1 → v2 through the "Save as v2" write, the HISTORY panel listed both versions, and restoring v1 landed v3`,
+    );
+  });
+
   test.describe("narrow 390x844", () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
