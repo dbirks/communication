@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Text:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;500;600&family=Kaisei+Opti:wght@500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e4e1d9;font-family:'Red Hat Text',ui-sans-serif,system-ui,sans-serif;color:#1e1d1a;-webkit-font-smoothing:antialiased;}
+a{color:#2a43b8;text-decoration:none;}
+a:hover{color:#1e1d1a;}
+*{box-sizing:border-box;}
+</style>
+</helmet>
+
+<section data-screen-label="Turn 2 · Triggers and YAML" style="padding:56px 64px 40px; display:flex; flex-direction:column; gap:28px; border-bottom:2px solid #cfcac0;">
+  <header style="display:flex; flex-direction:column; gap:8px; max-width:880px;">
+    <span style="font-family:'Red Hat Mono',monospace; font-size:11px; letter-spacing:.06em; color:#6e6a62;">TURN 2 · TRIGGERS AND YAML</span>
+    <h1 style="margin:0; font-size:30px; line-height:36px; font-weight:700;">Triggers live on the repo; YAML reads like YAML</h1>
+    <p style="margin:0; font-size:14px; line-height:21px; color:#3a3833; text-wrap:pretty;">Picked from turn 1: <a href="#1b">1b</a>, <a href="#1c">1c</a>, <a href="#1e">1e</a>, <a href="#1g">1g</a>. Triggers already exist in the API: schedules (cron) and GitHub issue triggers (opened, or labeled with any of a set). Both belong to a project assignment, so they're edited on the repo that uses the workflow (<a href="#2e">2e</a>). The library workflow page only shows where it's used (<a href="#2a">2a</a>).</p>
+  </header>
+  <div style="display:flex; flex-wrap:wrap; gap:48px; align-items:flex-start;">
+
+    <div id="2a" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">2a</span><span style="font-size:13px; font-weight:600;">Workflow page · “Used in” replaces Triggers and Start run</span></div>
+      <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+        <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+        <main style="flex:1; min-width:0; display:flex; flex-direction:column;">
+          <div style="background:#fff; border-bottom:1px solid #cfcac0; padding:18px 28px 0; display:flex; flex-direction:column; gap:12px;">
+            <div style="display:flex; align-items:flex-start; gap:16px;">
+              <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
+                <nav style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;"><a>Workflows</a> / <a>Delivery</a> /</nav>
+                <div style="display:flex; align-items:center; gap:10px;"><h1 style="margin:0; font-size:22px; line-height:28px; font-weight:600;">Plan with approval</h1><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37; white-space:nowrap;"><span>✓</span><span>published r2</span></span></div>
+                <p style="margin:0; font-size:13px; color:#6b675e;">Library workflow. It runs only in the repos that use it, and triggers are set up there.</p>
+              </div>
+              <div style="display:flex; gap:8px;"><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Use in a repo…</button><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Edit workflow</button></div>
+            </div>
+            <nav style="display:flex; gap:4px; margin-bottom:-1px;"><a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">Overview</a><a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">YAML</a><a style="padding:6px 12px 7px; border:1px solid #1e1d1a; border-bottom-color:#f8f7f3; border-radius:3px 3px 0 0; background:#f8f7f3; font-size:13px; font-weight:600; color:#1e1d1a;">Used in <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">2</span></a><a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">History</a></nav>
+          </div>
+          <div style="flex:1; padding:22px 28px; display:flex; flex-direction:column; gap:14px; max-width:980px;">
+            <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+              <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:5px 12px; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>USED IN 2 REPOS</span></div>
+              <div style="display:grid; grid-template-columns:200px 120px minmax(0,1fr) 150px 56px; align-items:center; gap:14px; padding:12px; border-bottom:1px solid #f0ede6;">
+                <span><span style="display:block; font-size:13px; font-weight:600;">storefront</span><span style="display:block; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">Northwind</span></span>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">pinned r2 · latest</span>
+                <span style="display:flex; flex-direction:column; gap:4px; font-size:12px;"><span style="display:flex; align-items:center; gap:6px;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/github.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block;">issue labeled <span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:500; border:1px solid #e6e2d9; background:#efede7; border-radius:3px; padding:0 5px;">plan</span></span><span style="display:flex; align-items:center; gap:6px;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/clock.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block;">Mondays 06:00 UTC</span></span>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#7a4a00;">! #9c1e waiting · 2h</span>
+                <a style="font-size:12.5px; font-weight:600; text-align:right;">Open ›</a>
+              </div>
+              <div style="display:grid; grid-template-columns:200px 120px minmax(0,1fr) 150px 56px; align-items:center; gap:14px; padding:12px;">
+                <span><span style="display:block; font-size:13px; font-weight:600;">docs-site</span><span style="display:block; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">Lumen Docs</span></span>
+                <span style="display:flex; flex-direction:column; gap:3px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">pinned r1</span><a style="font-size:12px; font-weight:600;">Update to r2</a></span>
+                <span style="display:flex; align-items:center; gap:6px; font-size:12px; color:#6b675e;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/play.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block; opacity:.6;">started by hand</span>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#1f6b37;">✓ #71aa done · 1d</span>
+                <a style="font-size:12.5px; font-weight:600; text-align:right;">Open ›</a>
+              </div>
+            </section>
+            <p style="margin:0; font-family:'Red Hat Mono',monospace; font-size:10.5px; line-height:16px; color:#6e6a62;">Open › goes to the repo page, where its triggers are edited (<a href="#2e">2e</a>). No Start run here, because a library workflow isn't attached to a repo.</p>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div id="2e" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">2e</span><span style="font-size:13px; font-weight:600;">Repo page · triggers live on each workflow the repo uses</span></div>
+      <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+        <dc-import name="Sidebar" active="project" project="northwind" repo="storefront" hint-size="240px,100%" style="height:100%"></dc-import>
+        <main style="flex:1; min-width:0; padding:22px 28px; display:flex; flex-direction:column; gap:18px;">
+          <div style="display:flex; align-items:flex-end; gap:16px;">
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
+              <nav style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;"><a>Northwind</a><span style="padding:0 6px;">/</span></nav>
+              <h1 style="margin:0; font-size:22px; line-height:28px; font-weight:600;">storefront</h1>
+              <span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;"><a>github.com/northwind/storefront</a> · main</span>
+            </div>
+            <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">New thread here</button><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Start run</button>
+          </div>
+          <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden; max-width:900px;">
+            <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:5px 12px; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>WORKFLOWS ON THIS REPO · 2</span><a style="margin-left:auto; font-weight:400; font-size:10.5px;">+ use a library workflow</a></div>
+            <div style="display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:16px; padding:12px; border-bottom:1px solid #e6e2d9;">
+              <div style="min-width:0; display:flex; flex-direction:column; gap:5px;">
+                <div style="display:flex; align-items:center; gap:8px;"><span style="font-size:13.5px; font-weight:600;">feature-delivery</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37; white-space:nowrap;"><span>✓</span><span>r3</span></span><span style="display:flex; align-items:center; gap:5px; font-size:12px; color:#6b675e;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/play.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block; opacity:.6;">started by hand</span></div>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">plan › implement › <span style="border:1px solid #e6e2d9; background:#f8f7f3; border-radius:3px; padding:0 5px;">loop: test · fix</span> › review</span>
+              </div>
+              <div style="display:flex; gap:8px; align-items:center;"><a style="font-size:12.5px; font-weight:600;">+ Add trigger</a><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;">Run</button></div>
+            </div>
+            <div style="padding:12px 12px 0; display:flex; flex-direction:column; gap:5px;">
+              <div style="display:flex; align-items:center; gap:8px;"><svg width="14" height="14" viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-size:13.5px; font-weight:600;">plan-with-approval</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37; white-space:nowrap;"><span>✓</span><span>r2</span></span><span style="flex:1;"></span><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;">Run</button></div>
+              <span style="padding-left:22px; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">survey › plan › approve › publish_plan</span>
+            </div>
+            <div style="margin:10px 12px 12px 34px; border:1px solid #cfcac0; border-radius:3px; overflow:hidden;">
+              <div style="display:flex; align-items:center; padding:6px 12px; background:#f6f7fe; border-bottom:1px solid #dfe4fa; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#2a43b8;"><span>STARTS WHEN</span><a style="margin-left:auto; font-family:'Red Hat Text',sans-serif; font-size:12px; font-weight:600; letter-spacing:0;">+ Add trigger</a></div>
+              <div style="display:grid; grid-template-columns:18px minmax(0,1fr) 160px 80px 40px; align-items:center; gap:10px; padding:9px 12px; "><img src="https://unpkg.com/lucide-static@0.400.0/icons/github.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block;"><span style="min-width:0;"><span style="display:block; font-size:12.5px; font-weight:600;">An issue is labeled <span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:500; border:1px solid #e6e2d9; background:#efede7; border-radius:3px; padding:0 5px;">plan</span></span><span style="display:block; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">northwind/storefront · checked every minute</span></span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">last fired 2h ago · <a>#9c1e</a></span><span style="display:flex; align-items:center; gap:6px;"><span style="width:28px; height:16px; border-radius:8px; background:#2f4bd6; position:relative;"><span style="position:absolute; right:2px; top:2px; width:12px; height:12px; border-radius:50%; background:#fff;"></span></span><span style="font-family:'Red Hat Mono',monospace; font-size:11px;">on</span></span><a style="font-size:12.5px; font-weight:600; text-align:right;">Edit</a></div>
+              <div style="display:grid; grid-template-columns:18px minmax(0,1fr) 160px 80px 40px; align-items:center; gap:10px; padding:9px 12px; border-top:1px solid #f0ede6;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/clock.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block;"><span style="min-width:0;"><span style="display:block; font-size:12.5px; font-weight:600;">Every Monday at 06:00 UTC</span><span style="display:block; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">0 6 * * 1 · goal: “Plan this week's upgrades”</span></span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">next in 3d</span><span style="display:flex; align-items:center; gap:6px;"><span style="width:28px; height:16px; border-radius:8px; background:#2f4bd6; position:relative;"><span style="position:absolute; right:2px; top:2px; width:12px; height:12px; border-radius:50%; background:#fff;"></span></span><span style="font-family:'Red Hat Mono',monospace; font-size:11px;">on</span></span><a style="font-size:12.5px; font-weight:600; text-align:right;">Edit</a></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:9px 12px; border-top:1px solid #f0ede6; font-size:12px; color:#6b675e;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/play.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block; opacity:.6;">Or start it by hand with Run, or from an issue below.</div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="2c" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">2c</span><span style="font-size:13px; font-weight:600;">Add / edit trigger dialog · opened from the repo</span></div>
+      <div style="width:600px; height:600px; background:rgba(30,29,26,.25); border:1px solid #cfcac0; display:flex; align-items:center; justify-content:center;">
+        <div style="width:520px; background:#fff; border:1px solid #1e1d1a; border-radius:4px; box-shadow:2px 2px 0 #1e1d1a;">
+          <div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid #e6e2d9;"><div style="flex:1;"><h2 style="margin:0; font-size:15px; font-weight:600;">Add a trigger</h2><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">plan-with-approval · Northwind / storefront</span></div><span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6e6a62;">esc</span></div>
+          <div style="padding:16px; display:flex; flex-direction:column; gap:14px;">
+            <div style="display:flex; flex-direction:column; gap:6px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">START IT WHEN</label>
+              <div style="display:flex; border:1px solid #cfcac0; border-radius:3px; overflow:hidden; width:max-content;"><span style="display:flex; align-items:center; gap:6px; padding:5px 12px; font-size:12.5px; font-weight:600; background:#1e1d1a; color:#fff;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/github.svg" width="14" height="14" alt="" style="filter:invert(1);">A GitHub issue…</span><span style="display:flex; align-items:center; gap:6px; padding:5px 12px; font-size:12.5px; color:#3a3833; border-left:1px solid #cfcac0;"><img src="https://unpkg.com/lucide-static@0.400.0/icons/clock.svg" width="14" height="14" alt="" style="flex-shrink:0; display:block;">On a schedule</span></div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">IS</label><span style="display:flex; align-items:center; height:30px; border:1px solid #cfcac0; border-radius:3px; padding:0 8px 0 10px; font-size:13px;">labeled<svg width="14" height="14" viewBox="0 0 12 12" style="margin-left:auto;"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></span></div>
+            <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">WITH ANY OF THESE LABELS</label><span style="display:flex; align-items:center; gap:6px; min-height:30px; border:1px solid #1e1d1a; box-shadow:0 0 0 2px #dfe4fa; border-radius:3px; padding:3px 8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; border:1px solid #e6e2d9; background:#efede7; border-radius:3px; padding:1px 6px;">plan ×</span><span style="font-family:'Red Hat Mono',monospace; font-size:12px; color:#6e6a62;">add label…</span></span></div>
+            <div style="border:1px solid #e6e2d9; border-radius:3px; background:#f8f7f3; padding:10px 12px; display:flex; flex-direction:column; gap:4px;">
+              <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e;">THE RUN GETS</span>
+              <span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11.5px;">goal</span> = the issue title and body</span>
+              <span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11.5px;">repository</span> = storefront</span>
+            </div>
+            <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6e6a62;">Checked every minute · public GitHub repositories only</span>
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid #e6e2d9;"><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Cancel</button><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Add trigger</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="2d" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">2d</span><span style="font-size:13px; font-weight:600;">YAML tab · block style, no inline braces</span></div>
+      <div style="width:1040px; height:600px; display:grid; grid-template-columns:1fr 1fr; gap:0; background:#fff; border:1px solid #cfcac0; overflow:hidden;">
+        <div style="border-right:1px solid #cfcac0; display:flex; flex-direction:column;">
+          <div style="padding:6px 12px; background:#fbefec; border-bottom:1px solid #e5b2a8; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#7f2215;">× TODAY · FLOW STYLE</div>
+          <pre style="margin:0; padding:12px 14px; font-family:'Red Hat Mono',monospace; font-size:11.5px; line-height:18px; color:#3a3833; white-space:pre;">spec:
+  inputs:
+    type: object
+    required: [goal, repository]
+    properties:
+      goal: {type: string, minLength: 1}
+      repository: {type: string, minLength: 1}
+  policies: {maxConcurrentNodes: 1, workspaceMode: worktree}
+  nodes:
+  - id: survey
+    kind: process.exec
+    retry: {maxAttempts: 2, backoff: {baseSeconds: 5}}
+    config:
+      workspace: {mode: read_only}
+      outputExtraction: {mode: none}</pre>
+        </div>
+        <div style="display:flex; flex-direction:column;">
+          <div style="display:flex; align-items:center; padding:6px 12px; background:#f1f7f2; border-bottom:1px solid #b9d3bf; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#1f5a33;"><span>✓ PROPOSED · BLOCK STYLE</span><span style="margin-left:auto; font-weight:400;">copy · download</span></div>
+          <pre style="margin:0; padding:12px 14px; font-family:'Red Hat Mono',monospace; font-size:11.5px; line-height:18px; color:#3a3833; white-space:pre;"><span style="color:#6e6a62;"> 1</span>  spec:
+<span style="color:#6e6a62;"> 2</span>    inputs:
+<span style="color:#6e6a62;"> 3</span>      type: object
+<span style="color:#6e6a62;"> 4</span>      required:
+<span style="color:#6e6a62;"> 5</span>        - goal
+<span style="color:#6e6a62;"> 6</span>        - repository
+<span style="color:#6e6a62;"> 7</span>      properties:
+<span style="color:#6e6a62;"> 8</span>        goal:
+<span style="color:#6e6a62;"> 9</span>          type: string
+<span style="color:#6e6a62;">10</span>          minLength: 1
+<span style="color:#6e6a62;">11</span>        repository:
+<span style="color:#6e6a62;">12</span>          type: string
+<span style="color:#6e6a62;">13</span>          minLength: 1
+<span style="color:#6e6a62;">14</span>    policies:
+<span style="color:#6e6a62;">15</span>      maxConcurrentNodes: 1
+<span style="color:#6e6a62;">16</span>      workspaceMode: worktree
+<span style="color:#6e6a62;">17</span>    nodes:
+<span style="color:#6e6a62;">18</span>      - id: survey
+<span style="color:#6e6a62;">19</span>        kind: process.exec
+<span style="color:#6e6a62;">20</span>        retry:
+<span style="color:#6e6a62;">21</span>          maxAttempts: 2
+<span style="color:#6e6a62;">22</span>          backoff:
+<span style="color:#6e6a62;">23</span>            baseSeconds: 5</pre>
+        </div>
+      </div>
+    </div>
+  
+    <div id="2b" style="display:flex; flex-direction:column; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#6e6a62; color:#fff; padding:2px 7px; border-radius:3px;">2b</span><span style="font-size:13px; font-weight:600;">Not chosen · a “Starts when” card on the library canvas (triggers belong to repos, see 2e)</span></div>
+      <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+        <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+          <header style="height:52px; flex-shrink:0; display:flex; align-items:center; gap:10px; border-bottom:1px solid #cfcac0; background:#fff; padding:0 16px;">
+            <nav style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e; white-space:nowrap;"><a>Workflows</a> / <a>Delivery</a> /</nav>
+            <h1 style="margin:0; font-size:15px; font-weight:600; white-space:nowrap;">Plan with approval</h1>
+            <span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#eeece6; color:#5e5a52; white-space:nowrap;"><span>·</span><span>draft v3</span></span>
+            <span style="display:flex; border:1px solid #cfcac0; border-radius:3px; overflow:hidden; margin-left:6px;"><span style="padding:4px 10px; font-size:12.5px; font-weight:600; background:#1e1d1a; color:#fff;">Canvas</span><span style="padding:4px 10px; font-size:12.5px; color:#3a3833;">YAML</span></span>
+            <span style="flex:1;"></span>
+            <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Validate</button>
+            <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Save</button>
+            <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:13px; font-weight:600;">Publish</button>
+          </header>
+          <div style="flex:1; min-height:0; display:flex;">
+            <div style="flex:1; min-width:0; position:relative; background-color:#f8f7f3; background-image:radial-gradient(#d6d2c9 1px,transparent 1px); background-size:20px 20px; overflow:hidden;">
+              <svg width="100%" height="100%" style="position:absolute; inset:0;">
+                <line x1="360" y1="140" x2="360" y2="186" stroke="#3a3833" stroke-width="1.25" stroke-dasharray="4 3"></line>
+                <line x1="360" y1="238" x2="360" y2="290" stroke="#3a3833" stroke-width="1.25"></line>
+                <line x1="360" y1="342" x2="360" y2="394" stroke="#3a3833" stroke-width="1.25"></line>
+                <line x1="360" y1="446" x2="360" y2="498" stroke="#3a3833" stroke-width="1.25"></line>
+              </svg>
+              <div style="position:absolute; left:230px; top:30px; width:260px; border:1px solid #2f4bd6; box-shadow:0 0 0 2px #dfe4fa; border-radius:6px; background:#f6f7fe; overflow:hidden;">
+                <div style="padding:6px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#2a43b8; border-bottom:1px solid #dfe4fa;">STARTS WHEN</div>
+                <div style="padding:6px 10px; display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                  <span><span style="font-family:'Red Hat Mono',monospace;">#</span> issue labeled <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">plan</span> · storefront</span>
+                  <span><span style="font-family:'Red Hat Mono',monospace;">◷</span> Mondays 06:00</span>
+                  <span style="color:#6b675e;">▸ or started by hand</span>
+                </div>
+              </div>
+              <div style="position:absolute; left:260px; top:186px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">survey</span><span style="font-size:11px; color:#3a3833;">▸ command</span></div>
+              <div style="position:absolute; left:260px; top:290px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">plan</span><span style="font-size:11px; color:#3a3833;">◇ model</span></div>
+              <div style="position:absolute; left:260px; top:394px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">approve</span><span style="font-size:11px; color:#3a3833;">⊙ gate</span></div>
+              <div style="position:absolute; left:260px; top:498px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">publish_plan</span><span style="font-size:11px; color:#3a3833;">↑ publish</span></div>
+            </div>
+            <aside style="width:340px; flex-shrink:0; border-left:1px solid #cfcac0; background:#fff; display:flex; flex-direction:column;">
+              <div style="padding:14px; border-bottom:1px solid #e6e2d9;"><div style="font-size:15px; font-weight:600;">Starts when</div><div style="font-size:12px; color:#6b675e; margin-top:2px;">Triggers save right away. They don't wait for Publish.</div></div>
+              <div style="padding:12px 14px; display:flex; flex-direction:column; gap:10px;">
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e;">NORTHWIND</span>
+                <div style="border:1px solid #e6e2d9; border-radius:3px; padding:10px; display:flex; flex-direction:column; gap:4px;"><div style="display:flex; align-items:center; gap:6px;"><span style="flex:1; font-size:12.5px; font-weight:600;">Issue labeled plan</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">on</span></div><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">northwind/storefront · last fired 2h ago</span></div>
+                <div style="border:1px solid #e6e2d9; border-radius:3px; padding:10px; display:flex; flex-direction:column; gap:4px;"><div style="display:flex; align-items:center; gap:6px;"><span style="flex:1; font-size:12.5px; font-weight:600;">Every Monday at 06:00 UTC</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">on</span></div><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">0 6 * * 1 · next in 3d</span></div>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e; margin-top:4px;">LUMEN DOCS</span>
+                <span style="font-size:12px; color:#6b675e;">No triggers. Runs start by hand.</span>
+                <div><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Add trigger</button></div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    </div>
+  <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px; max-width:1144px;">
+    <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#2a43b8;">→ NOTES</span>
+    <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+      <li>Library workflows are templates. They run only where a repo uses them, pinned to a revision. So the workflow page has no Start run and no trigger editing. Its “Used in” tab (<a href="#2a">2a</a>) lists each repo, the pinned revision (with “Update to r2” when behind), its triggers as read-only sentences, and the last run.</li>
+      <li>Triggers are edited on the repo page (<a href="#2e">2e</a>), in a “Starts when” box under each workflow the repo uses. The project page's Workflows tab shows the same rows across all of the project's repos.</li>
+      <li>The dialog (<a href="#2c">2c</a>) opens with the workflow and repo already set, so it only asks when and with which labels or schedule.</li>
+      <li>Icons: Lucide (<span style="font-family:'Red Hat Mono',monospace; font-size:12px;">github</span>, <span style="font-family:'Red Hat Mono',monospace; font-size:12px;">clock</span>, <span style="font-family:'Red Hat Mono',monospace; font-size:12px;">play</span>) at 14px, stroke 2, currentColor. That's a new dependency (lucide-react), so flag it per AGENTS.md.</li>
+      <li>Every YAML view should use block style: lists as “- item”, maps nested under their key, no inline <span style="font-family:'Red Hat Mono',monospace; font-size:12px;">{ }</span> or <span style="font-family:'Red Hat Mono',monospace; font-size:12px;">[ ]</span>.</li>
+    </ol>
+  </div>
+</section>
+
+<section data-screen-label="Workflows review" style="padding:56px 64px 96px; display:flex; flex-direction:column; gap:64px;">
+  <header style="display:flex; flex-direction:column; gap:8px; max-width:880px;">
+    <span style="font-family:'Red Hat Mono',monospace; font-size:11px; letter-spacing:.06em; color:#6e6a62;">TURN 1 · WORKFLOWS INDEX, WORKFLOW PAGE AND STUDIO</span>
+    <h1 style="margin:0; font-size:30px; line-height:36px; font-weight:700;">Workflows: today vs. proposed</h1>
+    <p style="margin:0; font-size:14px; line-height:21px; color:#3a3833; text-wrap:pretty;">Recreated from <span style="font-family:'Red Hat Mono',monospace; font-size:12.5px;">pages/Library.tsx</span>, <span style="font-family:'Red Hat Mono',monospace; font-size:12.5px;">pages/Studio.tsx</span> and <span style="font-family:'Red Hat Mono',monospace; font-size:12.5px;">components/studio/*</span>, using the Plan with approval template. Same tokens; layout, hierarchy and canvas behavior change.</p>
+  </header>
+
+  <!-- ============================== INDEX ============================== -->
+  <div style="display:flex; flex-direction:column; gap:20px;">
+    <h2 style="margin:0; font-size:19px; font-weight:700;">Workflows index <span style="font-family:'Red Hat Mono',monospace; font-size:12px; font-weight:400; color:#6b675e;">/workflows</span></h2>
+    <div style="display:flex; flex-wrap:wrap; gap:48px; align-items:flex-start;">
+
+      <div id="1a" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#1e1d1a; color:#fff; padding:2px 7px; border-radius:3px;">1a</span><span style="font-size:13px; font-weight:600;">Today</span><span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;">LibraryPage</span></div>
+        <div style="width:1280px; height:980px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <main style="flex:1; min-width:0; padding:24px 16px;">
+            <div style="max-width:1024px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:16px;">
+              <div style="display:flex; align-items:center; justify-content:space-between;"><h1 style="margin:0; font-size:19px; font-weight:700;">Workflows</h1><button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600;">Import YAML</button></div>
+              <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden; outline:2px dashed #c02a1a; outline-offset:3px;">
+                <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>NEW PIPELINE</span><span style="margin-left:auto; font-weight:400; color:#6e6a62;">definition only — no revision</span></div>
+                <div style="display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px; padding:10px;">
+                  <div style="flex:1; min-width:16rem; display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">slug</label><span style="display:block; height:28px; border:1px solid #cfcac0; border-radius:3px; background:#fff;"></span><span style="font-size:12px; color:#6b675e;">unique in the organization; a duplicate is a 409</span></div>
+                  <div style="flex:1; min-width:14rem; display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">name</label><span style="display:block; height:28px; border:1px solid #cfcac0; border-radius:3px; background:#fff;"></span><span style="font-size:12px; color:#6b675e;">optional display name</span></div>
+                  <div style="flex:1; min-width:16rem; display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">start from</label><span style="display:flex; align-items:center; height:28px; border:1px solid #cfcac0; border-radius:3px; background:#fff; padding:0 10px; font-size:12.5px;">Blank</span><span style="font-size:12px; color:#6b675e;">A minimal skeleton draft — Validate tells you what to fill in.</span></div>
+                  <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #e6e2d9; background:#f3f1ec; color:#b3ada2; font-family:inherit; font-size:12.5px; font-weight:600;">Create pipeline</button>
+                </div>
+              </section>
+              <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px;">
+                <span style="border-radius:3px; border:1px solid #1e1d1a; background:#1e1d1a; color:#fff; padding:3px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">all</span>
+                <span style="border-radius:3px; border:1px solid #e6e2d9; background:#fff; padding:3px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">has open draft</span>
+                <span style="border-radius:3px; border:1px solid #cfcac0; background:#fff; padding:3px 10px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">used in any project ▾</span>
+                <span style="border-radius:3px; border:1px solid #cfcac0; background:#fff; padding:3px 10px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">all folders ▾</span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <div>
+                  <div style="display:flex; align-items:center; gap:6px; border-radius:3px; border:1px solid #e6e2d9; background:#f8f7f3; padding:5px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600;"><span>▾</span><span>Delivery</span><span style="margin-left:auto; font-weight:400; color:#6b675e;">2</span></div>
+                  <div style="display:grid; grid-template-columns:220px 1fr 200px 150px; gap:0 16px; align-items:center; padding:8px 0; border-bottom:1px solid #e6e2d9;">
+                    <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;"><span style="font-size:13px; font-weight:700;">Feature delivery</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>published r3 8f2c1a</span></span></div>
+                    <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center;">plan <span style="color:#6b675e;">›</span> implement <span style="color:#6b675e;">›</span> <span style="border:1px solid #e6e2d9; background:#f8f7f3; border-radius:3px; padding:1px 6px;">loop: test · fix</span> <span style="color:#6b675e;">›</span> review</div>
+                    <div><p style="margin:0; font-size:11.5px;">Northwind</p><p style="margin:0; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">manual</p></div>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; outline:2px dashed #c02a1a; outline-offset:2px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">no open draft</span><div style="display:flex; gap:6px;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Duplicate</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;">Move to folder…</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Open</button></div></div>
+                  </div>
+                  <div style="display:grid; grid-template-columns:220px 1fr 200px 150px; gap:0 16px; align-items:center; padding:8px 0; border-bottom:1px solid #e6e2d9;">
+                    <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;"><span style="font-size:13px; font-weight:700;">Plan with approval</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#eeece6; color:#5e5a52;"><span>·</span><span>draft only</span></span></div>
+                    <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">—</div>
+                    <div><p style="margin:0; font-size:11.5px; color:#6b675e;">not assigned to a project you can see</p><p style="margin:0; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">—</p></div>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px;"><a style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">draft v1 · by David Birks</a><div style="display:flex; gap:6px;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Duplicate</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;">Move to folder…</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Open</button></div></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="display:flex; align-items:center; gap:6px; border-radius:3px; border:1px solid #e6e2d9; background:#f8f7f3; padding:5px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600;"><span>▾</span><span>Maintenance</span><span style="margin-left:auto; font-weight:400; color:#6b675e;">1</span></div>
+                  <div style="display:grid; grid-template-columns:220px 1fr 200px 150px; gap:0 16px; align-items:center; padding:8px 0; border-bottom:1px solid #e6e2d9;">
+                    <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;"><span style="font-size:13px; font-weight:700;">Dependency bumps</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>published r2 41d07e</span></span></div>
+                    <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; display:flex; gap:6px;">bump <span style="color:#6b675e;">›</span> test <span style="color:#6b675e;">›</span> open_pr</div>
+                    <div><p style="margin:0; font-size:11.5px;">Northwind</p><p style="margin:0; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">cron 0 6 * * 1</p></div>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">no open draft</span><div style="display:flex; gap:6px;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Duplicate</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600; white-space:nowrap;">Move to folder…</button><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Open</button></div></div>
+                  </div>
+                </div>
+              </div>
+              <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+                <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>STARTER WORKFLOWS</span><span style="margin-left:auto; font-weight:400; color:#6e6a62; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:620px;">starter workflows — "Use template" creates the pipeline and its first draft, then opens the Studio canvas</span></div>
+                <div style="padding:8px 10px; border-bottom:1px solid #e6e2d9;"><span style="display:flex; gap:6px; align-items:baseline;"><span style="font-size:12.5px; font-weight:600;">Plan with approval</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">docs/samples/home/plan-with-approval.yaml</span></span><span style="display:block; font-size:12px; color:#6b675e;">Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan.</span><span style="margin-top:6px; display:flex; gap:8px; align-items:center;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">4 steps</span><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Use template</button></span></div>
+                <div style="padding:8px 10px;"><span style="display:flex; gap:6px; align-items:baseline;"><span style="font-size:12.5px; font-weight:600;">Security review</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">docs/samples/home/security-review.yaml</span></span><span style="display:block; font-size:12px; color:#6b675e;">Scan a checkout, review findings with a chat model and publish a report.</span><span style="margin-top:6px; display:flex; gap:8px; align-items:center;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">4 steps</span><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Use template</button></span></div>
+              </section>
+            </div>
+          </main>
+        </div>
+      </div>
+
+      <div id="1b" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">1b</span><span style="font-size:13px; font-weight:600;">Proposed · one New workflow button, templates as starters</span></div>
+        <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden; position:relative;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <main style="flex:1; min-width:0; padding:22px 28px; display:flex; flex-direction:column; gap:18px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <h1 style="margin:0; font-size:22px; line-height:28px; font-weight:600;">Workflows</h1>
+              <span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;">5</span>
+              <span style="flex:1;"></span>
+              <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600;">Import YAML</button>
+              <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600;">New workflow</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px;">
+              <div style="border:1px dashed #cfcac0; border-radius:3px; background:#fff; padding:12px; display:flex; flex-direction:column; gap:4px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; letter-spacing:.06em; color:#6e6a62;">START BLANK</span><span style="font-size:13px; font-weight:600;">Empty canvas</span><span style="font-size:12px; color:#6b675e;">One agent step to start from.</span></div>
+              <div style="border:1px solid #cfcac0; border-radius:3px; background:#fff; padding:12px; display:flex; flex-direction:column; gap:4px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; letter-spacing:.06em; color:#6e6a62;">TEMPLATE · 4 STEPS</span><span style="font-size:13px; font-weight:600;">Plan with approval</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">survey › plan › approve › publish_plan</span></div>
+              <div style="border:1px solid #cfcac0; border-radius:3px; background:#fff; padding:12px; display:flex; flex-direction:column; gap:4px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; letter-spacing:.06em; color:#6e6a62;">TEMPLATE · 4 STEPS</span><span style="font-size:13px; font-weight:600;">Security review</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#3a3833;">scan › review › approve › report</span></div>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span style="height:28px; width:240px; border:1px solid #cfcac0; border-radius:3px; background:#fff; padding:6px 10px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#6e6a62;">Search workflows</span>
+              <span style="border-radius:3px; border:1px solid #1e1d1a; background:#1e1d1a; color:#fff; padding:3px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">all</span>
+              <span style="border-radius:3px; border:1px solid #e6e2d9; background:#fff; padding:3px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">has open draft</span>
+              <span style="border-radius:3px; border:1px solid #e6e2d9; background:#fff; padding:3px 8px; font-family:'Red Hat Mono',monospace; font-size:10.5px;">used in Northwind</span>
+            </div>
+            <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+              <div style="display:flex; align-items:center; gap:6px; padding:7px 12px; background:#efede7; border-bottom:1px solid #cfcac0;"><svg width="14" height="14" viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#3a3833;">DELIVERY</span><span style="margin-left:auto; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">2</span></div>
+              <div style="display:grid; grid-template-columns:220px minmax(0,1fr) 180px 120px; gap:16px; align-items:center; padding:12px; border-bottom:1px solid #f0ede6;">
+                <div style="display:flex; flex-direction:column; gap:5px; align-items:flex-start;"><span style="font-size:13.5px; font-weight:600;">Feature delivery</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>r3</span></span></div>
+                <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; display:flex; flex-wrap:wrap; gap:4px 6px; align-items:center;">plan <span style="color:#6b675e;">›</span> implement <span style="color:#6b675e;">›</span> <span style="border:1px solid #e6e2d9; background:#f8f7f3; border-radius:3px; padding:1px 6px;">loop: test · fix</span> <span style="color:#6b675e;">›</span> review</div>
+                <div style="font-size:12px; color:#3a3833;">Northwind · storefront<br><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">manual</span></div>
+                <div style="display:flex; gap:6px; justify-content:flex-end;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Edit</button><button style="height:26px; width:28px; border-radius:4px; border:1px solid #cfc9bd; background:#fff; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:700;">⋯</button></div>
+              </div>
+              <div style="display:grid; grid-template-columns:220px minmax(0,1fr) 180px 120px; gap:16px; align-items:center; padding:12px;">
+                <div style="display:flex; flex-direction:column; gap:5px; align-items:flex-start;"><span style="font-size:13.5px; font-weight:600;">Plan with approval</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#eeece6; color:#5e5a52;"><span>·</span><span>draft · not published</span></span></div>
+                <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; display:flex; gap:6px; align-items:center;">survey <span style="color:#6b675e;">›</span> plan <span style="color:#6b675e;">›</span> approve <span style="color:#6b675e;">›</span> publish_plan</div>
+                <div style="font-size:12px; color:#6b675e;">Not used yet</div>
+                <div style="display:flex; gap:6px; justify-content:flex-end;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Edit</button><button style="height:26px; width:28px; border-radius:4px; border:1px solid #cfc9bd; background:#fff; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:700;">⋯</button></div>
+              </div>
+            </section>
+            <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden; position:relative;">
+              <div style="display:flex; align-items:center; gap:6px; padding:7px 12px; background:#efede7; border-bottom:1px solid #cfcac0;"><svg width="14" height="14" viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#3a3833;">MAINTENANCE</span><span style="margin-left:auto; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">1</span></div>
+              <div style="display:grid; grid-template-columns:220px minmax(0,1fr) 180px 120px; gap:16px; align-items:center; padding:12px;">
+                <div style="display:flex; flex-direction:column; gap:5px; align-items:flex-start;"><span style="font-size:13.5px; font-weight:600;">Dependency bumps</span><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>r2</span></span></div>
+                <div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; display:flex; gap:6px;">bump <span style="color:#6b675e;">›</span> test <span style="color:#6b675e;">›</span> open_pr</div>
+                <div style="font-size:12px; color:#3a3833;">Northwind · payments-api<br><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">mondays 06:00</span></div>
+                <div style="display:flex; gap:6px; justify-content:flex-end; position:relative;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Edit</button><button style="height:26px; width:28px; border-radius:4px; border:1px solid #1e1d1a; background:#fff; box-shadow:2px 2px 0 #1e1d1a; font-family:inherit; font-size:13px; font-weight:700;">⋯</button></div>
+              </div>
+            </section>
+          </main>
+          <div style="position:absolute; right:28px; top:540px; width:180px; border:1px solid #cfcac0; border-radius:3px; background:#fff; padding:4px 0; box-shadow:0 8px 24px rgba(30,29,26,.18);">
+            <div style="padding:6px 12px; font-size:12.5px;">Use in a repo…</div>
+            <div style="padding:6px 12px; font-size:12.5px;">Duplicate</div>
+            <div style="padding:6px 12px; font-size:12.5px; background:#f6f7fe;">Move to folder…</div>
+            <div style="padding:6px 12px; font-size:12.5px;">Export YAML</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="1c" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">1c</span><span style="font-size:13px; font-weight:600;">Proposed · New workflow dialog</span></div>
+        <div style="width:600px; height:540px; background:rgba(30,29,26,.25); border:1px solid #cfcac0; display:flex; align-items:center; justify-content:center;">
+          <div style="width:520px; background:#fff; border:1px solid #1e1d1a; border-radius:4px; box-shadow:2px 2px 0 #1e1d1a;">
+            <div style="display:flex; align-items:center; padding:12px 16px; border-bottom:1px solid #e6e2d9;"><h2 style="margin:0; flex:1; font-size:15px; font-weight:600;">New workflow</h2><span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6e6a62;">esc</span></div>
+            <div style="padding:16px; display:flex; flex-direction:column; gap:14px;">
+              <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">NAME</label><span style="display:flex; align-items:center; height:30px; border:1px solid #1e1d1a; border-radius:3px; box-shadow:0 0 0 2px #dfe4fa; padding:0 10px; font-size:13px;">Retry payments plan</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">id: retry-payments-plan · <a>change</a></span></div>
+              <div style="display:flex; flex-direction:column; gap:6px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">START FROM</label>
+                <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                  <div style="border:1px solid #e6e2d9; border-radius:3px; padding:10px; display:flex; flex-direction:column; gap:3px;"><span style="font-size:12.5px; font-weight:600;">Blank</span><span style="font-size:11.5px; color:#6b675e;">One agent step</span></div>
+                  <div style="border:1px solid #1e1d1a; border-radius:3px; padding:10px; display:flex; flex-direction:column; gap:3px; background:#f6f7fe; box-shadow:2px 2px 0 #1e1d1a;"><span style="font-size:12.5px; font-weight:600;">Plan with approval</span><span style="font-size:11.5px; color:#6b675e;">4 steps</span></div>
+                  <div style="border:1px solid #e6e2d9; border-radius:3px; padding:10px; display:flex; flex-direction:column; gap:3px;"><span style="font-size:12.5px; font-weight:600;">Security review</span><span style="font-size:11.5px; color:#6b675e;">4 steps</span></div>
+                </div>
+                <span style="font-size:12px; line-height:17px; color:#6b675e;">Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan.</span>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">FOLDER</label><span style="display:flex; align-items:center; height:30px; border:1px solid #cfcac0; border-radius:3px; padding:0 8px 0 10px; font-size:13px;">Delivery<svg width="14" height="14" viewBox="0 0 12 12" style="margin-left:auto;"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></span></div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid #e6e2d9;">
+              <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600;">Cancel</button>
+              <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600;">Create and open canvas</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(2,minmax(0,560px)); gap:24px;">
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#b0281a;">× WHAT'S WRONG WITH <a href="#1a">1a</a></span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>A full creation form is always open above the list (dashed). It says “pipeline” and “slug” on a page called Workflows, and its hints are API notes (“a duplicate is a 409”, “definition only — no revision”).</li>
+          <li>Templates are at the bottom, below the folders, so most people won't see them.</li>
+          <li>Every row has three equal secondary buttons. Duplicate and Move to folder… take as much space as Open.</li>
+          <li>Those three buttons are about 290px wide in a 150px column, so at desktop widths they spill onto the project/trigger column (dashed).</li>
+          <li>Folder headers use the ▾ glyph, which the handoff dropped because it reads as a bullet.</li>
+          <li>Rows show the digest (r3 8f2c1a) and “not assigned to a project you can see”.</li>
+        </ol>
+      </div>
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#2a43b8;">→ WHAT <a href="#1b">1b</a> / <a href="#1c">1c</a> CHANGE</span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>One primary “New workflow” button opens a dialog. You type a name and the id is generated from it.</li>
+          <li>Templates appear as three starter cards above the list and as choices in the dialog.</li>
+          <li>Each row has one action (Edit) plus a ⋯ menu for Start a run, Duplicate, Move to folder and Export.</li>
+          <li>Folders are collapsible panels with SVG chevrons. The revision chip shows just r3; the digest moves to the workflow page.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== WORKFLOW PAGE ============================== -->
+  <div style="display:flex; flex-direction:column; gap:20px;">
+    <h2 style="margin:0; font-size:19px; font-weight:700;">Clicking into a workflow <span style="font-family:'Red Hat Mono',monospace; font-size:12px; font-weight:400; color:#6b675e;">/workflows/:id</span></h2>
+    <div style="display:flex; flex-wrap:wrap; gap:48px; align-items:flex-start;">
+
+      <div id="1d" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#1e1d1a; color:#fff; padding:2px 7px; border-radius:3px;">1d</span><span style="font-size:13px; font-weight:600;">Today</span><span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;">PipelinePage</span></div>
+        <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <main style="flex:1; min-width:0; padding:24px 0;">
+            <div style="display:grid; grid-template-columns:300px minmax(0,1fr); border-top:1px solid #e6e2d9; border-bottom:1px solid #e6e2d9; height:100%;">
+              <aside style="border-right:1px solid #e6e2d9; padding:12px; display:flex; flex-direction:column; gap:16px;">
+                <div><h1 style="margin:0; font-size:17px; font-weight:700;">Plan with approval</h1><p style="margin:0; font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;">plan-with-approval · 1 revision</p><button style="margin-top:6px; height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Customize</button></div>
+                <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+                  <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>REVISIONS</span></div>
+                  <div style="display:flex; align-items:center; gap:6px; padding:8px 10px; border:1px solid #1e1d1a; box-shadow:2px 2px 0 #1e1d1a;"><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>r1 0.1.0</span></span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6e6a62;">8f2c1a90</span></div>
+                </section>
+                <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+                  <div style="display:flex; align-items:center; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>DRAFTS</span><button style="margin-left:auto; height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:'Red Hat Text',sans-serif; font-size:13px; font-weight:600;">New draft</button></div>
+                  <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:8px 10px; border-bottom:1px solid #e6e2d9;"><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#e3f1fb; color:#135f96;"><span>i</span><span>draft v3</span></span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">valid</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">2h</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">David Birks</span></div>
+                  <div style="display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:8px 10px;"><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>draft v1</span></span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">published</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">1d</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">David Birks</span></div>
+                </section>
+                <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+                  <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>ASSIGN TO A PROJECT</span></div>
+                  <div style="padding:10px;"><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Assign to a project</button></div>
+                </section>
+              </aside>
+              <div style="padding:16px; display:flex; flex-direction:column; gap:16px; min-width:0; overflow:hidden;">
+                <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden; outline:2px dashed #c02a1a; outline-offset:3px;">
+                  <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>YAML</span><span style="margin-left:auto; font-weight:400; color:#6e6a62;">r1 · 0.1.0 · 8f2c1a90 · regenerated canonical</span></div>
+                  <pre style="margin:0; padding:10px; font-family:'Red Hat Mono',monospace; font-size:11.5px; line-height:17px; color:#3a3833; height:300px; overflow:hidden;">apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: plan-with-approval
+  description: Survey a repository checkout, draft an implementation plan…
+spec:
+  inputs:
+    type: object
+    required: [goal, repository]
+    properties:
+      goal: {type: string, minLength: 1, description: What the plan should accomplish.}
+      repository: {type: string, minLength: 1}
+  policies: {maxConcurrentNodes: 1, maxDurationSeconds: 7200, workspaceMode: worktree}
+  nodes:
+  - id: survey
+    kind: process.exec
+    timeoutSeconds: 300
+    retry: {maxAttempts: 2, backoff: {baseSeconds: 5, multiplier: 2}}</pre>
+                </section>
+                <section style="border-radius:3px; border:1px solid #cfcac0; background:#fff; overflow:hidden;">
+                  <div style="display:flex; gap:8px; border-bottom:1px solid #cfcac0; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:10px; line-height:1.4; font-weight:600; letter-spacing:.04em; background:#efede7; color:#3a3833;"><span>DEFINITION GRAPH</span><span style="margin-left:auto; font-weight:400; color:#6e6a62;">r1 · definition only, no run states</span></div>
+                  <div style="height:180px; display:flex; align-items:center; gap:22px; padding:0 20px; background:#f8f7f3;">
+                    <span style="border:1px solid #cfcac0; border-radius:6px; background:#fff; padding:8px 10px; font-size:12.5px; font-weight:600;">survey</span><span style="color:#3a3833;">→</span>
+                    <span style="border:1px solid #cfcac0; border-radius:6px; background:#fff; padding:8px 10px; font-size:12.5px; font-weight:600;">plan</span><span style="color:#3a3833;">→</span>
+                    <span style="border:1px solid #cfcac0; border-radius:6px; background:#fff; padding:8px 10px; font-size:12.5px; font-weight:600;">approve</span><span style="color:#3a3833;">→</span>
+                    <span style="border:1px solid #cfcac0; border-radius:6px; background:#fff; padding:8px 10px; font-size:12.5px; font-weight:600;">publish_plan</span>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+
+      <div id="1e" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">1e</span><span style="font-size:13px; font-weight:600;">Proposed · graph first, one Edit button</span></div>
+        <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <main style="flex:1; min-width:0; display:flex; flex-direction:column;">
+            <div style="background:#fff; border-bottom:1px solid #cfcac0; padding:18px 28px 0; display:flex; flex-direction:column; gap:12px;">
+              <div style="display:flex; align-items:flex-start; gap:16px;">
+                <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:4px;">
+                  <nav style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;"><a>Workflows</a> / <a>Delivery</a> /</nav>
+                  <div style="display:flex; align-items:center; gap:10px;"><h1 style="margin:0; font-size:22px; line-height:28px; font-weight:600;">Plan with approval</h1><span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#d9f0de; color:#1f6b37;"><span>✓</span><span>published r1</span></span></div>
+                  <p style="margin:0; max-width:70ch; font-size:13px; color:#6b675e; text-wrap:pretty;">Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan.</p>
+                </div>
+                <div style="display:flex; gap:8px;">
+                  <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:12.5px; font-weight:600; white-space:nowrap;">Use in a repo…</button>
+                  <button style="height:30px; padding:0 13px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:12.5px; font-weight:600;">Edit workflow</button>
+                </div>
+              </div>
+              <nav style="display:flex; gap:4px; margin-bottom:-1px;">
+                <a style="padding:6px 12px 7px; border:1px solid #1e1d1a; border-bottom-color:#f8f7f3; border-radius:3px 3px 0 0; background:#f8f7f3; font-size:13px; font-weight:600; color:#1e1d1a;">Overview</a>
+                <a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">YAML</a>
+                <a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">Used in <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px;">2</span></a>
+                <a style="padding:6px 12px 7px; border:1px solid transparent; font-size:13px; color:#6b675e;">History</a>
+              </nav>
+            </div>
+            <div style="flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) 300px;">
+              <div style="position:relative; background-color:#f8f7f3; background-image:radial-gradient(#cfcac0 1px,transparent 1px); background-size:16px 16px; border-right:1px solid #cfcac0;">
+                <svg width="100%" height="100%" style="position:absolute; inset:0;"><line x1="250" y1="86" x2="250" y2="130" stroke="#3a3833" stroke-width="1.25"></line><line x1="250" y1="182" x2="250" y2="226" stroke="#3a3833" stroke-width="1.25"></line><line x1="250" y1="278" x2="250" y2="322" stroke="#3a3833" stroke-width="1.25"></line></svg>
+                <div style="position:absolute; left:150px; top:34px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">survey</span><span style="font-size:11px; color:#3a3833;">▸ command</span></div>
+                <div style="position:absolute; left:150px; top:130px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">plan</span><span style="font-size:11px; color:#3a3833;">◇ model</span></div>
+                <div style="position:absolute; left:150px; top:226px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">approve</span><span style="font-size:11px; color:#3a3833;">⊙ gate · maintainer</span></div>
+                <div style="position:absolute; left:150px; top:322px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">publish_plan</span><span style="font-size:11px; color:#3a3833;">↑ publish · plan.md</span></div>
+                <span style="position:absolute; left:16px; bottom:14px; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6e6a62;">read-only · r1 · Edit workflow opens the canvas on your draft</span>
+              </div>
+              <aside style="background:#fff; padding:16px; display:flex; flex-direction:column; gap:18px;">
+                <div style="border:1px solid #cfcac0; border-radius:3px; background:#f6f7fe; padding:10px 12px; display:flex; flex-direction:column; gap:6px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#3a3833;">OPEN DRAFT</span><span style="font-size:12.5px;">v3 by David Birks · 2h · valid</span><a style="font-size:12.5px; font-weight:600;">Continue editing ›</a></div>
+                <div style="display:flex; flex-direction:column; gap:6px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e;">USED IN</span><span style="font-size:12.5px;">Northwind / storefront</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">on issues labelled “plan”</span><a style="font-size:12.5px;">+ Assign to a project</a></div>
+                <div style="display:flex; flex-direction:column; gap:6px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e;">INPUTS</span><span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; font-size:12px;">goal</span> — what the plan should accomplish</span><span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; font-size:12px;">repository</span> — project repo name</span></div>
+                <div style="display:flex; flex-direction:column; gap:6px;"><span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.04em; color:#6b675e;">LAST RUNS</span><span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; color:#7a4a00;">!</span> #9c1e waiting for approval · 2h</span><span style="font-size:12.5px;"><span style="font-family:'Red Hat Mono',monospace; color:#1f6b37;">✓</span> #71aa done · 1d</span></div>
+              </aside>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(2,minmax(0,560px)); gap:24px;">
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#b0281a;">× WHAT'S WRONG WITH <a href="#1d">1d</a></span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>The handoff says /workflows/:id is the editor. Today it opens on revisions, drafts, then a YAML dump (dashed), with the graph below it.</li>
+          <li>Editing is behind “Customize” or “New draft”. They look the same and both create a draft, so it's unclear which to press.</li>
+          <li>Revision vs. draft vs. published is exposed directly (r1 0.1.0, draft v3 valid, draft v1 published).</li>
+          <li>Runs and triggers are at the bottom or missing. The Studio's Runs/Assigned tabs link back to this same page.</li>
+        </ol>
+      </div>
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#2a43b8;">→ WHAT <a href="#1e">1e</a> CHANGES</span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>The page opens on the graph, drawn top to bottom. YAML, Used in and History are tabs. There's no Start run, because a library workflow is a template and runs from the repos that use it (<a href="#2a">2a</a>).</li>
+          <li>There is one primary “Edit workflow” button. It reopens your open draft, or creates one from the latest revision.</li>
+          <li>The right rail answers: is there a draft, where is this used, what inputs does it take, and how did recent runs go.</li>
+          <li>Revisions and drafts move to History, for when you need them.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== STUDIO ============================== -->
+  <div style="display:flex; flex-direction:column; gap:20px;">
+    <h2 style="margin:0; font-size:19px; font-weight:700;">Workflow Studio <span style="font-family:'Red Hat Mono',monospace; font-size:12px; font-weight:400; color:#6b675e;">/workflows/:id/drafts/:draftId</span></h2>
+    <div style="display:flex; flex-wrap:wrap; gap:48px; align-items:flex-start;">
+
+      <div id="1f" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#1e1d1a; color:#fff; padding:2px 7px; border-radius:3px;">1f</span><span style="font-size:13px; font-weight:600;">Today · after dragging two steps down</span><span style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e;">Studio.tsx · StudioCanvas · StudioPalette</span></div>
+        <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+            <div style="height:709px; display:flex; flex-direction:column; overflow:hidden;">
+              <header style="height:52px; flex-shrink:0; display:flex; align-items:center; gap:8px; border-bottom:1px solid #e6e2d9; background:#fff; padding:0 16px; overflow:hidden;">
+                <a style="font-family:'Red Hat Mono',monospace; font-size:12px; color:#6b675e; text-decoration:underline; text-decoration-color:#e6e2d9;">Workflows</a><span style="font-family:'Red Hat Mono',monospace; font-size:12px; color:#6e6a62;">/</span><h1 style="margin:0; min-width:120px; font-size:15px; font-weight:700; white-space:nowrap;">Plan with approval</h1>
+                <span style="border:1px solid #e6e2d9; background:#efede7; border-radius:3px; padding:1px 6px; font-family:'Red Hat Mono',monospace; font-size:10px; white-space:nowrap;">DRAFT v3</span>
+                <span style="border:1px solid #e6e2d9; background:#efede7; border-radius:3px; padding:1px 6px; font-family:'Red Hat Mono',monospace; font-size:10px; white-space:nowrap;">not validated</span>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6b675e;">unsaved</span>
+                <span style="display:flex; gap:2px; border:1px solid #e6e2d9; border-radius:3px; padding:2px;"><span style="height:26px; padding:0 10px; display:flex; align-items:center; font-size:13px; font-weight:600; color:#2a43b8;">Canvas</span><span style="height:26px; padding:0 10px; display:flex; align-items:center; font-size:13px; font-weight:600; color:#2a43b8;">YAML</span><span style="height:26px; padding:0 10px; display:flex; align-items:center; font-size:13px; font-weight:600; color:#2a43b8;">Runs</span><span style="height:26px; padding:0 10px; display:flex; align-items:center; font-size:13px; font-weight:600; color:#2a43b8;">Assigned</span></span>
+                <span style="flex:1;"></span>
+                <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Undo</button>
+                <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #e6e2d9; background:#f3f1ec; color:#b3ada2; font-family:inherit; font-size:13px; font-weight:600;">Redo</button>
+                <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #2238a8; background:#2f4bd6; color:#fff; box-shadow:2px 2px 0 #1a2d8f; font-family:inherit; font-size:13px; font-weight:600;">Save</button>
+                <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Validate</button>
+                <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">…</span>
+              </header>
+              <div style="flex:1; min-height:0; display:flex;">
+                <aside style="width:220px; flex-shrink:0; border-right:1px solid #e6e2d9; background:#fff; padding:12px; display:flex; flex-direction:column; gap:12px; outline:2px dashed #c02a1a; outline-offset:-4px;">
+                  <span style="display:block; border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px; font-size:13px; color:#6e6a62;">Search steps…</span>
+                  <div><h3 style="margin:0 0 4px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.025em; color:#6b675e;">Steps</h3>
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">Agent</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">agent.acp</div></div>
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">Model chat</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">model.chat</div></div>
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">Command</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">process.exec</div></div>
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">Approval</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">human.approval</div></div>
+                    </div></div>
+                  <div><h3 style="margin:0 0 4px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.025em; color:#6b675e;">Loops &amp; branching</h3>
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">Repeat until</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">until</div></div>
+                      <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px;"><div style="font-size:12px; font-weight:500;">For each</div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">for_each</div></div>
+                    </div></div>
+                  <div><h3 style="margin:0 0 4px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.025em; color:#6b675e;">Not runnable yet</h3>
+                    <div style="border:1px solid #e6e2d9; border-radius:6px; padding:6px 8px; opacity:.6;"><div style="display:flex; justify-content:space-between;"><span style="font-size:12px; font-weight:500;">Workflow</span><span style="font-size:9px; color:#6e6a62;">not runnable yet</span></div><div style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">pipeline.child</div></div></div>
+                </aside>
+                <div style="flex:1; min-width:0; position:relative; background-color:#f8f7f3; background-image:radial-gradient(#d6d2c9 1px,transparent 1px); background-size:20px 20px; overflow:hidden;">
+                  <svg width="100%" height="100%" style="position:absolute; inset:0;">
+                    <path d="M150 104 H176 V104 H190" fill="none" stroke="#3a3833" stroke-width="1.25"></path>
+                    <path d="M330 104 H356 V172 H36 V242 H52" fill="none" stroke="#3a3833" stroke-width="1.25"></path>
+                    <path d="M192 242 H216 V330 H232 V350 H246" fill="none" stroke="#3a3833" stroke-width="1.25"></path>
+                    <circle cx="356" cy="172" r="26" fill="none" stroke="#c02a1a" stroke-width="2" stroke-dasharray="4 3"></circle>
+                  </svg>
+                  <div style="position:absolute; left:10px; top:80px; width:140px; height:48px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:2px;"><span style="font-size:13px; font-weight:600; line-height:1;">survey</span><span style="font-size:11px; color:#3a3833; line-height:1; margin-top:6px;">command</span></div>
+                  <div style="position:absolute; left:190px; top:80px; width:140px; height:48px; border:1px solid #2f4bd6; box-shadow:0 0 0 2px #dfe4fa; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:2px;"><span style="font-size:13px; font-weight:600; line-height:1;">plan</span><span style="font-size:11px; color:#3a3833; line-height:1; margin-top:6px;">model</span></div>
+                  <div style="position:absolute; left:52px; top:218px; width:140px; height:48px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:2px;"><span style="font-size:13px; font-weight:600; line-height:1;">approve</span><span style="font-size:11px; color:#3a3833; line-height:1; margin-top:6px;">gate</span></div>
+                  <div style="position:absolute; left:246px; top:326px; width:140px; height:48px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:2px;"><span style="font-size:13px; font-weight:600; line-height:1;">publish_plan</span><span style="font-size:11px; color:#3a3833; line-height:1; margin-top:6px;">publish</span></div>
+                  <span style="position:absolute; left:160px; top:94px; width:20px; height:20px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; color:#3a3833;">+</span>
+                  <span style="position:absolute; left:26px; top:162px; width:20px; height:20px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; color:#3a3833;">+</span>
+                  <span style="position:absolute; left:206px; top:276px; width:20px; height:20px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; color:#3a3833;">+</span>
+                  <span style="position:absolute; left:306px; top:364px; width:20px; height:20px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; color:#3a3833; outline:2px dashed #c02a1a; outline-offset:2px;">+</span>
+                  <div style="position:absolute; right:10px; bottom:10px; display:flex; flex-direction:column; border:1px solid #e6e2d9; background:#fff; box-shadow:0 0 2px rgba(0,0,0,.08);"><span style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:14px; border-bottom:1px solid #eee;">+</span><span style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:14px; border-bottom:1px solid #eee;">−</span><span style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:11px; border-bottom:1px solid #eee;">⛶</span><span style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:10px; font-family:'Red Hat Mono',monospace;">lk</span></div>
+                </div>
+                <aside style="width:360px; flex-shrink:0; border-left:1px solid #e6e2d9; background:#fff; padding:0; display:flex; flex-direction:column;">
+                  <section style="margin:0; border:1px solid #e6e2d9; border-radius:3px; overflow:hidden;">
+                    <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; font-size:13.5px;"><span style="color:#6e6a62;">▾</span>Ask to change this draft…</div>
+                    <div style="border-top:1px solid #f0ede6; padding:8px 10px; display:flex; flex-direction:column; gap:8px;"><span style="display:block; height:44px; border:1px solid #cfcac0; border-radius:3px; padding:4px 10px; font-size:12.5px; color:#6e6a62;">Insert a code reviewer after the tests</span><span style="font-size:13.5px; color:#6e6a62;">Save your edits first — proposals are made against the saved version.</span><div><button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #e6e2d9; background:#f3f1ec; color:#b3ada2; font-family:inherit; font-size:13px; font-weight:600;">Propose</button></div></div>
+                  </section>
+                  <div style="padding:12px; display:flex; flex-direction:column; gap:10px;">
+                    <div style="display:flex; align-items:baseline; gap:8px;"><span style="font-size:15px; font-weight:700;">plan</span><span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">model.chat</span></div>
+                    <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">model</label><span style="display:block; border:1px solid #cfcac0; border-radius:3px; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">qwen3-8-27b</span></div>
+                    <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">temperature</label><span style="display:block; border:1px solid #cfcac0; border-radius:3px; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">0.2</span></div>
+                    <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:#6b675e;">maxTokens</label><span style="display:block; border:1px solid #cfcac0; border-radius:3px; padding:4px 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">16000</span></div>
+                    <p style="margin:4px 0 0; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#b0281a;">× no delete control — only Backspace/Delete on the canvas</p>
+                  </div>
+                </aside>
+              </div>
+            </div>
+            <div style="flex:1; display:flex; align-items:center; justify-content:center; border-top:2px dashed #c02a1a; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#b0281a;">91px left empty: height is calc(100vh − 91px), sized for the old top bar + footer</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="1g" style="display:flex; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:8px;"><span style="font-family:'Red Hat Mono',monospace; font-size:11px; font-weight:600; background:#2f4bd6; color:#fff; padding:2px 7px; border-radius:3px;">1g</span><span style="font-size:13px; font-weight:600;">Proposed · top-to-bottom, + on the line, visible delete</span></div>
+        <div style="width:1280px; height:800px; display:flex; background:#f8f7f3; border:1px solid #cfcac0; overflow:hidden;">
+          <dc-import name="Sidebar" active="workflows" hint-size="240px,100%" style="height:100%"></dc-import>
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+            <header style="height:52px; flex-shrink:0; display:flex; align-items:center; gap:10px; border-bottom:1px solid #cfcac0; background:#fff; padding:0 16px;">
+              <nav style="font-family:'Red Hat Mono',monospace; font-size:11px; color:#6b675e; white-space:nowrap;"><a>Workflows</a> / <a>Delivery</a> /</nav>
+              <h1 style="margin:0; font-size:15px; font-weight:600; white-space:nowrap;">Plan with approval</h1>
+              <span style="display:inline-flex; align-items:center; gap:6px; height:18px; border-radius:3px; padding:0 6px; font-family:'Red Hat Mono',monospace; font-size:9.5px; font-weight:600; text-transform:uppercase; background:#eeece6; color:#5e5a52; white-space:nowrap;"><span>·</span><span>draft v3 · unsaved</span></span>
+              <span style="display:flex; border:1px solid #cfcac0; border-radius:3px; overflow:hidden; margin-left:6px;"><span style="padding:4px 10px; font-size:12.5px; font-weight:600; background:#1e1d1a; color:#fff;">Canvas</span><span style="padding:4px 10px; font-size:12.5px; color:#3a3833;">YAML</span></span>
+              <span style="flex:1;"></span>
+              <span style="display:flex; gap:4px;"><button style="height:26px; width:30px; border-radius:4px; border:1px solid #cfc9bd; background:#fff; box-shadow:2px 2px 0 #cfc9bd; font-size:14px;">↶</button><button style="height:26px; width:30px; border-radius:4px; border:1px solid #e6e2d9; background:#f3f1ec; color:#b3ada2; font-size:14px;">↷</button></span>
+              <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Validate</button>
+              <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #cfc9bd; background:#efede7; box-shadow:2px 2px 0 #cfc9bd; font-family:inherit; font-size:13px; font-weight:600;">Save</button>
+              <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #e6e2d9; background:#f3f1ec; color:#b3ada2; font-family:inherit; font-size:13px; font-weight:600;" title="Save and validate first">Publish</button>
+            </header>
+            <div style="flex:1; min-height:0; display:flex;">
+              <aside style="width:200px; flex-shrink:0; border-right:1px solid #cfcac0; background:#fff; display:flex; flex-direction:column;">
+                <div style="padding:12px 10px 8px; display:flex; flex-direction:column; gap:8px;">
+                  <span style="font-family:'Red Hat Mono',monospace; font-size:10px; letter-spacing:.06em; color:#6e6a62; padding:0 2px;">ADD A STEP</span>
+                  <span style="display:block; height:28px; border:1px solid #cfcac0; border-radius:3px; padding:5px 10px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#6e6a62;">Search…</span>
+                </div>
+                <div style="padding:0 6px; display:flex; flex-direction:column; gap:1px;">
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:3px; border:1px solid transparent;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#2a43b8;">◆</span><span style="flex:1; font-size:13px;">Agent</span></div>
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:3px; border:1px solid #1e1d1a; background:#f6f7fe;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#3a3833;">◇</span><span style="flex:1; font-size:13px; font-weight:600;">Model</span><span style="font-family:'Red Hat Mono',monospace; font-size:10px; color:#6e6a62;">drag</span></div>
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:3px;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#3a3833;">▸</span><span style="flex:1; font-size:13px;">Command</span></div>
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:3px;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#3a3833;">⊙</span><span style="flex:1; font-size:13px;">Approval</span></div>
+                </div>
+                <span style="padding:14px 12px 4px; font-family:'Red Hat Mono',monospace; font-size:10px; letter-spacing:.06em; color:#6e6a62;">WRAP STEPS</span>
+                <div style="padding:0 6px; display:flex; flex-direction:column; gap:1px;">
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#3a3833;">↻</span><span style="flex:1; font-size:13px;">Repeat until</span></div>
+                  <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 8px;"><span style="width:14px; font-family:'Red Hat Mono',monospace; font-size:12px; color:#3a3833;">≡</span><span style="flex:1; font-size:13px;">For each</span></div>
+                </div>
+                <span style="margin-top:auto; padding:10px 12px; border-top:1px solid #e6e2d9; font-size:11.5px; line-height:16px; color:#6b675e;">Click to add after the selected step, or drag onto a line.</span>
+              </aside>
+              <div style="flex:1; min-width:0; position:relative; background-color:#f8f7f3; background-image:radial-gradient(#d6d2c9 1px,transparent 1px); background-size:20px 20px; overflow:hidden;">
+                <svg width="100%" height="100%" style="position:absolute; inset:0;">
+                  <line x1="270" y1="102" x2="270" y2="164" stroke="#3a3833" stroke-width="1.25"></line>
+                  <line x1="270" y1="216" x2="270" y2="278" stroke="#3a3833" stroke-width="1.25"></line>
+                  <line x1="270" y1="330" x2="270" y2="392" stroke="#3a3833" stroke-width="1.25"></line>
+                  <line x1="270" y1="444" x2="270" y2="476" stroke="#cfcac0" stroke-width="1.25" stroke-dasharray="3 3"></line>
+                </svg>
+                <div style="position:absolute; left:170px; top:50px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">survey</span><span style="font-size:11px; color:#3a3833;">▸ command</span></div>
+                <span style="position:absolute; left:259px; top:122px; width:22px; height:22px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; color:#3a3833;">+</span>
+                <div style="position:absolute; left:170px; top:164px; width:200px; height:52px; border:1px solid #2f4bd6; box-shadow:0 0 0 2px #dfe4fa; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">plan</span><span style="font-size:11px; color:#3a3833;">◇ model · qwen3-8-27b</span></div>
+                <div style="position:absolute; left:378px; top:170px; display:flex; flex-direction:column; gap:2px; border:1px solid #1e1d1a; border-radius:4px; background:#fff; box-shadow:2px 2px 0 #1e1d1a; padding:3px;">
+                  <span style="padding:3px 8px; font-size:12px; border-radius:3px;">Duplicate</span>
+                  <span style="padding:3px 8px; font-size:12px; border-radius:3px; color:#b0281a; background:#fbefec;">Delete <span style="font-family:'Red Hat Mono',monospace; font-size:10px;">⌫</span></span>
+                </div>
+                <span style="position:absolute; left:259px; top:236px; width:22px; height:22px; border-radius:50%; border:1px solid #2f4bd6; background:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; color:#2f4bd6; box-shadow:0 0 0 2px #dfe4fa;">+</span>
+                <span style="position:absolute; left:290px; top:239px; font-family:'Red Hat Mono',monospace; font-size:10px; color:#2a43b8;">insert step</span>
+                <div style="position:absolute; left:170px; top:278px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">approve</span><span style="font-size:11px; color:#3a3833;">⊙ gate · maintainer</span></div>
+                <span style="position:absolute; left:259px; top:350px; width:22px; height:22px; border-radius:50%; border:1px solid #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; color:#3a3833;">+</span>
+                <div style="position:absolute; left:170px; top:392px; width:200px; height:52px; border:1px solid #e6e2d9; border-radius:6px; background:#fff; padding:8px 10px; display:flex; flex-direction:column; gap:4px;"><span style="font-size:13px; font-weight:600;">publish_plan</span><span style="font-size:11px; color:#3a3833;">↑ publish · plan.md</span></div>
+                <span style="position:absolute; left:259px; top:476px; width:22px; height:22px; border-radius:50%; border:1px dashed #cfcac0; background:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; color:#6b675e;">+</span>
+                <span style="position:absolute; left:16px; bottom:14px; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6e6a62;">always top to bottom · lines leave the bottom and enter the top</span>
+                <div style="position:absolute; right:10px; bottom:10px; display:flex; border:1px solid #cfcac0; border-radius:3px; background:#fff;"><span style="width:28px; height:26px; display:flex; align-items:center; justify-content:center; font-size:13px; border-right:1px solid #e6e2d9;">−</span><span style="width:28px; height:26px; display:flex; align-items:center; justify-content:center; font-size:13px; border-right:1px solid #e6e2d9;">+</span><span style="padding:0 8px; height:26px; display:flex; align-items:center; font-family:'Red Hat Mono',monospace; font-size:10.5px;">fit</span></div>
+              </div>
+              <aside style="width:320px; flex-shrink:0; border-left:1px solid #cfcac0; background:#fff; display:flex; flex-direction:column;">
+                <div style="padding:14px 14px 12px; border-bottom:1px solid #e6e2d9; display:flex; align-items:center; gap:8px;">
+                  <span style="font-family:'Red Hat Mono',monospace; font-size:14px; color:#3a3833;">◇</span>
+                  <div style="flex:1; min-width:0;"><div style="font-size:15px; font-weight:600;">plan</div><div style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;">model · after survey</div></div>
+                  <button style="height:26px; padding:0 10px; border-radius:4px; border:1px solid #e5a99c; background:#fdd8d2; color:#b0281a; box-shadow:2px 2px 0 #e5a99c; font-family:inherit; font-size:13px; font-weight:600;">Delete</button>
+                </div>
+                <div style="padding:14px; display:flex; flex-direction:column; gap:12px;">
+                  <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">MODEL</label><span style="display:flex; align-items:center; height:28px; border:1px solid #cfcac0; border-radius:3px; padding:0 8px 0 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">qwen3-8-27b<svg width="14" height="14" viewBox="0 0 12 12" style="margin-left:auto;"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#3a3833" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></span></div>
+                  <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">WHAT SHOULD IT DO?</label><span style="display:block; min-height:84px; border:1px solid #cfcac0; border-radius:3px; padding:6px 10px; font-size:12.5px; line-height:18px; color:#1e1d1a;">Reply with the plan in markdown: numbered steps, the files each step touches, and one short verification note per step.</span></div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">TEMPERATURE</label><span style="display:block; height:28px; border:1px solid #cfcac0; border-radius:3px; padding:5px 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">0.2</span></div>
+                    <div style="display:flex; flex-direction:column; gap:4px;"><label style="font-family:'Red Hat Mono',monospace; font-size:10.5px; font-weight:600; letter-spacing:.04em; color:#6b675e;">MAX TOKENS</label><span style="display:block; height:28px; border:1px solid #cfcac0; border-radius:3px; padding:5px 10px; font-family:'Red Hat Mono',monospace; font-size:12.5px;">16000</span></div>
+                  </div>
+                  <span style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:#2a43b8; font-weight:600;"><svg width="14" height="14" viewBox="0 0 12 12" style="transform:rotate(-90deg);"><path d="M3 4.5l3 3 3-3" fill="none" stroke="#2a43b8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>Retries, timeout and outputs</span>
+                </div>
+                <div style="margin-top:auto; border-top:1px solid #e6e2d9; padding:10px 14px; display:flex; align-items:center; gap:8px;">
+                  <span style="flex:1; font-size:12.5px; color:#6b675e;">Ask to change this draft…</span>
+                  <span style="font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6e6a62;">⌘K</span>
+                </div>
+              </aside>
+            </div>
+            <div style="height:30px; flex-shrink:0; border-top:1px solid #cfcac0; background:#fff; display:flex; align-items:center; gap:12px; padding:0 16px; font-family:'Red Hat Mono',monospace; font-size:10.5px; color:#6b675e;"><span>4 steps</span><span>·</span><span>unsaved changes</span><span style="margin-left:auto;">to publish: save, then validate</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:repeat(2,minmax(0,560px)); gap:24px;">
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#b0281a;">× WHAT'S WRONG WITH <a href="#1f">1f</a></span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>The canvas picks left-to-right or top-to-bottom per graph (<span style="font-family:'Red Hat Mono',monospace; font-size:12px;">chooseCanvasOrientation</span>), and a linear 4-step template gets left-to-right. Handles sit on the left and right sides, so after you drag a step below another, the line leaves the side and wraps around (circled).</li>
+          <li>The “+” at the end sits under the last node's bottom edge. In a left-to-right graph, that's off the line.</li>
+          <li>Deleting a step only works with Backspace/Delete, and nothing on screen says so.</li>
+          <li>The palette uses rounded-md, uppercase 11px headings and two-line cards. Those are Tailwind defaults, not the ds tokens (3px radius, mono 10px labels), which is why it looks off next to the sidebar (dashed).</li>
+          <li>The page height is calc(100vh − 91px) for a top bar that no longer exists, so 91px at the bottom is left empty.</li>
+          <li>The header packs 2 chips, 4 tabs, 6 buttons and a truncated publish reason into one row. Runs and Assigned link back to the workflow page.</li>
+        </ol>
+      </div>
+      <div style="background:#fff; border:1px solid #cfcac0; border-radius:3px; padding:16px 18px; display:flex; flex-direction:column; gap:8px;">
+        <span style="font-family:'Red Hat Mono',monospace; font-size:10px; font-weight:600; letter-spacing:.06em; color:#2a43b8;">→ WHAT <a href="#1g">1g</a> CHANGES</span>
+        <ol style="margin:0; padding-left:18px; font-size:13px; line-height:20px; color:#3a3833; display:flex; flex-direction:column; gap:4px;">
+          <li>The layout is always top-to-bottom: handles are Top and Bottom, and routeEdge prefers vertical, even for steps next to each other in a loop. A dragged step still connects bottom to top.</li>
+          <li>Every “+” sits on its line, centered, including the end stub under the last step. Hovering one turns it royal and shows “insert step”.</li>
+          <li>The selected step shows a small menu next to it (Duplicate, Delete ⌫), and the inspector header has a Delete button.</li>
+          <li>The palette uses the ds rows: mono labels, the kind glyphs (◆ ◇ ▸ ⊙ ↻), 32px rows, and a tip about click vs. drag.</li>
+          <li>The header keeps Canvas/YAML, undo/redo, Validate, Save and Publish. The publish reason moves to a status bar along the bottom. The canvas fills the page height.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+</x-dc>
+</body>
+</html>

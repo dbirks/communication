@@ -1,0 +1,289 @@
+ 
+ TURN 2 · TRIGGERS AND YAML 
+Triggers live on the repo; YAML reads like YAML 
+Picked from turn 1: 1b , 1c , 1e , 1g . Triggers already exist in the API: schedules (cron) and GitHub issue triggers (opened, or labeled with any of a set). Both belong to a project assignment, so they're edited on the repo that uses the workflow ( 2e ). The library workflow page only shows where it's used ( 2a ). 
+===== [2a] =====
+ 2a Workflow page · “Used in” replaces Triggers and Start run 
+Workflows / Delivery / 
+Plan with approval ✓ published r2 
+Library workflow. It runs only in the repos that use it, and triggers are set up there. 
+ Use in a repo… Edit workflow Overview YAML Used in 2 History 
+ USED IN 2 REPOS 
+ storefront Northwind pinned r2 · latest issue labeled plan Mondays 06:00 UTC ! #9c1e waiting · 2h Open › 
+ docs-site Lumen Docs pinned r1 Update to r2 started by hand ✓ #71aa done · 1d Open › 
+Open › goes to the repo page, where its triggers are edited ( 2e ). No Start run here, because a library workflow isn't attached to a repo. 
+===== [2e] =====
+ 2e Repo page · triggers live on each workflow the repo uses 
+Northwind / 
+storefront github.com/northwind/storefront · main New thread here Start run 
+ WORKFLOWS ON THIS REPO · 2 + use a library workflow 
+ feature-delivery ✓ r3 started by hand plan › implement › loop: test · fix › review 
++ Add trigger Run 
+ plan-with-approval ✓ r2 Run survey › plan › approve › publish_plan 
+ STARTS WHEN + Add trigger 
+ An issue is labeled plan northwind/storefront · checked every minute last fired 2h ago · #9c1e on Edit 
+ Every Monday at 06:00 UTC 0 6 * * 1 · goal: “Plan this week's upgrades” next in 3d on Edit 
+Or start it by hand with Run, or from an issue below. 
+===== [2c] =====
+ 2c Add / edit trigger dialog · opened from the repo 
+Add a trigger plan-with-approval · Northwind / storefront esc 
+START IT WHEN 
+ A GitHub issue… On a schedule 
+IS labeled 
+WITH ANY OF THESE LABELS plan × add label… 
+ THE RUN GETS goal = the issue title and body repository = storefront Checked every minute · public GitHub repositories only 
+ Cancel Add trigger 
+===== [2d] =====
+ 2d YAML tab · block style, no inline braces 
+× TODAY · FLOW STYLE spec:
+ inputs:
+ type: object
+ required: [goal, repository]
+ properties:
+ goal: {type: string, minLength: 1}
+ repository: {type: string, minLength: 1}
+ policies: {maxConcurrentNodes: 1, workspaceMode: worktree}
+ nodes:
+ - id: survey
+ kind: process.exec
+ retry: {maxAttempts: 2, backoff: {baseSeconds: 5}}
+ config:
+ workspace: {mode: read_only}
+ outputExtraction: {mode: none} 
+ ✓ PROPOSED · BLOCK STYLE copy · download 1 spec: 2 inputs: 3 type: object 4 required: 5 - goal 6 - repository 7 properties: 8 goal: 9 type: string 10 minLength: 1 11 repository: 12 type: string 13 minLength: 1 14 policies: 15 maxConcurrentNodes: 1 16 workspaceMode: worktree 17 nodes: 18 - id: survey 19 kind: process.exec 20 retry: 21 maxAttempts: 2 22 backoff: 23 baseSeconds: 5 
+===== [2b] =====
+ 2b Not chosen · a “Starts when” card on the library canvas (triggers belong to repos, see 2e) 
+Workflows / Delivery / 
+Plan with approval · draft v3 Canvas YAML Validate Save Publish 
+STARTS WHEN 
+ # issue labeled plan · storefront ◷ Mondays 06:00 ▸ or started by hand 
+ survey ▸ command 
+ plan ◇ model 
+ approve ⊙ gate 
+ publish_plan ↑ publish 
+Starts when 
+Triggers save right away. They don't wait for Publish. 
+ NORTHWIND 
+ Issue labeled plan on northwind/storefront · last fired 2h ago 
+ Every Monday at 06:00 UTC on 0 6 * * 1 · next in 3d LUMEN DOCS No triggers. Runs start by hand. 
+ Add trigger 
+ → NOTES 
+Library workflows are templates. They run only where a repo uses them, pinned to a revision. So the workflow page has no Start run and no trigger editing. Its “Used in” tab ( 2a ) lists each repo, the pinned revision (with “Update to r2” when behind), its triggers as read-only sentences, and the last run. 
+Triggers are edited on the repo page ( 2e ), in a “Starts when” box under each workflow the repo uses. The project page's Workflows tab shows the same rows across all of the project's repos. 
+The dialog ( 2c ) opens with the workflow and repo already set, so it only asks when and with which labels or schedule. 
+Icons: Lucide ( github , clock , play ) at 14px, stroke 2, currentColor. That's a new dependency (lucide-react), so flag it per AGENTS.md. 
+Every YAML view should use block style: lists as “- item”, maps nested under their key, no inline { } or [ ] . 
+ TURN 1 · WORKFLOWS INDEX, WORKFLOW PAGE AND STUDIO 
+Workflows: today vs. proposed 
+Recreated from pages/Library.tsx , pages/Studio.tsx and components/studio/* , using the Plan with approval template. Same tokens; layout, hierarchy and canvas behavior change. 
+Workflows index /workflows 
+===== [1a] =====
+ 1a Today LibraryPage 
+Workflows Import YAML 
+ NEW PIPELINE definition only — no revision 
+slug unique in the organization; a duplicate is a 409 
+name optional display name 
+start from Blank A minimal skeleton draft — Validate tells you what to fill in. Create pipeline 
+ all has open draft used in any project ▾ all folders ▾ 
+ ▾ Delivery 2 
+ Feature delivery ✓ published r3 8f2c1a 
+plan › implement › loop: test · fix › review 
+Northwind 
+manual 
+ no open draft 
+ Duplicate Move to folder… Open 
+ Plan with approval · draft only 
+— 
+not assigned to a project you can see 
+— 
+draft v1 · by David Birks 
+ Duplicate Move to folder… Open 
+ ▾ Maintenance 1 
+ Dependency bumps ✓ published r2 41d07e 
+bump › test › open_pr 
+Northwind 
+cron 0 6 * * 1 
+ no open draft 
+ Duplicate Move to folder… Open 
+ STARTER WORKFLOWS starter workflows — "Use template" creates the pipeline and its first draft, then opens the Studio canvas 
+ Plan with approval docs/samples/home/plan-with-approval.yaml Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan. 4 steps Use template 
+ Security review docs/samples/home/security-review.yaml Scan a checkout, review findings with a chat model and publish a report. 4 steps Use template 
+===== [1b] =====
+ 1b Proposed · one New workflow button, templates as starters 
+Workflows 5 Import YAML New workflow 
+ START BLANK Empty canvas One agent step to start from. 
+ TEMPLATE · 4 STEPS Plan with approval survey › plan › approve › publish_plan 
+ TEMPLATE · 4 STEPS Security review scan › review › approve › report 
+ Search workflows all has open draft used in Northwind 
+ DELIVERY 2 
+ Feature delivery ✓ r3 
+plan › implement › loop: test · fix › review 
+Northwind · storefront manual 
+ Edit ⋯ 
+ Plan with approval · draft · not published 
+survey › plan › approve › publish_plan 
+Not used yet 
+ Edit ⋯ 
+ MAINTENANCE 1 
+ Dependency bumps ✓ r2 
+bump › test › open_pr 
+Northwind · payments-api mondays 06:00 
+ Edit ⋯ 
+Use in a repo… 
+Duplicate 
+Move to folder… 
+Export YAML 
+===== [1c] =====
+ 1c Proposed · New workflow dialog 
+New workflow esc 
+NAME Retry payments plan id: retry-payments-plan · change 
+START FROM 
+ Blank One agent step 
+ Plan with approval 4 steps 
+ Security review 4 steps Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan. 
+FOLDER Delivery 
+ Cancel Create and open canvas 
+ × WHAT'S WRONG WITH 1a 
+A full creation form is always open above the list (dashed). It says “pipeline” and “slug” on a page called Workflows, and its hints are API notes (“a duplicate is a 409”, “definition only — no revision”). 
+Templates are at the bottom, below the folders, so most people won't see them. 
+Every row has three equal secondary buttons. Duplicate and Move to folder… take as much space as Open. 
+Those three buttons are about 290px wide in a 150px column, so at desktop widths they spill onto the project/trigger column (dashed). 
+Folder headers use the ▾ glyph, which the handoff dropped because it reads as a bullet. 
+Rows show the digest (r3 8f2c1a) and “not assigned to a project you can see”. 
+ → WHAT 1b / 1c CHANGE 
+One primary “New workflow” button opens a dialog. You type a name and the id is generated from it. 
+Templates appear as three starter cards above the list and as choices in the dialog. 
+Each row has one action (Edit) plus a ⋯ menu for Start a run, Duplicate, Move to folder and Export. 
+Folders are collapsible panels with SVG chevrons. The revision chip shows just r3; the digest moves to the workflow page. 
+Clicking into a workflow /workflows/:id 
+===== [1d] =====
+ 1d Today PipelinePage 
+Plan with approval 
+plan-with-approval · 1 revision Customize 
+ REVISIONS 
+ ✓ r1 0.1.0 8f2c1a90 
+ DRAFTS New draft 
+ i draft v3 valid 2h David Birks 
+ ✓ draft v1 published 1d David Birks 
+ ASSIGN TO A PROJECT 
+ Assign to a project 
+ YAML r1 · 0.1.0 · 8f2c1a90 · regenerated canonical apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+ name: plan-with-approval
+ description: Survey a repository checkout, draft an implementation plan…
+spec:
+ inputs:
+ type: object
+ required: [goal, repository]
+ properties:
+ goal: {type: string, minLength: 1, description: What the plan should accomplish.}
+ repository: {type: string, minLength: 1}
+ policies: {maxConcurrentNodes: 1, maxDurationSeconds: 7200, workspaceMode: worktree}
+ nodes:
+ - id: survey
+ kind: process.exec
+ timeoutSeconds: 300
+ retry: {maxAttempts: 2, backoff: {baseSeconds: 5, multiplier: 2}} 
+ DEFINITION GRAPH r1 · definition only, no run states 
+ survey → plan → approve → publish_plan 
+===== [1e] =====
+ 1e Proposed · graph first, one Edit button 
+Workflows / Delivery / 
+Plan with approval ✓ published r1 
+Survey a repository checkout, draft an implementation plan for a goal with a chat model, hold it behind a maintainer approval, and publish the approved-shape plan. 
+ Use in a repo… Edit workflow Overview YAML Used in 2 History 
+ survey ▸ command 
+ plan ◇ model 
+ approve ⊙ gate · maintainer 
+ publish_plan ↑ publish · plan.md read-only · r1 · Edit workflow opens the canvas on your draft 
+ OPEN DRAFT v3 by David Birks · 2h · valid Continue editing › 
+ USED IN Northwind / storefront on issues labelled “plan” + Assign to a project 
+ INPUTS goal — what the plan should accomplish repository — project repo name 
+ LAST RUNS ! #9c1e waiting for approval · 2h ✓ #71aa done · 1d 
+ × WHAT'S WRONG WITH 1d 
+The handoff says /workflows/:id is the editor. Today it opens on revisions, drafts, then a YAML dump (dashed), with the graph below it. 
+Editing is behind “Customize” or “New draft”. They look the same and both create a draft, so it's unclear which to press. 
+Revision vs. draft vs. published is exposed directly (r1 0.1.0, draft v3 valid, draft v1 published). 
+Runs and triggers are at the bottom or missing. The Studio's Runs/Assigned tabs link back to this same page. 
+ → WHAT 1e CHANGES 
+The page opens on the graph, drawn top to bottom. YAML, Used in and History are tabs. There's no Start run, because a library workflow is a template and runs from the repos that use it ( 2a ). 
+There is one primary “Edit workflow” button. It reopens your open draft, or creates one from the latest revision. 
+The right rail answers: is there a draft, where is this used, what inputs does it take, and how did recent runs go. 
+Revisions and drafts move to History, for when you need them. 
+Workflow Studio /workflows/:id/drafts/:draftId 
+===== [1f] =====
+ 1f Today · after dragging two steps down Studio.tsx · StudioCanvas · StudioPalette 
+Workflows / 
+Plan with approval DRAFT v3 not validated unsaved Canvas YAML Runs Assigned Undo Redo Save Validate … 
+ Search steps… 
+Steps 
+Agent 
+agent.acp 
+Model chat 
+model.chat 
+Command 
+process.exec 
+Approval 
+human.approval 
+Loops & branching 
+Repeat until 
+until 
+For each 
+for_each 
+Not runnable yet 
+ Workflow not runnable yet 
+pipeline.child 
+ survey command 
+ plan model 
+ approve gate 
+ publish_plan publish + + + + 
+ + − ⛶ lk 
+ ▾ Ask to change this draft… 
+ Insert a code reviewer after the tests Save your edits first — proposals are made against the saved version. 
+ Propose 
+ plan model.chat 
+model qwen3-8-27b 
+temperature 0.2 
+maxTokens 16000 
+× no delete control — only Backspace/Delete on the canvas 
+91px left empty: height is calc(100vh − 91px), sized for the old top bar + footer 
+===== [1g] =====
+ 1g Proposed · top-to-bottom, + on the line, visible delete 
+Workflows / Delivery / 
+Plan with approval · draft v3 · unsaved Canvas YAML ↶ ↷ Validate Save Publish 
+ ADD A STEP Search… 
+ ◆ Agent 
+ ◇ Model drag 
+ ▸ Command 
+ ⊙ Approval WRAP STEPS 
+ ↻ Repeat until 
+ ≡ For each Click to add after the selected step, or drag onto a line. 
+ survey ▸ command + 
+ plan ◇ model · qwen3-8-27b 
+ Duplicate Delete ⌫ + insert step 
+ approve ⊙ gate · maintainer + 
+ publish_plan ↑ publish · plan.md + always top to bottom · lines leave the bottom and enter the top 
+ − + fit 
+ ◇ 
+plan 
+model · after survey Delete 
+MODEL qwen3-8-27b 
+WHAT SHOULD IT DO? Reply with the plan in markdown: numbered steps, the files each step touches, and one short verification note per step. 
+TEMPERATURE 0.2 
+MAX TOKENS 16000 Retries, timeout and outputs 
+ Ask to change this draft… ⌘K 
+ 4 steps · unsaved changes to publish: save, then validate 
+ × WHAT'S WRONG WITH 1f 
+The canvas picks left-to-right or top-to-bottom per graph ( chooseCanvasOrientation ), and a linear 4-step template gets left-to-right. Handles sit on the left and right sides, so after you drag a step below another, the line leaves the side and wraps around (circled). 
+The “+” at the end sits under the last node's bottom edge. In a left-to-right graph, that's off the line. 
+Deleting a step only works with Backspace/Delete, and nothing on screen says so. 
+The palette uses rounded-md, uppercase 11px headings and two-line cards. Those are Tailwind defaults, not the ds tokens (3px radius, mono 10px labels), which is why it looks off next to the sidebar (dashed). 
+The page height is calc(100vh − 91px) for a top bar that no longer exists, so 91px at the bottom is left empty. 
+The header packs 2 chips, 4 tabs, 6 buttons and a truncated publish reason into one row. Runs and Assigned link back to the workflow page. 
+ → WHAT 1g CHANGES 
+The layout is always top-to-bottom: handles are Top and Bottom, and routeEdge prefers vertical, even for steps next to each other in a loop. A dragged step still connects bottom to top. 
+Every “+” sits on its line, centered, including the end stub under the last step. Hovering one turns it royal and shows “insert step”. 
+The selected step shows a small menu next to it (Duplicate, Delete ⌫), and the inspector header has a Delete button. 
+The palette uses the ds rows: mono labels, the kind glyphs (◆ ◇ ▸ ⊙ ↻), 32px rows, and a tip about click vs. drag. 
+The header keeps Canvas/YAML, undo/redo, Validate, Save and Publish. The publish reason moves to a status bar along the bottom. The canvas fills the page height. 
