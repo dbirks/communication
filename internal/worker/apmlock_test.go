@@ -15,14 +15,18 @@ import (
 
 // fakeAPMLockStore records the claims and completions a loop makes against it.
 type fakeAPMLockStore struct {
-	mu         sync.Mutex
-	claim      APMLockClaim
-	claimed    bool
-	claimErr   error
-	last       APMLockClaim
-	lastResult *apm.ResolveResult
-	lastErr    error
-	claims     int
+	mu          sync.Mutex
+	claim       APMLockClaim
+	claimed     bool
+	claimErr    error
+	last        APMLockClaim
+	lastResult  *apm.ResolveResult
+	lastErr     error
+	claims      int
+	completions int
+	// queue holds locks queued behind the scripted claim; each one is armed
+	// as the scripted claim only once the previous one completes.
+	queue []APMLockClaim
 }
 
 func (f *fakeAPMLockStore) ClaimAPMLockRequest(ctx context.Context, workerID string) (APMLockClaim, bool, error) {
@@ -43,6 +47,14 @@ func (f *fakeAPMLockStore) CompleteAPMLockRequest(ctx context.Context, c APMLock
 	f.last = c
 	f.lastResult = result
 	f.lastErr = resolveErr
+	f.completions++
+	// A completed claim releases the next queued lock, so the loop has to
+	// claim again to pick it up.
+	if len(f.queue) > 0 {
+		f.claim = f.queue[0]
+		f.queue = f.queue[1:]
+		f.claimed = true
+	}
 	return nil
 }
 
@@ -226,6 +238,66 @@ func TestAPMLockLoopPollsAfterIdleClaim(t *testing.T) {
 	defer store.mu.Unlock()
 	if store.last.RequestID != "lock-1" {
 		t.Fatalf("never claimed the queued lock: last claim = %+v", store.last)
+	}
+}
+
+// TestAPMLockLoopClaimsConsecutiveLocks is the regression test for the stuck
+// loop: after a claimed lock settles, the loop must claim the next queued lock
+// immediately (its wait only ever woke on shutdown before), so two locks
+// queued one after the other are both claimed and completed without a Drain in
+// between.
+func TestAPMLockLoopClaimsConsecutiveLocks(t *testing.T) {
+	store := &fakeAPMLockStore{
+		claimed: true,
+		claim: APMLockClaim{
+			RequestID: "lock-a", ProfileID: "p-1", OrganizationID: "o-1",
+			PackageRef: "mattpocock/skills#v1.3.1", Target: apm.TargetClaude, WorkerID: "w-1",
+		},
+		queue: []APMLockClaim{{
+			RequestID: "lock-b", ProfileID: "p-2", OrganizationID: "o-1",
+			PackageRef: "mattpocock/skills#v1.3.2", Target: apm.TargetCodex, WorkerID: "w-1",
+		}},
+	}
+	resolve := &fakeAPMTyper{result: &apm.ResolveResult{
+		LockDigest:  "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ResolvedRef: "v1.3.2",
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel() })
+	l, err := NewAPMLockLoop(store, resolve, func() string { return "w-1" })
+	if err != nil {
+		t.Fatalf("NewAPMLockLoop: %v", err)
+	}
+	go func() { _ = l.Start(ctx) }()
+	// Wait for BOTH locks to complete; neither claim nor completion is driven
+	// by a Drain, which only happens after both are done.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		store.mu.Lock()
+		done := store.completions >= 2
+		store.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	if err := l.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.completions != 2 {
+		t.Fatalf("completions = %d, want 2 (both queued locks claimed and completed)", store.completions)
+	}
+	if store.lastErr != nil {
+		t.Fatalf("resolve error = %v, want nil", store.lastErr)
+	}
+	if store.lastResult == nil {
+		t.Fatal("the loop never reported a resolve result")
+	}
+	if store.last.RequestID != "lock-b" {
+		t.Fatalf("last completed request = %q, want lock-b", store.last.RequestID)
 	}
 }
 

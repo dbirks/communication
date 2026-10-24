@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dbirks/communication/internal/agent/apm"
@@ -121,8 +120,7 @@ type APMLockLoop struct {
 	stopCh chan struct{}
 	closed bool
 
-	inflight atomic.Int64
-	running  sync.WaitGroup
+	running sync.WaitGroup
 
 	// cfg tunes the claim cadence; clock drives it (tests inject a fake).
 	cfg   APMLockConfig
@@ -242,9 +240,23 @@ func (l *APMLockLoop) Start(ctx context.Context) error {
 		if l.stopping() || ctx.Err() != nil {
 			return nil
 		}
+		// Reserve a running slot under the loop mutex BEFORE claiming: Drain
+		// sets closed under the same mutex and only then enters
+		// running.Wait, so a reservation made while the loop is not closed
+		// can never race a Wait that has started — the WaitGroup is
+		// reserved before it can be waited on. An empty or failed claim
+		// gives the reservation straight back.
+		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			return nil
+		}
+		l.running.Add(1)
+		l.mu.Unlock()
 		c, ok, err := l.store.ClaimAPMLockRequest(ctx, workerID)
 		switch {
 		case err != nil:
+			l.running.Done()
 			if ctx.Err() != nil || l.stopping() {
 				return nil
 			}
@@ -255,19 +267,29 @@ func (l *APMLockLoop) Start(ctx context.Context) error {
 				slog.String("request_id", c.RequestID),
 				slog.String("profile_id", c.ProfileID),
 				slog.String("worker_id", c.WorkerID))
-			l.inflight.Add(1)
+			// done wakes the wait below when this resolve settles; waiting on the
+			// resolve itself (not only on shutdown) is what lets the loop claim
+			// the next lock instead of parking in this select forever. The
+			// resolve goroutine owns the reservation: Done lands when it
+			// settles, so Drain's running.Wait waits for exactly this resolve.
+			done := make(chan struct{})
 			go func() {
-				defer func() { l.inflight.Add(-1) }()
+				defer close(done)
+				defer l.running.Done()
 				l.run(ctx, c)
 			}()
-			for l.inflight.Load() > 0 {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-l.stopCh:
-					return nil
-				}
+			select {
+			case <-done:
+				// The resolve has settled: claim the next request right away,
+				// without another idle tick.
+				continue
+			case <-ctx.Done():
+				return nil
+			case <-l.stopCh:
+				return nil
 			}
+		default:
+			l.running.Done()
 		}
 		// Idle: wait for the next claim tick, shutdown, or stop. The tick is what
 		// keeps the queue scanned — without it the loop parks here forever after
@@ -290,8 +312,6 @@ func (l *APMLockLoop) Start(ctx context.Context) error {
 // The scratch dirs are removed when the resolve is done, whether it succeeded
 // or failed — a resolve owns its scratch dir and never leaves content behind.
 func (l *APMLockLoop) run(ctx context.Context, c APMLockClaim) {
-	l.running.Add(1)
-	defer l.running.Done()
 	workdir, err := os.MkdirTemp(l.scratchRoot, "apm-lock-")
 	if err != nil {
 		l.settle(ctx, c, nil, err)
