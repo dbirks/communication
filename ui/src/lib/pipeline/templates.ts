@@ -47,11 +47,7 @@ spec:
       kind: process.exec
 `;
 
-export type TemplateId =
-  | "blank"
-  | "plan-with-approval"
-  | "security-review"
-  | "issue-to-pr";
+export type TemplateId = "blank" | "plan-with-approval" | "security-review" | "issue-to-pr";
 
 export interface PipelineTemplate {
   id: TemplateId;
