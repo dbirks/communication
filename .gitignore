@@ -29,3 +29,6 @@ __pycache__/
 # Playwright E2E evidence output (e2e/): HTML reports, traces, screenshots
 playwright-report/
 test-results/
+
+# Emulator pass output (e2e/emulator): screenshots, results.json, reports
+e2e/emulator/out/
