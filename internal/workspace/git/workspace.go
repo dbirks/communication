@@ -96,6 +96,15 @@ type RepoSpec struct {
 	// today's default-branch startPoint. An already-existing run ref always
 	// resumes from itself, pin or not (ADR-0017 D1).
 	BaseCommit string
+	// Token (ADR-0061) is the repository's GitHub credential, resolved by the
+	// worker before the prepare. Empty is anonymous — today's behaviour.
+	// It rides the mirror clone/fetch environment only, via the
+	// token-free credential helper mirrorCredentialEnv installs: never
+	// logged, never in argv, never written into the mirror's config (the
+	// remote URL stays exactly the token-free GitURL), never part of an
+	// error string. The worktree that links into the mirror inherits
+	// nothing.
+	Token string
 }
 
 // PreparedRepo is the persisted half of one workspace repository: the four
@@ -306,9 +315,43 @@ func declared(paths []string) []string {
 	return out
 }
 
+// mirrorCredentialEnv returns the exec-environment entries that hand the
+// mirror's clone/fetch the repository's GitHub credential (ADR-0061): the
+// token-free credential helper for https://github.com that reads the token
+// from COMM_GIT_TOKEN, wired exactly the way ADR-0045 wires the push token —
+// environment only. An empty token returns nil, so a repository without a
+// credential keeps today's anonymous clone/fetch.
+//
+// The caller must apply the result to the mirror's `clone --mirror` and
+// `fetch` and to nothing else: the worktree/checkout linking into the mirror
+// gets no credential, the mirror's config and remote URL never see the
+// token, and no error path may format this slice (the token is only ever
+// delivered to git as a child-process environment entry).
+func mirrorCredentialEnv(token string) []string {
+	if token == "" {
+		return nil
+	}
+	// GIT_TERMINAL_PROMPT=0 comes from the Runner's base env (gitcmd.go
+	// Runner.env); GIT_CONFIG_COUNT is not set by anything else in the
+	// from-scratch env, so index 0 is free — PrepareEnv is the only place
+	// a GIT_CONFIG_* entry enters, and this is its only caller.
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo password=$COMM_GIT_TOKEN; }; f",
+		"COMM_GIT_TOKEN=" + token,
+	}
+}
+
 // ensureMirror creates <repos root>/<project>/<name>.git with
 // `git clone --mirror` or fetches into it. It never runs `gc` (ADR-0010 D6:
 // no mirror maintenance inside an attempt).
+//
+// When the spec carries a repository credential (ADR-0061), ONLY the two
+// network-facing commands — the mirror clone and the mirror fetch — run with
+// the credential in their process environment. Everything else in the
+// prepare (ref work, worktree add, clone into the workspace, exclusions)
+// runs on the ordinary Runner and inherits nothing.
 func (m *Manager) ensureMirror(ctx context.Context, mirror Mirror, spec RepoSpec) (bool, error) {
 	if _, err := os.Stat(filepath.Join(mirror.Path, "HEAD")); err == nil {
 		// `--git-dir` is not decoration: `git fetch <mirror> <refspec>` from
@@ -319,7 +362,7 @@ func (m *Manager) ensureMirror(ctx context.Context, mirror Mirror, spec RepoSpec
 		if err := m.pinFetchRefspec(ctx, mirror.Path); err != nil {
 			return false, err
 		}
-		out, err := m.Git.Run(ctx, "", "--git-dir="+mirror.Path, "fetch", "--quiet", "--prune", "origin")
+		out, err := m.Git.RunEnv(ctx, "", mirrorCredentialEnv(spec.Token), "--git-dir="+mirror.Path, "fetch", "--quiet", "--prune", "origin")
 		if err != nil {
 			return false, fmt.Errorf("workspace: fetch mirror %s: %w (%s)", mirror.Path, err, Redact(out))
 		}
@@ -340,7 +383,10 @@ func (m *Manager) ensureMirror(ctx context.Context, mirror Mirror, spec RepoSpec
 			return false, fmt.Errorf("workspace: clear half-written mirror %s: %w", mirror.Path, err)
 		}
 	}
-	if _, err := m.Git.Run(ctx, "", "clone", "--quiet", "--mirror", spec.GitURL, mirror.Path); err != nil {
+	// The clone argv carries the token-free GitURL: the credential rides
+	// the environment only (mirrorCredentialEnv), so the remote URL that
+	// lands in the mirror's config can never carry it.
+	if _, err := m.Git.RunEnv(ctx, "", mirrorCredentialEnv(spec.Token), "clone", "--quiet", "--mirror", spec.GitURL, mirror.Path); err != nil {
 		return false, fmt.Errorf("workspace: create mirror %s from %s: %w", mirror.Path, Redact(spec.GitURL), err)
 	}
 	if err := m.pinFetchRefspec(ctx, mirror.Path); err != nil {

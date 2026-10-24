@@ -142,7 +142,21 @@ func (r *Runner) Lines(ctx context.Context, dir string, argv ...string) ([]strin
 
 // Exec prepares and runs one git command, returning the raw result.
 func (r *Runner) Exec(ctx context.Context, dir string, argv ...string) (Result, error) {
-	cmd, err := r.Prepare(ctx, dir, argv...)
+	return r.ExecEnv(ctx, dir, nil, argv...)
+}
+
+// RunEnv is Run with per-call additions to the prepared environment. It is the
+// channel ADR-0061 hands the mirror credential over: environment only, per
+// command — never argv, never config, never an error string.
+func (r *Runner) RunEnv(ctx context.Context, dir string, extraEnv []string, argv ...string) (string, error) {
+	res, err := r.ExecEnv(ctx, dir, extraEnv, argv...)
+	return res.Output(), err
+}
+
+// ExecEnv prepares and runs one git command with per-call environment
+// additions, returning the raw result.
+func (r *Runner) ExecEnv(ctx context.Context, dir string, extraEnv []string, argv ...string) (Result, error) {
+	cmd, err := r.PrepareEnv(ctx, dir, extraEnv, argv...)
 	if err != nil {
 		return Result{}, err
 	}
@@ -168,6 +182,22 @@ func (r *Runner) Exec(ctx context.Context, dir string, argv ...string) (Result, 
 		return res, &Error{Argv: cmd.Argv, Err: runErr, Out: res.Stderr}
 	}
 	return res, nil
+}
+
+// PrepareEnv is Prepare plus the per-call environment additions, appended
+// after the Runner's own base env and identity entries. ADR-0061 is the only
+// caller today (the mirror credential, one command at a time), and it is the
+// only place a GIT_CONFIG_* entry may be introduced: the base env never sets
+// one, so index 0 is free by construction, not by assumption.
+func (r *Runner) PrepareEnv(ctx context.Context, dir string, extraEnv []string, argv ...string) (Command, error) {
+	cmd, err := r.Prepare(ctx, dir, argv...)
+	if err != nil {
+		return Command{}, err
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = append(cmd.Env, extraEnv...)
+	}
+	return cmd, nil
 }
 
 // Prepare resolves the executable and builds the environment. Exposed so a
