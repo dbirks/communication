@@ -130,11 +130,10 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     const header = await screen.findByTestId("studio-header");
     expect((await screen.findByTestId("studio-title")).textContent).toBe("Feature development");
     // The version the draft read served, and the server's last verdict.
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("DRAFT v12");
+    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("· DRAFT V12");
     expect((await screen.findByTestId("studio-validation-chip")).textContent).toContain("invalid");
-    // The 4a tab strip: Canvas/YAML view tabs with aria-selected, plus the
-    // Runs / Assigned links onto the workflow page. The page holds no
-    // assignment data, so the Assigned tab omits the count.
+    // Design 1g: the header carries the Canvas/YAML tabs only — the
+    // Runs/Assigned links are gone (the testids are retired).
     const tabs = await screen.findByTestId("studio-header-tabs");
     expect((await screen.findByTestId("studio-view-canvas")).getAttribute("aria-selected")).toBe(
       "true",
@@ -142,11 +141,8 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect((await screen.findByTestId("studio-view-yaml")).getAttribute("aria-selected")).toBe(
       "false",
     );
-    const runsLink = within(tabs).getByTestId("studio-header-runs");
-    expect(runsLink.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
-    const assignedLink = within(tabs).getByTestId("studio-header-assigned");
-    expect(assignedLink.textContent).toBe("Assigned");
-    expect(assignedLink.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(within(tabs).queryByTestId("studio-header-runs")).toBeNull();
+    expect(within(tabs).queryByTestId("studio-header-assigned")).toBeNull();
     // The breadcrumb links back to the workflows index.
     expect((await screen.findByTestId("studio-breadcrumb-workflows")).getAttribute("href")).toBe(
       "/workflows",
@@ -164,7 +160,7 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
     expect(await screen.findByTestId("studio-page")).toBeTruthy();
     // The replace happened: the pipeline page is no longer what's rendered.
     await waitFor(() => expect(screen.queryByTestId("pipeline-page")).toBeNull());
-    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("DRAFT v12");
+    expect((await screen.findByTestId("studio-draft-version")).textContent).toBe("· DRAFT V12");
   });
 
   it("switches the canvas for the YAML text and back", async () => {
@@ -263,10 +259,12 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
       },
     ]);
     await screen.findByTestId("studio-header");
-    // Valid verdict, clean bytes: publish is live (no visible reason).
+    // Valid verdict, clean bytes: publish is live; the status bar says so.
     const publish = (await screen.findByTestId("studio-publish")) as HTMLButtonElement;
     expect(publish.disabled).toBe(false);
-    expect(screen.queryByTestId("studio-publish-reason")).toBeNull();
+    expect((await screen.findByTestId("studio-publish-reason")).textContent).toBe(
+      "ready to publish",
+    );
     fireEvent.click(publish);
     await waitFor(() => expect(requestsTo(requests, publishPath, "POST")).toHaveLength(1));
     const body = JSON.parse(requestsTo(requests, publishPath, "POST")[0].body ?? "{}") as {
@@ -277,10 +275,12 @@ describe("/library/:pipelineId/drafts/:draftId", () => {
   });
 
   it("multi-selects in the outline and wraps the selection in a Repeat until scope", async () => {
-    // The outline (checkbox multi-select) only renders narrow — stub the
-    // media query so the page takes the <1024px path without a canvas.
-    vi.stubGlobal("matchMedia", () => ({
-      matches: true,
+    // The outline (checkbox multi-select) only renders 768–1024px — stub the
+    // media query for the narrow-but-not-phone range, so the page takes the
+    // <1024px outline path without a canvas (the <768px phone path shows
+    // the full canvas with drawers instead).
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(max-width: 1023px)",
       media: "",
       addEventListener: () => {},
       removeEventListener: () => {},
@@ -367,6 +367,8 @@ describe("the assistant proposal lifecycle", () => {
       },
     ]);
     await screen.findByTestId("studio-header");
+    // Design 1g: the box collapses to the footer row — open it first.
+    fireEvent.click(screen.getByTestId("assistant-proposal-footer"));
     fireEvent.change(screen.getByTestId("assistant-proposal-input"), {
       target: { value: "Add a note agent at the end" },
     });

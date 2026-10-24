@@ -75,12 +75,14 @@ export function SelectionToolbar({
   const count = selectedIds.length;
 
   if (variant === "toolbar") {
+    // Design 1g: a compact 30px mono strip with 26px secondary buttons — the
+    // wrap function stays, the bar must not read as a second tool pane.
     return (
       <div
         role="toolbar"
         aria-label="Selection actions"
         data-testid={testids.box}
-        className="flex items-center gap-2 border-b border-line bg-surface px-3 py-1.5"
+        className="flex h-[30px] shrink-0 items-center gap-2 border-b border-line bg-surface px-3"
       >
         <span className="font-mono text-[11px] text-muted" data-testid="selection-count">
           {count} step{count === 1 ? "" : "s"} selected
@@ -88,6 +90,7 @@ export function SelectionToolbar({
         <Button
           variant="secondary"
           compact
+          className="h-[26px]"
           data-testid={testids.wrapUntil}
           disabled={!enabled}
           onClick={() => onWrap?.("until")}
@@ -97,6 +100,7 @@ export function SelectionToolbar({
         <Button
           variant="secondary"
           compact
+          className="h-[26px]"
           data-testid={testids.wrapForEach}
           disabled={!enabled}
           onClick={() => onWrap?.("for_each")}
@@ -107,6 +111,7 @@ export function SelectionToolbar({
           <Button
             variant="ghost"
             compact
+            className="h-[26px]"
             data-testid={testids.unwrap}
             onClick={() => onUnwrap?.(unwrapId)}
           >

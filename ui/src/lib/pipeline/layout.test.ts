@@ -468,6 +468,18 @@ describe("canvas (dense) spacing", () => {
     expect(tbOpp.height).toBeLessThan(tb.height);
   });
 
+  it("keeps a top-to-bottom scope body top-to-bottom (subgraphRankdir same)", () => {
+    const tbSame = layoutDefinition(samplePipelineDocument, {
+      spacing: "dense",
+      rankdir: "TB",
+      subgraphRankdir: "same",
+    })!;
+    const group = tbSame.groups.find((g) => g.ownerId === "build_until_verified")!;
+    // The authoring Studio is always top-to-bottom: a scope body keeps the
+    // graph's own direction instead of flipping sideways.
+    expect(group.height).toBeGreaterThan(group.width);
+  });
+
   it("keeps the dense top-to-bottom cut inside fit zoom 1.2 of the canvas panes", () => {
     const tb = layoutDefinition(samplePipelineDocument, {
       spacing: "dense",

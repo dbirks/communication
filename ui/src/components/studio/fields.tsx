@@ -69,6 +69,44 @@ export function TextField({
   );
 }
 
+/** A UI-font textarea that grows with its content (design 1g: the prompt /
+ * message-content fields are auto-growing textareas, never single-line). */
+export function AutoTextareaField({
+  id,
+  label,
+  hint,
+  readOnly,
+  value,
+  onCommit,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  readOnly: boolean;
+  value: unknown;
+  onCommit: (value: string) => void;
+}) {
+  const current = show(value);
+  const [draft, setDraft] = useState(current);
+  useEffect(() => setDraft(current), [current]);
+  const rows = Math.min(10, Math.max(2, Math.ceil(draft.length / 48)));
+  return (
+    <Field id={id} label={label} hint={hint} className="min-w-0 flex-1">
+      <Textarea
+        id={id}
+        rows={rows}
+        disabled={readOnly}
+        value={draft}
+        data-testid={`insp-${id}`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== current) onCommit(draft);
+        }}
+      />
+    </Field>
+  );
+}
+
 /** A multi-line field committing on blur only (Enter belongs to the text). */
 export function TextareaField({
   id,
@@ -399,6 +437,24 @@ export function RowsField({
                     />
                   );
                 }
+                if (rf.widget === "textarea") {
+                  return (
+                    <AutoTextareaField
+                      key={rf.key}
+                      id={wid}
+                      label={rf.label}
+                      readOnly={readOnly}
+                      value={cell(row, rf.key, rf.widget)}
+                      onCommit={(v) =>
+                        commit(
+                          rows.map((r, j) =>
+                            j === i ? { ...r, [rf.key]: v === "" ? undefined : v } : r,
+                          ),
+                        )
+                      }
+                    />
+                  );
+                }
                 return (
                   <TextField
                     key={rf.key}
@@ -547,7 +603,7 @@ export function JsonField({
   value: unknown;
   onCommit: (value: unknown) => void;
 }) {
-  const sourceKey = JSON.stringify(value ?? null);
+  const sourceKey = value === null || value === undefined ? "null" : JSON.stringify(value, null, 2);
   const [draft, setDraft] = useState(sourceKey === "null" ? "" : sourceKey);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {

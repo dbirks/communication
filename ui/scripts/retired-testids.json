@@ -1,0 +1,17 @@
+{
+  "studio-header-runs": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
+  "studio-header-assigned": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
+  "workflow-duplicate-*": "re-homed to RowMenu.testidFor() by the library-row-menu worker; ids still exist at runtime and are asserted by tests, but the static check only sees literal data-testid templates",
+  "workflow-move-folder-*": "re-homed to RowMenu.testidFor() by the library-row-menu worker; ids still exist at runtime and are asserted by tests, but the static check only sees literal data-testid templates",
+  "canvas-minimap-toggle": "design 1g: the React Flow default Controls/Map toggle were replaced by the compact '− + fit' canvas-controls group (canvas-zoom-in/-out/canvas-fit); the minimap itself was dropped with it",
+  "library-new-pipeline": "design 1b/1c: the inline NEW PIPELINE form is gone — creation is the New workflow dialog (new-workflow-dialog / new-workflow-form) opened by workflows-new-workflow or a workflow-starter-* card; the fields it kept under the same names are library-new-name-input, library-new-slug-input (behind new-workflow-id-change) and library-new-submit",
+  "library-new-template-failure": "design 1b/1c: the inline form's 'template draft was not created' banner is gone; the same failure state is the New workflow dialog's own seedFailure line (template-use-draft-failure, plus new-workflow-folder-failure for the folder PATCH)",
+  "library-new-template-retry": "design 1b/1c: the inline form's 'Retry the template draft' button is gone; the dialog's own retry is template-use-draft-retry",
+  "library-templates": "design 1b: the bottom STARTER WORKFLOWS panel is gone — the three starter cards above the list (workflow-starter-blank / workflow-starter-<template id>) are its replacement, and each click opens the New workflow dialog with that starter preselected",
+  "library-templates-note": "design 1b: the STARTER WORKFLOWS panel's one-line note is gone; the cards state their own step count and the read-only reason is workflow-starters-need-role",
+  "library-template-*": "design 1b: the panel's per-template rows (library-template-<id>, plus the library-template-<id>-needs-role line) are gone — replaced by the starter cards workflow-starter-<id> and the dialog's starter cards new-workflow-template-<id>",
+  "template-*": "design 1b: the panel's per-template 'Use template' buttons and step counts (template-<id>-use, template-<id>-steps) are gone; a starter is now chosen as a card (new-workflow-template-<id>) and created by library-new-submit. The dialog keeps template-use-pipeline-failure and template-use-draft-retry under those same names",
+  "template-use-draft-failure": "design 1c: still rendered by NewWorkflowDialog, but its data-testid is now computed by a ternary ('new-workflow-folder-failure' | 'template-use-draft-failure'), so the static scan cannot see the literal — nothing was renamed or removed at runtime",
+  "workflow-draft-*": "design 1b: a row no longer prints its open-draft link line — 'Edit' (workflow-open-<slug>) opens the workflow page, whose OPEN DRAFT card carries the draft, its editor and its status",
+  "workflows-filter-project": "design 1b: the project <select> filter is replaced by the search field (workflows-search) plus the filter chips workflows-filter-all, workflows-filter-draft, workflows-used-in-<projectId> and workflows-filter-folder"
+}

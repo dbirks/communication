@@ -287,7 +287,14 @@ function specOf(raw: JsonSchema): Spec {
         return {
           key: k,
           label: labelFor(k),
-          widget: sub.widget === "object" || sub.widget === "kv" ? "text" : sub.widget,
+          widget:
+            sub.widget === "object" || sub.widget === "kv"
+              ? "text"
+              : // Design 1g: free-text row cells (message `content`) are
+                // auto-growing textareas, not truncated single-line inputs.
+                k === "content"
+                ? "textarea"
+                : sub.widget,
           enum: sub.enum,
         };
       });

@@ -7,7 +7,7 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { CSSProperties, KeyboardEvent } from "react";
 import { useState } from "react";
-import { canvasDirection } from "./flowModel";
+import { kindGlyph } from "../../lib/pipeline/definition";
 import { StepPicker } from "./StepPicker";
 
 export type StepNodeRender = {
@@ -22,6 +22,9 @@ export type StepNodeRender = {
   stale: boolean;
   highlight: boolean;
   status: { state: string; label: string } | null;
+  /** The node's own config (the kind's fields) — the one key fact the second
+   * line carries; absent when the kind has none / the doc has none. */
+  config?: Record<string, unknown>;
   /** Layout direction for the handle positions; falls back to the canvas's last layout. */
   direction?: "LR" | "TB";
   onSelect: () => void;
@@ -69,32 +72,71 @@ function statusGlyph(state: string): string {
 const chip =
   "rounded-full border border-line bg-fill px-1.5 py-0.5 text-[10px] leading-4 text-muted";
 
-/** Handles stay in the DOM in every mode — a read-only canvas still needs
- * them for edge geometry (an edge with no resolvable handle is dropped) —
- * but they are invisible and inert when they cannot be dragged. */
+/** The ONE key fact a canvas node carries beyond glyph + kind word: the
+ * kind's own config value — the model name, the command, the approver, the
+ * artifact — or nothing. Absent → the second line is glyph + kind word only;
+ * nothing is ever invented (design 1g).
+ */
+function keyFactFor(kind: string, config: Record<string, unknown> | undefined): string | null {
+  const c = config ?? {};
+  const text = (v: unknown): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
+  switch (kind) {
+    case "model.chat":
+      return text(c.model);
+    case "process.exec": {
+      const cmd = text(c.executable);
+      if (cmd) return cmd;
+      const args = Array.isArray(c.args)
+        ? c.args.filter((a): a is string => typeof a === "string")
+        : [];
+      return text(args[0]) ?? null;
+    }
+    case "human.approval":
+      return text(c.approver) ?? (Array.isArray(c.approverRoles) ? text(c.approverRoles[0]) : null);
+    case "artifact.publish":
+      return text(c.name);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Handles stay in the DOM in every mode — a read-only canvas still needs
+ * them for edge geometry (an edge with no resolvable handle is dropped).
+ * Design 1g draws no handle dots: the interactive ones stay invisible at
+ * rest and only appear when the pointer reaches them (hover = "connecting");
+ * they keep full pointer events so a connection drag still starts there.
+ */
 const handleClass = (interactive: boolean): string =>
   interactive
-    ? "!h-2 !w-2 !border-line-strong !bg-surface"
+    ? "!h-2 !w-2 !border-transparent !bg-transparent opacity-0 hover:opacity-100 hover:!border-line-strong hover:!bg-surface"
     : "!h-2 !w-2 !border-transparent !bg-transparent opacity-0 !pointer-events-none";
 
 export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
   const { data, selected } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
-  // The layout's direction picks where the edges attach: left/right for a
-  // left-to-right graph, top/bottom for a top-to-bottom one. Edges resolve
-  // against these handle positions, so handles that do not match the layout
-  // would connect the wrong corners.
-  const direction = data.direction ?? canvasDirection();
-  const inPosition = direction === "TB" ? Position.Top : Position.Left;
-  const outPosition = direction === "TB" ? Position.Bottom : Position.Right;
+  // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
+  // the node's top and bottom in every canvas view that renders a definition
+  // graph, so a dragged step keeps its bottom→top connections.
+  const inPosition = Position.Top;
+  const outPosition = Position.Bottom;
 
+  // Design 1g keeps exactly two lines in the node: the id, and glyph + kind
+  // word + one key fact. The `when` guard is not drawn on the node — it
+  // stays visible in the inspector and the edge labels.
   const pick = (event: KeyboardEvent) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       data.onSelect();
     }
   };
+
+  const keyFact = keyFactFor(data.kind, data.config);
+  const secondLine = keyFact
+    ? `${kindGlyph(data.kind)} ${data.kindWord} · ${keyFact}`
+    : `${kindGlyph(data.kind)} ${data.kindWord}`;
 
   return (
     <div
@@ -116,6 +158,7 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           selected ? "border-accent shadow-[0_0_0_2px_var(--color-accent-ring)]" : "border-line",
           data.stale ? "opacity-70" : "",
         ].join(" ")}
+        style={{ width: 200, height: 52 }}
       >
         <div
           className="truncate text-[13px] font-semibold leading-none text-ink"
@@ -141,24 +184,29 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         )}
         <div className="flex items-center gap-1.5">
           <span className="truncate text-[11px] leading-none text-ink-2" title={data.label}>
-            {data.kindWord}
+            {secondLine}
           </span>
           {data.deferred && <span className={chip}>{data.deferred}</span>}
         </div>
-        {data.when && !data.status && (
-          <div className="truncate text-[10px] italic text-faint" title={data.when}>
-            when {data.when}
-          </div>
-        )}
       </div>
 
       {data.terminal && interactive && data.onAddAfter && (
-        <div className="absolute -bottom-2.5 left-1/2 -translate-x-1/2">
+        <div
+          className="absolute left-1/2 flex -translate-x-1/2 flex-col items-center"
+          style={{ top: "100%" }}
+        >
+          {/* Short dashed stub below the sink, on the node's vertical axis
+              (design 1g); the "+" sits at the end of the stub, never on the
+              node's edge. */}
+          <span
+            aria-hidden="true"
+            className="h-[10px] w-px border-l border-dashed border-line-strong"
+          />
           <button
             type="button"
             data-testid={`add-after-${data.id}`}
             aria-label={`Add a step after ${data.id}`}
-            className="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong bg-surface text-xs leading-none text-ink-2 hover:border-accent hover:text-accent"
+            className="-mt-px flex h-[22px] w-[22px] items-center justify-center rounded-full border-[2px] border-dashed border-line-strong bg-surface text-sm leading-none text-ink-2 hover:border-accent hover:text-accent hover:shadow-[0_0_0_2px_var(--color-accent-ring)]"
             // The "+" opens the picker and NOTHING else: without the
             // pointerdown guard the gesture reaches the node and the step
             // gets selected on the same click that opens the picker.
@@ -214,9 +262,10 @@ export function ScopeNode(props: NodeProps<Node<ScopeNodeRender>>) {
   const { data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
   const interactive = !data.readOnly && !data.stale;
-  const direction = data.direction ?? canvasDirection();
-  const inPosition = direction === "TB" ? Position.Top : Position.Left;
-  const outPosition = direction === "TB" ? Position.Bottom : Position.Right;
+  // The Studio canvas is ALWAYS top-to-bottom (design 1g): the handles ride
+  // the scope group's top and bottom (a scope is a node like any other).
+  const inPosition = Position.Top;
+  const outPosition = Position.Bottom;
 
   const style: CSSProperties = {
     // The dagre group box already reserves the header bar; the border just

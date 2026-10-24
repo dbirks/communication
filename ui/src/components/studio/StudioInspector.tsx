@@ -12,7 +12,7 @@
  * user is done with a field. `readOnly` disables every widget and makes the
  * inspector display-only.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { isMap, parse, parseDocument, type YAMLMap } from "yaml";
 import { Link } from "react-router";
 import {
@@ -23,7 +23,7 @@ import {
   type GraphModel,
   type OpResult,
 } from "../../lib/pipeline/graphDoc";
-import { DEFERRED_KINDS } from "../../lib/pipeline/definition";
+import { DEFERRED_KINDS, kindGlyph, kindWord } from "../../lib/pipeline/definition";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "../../api/client";
 import { useAgentProfiles, useSystemSandbox } from "../../api/queries";
@@ -40,9 +40,9 @@ import {
   kindDisplayName,
   JSON_FALLBACK_HINT,
   type InspectorField,
-  type InspectorSection,
 } from "./inspectorSchema";
 import {
+  AutoTextareaField,
   BoolField,
   DepsChips,
   JsonField,
@@ -56,6 +56,7 @@ import {
   TextareaField,
 } from "./fields";
 import { Field, Input } from "../ds/Field";
+import { Button } from "../ds/Button";
 import { routes } from "../../lib/routes";
 import { KindChip } from "../m4/KindChip";
 
@@ -127,7 +128,7 @@ function PipelinePanel({
   const description = getAt(doc, ["metadata", "description"]);
   const inputs = getAt(doc, ["spec", "inputs"]);
   return (
-    <div className="space-y-[12px]" data-testid="insp-pipeline">
+    <div className="min-h-full space-y-[12px] p-[16px]" data-testid="insp-pipeline">
       <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
         Pipeline
       </p>
@@ -596,6 +597,7 @@ export function StudioInspector({
   text,
   readOnly,
   apply,
+  onDelete,
 }: {
   model: GraphModel;
   nodeId: string | null;
@@ -604,8 +606,13 @@ export function StudioInspector({
   text: string;
   readOnly: boolean;
   apply: (op: (text: string) => OpResult) => void;
+  /** The page's delete op — the inspector's Delete runs the same one as the keyboard. */
+  onDelete?: (id: string) => void;
 }) {
   const [renameError, setRenameError] = useState<string | null>(null);
+  /** Design 1g: model.chat's advanced fields (retries, timeout and outputs,
+   *  response schema) start collapsed behind their disclosure. */
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const parsed = useMemo(() => {
     try {
       const d: unknown = parse(text);
@@ -644,6 +651,99 @@ export function StudioInspector({
   const kind = node.kind;
   const deferred = DEFERRED[kind];
   const sections = fieldsFor(kind);
+  const prevId = node.dependsOn[0] ?? null;
+  // Narrowed copies: the guards above have excluded null, but the render
+  // helper below is a closure where TS would not carry the narrowing.
+  const nodeIdStr = nodeId;
+  const docObj = doc;
+  const nodeObjRef = nodeObj;
+
+  /** Design 1g: the fields that hide behind the model.chat disclosure —
+   *  retries, timeout and outputs, the response schema. */
+  const isAdvanced = (field: InspectorField): boolean =>
+    kind === "model.chat" &&
+    (field.path[0] === "retry" ||
+      field.path[0] === "onFailure" ||
+      field.path[0] === "timeoutSeconds" ||
+      field.path[0] === "outputs" ||
+      (field.path[0] === "config" && field.path[1] === "responseSchema"));
+
+  /** One field onto its widget; the agent prompt is the auto-growing UI-font
+   *  textarea (design 1g: "WHAT SHOULD IT DO?"), everything else rides the
+   *  schema widget. */
+  function renderField(field: InspectorField, fid: string) {
+    if (kind === "agent.acp" && field.path[1] === "profile") {
+      return (
+        <div key={fid} className="space-y-[6px]">
+          <ProfileSelect
+            readOnly={readOnly}
+            value={getAt(nodeObj, ["config", "profile"])}
+            onCommit={(v) => commit(field, v)}
+            model={model}
+            nodeId={nodeIdStr}
+            doc={docObj}
+          />
+          <p className="font-mono text-[11px] text-faint">
+            Model is chosen by the profile's launcher.
+          </p>
+          <SaveAsStep
+            key={`save-step-${nodeIdStr}`}
+            nodeId={nodeIdStr}
+            kind={kind}
+            config={getAt(nodeObj, ["config"])}
+            readOnly={readOnly}
+          />
+        </div>
+      );
+    }
+    if (kind === "agent.acp" && field.path[0] === "config" && field.path[1] === "prompt") {
+      return (
+        <AutoTextareaField
+          key={fid}
+          id={fid}
+          label="What should it do?"
+          hint={field.help}
+          readOnly={readOnly}
+          value={getAt(nodeObj, field.path)}
+          onCommit={(v) => commit(field, v)}
+        />
+      );
+    }
+    return (
+      <FieldControl
+        key={fid}
+        field={field}
+        id={fid}
+        nodeObj={nodeObjRef}
+        model={model}
+        nodeId={nodeIdStr}
+        readOnly={readOnly}
+        commit={commit}
+      />
+    );
+  }
+
+  const mainBlocks: ReactNode[] = [];
+  const advancedBlocks: ReactNode[] = [];
+  for (const section of sections) {
+    const kept = section.fields.filter((field) => !isAdvanced(field));
+    if (kept.length > 0) {
+      mainBlocks.push(
+        <section key={section.title} className="space-y-[8px]">
+          <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+            {section.title}
+          </p>
+          {section.note ? <p className="font-mono text-[11px] text-faint">{section.note}</p> : null}
+          {kept.map((field) => renderField(field, field.path.join("-")))}
+        </section>,
+      );
+    }
+    for (const field of section.fields) {
+      if (isAdvanced(field)) {
+        advancedBlocks.push(renderField(field, field.path.join("-")));
+      }
+    }
+  }
 
   function commit(field: InspectorField, value: unknown) {
     if (readOnly) return;
@@ -680,20 +780,44 @@ export function StudioInspector({
   }
 
   return (
-    <div className="space-y-[14px]" data-testid="insp-node">
-      {/* Header: what this step is, and what it's called. */}
+    // Design 1g: 16px padding, the header row (glyph + step id 15/600 +
+    // mono `kind · after <prev>` + Delete) over a divider, then the fields.
+    <div className="min-h-full space-y-[14px] p-[16px]" data-testid="insp-node">
       <div className="space-y-[8px]" data-testid="insp-header">
-        <div className="flex flex-wrap items-center gap-[6px]">
-          <KindChip kind={kind} deferredTo={deferred} testid="insp-kind-chip" />
-          <span className="font-mono text-[12.5px] font-semibold text-ink">
-            {kindDisplayName(kind)}
+        <div className="flex items-center gap-[8px] border-b border-line-soft pb-[12px]">
+          <span aria-hidden="true" className="font-mono text-[14px] leading-none text-ink-2">
+            {kindGlyph(kind)}
           </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[15px] font-semibold leading-tight text-ink">
+              <span data-testid="insp-node-id-label">{nodeId}</span>
+            </div>
+            <div className="truncate font-mono text-[10.5px] text-muted" data-testid="insp-after">
+              {prevId ? `${kindWord(kind)} · after ${prevId}` : kindWord(kind)}
+            </div>
+          </div>
+          <Button
+            variant="danger"
+            compact
+            onClick={() => onDelete?.(nodeId)}
+            data-testid="insp-delete"
+          >
+            Delete
+          </Button>
         </div>
+        {/* The e2e suite and screen readers read the kind word from the chip
+            — keep it in the DOM, visually superseded by the glyph above. */}
+        <span className="sr-only">
+          <KindChip kind={kind} deferredTo={deferred} testid="insp-kind-chip" />
+        </span>
         {deferred ? (
           <p className="font-mono text-[11px] text-faint" data-testid="insp-deferred">
             Not runnable yet — {kind} runs in {deferred}. These fields still write the YAML.
           </p>
         ) : null}
+      </div>
+
+      <div className="space-y-[12px]">
         <TextField
           id="node-id"
           label="Node id"
@@ -722,65 +846,22 @@ export function StudioInspector({
             {renameError}
           </p>
         ) : null}
-      </div>
 
-      {/* The kind's config, then the fields every node shares. */}
-      {sections.map((section: InspectorSection) => (
-        <section
-          key={section.title}
-          className="space-y-[8px] border-t border-line pt-[10px] first:border-t-0"
-        >
-          <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-            {section.title}
-          </p>
-          {section.note ? <p className="font-mono text-[11px] text-faint">{section.note}</p> : null}
-          {section.fields.map((field) => {
-            const fid = field.path.join("-");
-            if (kind === "agent.acp" && field.path[1] === "profile") {
-              return (
-                <div key={fid} className="space-y-[6px]">
-                  <ProfileSelect
-                    readOnly={readOnly}
-                    value={getAt(nodeObj, ["config", "profile"])}
-                    onCommit={(v) => commit(field, v)}
-                    model={model}
-                    nodeId={nodeId}
-                    doc={doc}
-                  />
-                  <p className="font-mono text-[11px] text-faint">
-                    Model is chosen by the profile's launcher.
-                  </p>
-                  <SaveAsStep
-                    key={`save-step-${nodeId}`}
-                    nodeId={nodeId}
-                    kind={kind}
-                    config={getAt(nodeObj, ["config"])}
-                    readOnly={readOnly}
-                  />
-                </div>
-              );
-            }
-            // 4b: the agent prompt field reads as "What should it do?"
-            // (label only — the field, its widget and its op are unchanged).
-            const shown =
-              kind === "agent.acp" && field.path[0] === "config" && field.path[1] === "prompt"
-                ? { ...field, label: "What should it do?" }
-                : field;
-            return (
-              <FieldControl
-                key={fid}
-                field={shown}
-                id={fid}
-                nodeObj={nodeObj}
-                model={model}
-                nodeId={nodeId}
-                readOnly={readOnly}
-                commit={commit}
-              />
-            );
-          })}
-        </section>
-      ))}
+        {mainBlocks}
+
+        {advancedBlocks.length > 0 ? (
+          <details
+            data-testid="insp-advanced-disclosure"
+            className="border-t border-line pt-[8px]"
+            onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
+          >
+            <summary className="flex cursor-pointer items-center gap-[6px] font-mono text-[12px] text-accent">
+              {advancedOpen ? "▾" : "›"} Retries, timeout and outputs
+            </summary>
+            <div className="mt-[10px] space-y-[8px]">{advancedBlocks}</div>
+          </details>
+        ) : null}
+      </div>
     </div>
   );
 }

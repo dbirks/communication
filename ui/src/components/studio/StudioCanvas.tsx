@@ -13,8 +13,6 @@
 import "@xyflow/react/dist/style.css";
 import {
   Background,
-  Controls,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
@@ -26,8 +24,10 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type NodeMouseHandler,
 } from "@xyflow/react";
 import {
+  findNode,
   scopeKey,
   type GraphEdge,
   type GraphModel,
@@ -41,6 +41,7 @@ import {
   type InsertableEdgeRender,
 } from "./edges";
 import { ScopeNode, StepNode, type ScopeNodeRender, type StepNodeRender } from "./nodes";
+import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
 import { PALETTE_DRAG_TYPE } from "./StudioPalette";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
@@ -79,6 +80,9 @@ export interface StudioCanvasProps {
   focusNodeId?: string | null;
   onConnect?(from: string, to: string): void;
   onDelete?(ids: string[]): void;
+  /** Duplicate a step — the selected node's context/selection menu calls it
+   * with the definition node id (the Studio page wires it to its undoable op). */
+  onDuplicate?: (id: string) => void;
   canConnect?(from: string, to: string): { ok: true } | { ok: false; reason: string };
 }
 
@@ -141,7 +145,7 @@ const edgeTypes = {
 
 /** The pointer must be within this many px of the segment to count as an
  * "insert here" drop (design doc §3.2). The smooth-step path bows well off the
- * straight segment in a tight left-to-right layout (a short hop with a rank
+ * straight segment in a tight top-to-bottom layout (a short hop with a rank
  * offset bows ~30px at its midpoint), and the drop preview is drawn AT the
  * path midpoint — so the radius must comfortably clear the bow, not just the
  * 24px the doc names for a straight edge. */
@@ -269,6 +273,29 @@ function isMeasuredBox(box: { width: number | undefined; height: number | undefi
   return isPositiveFinite(box.width) && isPositiveFinite(box.height);
 }
 
+/** The node's own config object from the parsed document, for the canvas
+ * node's one key fact (design 1g) — the kind's model / command / approver /
+ * artifact. Empty when the id is unknown or the doc has no such node. */
+function nodeConfigOf(
+  document: unknown,
+  model: GraphModel,
+  nodeId: string,
+): Record<string, unknown> {
+  const node = findNode(model, nodeId);
+  if (!node) return {};
+  let cur: unknown = document;
+  for (const part of node.pointer.split("/")) {
+    if (part === "") continue;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown> | null)?.[part];
+    if (cur === null || cur === undefined) return {};
+  }
+  if (cur === null || typeof cur !== "object" || Array.isArray(cur)) return {};
+  const cfg = (cur as Record<string, unknown>).config;
+  return cfg && typeof cfg === "object" && !Array.isArray(cfg)
+    ? (cfg as Record<string, unknown>)
+    : {};
+}
+
 function CanvasInner({
   model,
   document,
@@ -287,10 +314,11 @@ function CanvasInner({
   onAddAfter,
   onConnect,
   onDelete,
+  onDuplicate,
   canConnect,
   focusNodeId,
 }: StudioCanvasProps) {
-  const { setViewport } = useReactFlow();
+  const { setViewport, zoomIn, zoomOut } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The pane the graph fills — observed so a dock drag/collapse refits. */
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -301,13 +329,7 @@ function CanvasInner({
   const [preview, setPreview] = useState<{ edgeId: string; label: string } | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const [canvasPickerOpen, setCanvasPickerOpen] = useState(false);
-  const [stepsOpen, setStepsOpen] = useState(true);
-  // The minimap is opt-in: at fit-zoom it paints a solid rectangle over the
-  // graph content (it covered `publish_needs_attention` in the Workbench),
-  // so it stays hidden until the user asks for it from the controls — and
-  // never renders below 1280px wide, where the pane is too small for it to
-  // add anything.
-  const [miniMapOpen, setMiniMapOpen] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
 
   // The page's callbacks are NOT stable (the page re-creates `handleAddAfter`
   // and the inline `onInsertOnEdge` arrow on every render). The rebuild effect
@@ -319,9 +341,11 @@ function CanvasInner({
   const onSelectRef = useRef(onSelect);
   const onAddAfterRef = useRef(onAddAfter);
   const onInsertOnEdgeRef = useRef(onInsertOnEdge);
+  const onDuplicateRef = useRef(onDuplicate);
   onSelectRef.current = onSelect;
   onAddAfterRef.current = onAddAfter;
   onInsertOnEdgeRef.current = onInsertOnEdge;
+  onDuplicateRef.current = onDuplicate;
 
   // The node content's click handler calls `onSelect` unconditionally (it has
   // no access to the event). While Shift is held, React Flow's own click
@@ -398,6 +422,64 @@ function CanvasInner({
     );
   }, [base]);
 
+  // The selected node's context/selection menu (design 1g): a small menu to
+  // the RIGHT of the single selected step, TOP-ALIGNED with it, 8px gap —
+  // Duplicate / Delete — plus the same actions on right-click (context menu
+  // at the pointer). The menu is kept in FLOW coordinates: it must track the
+  // node through any pan/zoom, so its screen position is re-derived from the
+  // rendered viewport transform every time that transform changes.
+  const [menu, setMenu] = useState<{ fx: number; fy: number; nodeId: string } | null>(null);
+  const [menuScreen, setMenuScreen] = useState<{ x: number; y: number } | null>(null);
+  const menuFocusRef = useRef<HTMLElement | null>(null);
+
+  const selectedMenuNodeId = useMemo(() => {
+    if (readOnly || stale) return null;
+    if (selectedId === null) return null;
+    if (selectedIds !== undefined && selectedIds.length > 1) return null;
+    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
+    return node && node.type === "step" ? node.data.nodeId : null;
+  }, [readOnly, stale, selectedId, selectedIds, base]);
+
+  const selectedMenuBox = useMemo(() => {
+    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
+    if (!node) return null;
+    return nodeBoxes[node.id] ?? null;
+  }, [base, nodeBoxes, selectedId]);
+
+  useEffect(() => {
+    if (selectedMenuNodeId === null) {
+      setMenu(null);
+      setMenuScreen(null);
+      return;
+    }
+    const box = selectedMenuBox;
+    if (!box) return;
+    // Remember what had focus before the menu took it, so closing hands it back.
+    // `globalThis.document` — the component's own `document` prop shadows
+    // the global.
+    const active = globalThis.document.activeElement;
+    if (active instanceof HTMLElement) {
+      menuFocusRef.current = active;
+    }
+    // Design 1g: right of the node with an 8px gap, top-aligned with it. The
+    // box is stored at the node's RIGHT EDGE; the 8px gap is added in SCREEN
+    // pixels so it stays 8px at any zoom.
+    setMenu({ fx: box.x + box.width, fy: box.y, nodeId: selectedMenuNodeId });
+  }, [selectedMenuNodeId, selectedMenuBox]);
+
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    const el = menuFocusRef.current;
+    menuFocusRef.current = null;
+    if (el instanceof HTMLElement) el.focus();
+  }, []);
+
+  const openMenuAt = useCallback((x: number, y: number, nodeId: string) => {
+    const active = globalThis.document.activeElement;
+    menuFocusRef.current = active instanceof HTMLElement ? active : null;
+    setMenu({ fx: x, fy: y, nodeId });
+  }, []);
+
   // Standard controlled pattern: apply every change (position, dimensions,
   // select, …) so the `nodes` state tracks React Flow's internal store —
   // including the `selected` flag, which the rebuild carries forward so a
@@ -461,6 +543,17 @@ function CanvasInner({
     (clientX: number, clientY: number) =>
       nearestEdge(nodeBoxes, edgeQuery, clientToFlow(clientX, clientY), DROP_EDGE_RADIUS_PX),
     [nodeBoxes, edgeQuery, clientToFlow],
+  );
+
+  const onNodeContextMenu: NodeMouseHandler<Node> = useCallback(
+    (event, node) => {
+      if (readOnly) return;
+      const id = (node.data as { id?: string }).id;
+      if (typeof id !== "string") return;
+      const flow = clientToFlow(event.clientX, event.clientY);
+      openMenuAt(flow.x, flow.y, id);
+    },
+    [readOnly, clientToFlow, openMenuAt],
   );
 
   const onDragOver = useCallback(
@@ -610,6 +703,7 @@ function CanvasInner({
         emptyBody: scope.emptyBody,
         headerText: scope.headerText ?? `${scope.label} · ${scope.nodeId}`,
         loopNote: scope.loopNote,
+        config: nodeConfigOf(document, model, scope.nodeId),
         onAddInside: scope.emptyBody
           ? (kind: string) => onAddAfterRef.current?.(scope.nodeId, scope.scope, kind)
           : null,
@@ -705,6 +799,48 @@ function CanvasInner({
     [],
   );
 
+  // The menu's pane-absolute position, re-derived from the rendered viewport
+  // transform (flow → screen). While the menu is open, a MutationObserver on
+  // the viewport re-derives it on every pan/zoom, so the menu never drifts
+  // from its node.
+  const updateMenuScreen = useCallback(() => {
+    if (menu === null) return;
+    const t = parseViewportTransform(viewportEl()?.style.transform ?? null);
+    const zoom = t?.zoom ?? 1;
+    const tx = t?.x ?? 0;
+    const ty = t?.y ?? 0;
+    setMenuScreen({ x: menu.fx * zoom + tx + 8, y: menu.fy * zoom + ty });
+  }, [menu, viewportEl]);
+
+  useEffect(() => {
+    if (menu === null) return;
+    updateMenuScreen();
+    const el = viewportEl();
+    if (!el || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(updateMenuScreen);
+    observer.observe(el, { attributes: true, attributeFilter: ["style"] });
+    return () => observer.disconnect();
+  }, [menu, updateMenuScreen, viewportEl]);
+
+  // Click-away closes the menu WITHOUT swallowing the gesture: an invisible
+  // overlay over the whole pane used to make the canvas inert whenever a
+  // step was selected (the menu is open by selection) — edge "+"s, nodes and
+  // drags all hit the overlay first. A capture-phase pointerdown outside the
+  // menu closes it and lets the click through to its real target.
+  useEffect(() => {
+    if (menu === null) return;
+    const onPointerDown = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.("[data-testid='studio-node-menu']")) return;
+      // The dismissing click owns focus from here on; do not steal it back.
+      menuFocusRef.current = null;
+      setMenu(null);
+      setMenuScreen(null);
+    };
+    globalThis.document.addEventListener("pointerdown", onPointerDown, true);
+    return () => globalThis.document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [menu]);
+
   /** Fit the graph into the pane. Returns false when the guard refused
    * (zero-size pane, unmeasured boxes) — the caller retries on the next
    * trigger; a non-finite viewport is never applied. */
@@ -770,7 +906,6 @@ function CanvasInner({
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = () => {
-      console.log("[vp-debug] wheel fired");
       userMovedRef.current = true;
     };
     el.addEventListener("wheel", onWheel, { passive: true });
@@ -842,17 +977,6 @@ function CanvasInner({
     const defNode = base.nodes.find((n) => n.data.nodeId === focusNodeId);
     const box = defNode ? nodeBoxes[defNode.id] : null;
     const pane = paneRef.current?.getBoundingClientRect();
-    console.log("[vp-debug] focus-effect", {
-      focusNodeId,
-      userMoved: userMovedRef.current,
-      focusedAlready: focusedRef.current,
-      allMeasured,
-      defFound: !!defNode,
-      defId: defNode?.id,
-      boxId: defNode?.id ? nodeBoxes[defNode.id] != null : null,
-      pane: pane ? [Math.round(pane.width), Math.round(pane.height)] : null,
-      baseNodeIds: base.nodes.map((n) => n.data.nodeId),
-    });
     if (!focusNodeId || userMovedRef.current) return;
     if (focusedRef.current === focusNodeId) return;
     if (!allMeasured) return;
@@ -865,14 +989,27 @@ function CanvasInner({
       zoom: 1,
     };
     const vp = centerOnBox(box, pane.width, pane.height, current.zoom);
-    console.log("[vp-debug] center", { current, vp });
     if (vp) {
       setViewport(vp, { duration: 0 });
       lastGoodRef.current = vp;
     }
   }, [focusNodeId, allMeasured, nodeSetKey, base, nodeBoxes, paneReal, setViewport, viewportEl]);
 
-  const deleteKeys = readOnly ? null : ["Backspace", "Delete"];
+  // Backspace/Delete removes the selected steps (design 1g: the ⌫ action).
+  // One window handler is the canvas's only key-delete path — React Flow's
+  // own deleteKeyCode would double-delete through onNodesDelete.
+  useEffect(() => {
+    if (readOnly) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Backspace" && event.key !== "Delete") return;
+      const ids = pageSelRef.current;
+      if (ids.length === 0) return;
+      event.preventDefault();
+      deleteGuarded(ids);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [readOnly, deleteGuarded]);
 
   return (
     <div
@@ -909,11 +1046,6 @@ function CanvasInner({
           onNodeDragStop={onNodeDragStop}
           onConnect={handleConnect}
           onMoveStart={() => {
-            console.log("[vp-debug] onMoveStart fired");
-            userMovedRef.current = true;
-          }}
-          onMove={() => {
-            console.log("[vp-debug] onMove fired");
             userMovedRef.current = true;
           }}
           // Multi-selection: Shift+click adds a step to the selection (the
@@ -927,31 +1059,58 @@ function CanvasInner({
             deleteGuarded(deleted.map((n) => (n.data as { id?: string }).id ?? "").filter(Boolean))
           }
           onEdgesDelete={(deleted) => deleteGuarded(deleted.map((e) => e.id))}
+          onNodeContextMenu={onNodeContextMenu}
           nodesDraggable={!readOnly && !stale}
           nodesConnectable={!readOnly && !stale}
-          deleteKeyCode={deleteKeys}
         >
           <Background />
-          <Controls position="bottom-right" />
-          {/* The "+"-less controls column is React Flow's; this small toggle
-           * sits directly above it and owns the (hidden-by-default) minimap. */}
-          <button
-            type="button"
-            data-testid="canvas-minimap-toggle"
-            aria-pressed={miniMapOpen}
-            onClick={() => setMiniMapOpen((open) => !open)}
-            className="absolute bottom-[108px] right-2 z-10 rounded border border-line-strong bg-surface px-1.5 py-0.5 text-[11px] leading-tight text-ink-2 shadow-sm hover:border-accent hover:text-accent"
+          {/* Design 1g canvas chrome: the React Flow default Controls (and
+              the "Map" minimap toggle / lock) are replaced by one compact
+              bottom-right group: − + fit (mono, ink border). `fit` runs the
+              canvas' own guarded fit, never React Flow's unguarded one. The
+              "React Flow" attribution stays: hiding it needs a Pro licence
+              we do not hold. */}
+          <div
+            className="absolute bottom-[10px] right-[10px] z-10 flex overflow-hidden rounded-[3px] border border-line-strong bg-surface"
+            data-testid="canvas-controls"
           >
-            Map
-          </button>
-          {miniMapOpen && (
-            <MiniMap
-              position="bottom-left"
-              className="hidden min-[1280px]:block"
-              pannable
-              zoomable
-            />
-          )}
+            <button
+              type="button"
+              aria-label="Zoom out"
+              data-testid="canvas-zoom-out"
+              onClick={() => zoomOut({ duration: 200 })}
+              className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            >
+              −
+            </button>
+            <button
+              type="button"
+              aria-label="Zoom in"
+              data-testid="canvas-zoom-in"
+              onClick={() => zoomIn({ duration: 200 })}
+              className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              aria-label="Fit the graph to the pane"
+              data-testid="canvas-fit"
+              onClick={() => {
+                userMovedRef.current = false;
+                safeFit();
+              }}
+              className="h-[26px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
+            >
+              fit
+            </button>
+          </div>
+          <span
+            className="pointer-events-none absolute bottom-[14px] left-[16px] z-10 font-mono text-[10.5px] text-faint"
+            data-testid="canvas-caption"
+          >
+            always top to bottom · lines leave the bottom and enter the top
+          </span>
         </ReactFlow>
         {stale && (
           <div
@@ -991,49 +1150,65 @@ function CanvasInner({
           <div
             role="status"
             data-testid="connect-refused"
-            className="absolute bottom-3 left-3 z-10 max-w-sm rounded-md border border-st-failed-pale-edge bg-st-failed-pale-body px-3 py-1.5 text-[12px] text-st-failed-pale-fg"
+            className="absolute bottom-[44px] left-3 z-10 max-w-sm rounded-md border border-st-failed-pale-edge bg-st-failed-pale-body px-3 py-1.5 text-[12px] text-st-failed-pale-fg"
           >
             {refused}
           </div>
         )}
+        {menu && menuScreen !== null && (
+          <NodeMenu
+            x={menuScreen.x}
+            y={menuScreen.y}
+            nodeId={menu.nodeId}
+            onDuplicate={onDuplicate}
+            onDelete={(ids) => onDelete?.(ids)}
+            onClose={closeMenu}
+          />
+        )}
       </div>
 
+      {/* Design 1g: the accessible steps list is a collapsed one-line mono
+          disclosure (`steps list · N`), never a panel eating canvas height. */}
       <section className="border-t border-line bg-surface" data-testid="canvas-step-list">
         <button
           type="button"
           aria-expanded={stepsOpen}
           aria-controls="studio-canvas-steps"
           onClick={() => setStepsOpen((open) => !open)}
-          className="w-full px-3 py-1.5 text-left text-[12px] font-semibold text-ink-2 hover:bg-fill"
+          className="w-full px-3 py-1 text-left font-mono text-[10.5px] text-muted hover:bg-fill"
         >
-          {stepsOpen ? "▾" : "▸"} Steps list ({model.nodes.length})
+          {stepsOpen ? "▾" : "▸"} steps list · {model.nodes.length}
         </button>
-        {stepsOpen && (
-          <ol id="studio-canvas-steps" className="max-h-48 overflow-y-auto px-3 pb-2">
-            {model.nodes.map((node) => (
-              <li key={`${scopeKey(node.scope)}\u0000${node.id}`}>
-                <button
-                  type="button"
-                  data-testid={`canvas-step-row-${node.id}`}
-                  onClick={() => onSelect(node.id)}
-                  className={[
-                    "w-full rounded-md px-2 py-1 text-left text-[12px] hover:bg-fill",
-                    selectedId === node.id ||
-                    (selectedIds !== undefined && selectedIds.includes(node.id))
-                      ? "bg-accent-wash text-accent"
-                      : "text-ink",
-                  ].join(" ")}
-                >
-                  <span className="font-medium">{node.label}</span>{" "}
-                  <span className="font-mono text-[11px] text-muted">{node.id}</span>
-                  {node.dependsOn.length > 0 && (
-                    <span className="text-faint"> after {node.dependsOn.join(", ")}</span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ol>
-        )}
+        {/* The rows stay in the DOM behind the disclosure (they are the
+            accessible name list the Workbench reads); the disclosure just
+            hides them visually, so they never eat canvas height. */}
+        <ol
+          id="studio-canvas-steps"
+          className={`max-h-48 overflow-y-auto px-3 pb-2 ${stepsOpen ? "" : "hidden"}`}
+        >
+          {model.nodes.map((node) => (
+            <li key={`${scopeKey(node.scope)}\u0000${node.id}`}>
+              <button
+                type="button"
+                data-testid={`canvas-step-row-${node.id}`}
+                onClick={() => onSelect(node.id)}
+                className={[
+                  "w-full rounded-md px-2 py-1 text-left text-[12px] hover:bg-fill",
+                  selectedId === node.id ||
+                  (selectedIds !== undefined && selectedIds.includes(node.id))
+                    ? "bg-accent-wash text-accent"
+                    : "text-ink",
+                ].join(" ")}
+              >
+                <span className="font-medium">{node.label}</span>{" "}
+                <span className="font-mono text-[11px] text-muted">{node.id}</span>
+                {node.dependsOn.length > 0 && (
+                  <span className="text-faint"> after {node.dependsOn.join(", ")}</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ol>
       </section>
     </div>
   );

@@ -29,21 +29,6 @@ export interface LayoutOverrides {
   nodes?: Record<string, { x: number; y: number }>;
 }
 
-/**
- * The direction the most recent `toFlow` run laid the graph out in.
- * The canvas builds its render-data object field by field (so the node
- * bodies can stay dumb); until that wiring carries `direction` through, the
- * handle positions read the layout's own last choice from here. `toFlow` is
- * the only writer and it runs synchronously in the canvas's memo before the
- * render that consumes it, so the value is always the one for the current
- * graph. Prefer `data.direction` whenever the canvas passes it.
- */
-let lastCanvasDirection: "LR" | "TB" = "LR";
-
-export function canvasDirection(): "LR" | "TB" {
-  return lastCanvasDirection;
-}
-
 /** Static payload of a step or scope node — the canvas adds handlers on top. */
 export interface FlowNodeData {
   /** The definition node id (the name an expression may refer to). */
@@ -64,14 +49,6 @@ export interface FlowNodeData {
   /** The layout's whole group bar string ("Repeat until … · max 4"). */
   headerText: string | null;
   loopNote: string | null;
-  /**
-   * The dagre direction the layout ran in — the handles ride it: `LR` puts
-   * the source on the right and the target on the left, `TB` on bottom and
-   * top. Edges resolve against these handle positions, so a graph laid out
-   * in one direction rendered with the other's handles would connect
-   * corners.
-   */
-  direction: "LR" | "TB";
 }
 
 export interface FlowNodeBase {
@@ -137,10 +114,11 @@ export type EdgeAxis = "h" | "v";
 /**
  * The edge path for a given routing axis, from the endpoint boxes — the
  * same geometry both the edge renderer and the label anchor use, so the
- * label always sits on the path it labels. `v` is the smooth-step S-curve
- * bottom→top (edges entering a scope box attach at the scope's TOP, leaving
- * at the BOTTOM); `h` is the single-bend connector between the facing sides
- * — a short hop between siblings laid out side by side in a scope body, not
+ * label always sits on the path it labels. `v` is orthogonal: down from the
+ * source's bottom edge to the target's top edge, across to the target's
+ * centre (edges entering a scope box attach at the scope's TOP, leaving at
+ * the BOTTOM); `h` is the single-bend connector between the facing sides —
+ * a short hop between siblings laid out side by side in a scope body, not
  * a loop that crosses the group border.
  */
 export function routeEdge(
@@ -149,16 +127,18 @@ export function routeEdge(
   axis: EdgeAxis,
 ): { path: string; x: number; y: number } {
   if (axis === "v") {
-    const [path, x, y] = getSmoothStepPath({
-      sourceX: source.x + source.width / 2,
-      sourceY: source.y + source.height,
-      sourcePosition: "bottom" as never,
-      targetX: target.x + target.width / 2,
-      targetY: target.y,
-      targetPosition: "top" as never,
-      borderRadius: 6,
-    });
-    return { path, x, y };
+    // Orthogonal, always: down from the source's bottom edge to the target's
+    // top edge, then across to the target's centre. The authoring canvas is
+    // always top-to-bottom (design 1g), so a dragged step keeps its
+    // bottom→top connection instead of wrapping around the sides (the old
+    // left-to-right handle layout).
+    const sx = source.x + source.width / 2;
+    const sy = source.y + source.height;
+    const tx = target.x + target.width / 2;
+    const ty = target.y;
+    const path =
+      tx === sx ? `M ${sx} ${sy} L ${sx} ${ty}` : `M ${sx} ${sy} L ${sx} ${ty} L ${tx} ${ty}`;
+    return { path, x: (sx + tx) / 2, y: (sy + ty) / 2 };
   }
   const toRight = target.x + target.width / 2 >= source.x + source.width / 2;
   const [path, x, y] = getSmoothStepPath({
@@ -175,9 +155,8 @@ export function routeEdge(
 
 /**
  * Which axis an edge routes on. An edge that touches a scope GROUP box
- * (enters or leaves the scope) always attaches at the scope's top/bottom for
- * a top-to-bottom canvas (or left/right for a left-to-right one) — the
- * group border is where the connection belongs. A step-to-step edge takes
+ * (enters or leaves the scope) always attaches at the scope's top/bottom —
+ * the group border is where the connection belongs. A step-to-step edge takes
  * the axis its endpoints actually sit on: siblings side by side in a scope
  * body (the layout lays scope bodies out OPPOSITE to the graph) are
  * horizontal neighbours, and a horizontal smooth-step between adjacent
@@ -245,6 +224,25 @@ function fallbackWhen(when: string): string {
 
 const scopeScopeKey = (n: GraphNode): string => JSON.stringify(n.scope);
 
+/**
+ * The rendered step box (design 1g): 200×52, radius 6, every step centred on
+ * one vertical axis in a straight chain. dagre places each step in a box
+ * sized to its label (108–288 wide); the canvas renders a fixed 200×52 box,
+ * so the flow normalises every step box to 200×52 RE-CENTRED on the dagre
+ * box — the chain's axis stays where the layout put it, and the edge router
+ * (which reads these boxes) attaches to the node the user actually sees.
+ */
+export const STEP_BOX = { width: 200, height: 52 } as const;
+
+function recenter(box: { x: number; y: number; width: number; height: number }) {
+  return {
+    x: box.x + (box.width - STEP_BOX.width) / 2,
+    y: box.y + (box.height - STEP_BOX.height) / 2,
+    width: STEP_BOX.width,
+    height: STEP_BOX.height,
+  };
+}
+
 /** The pill the edge label draws: 10px mono text, `px-1.5` each side, one row.
  * Over-estimated on purpose — the anchor clears more room than the pill needs,
  * and an under-clearance is exactly the overlap the check exists to forbid. */
@@ -275,7 +273,7 @@ function boxHits(a: AnchorBox, b: AnchorBox): boolean {
  * `.canvas-check.mjs`). `null` (the common case) keeps the raw midpoint.
  * The canvas builds its edge render-data field by field and does not forward
  * this, so `toFlow` also publishes it in a module registry keyed by edge id
- * (the same pattern as `lastCanvasDirection`) that the edge bodies read via
+ * (the same pattern as the anchor registry) that the edge bodies read via
  * `edgeLabelAnchor`.
  */
 export function clearLabelAnchor(
@@ -372,65 +370,22 @@ export function edgeLabelAnchor(id: string): { x: number; y: number } | null {
 }
 
 /**
- * The panes a canvas graph is fitted into. The Workbench run view with the
- * dock open (≈1020×610) and the Studio (≈920×776). Orientation is chosen
- * against both, not one: a graph that fits the wider pane can still land
- * under zoom 1.0 in the other, and the canvas has both lives.
+ * The authoring canvas layout. The Studio is ALWAYS top-to-bottom (design
+ * 1g): the dense TB cut is the only authoring layout, a scope body runs TB
+ * inside its group too (`subgraphRankdir: "same"`), and the handles / the edge
+ * router ride that constant. `toFlow` no longer picks a direction per graph.
  */
-export const CANVAS_PANES: readonly { width: number; height: number }[] = [
-  { width: 1020, height: 610 },
-  { width: 920, height: 776 },
-];
-
-/**
- * Which dagre direction the canvas should use for a graph it has laid out
- * both ways: the one whose *worst* fit-to-pane zoom across the known canvas
- * panes is the higher (fit zoom = min(paneW/W, paneH/H) — the graph is drawn
- * at exactly that scale before the canvas's maxZoom clamp). Ties stay `LR`:
- * the historic direction, whose handles and edge routing the canvas was
- * built around. A graph that is much wider than it is tall relative to the
- * pane aspect loses here — that is exactly when `TB` wins.
- */
-export function chooseCanvasOrientation(
-  laid: { LR: DefinitionGraphLayout; TB: DefinitionGraphLayout },
-  panes: readonly { width: number; height: number }[] = CANVAS_PANES,
-): "LR" | "TB" {
-  const worst = (direction: "LR" | "TB") =>
-    Math.min(
-      ...panes.map((p) =>
-        Math.min(p.width / laid[direction].width, p.height / laid[direction].height),
-      ),
-    );
-  const tb = worst("TB");
-  const lr = worst("LR");
-  return tb > lr ? "TB" : "LR";
-}
-
-/**
- * The canvas layout: dense spacing, scope clusters laid out opposite to the
- * graph (a scope body is a chain — sideways inside the group, not stacked),
- * and the direction picked per graph (see `chooseCanvasOrientation`): the
- * dense LR cut alone left the twin 12-node graph width-bound at zoom ≈ 0.6
- * in the Workbench — the generous rank gap was the price of edge-label room
- * at 1:1, and the pane is far wider than it is tall. `null` means the
- * document cannot be read as a pipeline (the canvas shows the YAML).
- */
-export function canvasLayout(document: unknown): {
-  laid: DefinitionGraphLayout;
-  direction: "LR" | "TB";
-} | null {
+export function canvasLayout(
+  document: unknown,
+): { laid: DefinitionGraphLayout; direction: "TB" } | null {
   if (document == null) return null;
-  const options = { spacing: "dense" as const, subgraphRankdir: "opposite" as const };
-  const lr = layoutDefinition(document as DefinitionDocument, { ...options, rankdir: "LR" });
-  if (!lr) return null;
-  const tb = layoutDefinition(document as DefinitionDocument, { ...options, rankdir: "TB" });
-  const direction: "LR" | "TB" = tb ? chooseCanvasOrientation({ LR: lr, TB: tb }) : "LR";
-  const laid = direction === "TB" ? (tb as DefinitionGraphLayout) : lr;
-  // The node bodies read the handle positions off the layout's direction;
-  // the canvas wiring carries `direction` through its render data only once
-  // StudioCanvas forwards it (see `canvasDirection`).
-  lastCanvasDirection = direction;
-  return { laid, direction };
+  const tb = layoutDefinition(document as DefinitionDocument, {
+    spacing: "dense",
+    rankdir: "TB",
+    subgraphRankdir: "same",
+  });
+  if (!tb) return null;
+  return { laid: tb, direction: "TB" };
 }
 
 /**
@@ -484,7 +439,7 @@ export function toFlow(
             width: Math.max(box.width, 208),
             height: Math.max(box.height, 96),
           }
-        : { x: box.x, y: box.y, width: box.width, height: box.height };
+        : recenter(box);
     }
     if (!size) continue;
     abs.set(flowId(node.scope, node.id), {
@@ -494,6 +449,34 @@ export function toFlow(
       width: size.width,
       height: size.height,
     });
+  }
+
+  // A scope GROUP box is grown (right/bottom only — its top-left stays where
+  // the layout put it, so child-relative positions are untouched) until it
+  // contains every direct child box. Children are re-centred 200×52 render
+  // boxes and can be WIDER than the dagre slot the cluster was sized to; a
+  // group that no longer contains its body nodes reads as the old
+  // "scope border slicing through a step" bug.
+  const GROUP_PAD = 8;
+  // Deepest scopes first, so a nested group is expanded before its parent.
+  const scopes = [...abs.values()]
+    .filter((e) => e.node.isScope)
+    .sort((a, b) => b.node.scope.length - a.node.scope.length);
+  for (const group of scopes) {
+    const parentKey = flowId(group.node.scope, group.node.id);
+    for (const entry of abs.values()) {
+      if (entry === group) continue;
+      const parent = parentFlowId(entry.node.scope);
+      if (parent !== parentKey) continue;
+      // Left/right/bottom only — the top edge is the group's header bar.
+      const overLeft = group.x - (entry.x - GROUP_PAD);
+      if (overLeft > 0) {
+        group.x -= overLeft;
+        group.width += overLeft;
+      }
+      group.width = Math.max(group.width, entry.x + entry.width + GROUP_PAD - group.x);
+      group.height = Math.max(group.height, entry.y + entry.height - group.y + GROUP_PAD);
+    }
   }
 
   const nodes: FlowNodeBase[] = [];
@@ -526,7 +509,6 @@ export function toFlow(
         emptyBody: isScope && groupByPointer.get(node.pointer) === undefined,
         headerText: headerTextFor(node, groupByPointer.get(node.pointer)),
         loopNote: groupByPointer.get(node.pointer)?.loopNote ?? null,
-        direction,
       },
     };
     nodes.push(base);
@@ -678,7 +660,7 @@ export interface NearestEdgeQuery {
  * The nearest edge within `maxDistance` of the pointer, measured to the
  * straight segment between the source's exit point and the target's entry
  * point — bottom-centre → top-centre for a mostly-vertical hop, right-centre
- * → left-centre otherwise (the layout is left-to-right).
+ * → left-centre otherwise (the authoring canvas is always top-to-bottom).
  */
 export function nearestEdge(
   nodeBoxes: Record<string, { x: number; y: number; width: number; height: number }>,

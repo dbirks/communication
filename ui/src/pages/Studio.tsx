@@ -42,9 +42,11 @@ import {
   toJsDocument,
   useStudioDraft,
 } from "../components/studio/useStudioDraft";
+import { duplicateNode } from "../lib/pipeline/duplicateNode";
 import { StudioCanvas } from "../components/studio/StudioCanvas";
 import { StudioPalette } from "../components/studio/StudioPalette";
 import { StudioInspector } from "../components/studio/StudioInspector";
+import { StudioStatusBar } from "../components/studio/StudioStatusBar";
 import { SelectionToolbar, type ScopeKind } from "../components/studio/SelectionToolbar";
 import { DiffPanel } from "../components/studio/DiffPanel";
 import { StudioHeader, type StudioView } from "../components/studio/StudioHeader";
@@ -167,6 +169,12 @@ export function StudioPage() {
     rerun: () => void;
   } | null>(null);
   const narrow = useIsNarrow();
+  // Design 1g phone rule: below 768px the canvas runs full width and the
+  // palette / inspector open as drawers over it (`Steps` / `Inspect` in the
+  // header). 768–1023 keeps the outline fallback below.
+  const phone = useIsNarrow("(max-width: 767px)");
+  const [phonePaletteOpen, setPhonePaletteOpen] = useState(false);
+  const [phoneInspectorOpen, setPhoneInspectorOpen] = useState(false);
 
   const canAuthor = hasLibraryRole(me.data);
   const status = draft.data?.status ?? "draft";
@@ -342,6 +350,29 @@ export function StudioPage() {
     publishReason = null;
   }
 
+  // Design 1g status bar: the SHORT reason in words, never the long server
+  // sentence (the full sentence stays available as its title).
+  const shortPublishReason = (() => {
+    if (status === "published") return "already published";
+    if (!canAuthor) return "read-only — nothing to publish";
+    const needs: string[] = [];
+    if (studio.dirty) needs.push("save");
+    if (status !== "valid") needs.push("validate");
+    if (needs.length === 0) return "ready to publish";
+    return `to publish: ${needs.join(", then ")}`;
+  })();
+
+  // The status bar's validation chip (the old header chip): the server's
+  // last verdict in words.
+  const validationChip = (() => {
+    const v = draft.data?.validation;
+    if (v === undefined || v === null) return null;
+    const verdict = viewValidate(v);
+    if (verdict === null) return null;
+    const findings = verdict.errors.length;
+    return verdict.valid ? `valid (${findings} findings)` : `invalid (${findings} findings)`;
+  })();
+
   async function onPublish() {
     if (publishReason !== null) return;
     setPublishFailure(null);
@@ -368,30 +399,6 @@ export function StudioPage() {
 
   const inspector = (
     <>
-      {studio.guard.pending === null && studio.conflict === null ? (
-        <>
-          <AssistantProposalBox
-            draftId={draftId}
-            version={studio.savedVersion}
-            text={studio.text}
-            readOnly={readOnly}
-            dirty={studio.dirty && highlight.length === 0}
-            previewing={highlight.length > 0}
-            onPreview={onPreview}
-            onApply={onProposalApply}
-            onDiscard={onProposalDiscard}
-          />
-          {highlight.length > 0 ? (
-            <p
-              className="border-b border-line bg-st-waiting-pale-body px-3 py-1.5 font-mono text-[10px] text-st-waiting-pale-fg"
-              data-testid="studio-proposal-caption"
-            >
-              {PROPOSAL_CAPTION}
-              {proposalSummary ? ` — ${proposalSummary}` : ""}
-            </p>
-          ) : null}
-        </>
-      ) : null}
       {selectedIds.length > 1 ? (
         <div
           className="rounded-[3px] border border-line bg-paper p-[8px]"
@@ -436,8 +443,34 @@ export function StudioPage() {
           text={studio.text}
           readOnly={readOnly}
           apply={studio.apply}
+          onDelete={(id) => handleDelete([id])}
         />
       )}
+      {studio.guard.pending === null && studio.conflict === null && selectedIds.length <= 1 ? (
+        <>
+          <AssistantProposalBox
+            draftId={draftId}
+            version={studio.savedVersion}
+            text={studio.text}
+            readOnly={readOnly}
+            dirty={studio.dirty && highlight.length === 0}
+            previewing={highlight.length > 0}
+            onPreview={onPreview}
+            onApply={onProposalApply}
+            onDiscard={onProposalDiscard}
+            footer
+          />
+          {highlight.length > 0 ? (
+            <p
+              className="border-b border-line bg-st-waiting-pale-body px-3 py-1.5 font-mono text-[10px] text-st-waiting-pale-fg"
+              data-testid="studio-proposal-caption"
+            >
+              {PROPOSAL_CAPTION}
+              {proposalSummary ? ` — ${proposalSummary}` : ""}
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </>
   );
   const canvas = (
@@ -458,6 +491,7 @@ export function StudioPage() {
       onAddAfter={readOnly ? undefined : handleAddAfter}
       onConnect={readOnly ? undefined : (from, to) => runOp((text) => connectOp(text, from, to))}
       onDelete={readOnly ? undefined : handleDelete}
+      onDuplicate={readOnly ? undefined : (id) => runOp((text) => duplicateNode(text, id))}
       canConnect={readOnly ? undefined : (from, to) => canConnectOf(model, from, to)}
     />
   );
@@ -537,20 +571,15 @@ export function StudioPage() {
   );
 
   return (
-    // Full-bleed route (App.tsx): the page owns the whole viewport — app bar
-    // (53px) + footer (37px) leave `calc(100vh - 91px)`, a definite height the
-    // column divides: header, then palette/canvas/inspector, each pane
-    // scrolling internally. No vertical page scroll, so the sticky app bar
-    // can never scroll over the canvas and intercept its controls.
-    <div
-      className="flex h-[calc(100vh-91px)] flex-col overflow-hidden bg-paper"
-      data-testid="studio-page"
-    >
+    // Full-bleed route (App.tsx): the page owns the whole viewport — the
+    // studio's header, palette/canvas/inspector and status bar fill it
+    // (`h-screen`, no page scroll), so the sticky app chrome can never scroll
+    // over the canvas and intercept its controls.
+    <div className="flex h-screen flex-col overflow-hidden bg-paper" data-testid="studio-page">
       <StudioHeader
         pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
-        pipelineId={pipelineId}
+        pipelineFolder={pipeline.data?.folder ?? null}
         savedVersion={studio.savedVersion || null}
-        validation={viewValidate(draft.data?.validation ?? null)}
         readOnly={readOnly}
         canUndo={studio.canUndo}
         canRedo={studio.canRedo}
@@ -561,13 +590,27 @@ export function StudioPage() {
         dirty={studio.dirty}
         onValidate={() => void runValidate()}
         validatePending={validate.isPending}
-        onDiff={() => setDiffOpen((open) => !open)}
-        diffOpen={diffOpen}
         onPublish={() => void onPublish()}
         publishPending={publish.isPending}
         publishReason={publishReason}
         view={view}
         onViewChange={setView}
+        phoneToggles={
+          phone
+            ? {
+                paletteOpen: phonePaletteOpen,
+                inspectorOpen: phoneInspectorOpen,
+                onTogglePalette: () => {
+                  setPhonePaletteOpen((open) => !open);
+                  setPhoneInspectorOpen(false);
+                },
+                onToggleInspector: () => {
+                  setPhoneInspectorOpen((open) => !open);
+                  setPhonePaletteOpen(false);
+                },
+              }
+            : null
+        }
       />
       {studio.guard.pending !== null ? (
         <div
@@ -650,7 +693,41 @@ export function StudioPage() {
         <FormError error={publishFailure} testid="studio-publish-error" />
       ) : null}
 
-      {narrow ? (
+      {phone ? (
+        /* Design 1g phone: the canvas runs full width, no side scroll; the
+           palette and the inspector open as drawers OVER the canvas. */
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <div className="flex h-full min-h-0 flex-col">
+            <SelectionToolbar
+              variant="toolbar"
+              selectedIds={selectedIds}
+              model={model}
+              readOnly={readOnly}
+              onWrap={handleWrap}
+              onUnwrap={handleUnwrap}
+            />
+            <div className="relative min-h-0 flex-1 overflow-hidden">
+              {view === "yaml" ? yaml : <div className="h-full min-h-0">{canvas}</div>}
+              {drawers}
+            </div>
+          </div>
+          {phonePaletteOpen ? (
+            <div className="absolute inset-y-0 left-0 z-20 w-[200px] border-r border-line bg-surface">
+              <StudioPalette
+                selectedId={selectedId}
+                readOnly={readOnly}
+                stale={!parseOk}
+                onAddAfter={readOnly ? undefined : handleAddAfter}
+              />
+            </div>
+          ) : null}
+          {phoneInspectorOpen ? (
+            <div className="absolute inset-y-0 right-0 z-20 w-[320px] overflow-auto border-l border-line bg-surface">
+              {inspector}
+            </div>
+          ) : null}
+        </div>
+      ) : narrow ? (
         <div className="grid flex-1 grid-cols-1 grid-rows-2 gap-3 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1">
           <div className="min-w-0 overflow-auto rounded-[3px] border border-line bg-surface p-3">
             {view === "yaml" ? (
@@ -676,7 +753,7 @@ export function StudioPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <aside className="w-[220px] shrink-0 overflow-auto border-r border-line bg-surface">
+          <aside className="w-[200px] shrink-0 overflow-auto border-r border-line bg-surface">
             <StudioPalette
               selectedId={selectedId}
               readOnly={readOnly}
@@ -704,11 +781,20 @@ export function StudioPage() {
             </div>
             {drawers}
           </main>
-          <aside className="w-[360px] shrink-0 overflow-auto border-l border-line bg-surface">
+          <aside className="w-[320px] shrink-0 overflow-auto border-l border-line bg-surface">
             {inspector}
           </aside>
         </div>
       )}
+
+      <StudioStatusBar
+        stepCount={model.nodes.length}
+        dirty={studio.dirty}
+        validation={validationChip}
+        diffLabel={newestSummary === null ? null : `diff vs r${newestSummary.revision_number}`}
+        onDiff={() => setDiffOpen((open) => !open)}
+        publishReason={shortPublishReason}
+      />
 
       {ambiguity !== null ? (
         <AmbiguityDialog
