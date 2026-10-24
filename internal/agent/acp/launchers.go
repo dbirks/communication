@@ -43,7 +43,11 @@ type Launcher struct {
 	// declared here rather than read out of the worker's environment because
 	// ADR-0019 D4 requires the launch env to be built from scratch, and
 	// because "the credential directory is one of these two" is launcher
-	// knowledge that belongs in the registry.
+	// knowledge that belongs in the registry. A name whose VALUE is the
+	// credential (the launcher's ApiKeyEnv or OAuthTokenEnv, ADR-0040/0059)
+	// is never enumerated as a location: AuthEnvFor excludes it so no worker
+	// stats or grants it and it never lands in the sandbox launcher's argv
+	// hop, which nono's audit journal records verbatim.
 	//
 	// What they cost is recorded, not hidden: whatever these point at is a
 	// read-write grant (a harness writes into its own config tree mid-turn),

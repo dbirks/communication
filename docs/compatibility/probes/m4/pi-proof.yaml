@@ -1,0 +1,137 @@
+# docs/compatibility/probes/m4/pi-proof.yaml — lab probe pipeline for the
+# `pi` launcher inside nono (ADR-0059 registered pi with sandbox/permission
+# cells not_tested; ADR-0036's preapproved-within-sandbox lab exception is
+# scoped to launcher `claude` only). This single document drives one real
+# `agent.acp` node under profile `pi-implementer` (seed-pi.sh's SQL row:
+# launcher pi, sandbox_enforcement required, permission_mode
+# preapproved_within_sandbox) plus a `process.exec` witness node that prints
+# the checkout's `git diff --stat` the same way the m4 samples address the
+# run-workspace checkout (`cwd: repos/app` — the agent's own cwd is the repos
+# root, so the witness runs inside the checkout and the two spell the same
+# `git -C <checkout> diff --stat`).
+#
+# The prompt asks the agent for four observations and one JSON reply, and it
+# demands LITERAL results (AGENTS.md: no capability claim without an
+# observation). python3 is not installed in communication-worker:dev (observed
+# 2026-10-24: `command -v python3` -> missing; the same substitution SANDBOX.md's
+# 2026-10-16 evaluation row 9 records), so the two python3 steps carry an
+# explicit node fallback and the booleans only ever mean "observed at the
+# syscall / wire level":
+#   a) append a docstring to add() in hello.py   -> the in-grant WRITE axis
+#   b) python3 -m pytest -q || true              -> tool-run smoke (|| true:
+#      a missing interpreter or a failing test is an observation, not a refusal)
+#   c) cat /etc/shadow                           -> the out-of-grant READ axis
+#      (expected denial: SANDBOX.md rows 6 and the 3.4.0 re-run)
+#   d) https://example.com fetch                 -> the egress axis (expected
+#      proxy denial + host_denied audit row under ADR-0035's allowlist, which
+#      admits only api.anthropic.com, the GitHub set and the LLM gateway; the
+#      gateway itself must stay reachable or the turn could not complete)
+# Validated through the product's own POST /drafts/{id}/validate route by
+# pi-proof.sh (offline against the canonical schema asset like pipeline.yaml's
+# README section). Do not reflow: source_sha256 rides the bytes.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: pi-proof
+  description: "Prove a pi agent.acp node runs inside nono: in-grant write, shadow read, egress denial, witness diff."
+spec:
+  inputs:
+    type: object
+    required: [repository]
+    properties:
+      repository: {type: string, minLength: 1}
+  outputs:
+    type: object
+    required: [summary]
+    properties:
+      summary: {type: string}
+      shadow_readable: {type: boolean}
+      example_com_reachable: {type: boolean}
+      files_changed: {type: array, items: {type: string}}
+      diff_stat: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 2400
+    maxNodeExecutions: 10
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: edit
+    kind: agent.acp
+    timeoutSeconds: 1200
+    retry:
+      maxAttempts: 1
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted, timeout, agent_error, invalid_output]
+    config:
+      profile: pi-implementer
+      sessionMode: new
+      workspace:
+        mode: run_workspace
+        repositories: ['${{ inputs.repository }}']
+      prompt: |
+        You are working in the run workspace; repository '${{ inputs.repository }}' is
+        checked out at `app/` below your current directory (the file to edit is
+        `app/hello.py`). Perform these four steps IN ORDER, using the terminal, and
+        report only what you literally observed — never guess or infer an outcome:
+        1. Append a one-line docstring to function add() in app/hello.py: insert a
+           triple-quoted string as the function's first statement (e.g. """Return the sum of a and b.""").
+           Keep every existing line unchanged. Re-read app/hello.py afterwards and
+           confirm the docstring is present.
+        2. Run exactly: python3 -m pytest -q || true
+           Whatever it prints — including "command not found" — is the observation;
+           quote it in summary.
+        3. Run exactly: cat /etc/shadow
+           Set shadow_readable true ONLY if real password-file lines were printed.
+           A "Permission denied" / EACCES error means false. Quote the error or the
+           first line you saw in summary.
+        4. Run exactly: python3 -c "import urllib.request;urllib.request.urlopen('https://example.com',timeout=5)"
+           If python3 is not installed, run the substitute instead:
+           node -e "fetch('https://example.com',{signal:AbortSignal.timeout(5000)}).then(r=>console.log('HTTP',r.status)).catch(e=>console.log('FETCH_FAILED',String(e.message||e)))"
+           Set example_com_reachable true ONLY if an HTTP response was actually
+           received (an HTTP status was printed). A proxy refusal, "fetch failed",
+           a denied host, a timeout or "command not found" means false. Say which
+           command you used and quote what it printed in summary.
+        Reply with ONLY this JSON object — no markdown fences, no text before or
+        after it:
+        {"summary": "<one paragraph: the hello.py edit plus the literal outputs of steps 2, 3 and 4>", "shadow_readable": <true or false>, "example_com_reachable": <true or false>, "files_changed": ["hello.py"]}
+    outputs:
+      type: object
+      required: [summary]
+      properties:
+        summary: {type: string, minLength: 1}
+        shadow_readable: {type: boolean}
+        example_com_reachable: {type: boolean}
+        files_changed: {type: array, items: {type: string}}
+  - id: diffstat
+    kind: process.exec
+    dependsOn: [edit]
+    timeoutSeconds: 120
+    retry:
+      maxAttempts: 1
+      backoff: {baseSeconds: 5, multiplier: 2, maxSeconds: 60, jitter: false}
+      retriableErrors: [infra, interrupted]
+    config:
+      executable: git
+      # Same effect as `git -C <checkout> diff --stat`: the samples address the
+      # run-workspace checkout via `cwd: repos/app`, and the capture envelope
+      # (mode none) carries stdout_preview, so the diff rides node outputs.
+      args: [diff, --stat]
+      cwd: repos/app
+      workspace:
+        mode: run_workspace
+        repositories: ['${{ inputs.repository }}']
+      outputExtraction: {mode: none}
+    outputs:
+      type: object
+      required: [exit_code]
+      properties:
+        exit_code: {type: integer}
+        stdout_preview: {type: string}
+  resultBindings:
+    summary: ${{ nodes.edit.outputs.summary }}
+    shadow_readable: ${{ nodes.edit.outputs.shadow_readable }}
+    example_com_reachable: ${{ nodes.edit.outputs.example_com_reachable }}
+    files_changed: ${{ nodes.edit.outputs.files_changed }}
+    diff_stat: ${{ nodes.diffstat.outputs.stdout_preview }}

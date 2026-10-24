@@ -223,6 +223,21 @@ func LaunchEnv(req EnvRequest) ([]string, error) {
 // set. A declared auth var that is absent is not an error here: whether the
 // launcher can run without it is the sandbox planner's question, and the answer
 // differs per launcher (ADR-0019 D4's credential custody gap).
+//
+// A variable the launcher declares as holding a credential VALUE — its
+// ApiKeyEnv (ADR-0059) or OAuthTokenEnv (ADR-0040) — is never emitted here.
+// Everything this function returns is treated by callers as a credential
+// LOCATION: the worker stats each enumerated value as a directory and grants
+// it, and under a sandbox the entries render into the launcher's `env
+// NAME=value` hop, which nono's audit journal records verbatim. An
+// auth-listed key would therefore either die in `os.Stat(<secret>)` with the
+// value embedded in the journalled error (observed in the M4 lab 2026-10-24:
+// conversation.turn.failed carried the gateway key as a "credential
+// directory" for launcher pi) or, if the stat ever passed, land the key in
+// the audit argv — both violating ADR-0040/ADR-0059's delivery rule (env
+// never in argv, never in a journalled value). The key still reaches the
+// sandboxed child through the launcher's own process environment (nono
+// inherits it; measured in ADR-0040).
 func AuthEnvFor(l Launcher, env []string) []string {
 	if len(l.AuthEnvVars) == 0 {
 		return nil
@@ -230,6 +245,12 @@ func AuthEnvFor(l Launcher, env []string) []string {
 	want := map[string]bool{}
 	for _, name := range l.AuthEnvVars {
 		want[name] = true
+	}
+	if l.ApiKeyEnv != "" {
+		delete(want, l.ApiKeyEnv)
+	}
+	if l.OAuthTokenEnv != "" {
+		delete(want, l.OAuthTokenEnv)
 	}
 	have := map[string]string{}
 	for _, kv := range env {

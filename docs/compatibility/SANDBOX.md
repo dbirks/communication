@@ -542,3 +542,75 @@ Evidence, verbatim from the pod, run under `nono run --profile /sandbox-policy/c
 So with pathname AF_UNIX mediation (seccomp-notify on connect) every TCP connect fails `EPERM` on this host — likely the supervisor cannot inspect the child's sockaddr under Yama `ptrace_scope=2`. Consequence in product: a real `claude-agent-acp` turn retried for ~4 minutes, then `agent session failed mid-turn: … Unable to connect to API (EPERM)` (error_class infra). nono's audit had 0 `network_events`.
 
 **Detection.** The filesystem self-test cannot see this (its two legs pass), so the worker's startup gate now runs a second probe under the exact agent-turn profile a turn launches (`nono run -s --profile communication-agent.json … --open-port <port>` against a 127.0.0.1 listener owned by the worker process, child is the image's own `node`, `internal/sandbox/nono/tcpselftest.go`): connect → `ok`; child errors `EPERM` → `seccomp-notify-connect-mediation-unavailable`; anything else → reported verbatim. On a non-`ok` result the worker logs one ERROR line naming `af_unix_mediation=pathname`, the errno, the node's `kernel.yama.ptrace_scope` (read from `/proc` when readable) and the remediation "set kernel.yama.ptrace_scope<=1 on the node, or an operator-approved AF_UNIX mediation fallback (not yet available, ADR pending)", and withholds the `agent.acp` executor — `process.exec`, `model.chat` and `artifact.publish` keep running. `doctor` reports the same classification as `sandbox:nono-tcp-reachability`. The probe only withholds a claim; it weakens nothing, and no fallback that weakens the sandbox exists or is added here.
+
+## pi launcher in nono (2026-10-24)
+
+ADR-0059 registered launcher `pi` (`pi-acp@0.0.34`) with its sandbox and
+permission cells `not_tested`; ADR-0036's `preapproved_within_sandbox` lab
+exception is scoped to launcher `claude` and reverts if "the launcher is not
+claude". This section records the attempt to produce the pi equivalent of the
+2026-10-16 evaluation and the egress rows 8a/8b, with the same method (real
+turn in the M4 lab, journal rows quoted verbatim). **It stops earlier than the
+claude evaluation did: on this product build a pi agent turn never reaches the
+sandbox at all.** No filesystem or egress axis is newly measured here, and
+nothing in this section is a PASS for the pi boundary.
+
+### Setup (as run)
+
+| Item | Value |
+| --- | --- |
+| Lab | compose project `communication-m4`, left up throughout (never rebuilt, never `down`); workers carry the `compose.real.yml` pi overlay — verified live from `worker-a` pid1 env: `COMMUNICATION_PI_API_KEY_FILE=/run/comm/llm-api-key`, `COMMUNICATION_PI_BASE_URL=https://llm-collective.e-gineering.com/v1`, `COMMUNICATION_PI_MODEL=david-birks/qwen3-8-27b`, `COMMUNICATION_AGENT_EGRESS_ALLOW=api.anthropic.com,github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,llm-collective.e-gineering.com` |
+| Probes | `docs/compatibility/probes/m4/seed-pi.sh` (project `pi-proof`, repo `app`, profiles) → `pi-proof.yaml` + `pi-proof.sh` (draft → validate → publish → assignment → run → evidence) |
+| Profiles (SQL upsert; the API cannot write this mode, M3 D10 — same route as seed.sh/ADR-0036) | `pi-planner` `01a16fb1-0a47-7147-9a0d-b7adc0893f0d`, `pi-implementer` `01a16fb1-0b1f-7226-a1f7-953ee42092ee`; read-back rows (both): `launcher=pi sandbox=required permission=preapproved_within_sandbox workspace=worktree commit=false` |
+| Pipeline | slug `pi-proof`, revision `01a16fb5-e8e2-7fd1-83a9-c31187ecc585`, `revision_digest=sha256:c6ac6107706e8c88f429be6b1b69820f95f2ba123720d5b0dfdab0e21ccbdefa`, `plan_digest=sha256:44322c966516550d262907166a5ffd9fefe32c45017dd4e7f59ddc1db739a32f`, validate `valid=true`; assignment `01a16fb5-e937-7c1b-83da-9f43087c2beb` (repository-scoped, ADR-0060) |
+| Run | `01a16fb5-e95e-75f4-bfef-d780c615542a` → terminal `failed`; nodes: `edit` (agent.acp) `failed`/`infra`, `diffstat` (process.exec) `cancelled`; agent node outputs `{}`. Reproduced identically by a second run after the P3 fix: `01a17000-4e69-74c2-8288-66295724f96a`, attempt `ed2bf247-fe10-5f3d-b5cb-2c937a5ae816`, same verbatim detail (the lab image predates the fix; the pipeline path refuses at the mode gate either way) |
+
+### Matrix
+
+| # | Item | Literal observation | Verdict |
+| --- | --- | --- | --- |
+| P1 | `agent.acp` attempt under `pi-implementer` (`required` + `preapproved_within_sandbox`) — does the node launch inside nono? | attempt `1389e01a-7e44-51ba-ae62-4ca9eb5644ae` n=1 `status=failed error_class=infra` detail: `agent profile "pi-implementer" requires the prompting permission mode (preapproved_within_sandbox), but launcher pi has no verified prompting mode (docs/compatibility/ACP.md): running its never-asks default would be a lie about review` | **GAP** — the attempt is refused **before** sandbox verification; ADR-0019 D6 fail-closed, working as designed (see P4) |
+| P2 | the run's `sandbox.verified` / `sandbox.egress_observed` / host_denied rows | `SELECT … type IN ('sandbox.verified','sandbox.egress_observed') … run_id=01a16fb5-e95e…` → **0 rows**; host_denied-carrying rows **0**; `conversation.permission.*` for the run **0**; turn row `no-turn` | **GAP** — no pi turn ever entered the sandbox, so the in-grant-write / `/etc/shadow` / egress-denied / gateway-allowed axes are unmeasurable on the pipeline path; the nono boundary itself is unchanged for pi: **not_tested** |
+| P3 | same profile on the **conversation** path (2026-10-16 evaluation's route: `POST /projects/{id}/conversations` 201, one message 202, turn `01a16fbf-8b3d-7b41-8964-9759fd31a5f7` in conversation `01a16fbf-8b11-7dcd-b501-f700628d8d2c`) | turn `failed`, journal seq `16`: `conversation.turn.failed {"message": "worker: launcher \"pi\" declares a credential directory at llmc_…[REDACTED] that is not usable: stat llmc_…[REDACTED]: no such file or directory", …}` | **FAIL (product bug, pre-existing)** — the turn died *before* the mode gate: `resolveLauncherApiKeys` sources the gateway key into the worker env under `OPENAI_API_KEY`, pi declares that same name in `AuthEnvVars`, and the credential-LOCATION machinery (`internal/worker/unit.go credentialDirs`) `os.Stat`ed the **secret value** and journalled it inside the event payload — a direct violation of ADR-0040/ADR-0059's own rule (errors name the file and the fault, never the value; env only, never a journalled value). Fixed in-tree: `acp.AuthEnvFor` now excludes a launcher's value-carrying vars (`ApiKeyEnv`, `OAuthTokenEnv`) from location enumeration, so no worker stats/grants them and they never render into the sandbox launcher's argv hop (`internal/agent/acp/launchenv.go`, test `TestAuthEnvForNeverEmitsCredentialValueVars`, `go test -race ./internal/agent/...` green). **Live re-verification pending a worker-image rebuild — out of scope for this run (the lab must not be rebuilt).** The key remains journalled in the lab DB payload; rotation is the operator's call |
+| P4 | can launcher `pi` *have* a verified prompting mode at the pinned adapter? | `pi-acp@0.0.34` shipped bundle in `communication-m4-worker-a-1` (`/usr/local/lib/node_modules/pi-acp`): the only `conn.requestPermission` call site is `requestExtensionPermission`, reached solely from the `extension_ui_request` handler (pi *extension* UI dialogs); ordinary tool execution (bash/edit/write) is never routed through `session/request_permission`. The adapter's advertised `modes` are pi's thinking levels (`off…high`, `session_options` in `probes/acp/results-pi.json`) — setting one changes reasoning effort, not permission behaviour | **GAP confirmed** — there is no per-tool-call prompting mode to verify on this adapter version, so `AskModeID: ""` and the P1 refusal are the honest state; ADR-0036's condition (a) cannot be closed for pi without upstream adapter support or an owner decision (below) |
+| P5 | pi provider-config delivery (would a launched pi even reach the gateway model?) | `Launcher.ApiModelsJSON()` (the ADR-0059 per-turn `models.json` render) has **zero call sites** in the worker/agent tree (`grep -rn ApiModelsJSON internal/ cmd/` → definition only), and `OPENAI_BASE_URL` is not in the launch-environment allowlist or the pi auth vars — the child gets `OPENAI_API_KEY` (nono env inheritance, ADR-0040) but no base URL/model without it | **GAP** — `models.json` is declared in ADR-0059's Decision but unimplemented in the worker; pi would fall back to `api.openai.com` (not in the egress allowlist → denied). Un-exercised in-lab because P1 refuses before any launch; the delivery channel (inheritance vs the `env` hop, which nono's audit records verbatim) is a decision, not a fix I may invent here |
+| P6 | image binaries (for any future pi run's fixture steps) | `command -v python3` → missing (exit 127 as 2026-10-16 row 9); `node` v22.23.4, `git`, `nono 0.80.0`, `pi 1.4.0`, `pi-acp` at `/usr/local/bin` present | **note** — `pi-proof.yaml`'s prompt therefore carries the node fallback for the egress check, same substitution method as row 9 |
+
+### Verdict
+
+* **Launcher `pi` runs no `agent.acp` node under any recorded permission mode
+  on this product build.** `internal/worker/agentturn.go` and `turnloop.go`
+  both require a verified prompting mode for `ask`, `deny` and
+  `preapproved_within_sandbox`, and pi-acp@0.0.34 offers none (P4) — the
+  pipeline attempt refused (P1) and the conversation turn refused *earlier*,
+  on the P3 credential-location bug, with the gateway key journalled (fixed in
+  tree, unit-proven, live re-check pending a rebuild).
+* **The four conditions gating an ADR-0062 (in-grant write, `/etc/shadow`
+  EACCES, `example.com` denied + `host_denied` audit row, gateway allowed) are
+  unmet — not FAILED, UNMEASURED** (P2). No ADR-0062 is written by this probe.
+* The claude rows above (filesystem solid, egress allowlist 8a/8b) stay the
+  only `preapproved_within_sandbox` lab evidence, and ADR-0036's
+  claude-only scope is unchanged.
+
+### What would unblock a pi evaluation (decision list, owners' call)
+
+1. **Prompting mode**: upstream `pi-acp` support for per-tool
+   `session/request_permission` (then verify + register `AskModeID`), **or** an
+   owner decision to run a never-asks launcher under `preapproved` with the
+   known consequence ADR-0036's 2026-10-16 evaluation named as condition (a) —
+   the journal answers nothing about who allowed a tool call.
+2. **Provider-config delivery**: implement ADR-0059's `models.json` render in
+   the worker (path inside the agent home + which channel for base URL/model),
+   deciding where the per-turn provider config may live without reaching the
+   `env`-hop argv that nono's audit journals verbatim (P5).
+3. Re-run this probe (`seed-pi.sh` + `pi-proof.sh`) on the rebuilt image after
+   1+2; only literal journal rows may then flip P1–P5.
+
+### Limitations
+
+One lab, one profile pair, one pipeline revision, one run; the image running
+during this session predates the P3 fix (rebuild not permitted mid-run), so the
+fix's live proof is deferred. The P3 conversation probe was a throwaway driver
+(`POST /api/v1/conversations` + one message, same API legs as `deny_probe.sh`),
+not a committed probe. Journal payloads quoted here redact the key value; the
+lab DB row itself still contains it.
