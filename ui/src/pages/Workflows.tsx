@@ -1,43 +1,54 @@
 /**
- * The org **Workflows** index (`/workflows`): the library, the filter row,
- * and the authoring surface that hangs off it — the new-pipeline form and
- * the starter template list.
+ * The org **Workflows** index (`/workflows`) — design 1b:
+ * - Header: H1 `Workflows` + the mono count the list read carries,
+ *   `Import YAML` (secondary) + `New workflow` (primary).
+ * - Three starter cards above the filters: `START BLANK` (dashed border)
+ *   and one card per vetted template, each showing the canvas step count
+ *   the Studio will draw and the document's own top-level step chain.
+ *   Clicking a card opens the New workflow dialog (1c) with that starter
+ *   preselected.
+ * - Filters: a 240px search field + chips `all` / `has open draft` /
+ *   `used in <project>` — one chip per project whose assignments fan
+ *   actually pins an indexed workflow; real data only, so the chips wait
+ *   for the fan to settle.
+ * - Folder groups (ADR-0049 § 8): each folder a panel whose header holds an
+ *   SVG chevron, the name in mono caps and the group's own count; the rows
+ *   keep the `220px 1fr 180px 120px` grid (`WorkflowRow`). Unfiled rows
+ *   render below the folder panels without a header.
  *
- * Honesty rules (docs/design/handoff-app-shell/gaps/library.md § 5),
- * unchanged from the old library page:
+ * The 1a inline `NEW PIPELINE` form and the bottom `STARTER WORKFLOWS`
+ * panel are gone: creation lives in `NewWorkflowDialog` (1c), which runs
+ * the same two writes the inline form ran (pipeline first, draft second —
+ * ADR-0002's logical create, then its first draft) and lands on the
+ * Studio route.
+ *
+ * Honesty rules (gaps/library.md § 5), unchanged from the old page:
  * - A row is built from the same two reads the project page fans
  *   (`GET /pipelines/{id}` + its drafts list); nothing is invented beyond
  *   what the wire serves.
- * - `channels` is M6 rollout vocabulary; the wire serves none, so the
- *   revision chip is a single `✓ PUBLISHED r{n} {digest6}` — no amber
- *   BETA/STABLE dual chip, and never "by assistant" (no assistant identity
- *   is persisted on drafts).
+ * - The revision chip is the server's own `latest` summary — `✓ r{n}`
+ *   (the digest moved to the workflow page) or `· draft · not published`.
  * - Duplicate is the client-side three writes the gap analysis settles on
- *   (U1) until a backend endpoint exists: GET the latest revision's
- *   regenerated document → POST a new pipeline `<slug>-copy[-n]` → POST one
- *   draft under it, then land on that draft.
- * - Authoring controls (new workflow, import, duplicate) appear only for
- *   the library role: `01` gives definition-reading to every org member and
- *   publishing to org admins alone.
+ *   (U1) until a backend endpoint exists.
+ * - Authoring controls (`New workflow`, the cards, import, duplicate)
+ *   appear only for the library role: `01` gives definition-reading to
+ *   every org member and publishing to org admins alone. Read-only users
+ *   still see the cards, disabled, with the one-line reason.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
-import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
-import { Field, Input, Select } from "../components/ds/Field";
+import { Input } from "../components/ds/Field";
 import { ProblemBanner, Spinner } from "../components/Feedback";
-import { apiFetch, problemOf } from "../api/client";
-import { useActorNames } from "../api/actors";
+import { apiFetch } from "../api/client";
 import { queryKeys, useMe, useProjects } from "../api/queries";
 import {
   pipelineDraftsQueryOptions,
   pipelineQueryOptions,
   revisionQueryOptions,
   schedulesQueryOptions,
-  useCreateDraft,
-  useCreatePipeline,
   useDuplicatePipeline,
   usePipelines,
   UNFILED_FOLDER,
@@ -45,25 +56,25 @@ import {
   folderLabel,
   workflowRowFacts,
 } from "../api/pipelines";
-import type { AssignmentList, PipelineSummary } from "../api/types";
+import type { AssignmentList, Draft, PipelineSummary } from "../api/types";
 import { isDefinitionDocument } from "../lib/pipeline/definition";
+import { parseGraph } from "../lib/pipeline/graphDoc";
 import { routes } from "../lib/routes";
 import { useLayoutPrefs } from "../lib/prefs";
 import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/WorkflowRow";
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
+import { NewWorkflowDialog } from "../components/workflows/NewWorkflowDialog";
 import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../lib/pipeline/authoring";
 import {
   PIPELINE_TEMPLATES,
-  templateById,
-  withMetadataName,
   type PipelineTemplate,
   type TemplateId,
 } from "../lib/pipeline/templates";
 
 /* ------------------------------------------------------------- /workflows */
 
-/** The 3a filter row's toggle chip: a pressed state a screen reader hears
- * (`aria-pressed`) and a keyboard can reach (the ds focus ring). */
+/** The filter chip: a pressed state a screen reader hears (`aria-pressed`)
+ * and a keyboard can reach (the ds focus ring). */
 function FilterChip({
   active,
   onClick,
@@ -92,10 +103,88 @@ function FilterChip({
   );
 }
 
+/**
+ * One folder group: a panel whose header holds the SVG chevron (the
+ * handoff's `M3 4.5l3 3 3-3` path — it rotates to point right when the
+ * group is collapsed), the folder name in mono caps, and the group's own
+ * count. The header is the collapse toggle.
+ */
+function FolderGroup({
+  name,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  name: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "folder";
+  return (
+    <section className="overflow-hidden rounded-[3px] border border-line-strong bg-surface">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="flex w-full items-center gap-[6px] border-b border-line-strong bg-fill px-[10px] py-[7px] font-mono text-[10px] font-semibold tracking-[.04em] uppercase text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring"
+        data-testid={`workflow-folder-header-${slug}`}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 12 12"
+          aria-hidden="true"
+          className={`shrink-0 ${open ? "" : "-rotate-90"}`}
+        >
+          <path
+            d="M3 4.5l3 3 3-3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="min-w-0 truncate">{name}</span>
+        <span className="ml-auto shrink-0 font-normal text-faint">{count}</span>
+      </button>
+      {open ? <ul className="px-3">{children}</ul> : null}
+    </section>
+  );
+}
+
+/** The card's step chain: the template document's own top-level node ids in
+ * definition order, a scope node folded to one `loop: …` cell — the same
+ * reading `WorkflowRow` shows on the rows, computed from the document that
+ * card actually posts. Empty when the document does not parse (honest: the
+ * card then says what it is in words instead). */
+export function templateChain(template: PipelineTemplate): string {
+  const parsed = parseGraph(template.documentYaml);
+  if (!parsed.ok) return "";
+  const { nodes } = parsed.model;
+  return nodes
+    .filter((node) => node.scope.length === 0)
+    .map((node) => {
+      if (!node.isScope) return node.id;
+      const children = nodes
+        .filter((child) => child.scope.length > 0 && child.scope[0] === node.id)
+        .map((child) => child.id)
+        .join(" · ");
+      return children ? `loop: ${children}` : node.id;
+    })
+    .join(" › ");
+}
+
 export function LibraryPage() {
   const navigate = useNavigate();
   const me = useMe();
-  const actors = useActorNames();
   const pipelines = usePipelines();
   const projects = useProjects();
   const canAuthor = hasLibraryRole(me.data);
@@ -105,9 +194,14 @@ export function LibraryPage() {
   const showFolders = prefs.showWorkflowFolders;
   const [searchParams, setSearchParams] = useSearchParams();
   const folderFilter = searchParams.get("folder") ?? "";
+  const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "has-draft">("all");
   const [usedInProject, setUsedInProject] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [newWorkflow, setNewWorkflow] = useState<{ open: boolean; preset: TemplateId | null }>({
+    open: false,
+    preset: null,
+  });
   const [moveTarget, setMoveTarget] = useState<PipelineSummary | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -153,15 +247,54 @@ export function LibraryPage() {
 
   const duplicate = useDuplicatePipeline(items.map((pipeline) => pipeline.slug));
 
-  // The filter select and the move dialog's picker share the same names: the
-  // wire's distinct folder values (alphabetical), the Unfiled label last.
+  // The dialog's folder picker and the move dialog's chips share the same
+  // names: the wire's distinct folder values (alphabetical). The filter
+  // `?folder=` param additionally names the Unfiled group.
+  const realFolderNames = useMemo(() => distinctFolders(items), [items]);
   const folderNames = useMemo(() => {
-    const names = distinctFolders(items);
+    const names = [...realFolderNames];
     if (items.some((pipeline) => !pipeline.folder || pipeline.folder.length === 0)) {
       names.push(UNFILED_FOLDER);
     }
     return names;
-  }, [items]);
+  }, [realFolderNames, items]);
+  const effectiveFolderFilter =
+    folderFilter && folderNames.includes(folderFilter) ? folderFilter : "";
+
+  // `used in <project>` chips: only projects whose assignments fan actually
+  // pins an indexed workflow — and only once the fan has settled, so a
+  // still-reading fan never reads as "nothing is used anywhere".
+  const assignmentsData = assignmentsFan.map((entry) => entry?.data);
+  const assignmentsSettled =
+    projectItems.length === 0 ||
+    (assignmentsData.every((data) => data !== undefined) &&
+      assignmentsFan.every((entry) => !entry?.isError));
+  const usedByProjects = projectItems.filter((_project, index) =>
+    (assignmentsData[index]?.assignments ?? []).some((assignment) =>
+      indexIds.has(assignment.pipeline_id),
+    ),
+  );
+
+  // A draft-only row's step chain reads its newest un-published draft's own
+  // document — the same `GET /drafts/{id}` the draft editor uses. Rows with a
+  // revision read the revision's canonical document, so the fan is armed
+  // only for rows that have nothing else to read.
+  const openDrafts = items.map((_pipeline, index) => {
+    if ((definitions[index]?.data?.revisions ?? []).length > 0) return null;
+    const drafts = draftsList[index]?.data?.drafts ?? [];
+    return (
+      [...drafts]
+        .filter((draft) => draft.status !== "published")
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0] ?? null
+    );
+  });
+  const draftFan = useQueries({
+    queries: openDrafts.map((draft) => ({
+      queryKey: queryKeys.draft(draft?.id ?? ""),
+      queryFn: () => apiFetch<Draft>(`/api/v1/drafts/${draft?.id ?? ""}`),
+      enabled: draft !== null,
+    })),
+  });
 
   const rows = items.map((pipeline, index) => {
     const definition = definitions[index]?.data;
@@ -176,7 +309,11 @@ export function LibraryPage() {
       ready,
       revisions: definition?.revisions ?? [],
       document,
+      // `Export YAML` downloads the latest revision's regenerated YAML text;
+      // the wire's draft list carries no document text, so no revision → null.
+      exportDocument: revision?.document_text ?? null,
       drafts: draftsList[index]?.data?.drafts ?? [],
+      openDraftDocument: draftFan[index]?.data?.document_yaml ?? null,
       facts: workflowRowFacts(
         projectItems,
         assignmentsFan.map((entry) => entry?.data),
@@ -186,18 +323,20 @@ export function LibraryPage() {
     };
   });
 
+  const query = search.trim().toLowerCase();
   const visible = rows.filter((row) => {
-    // A `?folder=` value the list no longer carries (its last row moved away)
-    // filters nothing: the select falls back to `all folders` and so does
-    // the page, rather than hiding rows behind a stale param.
-    const effectiveFolderFilter =
-      folderFilter && folderNames.includes(folderFilter) ? folderFilter : "";
     if (
-      showFolders &&
-      effectiveFolderFilter &&
-      folderLabel(row.pipeline.folder) !== effectiveFolderFilter
+      query &&
+      !row.pipeline.slug.toLowerCase().includes(query) &&
+      !row.pipeline.display_name.toLowerCase().includes(query)
     ) {
       return false;
+    }
+    // A `?folder=` value the list no longer carries (its last row moved away)
+    // filters nothing: the chip clears itself rather than hiding rows behind
+    // a stale param.
+    if (showFolders && effectiveFolderFilter) {
+      if (folderLabel(row.pipeline.folder) !== effectiveFolderFilter) return false;
     }
     if (filter === "has-draft" && !row.drafts.some((draft) => draft.status !== "published")) {
       return false;
@@ -208,18 +347,17 @@ export function LibraryPage() {
     return true;
   });
 
-  // The grouped view (ADR-0049 § 8): one section per folder, Unfiled last;
-  // a group only renders while its rows survive the other filters.
-  const groups = folderNames
+  // The grouped view (ADR-0049 § 8): one panel per folder, Unfiled last —
+  // as the rows without a header, never a panel with one.
+  const groups = realFolderNames
     .map((name) => ({
       name,
-      rows: visible.filter((row) =>
-        name === UNFILED_FOLDER
-          ? !row.pipeline.folder || row.pipeline.folder.length === 0
-          : row.pipeline.folder === name,
-      ),
+      rows: visible.filter((row) => row.pipeline.folder === name),
     }))
     .filter((group) => group.rows.length > 0);
+  const unfiledRows = visible.filter(
+    (row) => !row.pipeline.folder || row.pipeline.folder.length === 0,
+  );
 
   const rowNode = (row: (typeof rows)[number]) => (
     <WorkflowRow
@@ -228,8 +366,7 @@ export function LibraryPage() {
       definitionReady={row.ready}
       revisions={row.revisions}
       document={row.document}
-      drafts={row.drafts}
-      nameOf={actors.nameOf}
+      openDraftDocument={row.openDraftDocument}
       assigned={row.facts.assigned}
       assignmentsResolved={row.facts.resolved}
       canAuthor={canAuthor}
@@ -240,6 +377,9 @@ export function LibraryPage() {
         })
       }
       onOpen={() => navigate(routes.workflow(row.pipeline.id))}
+      // No use-in-a-repo dialog exists on the index yet, so that item is not
+      // offered; Export YAML is only offered when the row has a document.
+      exportDocument={row.exportDocument}
       onMoveToFolder={canAuthor ? () => setMoveTarget(row.pipeline) : undefined}
     />
   );
@@ -248,25 +388,91 @@ export function LibraryPage() {
     definitions.some((entry) => entry.isError) || assignmentsFan.some((entry) => entry.isError);
 
   return (
-    <div className="min-h-full space-y-4 px-4 py-4" data-testid="library-page">
-      <div className="flex items-center justify-between">
-        <h1 className="text-[19px] font-bold" id="library-heading">
+    <div className="min-h-full space-y-4 px-7 py-[22px]" data-testid="library-page">
+      {/* header: H1 + the list read's own count, then the authoring actions
+          (they wrap below the H1 at phone width) */}
+      <div className="flex flex-wrap items-center gap-x-[10px] gap-y-[8px]">
+        <h1 className="text-[22px] leading-[28px] font-semibold" id="library-heading">
           Workflows
         </h1>
-        {canAuthor ? (
-          <Button
-            variant="secondary"
-            onClick={() => setImportOpen(true)}
-            data-testid="workflows-import-yaml"
-          >
-            Import YAML
-          </Button>
+        {pipelines.data ? (
+          <span className="font-mono text-[11px] text-faint" data-testid="workflows-count">
+            {items.length}
+          </span>
         ) : null}
+        <div className="flex flex-wrap items-center gap-[8px] min-[900px]:ml-auto">
+          {canAuthor ? (
+            <Button
+              variant="secondary"
+              onClick={() => setImportOpen(true)}
+              data-testid="workflows-import-yaml"
+            >
+              Import YAML
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            disabled={!canAuthor}
+            onClick={() => setNewWorkflow({ open: true, preset: null })}
+            data-testid="workflows-new-workflow"
+          >
+            New workflow
+          </Button>
+        </div>
       </div>
       {me.isError ? (
         <ProblemBanner error={me.error} fallback="Your identity could not be read." />
       ) : null}
-      {canAuthor ? <NewPipelineForm /> : null}
+      {/* The starter cards: the dialog's own three starting points, so a card
+          click preselects what `New workflow` would otherwise start from. */}
+      <div
+        className="grid grid-cols-1 gap-3 min-[900px]:grid-cols-3"
+        data-testid="workflow-starters"
+      >
+        <button
+          type="button"
+          disabled={!canAuthor}
+          onClick={() => setNewWorkflow({ open: true, preset: "blank" })}
+          className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-dashed border-line bg-surface p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
+          data-testid="workflow-starter-blank"
+        >
+          <span className="font-mono text-[10px] tracking-[.06em] text-faint">START BLANK</span>
+          <span className="text-[13px] font-semibold text-ink">Empty canvas</span>
+          <span className="text-[12px] text-muted">One agent step to start from.</span>
+        </button>
+        {PIPELINE_TEMPLATES.filter((template) => template.id !== "blank").map((template) => (
+          <button
+            key={template.id}
+            type="button"
+            disabled={!canAuthor}
+            onClick={() => setNewWorkflow({ open: true, preset: template.id })}
+            className="flex min-h-[76px] flex-col gap-1 rounded-[3px] border border-line bg-surface p-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid={`workflow-starter-${template.id}`}
+          >
+            <span className="font-mono text-[10px] tracking-[.06em] text-faint">
+              {template.stepCount === null
+                ? "TEMPLATE"
+                : `TEMPLATE · ${template.stepCount} ${template.stepCount === 1 ? "STEP" : "STEPS"}`}
+            </span>
+            <span className="text-[13px] font-semibold text-ink">{template.label}</span>
+            {templateChain(template) ? (
+              <span className="font-mono text-[10.5px] text-ink-2">{templateChain(template)}</span>
+            ) : (
+              <span className="text-[12px] text-muted">{template.description}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      {/* The reason the cards are inert — only once `me` has been read:
+          loading is not authoring, and an admin is never flashed the refusal. */}
+      {me.isSuccess && !canAuthor ? (
+        <p
+          className="-mt-2 font-mono text-[10px] text-faint"
+          data-testid="workflow-starters-need-role"
+        >
+          {`needs ${LIBRARY_ROLE_LABEL} to create`}
+        </p>
+      ) : null}
       {pipelines.isPending ? <Spinner label="Loading the workflow library" /> : null}
       {pipelines.isError ? (
         <ProblemBanner error={pipelines.error} fallback="The workflow library could not be read." />
@@ -285,108 +491,114 @@ export function LibraryPage() {
       ) : null}
       {pipelines.data ? (
         <div className="flex flex-wrap items-center gap-[6px]" data-testid="workflows-filters">
+          <Input
+            id="workflows-search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search workflows"
+            aria-label="Search workflows"
+            className="w-full min-[600px]:w-[240px]"
+            data-testid="workflows-search"
+          />
           <FilterChip
-            active={filter === "all"}
-            onClick={() => setFilter("all")}
+            active={filter === "all" && usedInProject === "" && search === ""}
+            onClick={() => {
+              setFilter("all");
+              setUsedInProject("");
+              setSearch("");
+            }}
             testid="workflows-filter-all"
           >
             all
           </FilterChip>
           <FilterChip
             active={filter === "has-draft"}
-            onClick={() => setFilter("has-draft")}
+            onClick={() => setFilter((current) => (current === "has-draft" ? "all" : "has-draft"))}
             testid="workflows-filter-draft"
           >
             has open draft
           </FilterChip>
-          <Select
-            id="workflows-filter-project"
-            aria-label="used in project"
-            value={usedInProject}
-            onChange={(event) => setUsedInProject(event.target.value)}
-            className="font-mono text-[10.5px]"
-            data-testid="workflows-filter-project"
-          >
-            <option value="">used in any project</option>
-            {projectItems.map((project) => (
-              <option key={project.id} value={project.id}>
-                {`used in ${project.name}`}
-              </option>
-            ))}
-          </Select>
-          {showFolders ? (
-            <Select
-              id="workflows-filter-folder"
-              aria-label="folder"
-              value={folderFilter && folderNames.includes(folderFilter) ? folderFilter : ""}
-              onChange={(event) => {
+          {assignmentsSettled
+            ? usedByProjects.map((project) => (
+                <FilterChip
+                  key={project.id}
+                  active={usedInProject === project.id}
+                  onClick={() =>
+                    setUsedInProject((current) => (current === project.id ? "" : project.id))
+                  }
+                  testid={`workflows-used-in-${project.id}`}
+                >
+                  {`used in ${project.name}`}
+                </FilterChip>
+              ))
+            : null}
+          {effectiveFolderFilter ? (
+            <FilterChip
+              active
+              onClick={() => {
                 const next = new URLSearchParams(searchParams);
-                if (event.target.value === "") {
-                  next.delete("folder");
-                } else {
-                  next.set("folder", event.target.value);
-                }
+                next.delete("folder");
                 setSearchParams(next, { replace: true });
               }}
-              className="font-mono text-[10.5px]"
-              data-testid="workflows-filter-folder"
+              testid="workflows-filter-folder"
             >
-              <option value="">all folders</option>
-              {folderNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
-            </Select>
+              {`in ${folderLabel(effectiveFolderFilter)}`}
+            </FilterChip>
           ) : null}
         </div>
       ) : null}
       {pipelines.data && visible.length === 0 ? (
         <p className="text-[12.5px] text-muted" data-testid="workflows-empty">
           {rows.length === 0
-            ? "No workflows yet — one is created with `New workflow` below."
+            ? "No workflows yet. Start from a card above or New workflow."
             : "No workflow matches the current filter."}
         </p>
       ) : null}
       {pipelines.data && visible.length > 0 ? (
         showFolders ? (
-          // ADR-0049 § 8: collapsible folder headers, each with its count
-          // (the group's own rows — never an invented number), Unfiled last.
           <div className="space-y-2" data-testid="workflows-list">
-            {groups.map((group) => {
-              const open = collapsed[group.name] !== true;
-              const slug =
-                group.name
-                  .toLowerCase()
-                  .replace(/[^a-z0-9]+/g, "-")
-                  .replace(/^-+|-+$/g, "") || "folder";
-              return (
-                <section key={group.name}>
-                  <button
-                    type="button"
-                    aria-expanded={open}
-                    onClick={() => setCollapsed((current) => ({ ...current, [group.name]: open }))}
-                    className="flex w-full items-center gap-[6px] rounded-[3px] border border-line bg-paper px-[8px] py-[5px] font-mono text-[10.5px] font-semibold text-ink hover:border-line-strong focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
-                    data-testid={`workflow-folder-header-${slug}`}
-                  >
-                    <span aria-hidden="true">{open ? "▾" : "▸"}</span>
-                    <span className="min-w-0 truncate">{group.name}</span>
-                    <span className="ml-auto shrink-0 font-normal text-muted">
-                      {group.rows.length}
-                    </span>
-                  </button>
-                  {open ? <ul className="divide-y-0">{group.rows.map(rowNode)}</ul> : null}
-                </section>
-              );
-            })}
+            {groups.map((group) => (
+              <FolderGroup
+                key={group.name}
+                name={group.name}
+                count={group.rows.length}
+                open={collapsed[group.name] !== true}
+                onToggle={() =>
+                  setCollapsed((current) => ({
+                    ...current,
+                    [group.name]: current[group.name] !== true,
+                  }))
+                }
+              >
+                {group.rows.map(rowNode)}
+              </FolderGroup>
+            ))}
+            {unfiledRows.length > 0 ? (
+              <ul
+                className="rounded-[3px] border border-line-strong bg-surface px-3"
+                data-testid="workflow-unfiled-group"
+              >
+                {unfiledRows.map(rowNode)}
+              </ul>
+            ) : null}
           </div>
         ) : (
-          <ul className="divide-y-0" data-testid="workflows-list">
+          <ul
+            className="rounded-[3px] border border-line-strong bg-surface px-3"
+            data-testid="workflows-list"
+          >
             {visible.map(rowNode)}
           </ul>
         )
       ) : null}
       <ImportYamlDialog open={importOpen} onClose={() => setImportOpen(false)} />
+      <NewWorkflowDialog
+        open={newWorkflow.open}
+        onClose={() => setNewWorkflow((current) => ({ ...current, open: false }))}
+        canCreate={canAuthor}
+        presetTemplateId={newWorkflow.preset}
+        folders={realFolderNames}
+      />
       {moveTarget ? (
         <MoveToFolderDialog
           pipeline={moveTarget}
@@ -394,333 +606,7 @@ export function LibraryPage() {
           onClose={() => setMoveTarget(null)}
         />
       ) : null}
-      {/* Below the definitions, never above them: the templates are the same
-          vetted samples the authoring form offers, and a reader without the
-          library role has no picker to find them behind. */}
-      <PipelineTemplateList canCreate={canAuthor} />
     </div>
-  );
-}
-/**
- * `POST /pipelines` — the logical definition only (ADR-0002): a slug and a
- * name create nothing that runs, because a pipeline has no revision until a
- * draft validates and publishes.
- *
- * "Start from" is the exception that proves the rule: a template never
- * invents a revision either. It posts the **second** write the click path
- * already required by hand (New pipeline → New draft → paste the sample) —
- * `POST /pipelines/{id}/drafts` with one of the two `docs/samples/home/`
- * documents, whose single `metadata.name` line is rewritten to the new slug so
- * the document agrees with the definition just created. Blank does the same
- * with the minimal skeleton document (`BLANK_SKELETON_YAML`): a draft is
- * allowed to be invalid — Validate is what judges it — so a Blank pipeline is
- * no longer a dead end with no first draft. When a template's draft
- * lands, the page opens at `/library/:id?draft=<id>` with that draft selected,
- * so the author sees the YAML they can now Validate and Publish. A failed
- * template post does not retry the pipeline (that would be a `409` on a slug
- * the server already accepted) — it re-posts only the draft.
- */
-function NewPipelineForm() {
-  const navigate = useNavigate();
-  const create = useCreatePipeline();
-  const [slug, setSlug] = useState("");
-  const [name, setName] = useState("");
-  const [templateId, setTemplateId] = useState<TemplateId>("blank");
-  // The pipeline exists and its draft does not yet — set only after the
-  // definition POST resolves, and the input for the draft hook's pipeline id.
-  // `run` counts attempts: a failed post is retried only by the explicit
-  // button, never by a re-render (the mutation object is new every render, and
-  // an effect keyed on it would hammer the drafts endpoint forever).
-  const [seed, setSeed] = useState<{
-    pipelineId: string;
-    documentYaml: string;
-    run: number;
-  } | null>(null);
-  const [seedFailure, setSeedFailure] = useState<unknown>(null);
-  const template = templateById(templateId);
-  const createDraft = useCreateDraft(seed?.pipelineId ?? "");
-
-  /** The last attempt this render has already fired; see `run` above. */
-  const startedRun = useRef(0);
-  useEffect(() => {
-    if (!seed || startedRun.current === seed.run) return;
-    startedRun.current = seed.run;
-    createDraft
-      .mutateAsync({ document_yaml: seed.documentYaml })
-      .then((draft) => navigate(`/library/${seed.pipelineId}/drafts/${draft.id}`))
-      .catch((error: unknown) => setSeedFailure(error));
-  }, [seed, createDraft, navigate]);
-
-  async function submit() {
-    if (slug.trim() === "") return;
-    // Every template carries a document (Blank: the skeleton), so the second
-    // write always follows the definition — there is no document-less path.
-    const documentYaml = template?.documentYaml;
-    if (!documentYaml) return;
-    try {
-      const pipeline = await create.mutateAsync({
-        slug: slug.trim(),
-        display_name: name.trim() || undefined,
-      });
-      setSeedFailure(null);
-      setSeed({
-        pipelineId: pipeline.id,
-        documentYaml: withMetadataName(documentYaml, slug.trim()),
-        run: startedRun.current + 1,
-      });
-    } catch {
-      // the problem renders below; a duplicate slug is the server's `409`
-    }
-  }
-
-  return (
-    <Panel
-      title="NEW PIPELINE"
-      headingId="library-new-pipeline-heading"
-      headingLevel={2}
-      meta={
-        <span className="font-mono text-[10px] font-normal">definition only — no revision</span>
-      }
-    >
-      <form
-        className="flex flex-wrap items-end gap-[10px] p-[10px]"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-        data-testid="library-new-pipeline"
-      >
-        <Field
-          id="library-new-slug"
-          label="slug"
-          hint="unique in the organization; a duplicate is a 409"
-          error={
-            create.isError
-              ? problemOf(create.error).detail || problemOf(create.error).title
-              : undefined
-          }
-          className="min-w-[16rem] flex-1"
-        >
-          <Input
-            id="library-new-slug"
-            value={slug}
-            onChange={(event) => setSlug(event.target.value)}
-            className="font-mono"
-            data-testid="library-new-slug-input"
-          />
-        </Field>
-        <Field
-          id="library-new-name"
-          label="name"
-          hint="optional display name"
-          className="min-w-[14rem] flex-1"
-        >
-          <Input
-            id="library-new-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            data-testid="library-new-name-input"
-          />
-        </Field>
-        <Field
-          id="library-new-template"
-          label="start from"
-          hint={<span data-testid="library-new-template-hint">{template?.description}</span>}
-          className="min-w-[16rem] flex-1"
-        >
-          <Select
-            id="library-new-template"
-            value={templateId}
-            onChange={(event) => setTemplateId(event.target.value as TemplateId)}
-            className="font-ui"
-            data-testid="library-new-template-select"
-          >
-            {PIPELINE_TEMPLATES.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={create.isPending || Boolean(seed) || slug.trim() === ""}
-          data-testid="library-new-submit"
-        >
-          {create.isPending || seed ? "Creating…" : "Create pipeline"}
-        </Button>
-      </form>
-      {seedFailure ? (
-        <div className="flex flex-wrap items-center gap-[8px] px-[10px] pb-[10px]">
-          <ProblemBanner
-            error={seedFailure}
-            fallback="The pipeline was created, but its template draft was not."
-            testid="library-new-template-failure"
-          />
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setSeedFailure(null);
-              setSeed((current) => (current ? { ...current, run: current.run + 1 } : current));
-            }}
-            data-testid="library-new-template-retry"
-          >
-            Retry the template draft
-          </Button>
-        </div>
-      ) : null}
-    </Panel>
-  );
-}
-/**
- * The starter workflows, shown as a list: the same vetted starting points the
- * "start from" select inside `NewPipelineForm` offers, readable at a glance —
- * name, one-line description, the number of steps the Studio canvas will
- * draw (`stepCount`, from the same parser the canvas uses), and for the
- * library role a "Use template" button. That button runs the same two writes
- * the form runs — `POST /pipelines` with the template id as the slug, then
- * `POST /pipelines/{id}/drafts` with the template's document, `name:`
- * rewritten to that slug — and lands on the Studio route: a usable graph,
- * no YAML textarea in between.
- *
- * The slug is the template id, so a second "Use template" in the same org
- * is a `409` the server already knows how to say; the banner names it and
- * points at the form above, where a different slug goes. A draft-post
- * failure is retried by the explicit button only, never by a re-render —
- * the same `run`-counted one-shot as `NewPipelineForm`.
- */
-function PipelineTemplateList({ canCreate }: { canCreate: boolean }) {
-  const navigate = useNavigate();
-  const createPipeline = useCreatePipeline();
-  const [pipelineFailure, setPipelineFailure] = useState<unknown>(null);
-  const [seed, setSeed] = useState<{
-    pipelineId: string;
-    templateId: TemplateId;
-    documentYaml: string;
-    run: number;
-  } | null>(null);
-  const [seedFailure, setSeedFailure] = useState<unknown>(null);
-  const createDraft = useCreateDraft(seed?.pipelineId ?? "");
-  /** The last attempt this render has already fired; see `run` above. */
-  const startedRun = useRef(0);
-  useEffect(() => {
-    if (!seed || startedRun.current === seed.run) return;
-    startedRun.current = seed.run;
-    createDraft
-      .mutateAsync({ document_yaml: seed.documentYaml })
-      .then((draft) => navigate(`/library/${seed.pipelineId}/drafts/${draft.id}`))
-      .catch((error: unknown) => setSeedFailure(error));
-  }, [seed, createDraft, navigate]);
-
-  async function startTemplate(template: PipelineTemplate) {
-    setPipelineFailure(null);
-    setSeedFailure(null);
-    try {
-      const pipeline = await createPipeline.mutateAsync({
-        slug: template.id,
-        display_name: template.label,
-      });
-      setSeed({
-        pipelineId: pipeline.id,
-        templateId: template.id,
-        documentYaml: withMetadataName(template.documentYaml, template.id),
-        run: startedRun.current + 1,
-      });
-    } catch (error) {
-      // A slug the organization already has is a `409` — the form above is
-      // where a different slug goes; the banner says so below.
-      setPipelineFailure(error);
-    }
-  }
-
-  return (
-    <Panel
-      title="STARTER WORKFLOWS"
-      headingId="library-templates-heading"
-      headingLevel={2}
-      meta={
-        <span className="font-mono text-[10px] font-normal" data-testid="library-templates-note">
-          {canCreate
-            ? 'starter workflows — "Use template" creates the pipeline and its first draft, then opens the Studio canvas'
-            : `read-only — creating a pipeline from one needs ${LIBRARY_ROLE_LABEL}`}
-        </span>
-      }
-    >
-      <ul className="divide-y divide-line" data-testid="library-templates">
-        {PIPELINE_TEMPLATES.map((template) => (
-          <li
-            key={template.id}
-            className="px-[10px] py-[8px]"
-            data-testid={`library-template-${template.id}`}
-          >
-            <span className="flex flex-wrap items-baseline gap-[6px]">
-              <span className="text-[12.5px] font-semibold">{template.label}</span>
-              <span className="font-mono text-[10px] text-faint">{template.source}</span>
-            </span>
-            <span className="block text-[12px] text-muted">{template.description}</span>
-            <span className="mt-[6px] flex flex-wrap items-center gap-[8px]">
-              {template.stepCount === null ? null : (
-                <span
-                  className="font-mono text-[10px] text-faint"
-                  data-testid={`template-${template.id}-steps`}
-                >
-                  {template.stepCount} {template.stepCount === 1 ? "step" : "steps"}
-                </span>
-              )}
-              {canCreate ? (
-                <Button
-                  variant="secondary"
-                  compact
-                  onClick={() => void startTemplate(template)}
-                  disabled={createPipeline.isPending || seed !== null || seedFailure !== null}
-                  data-testid={`template-${template.id}-use`}
-                >
-                  {seed?.templateId === template.id ? "Creating…" : "Use template"}
-                </Button>
-              ) : null}
-              {canCreate ? null : (
-                // The exact verb that is missing, on the row it would apply to.
-                <span
-                  className="font-mono text-[10px]"
-                  data-testid={`library-template-${template.id}-needs-role`}
-                >
-                  needs {LIBRARY_ROLE_LABEL} to create
-                </span>
-              )}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {pipelineFailure ? (
-        <p
-          className="px-[10px] pb-[8px] font-mono text-[10.5px] text-muted"
-          data-testid="template-use-pipeline-failure"
-        >
-          {problemOf(pipelineFailure).detail || problemOf(pipelineFailure).title} — a different slug
-          goes in the form above
-        </p>
-      ) : null}
-      {seedFailure ? (
-        <div className="flex flex-wrap items-center gap-[8px] px-[10px] pb-[10px]">
-          <ProblemBanner
-            error={seedFailure}
-            fallback="The pipeline was created, but its template draft was not."
-            testid="template-use-draft-failure"
-          />
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setSeedFailure(null);
-              setSeed((current) => (current ? { ...current, run: current.run + 1 } : current));
-            }}
-            data-testid="template-use-draft-retry"
-          >
-            Retry the template draft
-          </Button>
-        </div>
-      ) : null}
-    </Panel>
   );
 }
 

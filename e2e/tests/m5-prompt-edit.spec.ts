@@ -31,7 +31,7 @@
 // cookies), because every pipeline route below is `HandleAuthed`.
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
-import { gotoApp, selectByOptionText, shot, signIn } from "./helpers.js";
+import { gotoApp, shot, signIn } from "./helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -39,7 +39,8 @@ const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 const EDIT_TIMEOUT_MS = Number(process.env.E2E_W4_EDIT_TIMEOUT_MS ?? 120_000);
 
 const ADMIN = { subject: "admin", name: "admin" };
-const TEMPLATE_LABEL = "Plan with approval";
+/** The starter the New workflow dialog clones (design 1c's template card). */
+const TEMPLATE_ID = "plan-with-approval";
 const stamp = process.env.E2E_W4_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `w4-prompt-${stamp}`;
 
@@ -135,12 +136,18 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
   });
 
   test("step 1 — admin clones the Plan with approval sample", async () => {
-    await test.step("Library → New pipeline → Start from: Plan with approval", async () => {
+    await test.step("Workflows → New workflow → start from: Plan with approval", async () => {
       await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      // Design 1c: the New workflow dialog is the index's only creation
+      // surface — a name, the id derived from it (changed here to the
+      // suite's own slug), and the starter as a card.
+      await admin.getByTestId("workflows-new-workflow").click();
+      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
       await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await selectByOptionText(admin, "library-new-template-select", TEMPLATE_LABEL);
+      await admin.getByTestId("new-workflow-id-change").click();
+      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      await admin.getByTestId(`new-workflow-template-${TEMPLATE_ID}`).click();
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
       // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId

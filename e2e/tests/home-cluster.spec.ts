@@ -416,7 +416,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   let displayName = "";
   let projectPath = ""; // /projects/{id}
   let projectId = "";
-  let planPipelinePath = ""; // /library/{pipelineId}
+  let planPipelinePath = ""; // /workflows/{pipelineId}
   let planRunId = "";
   let claudeRunId = "";
   let profileId = "";
@@ -628,16 +628,16 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     // and when its r1 is already published the Validate/Publish steps are
     // skipped because the stored revision is the fact.
     let publishedAlready = false;
-    await test.step("Library → the plan pipeline (created once, reused on re-runs)", async () => {
-      await gotoApp(page, "/library");
+    await test.step("Workflows → the plan pipeline (created once, reused on re-runs)", async () => {
+      await gotoApp(page, "/workflows");
       await expect(page.getByTestId("library-page")).toBeVisible();
       await expect(
-        page.getByTestId("pipeline-library").or(page.getByTestId("pipeline-library-empty")).first(),
+        page.getByTestId("workflows-list").or(page.getByTestId("workflows-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
-      const existing = page.getByTestId(`pipeline-name-${PLAN_SLUG}`);
+      const existing = page.getByTestId(`workflow-name-${PLAN_SLUG}`);
       if (await existing.isVisible().catch(() => false)) {
         await existing.click();
-        await page.waitForURL(/\/library\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
+        await page.waitForURL(/\/workflows\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
         planPipelinePath = new URL(page.url()).pathname;
         const revisions = await pipelineRevisions(planPipelinePath);
         const r1 = revisions.find((row) => row.revision_number === 1);
@@ -656,20 +656,26 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         publishedAlready = true;
         await shot(page, "home-02-reused-pipeline");
       } else {
-        await page.getByTestId("library-new-slug-input").fill(PLAN_SLUG);
+        // Design 1c: the New workflow dialog is the index's only creation
+        // surface — a name, the id derived from it (changed here to the
+        // suite's own slug), and the starter chosen as a card.
+        await page.getByTestId("workflows-new-workflow").click();
+        await expect(page.getByTestId("new-workflow-dialog")).toBeVisible();
         await page.getByTestId("library-new-name-input").fill(PLAN_SLUG);
-        await selectByOptionText(page, "library-new-template-select", "Plan with approval");
+        await page.getByTestId("new-workflow-id-change").click();
+        await page.getByTestId("library-new-slug-input").fill(PLAN_SLUG);
+        await page.getByTestId("new-workflow-template-plan-with-approval").click();
         await page.getByTestId("library-new-submit").click();
         // A template is not a revision: the click path lands on the seeded
-        // draft's Workflow Studio, at /library/:id/drafts/:draftId. A 422
+        // draft's Workflow Studio, at /workflows/:id/drafts/:draftId. A 422
         // (e.g. an illegal slug) never navigates and fails the wait with
         // the API's status and body.
         await waitForNavAfterWrite(
           page,
-          /\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
+          /\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
           "create the plan pipeline",
         );
-        planPipelinePath = `/library/${new URL(page.url()).pathname.split("/")[2]}`;
+        planPipelinePath = `/workflows/${new URL(page.url()).pathname.split("/")[2]}`;
         // The Studio's YAML view is the same authoring surface the old
         // editor exposed as its textarea.
         await page.getByTestId("studio-view-yaml").click();
@@ -744,11 +750,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     ).toEqual([]);
   }
 
-  /** GET the pipeline's stored revisions (route 13) behind a /library path. */
+  /** GET the pipeline's stored revisions (route 13) behind its /workflows path. */
   async function pipelineRevisions(
     path: string,
   ): Promise<{ revision_number: number; revision_digest: string; status: string }[]> {
-    const pipelineId = path.slice("/library/".length);
+    const pipelineId = path.replace(/^\/(?:library|workflows)\//, "");
     const body = await getJson<{
       revisions: { revision_number: number; revision_digest: string; status: string }[];
     }>(context, `/api/v1/pipelines/${pipelineId}/revisions`);
@@ -758,7 +764,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   /**
    * Take the one-node claude document through the Workflow Studio's YAML
    * view: fill → save → validate → publish r1. The caller is either already
-   * on the Studio route `/library/:pipelineId/drafts/:draftId` (the Blank
+   * on the Studio route `/workflows/:pipelineId/drafts/:draftId` (the Blank
    * create navigates straight there) or on the pipeline page, where the
    * draft is the page's own state: an existing `draft-row-*` is selected
    * when the page lists one (the resume of an interrupted run), otherwise
@@ -769,7 +775,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
    * neither a row nor an enabled control.
    */
   async function authorFirstRevision(slug: string): Promise<void> {
-    if (!/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/.test(page.url())) {
+    if (!/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/.test(page.url())) {
       const draftRow = page.getByTestId(/^draft-row-.+$/).first();
       // Settle the drafts list first: it shows either a row or its own
       // `drafts-empty` line, and the decision below must not race the query.
@@ -787,7 +793,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         await expect(newDraft).toBeEnabled({ timeout: 30_000 });
         await newDraft.click();
       }
-      await page.waitForURL(/\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
+      await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
         timeout: 30_000,
       });
     }
@@ -1072,17 +1078,17 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await shot(page, "home-09-profile");
     });
     await test.step("the one-node pipeline (Blank): r1 published (created once, reused)", async () => {
-      await gotoApp(page, "/library");
+      await gotoApp(page, "/workflows");
       await expect(page.getByTestId("library-page")).toBeVisible();
       await expect(
-        page.getByTestId("pipeline-library").or(page.getByTestId("pipeline-library-empty")).first(),
+        page.getByTestId("workflows-list").or(page.getByTestId("workflows-empty")).first(),
       ).toBeVisible({ timeout: 30_000 });
-      const existing = page.getByTestId(`pipeline-name-${CLAUDE_SLUG}`);
+      const existing = page.getByTestId(`workflow-name-${CLAUDE_SLUG}`);
       if (await existing.isVisible().catch(() => false)) {
         // Re-run: the server would 409 the duplicate slug, so the existing
         // definition is opened and its stored state decides.
         await existing.click();
-        await page.waitForURL(/\/library\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
+        await page.waitForURL(/\/workflows\/[0-9a-f-]{36}$/, { timeout: NAV_TIMEOUT_MS });
         const revisions = await pipelineRevisions(new URL(page.url()).pathname);
         const r1 = revisions.find((row) => row.revision_number === 1);
         if (r1?.status === "published") {
@@ -1108,15 +1114,19 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         return;
       }
       // Blank posts the skeleton as the first draft and navigates the
-      // create click straight to the pipeline page with it selected — the
+      // create click straight to the Studio route with it selected — the
       // navigation is the fact (`waitForNavAfterWrite` semantics: a
       // non-2xx on the write rejects before the wait burns its timeout).
-      await page.getByTestId("library-new-slug-input").fill(CLAUDE_SLUG);
+      // Design 1c: the starter card opens the New workflow dialog with Blank
+      // already selected; the id is the suite's own slug.
+      await page.getByTestId("workflow-starter-blank").click();
+      await expect(page.getByTestId("new-workflow-dialog")).toBeVisible();
       await page.getByTestId("library-new-name-input").fill(CLAUDE_SLUG);
-      await selectByOptionText(page, "library-new-template-select", "Blank");
+      await page.getByTestId("new-workflow-id-change").click();
+      await page.getByTestId("library-new-slug-input").fill(CLAUDE_SLUG);
       const created = waitForNavAfterWrite(
         page,
-        /\/library\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
+        /\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/,
         "create the claude pipeline",
       );
       await page.getByTestId("library-new-submit").click();

@@ -448,12 +448,18 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   });
 
   test("step 1 — admin clones the Plan with approval sample", async () => {
-    await test.step("Library → New pipeline → Start from: Plan with approval", async () => {
+    await test.step("Workflows → New workflow → start from: Plan with approval", async () => {
       await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      // Design 1c: the New workflow dialog is the index's only creation
+      // surface — a name, the id derived from it (changed here to the
+      // suite's own slug), and the starter as a card.
+      await admin.getByTestId("workflows-new-workflow").click();
+      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
       await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
+      await admin.getByTestId("new-workflow-id-change").click();
+      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
       await admin.getByTestId("library-new-submit").click();
       // A template is not a revision: the click path lands on the draft it
       // seeded's Workflow Studio, at /workflows/:id/drafts/:draftId.
@@ -885,9 +891,14 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
     await test.step("publish a scratch copy whose gate deadline is the schema floor", async () => {
       await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
-      await admin.getByTestId("library-new-slug-input").fill(GATE_SLUG);
+      // Design 1c: the same New workflow dialog path as step 1 — the scratch
+      // gate pipeline is another clone of the Plan with approval starter.
+      await admin.getByTestId("workflows-new-workflow").click();
+      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
       await admin.getByTestId("library-new-name-input").fill(GATE_SLUG);
-      await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
+      await admin.getByTestId("new-workflow-id-change").click();
+      await admin.getByTestId("library-new-slug-input").fill(GATE_SLUG);
+      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
       await admin.getByTestId("library-new-submit").click();
       await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
       await admin.getByTestId("studio-view-yaml").click();

@@ -81,33 +81,34 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
       await expect(chip).toBeVisible();
       const text = (await chip.innerText()).trim();
       if (pipeline.revision_count > 0) {
-        // The chip reads `PUBLISHED r<n> <digest6>` from the revisions API; CSS
-        // upper-cases the mono text, so compare case-insensitively.
+        // Design 1b: the row's chip is the server's own newest summary —
+        // `r<n>` (the digest moved to the workflow page). The mono chip is
+        // CSS upper-cased, so compare upper-cased text either way.
+        const upper = text.toUpperCase();
         const [latest] = await apiPipelineRevisions(page.request, pipeline.id);
         expect(latest, `revision summaries for ${pipeline.slug}`).toBeTruthy();
-        const digest6 = (digest: string) =>
-          digest.startsWith("sha256:") ? digest.slice(7, 13) : digest.slice(0, 6);
         expect(latest.revision_number, "newest summary matches the list API").toBe(
           pipeline.latest_revision_number,
         );
-        expect(text.toUpperCase(), `revision chip for ${pipeline.slug}`).toContain(
-          `PUBLISHED R${latest.revision_number} ${digest6(latest.revision_digest).toUpperCase()}`,
-        );
-        expect(text, "the chip carries the digest tail after the revision number").toHaveLength(
-          `PUBLISHED r${pipeline.latest_revision_number} `.length + 6,
-        );
-      } else {
+        expect(upper, `revision chip for ${pipeline.slug}`).toBe(`R${latest.revision_number}`);
         expect(
-          ["DRAFT ONLY", "· loading"],
+          upper,
+          `the chip for ${pipeline.slug} is the revision number alone (no digest on the row)`,
+        ).toHaveLength(`R${pipeline.latest_revision_number}`.length);
+      } else {
+        // Design 1b: a row with no revision reads `draft · not published`;
+        // `· loading` is the definition read still in flight.
+        expect(
+          ["DRAFT · NOT PUBLISHED", "· LOADING"],
           `revision chip for ${pipeline.slug}: ${text}`,
-        ).toContain(text);
+        ).toContain(text.toUpperCase());
       }
     }
     await checkShellScreen(page, "workflows list", stopWatching);
     await evidence(
       page,
       "shell-p4-workflows-list",
-      `/workflows lists exactly the ${pipelines.length} pipelines from GET /api/v1/pipelines and every revision chip reads from the API (PUBLISHED r<N> or DRAFT ONLY)`,
+      `/workflows lists exactly the ${pipelines.length} pipelines from GET /api/v1/pipelines and every revision chip reads the API's own newest summary (r<N>, or draft · not published)`,
     );
   });
 
@@ -122,6 +123,10 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     expect(source, "a pipeline to duplicate").toBeTruthy();
     await page.goto(BASE_URL + "/workflows", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId(`workflow-row-${source!.slug}`)).toBeVisible({ timeout: 30_000 });
+    // Design 1b: the row's actions live behind its `⋯` menu — open it, then
+    // the `Duplicate` item (same test id as the old always-visible button).
+    await page.getByTestId(`workflow-menu-${source!.slug}`).click();
+    await expect(page.getByTestId(`workflow-menu-panel-${source!.slug}`)).toBeVisible();
     await page.getByTestId(`workflow-duplicate-${source!.slug}`).click();
     // The UI POSTs the copy and navigates to the copy's draft editor; wait
     // for that navigation before reading the API (reading it mid-POST sees

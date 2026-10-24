@@ -100,8 +100,12 @@ export default function App() {
   // 1000px content column around them — the studio's palette | canvas |
   // inspector runs edge to edge, canvas-sized to the viewport height.
   const workbenchBleed =
-    /^\/(runs|projects\/[^/]+\/runs)\/[^/]+$/.test(pathname) ||
-    /^\/(workflows|library)\/[^/]+\/drafts\/[^/]+$/.test(pathname);
+    /^\/runs\/[^/]+$/.test(pathname) ||
+    /^\/projects\/[^/]+\/runs\/[^/]+$/.test(pathname) ||
+    /^\/(workflows|library)\/[^/]+\/drafts\/[^/]+$/.test(pathname) ||
+    // The Workflows index (design 1b) uses the full content column, not the
+    // capped page column the other library screens keep.
+    /^\/(workflows|library)$/.test(pathname);
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not

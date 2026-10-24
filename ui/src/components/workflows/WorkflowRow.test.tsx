@@ -1,16 +1,18 @@
 /**
- * The Workflows index row (3a): the chip is the server's own summary, the
- * chain is the document's own node ids (scopes folded to one `loop: …` chip),
- * the assignment cell never claims "unassigned" while a read is in flight,
- * and the open-draft line names the real editor — no "by assistant".
+ * The Workflows index row (1b): the chip is the server's own summary, the
+ * chain is the document's own node ids (scopes folded to one `loop: …` chip,
+ * a draft-only row chaining from its newest open draft's own document), the
+ * assignment cell never claims "unassigned" while a read is in flight, and
+ * the row prints no draft line — `Edit` opens the workflow page.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MoveToFolderDialog, WorkflowRow, stepChain } from "./WorkflowRow";
-import type { Assignment, DraftSummary, PipelineRevisionSummary, Project } from "../../api/types";
+import type { Assignment, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
+import { PIPELINE_TEMPLATES } from "../../lib/pipeline/templates";
 import { mockFetch, projectFixture, requestsTo } from "../../test/fakes";
 import {
   WIRE_PIPELINE_ID,
@@ -27,13 +29,6 @@ const pipeline = {
 };
 const document = samplePipelineDocument as unknown as DefinitionDocument;
 const revision: PipelineRevisionSummary = wirePipeline.revisions[0];
-const draft: DraftSummary = {
-  id: "01987b23-9999-7000-8000-abcdef012345",
-  status: "valid",
-  version: 12,
-  updated_at: "2026-07-31T09:00:00Z",
-  edited_by: "actor-1",
-};
 const assignment: Assignment = {
   ...wireAssignmentList.assignments[0],
   pipeline_id: wirePipeline.id,
@@ -54,14 +49,13 @@ function mount(overrides: Partial<Parameters<typeof WorkflowRow>[0]> = {}) {
         definitionReady
         revisions={[revision]}
         document={document}
-        drafts={[draft]}
-        nameOf={(id) => (id === "actor-1" ? "Ada Lovelace" : null)}
         assigned={[{ project, assignment, cron: null }]}
         assignmentsResolved
         canAuthor
         duplicating={false}
         onDuplicate={onDuplicate}
         onOpen={onOpen}
+        exportDocument={null}
         {...overrides}
       />
     </MemoryRouter>,
@@ -89,20 +83,19 @@ describe("stepChain", () => {
 });
 
 describe("WorkflowRow", () => {
-  it("shows the published chip from the server summary: r-number and first six digest hex", () => {
+  it("shows the published chip from the server summary: the r-number (the digest moved to the workflow page)", () => {
     mount();
-    expect(textOf(`workflow-revision-${pipeline.slug}`)).toContain(
-      `PUBLISHED r${revision.revision_number} 3f2f3f`,
-    );
+    expect(textOf(`workflow-revision-${pipeline.slug}`)).toContain(`r${revision.revision_number}`);
+    expect(textOf(`workflow-revision-${pipeline.slug}`)).not.toContain("3f2f3f");
     // The chain reads the document's own ids; the scope is one cell.
     expect(textOf(`workflow-chain-${pipeline.slug}-2`)).toContain(
       "loop: implement · test · review",
     );
   });
 
-  it("shows `DRAFT ONLY` only once the definition arrived with zero revisions", () => {
+  it("shows `draft · not published` only once the definition arrived with zero revisions", () => {
     mount({ revisions: [], document: null });
-    expect(textOf(`workflow-revision-${pipeline.slug}`)).toContain("DRAFT ONLY");
+    expect(textOf(`workflow-revision-${pipeline.slug}`)).toContain("draft · not published");
   });
 
   it("keeps the chip honest while the definition read is in flight", () => {
@@ -127,43 +120,73 @@ describe("WorkflowRow", () => {
     expect(textOf(`workflow-trigger-${pipeline.slug}`)).toContain("…");
   });
 
-  it("says so, honestly, once the fan has settled with nothing", () => {
+  it("says `Not used yet` once the fan has settled with nothing, and drops the trigger line", () => {
     mount({ assigned: [], assignmentsResolved: true });
-    expect(textOf(`workflow-assignments-${pipeline.slug}`)).toContain(
-      "not assigned to a project you can see",
-    );
-    expect(textOf(`workflow-trigger-${pipeline.slug}`)).toContain("—");
+    expect(textOf(`workflow-assignments-${pipeline.slug}`)).toContain("Not used yet");
+    expect(screen.queryByTestId(`workflow-trigger-${pipeline.slug}`)).toBeNull();
   });
 
-  it("links the newest un-published draft with the real editor name", () => {
+  it("prints no draft line — `Edit` opens the workflow page, which carries the open draft", () => {
     mount();
-    expect(textOf(`workflow-draft-${pipeline.slug}`)).toContain("draft v12 · by Ada Lovelace");
+    expect(screen.queryByTestId(`workflow-draft-${pipeline.slug}`)).toBeNull();
   });
 
-  it("shows `no open draft` when every draft is published", () => {
-    mount({ drafts: [{ ...draft, status: "published" }] });
-    expect(textOf(`workflow-draft-${pipeline.slug}`)).toContain("no open draft");
+  it("derives the chain from the newest open draft's own document when there is no revision", () => {
+    const plan = PIPELINE_TEMPLATES.find((template) => template.id === "plan-with-approval");
+    mount({ revisions: [], document: null, openDraftDocument: plan?.documentYaml ?? null });
+    // The sample document's own top-level ids, in definition order.
+    expect(textOf(`workflow-chain-${pipeline.slug}-0`)).toContain("survey");
+    expect(textOf(`workflow-chain-${pipeline.slug}-1`)).toContain("plan");
+    expect(textOf(`workflow-chain-${pipeline.slug}-2`)).toContain("approve");
+    expect(textOf(`workflow-chain-${pipeline.slug}-3`)).toContain("publish_plan");
+  });
+
+  it("stays honest with `—` while a draft-only row's document has not arrived", () => {
+    mount({ revisions: [], document: null });
+    expect(screen.queryByTestId(`workflow-chain-${pipeline.slug}-0`)).toBeNull();
   });
 
   it("offers Duplicate (library role only) and Open, and reports progress", () => {
     const { onDuplicate, onOpen } = mount();
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
     fireEvent.click(screen.getByTestId(`workflow-duplicate-${pipeline.slug}`));
     expect(onDuplicate).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByTestId(`workflow-open-${pipeline.slug}`));
     expect(onOpen).toHaveBeenCalledOnce();
     cleanup();
     mount({ canAuthor: false, duplicating: false });
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
     expect(screen.queryByTestId(`workflow-duplicate-${pipeline.slug}`)).toBeNull();
   });
 
   it("offers `Move to folder…` to authors only, wired to the row action", () => {
     const onMoveToFolder = vi.fn();
     mount({ onMoveToFolder });
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
     fireEvent.click(screen.getByTestId(`workflow-move-folder-${pipeline.slug}`));
     expect(onMoveToFolder).toHaveBeenCalledOnce();
     cleanup();
     mount({ canAuthor: false, duplicating: false, onMoveToFolder });
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
     expect(screen.queryByTestId(`workflow-move-folder-${pipeline.slug}`)).toBeNull();
+  });
+
+  it("omits `Use in a repo…` while no dialog exists, and offers it once one is wired", () => {
+    mount();
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
+    expect(screen.queryByTestId(`workflow-menu-use-in-repo-${pipeline.slug}`)).toBeNull();
+    cleanup();
+    const onUseInRepo = vi.fn();
+    mount({ onUseInRepo });
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
+    fireEvent.click(screen.getByTestId(`workflow-menu-use-in-repo-${pipeline.slug}`));
+    expect(onUseInRepo).toHaveBeenCalledOnce();
+  });
+
+  it("offers `Export YAML` only when the row has a document to export", () => {
+    mount();
+    fireEvent.click(screen.getByTestId(`workflow-menu-${pipeline.slug}`));
+    expect(screen.queryByTestId(`workflow-menu-export-yaml-${pipeline.slug}`)).toBeNull();
   });
 });
 

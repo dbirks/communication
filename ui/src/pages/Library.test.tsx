@@ -210,18 +210,41 @@ function metadataName(document: string): string | undefined {
  * those writes are widened. */
 const settled = { timeout: 4000 };
 
+/** Open the New workflow dialog (1c): the header button is inert until the
+ * `me` read says who is authoring, so wait for it to come alive first. */
+async function openNewWorkflow() {
+  const button = await screen.findByTestId("workflows-new-workflow");
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false), settled);
+  fireEvent.click(button);
+  return screen.findByTestId("new-workflow-dialog");
+}
+
+/** The starter cards are inert until `me` settles too — click when live. */
+async function clickEnabledCard(testid: string) {
+  const card = await screen.findByTestId(testid);
+  await waitFor(() => expect((card as HTMLButtonElement).disabled).toBe(false), settled);
+  fireEvent.click(card);
+}
+
 describe("/workflows — the index (3a)", () => {
   it("lists the org workflows with the server's own chips and opens the one you click", async () => {
     mount("/workflows");
     const list = await screen.findByTestId("workflows-list");
     expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
-    // The chip is the summary's own values: r-number and the first six hex.
+    // The H1 carries the list read's own count — nothing invented.
+    expect(screen.getByTestId("workflows-count").textContent).toBe("2");
+    // The chip is the summary's own r-number; the digest moved to the
+    // workflow page, so it is not shown in the index row.
     expect(screen.getByTestId("workflow-revision-feature-development").textContent).toContain(
-      `PUBLISHED r${wirePipeline.revisions[0].revision_number} 3f2f3f`,
+      `r${wirePipeline.revisions[0].revision_number}`,
     );
-    // A zero-revision workflow reads DRAFT ONLY — no invented revision.
+    expect(screen.getByTestId("workflow-revision-feature-development").textContent).not.toContain(
+      "3f2f3f",
+    );
+    // A zero-revision workflow reads `draft · not published` — no invented
+    // revision.
     expect(screen.getByTestId("workflow-revision-module-check").textContent).toContain(
-      "DRAFT ONLY",
+      "draft · not published",
     );
     fireEvent.click(screen.getByTestId("workflow-open-feature-development"));
     expect(await screen.findByTestId("pipeline-page")).toBeTruthy();
@@ -230,7 +253,7 @@ describe("/workflows — the index (3a)", () => {
     );
   });
 
-  it("names the assigned project, the trigger, and the real draft editor", async () => {
+  it("names the assigned project and the trigger, and prints no draft line on the row", async () => {
     mount("/workflows");
     await screen.findByTestId("workflows-list");
     // The assignments fan is the caller's own membership: Widgets pins this
@@ -241,17 +264,62 @@ describe("/workflows — the index (3a)", () => {
     expect(screen.getByTestId("workflow-trigger-feature-development").textContent).toContain(
       "manual",
     );
-    // The draft line resolves `edited_by` to a name — never a raw id and
-    // never "by assistant" (no assistant identity is persisted).
-    const draftLine = screen.getByTestId("workflow-draft-feature-development");
-    expect(draftLine.textContent).toContain("Ada Lovelace");
-    expect(draftLine.textContent).not.toContain(wireUserId);
+    // 1b: the row no longer prints a draft line — the workflow page's
+    // OPEN DRAFT card carries the editor and status.
+    expect(screen.queryByTestId("workflow-draft-feature-development")).toBeNull();
   });
 
-  it("filters: `has open draft` and `used in <project>` narrow the flat list", async () => {
+  it("a draft-only row chains from its newest open draft's document", async () => {
+    const plan = PIPELINE_TEMPLATES.find((template) => template.id === "plan-with-approval");
+    const childDraftId = "01987b23-0000-7000-8000-child0123456";
+    const childDraftPath = `/api/v1/drafts/${childDraftId}`;
+    const { requests } = mount("/workflows", [
+      {
+        path: `/api/v1/pipelines/${WIRE_CHILD_PIPELINE_ID}/drafts`,
+        body: {
+          drafts: [
+            {
+              id: childDraftId,
+              status: "valid",
+              version: 1,
+              updated_at: "2026-07-31T09:00:00Z",
+              edited_by: wireUserId,
+            },
+          ],
+        },
+      },
+      {
+        path: childDraftPath,
+        body: { ...wireDraft("valid"), id: childDraftId, document_yaml: plan?.documentYaml ?? "" },
+      },
+    ]);
+    const list = await screen.findByTestId("workflows-list");
+    // module-check has zero revisions: its chain comes from the draft's own
+    // document, read exactly once through the draft editor's own endpoint.
+    await waitFor(
+      () =>
+        expect(within(list).getByTestId("workflow-chain-module-check-0").textContent).toContain(
+          "survey",
+        ),
+      settled,
+    );
+    expect(within(list).getByTestId("workflow-chain-module-check-3").textContent).toContain(
+      "publish_plan",
+    );
+    expect(requestsTo(requests, childDraftPath, "GET")).toHaveLength(1);
+  });
+
+  it("filters: the search field, `has open draft`, and `used in <project>` narrow the list", async () => {
     mount("/workflows");
     const list = await screen.findByTestId("workflows-list");
     expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
+
+    // The search field matches the wire's own slug and display name.
+    fireEvent.change(screen.getByTestId("workflows-search"), { target: { value: "module" } });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
+    fireEvent.change(screen.getByTestId("workflows-search"), { target: { value: "" } });
+    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
 
     fireEvent.click(screen.getByTestId("workflows-filter-draft"));
     await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
@@ -262,9 +330,11 @@ describe("/workflows — the index (3a)", () => {
     fireEvent.click(screen.getByTestId("workflows-filter-all"));
     await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
 
-    fireEvent.change(screen.getByTestId("workflows-filter-project"), {
-      target: { value: wireProjectId },
-    });
+    // One `used in <project>` chip per project whose assignments fan pins an
+    // indexed workflow — the chip is the filter, not a select.
+    fireEvent.click(
+      await screen.findByTestId(`workflows-used-in-${wireProjectId}`, undefined, settled),
+    );
     await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
     expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
   });
@@ -284,7 +354,8 @@ describe("/workflows — the index (3a)", () => {
         body: copyDraft,
       },
     ]);
-    await screen.findByTestId("workflow-duplicate-feature-development");
+    await screen.findByTestId("workflow-menu-feature-development");
+    fireEvent.click(screen.getByTestId("workflow-menu-feature-development"));
     fireEvent.click(screen.getByTestId("workflow-duplicate-feature-development"));
     const landed = await screen.findByTestId("studio-route", undefined, settled);
     expect(landed.textContent).toBe(`${COPY_PIPELINE_ID} / ${COPY_DRAFT_ID}`);
@@ -348,12 +419,18 @@ describe("/workflows — the index (3a)", () => {
   it("posts a new workflow slug for an org admin", async () => {
     const { requests } = mount("/library", [
       { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+      { path: draftsPath, method: "POST", status: 201, body: wireDraft("draft") },
     ]);
-    await screen.findByTestId("library-new-pipeline");
-    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+    const dialog = await openNewWorkflow();
+    // The id is generated from the name — there is no open slug field until
+    // the author clicks `change`.
+    fireEvent.change(within(dialog).getByTestId("library-new-name-input"), {
       target: { value: "nightly-sweep" },
     });
-    fireEvent.click(screen.getByTestId("library-new-submit"));
+    expect(within(dialog).getByTestId("new-workflow-id").textContent).toContain(
+      "id: nightly-sweep",
+    );
+    fireEvent.click(within(dialog).getByTestId("library-new-submit"));
     await waitFor(() => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1));
     expect(requestsTo(requests, "/api/v1/pipelines", "POST")[0].body).toContain("nightly-sweep");
   });
@@ -367,18 +444,18 @@ describe("/workflows — the index (3a)", () => {
       { path: draftsPath, method: "POST", status: 201, body: seededDraft },
       { path: draftPath, body: seededDraft },
     ]);
-    await screen.findByTestId("library-new-pipeline", undefined, settled);
-    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
-      target: { value: "nightly-sweep" },
-    });
-    fireEvent.change(screen.getByTestId("library-new-template-select"), {
-      target: { value: "plan-with-approval" },
-    });
+    const dialog = await openNewWorkflow();
+    // The START FROM cards pick the starter; the name stays what the author
+    // types, and the id follows it.
+    fireEvent.click(within(dialog).getByTestId("new-workflow-template-plan-with-approval"));
     // The picker says what the template does before you commit to it.
-    expect(screen.getByTestId("library-new-template-hint").textContent).toContain(
+    expect(within(dialog).getByTestId("library-new-template-hint").textContent).toContain(
       "maintainer approval",
     );
-    fireEvent.click(screen.getByTestId("library-new-submit"));
+    fireEvent.change(within(dialog).getByTestId("library-new-name-input"), {
+      target: { value: "nightly-sweep" },
+    });
+    fireEvent.click(within(dialog).getByTestId("library-new-submit"));
 
     await waitFor(
       () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
@@ -423,21 +500,19 @@ describe("/workflows — the index (3a)", () => {
         body: { title: "Worker offline", status: 503, detail: "no replica could take the write" },
       },
     ]);
-    await screen.findByTestId("library-new-pipeline", undefined, settled);
-    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+    const dialog = await openNewWorkflow();
+    fireEvent.click(within(dialog).getByTestId("new-workflow-template-security-review"));
+    fireEvent.change(within(dialog).getByTestId("library-new-name-input"), {
       target: { value: "nightly-sweep" },
     });
-    fireEvent.change(screen.getByTestId("library-new-template-select"), {
-      target: { value: "security-review" },
-    });
-    fireEvent.click(screen.getByTestId("library-new-submit"));
-    const banner = await screen.findByTestId("library-new-template-failure", undefined, settled);
+    fireEvent.click(within(dialog).getByTestId("library-new-submit"));
+    const banner = await screen.findByTestId("template-use-draft-failure", undefined, settled);
     // The pipeline was created, so the retry must not repeat that POST — the
     // second click would be a 409 on a slug the server already accepted.
     expect(banner.textContent).toContain("no replica could take the write");
     expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1);
     expect(screen.queryByTestId("pipeline-page")).toBeNull();
-    fireEvent.click(screen.getByTestId("library-new-template-retry"));
+    fireEvent.click(within(dialog).getByTestId("template-use-draft-retry"));
     await waitFor(() => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(2), settled);
     expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1);
   });
@@ -452,12 +527,12 @@ describe("/workflows — the index (3a)", () => {
       { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
       { path: draftsPath, method: "POST", status: 201, body: seededDraft },
     ]);
-    await screen.findByTestId("library-new-pipeline", undefined, settled);
-    fireEvent.change(screen.getByTestId("library-new-slug-input"), {
+    const dialog = await openNewWorkflow();
+    fireEvent.change(within(dialog).getByTestId("library-new-name-input"), {
       target: { value: "hand-written" },
     });
     // Blank is the picker's default and posts the skeleton, not "no document".
-    fireEvent.click(screen.getByTestId("library-new-submit"));
+    fireEvent.click(within(dialog).getByTestId("library-new-submit"));
 
     await waitFor(
       () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
@@ -482,94 +557,101 @@ describe("/workflows — the index (3a)", () => {
     );
   });
 
-  // M5 QA (`lib | polish`): the only place a template was ever mentioned was
-  // the "start from" select inside `NewPipelineForm`, which is rendered for the
-  // library role alone — so an org member could not learn the samples exist,
-  // let alone where they come from. The list is now its own panel, and the one
-  // authoring predicate decides whether it reads as an invitation or a refusal.
-  describe("template discoverability", () => {
+  // 1b: the starter cards replaced the bottom `STARTER WORKFLOWS` panel and
+  // the inline form's template select — the cards are the dialog's own three
+  // starting points, so a card click preselects and a create runs the same
+  // two writes (pipeline first, draft second). The one authoring predicate
+  // decides whether the cards read as an invitation or a refusal.
+  describe("starter cards (1b)", () => {
     const member: Me = { ...meFixture, is_org_admin: false };
 
-    it("lists the vetted starting points read-only for a member who cannot create", async () => {
+    it("shows the cards to a member who cannot create, disabled with the one-line reason", async () => {
       const { requests } = mount("/library", [{ path: "/api/v1/me", body: member }]);
-
-      const list = await screen.findByTestId("library-templates");
-      expect(within(list).getByText("Plan with approval")).toBeTruthy();
-      expect(within(list).getByText("Security review")).toBeTruthy();
-      expect(within(list).getByText("Blank")).toBeTruthy();
-      // Named where they live, not just what they are called.
-      expect(within(list).getByTestId("library-template-plan-with-approval").textContent).toContain(
-        "docs/samples/home",
-      );
-      // The reason the picker is missing, in the page's own vocabulary — and
+      const cards = await screen.findByTestId("workflow-starters");
+      expect(within(cards).getByTestId("workflow-starter-blank")).toBeTruthy();
+      expect(within(cards).getByTestId("workflow-starter-plan-with-approval")).toBeTruthy();
+      expect(within(cards).getByTestId("workflow-starter-security-review")).toBeTruthy();
+      // The reason the cards are inert, in the page's own vocabulary — and
       // only once `me` has been read: loading is not authoring.
       await waitFor(
         () =>
-          expect(screen.getByTestId("library-templates-note").textContent).toContain(
-            "needs the library role",
+          expect(screen.getByTestId("workflow-starters-need-role").textContent).toContain(
+            "needs the library role to create",
           ),
         settled,
       );
-      // Each row says which verb is missing, not just the panel — and no
-      // "Use template" button is offered to a role that cannot create.
+      // The cards and the header button are all inert for a role that cannot
+      // create — and reading the page is not authoring: no write is attempted.
       expect(
-        within(list).getByTestId("library-template-plan-with-approval-needs-role").textContent,
-      ).toContain("needs the library role to create");
-      expect(within(list).queryAllByTestId(/^template-.*-use$/)).toHaveLength(0);
-      // Reading the list is not authoring: no form, and no write attempted.
-      expect(screen.queryByTestId("library-new-pipeline")).toBeNull();
+        (within(cards).getByTestId("workflow-starter-blank") as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect((screen.getByTestId("workflows-new-workflow") as HTMLButtonElement).disabled).toBe(
+        true,
+      );
       expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(0);
     });
 
-    it("reads as starter workflows: one line each, the canvas step count, and a Use template action", async () => {
+    it("reads the vetted starting points: the canvas step count, and the document's own chain", async () => {
       mount("/library");
-
-      const list = await screen.findByTestId("library-templates");
+      const cards = await screen.findByTestId("workflow-starters");
+      // An admin is never handed the refusal they do not need — not while
+      // `me` is still loading, and not after it settles.
       await waitFor(
-        () =>
-          expect(screen.getByTestId("library-templates-note").textContent).toContain(
-            'starter workflows — "Use template"',
-          ),
+        () => expect(screen.queryByTestId("workflow-starters-need-role")).toBeNull(),
         settled,
       );
-      // An admin is never handed the refusal they do not need.
-      expect(screen.queryAllByTestId(/-needs-role$/)).toHaveLength(0);
-      // The same list the picker offers — one source, not a second copy that can drift.
-      expect(within(list).getAllByTestId(/^library-template-/)).toHaveLength(
-        PIPELINE_TEMPLATES.length,
-      );
-      // Each row advertises the step count the Studio canvas will draw, and
-      // the action that creates the pipeline and its first draft from it.
-      for (const template of PIPELINE_TEMPLATES) {
-        expect(
-          within(list)
-            .getByTestId(`template-${template.id}-steps`)
-            .textContent?.includes(`${template.stepCount}`),
-        ).toBe(true);
-        expect(within(list).getByTestId(`template-${template.id}-use`)).toBeTruthy();
+      // Blank is the dashed card with its own wording.
+      const blank = within(cards).getByTestId("workflow-starter-blank");
+      expect(blank.textContent).toContain("START BLANK");
+      expect(blank.textContent).toContain("Empty canvas");
+      expect(blank.textContent).toContain("One agent step to start from.");
+      // Each template card advertises the step count the Studio canvas will
+      // draw, and the chain is the document's own top-level node ids.
+      for (const template of PIPELINE_TEMPLATES.filter((option) => option.id !== "blank")) {
+        const card = within(cards).getByTestId(`workflow-starter-${template.id}`);
+        expect(card.textContent).toContain(`TEMPLATE · ${template.stepCount} STEPS`);
+        expect(card.textContent).toContain(template.label);
       }
-      // Blank names its own source: the inlined skeleton, not a sample.
-      expect(within(list).getByTestId("library-template-blank").textContent).toContain("skeleton");
-      // The advertised counts are the sample documents' own node counts.
-      expect(within(list).getByTestId("template-plan-with-approval-steps").textContent).toBe(
-        "4 steps",
+      expect(
+        within(cards).getByTestId("workflow-starter-plan-with-approval").textContent,
+      ).toContain("survey › plan › approve › publish_plan");
+      expect(within(cards).getByTestId("workflow-starter-security-review").textContent).toContain(
+        "scan › summarize › publish_report",
       );
-      expect(within(list).getByTestId("template-security-review-steps").textContent).toBe(
-        "3 steps",
-      );
-      expect(within(list).getByTestId("template-blank-steps").textContent).toBe("1 step");
     });
 
-    it("Use template creates the pipeline and its first draft, and lands on Studio", async () => {
+    it("clicking a card opens the New workflow dialog with the template preselected", async () => {
+      mount("/library");
+      await clickEnabledCard("workflow-starter-plan-with-approval");
+      const dialog = await screen.findByTestId("new-workflow-dialog");
+      // The card's name is in the NAME field, the id follows it…
+      const nameInput = within(dialog).getByTestId("library-new-name-input") as HTMLInputElement;
+      expect(nameInput.value).toBe("Plan with approval");
+      expect(within(dialog).getByTestId("new-workflow-id").textContent).toContain(
+        "id: plan-with-approval",
+      );
+      // …and the START FROM cards show its selection.
+      const radio = within(dialog)
+        .getByTestId("new-workflow-template-plan-with-approval")
+        .querySelector("input");
+      expect(radio).not.toBeNull();
+      expect((radio as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("a card create posts the pipeline under the starter's slug, then its draft, and lands on Studio", async () => {
       const plan = PIPELINE_TEMPLATES.find((template) => template.id === "plan-with-approval");
-      const seededDraft: Draft = { ...wireDraft("draft"), document_yaml: plan?.documentYaml ?? "" };
+      const seededDraft: Draft = {
+        ...wireDraft("draft"),
+        document_yaml: plan?.documentYaml ?? "",
+      };
       const { requests } = mount("/library", [
         { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
         { path: draftsPath, method: "POST", status: 201, body: seededDraft },
         { path: draftPath, body: seededDraft },
       ]);
-      await screen.findByTestId("template-plan-with-approval-use", undefined, settled);
-      fireEvent.click(screen.getByTestId("template-plan-with-approval-use"));
+      await clickEnabledCard("workflow-starter-plan-with-approval");
+      const dialog = await screen.findByTestId("new-workflow-dialog");
+      fireEvent.click(within(dialog).getByTestId("library-new-submit"));
 
       await waitFor(
         () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
@@ -596,7 +678,7 @@ describe("/workflows — the index (3a)", () => {
       );
     });
 
-    it("a Use template on a slug the org already has is a 409 the banner names, and no draft is posted", async () => {
+    it("a create on a slug the org already has is a 409 named on the id line, and no draft is posted", async () => {
       const { requests } = mount("/library", [
         {
           path: "/api/v1/pipelines",
@@ -605,13 +687,53 @@ describe("/workflows — the index (3a)", () => {
           body: { title: "conflict", status: 409, detail: "slug already exists" },
         },
       ]);
-      fireEvent.click(
-        await screen.findByTestId("template-security-review-use", undefined, settled),
-      );
-      const banner = await screen.findByTestId("template-use-pipeline-failure", undefined, settled);
-      expect(banner.textContent).toContain("slug already exists");
+      await clickEnabledCard("workflow-starter-security-review");
+      const dialog = await screen.findByTestId("new-workflow-dialog");
+      fireEvent.click(within(dialog).getByTestId("library-new-submit"));
+      const line = await screen.findByTestId("template-use-pipeline-failure", undefined, settled);
+      expect(line.textContent).toContain("slug already exists");
       expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(0);
       expect(screen.queryByTestId("studio-route")).toBeNull();
+    });
+
+    it("a FOLDER pick files the new pipeline with one PATCH between the two writes", async () => {
+      const seededDraft: Draft = { ...wireDraft("draft") };
+      const { requests } = mount("/library", [
+        { path: "/api/v1/pipelines", method: "GET", body: folderedList },
+        { path: "/api/v1/pipelines", method: "POST", status: 201, body: wirePipeline },
+        { path: pipelinePath, method: "PATCH", body: { ...wirePipeline, folder: "Delivery" } },
+        { path: draftsPath, method: "POST", status: 201, body: seededDraft },
+        { path: draftPath, body: seededDraft },
+      ]);
+      await clickEnabledCard("workflows-new-workflow");
+      const dialog = await screen.findByTestId("new-workflow-dialog");
+      fireEvent.change(within(dialog).getByTestId("library-new-name-input"), {
+        target: { value: "nightly-sweep" },
+      });
+      // The pick is the wire's own existing folder — no free text.
+      fireEvent.change(within(dialog).getByTestId("new-workflow-folder"), {
+        target: { value: "Delivery" },
+      });
+      fireEvent.click(within(dialog).getByTestId("library-new-submit"));
+      await waitFor(
+        () => expect(requestsTo(requests, "/api/v1/pipelines", "POST")).toHaveLength(1),
+        settled,
+      );
+      await waitFor(
+        () => expect(requestsTo(requests, pipelinePath, "PATCH")).toHaveLength(1),
+        settled,
+      );
+      const sent = JSON.parse(requestsTo(requests, pipelinePath, "PATCH")[0].body ?? "{}") as {
+        folder: string;
+      };
+      expect(sent).toEqual({ folder: "Delivery" });
+      await waitFor(
+        () => expect(requestsTo(requests, draftsPath, "POST")).toHaveLength(1),
+        settled,
+      );
+      expect((await screen.findByTestId("studio-route", undefined, settled)).textContent).toContain(
+        WIRE_DRAFT_ID,
+      );
     });
   });
 });
@@ -625,19 +747,20 @@ const folderedList = {
 };
 
 describe("/workflows — folders (ADR-0049 § 8)", () => {
-  it("groups rows under collapsible folder headers, Unfiled last, counts from the API", async () => {
+  it("groups rows under collapsible folder headers; unfiled rows go headerless, counts from the API", async () => {
     mount("/workflows", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const list = await screen.findByTestId("workflows-list");
     const headers = within(list).getAllByTestId(/^workflow-folder-header-/);
+    // The folder panel gets the header; the unfiled rows do not (design 1b).
     expect(headers.map((header) => header.getAttribute("data-testid"))).toEqual([
       "workflow-folder-header-delivery",
-      "workflow-folder-header-unfiled",
     ]);
     // Each header carries its group's own count — nothing invented.
     expect(headers[0].textContent).toContain("Delivery");
     expect(headers[0].textContent).toContain("1");
-    expect(headers[1].textContent).toContain("Unfiled");
-    expect(headers[1].textContent).toContain("1");
+    // The unfiled row lives in its own headerless group.
+    expect(within(list).getByTestId("workflow-unfiled-group")).toBeTruthy();
+    expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
 
     // The collapse is real: the group's rows disappear and the button says so.
     fireEvent.click(headers[0]);
@@ -650,19 +773,24 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
     });
   });
 
-  it("honours `?folder=` and the folder select, back to `all folders` included", async () => {
+  it("honours `?folder=` — Delivery and Unfiled — and the chip clears back to all folders", async () => {
     mount("/workflows?folder=Delivery", [{ path: "/api/v1/pipelines", body: folderedList }]);
     const list = await screen.findByTestId("workflows-list");
-    const select = screen.getByTestId("workflows-filter-folder") as HTMLSelectElement;
-    expect(select.value).toBe("Delivery");
     expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
     expect(screen.getByTestId("workflow-row-feature-development")).toBeTruthy();
+    // The active folder filter is visible as a chip, and clicking it clears.
+    fireEvent.click(screen.getByTestId("workflows-filter-folder"));
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("workflows-list")).getAllByTestId(/^workflow-row-/),
+      ).toHaveLength(2),
+    );
+    cleanup();
 
-    fireEvent.change(select, { target: { value: "" } });
-    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2));
-
-    fireEvent.change(select, { target: { value: "Unfiled" } });
-    await waitFor(() => expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(1));
+    // The Unfiled group is headerless — its rows live in their own group.
+    mount("/workflows?folder=Unfiled", [{ path: "/api/v1/pipelines", body: folderedList }]);
+    const unfiled = await screen.findByTestId("workflow-unfiled-group");
+    expect(within(unfiled).getAllByTestId(/^workflow-row-/)).toHaveLength(1);
     expect(screen.getByTestId("workflow-row-module-check")).toBeTruthy();
   });
 
@@ -673,6 +801,7 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
       { path: patchPath, method: "PATCH", body: { ...childPipeline, folder: "Delivery" } },
     ]);
     await screen.findByTestId("workflows-list");
+    fireEvent.click(screen.getByTestId("workflow-menu-module-check"));
     fireEvent.click(screen.getByTestId("workflow-move-folder-module-check"));
     const input = (await screen.findByTestId("move-folder-input")) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "Delivery" } });
@@ -694,6 +823,7 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
       { path: patchPath, method: "PATCH", body: { ...childPipeline, folder: null } },
     ]);
     await screen.findByTestId("workflows-list");
+    fireEvent.click(screen.getByTestId("workflow-menu-module-check"));
     fireEvent.click(screen.getByTestId("workflow-move-folder-module-check"));
     await screen.findByTestId("move-folder-input");
     fireEvent.click(screen.getByTestId("move-folder-submit"));
@@ -706,7 +836,7 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
     expect(sent).toEqual({ folder: null });
   });
 
-  it("stays a flat list with no folder select when show_workflow_folders is off", async () => {
+  it("stays one flat list — no folder groups, no folder chip — when show_workflow_folders is off", async () => {
     mount("/workflows", [
       { path: "/api/v1/pipelines", body: folderedList },
       {
@@ -725,6 +855,7 @@ describe("/workflows — folders (ADR-0049 § 8)", () => {
     ]);
     const list = await screen.findByTestId("workflows-list");
     expect(within(list).queryAllByTestId(/^workflow-folder-header-/)).toHaveLength(0);
+    expect(screen.queryByTestId("workflow-unfiled-group")).toBeNull();
     expect(screen.queryByTestId("workflows-filter-folder")).toBeNull();
     expect(within(list).getAllByTestId(/^workflow-row-/)).toHaveLength(2);
   });

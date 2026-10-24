@@ -258,15 +258,21 @@ test.describe("W3 start a run from a GitHub issue", () => {
   });
 
   test("admin authors and publishes the issue-run pipeline", async () => {
-    await test.step(`Library → New pipeline ${SLUG} → its draft`, async () => {
+    await test.step(`Workflows → New workflow ${SLUG} → its draft`, async () => {
       // Any template only seeds a draft to replace: the editor is then filled
       // with the issue-run document whole, the way m5-journey replaces its
       // clone with the process.exec twin.
       await gotoApp(admin, "/workflows");
       await expect(admin.getByTestId("library-page")).toBeVisible();
-      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      // Design 1c: the New workflow dialog is the index's only creation
+      // surface — a name, the id derived from it (changed here to the
+      // suite's own slug), and the starter as a card.
+      await admin.getByTestId("workflows-new-workflow").click();
+      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
       await admin.getByTestId("library-new-name-input").fill(SLUG);
-      await selectByOptionText(admin, "library-new-template-select", "Plan with approval");
+      await admin.getByTestId("new-workflow-id-change").click();
+      await admin.getByTestId("library-new-slug-input").fill(SLUG);
+      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
       await admin.getByTestId("library-new-submit").click();
       await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
       pipelinePath = `/workflows/${new URL(admin.url()).pathname.split("/")[2]}`;
