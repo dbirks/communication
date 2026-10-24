@@ -40,20 +40,25 @@ var (
 	// reasoning: "the trigger is broken" must beat "the trigger silently never
 	// ran", so the create says no out loud.
 	ErrIssueTriggerNotFireable = errors.New("api: issue trigger assignment cannot fire")
+	// ErrIssueTriggerRepositoryMismatch (ADR-0060): a trigger on a
+	// repository-scoped assignment must watch that same repository; the
+	// mismatch is a 422 refusal, never a silently mis-firing trigger.
+	ErrIssueTriggerRepositoryMismatch = errors.New("api: issue trigger repository does not match its assignment")
 )
 
 // Problem codes this surface emits. The 422s ride the m4WriteTypedProblem
 // envelope (the errors:// URI of the code); the 400s are the shape refusals a
 // fire cannot be trusted to re-derive.
 const (
-	IssueTriggerCodeInvalidEvent  = "invalid_event"
-	IssueTriggerCodeInvalidLabels = "invalid_labels"
-	IssueTriggerCodeNotGitHubRepo = "not_a_github_repository"
-	IssueTriggerCodeVersionStale  = "issue_trigger_version_stale"
-	IssueTriggerCodeNotFireable   = "issue_trigger_not_fireable"
-	IssueTriggerCodePatchEmpty    = "empty_patch"
-	IssueTriggerCodeFieldRequired = "field_required"
-	IssueTriggerCodeInputsInvalid = "invalid_inputs"
+	IssueTriggerCodeInvalidEvent       = "invalid_event"
+	IssueTriggerCodeInvalidLabels      = "invalid_labels"
+	IssueTriggerCodeNotGitHubRepo      = "not_a_github_repository"
+	IssueTriggerCodeVersionStale       = "issue_trigger_version_stale"
+	IssueTriggerCodeNotFireable        = "issue_trigger_not_fireable"
+	IssueTriggerCodePatchEmpty         = "empty_patch"
+	IssueTriggerCodeFieldRequired      = "field_required"
+	IssueTriggerCodeInputsInvalid      = "invalid_inputs"
+	IssueTriggerCodeRepositoryMismatch = "repository_mismatch"
 )
 
 // IssueTriggerView is one issue_triggers row as the API presents it. The
@@ -71,6 +76,8 @@ type IssueTriggerView struct {
 	CursorAt     *time.Time      `json:"cursor_at"`
 	LastPolledAt *time.Time      `json:"last_polled_at"`
 	LastError    string          `json:"last_error"`
+	LastFiredAt  *time.Time      `json:"last_fired_at"`
+	LastRunID    *string         `json:"last_run_id"`
 	Version      int             `json:"version"`
 	CreatedBy    string          `json:"created_by"`
 	CreatedAt    time.Time       `json:"created_at"`
@@ -276,6 +283,14 @@ func (h *issueTriggerHandlers) patchIssueTrigger(w http.ResponseWriter, r *http.
 			"event must be one of opened, labeled.")
 		return
 	}
+	if body.RepositoryID != nil && current.RepositoryID != "" && *body.RepositoryID != current.RepositoryID {
+		// ADR-0060: a trigger on a repository-scoped assignment must watch that
+		// same repository; the mismatch is a 422 refusal, never a silently
+		// mis-firing trigger — the same arm create answers.
+		issueTriggerProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeRepositoryMismatch, "repository_id",
+			"The issue trigger's repository does not match the repository its assignment uses; fix the trigger or the assignment.")
+		return
+	}
 	if body.Labels != nil && issueTriggerValidLabels(*body.Labels) != nil {
 		issueTriggerProblem(w, http.StatusBadRequest, IssueTriggerCodeInvalidLabels, "labels",
 			"labels must be at most 20 names of at most 50 characters each.")
@@ -371,6 +386,10 @@ func (h *issueTriggerHandlers) fail(w http.ResponseWriter, r *http.Request, c Ca
 		m4WriteTypedProblem(w, http.StatusConflict, IssueTriggerCodeNotFireable,
 			"Issue Trigger Not Fireable",
 			"The assignment behind this issue trigger is disabled or pinned to an unpublished revision; fix the assignment before triggering it.")
+	case errors.Is(err, ErrIssueTriggerRepositoryMismatch):
+		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeRepositoryMismatch,
+			"Issue Trigger Repository Mismatch",
+			"The issue trigger's repository does not match the repository its assignment uses; fix the trigger or the assignment.")
 	case errors.Is(err, github.ErrNotGitHubRepository):
 		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, IssueTriggerCodeNotGitHubRepo,
 			"Not A GitHub Repository",

@@ -134,6 +134,9 @@ func m4SetupShared(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *m4Fix
 			{`DELETE FROM runs WHERE project_id = $1 AND depth = 1`, []any{f.projectID}},
 			{`DELETE FROM runs WHERE project_id = $1 AND depth = 0`, []any{f.projectID}},
 			{`DELETE FROM assignments WHERE project_id = $1`, []any{f.projectID}},
+			// ADR-0060: runs and assignments may name the project's
+			// repositories; the rows go with them, before the project does.
+			{`DELETE FROM repositories WHERE project_id = $1`, []any{f.projectID}},
 			// The draft->revision pointer is circular, so it is cleared
 			// before either table can lose its rows.
 			{`UPDATE pipeline_drafts SET published_revision_id = NULL WHERE pipeline_id = $1`,

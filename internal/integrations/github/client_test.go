@@ -125,7 +125,7 @@ const ghiOneIssue = `[{"number":7,"title":"Fix the parser","body":"detail",
 
 func TestListIssuesBuildsThePinnedRequest(t *testing.T) {
 	c, stub := ghiClient(t, 0, nil, ghiOneIssue)
-	got, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"}, IssueQuery{})
+	got, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -155,14 +155,54 @@ func TestListIssuesBuildsThePinnedRequest(t *testing.T) {
 		t.Error("User-Agent must be set; GitHub refuses anonymous requests without one")
 	}
 	if auth := stub.gotHead.Get("Authorization"); auth != "" {
-		t.Errorf("Authorization = %q, want none: this adapter is anonymous-only", auth)
+		t.Errorf("Authorization = %q, want none: no token was passed to this call", auth)
+	}
+}
+
+func TestListIssuesSendsTheBearerHeaderOnlyWhenATokenIsPassed(t *testing.T) {
+	const token = "ghp_testtoken1234567890"
+	c, stub := ghiClient(t, 0, nil, `[]`)
+	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{}, token); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if got := stub.gotHead.Get("Authorization"); got != "Bearer "+token {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer "+token)
+	}
+
+	// An empty token sends no Authorization header at all, not even an empty
+	// one: the request is byte-for-byte the anonymous request of ADR-0031.
+	c2, stub2 := ghiClient(t, 0, nil, `[]`)
+	if _, err := c2.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{}, ""); err != nil {
+		t.Fatalf("ListIssues (no token): %v", err)
+	}
+	if got := stub2.gotHead.Get("Authorization"); got != "" {
+		t.Errorf("Authorization = %q, want the header absent for an empty token", got)
+	}
+}
+
+func TestListIssuesNeverLeavesATokenInTheURL(t *testing.T) {
+	// Defense in depth: the token rides the header, so neither the path the
+	// server saw nor any error built from the request may carry it.
+	c, stub := ghiClient(t, http.StatusNotFound, nil, `{"message":"Not Found"}`)
+	_, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"},
+		IssueQuery{}, "secret-token-value")
+	if !errors.Is(err, ErrRepositoryNotFound) {
+		t.Fatalf("err = %v, want ErrRepositoryNotFound", err)
+	}
+	if strings.Contains(stub.gotPath, "secret-token-value") {
+		t.Errorf("path = %q must not carry the token", stub.gotPath)
+	}
+	if strings.Contains(err.Error(), "secret-token-value") {
+		t.Errorf("error %q must not name the token", err)
 	}
 }
 
 func TestListIssuesPassesStateAndLabel(t *testing.T) {
 	c, stub := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
-		IssueQuery{State: StateAll, Label: "ready-for-agent", PerPage: 5}); err != nil {
+		IssueQuery{State: StateAll, Label: "ready-for-agent", PerPage: 5}, ""); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if got := stub.gotQuery.Get("state"); got != "all" {
@@ -179,7 +219,7 @@ func TestListIssuesPassesStateAndLabel(t *testing.T) {
 func TestListIssuesRejectsAnUnknownState(t *testing.T) {
 	c, _ := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"},
-		IssueQuery{State: "everything"}); err == nil {
+		IssueQuery{State: "everything"}, ""); err == nil {
 		t.Fatal("state=everything: want an error, got none")
 	}
 }
@@ -189,7 +229,7 @@ func TestListIssuesEscapesTheRepositoryNameIntoThePath(t *testing.T) {
 	// "/repos/o/r/../../someother/thing" style escapes are stopped.
 	c, stub := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widg ets/../../x"},
-		IssueQuery{}); err != nil {
+		IssueQuery{}, ""); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if strings.HasPrefix(stub.gotPath, "/repos/octo/widgets/..") {
@@ -212,7 +252,7 @@ func TestListIssuesSkipsPullRequests(t *testing.T) {
 		 "pull_request":null}
 	]`
 	c, _ := ghiClient(t, 0, nil, body)
-	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -230,7 +270,7 @@ func TestListIssuesPassesSinceAndSortForTheIssuePoll(t *testing.T) {
 	c, stub := ghiClient(t, 0, nil, `[]`)
 	since := time.Unix(1760000000, 0)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
-		IssueQuery{State: "open", Sort: "updated", Since: since, PerPage: 100}); err != nil {
+		IssueQuery{State: "open", Sort: "updated", Since: since, PerPage: 100}, ""); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if got := stub.gotQuery.Get("sort"); got != "updated" {
@@ -247,7 +287,7 @@ func TestListIssuesPassesSinceAndSortForTheIssuePoll(t *testing.T) {
 func TestListIssuesPassesAnyOfLabelsForTheIssuePoll(t *testing.T) {
 	c, stub := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
-		IssueQuery{State: "open", Labels: []string{"bug", "docs"}, PerPage: 100}); err != nil {
+		IssueQuery{State: "open", Labels: []string{"bug", "docs"}, PerPage: 100}, ""); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if got := stub.gotQuery.Get("labels"); got != "bug,docs" {

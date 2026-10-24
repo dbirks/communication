@@ -260,7 +260,7 @@ func (r *wiringRuns) counts() (int, int) {
 
 type wiringAssignments struct{}
 
-func (wiringAssignments) ListAssignments(_ context.Context, _ Caller, projectID string) ([]AssignmentView, error) {
+func (wiringAssignments) ListAssignments(_ context.Context, _ Caller, projectID string, _ AssignmentListFilter) ([]AssignmentView, error) {
 	if projectID != "p-1" {
 		return nil, ErrProjectNotFound
 	}

@@ -19,7 +19,7 @@ func TestListIssuesTruncatesBodiesToFourThousandBytes(t *testing.T) {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 	c, _ := ghiClient(t, 0, nil, string(raw))
-	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestListIssuesTruncatesBodiesToFourThousandBytes(t *testing.T) {
 
 	// A short body is untouched and not flagged.
 	c2, _ := ghiClient(t, 0, nil, `[{"number":2,"title":"t","body":"short","state":"open"}]`)
-	issue, err := c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	issue, err := c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestListIssuesTruncationNeverSplitsARune(t *testing.T) {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 	c, _ := ghiClient(t, 0, nil, string(raw))
-	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestListIssuesReadsLabelsTimeAndURL(t *testing.T) {
 		"html_url":"https://github.com/octo/widgets/issues/12",
 		"updated_at":"2026-10-16T07:33:53Z"}]`
 	c, _ := ghiClient(t, 0, nil, body)
-	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	got, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestListIssuesReadsLabelsTimeAndURL(t *testing.T) {
 	body = `[{"number":13,"title":"t","body":"","labels":["enhancement"],
 		"state":"open","html_url":"","updated_at":"not a time"}]`
 	c2, _ := ghiClient(t, 0, nil, body)
-	got, err = c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	got, err = c2.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err != nil {
 		t.Fatalf("ListIssues (string labels): %v", err)
 	}
@@ -116,7 +116,7 @@ func TestListIssuesTypedErrors(t *testing.T) {
 	t.Run("404 is ErrRepositoryNotFound", func(t *testing.T) {
 		c, _ := ghiClient(t, http.StatusNotFound, nil,
 			`{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}`)
-		_, err := c.ListIssues(ctx, repo, IssueQuery{})
+		_, err := c.ListIssues(ctx, repo, IssueQuery{}, "")
 		if !errors.Is(err, ErrRepositoryNotFound) {
 			t.Fatalf("err = %v, want ErrRepositoryNotFound", err)
 		}
@@ -135,7 +135,7 @@ func TestListIssuesTypedErrors(t *testing.T) {
 			"X-Ratelimit-Limit":     []string{"60"},
 			"X-Ratelimit-Reset":     []string{"1790000000"},
 		}, `{"message":"API rate limit exceeded for IP address."}`)
-		_, err := c.ListIssues(ctx, repo, IssueQuery{})
+		_, err := c.ListIssues(ctx, repo, IssueQuery{}, "")
 		if !errors.Is(err, ErrRateLimited) {
 			t.Fatalf("err = %v, want ErrRateLimited", err)
 		}
@@ -157,14 +157,14 @@ func TestListIssuesTypedErrors(t *testing.T) {
 	t.Run("429 with a spent budget is ErrRateLimited too", func(t *testing.T) {
 		c, _ := ghiClient(t, http.StatusTooManyRequests,
 			http.Header{"X-Ratelimit-Remaining": []string{"0"}}, `{"message":"slow down"}`)
-		if _, err := c.ListIssues(ctx, repo, IssueQuery{}); !errors.Is(err, ErrRateLimited) {
+		if _, err := c.ListIssues(ctx, repo, IssueQuery{}, ""); !errors.Is(err, ErrRateLimited) {
 			t.Fatalf("err = %v, want ErrRateLimited", err)
 		}
 	})
 
 	t.Run("403 without the header is not a rate limit", func(t *testing.T) {
 		c, _ := ghiClient(t, http.StatusForbidden, nil, `{"message":"Forbidden"}`)
-		_, err := c.ListIssues(ctx, repo, IssueQuery{})
+		_, err := c.ListIssues(ctx, repo, IssueQuery{}, "")
 		if errors.Is(err, ErrRateLimited) {
 			t.Fatalf("err = %v: a plain 403 must not be reported as a spent budget", err)
 		}
@@ -176,7 +176,7 @@ func TestListIssuesTypedErrors(t *testing.T) {
 
 	t.Run("500 carries the upstream message", func(t *testing.T) {
 		c, _ := ghiClient(t, http.StatusInternalServerError, nil, `{"message":"boom"}`)
-		_, err := c.ListIssues(ctx, repo, IssueQuery{})
+		_, err := c.ListIssues(ctx, repo, IssueQuery{}, "")
 		var api *APIError
 		if !errors.As(err, &api) || api.Status != 500 || api.Message != "boom" {
 			t.Fatalf("err = %v, want *APIError{500, boom}", err)
@@ -185,7 +185,7 @@ func TestListIssuesTypedErrors(t *testing.T) {
 
 	t.Run("a body that is not a JSON array is a decode failure", func(t *testing.T) {
 		c, _ := ghiClient(t, 0, nil, `<html>not json</html>`)
-		if _, err := c.ListIssues(ctx, repo, IssueQuery{}); err == nil {
+		if _, err := c.ListIssues(ctx, repo, IssueQuery{}, ""); err == nil {
 			t.Fatal("want a decode error, got none")
 		} else if !strings.Contains(err.Error(), "decode") {
 			t.Errorf("err = %v, want it to say the decode failed", err)
@@ -196,14 +196,14 @@ func TestListIssuesTypedErrors(t *testing.T) {
 func TestListIssuesClampsPerPageAndRefusesAnEmptyRepository(t *testing.T) {
 	c, stub := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"},
-		IssueQuery{PerPage: 5000}); err != nil {
+		IssueQuery{PerPage: 5000}, ""); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if got := stub.gotQuery.Get("per_page"); got != "100" {
 		t.Errorf("per_page = %q, want the cap of 100", got)
 	}
 
-	if _, err := c.ListIssues(context.Background(), Repository{}, IssueQuery{}); !errors.Is(err, ErrNotGitHubRepository) {
+	if _, err := c.ListIssues(context.Background(), Repository{}, IssueQuery{}, ""); !errors.Is(err, ErrNotGitHubRepository) {
 		t.Errorf("empty repository: err = %v, want ErrNotGitHubRepository", err)
 	}
 }
@@ -244,7 +244,7 @@ func TestListIssuesGivesUpOnASlowUpstream(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	c := &Client{BaseURL: srv.URL, HTTP: &http.Client{Timeout: 25 * time.Millisecond}}
-	_, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{})
+	_, err := c.ListIssues(context.Background(), Repository{Owner: "o", Name: "r"}, IssueQuery{}, "")
 	if err == nil {
 		t.Fatal("want a timeout error, got none")
 	}

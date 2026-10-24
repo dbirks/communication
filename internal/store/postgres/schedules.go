@@ -207,6 +207,9 @@ type schedulePin struct {
 	maxConcurrent  int
 	assignmentOn   bool
 	revStatus      string
+	// RepositoryID (ADR-0060) is the assignment's repository — the repository
+	// a schedule-fired run works on; empty means the whole project.
+	repositoryID string
 }
 
 // schedulePinSQL reads the assignment's pin plus the project's organization.
@@ -216,7 +219,7 @@ const schedulePinSQL = `
 	SELECT a.id::text, p.organization_id::text, a.project_id::text, a.pipeline_id::text,
 	       a.pinned_revision_id::text, a.enabled, a.max_concurrent_runs,
 	       a.budget_overrides::text, r.revision_digest, r.plan_digest,
-	       r.digest_scope, r.compiled_plan::text, r.status
+	       r.digest_scope, r.compiled_plan::text, r.status, COALESCE(a.repository_id::text, '')
 	FROM assignments a
 	JOIN projects p            ON p.id = a.project_id
 	JOIN pipeline_revisions r  ON r.id = a.pinned_revision_id
@@ -227,7 +230,7 @@ func scheduleScanPin(q pgx.Row) (schedulePin, error) {
 	err := q.Scan(&pin.assignmentID, &pin.organizationID, &pin.projectID, &pin.pipelineID,
 		&pin.revisionID, &pin.assignmentOn, &pin.maxConcurrent,
 		&pin.budgetOver, &pin.revisionDigest, &pin.planDigest,
-		&pin.digestScope, &pin.plan, &pin.revStatus)
+		&pin.digestScope, &pin.plan, &pin.revStatus, &pin.repositoryID)
 	return pin, err
 }
 
@@ -667,6 +670,25 @@ func (s *ScheduleStore) fireSchedule(ctx context.Context, id string, now time.Ti
 		return 0, fmt.Errorf("postgres: schedule %s inputs no longer valid: %w", id, err)
 	}
 
+	// ADR-0060: a schedule-fired run works on the assignment's repository;
+	// a project-wide assignment (repository_id NULL) names its repository
+	// through the fixed inputs' `repository` member, resolved here by exact,
+	// case-sensitive name — the same resolution a manual start rides through.
+	repositoryID := pin.repositoryID
+	if repositoryID == "" {
+		if name, ok := scheduleRepositoryInput(inputs); ok {
+			var repoID string
+			if err := tx.QueryRow(ctx, `
+				SELECT id::text FROM repositories
+				WHERE project_id = $1::uuid AND name = $2::text
+				ORDER BY created_at, id
+				LIMIT 1`, sc.ProjectID, name).Scan(&repoID); err != nil {
+				return 0, fmt.Errorf("postgres: resolve schedule %s repository: %w", id, err)
+			}
+			repositoryID = repoID
+		}
+	}
+
 	newRun := NewRun{
 		OrganizationID:     pin.organizationID,
 		ProjectID:          sc.ProjectID,
@@ -681,11 +703,12 @@ func (s *ScheduleStore) fireSchedule(ctx context.Context, id string, now time.Ti
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
 		// ADR-0056: the fire is a 'schedule' start and names the trigger it
 		// came from; a retried slot replays the same row, keeping this trigger.
-		TriggerKind: "schedule",
-		TriggerRef:  sc.ID,
-		Inputs:      inputs,
-		Key:         key,
-		RequestSHA:  scheduleRequestSHA(key, pin.revisionID, values),
+		TriggerKind:  "schedule",
+		TriggerRef:   sc.ID,
+		RepositoryID: repositoryID,
+		Inputs:       inputs,
+		Key:          key,
+		RequestSHA:   scheduleRequestSHA(key, pin.revisionID, values),
 		Event: &RunEvent{
 			Type: events.TypeRunCreated, ActorKind: events.ActorKindSystem, ActorID: "system",
 			Payload: events.RunCreatedPayload{
@@ -809,6 +832,22 @@ func scheduleLatestDueSlot(from, now time.Time, cron schedule.Cron) (time.Time, 
 // colons of the long form are illegal too.
 func scheduleIdempotencyKey(scheduleID string, slot time.Time) string {
 	return "schedule-" + scheduleID + "-" + slot.UTC().Format("20060102T150405Z")
+}
+
+// scheduleRepositoryInput reads the fixed `repository` input of a schedule's
+// inputs — the repository-binding name a project-wide assignment (ADR-0060)
+// declares, resolved to a repository of the project by exact, case-sensitive
+// name before the run insert. Absent or not-a-string ⇒ no repository.
+func scheduleRepositoryInput(inputs map[string]RunInput) (string, bool) {
+	raw, ok := inputs["repository"]
+	if !ok {
+		return "", false
+	}
+	var name string
+	if err := json.Unmarshal(raw.Value, &name); err != nil || name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // scheduleRequestSHA is the key's body hash: it covers the pin and the fixed

@@ -144,7 +144,7 @@ func (h *ghHandlers) listIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := h.lister.ListIssues(r.Context(), ghRepo, github.IssueQuery{
 		State: state,
 		Label: label,
-	})
+	}, "") // anonymous for now; the repository's ADR-0061 credential is wired in a later task
 	if err != nil {
 		h.upstreamFailure(w, r, prj, c, projectID, action, ghRepo, err)
 		return

@@ -578,7 +578,7 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	if len(it.Labels) == 1 {
 		ghQuery.Labels = it.Labels
 	}
-	issues, err := lister.ListIssues(ctx, repo, ghQuery)
+	issues, err := lister.ListIssues(ctx, repo, ghQuery, "") // no credential yet; ADR-0061 wiring lands in a later task
 	if err != nil {
 		// The honest half of "never crash the tick": record the failure on the
 		// row (bounded message) and keep the trigger due for the next beat.
@@ -683,6 +683,7 @@ func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTr
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
 		TriggerKind:        "issue",
 		TriggerRef:         repo.String() + "#" + fmt.Sprint(issue.Number),
+		RepositoryID:       it.RepositoryID,
 		Inputs:             inputs,
 		Key:                key,
 		RequestSHA:         scheduleRequestSHA(key, pin.revisionID, rendered),
@@ -855,7 +856,7 @@ func (a APIIssueTriggerStore) store() (*IssueTriggerStore, error) {
 // source.
 const apiIssueTriggerColumns = `x.id::text, x.project_id::text, x.assignment_id::text, x.repository_id::text,
 	x.event, x.labels, x.inputs::text, x.enabled, x.cursor_at, x.last_polled_at, x.last_error, x.version,
-	x.created_by::text, x.created_at, x.updated_at,
+	x.created_by::text, x.created_at, x.updated_at, lf.last_run_id, lf.last_fired_at,
 	COALESCE(m.role, CASE WHEN $3::boolean THEN 'maintainer' ELSE '' END)`
 
 // apiIssueTriggerScope is the FROM/WHERE visibility half: the caller's
@@ -869,6 +870,33 @@ const apiIssueTriggerScope = `
 	WHERE p.organization_id = $2::uuid
 	  AND ($3::boolean OR m.user_id IS NOT NULL)`
 
+// apiIssueTriggerLastFired is the ADR-0060 read-side answer for one issue
+// trigger: the newest run that fired it (trigger_kind = 'issue' through the
+// `issue-<trigger id>-<number>` idempotency key the fire writes, ADR-0056 §5) —
+// its run id and its creation time. One LATERAL subquery per trigger row, so
+// the list answers without N+1 and without trusting a stored cursor.
+const apiIssueTriggerLastFired = `
+	LEFT JOIN LATERAL (
+		SELECT r.id::text AS last_run_id, r.created_at AS last_fired_at
+		FROM run_idempotency_keys k
+		JOIN runs r ON r.id = k.run_id
+		WHERE k.project_id = x.project_id::uuid
+		  AND k.key LIKE 'issue-' || x.id::text || '-%'
+		ORDER BY r.created_at DESC
+		LIMIT 1
+	) lf ON TRUE`
+
+// apiIssueTriggerJoined is the FROM clause of the read queries: the scoped
+// issue_triggers row plus the caller's project membership, then the ADR-0060
+// last-fired LATERAL. Parameter numbering assumes $1 user, $2 org, $3 admin.
+const apiIssueTriggerJoined = `
+	FROM issue_triggers x
+	JOIN projects p ON p.id = x.project_id
+	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
+	` + apiIssueTriggerLastFired + `
+	WHERE p.organization_id = $2::uuid
+	  AND ($3::boolean OR m.user_id IS NOT NULL)`
+
 func (a APIIssueTriggerStore) scanIssueTrigger(row pgx.Row) (api.IssueTriggerView, error) {
 	var (
 		v          api.IssueTriggerView
@@ -876,10 +904,12 @@ func (a APIIssueTriggerStore) scanIssueTrigger(row pgx.Row) (api.IssueTriggerVie
 		cursorAt   *time.Time
 		lastPolled *time.Time
 		lastErr    *string
+		lastRunID  *string
+		lastFired  *time.Time
 	)
 	err := row.Scan(&v.ID, &v.ProjectID, &v.AssignmentID, &v.RepositoryID, &v.Event,
 		&v.Labels, &inputs, &v.Enabled, &cursorAt, &lastPolled, &lastErr, &v.Version,
-		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &v.MyRole)
+		&v.CreatedBy, &v.CreatedAt, &v.UpdatedAt, &lastRunID, &lastFired, &v.MyRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return api.IssueTriggerView{}, api.ErrIssueTriggerNotFound
 	}
@@ -898,6 +928,13 @@ func (a APIIssueTriggerStore) scanIssueTrigger(row pgx.Row) (api.IssueTriggerVie
 	if lastErr != nil {
 		v.LastError = *lastErr
 	}
+	if lastFired != nil {
+		t := lastFired.UTC()
+		v.LastFiredAt = &t
+	}
+	if lastRunID != nil {
+		v.LastRunID = lastRunID
+	}
 	return v, nil
 }
 
@@ -914,7 +951,7 @@ func (a APIIssueTriggerStore) ListProjectIssueTriggers(ctx context.Context, c ap
 	if err := prjRequireCaller(cc); err != nil {
 		return nil, err
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT `+apiIssueTriggerColumns+apiIssueTriggerScope+`
+	rows, err := s.Pool.Query(ctx, `SELECT `+apiIssueTriggerColumns+apiIssueTriggerJoined+`
 		  AND x.project_id = $4::uuid
 		ORDER BY x.created_at, x.id`,
 		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, projectID)
@@ -945,7 +982,7 @@ func (a APIIssueTriggerStore) GetIssueTrigger(ctx context.Context, c api.Caller,
 	if err := prjRequireCaller(cc); err != nil {
 		return api.IssueTriggerView{}, err
 	}
-	return a.scanIssueTrigger(s.Pool.QueryRow(ctx, `SELECT `+apiIssueTriggerColumns+apiIssueTriggerScope+`
+	return a.scanIssueTrigger(s.Pool.QueryRow(ctx, `SELECT `+apiIssueTriggerColumns+apiIssueTriggerJoined+`
 		  AND x.id = $4::uuid`,
 		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, issueTriggerID))
 }
@@ -979,6 +1016,21 @@ func (a APIIssueTriggerStore) CreateIssueTrigger(ctx context.Context, c api.Call
 	}
 	if err != nil {
 		return api.IssueTriggerView{}, fmt.Errorf("postgres: api resolve issue trigger project: %w", err)
+	}
+	// ADR-0060: a trigger on a repository-scoped assignment must watch that
+	// same repository — the mismatch is a 422 refusal, never a silently
+	// mis-firing trigger.
+	var assignmentRepositoryID string
+	if err := s.Pool.QueryRow(ctx, `
+		SELECT COALESCE(repository_id::text, '') FROM assignments
+		WHERE id = $1::uuid AND project_id = $2::uuid`, in.AssignmentID, projectID).Scan(&assignmentRepositoryID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return api.IssueTriggerView{}, api.ErrIssueTriggerNotFound
+		}
+		return api.IssueTriggerView{}, fmt.Errorf("postgres: api resolve issue trigger assignment: %w", err)
+	}
+	if assignmentRepositoryID != "" && in.RepositoryID != assignmentRepositoryID {
+		return api.IssueTriggerView{}, api.ErrIssueTriggerRepositoryMismatch
 	}
 	enabled := true
 	if in.Enabled != nil {
@@ -1038,7 +1090,49 @@ func (a APIIssueTriggerStore) UpdateIssueTrigger(ctx context.Context, c api.Call
 	if err != nil {
 		return api.IssueTriggerView{}, issueTriggerAPIErr(err)
 	}
-	return issueTriggerViewOf(sc, ""), nil
+	lastRunID, lastFired, err := a.issueTriggerLastFired(ctx, issueTriggerID)
+	if err != nil {
+		return api.IssueTriggerView{}, err
+	}
+	out := issueTriggerViewOf(sc, "")
+	out.LastRunID = lastRunID
+	out.LastFiredAt = lastFired
+	return out, nil
+}
+
+// issueTriggerLastFired reads one issue trigger's last-fired run (the newest
+// run with trigger_kind = 'issue' fired by it, via the idempotency key the fire
+// writes). Null when the trigger never fired.
+func (a APIIssueTriggerStore) issueTriggerLastFired(ctx context.Context, issueTriggerID string) (*string, *time.Time, error) {
+	s, err := a.store()
+	if err != nil {
+		return nil, nil, err
+	}
+	var projectID string
+	if err := s.Pool.QueryRow(ctx, `
+		SELECT project_id::text FROM issue_triggers WHERE id = $1::uuid`, issueTriggerID).Scan(&projectID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, api.ErrIssueTriggerNotFound
+		}
+		return nil, nil, fmt.Errorf("postgres: read issue trigger %s: %w", issueTriggerID, err)
+	}
+	var lastRunID string
+	var lastFired time.Time
+	if err := s.Pool.QueryRow(ctx, `
+		SELECT r.id::text, r.created_at
+		FROM run_idempotency_keys k
+		JOIN runs r ON r.id = k.run_id
+		WHERE k.project_id = $1::uuid
+		  AND k.key LIKE 'issue-' || $2::text || '-%'
+		ORDER BY r.created_at DESC
+		LIMIT 1`, projectID, issueTriggerID).Scan(&lastRunID, &lastFired); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("postgres: read last fired run of issue trigger %s: %w", issueTriggerID, err)
+	}
+	id := lastRunID
+	return &id, &lastFired, nil
 }
 
 // issueTriggerAPIErr translates the issue-trigger store's facts into the

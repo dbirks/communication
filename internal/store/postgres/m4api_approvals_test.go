@@ -135,7 +135,7 @@ func TestM4APIApprovalsAssignmentCRUD(t *testing.T) {
 		t.Errorf("duplicate create err = %v, want ErrAssignmentConflict", err)
 	}
 
-	list, err := store.ListAssignments(ctx, c, f.projectID)
+	list, err := store.ListAssignments(ctx, c, f.projectID, api.AssignmentListFilter{})
 	if err != nil {
 		t.Fatalf("ListAssignments: %v", err)
 	}

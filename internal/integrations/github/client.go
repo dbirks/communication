@@ -13,9 +13,10 @@ import (
 	"unicode/utf8"
 )
 
-// Client is the anonymous HTTP implementation of IssueLister. It is safe for
+// Client is the HTTP implementation of IssueLister. It is safe for
 // concurrent use: its only mutable fields are set at construction (New) or by
-// a test, never during a request.
+// a test, never during a request. The Client stores no credential: a token is
+// per call (ADR-0061 §5), because one client serves every project.
 type Client struct {
 	// BaseURL is the API root; empty means DefaultBaseURL. Tests replace it
 	// with an httptest server URL.
@@ -84,7 +85,13 @@ func (l *rawLabel) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// ListIssues fetches one page of a repository's issues, anonymously.
+// ListIssues fetches one page of a repository's issues.
+//
+// token is the per-call credential (ADR-0061 §5): empty makes the call
+// anonymous (no Authorization header, public repositories only); non-empty is
+// sent as `Authorization: Bearer <token>`. The token rides the header only —
+// it is never stored on the Client, never part of the URL, and never named in
+// an error built from this request.
 //
 // The request URL is built from escaped path segments only, so a repository
 // row whose owner/name came from anywhere cannot steer this request elsewhere
@@ -93,7 +100,7 @@ func (l *rawLabel) UnmarshalJSON(raw []byte) error {
 // Pull requests are dropped: that endpoint lists issues and pull requests
 // together, and a run started "from an issue" must not quietly be a run
 // started from a PR.
-func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery) ([]Issue, error) {
+func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery, token string) ([]Issue, error) {
 	if repo.Owner == "" || repo.Name == "" {
 		return nil, &NotGitHubRepositoryError{GitURL: repo.String()}
 	}
@@ -137,7 +144,11 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery) 
 	req.Header.Set("Accept", acceptHeader)
 	req.Header.Set(apiVersionHead, apiVersion)
 	req.Header.Set("User-Agent", userAgent)
-	// Deliberately no Authorization header: anonymous only (package doc).
+	if token != "" {
+		// ADR-0061 §5: a per-call credential authorizes this one request; it
+		// is never cached on the Client or echoed into an error.
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.client().Do(req)
 	if err != nil {
@@ -188,7 +199,7 @@ func classify(resp *http.Response, repo Repository) error {
 		return &NotFoundError{Repository: repo.String()}
 
 	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusTooManyRequests:
-		// A 403 is GitHub's rate-limit answer when the anonymous budget is
+		// A 403 is GitHub's rate-limit answer when this caller's budget is
 		// spent, but it is also the answer to other refusals — so only the
 		// spent-budget header promotes it.
 		if strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0" {

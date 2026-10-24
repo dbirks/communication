@@ -72,6 +72,10 @@ var (
 	// attached to another run — a 422 refusal; re-attach through that run,
 	// never a second attachment.
 	ErrRunSourceArtifactTaken = errors.New("api: the named artifact is already attached to another run")
+	// ErrRunRepositoryNotInProject (ADR-0060): the explicit `repository_id` a
+	// POST /runs body named is not a repository of the run's project — a 422
+	// refusal (the caller named a visible-ish object and the claim is false).
+	ErrRunRepositoryNotInProject = errors.New("api: the named repository is not of this project")
 	// ErrNodeExecutionNotFound is route 31's 404: the retry body named a
 	// `node_instance_keys[]` entry that is not a node execution of the run.
 	// The client asked to act on a row that does not exist — a client error,
@@ -87,6 +91,10 @@ const (
 	RunConflictState                 = "run_state_conflict"
 	RunConflictIdempotencyMismatch   = "idempotency_key_mismatch"
 )
+
+// RunRepositoryCodeInvalid is the POST /runs refusal for an explicit
+// `repository_id` that names no repository of the run's project (ADR-0060).
+const RunRepositoryCodeInvalid = "invalid_repository"
 
 // RunConflictError is a refused run lifecycle action that must answer 409
 // with the run's current status so the client can re-read cheaply
@@ -133,7 +141,9 @@ func (e *RunInputsInvalid) Error() string { return "api: run inputs failed valid
 
 // RunSummaryView is the RunSummary schema. The digests ride the list row on
 // purpose: "which revision is this run executing?" is a first-glance
-// question with pinned, immutable data as its answer.
+// question with pinned, immutable data as its answer. The repository is
+// ADR-0060's: the run's repository (nullable — a project-wide intent or a
+// resolved inputs.repository names none) and its display name.
 type RunSummaryView struct {
 	ID                 string     `json:"id"`
 	ProjectID          string     `json:"project_id"`
@@ -147,6 +157,8 @@ type RunSummaryView struct {
 	Depth              int        `json:"depth"`
 	ParentRunID        *string    `json:"parent_run_id"`
 	TriggeredBy        *string    `json:"triggered_by"`
+	RepositoryID       *string    `json:"repository_id"`
+	RepositoryName     *string    `json:"repository_name"`
 	Priority           int        `json:"priority"`
 	CreatedAt          time.Time  `json:"created_at"`
 	StartedAt          *time.Time `json:"started_at"`
@@ -174,6 +186,15 @@ var runTriggerKinds = map[string]bool{
 	"schedule": true,
 	"issue":    true,
 	"thread":   true,
+}
+
+// RunListFilter is the optional narrowing the project run list answers (ADR-0056
+// + ADR-0060): the started-by kind, one repository, or one assignment pin.
+// Empty members mean "no filter".
+type RunListFilter struct {
+	Trigger      string
+	RepositoryID string
+	AssignmentID string
 }
 
 // RunSummaryListView is the RunSummaryList envelope.
@@ -396,7 +417,9 @@ type RunTreeView struct {
 }
 
 // AssignmentView is the Assignment schema: a pin plus budgets — not a
-// rollout channel and not a promotion workflow (all M6).
+// rollout channel and not a promotion workflow (all M6). The repository is
+// ADR-0060's: the repository this pipeline is used in, or null for the whole
+// project (the legacy / any-repo meaning).
 type AssignmentView struct {
 	ID                   string          `json:"id"`
 	ProjectID            string          `json:"project_id"`
@@ -411,8 +434,21 @@ type AssignmentView struct {
 	Version              int             `json:"version"`
 	CreatedAt            time.Time       `json:"created_at"`
 	UpdatedAt            time.Time       `json:"updated_at"`
+	// RepositoryID is the repository this pipeline is used in; null means the
+	// whole project (ADR-0060). RepositoryName is the read-only display name of
+	// that repository (null together with the id).
+	RepositoryID   *string `json:"repository_id"`
+	RepositoryName *string `json:"repository_name"`
 
 	MyRole string `json:"-"`
+}
+
+// AssignmentListFilter is the optional narrowing the assignment list answers
+// (ADR-0060): one repository (the repo's assignments plus the project-wide ones)
+// and/or one workflow.
+type AssignmentListFilter struct {
+	RepositoryID string
+	PipelineID   string
 }
 
 // AssignmentListView is the AssignmentList envelope.
@@ -452,10 +488,11 @@ type RunStore interface {
 	// from a memory and never names the worker.
 	GetRun(ctx context.Context, c Caller, runID string) (RunView, error)
 	ListProjectRuns(ctx context.Context, c Caller, projectID string) ([]RunSummaryView, error)
-	// ListProjectRunsFiltered is route 21's ADR-0056 read: the project's runs,
+	// ListProjectRunsFiltered is route 21's narrowed read: the project's runs,
 	// optionally kept only to the started-by trigger kind (validated by the
-	// handler before it reaches the store).
-	ListProjectRunsFiltered(ctx context.Context, c Caller, projectID string, trigger string) ([]RunSummaryView, error)
+	// handler before it reaches the store) and to one repository / assignment
+	// (ADR-0060).
+	ListProjectRunsFiltered(ctx context.Context, c Caller, projectID string, f RunListFilter) ([]RunSummaryView, error)
 	// ListRunNodes returns every node execution ordered by
 	// node_instance_key (route 24).
 	ListRunNodes(ctx context.Context, c Caller, runID string) ([]NodeExecutionView, error)
@@ -513,7 +550,7 @@ type RunStore interface {
 // ErrAssignmentNotFound) and appending assignment.created /
 // assignment.updated (with the before/after pair) in its transaction.
 type AssignmentStore interface {
-	ListAssignments(ctx context.Context, c Caller, projectID string) ([]AssignmentView, error)
+	ListAssignments(ctx context.Context, c Caller, projectID string, f AssignmentListFilter) ([]AssignmentView, error)
 	// CreateAssignment validates the pin (the revision must be published,
 	// of pipeline_id, and in this organization — 404 otherwise) and the
 	// budget layering (ErrBudgetOverridesRaise when an override RAISES a
@@ -561,6 +598,10 @@ type RunCreateInput struct {
 	Key                string
 	RequestSHA         string
 	TriggeredBy        string
+	// RepositoryID (ADR-0060) is the explicit "this run works on this
+	// repository" member; empty means the run's repository came from the
+	// assignment or an inputs.repository name instead.
+	RepositoryID string
 	// Source (ADR-0053): the thread this run is handed from; nil = ordinary run.
 	Source *RunSourceInput
 }
@@ -580,6 +621,9 @@ type AssignmentCreateInput struct {
 	PinnedRevisionID  string
 	MaxConcurrentRuns int // 0 ⇒ server default 1
 	BudgetOverrides   json.RawMessage
+	// RepositoryID (ADR-0060) is the repository this pipeline is used in; empty
+	// means the whole project (the legacy / any-repo meaning).
+	RepositoryID string `json:"repository_id,omitempty"`
 }
 
 // AssignmentPatchInput is route 19's body; nil members do not move.
@@ -588,6 +632,9 @@ type AssignmentPatchInput struct {
 	MaxConcurrentRuns *int
 	BudgetOverrides   *json.RawMessage
 	Enabled           *bool
+	// RepositoryID (ADR-0060) is immutable once the assignment exists; a change
+	// is refused with 422, never silently moved.
+	RepositoryID *string `json:"repository_id,omitempty"`
 }
 
 // --- request bodies ----------------------------------------------------------
@@ -604,6 +651,10 @@ type rnRunCreateBody struct {
 	Inputs             map[string]json.RawMessage `json:"inputs,omitempty"`
 	Idempotency        string                     `json:"idempotency,omitempty"`
 	Source             *rnRunSourceBody           `json:"source,omitempty"`
+	// RepositoryID (ADR-0060) is the explicit "this run works on this
+	// repository" member; empty means the run's repository came from the
+	// assignment or an inputs.repository name instead.
+	RepositoryID string `json:"repository_id,omitempty"`
 }
 
 type rnRetryBody struct {
@@ -617,6 +668,9 @@ type rnAssignmentCreateBody struct {
 	PinnedRevisionID  string          `json:"pinned_revision_id"`
 	MaxConcurrentRuns int             `json:"max_concurrent_runs,omitempty"`
 	BudgetOverrides   json.RawMessage `json:"budget_overrides,omitempty"`
+	// RepositoryID (ADR-0060) is the repository this pipeline is used in; empty
+	// means the whole project (the legacy / any-repo meaning).
+	RepositoryID string `json:"repository_id,omitempty"`
 }
 
 type rnAssignmentPatchBody struct {
@@ -624,9 +678,29 @@ type rnAssignmentPatchBody struct {
 	MaxConcurrentRuns *int             `json:"max_concurrent_runs,omitempty"`
 	BudgetOverrides   *json.RawMessage `json:"budget_overrides,omitempty"`
 	Enabled           *bool            `json:"enabled,omitempty"`
+	// RepositoryID (ADR-0060) is immutable once the assignment exists; a change
+	// is refused with 422, never silently moved.
+	RepositoryID *string `json:"repository_id,omitempty"`
 }
 
 var m4IdempotencyKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// rnRunRepositoryInput reads the optional `repository` string input of a run
+// create body (ADR-0060): the repository-binding name the caller named, which
+// the run resolves to one of the project's repositories by exact,
+// case-sensitive name. Absent or non-string ⇒ no resolution (the run then
+// keeps the repository its pin or its caller named, or none).
+func rnRunRepositoryInput(inputs map[string]json.RawMessage) (string, bool) {
+	raw, ok := inputs["repository"]
+	if !ok {
+		return "", false
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		return "", false
+	}
+	return name, true
+}
 
 // RegisterRuns mounts routes 17–33. projects is used for the role gates on
 // the project-prefixed routes and mutation role checks; the run/approval
@@ -685,7 +759,22 @@ func (h *rnHandlers) listAssignments(w http.ResponseWriter, r *http.Request) {
 	if !h.requireProjectRole(w, r, c, projectID, "assignment.list", rnView) {
 		return
 	}
-	items, err := h.assignments.ListAssignments(r.Context(), c, projectID)
+	// ADR-0060: the list may narrow to one repository (the repo's assignments
+	// plus the project-wide ones) and to one workflow.
+	query := r.URL.Query()
+	repositoryID := query.Get("repository_id")
+	pipelineID := query.Get("pipeline_id")
+	if repositoryID != "" && !validUUID(repositoryID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request", "repository_id must be a uuid.")
+		return
+	}
+	if pipelineID != "" && !validUUID(pipelineID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request", "pipeline_id must be a uuid.")
+		return
+	}
+	items, err := h.assignments.ListAssignments(r.Context(), c, projectID, AssignmentListFilter{
+		RepositoryID: repositoryID, PipelineID: pipelineID,
+	})
 	if err != nil {
 		h.fail(w, r, c, projectID, "assignment.list", err)
 		return
@@ -725,11 +814,34 @@ func (h *rnHandlers) createAssignment(w http.ResponseWriter, r *http.Request) {
 		rnInvalid(w, "budget_overrides must be a JSON object of ceilings.")
 		return
 	}
+	if body.RepositoryID != "" && !validUUID(body.RepositoryID) {
+		rnInvalid(w, "repository_id must be a uuid.")
+		return
+	}
+	if body.RepositoryID != "" {
+		repos, err := h.projects.ListRepositories(r.Context(), c, projectID)
+		if err != nil {
+			h.fail(w, r, c, projectID, "assignment.create", err)
+			return
+		}
+		found := false
+		for _, repo := range repos {
+			if repo.ID == body.RepositoryID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			rnInvalid(w, "repository_id must be a repository of this project.")
+			return
+		}
+	}
 	item, err := h.assignments.CreateAssignment(r.Context(), c, projectID, AssignmentCreateInput{
 		PipelineID:        body.PipelineID,
 		PinnedRevisionID:  body.PinnedRevisionID,
 		MaxConcurrentRuns: body.MaxConcurrentRuns,
 		BudgetOverrides:   body.BudgetOverrides,
+		RepositoryID:      body.RepositoryID,
 	})
 	if err != nil {
 		h.fail(w, r, c, projectID, "assignment.create", err)
@@ -764,6 +876,12 @@ func (h *rnHandlers) patchAssignment(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.PinnedRevisionID != nil && !validUUID(*body.PinnedRevisionID) {
 		rnInvalid(w, "pinned_revision_id must be a uuid.")
+		return
+	}
+	if body.RepositoryID != nil {
+		// ADR-0060: the repository is immutable once the assignment exists; a
+		// re-pin may move the pinned revision, never the repository.
+		rnInvalid(w, "repository_id is immutable on an assignment; re-pin the revision instead.")
 		return
 	}
 	if body.MaxConcurrentRuns != nil && (*body.MaxConcurrentRuns < 1 || *body.MaxConcurrentRuns > 8) {
@@ -823,7 +941,24 @@ func (h *rnHandlers) listRuns(w http.ResponseWriter, r *http.Request) {
 			"invalid_trigger: trigger must be one of manual, schedule, issue, thread.")
 		return
 	}
-	items, err := h.store.ListProjectRunsFiltered(r.Context(), c, projectID, trigger)
+	// ADR-0060: the run-list repository / assignment filters (the repository
+	// a run works on, or the pin it started from).
+	query := r.URL.Query()
+	repositoryID := query.Get("repository_id")
+	assignmentID := query.Get("assignment_id")
+	if repositoryID != "" && !validUUID(repositoryID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request", "repository_id must be a uuid.")
+		return
+	}
+	if assignmentID != "" && !validUUID(assignmentID) {
+		WriteProblem(w, http.StatusBadRequest, "Bad Request", "assignment_id must be a uuid.")
+		return
+	}
+	items, err := h.store.ListProjectRunsFiltered(r.Context(), c, projectID, RunListFilter{
+		Trigger:      trigger,
+		RepositoryID: repositoryID,
+		AssignmentID: assignmentID,
+	})
 	if err != nil {
 		h.fail(w, r, c, projectID, "run.list", err)
 		return
@@ -903,6 +1038,58 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ADR-0060: resolve the repository the run works on, first that applies:
+	// the explicit body member (validated against the run's project — a
+	// repository of another project is the 422 `invalid_repository` refusal),
+	// then the assignment's repository (a repo-scoped assignment names the one
+	// repository the run works on; a project-wide one leaves the question open
+	// to the inputs below), then an `inputs.repository` name resolved to a
+	// repository of the project by exact, case-sensitive name. Issue-fired and
+	// schedule-fired runs resolve inside the fire paths instead; a manual or
+	// thread start rides this list.
+	var repositoryID string
+	if body.RepositoryID != "" {
+		repos, err := h.projects.ListRepositories(r.Context(), c, projectID)
+		if err != nil {
+			h.fail(w, r, c, projectID, "run.create", err)
+			return
+		}
+		for _, repo := range repos {
+			if repo.ID == body.RepositoryID {
+				repositoryID = body.RepositoryID
+				break
+			}
+		}
+		if repositoryID == "" {
+			h.fail(w, r, c, projectID, "run.create", ErrRunRepositoryNotInProject)
+			return
+		}
+	} else if body.AssignmentID != "" {
+		current, err := h.assignments.GetAssignment(r.Context(), c, body.AssignmentID)
+		if err != nil {
+			h.fail(w, r, c, projectID, "run.create", err)
+			return
+		}
+		if current.RepositoryID != nil && *current.RepositoryID != "" {
+			repositoryID = *current.RepositoryID
+		}
+	}
+	if repositoryID == "" {
+		if name, ok := rnRunRepositoryInput(body.Inputs); ok {
+			repos, err := h.projects.ListRepositories(r.Context(), c, projectID)
+			if err != nil {
+				h.fail(w, r, c, projectID, "run.create", err)
+				return
+			}
+			for _, repo := range repos {
+				if repo.Name == name {
+					repositoryID = repo.ID
+					break
+				}
+			}
+		}
+	}
+
 	run, created, err := h.store.CreateRun(r.Context(), c, RunCreateInput{
 		ProjectID:          projectID,
 		AssignmentID:       body.AssignmentID,
@@ -911,6 +1098,7 @@ func (h *rnHandlers) createRun(w http.ResponseWriter, r *http.Request) {
 		Key:                key,
 		RequestSHA:         m4SHA256(raw),
 		TriggeredBy:        c.UserID,
+		RepositoryID:       repositoryID,
 		Source:             source,
 	})
 	if err != nil {
@@ -1451,6 +1639,13 @@ func (h *rnHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, reso
 		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, "source-artifact-taken",
 			"Artifact already attached",
 			"The named artifact is already attached to another run; it cannot ride two runs at once.")
+	case errors.Is(err, ErrRunRepositoryNotInProject):
+		// ADR-0060: an explicit `repository_id` that is not of the project the
+		// run is created in refuses here — never silently falling back to the
+		// project-wide pin.
+		m4WriteTypedProblem(w, http.StatusUnprocessableEntity, RunRepositoryCodeInvalid,
+			"Invalid Repository",
+			"The repository_id names a repository of another project; start the run in the repository's project.")
 	case errors.Is(err, ErrAssignmentConflict):
 		m4WriteTypedProblem(w, http.StatusConflict, "assignment-already-exists",
 			"Assignment already exists",

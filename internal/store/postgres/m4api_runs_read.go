@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -106,8 +107,11 @@ func m4RunReadNotFound() error {
 }
 
 // m4RunSummary projects a Run row onto the RunSummary schema. Every digest on
-// it is the pinned copy from creation, never a re-resolve (12 case 11).
-func m4RunSummary(r Run) api.RunSummaryView {
+// it is the pinned copy from creation, never a re-resolve (12 case 11). The
+// repository is ADR-0060's: the run's repository id (nullable on the wire) and
+// its display name (null when the run has none — a project-wide intent or a
+// resolved inputs.repository).
+func m4RunSummary(r Run, repositoryName string) api.RunSummaryView {
 	v := api.RunSummaryView{
 		ID: r.ID, ProjectID: r.ProjectID, PipelineID: r.PipelineID,
 		PipelineRevisionID: r.PipelineRevisionID,
@@ -119,6 +123,10 @@ func m4RunSummary(r Run) api.RunSummaryView {
 	v.FailedCause = m4RunReadPtr(r.FailedCause)
 	v.ParentRunID = m4RunReadPtr(r.ParentRunID)
 	v.TriggeredBy = m4RunReadPtr(r.TriggeredBy)
+	v.RepositoryID = m4RunReadPtr(r.RepositoryID)
+	if r.RepositoryID != "" {
+		v.RepositoryName = m4RunReadPtr(repositoryName)
+	}
 	v.Trigger = m4RunTrigger(r)
 	return v
 }
@@ -230,8 +238,16 @@ func (a APIRunStore) GetRun(ctx context.Context, c api.Caller, runID string) (ap
 // m4RunReadView assembles the Run schema from the row plus its two joined
 // reads (run_inputs, the revision's digest_scope) and the placement answer.
 func (a APIRunStore) m4RunReadView(ctx context.Context, pool *pgxpool.Pool, r Run, role string) (api.RunView, error) {
+	repositoryName := ""
+	if r.RepositoryID != "" {
+		n, err := m4RunRepositoryName(ctx, pool, r.RepositoryID)
+		if err != nil {
+			return api.RunView{}, err
+		}
+		repositoryName = n
+	}
 	view := api.RunView{
-		RunSummaryView:        m4RunSummary(r),
+		RunSummaryView:        m4RunSummary(r, repositoryName),
 		PausedReason:          m4RunReadPtr(r.PausedReason),
 		ExpressionEvaluations: r.ExpressionEvals,
 		Placement:             m4RunReadPlacement(ctx, pool, r),
@@ -290,19 +306,19 @@ func m4RunReadInputs(ctx context.Context, pool *pgxpool.Pool, runID string) ([]a
 // ListProjectRuns is route 21: the project's runs newest-first. An invisible
 // project answers api.ErrProjectNotFound (the handler's own project gate
 // agrees), never an empty list that pretends the project has no runs. The
-// assistant's read surface reuses it with no trigger filter.
+// assistant's read surface reuses it with no filter.
 func (a APIRunStore) ListProjectRuns(ctx context.Context, c api.Caller, projectID string) ([]api.RunSummaryView, error) {
-	return a.listProjectRuns(ctx, c, projectID, "")
+	return a.listProjectRuns(ctx, c, projectID, api.RunListFilter{})
 }
 
-// ListProjectRunsFiltered is route 21's ADR-0056 trigger-filtered read: the
-// project's runs, optionally kept only to the started-by kind (the handler
-// validates the kind before it reaches the store).
-func (a APIRunStore) ListProjectRunsFiltered(ctx context.Context, c api.Caller, projectID string, trigger string) ([]api.RunSummaryView, error) {
-	return a.listProjectRuns(ctx, c, projectID, trigger)
+// ListProjectRunsFiltered is route 21's narrowed read: the project's runs,
+// optionally kept only to the started-by trigger kind (ADR-0056, validated by
+// the handler), to one repository (ADR-0060) or to one assignment pin.
+func (a APIRunStore) ListProjectRunsFiltered(ctx context.Context, c api.Caller, projectID string, f api.RunListFilter) ([]api.RunSummaryView, error) {
+	return a.listProjectRuns(ctx, c, projectID, f)
 }
 
-func (a APIRunStore) listProjectRuns(ctx context.Context, c api.Caller, projectID, trigger string) ([]api.RunSummaryView, error) {
+func (a APIRunStore) listProjectRuns(ctx context.Context, c api.Caller, projectID string, f api.RunListFilter) ([]api.RunSummaryView, error) {
 	pool, err := m4RunReadPool(a)
 	if err != nil {
 		return nil, err
@@ -310,15 +326,87 @@ func (a APIRunStore) listProjectRuns(ctx context.Context, c api.Caller, projectI
 	if _, err := m4RunReadProjectScope(ctx, pool, c, projectID); err != nil {
 		return nil, err
 	}
-	runs, err := a.Runs.ListProjectRuns(ctx, projectID, trigger)
+	runs, err := a.Runs.ListProjectRuns(ctx, projectID, f.Trigger, f.RepositoryID, f.AssignmentID)
+	if err != nil {
+		return nil, err
+	}
+	// ADR-0060: the repository name rides the summary, resolved from the runs'
+	// repository ids in one shot per list (never a per-run lookup).
+	repoNames, err := m4RunRepositoryNames(ctx, pool, projectID, runs)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]api.RunSummaryView, 0, len(runs))
 	for _, r := range runs {
-		out = append(out, m4RunSummary(r))
+		name := ""
+		if r.RepositoryID != "" {
+			name = repoNames[r.RepositoryID]
+		}
+		out = append(out, m4RunSummary(r, name))
 	}
 	return out, nil
+}
+
+// m4RunRepositoryNames resolves the display names of the repositories a run
+// list names (ADR-0060: the run's repository rides the summary, and the name is
+// resolved in one shot per list — never a per-run lookup, and never a guess
+// when the repository row is gone: an empty name means no repository).
+func m4RunRepositoryNames(ctx context.Context, pool *pgxpool.Pool, projectID string, runs []Run) (map[string]string, error) {
+	ids := map[string]bool{}
+	for _, r := range runs {
+		if r.RepositoryID != "" {
+			ids[r.RepositoryID] = true
+		}
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var placeholders []string
+	var args []any
+	first := true
+	for id := range ids {
+		if !first {
+			placeholders = append(placeholders, ", ")
+		}
+		placeholders = append(placeholders, fmt.Sprintf("$%d::uuid", len(args)+2))
+		args = append(args, id)
+		first = false
+	}
+	rows, err := pool.Query(ctx, fmt.Sprintf(`
+		SELECT id::text, name FROM repositories
+		WHERE project_id = $1::uuid AND id IN (%s)`, strings.Join(placeholders, "")),
+		append([]any{projectID}, args...)...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: read run repositories: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("postgres: scan run repository: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: read run repositories rows: %w", err)
+	}
+	return out, nil
+}
+
+// m4RunRepositoryName resolves one run's repository display name (ADR-0060:
+// the run's repository rides the summary; the name is the repository row's
+// name, empty when the repository is gone — never a guess dressed as data).
+func m4RunRepositoryName(ctx context.Context, pool *pgxpool.Pool, repositoryID string) (string, error) {
+	var name string
+	if err := pool.QueryRow(ctx, `
+		SELECT name FROM repositories WHERE id = $1::uuid`, repositoryID).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("postgres: read run repository %s: %w", repositoryID, err)
+	}
+	return name, nil
 }
 
 // m4RunNodeView projects a node execution row. Iterations/Items stay nil —
@@ -534,7 +622,7 @@ func (a APIRunStore) m4RunReadTree(ctx context.Context, pool *pgxpool.Pool, proj
 		// pipeline_invocations says about the relationship.
 		return api.RunTreeView{}, m4RunReadNotFound()
 	}
-	tree := api.RunTreeView{Run: m4RunSummary(r), Children: []api.RunTreeView{}}
+	tree := api.RunTreeView{Run: m4RunSummary(r, ""), Children: []api.RunTreeView{}}
 
 	rows, err := pool.Query(ctx, m4RunReadChildrenSQL, runID)
 	if err != nil {

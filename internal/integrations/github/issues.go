@@ -3,14 +3,18 @@
 // trigger/query/action provider contract, restricted to reading issues so a
 // user can start a run from one.
 //
-// ANONYMOUS ONLY, BY DESIGN. Every request this package makes is
-// unauthenticated, so only public repositories are readable. No token, no
-// Authorization header, nothing read from the environment: GitHub's own
-// unauthenticated rate budget is small (60 requests/hour per IP), which the
-// caller sees as a typed RateLimitError rather than a hang. Token support
-// belongs to the scoped secrets path (ADR-0018: keyrings, `SecretRef`
-// materialization, never env scraping) and is deliberately not implemented
-// here — see ADR-0031.
+// ANONYMOUS BY DEFAULT, AUTHENTICATED ON REQUEST (ADR-0031, ADR-0061 §5). A
+// call that passes no token is unauthenticated and can only read public
+// repositories, under GitHub's small unauthenticated rate budget (60
+// requests/hour per IP) which the caller sees as a typed RateLimitError
+// rather than a hang. A call that passes a token sends it as
+// `Authorization: Bearer <token>` and may read the private repositories the
+// token can see. The token travels per call as an argument to ListIssues and
+// is never stored on the Client (the client is shared across projects),
+// never read from the environment, and never appears in a URL, error or log
+// line. The token's origin is the scoped-secrets path (ADR-0018 keyrings and
+// `SecretRef` materialization, ADR-0061's per-repository
+// `integration_broker` credential) — callers resolve it before the call.
 //
 // The read half only: no webhook receiver, no trigger, no `integration.query`
 // node kind (it stays in the compiler's deferredKinds), and no comment/close/
@@ -125,10 +129,11 @@ type IssueQuery struct {
 
 // IssueLister is the query surface: read issues, change nothing. It is the
 // interface the API handlers take, so a test can drive a route without a
-// network and a later token-backed implementation can replace this package's
-// Client without touching a handler.
+// network. The token argument is the per-call credential (ADR-0061 §5):
+// empty means an anonymous call, non-empty means the call is authorized by
+// that token; it never persists on the lister.
 type IssueLister interface {
-	ListIssues(ctx context.Context, repo Repository, q IssueQuery) ([]Issue, error)
+	ListIssues(ctx context.Context, repo Repository, q IssueQuery, token string) ([]Issue, error)
 }
 
 // Sentinel errors for the three cases a handler must distinguish. Wrap-check
@@ -140,8 +145,8 @@ var (
 	// ErrRateLimited: GitHub refused for budget rather than for content. The
 	// caller should back off, not retry immediately.
 	ErrRateLimited = errors.New("github: rate limited")
-	// ErrRepositoryNotFound: GitHub answered 404. An anonymous request cannot
-	// tell "does not exist" from "private", and says so.
+	// ErrRepositoryNotFound: GitHub answered 404. An unauthenticated request
+	// cannot tell "does not exist" from "private", and says so.
 	ErrRepositoryNotFound = errors.New("github: repository not found")
 )
 
@@ -166,9 +171,9 @@ type RateLimitError struct {
 
 func (e *RateLimitError) Error() string {
 	if e.Reset.IsZero() {
-		return "github: rate limited (anonymous budget exhausted)"
+		return "github: rate limited (request budget exhausted)"
 	}
-	return fmt.Sprintf("github: rate limited (anonymous budget exhausted, resets %s)",
+	return fmt.Sprintf("github: rate limited (request budget exhausted, resets %s)",
 		e.Reset.UTC().Format(time.RFC3339))
 }
 
@@ -179,7 +184,7 @@ func (e *RateLimitError) Unwrap() error { return ErrRateLimited }
 type NotFoundError struct{ Repository string }
 
 func (e *NotFoundError) Error() string {
-	return fmt.Sprintf("github: repository %s not found (an anonymous request cannot read private repositories)", e.Repository)
+	return fmt.Sprintf("github: repository %s not found (private repositories are invisible to unauthenticated requests)", e.Repository)
 }
 
 // Unwrap makes errors.Is(err, ErrRepositoryNotFound) true.

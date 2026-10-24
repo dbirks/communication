@@ -9245,6 +9245,20 @@ components:
         pinned_version_label:
           type: ["string", "null"]
           pattern: "^\\d+\\.\\d+\\.\\d+$"
+        repository_id:
+          type: ["string", "null"]
+          format: uuid
+          description: >
+            The repository this pipeline is used in (ADR-0060); null means the
+            whole project — the legacy / any-repo meaning. A repo-scoped
+            assignment names exactly one repository of its project; a
+            project-wide assignment (null) covers every repository of the
+            project.
+        repository_name:
+          type: ["string", "null"]
+          description: >
+            Read-only display name of `repository_id`; null together with a
+            null `repository_id`.
         max_concurrent_runs:
           type: integer
           minimum: 1
@@ -9301,6 +9315,13 @@ components:
           description: >
             Ceilings only: a value that raises a limit is `400`
             `budget_overrides_may_only_lower`.
+        repository_id:
+          type: ["string", "null"]
+          format: uuid
+          description: >
+            The repository this pipeline is used in (ADR-0060); null means the
+            whole project (the legacy / any-repo meaning). A repo-scoped
+            assignment names one repository of its project.
     AssignmentPatch:
       title: AssignmentPatch
       description: >
@@ -9322,6 +9343,14 @@ components:
           additionalProperties: true
         enabled:
           type: boolean
+        repository_id:
+          type: ["string", "null"]
+          format: uuid
+          description: >
+            The repository this pipeline is used in (ADR-0060); immutable once
+            the assignment exists — sending a value here is the `422`
+            `repository_mismatch`-style refusal (`repository_id_is_immutable`),
+            never a silent move. Null (the whole project) may not be set either.
     # ---------------------------------------------- M6: schedules -----------
     Schedule:
       title: Schedule

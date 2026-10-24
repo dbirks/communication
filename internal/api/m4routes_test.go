@@ -294,7 +294,7 @@ func (f *m4Runs) ListProjectRuns(_ context.Context, _ Caller, projectID string) 
 	}
 	return f.runs, nil
 }
-func (f *m4Runs) ListProjectRunsFiltered(_ context.Context, _ Caller, projectID string, trigger string) ([]RunSummaryView, error) {
+func (f *m4Runs) ListProjectRunsFiltered(_ context.Context, _ Caller, projectID string, _ RunListFilter) ([]RunSummaryView, error) {
 	if projectID != "p-1" {
 		return nil, ErrProjectNotFound
 	}
@@ -368,7 +368,7 @@ type m4Assignments struct {
 	denied     []string
 }
 
-func (f *m4Assignments) ListAssignments(context.Context, Caller, string) ([]AssignmentView, error) {
+func (f *m4Assignments) ListAssignments(context.Context, Caller, string, AssignmentListFilter) ([]AssignmentView, error) {
 	return f.list, nil
 }
 func (f *m4Assignments) CreateAssignment(_ context.Context, _ Caller, projectID string, in AssignmentCreateInput) (AssignmentView, error) {

@@ -62,6 +62,11 @@ func itSetup(t *testing.T) *itFixture {
 		bg := context.Background()
 		for _, step := range []string{
 			`DELETE FROM issue_triggers WHERE project_id = $1`,
+			// ADR-0060: a fired run records the trigger's repository; the FK
+			// goes away only when the repository does, and the fixture's run
+			// cleanup runs after this callback — so the pointer is cleared
+			// here, never the run.
+			`UPDATE runs SET repository_id = NULL WHERE project_id = $1`,
 			`DELETE FROM repositories WHERE project_id = $1`,
 		} {
 			if _, err := f.pool.Exec(bg, step, f.projectID); err != nil {
@@ -167,8 +172,8 @@ func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLi
 	return &itIssueLister{client: c, server: srv, handler: handler}
 }
 
-func (l *itIssueLister) ListIssues(ctx context.Context, repo github.Repository, q github.IssueQuery) ([]github.Issue, error) {
-	return l.client.ListIssues(ctx, repo, q)
+func (l *itIssueLister) ListIssues(ctx context.Context, repo github.Repository, q github.IssueQuery, token string) ([]github.Issue, error) {
+	return l.client.ListIssues(ctx, repo, q, token)
 }
 
 func (l *itIssueLister) Close() { l.server.Close() }

@@ -36,7 +36,7 @@ const m4AssignmentColumns = `
 	x.id, x.project_id, x.pipeline_id, x.pinned_revision_id,
 	r.revision_digest, r.version_label,
 	x.max_concurrent_runs, x.budget_overrides, x.enabled, x.version,
-	x.created_at, x.updated_at,
+	x.created_at, x.updated_at, x.repository_id, COALESCE(r2.name, ''),
 	COALESCE(m.role, CASE WHEN $3::boolean THEN 'maintainer' ELSE '' END),
 	r.compiled_plan`
 
@@ -48,6 +48,7 @@ const m4AssignmentScope = `
 	FROM assignments x
 	JOIN projects p ON p.id = x.project_id
 	JOIN pipeline_revisions r ON r.id = x.pinned_revision_id
+	LEFT JOIN repositories r2 ON r2.id = x.repository_id
 	LEFT JOIN memberships m ON m.project_id = p.id AND m.user_id = $1::uuid
 	WHERE p.organization_id = $2::uuid
 	  AND ($3::boolean OR m.user_id IS NOT NULL)`
@@ -70,12 +71,12 @@ func (a APIAssignmentStore) pool() (*pgxpool.Pool, error) {
 
 func m4AssignmentViewScan(id, projectID, pipelineID, revID, digest string, label *string,
 	maxConcurrent int, overrides []byte, enabled bool, version int, createdAt, updatedAt time.Time,
-	role string, plan []byte) (api.AssignmentView, error) {
+	role string, plan []byte, repositoryID *string, repositoryName string) (api.AssignmentView, error) {
 	effective, err := m4EffectiveBudgets(plan, orEmptyJSON(overrides))
 	if err != nil {
 		return api.AssignmentView{}, err
 	}
-	return api.AssignmentView{
+	v := api.AssignmentView{
 		ID: id, ProjectID: projectID, PipelineID: pipelineID,
 		PinnedRevisionID: revID, PinnedRevisionDigest: digest, PinnedVersionLabel: label,
 		MaxConcurrentRuns: maxConcurrent,
@@ -83,15 +84,36 @@ func m4AssignmentViewScan(id, projectID, pipelineID, revID, digest string, label
 		EffectiveBudgets:  effective,
 		Enabled:           enabled, Version: version,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
-		MyRole: role,
-	}, nil
+		RepositoryID: repositoryID,
+		MyRole:       role,
+	}
+	if repositoryID != nil {
+		name := repositoryName
+		v.RepositoryName = &name
+	}
+	return v, nil
+}
+
+// m4AssignmentRepositoryName resolves one assignment's repository display
+// name (ADR-0060): the repository row's name, empty when the repository is
+// gone — never a guess dressed as data.
+func m4AssignmentRepositoryName(ctx context.Context, pool *pgxpool.Pool, repositoryID *string) (string, error) {
+	var name string
+	if err := pool.QueryRow(ctx, `
+		SELECT name FROM repositories WHERE id = $1::uuid`, *repositoryID).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("postgres: read assignment repository %s: %w", *repositoryID, err)
+	}
+	return name, nil
 }
 
 // ListAssignments is route 17: the project's assignments under the caller's
 // predicate, newest first. An invisible project yields the empty list (the
 // handler has already 403/404'd a project the caller may not read; the
 // predicate here is what keeps a wrong projectID from leaking rows).
-func (a APIAssignmentStore) ListAssignments(ctx context.Context, c api.Caller, projectID string) ([]api.AssignmentView, error) {
+func (a APIAssignmentStore) ListAssignments(ctx context.Context, c api.Caller, projectID string, f api.AssignmentListFilter) ([]api.AssignmentView, error) {
 	pool, err := a.pool()
 	if err != nil {
 		return nil, err
@@ -100,12 +122,31 @@ func (a APIAssignmentStore) ListAssignments(ctx context.Context, c api.Caller, p
 	if err := prjRequireCaller(cc); err != nil {
 		return nil, err
 	}
+	args := []any{cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, projectID}
+	var conds []string
+	addCond := func(clause string, values ...any) {
+		args = append(args, values...)
+		conds = append(conds, clause)
+	}
+	if f.RepositoryID != "" {
+		// ADR-0060: the repository's assignments PLUS the project-wide ones.
+		addCond(fmt.Sprintf("(x.repository_id = $%d::uuid OR x.repository_id IS NULL)", len(args)+1), f.RepositoryID)
+	}
+	if f.PipelineID != "" {
+		addCond(fmt.Sprintf("x.pipeline_id = $%d::uuid", len(args)+1), f.PipelineID)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "\n	  AND " + conds[0]
+		for _, c := range conds[1:] {
+			where += "\n	  AND " + c
+		}
+	}
 	rows, err := pool.Query(ctx, `
 		SELECT `+m4AssignmentColumns+`
 		`+m4AssignmentScope+`
-		  AND x.project_id = $4::uuid
-		ORDER BY x.created_at DESC, x.id DESC`,
-		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, projectID)
+		  AND x.project_id = $4::uuid`+where+`
+		ORDER BY x.created_at DESC, x.id DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: api list assignments: %w", err)
 	}
@@ -132,10 +173,12 @@ func m4ScanAssignment(row pgx.Row) (api.AssignmentView, error) {
 		createdAt, updatedAt                     time.Time
 		role                                     string
 		plan                                     []byte
+		repositoryName                           string
 	)
+	var repositoryID *string
 	if err := row.Scan(&id, &projectID, &pipelineID, &revID, &digest, &label,
 		&maxConcurrent, &overrides, &enabled, &version, &createdAt, &updatedAt,
-		&role, &plan); err != nil {
+		&repositoryID, &repositoryName, &role, &plan); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The predicate missed: the same bytes a random uuid produces.
 			return api.AssignmentView{}, api.ErrAssignmentNotFound
@@ -143,7 +186,7 @@ func m4ScanAssignment(row pgx.Row) (api.AssignmentView, error) {
 		return api.AssignmentView{}, fmt.Errorf("postgres: scan api assignment: %w", err)
 	}
 	return m4AssignmentViewScan(id, projectID, pipelineID, revID, digest, label,
-		maxConcurrent, overrides, enabled, version, createdAt, updatedAt, role, plan)
+		maxConcurrent, overrides, enabled, version, createdAt, updatedAt, role, plan, repositoryID, repositoryName)
 }
 
 // CreateAssignment is route 18: the pin, the ceilings and assignment.created
@@ -188,13 +231,14 @@ func (a APIAssignmentStore) CreateAssignment(ctx context.Context, c api.Caller, 
 
 	// The pin: published, of this pipeline, in this organization.
 	var (
-		revDigest  string
-		revLabel   *string
-		plan       []byte
-		revStatus  string
-		revPipeID  string
-		revOrgID   string
-		revFoundOK bool
+		repositoryID *string
+		revDigest    string
+		revLabel     *string
+		plan         []byte
+		revStatus    string
+		revPipeID    string
+		revOrgID     string
+		revFoundOK   bool
 	)
 	err = tx.QueryRow(ctx, `
 		SELECT r.revision_digest, r.version_label, r.compiled_plan, r.status, r.pipeline_id::text,
@@ -234,12 +278,13 @@ func (a APIAssignmentStore) CreateAssignment(ctx context.Context, c api.Caller, 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO assignments
 			(project_id, pipeline_id, pinned_revision_id, max_concurrent_runs,
-			 budget_overrides, created_by)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, COALESCE(NULLIF($5, '')::jsonb, '{}'::jsonb), $6::uuid)
-		RETURNING id::text, created_at`,
+			 budget_overrides, created_by, repository_id)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, COALESCE(NULLIF($5, '')::jsonb, '{}'::jsonb), $6::uuid,
+			NULLIF($7, '')::uuid)
+		RETURNING id::text, created_at, repository_id`,
 		projectID, in.PipelineID, in.PinnedRevisionID, maxConcurrent,
-		string(overrides), cc.UserID).
-		Scan(&id, &createdAt)
+		string(overrides), cc.UserID, in.RepositoryID).
+		Scan(&id, &createdAt, &repositoryID)
 	if m4UniqueViolation(err) {
 		return api.AssignmentView{}, api.ErrAssignmentConflict
 	}
@@ -262,6 +307,14 @@ func (a APIAssignmentStore) CreateAssignment(ctx context.Context, c api.Caller, 
 	if err := tx.Commit(ctx); err != nil {
 		return api.AssignmentView{}, fmt.Errorf("postgres: commit create assignment: %w", err)
 	}
+	repositoryName := ""
+	var repositoryNamePtr *string
+	if repositoryID != nil {
+		if n, err := m4AssignmentRepositoryName(ctx, pool, repositoryID); err == nil {
+			repositoryName = n
+			repositoryNamePtr = &repositoryName
+		}
+	}
 	return api.AssignmentView{
 		ID: id, ProjectID: projectID, PipelineID: in.PipelineID,
 		PinnedRevisionID: in.PinnedRevisionID, PinnedRevisionDigest: revDigest,
@@ -269,6 +322,7 @@ func (a APIAssignmentStore) CreateAssignment(ctx context.Context, c api.Caller, 
 		MaxConcurrentRuns:  maxConcurrent, BudgetOverrides: overrides,
 		EffectiveBudgets: json.RawMessage(effectiveRaw),
 		Enabled:          true, Version: 1, CreatedAt: createdAt, UpdatedAt: createdAt,
+		RepositoryID: repositoryID, RepositoryName: repositoryNamePtr,
 		MyRole: role,
 	}, nil
 }
@@ -284,11 +338,20 @@ func (a APIAssignmentStore) GetAssignment(ctx context.Context, c api.Caller, ass
 	if err := prjRequireCaller(cc); err != nil {
 		return api.AssignmentView{}, err
 	}
-	return m4ScanAssignment(pool.QueryRow(ctx, `
+	v, err := m4ScanAssignment(pool.QueryRow(ctx, `
 		SELECT `+m4AssignmentColumns+`
 		`+m4AssignmentScope+`
 		  AND x.id = $4::uuid`,
 		cc.UserID, cc.OrganizationID, cc.IsOrgAdmin, assignmentID))
+	if err != nil {
+		return api.AssignmentView{}, err
+	}
+	if v.RepositoryID != nil {
+		if n, nerr := m4AssignmentRepositoryName(ctx, pool, v.RepositoryID); nerr == nil {
+			v.RepositoryName = &n
+		}
+	}
+	return v, nil
 }
 
 // UpdateAssignment is route 19. The PATCH body carries no version member

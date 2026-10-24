@@ -27,7 +27,7 @@ type ghiListCall struct {
 }
 
 func (f *ghiFakeLister) ListIssues(ctx context.Context, repo github.Repository,
-	q github.IssueQuery) ([]github.Issue, error) {
+	q github.IssueQuery, token string) ([]github.Issue, error) {
 	f.calls = append(f.calls, ghiListCall{repo: repo, query: q})
 	if f.err != nil {
 		return nil, f.err
