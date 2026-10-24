@@ -284,6 +284,7 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 		TriggeredBy:          in.TriggeredBy,
 		TriggerKind:          triggerKind,
 		TriggerRef:           triggerRef,
+		RepositoryID:         in.RepositoryID,
 		Inputs:               inputs,
 		Key:                  in.Key,
 		RequestSHA:           in.RequestSHA,
@@ -353,23 +354,31 @@ func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	agentProfileVersion := 1
+	if in.SourceConversationID != "" {
+		if err := tx.QueryRow(ctx, `
+			SELECT agent_profile_version FROM conversations WHERE id = $1::uuid`,
+			in.SourceConversationID).Scan(&agentProfileVersion); err != nil {
+			return Run{}, false, fmt.Errorf("postgres: read source conversation %s for the profile version: %w", in.SourceConversationID, err)
+		}
+	}
 	run, err := a.Runs.scanRun(tx.QueryRow(ctx, `
 		INSERT INTO runs
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-			 trigger_kind, trigger_ref)
+			 trigger_kind, trigger_ref, repository_id, agent_profile_version)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($18, '')::uuid, $19)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef))
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion))
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}

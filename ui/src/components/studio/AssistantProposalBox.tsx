@@ -19,7 +19,7 @@
  * The page owns all state that outlives this box (`text`, `previewing`,
  * the pre-proposal text); this box owns only the instruction and errors.
  */
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   draftProposalErrorOf,
   useDraftProposal,
@@ -54,6 +54,8 @@ export interface AssistantProposalBoxProps {
   onApply(): void;
   /** The page restores the pre-proposal text and clears the highlight. */
   onDiscard(): void;
+  /** Design 1g: render as the studio's collapsed footer row ("Ask to change this draft… ⌘K"). */
+  footer?: boolean;
 }
 
 /** The caption ADR-0044 §4 pins while a proposal is on canvas. */
@@ -69,12 +71,27 @@ export function AssistantProposalBox({
   onPreview,
   onApply,
   onDiscard,
+  footer = false,
 }: AssistantProposalBoxProps) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!footer);
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [previewSummary, setPreviewSummary] = useState<string | null>(null);
   const proposal = useDraftProposal();
+
+  // Design 1g: in the studio the box collapses to the footer row; ⌘K opens it.
+  useEffect(() => {
+    if (!footer) return;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [footer]);
 
   const blockedReason = readOnly
     ? "This draft is read-only, so the assistant can't be asked to change it."
@@ -113,80 +130,97 @@ export function AssistantProposalBox({
       data-testid="assistant-proposal-box"
       className="overflow-hidden rounded-[3px] border border-line bg-surface"
     >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-[10px] py-[6px] text-left text-body"
-      >
-        <span aria-hidden="true" className="text-faint">
-          {open ? "▾" : "▸"}
-        </span>
-        Ask to change this draft…
-        {previewing && (
-          <span className="ml-auto font-mono text-[10px] tracking-[.04em] text-faint">
-            reviewing
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="space-y-[8px] border-t border-line-soft px-[10px] py-[8px]">
-          {previewing ? (
-            <>
-              <p data-testid="assistant-proposal-caption" className="text-body">
-                {PROPOSAL_CAPTION}
-              </p>
-              {previewSummary && <p className="text-faint">{previewSummary}</p>}
-              <div className="flex gap-2">
-                <Button variant="primary" data-testid="assistant-proposal-apply" onClick={onApply}>
-                  Apply
-                </Button>
-                <Button
-                  variant="secondary"
-                  data-testid="assistant-proposal-discard"
-                  onClick={onDiscard}
-                >
-                  Discard
-                </Button>
-              </div>
-            </>
-          ) : (
-            <form onSubmit={submit} className="space-y-[8px]">
-              <Textarea
-                data-testid="assistant-proposal-input"
-                rows={2}
-                placeholder="Insert a code reviewer after the tests"
-                value={instruction}
-                disabled={blockedReason !== null || submitting}
-                onChange={(event) => {
-                  setInstruction(event.target.value);
-                  setError(null);
-                }}
-              />
-              {blockedReason && (
-                <p data-testid="assistant-proposal-reason" className="text-faint">
-                  {blockedReason}
-                </p>
+      {footer && !open ? (
+        <button
+          type="button"
+          data-testid="assistant-proposal-footer"
+          onClick={() => setOpen(true)}
+          aria-expanded={false}
+          className="flex w-full items-center gap-2 px-[10px] py-[6px] text-left text-body hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+        >
+          Ask to change this draft…
+          <span className="ml-auto font-mono text-[10.5px] tracking-[.04em] text-faint">⌘K</span>
+        </button>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className="flex w-full items-center gap-2 px-[10px] py-[6px] text-left text-body"
+          >
+            <span aria-hidden="true" className="text-faint">
+              {open ? "▾" : "▸"}
+            </span>
+            Ask to change this draft…
+            {previewing && (
+              <span className="ml-auto font-mono text-[10.5px] tracking-[.04em] text-faint">
+                reviewing
+              </span>
+            )}
+          </button>
+          {open && (
+            <div className="space-y-[8px] border-t border-line-soft px-[10px] py-[8px]">
+              {previewing ? (
+                <>
+                  <p data-testid="assistant-proposal-caption" className="text-body">
+                    {PROPOSAL_CAPTION}
+                  </p>
+                  {previewSummary && <p className="text-faint">{previewSummary}</p>}
+                  <div className="flex gap-2">
+                    <Button variant="primary" data-testid="assistant-proposal-apply" onClick={onApply}>
+                      Apply
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      data-testid="assistant-proposal-discard"
+                      onClick={onDiscard}
+                    >
+                      Discard
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <form onSubmit={submit} className="space-y-[8px]">
+                    <Textarea
+                      data-testid="assistant-proposal-input"
+                      rows={2}
+                      placeholder="Insert a code reviewer after the tests"
+                      value={instruction}
+                      disabled={blockedReason !== null || submitting}
+                      onChange={(event) => {
+                        setInstruction(event.target.value);
+                        setError(null);
+                      }}
+                    />
+                    {blockedReason && (
+                      <p data-testid="assistant-proposal-reason" className="text-faint">
+                        {blockedReason}
+                      </p>
+                    )}
+                    {error && (
+                      <p data-testid="assistant-proposal-error" className="text-ink">
+                        {error}
+                      </p>
+                    )}
+                    <div>
+                      <Button
+                        variant="primary"
+                        compact
+                        type="submit"
+                        data-testid="assistant-proposal-submit"
+                        disabled={!canSubmit}
+                      >
+                        {submitting ? "Thinking…" : "Propose"}
+                      </Button>
+                    </div>
+                  </form>
+                </>
               )}
-              {error && (
-                <p data-testid="assistant-proposal-error" className="text-ink">
-                  {error}
-                </p>
-              )}
-              <div>
-                <Button
-                  variant="primary"
-                  compact
-                  type="submit"
-                  data-testid="assistant-proposal-submit"
-                  disabled={!canSubmit}
-                >
-                  {submitting ? "Thinking…" : "Propose"}
-                </Button>
-              </div>
-            </form>
+            </div>
           )}
-        </div>
+        </>
       )}
     </section>
   );

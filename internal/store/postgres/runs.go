@@ -103,6 +103,10 @@ type Run struct {
 	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
 	// thread start keeps source_conversation_id, ADR-0053).
 	TriggerRef string
+	// RepositoryID (ADR-0060) is the repository this run works on; empty string
+	// is NULL (the run started against no named repository — a project-wide
+	// intent or a resolved inputs.repository).
+	RepositoryID string
 	// AgentProfileVersion (ADR-0058) is the profile version this run was pinned
 	// to at creation — the version its source conversation carried when the run
 	// was started from a thread, or the creation default for a direct start. It
@@ -193,7 +197,7 @@ const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revis
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
 	priority, expression_evaluations, created_at, started_at, finished_at,
 	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, ''),
-	agent_profile_version`
+	COALESCE(repository_id::text, ''), agent_profile_version`
 
 func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 	var (
@@ -209,7 +213,7 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
 		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished,
-		&r.TriggerKind, &r.TriggerRef, &r.AgentProfileVersion)
+		&r.TriggerKind, &r.TriggerRef, &r.RepositoryID, &r.AgentProfileVersion)
 	if err != nil {
 		return Run{}, err
 	}
@@ -252,6 +256,10 @@ type NewRun struct {
 	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
 	// thread start keeps source_conversation_id, ADR-0053).
 	TriggerRef string
+	// RepositoryID (ADR-0060) is the repository this run works on; empty string
+	// is NULL (the run started against no named repository — a project-wide
+	// intent or a resolved inputs.repository).
+	RepositoryID string
 	// Inputs are validated against spec.inputs by the caller; the store
 	// writes one run_inputs row per entry.
 	Inputs map[string]RunInput
@@ -329,18 +337,18 @@ func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run R
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 				source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 				policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-				trigger_kind, trigger_ref, agent_profile_version)
+				trigger_kind, trigger_ref, repository_id, agent_profile_version)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, $18)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($18, '')::uuid, $19)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, agentProfileVersion)); err != nil {
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion)); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
 
@@ -413,16 +421,32 @@ func (s *RunStore) GetRun(ctx context.Context, id string) (Run, error) {
 	return r, nil
 }
 
-// ListProjectRuns returns a project's runs, newest first (route 21). An
-// optional trigger (ADR-0056, validated by the handler) keeps only the runs
-// that were started by that kind; an empty value is the no-filter answer.
-func (s *RunStore) ListProjectRuns(ctx context.Context, projectID string, trigger string) ([]Run, error) {
+// ListProjectRuns returns a project's runs, newest first (route 21). The
+// filters are the read-side narrowing the task's run-list surface needs: an
+// optional trigger kind (ADR-0056, validated by the handler) keeps only the
+// runs that were started by that kind, and an optional repository_id /
+// assignment_id pair keeps only the runs of one repository or one pin (ADR-0060).
+// An empty filter value is the no-filter answer.
+func (s *RunStore) ListProjectRuns(ctx context.Context, projectID, trigger, repositoryID, assignmentID string) ([]Run, error) {
 	where := `WHERE project_id = $1::uuid`
 	args := []any{projectID}
+	argN := 2
 	if trigger != "" {
-		where += `
-  AND trigger_kind = $2::text`
+		where += fmt.Sprintf(`
+  AND trigger_kind = $%d::text`, argN)
 		args = append(args, trigger)
+		argN++
+	}
+	if repositoryID != "" {
+		where += fmt.Sprintf(`
+  AND repository_id = $%d::uuid`, argN)
+		args = append(args, repositoryID)
+		argN++
+	}
+	if assignmentID != "" {
+		where += fmt.Sprintf(`
+  AND assignment_id = $%d::uuid`, argN)
+		args = append(args, assignmentID)
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT `+runColumns+` FROM runs

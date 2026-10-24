@@ -160,7 +160,7 @@ func (a APICrossProjectStore) ListVisibleRuns(ctx context.Context, c api.Caller,
 			return nil, "", fmt.Errorf("postgres: scan visible run: %w", err)
 		}
 		view := api.CrossProjectRunView{
-			RunSummaryView: m4RunSummary(r),
+			RunSummaryView: m4RunSummary(r, ""),
 			ProjectName:    projectName, PipelineSlug: pipelineSlug,
 			PipelineDisplayName: pipelineName, Steps: []api.CrossProjectRunStep{},
 		}

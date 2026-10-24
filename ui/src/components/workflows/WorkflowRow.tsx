@@ -1,23 +1,22 @@
 /**
- * One row of the Workflows index (design 3a): a `220px 1fr 200px 150px`
- * desktop grid that stacks at phone width (name+chip, chain, meta, actions).
+ * One row of the Workflows index (design 1b): a `220px 1fr 180px 120px`
+ * desktop grid that stacks at phone width (name+chip, chain, used-in, actions).
  *
- * Honesty rules (gaps/library.md § 5):
- * - The revision chip is the server's own `latest` summary — `✓ PUBLISHED
- *   r{n} {digest6}` (first six hex of the `sha256:` digest) or `· DRAFT ONLY`
- *   once the definition read has arrived with zero revisions. No channels:
- *   BETA/STABLE is M6 vocabulary the wire does not carry, and no amber dual
- *   chip is rendered.
+ * Honesty rules (gaps/library.md § 5 + the Workflows Review handoff):
+ * - The revision chip is the server's own `latest` summary — `✓ r{n}`
+ *   (the digest moved to the workflow page) or `· draft · not published`
+ *   once the definition read has arrived with zero revisions.
  * - The step chain is the TOP-LEVEL nodes of the latest revision's canonical
  *   document in definition order; a scope node (`until` / `for_each` /
  *   `parallel`) collapses to one shaded chip `loop: <child> · <child>…` using
  *   the document's own child ids — nothing is named by the client.
- * - Assigned projects are the caller's own membership's assignments (the
- *   page's shared fan); a project whose read failed never reads as
- *   "unassigned" — the cell shows `—` until the read settles.
- * - The trigger is `cron <expr>` from the owning project's enabled schedule,
- *   or `manual`; GitHub-issue triggers do not exist yet (gaps § 5) and are
- *   never rendered.
+ * - Where used is the caller's own membership's assignments: `project ·
+ *   repo` when ADR-0060 pins a repository, `project` alone for a
+ *   whole-project assignment, or `Not used yet`. A project whose read failed
+ *   never reads as "unassigned" — the cell shows `…` until the read settles.
+ * - The trigger is the owning project's enabled schedule's `cron <expr>`,
+ *   or `manual`; GitHub-issue triggers do not exist yet and are never
+ *   rendered.
  * - The open-draft line is the newest un-published draft with the real
  *   editor name — no "by assistant": the wire carries no assistant identity.
  */
@@ -27,19 +26,14 @@ import { StatusChip } from "../ds/Row";
 import { Button } from "../ds/Button";
 import { Field, Input } from "../ds/Field";
 import { FormError } from "../Feedback";
+import { RowMenu } from "./RowMenu";
 import { UNFILED_FOLDER, useMovePipelineFolder } from "../../api/pipelines";
+import { toBlockYaml } from "../../lib/pipeline/blockYaml";
 
 import type { Assignment, DraftSummary, PipelineRevisionSummary, Project } from "../../api/types";
 import type { DefinitionDocument } from "../../lib/pipeline/definition";
 import { SCOPE_KINDS, kindWord, scopeBody } from "../../lib/pipeline/definition";
 import { routes } from "../../lib/routes";
-
-/** The first six hex of a `sha256:`-prefixed digest (`8f2c1a`). */
-function digest6(revisionDigest: string): string {
-  return revisionDigest.startsWith("sha256:")
-    ? revisionDigest.slice(7, 13)
-    : revisionDigest.slice(0, 6);
-}
 
 /** A chain cell: a plain step id, or a shaded `loop: …` scope chip. */
 export interface StepChainCell {
@@ -62,6 +56,25 @@ export function stepChain(doc: DefinitionDocument | null): StepChainCell[] {
     }
   }
   return cells;
+}
+
+/** `Export YAML`: the bytes the browser downloads. The text is re-flowed
+ * through `toBlockYaml` (design 2d) and the file is named `<slug>.yaml`. */
+export function workflowExportYaml(documentText: string, slug: string) {
+  return { name: `${slug}.yaml`, text: toBlockYaml(documentText) };
+}
+
+/** Triggers the download; a no-op the tests can replace. */
+export function downloadWorkflowYaml(documentText: string, slug: string): string {
+  const { name, text } = workflowExportYaml(documentText, slug);
+  const blob = new Blob([text], { type: "text/yaml" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
+  return name;
 }
 
 export interface WorkflowRowAssignment {
@@ -89,8 +102,13 @@ export interface WorkflowRowProps {
   duplicating: boolean;
   onDuplicate: () => void;
   onOpen: () => void;
-  /** Row action `Move to folder…` (ADR-0049 § 8); absent for readers. */
+  /** Row menu `Use in a repo…` → the workflow page's use-in-a-repo dialog. */
+  onUseInRepo: () => void;
+  /** Row menu `Move to folder…` (ADR-0049 § 8); absent for readers. */
   onMoveToFolder?: () => void;
+  /** The document `Export YAML` downloads (latest revision, else the open
+   * draft) — null when nothing is readable, so the item is not offered. */
+  exportDocument: string | null;
 }
 
 export function WorkflowRow({
@@ -106,7 +124,9 @@ export function WorkflowRow({
   duplicating,
   onDuplicate,
   onOpen,
+  onUseInRepo,
   onMoveToFolder,
+  exportDocument,
 }: WorkflowRowProps) {
   const latest = revisions[0] ?? null;
   const cells = stepChain(document);
@@ -117,15 +137,21 @@ export function WorkflowRow({
     assigned.length === 0
       ? null
       : (assigned.map((row) => row.cron).find((cron) => cron !== null) ?? "manual");
+  const usedIn = assigned.map(
+    (row) =>
+      row.assignment.repository_name
+        ? `${row.project.name} · ${row.assignment.repository_name}`
+        : row.project.name,
+  );
 
   return (
     <li className="border-b border-line py-[8px]" data-testid={`workflow-row-${pipeline.slug}`}>
-      <div className="grid grid-cols-1 gap-y-[6px] gap-x-4 min-[900px]:grid-cols-[220px_1fr_200px_150px] min-[900px]:items-center">
+      <div className="grid grid-cols-1 gap-y-[6px] gap-x-4 min-[900px]:grid-cols-[220px_1fr_180px_120px] min-[900px]:items-center">
         {/* name + revision chip */}
         <div className="min-w-0 space-y-[4px]">
           <Link
             to={routes.workflow(pipeline.id)}
-            className="block truncate text-[13px] font-bold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="block truncate text-[13.5px] font-semibold text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid={`workflow-name-${pipeline.slug}`}
           >
             {pipeline.display_name || pipeline.slug}
@@ -133,13 +159,13 @@ export function WorkflowRow({
           {latest ? (
             <StatusChip
               state="done"
-              label={`PUBLISHED r${latest.revision_number} ${digest6(latest.revision_digest)}`}
+              label={`r${latest.revision_number}`}
               labelProps={{ "data-testid": `workflow-revision-${pipeline.slug}` }}
             />
           ) : definitionReady ? (
             <StatusChip
               state="queued"
-              label="DRAFT ONLY"
+              label="draft · not published"
               labelProps={{ "data-testid": `workflow-revision-${pipeline.slug}` }}
             />
           ) : (
@@ -179,36 +205,32 @@ export function WorkflowRow({
           )}
         </div>
 
-        {/* assigned projects + trigger */}
+        {/* where it is used + trigger */}
         <div className="min-w-0 space-y-[3px]">
           {assignmentsResolved && assigned.length === 0 ? (
             <p
               className="text-[11.5px] text-muted"
               data-testid={`workflow-assignments-${pipeline.slug}`}
             >
-              not assigned to a project you can see
+              Not used yet
             </p>
           ) : (
             <p
               className="truncate text-[11.5px]"
-              title={assigned.map((row) => row.project.name).join(" · ")}
+              title={usedIn.join(" · ")}
               data-testid={`workflow-assignments-${pipeline.slug}`}
             >
-              {assigned.map((row) => row.project.name).join(" · ") || "…"}
+              {usedIn.join(" · ") || "…"}
             </p>
           )}
-          <p
-            className="font-mono text-[10.5px] text-muted"
-            data-testid={`workflow-trigger-${pipeline.slug}`}
-          >
-            {trigger === null
-              ? assignmentsResolved
-                ? "—"
-                : "…"
-              : trigger === "manual"
-                ? "manual"
-                : `cron ${trigger}`}
-          </p>
+          {trigger === null && assignmentsResolved ? null : (
+            <p
+              className="font-mono text-[10.5px] text-muted"
+              data-testid={`workflow-trigger-${pipeline.slug}`}
+            >
+              {trigger === null ? "…" : trigger === "manual" ? "manual" : `cron ${trigger}`}
+            </p>
+          )}
         </div>
 
         {/* open draft + actions */}
@@ -229,36 +251,27 @@ export function WorkflowRow({
               no open draft
             </span>
           )}
-          <div className="flex gap-[6px]">
-            {canAuthor ? (
-              <Button
-                variant="secondary"
-                compact
-                disabled={duplicating}
-                onClick={onDuplicate}
-                data-testid={`workflow-duplicate-${pipeline.slug}`}
-              >
-                {duplicating ? "Duplicating…" : "Duplicate"}
-              </Button>
-            ) : null}
-            {canAuthor && onMoveToFolder ? (
-              <Button
-                variant="secondary"
-                compact
-                onClick={onMoveToFolder}
-                data-testid={`workflow-move-folder-${pipeline.slug}`}
-              >
-                Move to folder…
-              </Button>
-            ) : null}
+          <div className="flex items-center gap-[6px]">
             <Button
               variant="secondary"
               compact
               onClick={onOpen}
               data-testid={`workflow-open-${pipeline.slug}`}
             >
-              Open
+              Edit
             </Button>
+            <RowMenu
+              slug={pipeline.slug}
+              duplicating={duplicating}
+              onUseInRepo={onUseInRepo}
+              onDuplicate={onDuplicate}
+              onMoveToFolder={canAuthor ? onMoveToFolder : undefined}
+              onExportYaml={
+                exportDocument !== null
+                  ? () => downloadWorkflowYaml(exportDocument, pipeline.slug)
+                  : undefined
+              }
+            />
           </div>
         </div>
       </div>

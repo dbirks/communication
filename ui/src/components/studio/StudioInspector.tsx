@@ -56,6 +56,7 @@ import {
   TextareaField,
 } from "./fields";
 import { Field, Input } from "../ds/Field";
+import { Button } from "../ds/Button";
 import { routes } from "../../lib/routes";
 import { KindChip } from "../m4/KindChip";
 
@@ -596,6 +597,7 @@ export function StudioInspector({
   text,
   readOnly,
   apply,
+  onDelete,
 }: {
   model: GraphModel;
   nodeId: string | null;
@@ -604,6 +606,8 @@ export function StudioInspector({
   text: string;
   readOnly: boolean;
   apply: (op: (text: string) => OpResult) => void;
+  /** The page's delete op — the inspector's Delete runs the same one as the keyboard. */
+  onDelete?: (id: string) => void;
 }) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const parsed = useMemo(() => {
@@ -644,6 +648,7 @@ export function StudioInspector({
   const kind = node.kind;
   const deferred = DEFERRED[kind];
   const sections = fieldsFor(kind);
+  const prevId = node.dependsOn[0] ?? null;
 
   function commit(field: InspectorField, value: unknown) {
     if (readOnly) return;
@@ -683,11 +688,23 @@ export function StudioInspector({
     <div className="space-y-[14px]" data-testid="insp-node">
       {/* Header: what this step is, and what it's called. */}
       <div className="space-y-[8px]" data-testid="insp-header">
-        <div className="flex flex-wrap items-center gap-[6px]">
+        <div className="flex flex-wrap items-center gap-[8px]">
           <KindChip kind={kind} deferredTo={deferred} testid="insp-kind-chip" />
-          <span className="font-mono text-[12.5px] font-semibold text-ink">
-            {kindDisplayName(kind)}
+          <span className="text-[15px] font-semibold text-ink" data-testid="insp-node-id-label">
+            {nodeId}
           </span>
+          <span className="font-mono text-[11px] text-muted" data-testid="insp-after">
+            {prevId ? `${kind} · after ${prevId}` : kind}
+          </span>
+          <Button
+            variant="danger"
+            compact
+            className="ml-auto"
+            onClick={() => onDelete?.(nodeId)}
+            data-testid="insp-delete"
+          >
+            Delete
+          </Button>
         </div>
         {deferred ? (
           <p className="font-mono text-[11px] text-faint" data-testid="insp-deferred">

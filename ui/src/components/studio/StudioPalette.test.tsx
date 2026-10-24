@@ -53,7 +53,7 @@ describe("StudioPalette", () => {
 
   it("filters with the search box and shows the non-runnable group greyed", () => {
     render(<StudioPalette selectedId={null} onAddAfter={vi.fn()} />);
-    expect(screen.getByText("Not runnable yet")).toBeTruthy();
+    expect(screen.getByText(/not runnable yet/)).toBeTruthy();
     const input = screen.getByTestId("palette-search");
     fireEvent.change(input, { target: { value: "approval" } });
     expect(screen.getByTestId("palette-item-human.approval")).toBeTruthy();

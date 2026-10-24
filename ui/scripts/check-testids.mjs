@@ -14,10 +14,18 @@
 // Usage: node scripts/check-testids.mjs [rev]   (rev default: HEAD)
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rev = process.argv[2] ?? "HEAD";
+// Ids deliberately removed (with their reasons) live here; the check prints
+// them as retired instead of failing.
+const retired = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "retired-testids.json"),
+    "utf8",
+  ),
+);
 const uiRoot = join(fileURLToPath(import.meta.url), "..", "..");
 const repoRoot = join(uiRoot, "..");
 const srcDir = join(uiRoot, "src");
@@ -70,10 +78,14 @@ export function definedIds(sources) {
 const before = definedIds(revSources(rev));
 const after = definedIds(workSources());
 
-const lost = before.filter((id) => !after.includes(id));
+const lost = before.filter(
+  (id) => !after.includes(id) && !(id in retired) && !Object.keys(retired).some((key) => key.startsWith(id + "-")),
+);
+const retiredNow = before.filter((id) => retired[id] && !after.includes(id));
 const added = after.filter((id) => !before.includes(id));
 console.log(`${rev}: ${before.length} test ids | work: ${after.length} test ids`);
 if (added.length) console.log(`added: ${added.join(", ")}`);
+for (const id of retiredNow) console.log(`retired: ${id} — ${retired[id]}`);
 if (lost.length) {
   console.error(`LOST test ids: ${lost.join(", ")}`);
   process.exit(1);

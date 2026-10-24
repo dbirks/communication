@@ -4254,6 +4254,13 @@ export interface components {
       /** @description Denormalized from the pinned revision for list rendering. */
       pinned_revision_digest: string;
       pinned_version_label?: string | null;
+      /**
+       * Format: uuid
+       * @description The repository this pipeline is used in (ADR-0060); null means the whole project — the legacy / any-repo meaning. A repo-scoped assignment names exactly one repository of its project; a project-wide assignment (null) covers every repository of the project.
+       */
+      repository_id?: string | null;
+      /** @description Read-only display name of `repository_id`; null together with a null `repository_id`. */
+      repository_name?: string | null;
       max_concurrent_runs: number;
       /** @description Ceilings only, never a raise. */
       budget_overrides: {
@@ -4292,6 +4299,11 @@ export interface components {
       budget_overrides?: {
         [key: string]: unknown;
       };
+      /**
+       * Format: uuid
+       * @description The repository this pipeline is used in (ADR-0060); null means the whole project (the legacy / any-repo meaning). A repo-scoped assignment names one repository of its project.
+       */
+      repository_id?: string | null;
     };
     /**
      * AssignmentPatch
@@ -4305,6 +4317,11 @@ export interface components {
         [key: string]: unknown;
       };
       enabled?: boolean;
+      /**
+       * Format: uuid
+       * @description The repository this pipeline is used in (ADR-0060); immutable once the assignment exists — sending a value here is the `422` `repository_mismatch`-style refusal (`repository_id_is_immutable`), never a silent move. Null (the whole project) may not be set either.
+       */
+      repository_id?: string | null;
     };
     /**
      * Schedule

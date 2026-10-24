@@ -66,7 +66,7 @@ type assistantRunActions interface {
 // assistantAssignmentLister resolves a project's pin on a pipeline —
 // the same resolution the user's own run-start request rides through.
 type assistantAssignmentLister interface {
-	ListAssignments(ctx context.Context, c Caller, projectID string) ([]AssignmentView, error)
+	ListAssignments(ctx context.Context, c Caller, projectID string, f AssignmentListFilter) ([]AssignmentView, error)
 }
 
 // assistantApprovalGate is the gate face: the caller's read plus the CAS
@@ -365,7 +365,7 @@ func NewAssistantActions(d AssistantActionsDeps) map[string]assistant.ActionExec
 			// "unavailable", never which pipelines exist.
 			var pinned string
 			if d.Assignments != nil {
-				items, err := d.Assignments.ListAssignments(ctx, caller, projectID)
+				items, err := d.Assignments.ListAssignments(ctx, caller, projectID, AssignmentListFilter{})
 				if err != nil {
 					return "", nil, denied(err)
 				}

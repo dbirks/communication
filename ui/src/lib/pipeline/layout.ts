@@ -358,14 +358,17 @@ export function layoutDefinition(
     rankdir?: "LR" | "TB";
     spacing?: LayoutSpacingName;
     /**
-     * Lay each scope cluster's body in the opposite direction to the graph.
+     * Lay each scope cluster's body in the opposite direction to the graph
+     * (`"opposite"`), in the same direction (`"same"` — the authoring Studio
+     * is always top-to-bottom, so a scope body runs top-to-bottom inside its
+     * group too), or inherit the graph's own direction when unset.
      * A scope's body is a chain, so in a `TB` graph the cluster becomes a
      * short wide box instead of a tall narrow one — the one move that keeps
      * the graph's total height from stacking every loop body vertically.
      * dagre 3.1.1 lays a cluster out as its own subgraph when the cluster
      * node carries its own `rankdir`; observed, not assumed.
      */
-    subgraphRankdir?: "opposite";
+    subgraphRankdir?: "opposite" | "same";
   } = {},
 ): DefinitionGraphLayout | null {
   const roots = document.spec?.nodes;
@@ -459,6 +462,10 @@ export function layoutDefinition(
       };
       if (options.subgraphRankdir === "opposite") {
         attrs.rankdir = rankdir === "TB" ? "LR" : "TB";
+      } else if (options.subgraphRankdir === "same") {
+        // The authoring canvas is always top-to-bottom: a scope body keeps
+        // the graph's own direction instead of flipping.
+        attrs.rankdir = rankdir;
       }
       graph.setNode(placement.clusterKey, attrs);
       if (placement.groupKey) graph.setParent(placement.clusterKey, placement.groupKey);

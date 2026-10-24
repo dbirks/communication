@@ -1,49 +1,29 @@
 /**
- * StudioHeader — the top bar of the Workflow Studio (phase 4, 4a):
- * breadcrumb `Workflows / {name}`, the `DRAFT vN` chip, the server's last
- * validation chip, the Canvas · YAML · Runs · Assigned tab strip (Canvas/YAML
- * are the view toggle as a `role=tablist` of `role=tab` buttons; Runs/Assigned
- * are plain links that sit in the same strip, outside the tablist, since a
- * tablist may only own tab children (AXE aria-required-children); they
- * navigate to the workflow page's revisions and assignment sections), then the
- * existing Save / Validate / Diff / Publish actions.
+ * StudioHeader — the top bar of the Workflow Studio (design 1g):
+ * breadcrumb `Workflows / <folder> /`, the workflow name (15/600), the draft
+ * chip, the Canvas | YAML segmented control, then the action row (undo/redo
+ * icon buttons, Validate, Save, Diff, Publish).
  *
- * Desktop (≥768px) is a single 52px row: the name never shrinks below 160px
- * and the publish reason truncates with an ellipsis, capped at 240px (full
- * text in `title` and an accessible label), so the row does not scroll
- * sideways at 1280px+. Below 768px it stacks into four
- * rows: (1) breadcrumb + name, truncated with an ellipsis, (2) the chips,
- * wrapping, (3) the tab strip — horizontally scrollable on the strip only —
- * and (4) the actions, wrapping, each at least 44px tall.
+ * The header is a single 52px row on desktop (≥768px). The publish reason
+ * moved down into the StudioStatusBar — this bar keeps only the control and
+ * the actions, so the row never truncates.
  *
  * Presentation only — every state the header renders comes in as props; the
- * publish gate (saved + server-valid, with the reason as visible text, not
- * just hover) is computed by the page and handed down.
+ * publish gate (saved + server-valid, with the reason as visible text, not just
+ * hover) is computed by the page and handed down.
  */
 import { Link } from "react-router";
 import { Button } from "../ds/Button";
 import { routes } from "../../lib/routes";
-import { LIBRARY_READ_ONLY_NOTE } from "../../lib/pipeline/authoring";
+import { folderLabel } from "../../api/pipelines";
 import type { ValidateBody } from "../../lib/pipeline/contract";
 
 export type StudioView = "canvas" | "yaml";
 
-/** One tab of the Canvas · YAML · Runs · Assigned strip. */
-const TAB_CLASS = "ds-btn ds-btn--ghost ds-btn--compact";
-
-/** Action buttons get a comfortable mobile tap target; desktop keeps 26px. */
-const MOBILE_BTN = "min-h-[44px] md:min-h-0";
-
 export interface StudioHeaderProps {
   pipelineName: string;
-  /** The pipeline's id — the Runs / Assigned tabs navigate to its page. */
-  pipelineId: string;
-  /**
-   * The assignment count, when the page already holds the data; absent the
-   * tab renders as a plain `Assigned` link without a number.
-   */
-  assignedCount?: number | null;
-  /** The version last written or read from the server. */
+  /** The pipeline's folder label (design 1g breadcrumb: `Workflows / <folder> /`). */
+  pipelineFolder?: string | null;
   savedVersion: number | null;
   /** The draft's last server validation (`viewValidate` over its body). */
   validation: ValidateBody | null;
@@ -62,16 +42,61 @@ export interface StudioHeaderProps {
   diffOpen: boolean;
   onPublish(): void;
   publishPending: boolean;
-  /** null = publish is available; otherwise the reason, shown as visible text. */
+  /** null = publish is available; otherwise the reason (the status bar spells it). */
   publishReason: string | null;
   view: StudioView;
   onViewChange(view: StudioView): void;
 }
 
+function SegmentedControl({
+  view,
+  onViewChange,
+}: {
+  view: StudioView;
+  onViewChange(view: StudioView): void;
+}) {
+  return (
+    <div
+      className="flex rounded-[3px] border border-line p-[2px]"
+      data-testid="studio-header-tabs"
+    >
+      <div
+        role="tablist"
+        aria-label="Canvas and YAML views"
+        className="flex items-center gap-[2px]"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "canvas"}
+          onClick={() => onViewChange("canvas")}
+          data-testid="studio-view-canvas"
+          className={`rounded-[2px] px-[10px] py-[4px] text-[12.5px] font-semibold ${
+            view === "canvas" ? "bg-ink text-surface" : "text-ink-2 hover:bg-fill"
+          }`}
+        >
+          Canvas
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "yaml"}
+          onClick={() => onViewChange("yaml")}
+          data-testid="studio-view-yaml"
+          className={`rounded-[2px] px-[10px] py-[4px] text-[12.5px] font-semibold ${
+            view === "yaml" ? "bg-ink text-surface" : "text-ink-2 hover:bg-fill"
+          }`}
+        >
+          YAML
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function StudioHeader({
   pipelineName,
-  pipelineId,
-  assignedCount,
+  pipelineFolder,
   savedVersion,
   validation,
   readOnly,
@@ -93,7 +118,8 @@ export function StudioHeader({
   onViewChange,
 }: StudioHeaderProps) {
   const findings = validation?.errors.length ?? 0;
-  const workflowPage = routes.workflow(pipelineId);
+  const versionText = savedVersion === null ? "" : ` V${savedVersion}`;
+  const chipText = `· DRAFT${versionText}${dirty ? " · UNSAVED" : ""}`;
   return (
     <header
       className="flex shrink-0 flex-col gap-[8px] border-b border-line bg-surface px-4 py-2 md:h-[52px] md:flex-row md:items-center md:overflow-x-auto md:py-0"
@@ -114,14 +140,20 @@ export function StudioHeader({
         <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
           /
         </span>
-        <h1
-          className="min-w-[160px] truncate text-[15px] font-bold md:max-w-[320px]"
-          data-testid="studio-title"
-          title={pipelineName}
-        >
-          {pipelineName}
-        </h1>
+        <span className="shrink-0 font-mono text-[12px] text-muted" data-testid="studio-breadcrumb-folder">
+          {folderLabel(pipelineFolder)}
+        </span>
+        <span aria-hidden="true" className="shrink-0 font-mono text-[12px] text-faint">
+          /
+        </span>
       </nav>
+      <h1
+        className="min-w-[160px] truncate text-[15px] font-semibold md:max-w-[320px]"
+        data-testid="studio-title"
+        title={pipelineName}
+      >
+        {pipelineName}
+      </h1>
       <div
         className="flex flex-wrap items-center gap-[8px] md:shrink-0"
         data-testid="studio-header-chips"
@@ -130,7 +162,7 @@ export function StudioHeader({
           className="shrink-0 rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
           data-testid="studio-draft-version"
         >
-          DRAFT v{savedVersion ?? "…"}
+          {chipText}
         </span>
         <span
           className="shrink-0 rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
@@ -148,132 +180,84 @@ export function StudioHeader({
           </span>
         ) : null}
       </div>
-      <nav
-        aria-label="Studio views"
-        className="flex w-full items-center gap-[2px] overflow-x-auto rounded-[3px] border border-line p-[2px] md:w-auto md:min-w-0"
-        data-testid="studio-header-tabs"
-      >
-        <div
-          role="tablist"
-          aria-label="Canvas and YAML views"
-          className="flex items-center gap-[2px]"
-        >
-          <Button
-            variant="ghost"
-            compact
-            role="tab"
-            aria-selected={view === "canvas"}
-            onClick={() => onViewChange("canvas")}
-            data-testid="studio-view-canvas"
-          >
-            Canvas
-          </Button>
-          <Button
-            variant="ghost"
-            compact
-            role="tab"
-            aria-selected={view === "yaml"}
-            onClick={() => onViewChange("yaml")}
-            data-testid="studio-view-yaml"
-          >
-            YAML
-          </Button>
-        </div>
-        <Link to={workflowPage} className={TAB_CLASS} data-testid="studio-header-runs">
-          Runs
-        </Link>
-        <Link to={workflowPage} className={TAB_CLASS} data-testid="studio-header-assigned">
-          {assignedCount === null || assignedCount === undefined
-            ? "Assigned"
-            : `Assigned to ${assignedCount}`}
-        </Link>
-      </nav>
+      <SegmentedControl view={view} onViewChange={onViewChange} />
       <span className="hidden md:block md:flex-1" />
       <div
         className="flex flex-wrap items-center gap-[8px] md:min-w-0 md:flex-nowrap"
         data-testid="studio-header-actions"
       >
-        <Button
-          variant="secondary"
-          compact
+        <button
+          type="button"
+          aria-label="Undo"
+          data-testid="studio-undo"
           disabled={!canUndo}
           onClick={onUndo}
-          className={MOBILE_BTN}
-          data-testid="studio-undo"
+          className="inline-flex h-[30px] w-[30px] min-h-[44px] items-center justify-center rounded-[3px] border border-line bg-surface text-[13px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0"
         >
-          Undo
+          ↶
+        </button>
+        <button
+          type="button"
+          aria-label="Redo"
+          data-testid="studio-redo"
+          disabled={!canRedo}
+          onClick={onRedo}
+          className="inline-flex h-[30px] w-[30px] min-h-[44px] items-center justify-center rounded-[3px] border border-line bg-surface text-[13px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0"
+        >
+          ↷
+        </button>
+        {!readOnly ? (
+          <Button
+            variant="secondary"
+            compact
+            className="min-h-[44px]"
+            disabled={saving}
+            onClick={onSave}
+            data-testid="studio-save"
+          >
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        ) : (
+          <span
+            className="font-mono text-[11px] text-muted"
+            data-testid="studio-read-only-note"
+          >
+            Read-only — no library role to author this draft, or it is published; Save and
+            Publish are hidden.
+          </span>
+        )}
+        <Button
+          variant="secondary"
+          compact
+          className="min-h-[44px]"
+          disabled={validatePending}
+          onClick={onValidate}
+          data-testid="studio-validate"
+        >
+          {validatePending ? "Validating…" : "Validate"}
         </Button>
         <Button
           variant="secondary"
           compact
-          disabled={!canRedo}
-          onClick={onRedo}
-          className={MOBILE_BTN}
-          data-testid="studio-redo"
+          className="min-h-[44px]"
+          aria-pressed={diffOpen}
+          onClick={onDiff}
+          data-testid="studio-diff"
         >
-          Redo
+          Diff
         </Button>
-        {readOnly ? (
-          <span
-            className="shrink-0 font-mono text-[10.5px] text-faint"
-            data-testid="studio-read-only-note"
+        {!readOnly ? (
+          <Button
+            variant="primary"
+            compact
+            className="min-h-[44px]"
+            disabled={publishReason !== null || publishPending}
+            onClick={onPublish}
+            data-testid="studio-publish"
           >
-            {LIBRARY_READ_ONLY_NOTE}
-          </span>
-        ) : (
-          <>
-            <Button
-              variant="primary"
-              compact
-              disabled={saving}
-              onClick={onSave}
-              className={MOBILE_BTN}
-              data-testid="studio-save"
-            >
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button
-              variant="secondary"
-              compact
-              disabled={validatePending}
-              onClick={onValidate}
-              className={MOBILE_BTN}
-              data-testid="studio-validate"
-            >
-              {validatePending ? "Validating…" : "Validate"}
-            </Button>
-            <Button
-              variant="secondary"
-              compact
-              aria-pressed={diffOpen}
-              onClick={onDiff}
-              className={MOBILE_BTN}
-              data-testid="studio-diff"
-            >
-              Diff
-            </Button>
-            <Button
-              variant="primary"
-              compact
-              disabled={publishReason !== null || publishPending}
-              onClick={onPublish}
-              className={MOBILE_BTN}
-              data-testid="studio-publish"
-            >
-              {publishPending ? "Publishing…" : "Publish"}
-            </Button>
-            {publishReason !== null ? (
-              <span
-                className="min-w-0 max-w-full truncate font-mono text-[10.5px] text-muted md:max-w-[240px]"
-                data-testid="studio-publish-reason"
-                title={publishReason}
-                aria-label={publishReason}
-              >
-                {publishReason}
-              </span>
-            ) : null}
-          </>
-        )}
+            {publishPending ? "Publishing…" : "Publish"}
+          </Button>
+        ) : null}
       </div>
     </header>
   );

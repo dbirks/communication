@@ -8,13 +8,12 @@ import { parseDocument } from "yaml";
 import { parseGraph, wrapInScope } from "../../lib/pipeline/graphDoc";
 import {
   canvasLayout,
-  canvasDirection,
-  chooseCanvasOrientation,
   clearLabelAnchor,
   edgeLabelAnchor,
   flowId,
   nearestEdge,
   pointSegmentDistance,
+  routeEdge,
   routeLabel,
   toFlow,
   type FlowNodeBase,
@@ -277,29 +276,44 @@ describe("nearestEdge", () => {
   });
 });
 
-describe("chooseCanvasOrientation", () => {
-  const box = (width: number, height: number) =>
-    ({ width, height, nodes: [], groups: [], edges: [] }) as never;
-
-  it("picks TB when its box fits the canvas panes better than the wide LR one", () => {
-    // The twin graph's two cuts, roughly: LR wide and squat, TB near square.
-    expect(chooseCanvasOrientation({ LR: box(900, 300), TB: box(520, 520) })).toBe("TB");
-  });
-
-  it("stays left-to-right when the LR box already fits better", () => {
-    expect(chooseCanvasOrientation({ LR: box(500, 400), TB: box(1400, 600) })).toBe("LR");
-  });
-
-  it("keeps LR on a tie", () => {
-    expect(chooseCanvasOrientation({ LR: box(610, 1020), TB: box(610, 1020) })).toBe("LR");
+describe("canvasLayout (authoring: always top-to-bottom)", () => {
+  it("lays a linear template top-to-bottom", () => {
+    const linear = `kind: Pipeline
+spec:
+  nodes:
+    - id: plan
+      kind: model.chat
+      config:
+        model: m
+        messages:
+          - { role: user, content: hi }
+    - id: check
+      kind: process.exec
+      dependsOn: [plan]
+      config:
+        executable: sh
+        args: []
+`;
+    const parsed = parseGraph(linear);
+    if (!parsed.ok) throw new Error(`linear fixture should parse: ${parsed.error}`);
+    const doc = parseDocument(linear).toJS();
+    const flow = toFlow(parsed.model, doc);
+    expect(flow.nodes.length).toBe(2);
+    // Always top-to-bottom: the dependency sits ABOVE the step that needs it.
+    expect(flow.nodes[0]!.position.y).toBeLessThan(flow.nodes[1]!.position.y);
+    expect(canvasLayout(doc)?.direction).toBe("TB");
   });
 });
 
-describe("toFlow direction", () => {
-  it("carries the canvas layout's direction on every node", () => {
-    const flow = toFlow(model, probeDocument);
-    expect(flow.nodes.length).toBeGreaterThan(0);
-    expect(flow.nodes.every((n) => n.data.direction === canvasDirection())).toBe(true);
+describe("routeEdge", () => {
+  it("routes a top-to-bottom edge bottom→top with a vertical first segment", () => {
+    const src = { x: 100, y: 0, width: 100, height: 52 };
+    const dst = { x: 100, y: 150, width: 100, height: 52 };
+    const { path, x, y } = routeEdge(src, dst, "v");
+    // Source bottom (150, 52) → target top (150, 150): vertical first segment.
+    expect(path).toBe("M 150 52 L 150 150");
+    expect(x).toBe(150);
+    expect(y).toBe(101);
   });
 });
 

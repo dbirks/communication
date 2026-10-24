@@ -17,6 +17,7 @@ import {
   StudioCanvas,
   type StudioCanvasProps,
 } from "./StudioCanvas";
+import { routeEdge, toFlow } from "./flowModel";
 
 class ResizeObserverStub {
   private readonly callback: (
@@ -257,6 +258,118 @@ spec:
     expect(screen.getByTestId("scope-status-build_until_verified").textContent).toContain(
       "iteration 2 of 4",
     );
+  });
+
+  it("renders the selected node's menu with Duplicate and Delete, and wires the actions", () => {
+    const onDuplicate = vi.fn();
+    const onDelete = vi.fn();
+    renderCanvas({ selectedId: "check", onDuplicate, onDelete });
+    const menu = screen.getByTestId("studio-node-menu");
+    expect(menu).toBeTruthy();
+    expect(screen.getByTestId("studio-node-menu-duplicate")).toBeTruthy();
+    expect(screen.getByTestId("studio-node-menu-delete")).toBeTruthy();
+
+    // Both actions live in one menu that closes after each activation, so the
+    // second action needs the menu re-opened (right-click) before it can fire.
+    fireEvent.click(screen.getByTestId("studio-node-menu-delete"));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledWith(["check"]);
+
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    fireEvent.click(screen.getByTestId("studio-node-menu-duplicate"));
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+    expect(onDuplicate).toHaveBeenCalledWith("check");
+  });
+
+  it("opens the context menu on right-click and deletes from it", () => {
+    const onDelete = vi.fn();
+    renderCanvas({ selectedId: "check", onDelete });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    expect(screen.getByTestId("studio-node-menu")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("studio-node-menu-delete"));
+    expect(onDelete).toHaveBeenCalledWith(["check"]);
+  });
+
+  it("closes the context menu with Escape", () => {
+    renderCanvas({ selectedId: "check" });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    const menu = screen.getByTestId("studio-node-menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByTestId("studio-node-menu")).toBeNull();
+  });
+
+  it("navigates the context menu with arrow keys and deletes with Enter", () => {
+    const onDelete = vi.fn();
+    renderCanvas({ selectedId: "check", onDelete });
+    fireEvent.contextMenu(screen.getByTestId("canvas-step-check"));
+    const menu = screen.getByTestId("studio-node-menu");
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    fireEvent.keyDown(menu, { key: "Enter" });
+    expect(onDelete).toHaveBeenCalledWith(["check"]);
+  });
+
+  it("keeps the edge plus sign centred on the line at its midpoint", async () => {
+    renderCanvas();
+    const add = (await screen.findByTestId("edge-add-plan-check")) as HTMLElement;
+    expect(add).toBeTruthy();
+    // Plain expect on the numbers/attributes — the jest-dom style matcher is
+    // not registered in this project's vitest setup.
+    expect(add.style.left).toBe("50%");
+    expect(add.style.top).toBe("50%");
+    // The label layer sits exactly on the routed edge's midpoint, and the "+"
+    // is centred on it.
+    const flow = toFlow(fixtureModel, parse(fixtureYaml));
+    const edge = flow.edges[0]!;
+    const { x: midX, y: midY } = routeEdge(edge.sourceBox!, edge.targetBox!, edge.axis);
+    expect(add.parentElement!.style.left).toBe(`${midX}px`);
+    expect(add.parentElement!.style.top).toBe(`${midY}px`);
+  });
+
+  it("attaches every step's handles to the top and bottom of the node", async () => {
+    const { container } = renderCanvas();
+    const check = container.querySelector<HTMLElement>("[data-testid='canvas-step-check']");
+    expect(check).toBeTruthy();
+    // The authoring canvas is ALWAYS top-to-bottom: the target handle rides
+    // the node's top and the source handle its bottom, so a dragged step keeps
+    // its bottom→top connection instead of wrapping around the sides.
+    expect(check!.querySelector<HTMLElement>('[data-handlepos="top"]')).toBeTruthy();
+    expect(check!.querySelector<HTMLElement>('[data-handlepos="bottom"]')).toBeTruthy();
+  });
+
+  it("keeps the edge's first segment vertical from the source bottom after a move", async () => {
+    // A simulated drag: the target step moves BELOW the source, and the edge
+    // must still leave the source's bottom and enter the target's top.
+    const layout = { nodes: { check: { x: 320, y: 700 } } };
+    const flow = toFlow(fixtureModel, parse(fixtureYaml), layout);
+    const edge = flow.edges[0]!;
+    const src = edge.sourceBox!;
+    const tgt = edge.targetBox!;
+    const firstSegment = `M ${src.x + src.width / 2} ${src.y + src.height} L ${src.x + src.width / 2} ${tgt.y}`;
+    const { container } = renderCanvas({ layout });
+    // Edge bodies render after the nodes measure (microtask) — wait for the
+    // "+" to be present, which means the path layer is in the DOM.
+    await screen.findByTestId("edge-add-plan-check");
+    const pathEl = container.querySelector(".react-flow__edge-path");
+    expect(pathEl).toBeTruthy();
+    expect(pathEl!.getAttribute("d")).toContain(firstSegment);
+  });
+
+  it("deletes the selected step with the Backspace key", () => {
+    const onDelete = vi.fn();
+    renderCanvas({ selectedId: "check", onDelete });
+    fireEvent.keyDown(document, { key: "Backspace" });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledWith(["check"]);
+  });
+
+  it("keeps the terminal plus sign on the terminal step via the add-after stub", async () => {
+    renderCanvas();
+    const addAfter = (await screen.findByTestId("add-after-check")) as HTMLElement;
+    expect(addAfter).toBeTruthy();
+    // The stub wrapper sits on the node's vertical axis (left-1/2) and the
+    // "+" itself is centred on it.
+    expect(addAfter.parentElement).toBeTruthy();
+    expect(addAfter.parentElement!.className).toContain("left-1/2");
   });
 });
 

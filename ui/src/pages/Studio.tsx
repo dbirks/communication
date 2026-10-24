@@ -42,9 +42,11 @@ import {
   toJsDocument,
   useStudioDraft,
 } from "../components/studio/useStudioDraft";
+import { duplicateNode } from "../lib/pipeline/duplicateNode";
 import { StudioCanvas } from "../components/studio/StudioCanvas";
 import { StudioPalette } from "../components/studio/StudioPalette";
 import { StudioInspector } from "../components/studio/StudioInspector";
+import { StudioStatusBar } from "../components/studio/StudioStatusBar";
 import { SelectionToolbar, type ScopeKind } from "../components/studio/SelectionToolbar";
 import { DiffPanel } from "../components/studio/DiffPanel";
 import { StudioHeader, type StudioView } from "../components/studio/StudioHeader";
@@ -368,30 +370,6 @@ export function StudioPage() {
 
   const inspector = (
     <>
-      {studio.guard.pending === null && studio.conflict === null ? (
-        <>
-          <AssistantProposalBox
-            draftId={draftId}
-            version={studio.savedVersion}
-            text={studio.text}
-            readOnly={readOnly}
-            dirty={studio.dirty && highlight.length === 0}
-            previewing={highlight.length > 0}
-            onPreview={onPreview}
-            onApply={onProposalApply}
-            onDiscard={onProposalDiscard}
-          />
-          {highlight.length > 0 ? (
-            <p
-              className="border-b border-line bg-st-waiting-pale-body px-3 py-1.5 font-mono text-[10px] text-st-waiting-pale-fg"
-              data-testid="studio-proposal-caption"
-            >
-              {PROPOSAL_CAPTION}
-              {proposalSummary ? ` — ${proposalSummary}` : ""}
-            </p>
-          ) : null}
-        </>
-      ) : null}
       {selectedIds.length > 1 ? (
         <div
           className="rounded-[3px] border border-line bg-paper p-[8px]"
@@ -436,8 +414,34 @@ export function StudioPage() {
           text={studio.text}
           readOnly={readOnly}
           apply={studio.apply}
+          onDelete={(id) => handleDelete([id])}
         />
       )}
+      {studio.guard.pending === null && studio.conflict === null && selectedIds.length <= 1 ? (
+        <>
+          <AssistantProposalBox
+            draftId={draftId}
+            version={studio.savedVersion}
+            text={studio.text}
+            readOnly={readOnly}
+            dirty={studio.dirty && highlight.length === 0}
+            previewing={highlight.length > 0}
+            onPreview={onPreview}
+            onApply={onProposalApply}
+            onDiscard={onProposalDiscard}
+            footer
+          />
+          {highlight.length > 0 ? (
+            <p
+              className="border-b border-line bg-st-waiting-pale-body px-3 py-1.5 font-mono text-[10px] text-st-waiting-pale-fg"
+              data-testid="studio-proposal-caption"
+            >
+              {PROPOSAL_CAPTION}
+              {proposalSummary ? ` — ${proposalSummary}` : ""}
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </>
   );
   const canvas = (
@@ -458,6 +462,7 @@ export function StudioPage() {
       onAddAfter={readOnly ? undefined : handleAddAfter}
       onConnect={readOnly ? undefined : (from, to) => runOp((text) => connectOp(text, from, to))}
       onDelete={readOnly ? undefined : handleDelete}
+      onDuplicate={readOnly ? undefined : (id) => runOp((text) => duplicateNode(text, id))}
       canConnect={readOnly ? undefined : (from, to) => canConnectOf(model, from, to)}
     />
   );
@@ -537,18 +542,17 @@ export function StudioPage() {
   );
 
   return (
-    // Full-bleed route (App.tsx): the page owns the whole viewport — app bar
-    // (53px) + footer (37px) leave `calc(100vh - 91px)`, a definite height the
-    // column divides: header, then palette/canvas/inspector, each pane
-    // scrolling internally. No vertical page scroll, so the sticky app bar
-    // can never scroll over the canvas and intercept its controls.
+    // Full-bleed route (App.tsx): the page owns the whole viewport — the
+    // studio's header, palette/canvas/inspector and status bar fill it
+    // (`h-screen`, no page scroll), so the sticky app chrome can never scroll
+    // over the canvas and intercept its controls.
     <div
-      className="flex h-[calc(100vh-91px)] flex-col overflow-hidden bg-paper"
+      className="flex h-screen flex-col overflow-hidden bg-paper"
       data-testid="studio-page"
     >
       <StudioHeader
         pipelineName={pipeline.data?.display_name || pipeline.data?.slug || pipelineId}
-        pipelineId={pipelineId}
+        pipelineFolder={pipeline.data?.folder ?? null}
         savedVersion={studio.savedVersion || null}
         validation={viewValidate(draft.data?.validation ?? null)}
         readOnly={readOnly}
@@ -709,6 +713,12 @@ export function StudioPage() {
           </aside>
         </div>
       )}
+
+      <StudioStatusBar
+        stepCount={model.nodes.length}
+        dirty={studio.dirty}
+        publishReason={publishReason}
+      />
 
       {ambiguity !== null ? (
         <AmbiguityDialog

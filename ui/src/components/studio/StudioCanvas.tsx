@@ -26,8 +26,10 @@ import {
   type EdgeChange,
   type Node,
   type NodeChange,
+  type NodeMouseHandler,
 } from "@xyflow/react";
 import {
+  findNode,
   scopeKey,
   type GraphEdge,
   type GraphModel,
@@ -41,6 +43,7 @@ import {
   type InsertableEdgeRender,
 } from "./edges";
 import { ScopeNode, StepNode, type ScopeNodeRender, type StepNodeRender } from "./nodes";
+import { NodeMenu } from "./NodeMenu";
 import { StepPicker } from "./StepPicker";
 import { PALETTE_DRAG_TYPE } from "./StudioPalette";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
@@ -79,6 +82,9 @@ export interface StudioCanvasProps {
   focusNodeId?: string | null;
   onConnect?(from: string, to: string): void;
   onDelete?(ids: string[]): void;
+  /** Duplicate a step — the selected node's context/selection menu calls it
+   * with the definition node id (the Studio page wires it to its undoable op). */
+  onDuplicate?: (id: string) => void;
   canConnect?(from: string, to: string): { ok: true } | { ok: false; reason: string };
 }
 
@@ -141,11 +147,15 @@ const edgeTypes = {
 
 /** The pointer must be within this many px of the segment to count as an
  * "insert here" drop (design doc §3.2). The smooth-step path bows well off the
- * straight segment in a tight left-to-right layout (a short hop with a rank
+ * straight segment in a tight top-to-bottom layout (a short hop with a rank
  * offset bows ~30px at its midpoint), and the drop preview is drawn AT the
  * path midpoint — so the radius must comfortably clear the bow, not just the
  * 24px the doc names for a straight edge. */
 const DROP_EDGE_RADIUS_PX = 48;
+
+/** Height of the selected-node context/selection menu (two 22px rows, 2px
+ * gap, 3px padding — design 1g). */
+const NODE_MENU_HEIGHT = 52;
 
 /* ------------------------------------------------------------------ the
  * viewport-fit guards.
@@ -269,6 +279,29 @@ function isMeasuredBox(box: { width: number | undefined; height: number | undefi
   return isPositiveFinite(box.width) && isPositiveFinite(box.height);
 }
 
+/** The node's own config object from the parsed document, for the canvas
+ * node's one key fact (design 1g) — the kind's model / command / approver /
+ * artifact. Empty when the id is unknown or the doc has no such node. */
+function nodeConfigOf(
+  document: unknown,
+  model: GraphModel,
+  nodeId: string,
+): Record<string, unknown> {
+  const node = findNode(model, nodeId);
+  if (!node) return {};
+  let cur: unknown = document;
+  for (const part of node.pointer.split("/")) {
+    if (part === "") continue;
+    cur = Array.isArray(cur) ? cur[Number(part)] : (cur as Record<string, unknown> | null)?.[part];
+    if (cur === null || cur === undefined) return {};
+  }
+  if (cur === null || typeof cur !== "object" || Array.isArray(cur)) return {};
+  const cfg = (cur as Record<string, unknown>).config;
+  return cfg && typeof cfg === "object" && !Array.isArray(cfg)
+    ? (cfg as Record<string, unknown>)
+    : {};
+}
+
 function CanvasInner({
   model,
   document,
@@ -287,6 +320,7 @@ function CanvasInner({
   onAddAfter,
   onConnect,
   onDelete,
+  onDuplicate,
   canConnect,
   focusNodeId,
 }: StudioCanvasProps) {
@@ -319,9 +353,11 @@ function CanvasInner({
   const onSelectRef = useRef(onSelect);
   const onAddAfterRef = useRef(onAddAfter);
   const onInsertOnEdgeRef = useRef(onInsertOnEdge);
+  const onDuplicateRef = useRef(onDuplicate);
   onSelectRef.current = onSelect;
   onAddAfterRef.current = onAddAfter;
   onInsertOnEdgeRef.current = onInsertOnEdge;
+  onDuplicateRef.current = onDuplicate;
 
   // The node content's click handler calls `onSelect` unconditionally (it has
   // no access to the event). While Shift is held, React Flow's own click
@@ -398,6 +434,60 @@ function CanvasInner({
     );
   }, [base]);
 
+  // The selected node's context/selection menu (design 1g): a small menu to
+  // the right of the single selected step — Duplicate / Delete — plus the
+  // same actions on right-click (context menu at the pointer).
+  const [menu, setMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const menuFocusRef = useRef<HTMLElement | null>(null);
+
+  const selectedMenuNodeId = useMemo(() => {
+    if (readOnly || stale) return null;
+    if (selectedId === null) return null;
+    if (selectedIds !== undefined && selectedIds.length > 1) return null;
+    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
+    return node && node.type === "step" ? node.data.nodeId : null;
+  }, [readOnly, stale, selectedId, selectedIds, base]);
+
+  const selectedMenuBox = useMemo(() => {
+    const node = base.nodes.find((n) => n.data.nodeId === selectedId);
+    if (!node) return null;
+    return nodeBoxes[node.id] ?? null;
+  }, [base, nodeBoxes, selectedId]);
+
+  useEffect(() => {
+    if (selectedMenuNodeId === null) {
+      setMenu(null);
+      return;
+    }
+    const box = selectedMenuBox;
+    if (!box) return;
+    // Remember what had focus before the menu took it, so closing hands it back.
+    // `globalThis.document` — the component's own `document` prop shadows
+    // the global.
+    const active = globalThis.document.activeElement;
+    if (active instanceof HTMLElement) {
+      menuFocusRef.current = active;
+    }
+    setMenu({
+      x: box.x + box.width + 8,
+      y: box.y + (box.height - NODE_MENU_HEIGHT) / 2,
+      nodeId: selectedMenuNodeId,
+    });
+  }, [selectedMenuNodeId, selectedMenuBox]);
+
+  const closeMenu = useCallback(() => {
+    setMenu(null);
+    const el = menuFocusRef.current;
+    menuFocusRef.current = null;
+    if (el instanceof HTMLElement) el.focus();
+  }, []);
+
+  const openMenuAt = useCallback((x: number, y: number, nodeId: string) => {
+    const active = globalThis.document.activeElement;
+    menuFocusRef.current = active instanceof HTMLElement ? active : null;
+    setMenu({ x, y, nodeId });
+  }, []);
+
   // Standard controlled pattern: apply every change (position, dimensions,
   // select, …) so the `nodes` state tracks React Flow's internal store —
   // including the `selected` flag, which the rebuild carries forward so a
@@ -461,6 +551,17 @@ function CanvasInner({
     (clientX: number, clientY: number) =>
       nearestEdge(nodeBoxes, edgeQuery, clientToFlow(clientX, clientY), DROP_EDGE_RADIUS_PX),
     [nodeBoxes, edgeQuery, clientToFlow],
+  );
+
+  const onNodeContextMenu: NodeMouseHandler<Node> = useCallback(
+    (event, node) => {
+      if (readOnly) return;
+      const id = (node.data as { id?: string }).id;
+      if (typeof id !== "string") return;
+      const flow = clientToFlow(event.clientX, event.clientY);
+      openMenuAt(flow.x, flow.y, id);
+    },
+    [readOnly, clientToFlow, openMenuAt],
   );
 
   const onDragOver = useCallback(
@@ -610,6 +711,7 @@ function CanvasInner({
         emptyBody: scope.emptyBody,
         headerText: scope.headerText ?? `${scope.label} · ${scope.nodeId}`,
         loopNote: scope.loopNote,
+        config: nodeConfigOf(document, model, scope.nodeId),
         onAddInside: scope.emptyBody
           ? (kind: string) => onAddAfterRef.current?.(scope.nodeId, scope.scope, kind)
           : null,
@@ -770,7 +872,6 @@ function CanvasInner({
     const el = canvasRef.current;
     if (!el) return;
     const onWheel = () => {
-      console.log("[vp-debug] wheel fired");
       userMovedRef.current = true;
     };
     el.addEventListener("wheel", onWheel, { passive: true });
@@ -842,17 +943,6 @@ function CanvasInner({
     const defNode = base.nodes.find((n) => n.data.nodeId === focusNodeId);
     const box = defNode ? nodeBoxes[defNode.id] : null;
     const pane = paneRef.current?.getBoundingClientRect();
-    console.log("[vp-debug] focus-effect", {
-      focusNodeId,
-      userMoved: userMovedRef.current,
-      focusedAlready: focusedRef.current,
-      allMeasured,
-      defFound: !!defNode,
-      defId: defNode?.id,
-      boxId: defNode?.id ? nodeBoxes[defNode.id] != null : null,
-      pane: pane ? [Math.round(pane.width), Math.round(pane.height)] : null,
-      baseNodeIds: base.nodes.map((n) => n.data.nodeId),
-    });
     if (!focusNodeId || userMovedRef.current) return;
     if (focusedRef.current === focusNodeId) return;
     if (!allMeasured) return;
@@ -865,14 +955,27 @@ function CanvasInner({
       zoom: 1,
     };
     const vp = centerOnBox(box, pane.width, pane.height, current.zoom);
-    console.log("[vp-debug] center", { current, vp });
     if (vp) {
       setViewport(vp, { duration: 0 });
       lastGoodRef.current = vp;
     }
   }, [focusNodeId, allMeasured, nodeSetKey, base, nodeBoxes, paneReal, setViewport, viewportEl]);
 
-  const deleteKeys = readOnly ? null : ["Backspace", "Delete"];
+  // Backspace/Delete removes the selected steps (design 1g: the ⌫ action).
+  // One window handler is the canvas's only key-delete path — React Flow's
+  // own deleteKeyCode would double-delete through onNodesDelete.
+  useEffect(() => {
+    if (readOnly) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Backspace" && event.key !== "Delete") return;
+      const ids = pageSelRef.current;
+      if (ids.length === 0) return;
+      event.preventDefault();
+      deleteGuarded(ids);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [readOnly, deleteGuarded]);
 
   return (
     <div
@@ -909,11 +1012,6 @@ function CanvasInner({
           onNodeDragStop={onNodeDragStop}
           onConnect={handleConnect}
           onMoveStart={() => {
-            console.log("[vp-debug] onMoveStart fired");
-            userMovedRef.current = true;
-          }}
-          onMove={() => {
-            console.log("[vp-debug] onMove fired");
             userMovedRef.current = true;
           }}
           // Multi-selection: Shift+click adds a step to the selection (the
@@ -927,9 +1025,9 @@ function CanvasInner({
             deleteGuarded(deleted.map((n) => (n.data as { id?: string }).id ?? "").filter(Boolean))
           }
           onEdgesDelete={(deleted) => deleteGuarded(deleted.map((e) => e.id))}
+          onNodeContextMenu={onNodeContextMenu}
           nodesDraggable={!readOnly && !stale}
           nodesConnectable={!readOnly && !stale}
-          deleteKeyCode={deleteKeys}
         >
           <Background />
           <Controls position="bottom-right" />
@@ -995,6 +1093,26 @@ function CanvasInner({
           >
             {refused}
           </div>
+        )}
+        {menu && (
+          <>
+            <div
+              className="absolute inset-0 z-10"
+              onMouseDown={(event) => {
+                // Click-away closes the context menu; the menu itself sits
+                // above this layer (z-20).
+                if (event.target === event.currentTarget) closeMenu();
+              }}
+            />
+            <NodeMenu
+              x={menu.x}
+              y={menu.y}
+              nodeId={menu.nodeId}
+              onDuplicate={onDuplicate}
+              onDelete={(ids) => onDelete?.(ids)}
+              onClose={closeMenu}
+            />
+          </>
         )}
       </div>
 

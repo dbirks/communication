@@ -132,6 +132,9 @@ type Assignment struct {
 	CreatedBy         string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// RepositoryID (ADR-0060) is the repository this pipeline is used in;
+	// empty string is NULL — the whole project, the legacy / any-repo meaning.
+	RepositoryID string
 }
 
 const pipPipelineColumns = `id, organization_id, slug, display_name, description,
@@ -604,7 +607,7 @@ func (s *PipelineStore) DeprecateRevision(ctx context.Context, revisionID string
 
 const pipAssignmentColumns = `id, project_id, pipeline_id, pinned_revision_id,
 	max_concurrent_runs, budget_overrides, enabled, version, created_by::text,
-	created_at, updated_at`
+	created_at, updated_at, repository_id`
 
 func (s *PipelineStore) scanAssignment(row pgx.Row) (Assignment, error) {
 	var (
@@ -613,7 +616,7 @@ func (s *PipelineStore) scanAssignment(row pgx.Row) (Assignment, error) {
 	)
 	if err := row.Scan(&a.ID, &a.ProjectID, &a.PipelineID, &a.PinnedRevisionID,
 		&a.MaxConcurrentRuns, &budget, &a.Enabled, &a.Version, &a.CreatedBy,
-		&a.CreatedAt, &a.UpdatedAt); err != nil {
+		&a.CreatedAt, &a.UpdatedAt, &a.RepositoryID); err != nil {
 		return Assignment{}, err
 	}
 	a.BudgetOverrides = orEmptyJSON(budget)
@@ -630,20 +633,24 @@ type NewAssignment struct {
 	MaxConcurrentRuns int // 0 ⇒ the column default (1)
 	BudgetOverrides   json.RawMessage
 	CreatedBy         string
+	// RepositoryID (ADR-0060) is the repository this pipeline is used in;
+	// empty means the whole project (the legacy / any-repo meaning).
+	RepositoryID string
 }
 
 // CreateAssignment pins a published revision to a project. A second
-// assignment of one pipeline to one project is ErrConflict
-// (UNIQUE (project_id, pipeline_id)).
+// assignment of one pipeline to one repository (or to the whole project) is
+// ErrConflict (UNIQUE (project_id, pipeline_id, repository_id) NULLS NOT
+// DISTINCT — ADR-0060).
 func (s *PipelineStore) CreateAssignment(ctx context.Context, in NewAssignment) (Assignment, error) {
 	a, err := s.scanAssignment(s.Pool.QueryRow(ctx, `
 		INSERT INTO assignments
-			(project_id, pipeline_id, pinned_revision_id, max_concurrent_runs, budget_overrides, created_by)
+			(project_id, pipeline_id, pinned_revision_id, max_concurrent_runs, budget_overrides, created_by, repository_id)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, COALESCE(NULLIF($4, 0), 1),
-		        COALESCE(NULLIF($5, '')::jsonb, '{}'::jsonb), $6::uuid)
+		        COALESCE(NULLIF($5, '')::jsonb, '{}'::jsonb), $6::uuid, NULLIF($7, '')::uuid)
 		RETURNING `+pipAssignmentColumns,
 		in.ProjectID, in.PipelineID, in.PinnedRevisionID, in.MaxConcurrentRuns,
-		string(in.BudgetOverrides), in.CreatedBy))
+		string(in.BudgetOverrides), in.CreatedBy, in.RepositoryID))
 	if pipUniqueErr(err) != nil {
 		return Assignment{}, ErrConflict
 	}

@@ -1,0 +1,6 @@
+{
+  "studio-header-runs": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
+  "studio-header-assigned": "design 1g: Studio header drops the Runs/Assigned affordances (Workflows Review handoff)",
+  "workflow-duplicate-*": "re-homed to RowMenu.testidFor() by the library-row-menu worker; ids still exist at runtime and are asserted by tests, but the static check only sees literal data-testid templates",
+  "workflow-move-folder-*": "re-homed to RowMenu.testidFor() by the library-row-menu worker; ids still exist at runtime and are asserted by tests, but the static check only sees literal data-testid templates"
+}

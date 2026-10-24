@@ -50,7 +50,7 @@ export type ErrorEdgeRender = RoutedGeometry & {
 };
 
 const addButton =
-  "pointer-events-auto flex h-5 w-5 items-center justify-center rounded-full border border-line-strong bg-surface text-xs leading-none text-ink-2 shadow-sm hover:border-accent hover:text-accent";
+  "pointer-events-auto absolute flex h-[22px] w-[22px] items-center justify-center rounded-full border border-line-strong bg-surface text-sm leading-none text-ink-2 shadow-sm hover:border-accent hover:text-accent hover:shadow-[0_0_0_2px_var(--color-accent-ring)]";
 
 /**
  * The path and its label point for one edge. When `toFlow` carried the
@@ -83,15 +83,21 @@ function edgePath(
 export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
   const { id, data } = props;
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [path, pathLabelX, pathLabelY] = edgePath(data, props);
+  const [path, midX, midY] = edgePath(data, props);
   // The collision-checked anchor overrides the raw path midpoint: in the dense
   // top-to-bottom cut the midpoint can sit on a neighbour scope's box.
-  const labelX = data?.labelAnchor?.x ?? pathLabelX;
-  const labelY = data?.labelAnchor?.y ?? pathLabelY;
+  const labelX = data?.labelAnchor?.x ?? midX;
+  const labelY = data?.labelAnchor?.y ?? midY;
   if (!data) return null;
   const interactive = !data.readOnly && !data.stale;
   const preview = data.preview;
-  const label = preview ? `Insert ${preview} here` : data.label;
+  const pillText = preview ? `Insert ${preview} here` : data.label;
+
+  // The "+" is centred ON the line at its midpoint; an edge label sits beside
+  // the line and never over the "+" — when the checked anchor landed on the
+  // line midpoint the button owns that spot, so the pill moves beside it.
+  const pillAtLine = Math.abs(labelX - midX) < 1 && Math.abs(labelY - midY) < 1;
+  const pillPos = pillAtLine ? { x: midX + 24, y: midY } : { x: labelX, y: labelY };
 
   return (
     <>
@@ -105,64 +111,62 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
       />
       <EdgeLabelRenderer>
         <div
-          className="pointer-events-none absolute"
-          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+          className="pointer-events-auto absolute group"
+          style={{ left: midX, top: midY, transform: "translate(-50%, -50%)" }}
         >
-          {/* The PILL is the anchored element: `clearLabelAnchor` (flowModel)
-           * checked the pill's box against every node at (labelX, labelY),
-           * so the pill's own centre must sit exactly there. The "+" sits
-           * ABOVE the pill, out of the anchored box — when it was in the
-           * flex column the pill rendered 12px below the checked anchor
-           * and grazed the neighbour boxes the check had cleared. */}
-          <div className="relative">
-            {label && (
-              <span
-                data-testid={preview ? "insert-preview" : undefined}
-                title={preview ? undefined : (data.labelTitle ?? label)}
-                className={
-                  preview
-                    ? "pointer-events-none block rounded-full border border-accent bg-surface px-2 py-0.5 text-[10px] font-semibold text-accent"
-                    : "pointer-events-none block max-w-[76px] overflow-hidden rounded-full border border-line bg-surface px-1.5 py-0.5 text-ellipsis text-[10px] text-ink-2"
-                }
-              >
-                {label}
-              </span>
-            )}
-            {interactive && !preview && (
-              <button
-                type="button"
-                className={
-                  addButton +
-                  " absolute left-1/2 -translate-x-1/2 " +
-                  (label ? "-top-[30px]" : "-top-2.5")
-                }
-                data-testid={`edge-add-${data.edge.from}-${data.edge.to}`}
-                aria-label={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
-                // The "+" opens the picker and NOTHING else: without the
-                // pointerdown guard the gesture bubbles to the node/pane and
-                // the hosting step gets selected on the same click.
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setPickerOpen(true);
+          {pickerOpen && (
+            <div
+              className="pointer-events-auto absolute"
+              style={{ left: 0, top: 24, transform: "translate(-50%, -50%)" }}
+            >
+              <StepPicker
+                title={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
+                onPick={(kind) => {
+                  setPickerOpen(false);
+                  data.onInsert(kind);
                 }}
-              >
-                +
-              </button>
-            )}
-            {pickerOpen && (
-              <div className="pointer-events-auto absolute left-1/2 top-full mt-1 -translate-x-1/2">
-                <StepPicker
-                  title={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
-                  onPick={(kind) => {
-                    setPickerOpen(false);
-                    data.onInsert(kind);
-                  }}
-                  onClose={() => setPickerOpen(false)}
-                />
-              </div>
-            )}
-          </div>
+                onClose={() => setPickerOpen(false)}
+              />
+            </div>
+          )}
+          <button
+            type="button"
+            className={addButton}
+            style={{
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              width: 22,
+              height: 22,
+            }}
+            data-testid={`edge-add-${data.edge.from}-${data.edge.to}`}
+            aria-label={`Insert a step between ${data.edge.from} and ${data.edge.to}`}
+            // The "+" opens the picker and NOTHING else: without the
+            // pointerdown guard the gesture bubbles to the node/pane and
+            // the hosting step gets selected on the same click.
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setPickerOpen(true);
+            }}
+          >
+            +
+          </button>
+          {(interactive || pillText !== null) && (
+            <span
+              className={
+                "pointer-events-none absolute rounded-full border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-2 " +
+                (preview ? "border-accent text-accent" : "border-line") +
+                " group-hover:border-accent group-hover:text-accent" +
+                (pillText !== null ? "" : "opacity-0 group-hover:opacity-100")
+              }
+              style={{ left: pillPos.x, top: pillPos.y, transform: "translate(-50%, -50%)" }}
+              data-testid={preview ? "insert-preview" : undefined}
+              title={preview ? undefined : (data.labelTitle ?? pillText ?? undefined)}
+            >
+              {pillText ?? "insert step"}
+            </span>
+          )}
         </div>
       </EdgeLabelRenderer>
     </>
