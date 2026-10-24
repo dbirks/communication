@@ -1,0 +1,110 @@
+# compose.real.yml — real-model / real-pi overlay for the M4 lab stack.
+#
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) \
+#     COMMUNICATION_LLM_API_KEY_HOST_FILE=$HOME/.config/communication/llmc-api-key \
+#     docker compose -p communication-m4 \
+#       -f compose.yml -f compose.harness.yml -f compose.m4.yml -f compose.real.yml \
+#       up -d --build
+#
+#   `docker compose ... config --quiet` MUST render (all four -f files in that
+#   order) before `up`; with any of the `:?` variables unset it refuses to
+#   render, which is the point.
+#
+# What this layer adds over the M4 stack (compose.m4.yml's worker-a/worker-b
+# and compose.yml's api-a/api-b, per service):
+#   * A read-only bind of the operator's gateway key FILE at
+#     /run/comm/llm-api-key on worker-a, worker-b, api-a and api-b. The host
+#     file may be 0600 and owned by the host user: every reader in this stack
+#     runs as ${HOST_UID} (compose.harness.yml / compose.m4.yml), so the
+#     mount is readable without any chmod. No key value is ever written into
+#     this file or any environment value here — only paths and interpolation
+#     names.
+#   * worker-a/worker-b: `model.chat` nodes run against the operator's
+#     OpenAI-compatible gateway (cmd/communication/worker.go):
+#       COMMUNICATION_MODEL_CHAT_BASE_URL      server root
+#       COMMUNICATION_MODEL_CHAT_API_KEY       bearer token — NO _FILE variant
+#        exists in the Go code (verified: only this env is read), so the
+#        value comes from the host environment by ${LLMC_API_KEY:?}
+#        interpolation, the host's gateway-key variable (docs/compatibility/
+#        ACP.md); it is never a literal in this file
+#       COMMUNICATION_MODEL_CHAT_MODELS        one-model allowlist
+#   * worker-a/worker-b: the `pi` ACP launcher (ADR-0059) gets
+#       COMMUNICATION_PI_API_KEY_FILE=/run/comm/llm-api-key (file delivery,
+#        read at each launch; the Go code has no plain-env form) plus the
+#        per-turn provider base URL + model rendered into the agent-home
+#        models.json.
+#   * worker-a/worker-b: COMMUNICATION_AGENT_EGRESS_ALLOW admits the hosts a
+#        real turn actually needs — the claude launcher's default
+#        (api.anthropic.com), GitHub push (docs/design/agent-push.md,
+#        ADR-0045), and the gateway host below.
+#   * api-a/api-b: the in-app assistant (ADR-0034) runs against the same
+#     gateway with file-delivered key (serve.go: _API_KEY_FILE is the
+#     preferred form).
+#
+# Host variables (with safe defaults where shown):
+#   COMMUNICATION_LLM_BASE_URL        (default https://llm-collective.e-gineering.com/v1)
+#   COMMUNICATION_LLM_MODEL           (default david-birks/qwen3-8-27b)
+#   LLMC_API_KEY                      the gateway key, from the host environment
+#                                     only; must equal the file's contents
+#   COMMUNICATION_LLM_API_KEY_HOST_FILE  REQUIRED: host path of the key file
+#                                     (e.g. $HOME/.config/communication/llmc-api-key)
+#   COMMUNICATION_LLM_HOST            (default llm-collective.e-gineering.com)
+#                                     the base URL's host, for egress. compose
+#                                     cannot parse a URL, so this is a separate
+#                                     variable rather than derived; if you
+#                                     point COMMUNICATION_LLM_BASE_URL at a
+#                                     different gateway, set this too.
+name: communication-m4
+
+services:
+  worker-a:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
+    environment:
+      # model.chat (worker.go: parsed at startup; base URL unset means the
+      # kind is not registered and its nodes fail with the honest refusal).
+      COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the host environment (file form: COMMUNICATION_LLM_API_KEY_HOST_FILE)}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      # pi launcher (ADR-0059): key via the mounted file, never env;
+      # base URL + model into the agent-home models.json per turn.
+      COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      # ADR-0035 worker-owned egress: claude (shipped default host) + GitHub
+      # push (api.anthropic.com is nono's provisional default; the GitHub set
+      # is agent-push.md step 3 plus its raw/archive/download hosts) + the
+      # gateway host the model.chat and pi turns call.
+      COMMUNICATION_AGENT_EGRESS_ALLOW: "api.anthropic.com,github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,${COMMUNICATION_LLM_HOST:-llm-collective.e-gineering.com}"
+
+  worker-b:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
+    environment:
+      COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the host environment (file form: COMMUNICATION_LLM_API_KEY_HOST_FILE)}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
+      COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_AGENT_EGRESS_ALLOW: "api.anthropic.com,github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,${COMMUNICATION_LLM_HOST:-llm-collective.e-gineering.com}"
+
+  api-a:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
+    environment:
+      # ADR-0034: unset COMMUNICATION_ASSISTANT_BASE_URL means the assistant
+      # is absent (503 assistant_not_configured). Setting it makes THIS
+      # replica egress app content to the gateway — which is the operator's
+      # explicit intent in applying this overlay.
+      COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
+
+  api-b:
+    volumes:
+      - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
+    environment:
+      COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
