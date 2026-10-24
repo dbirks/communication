@@ -1,0 +1,299 @@
+# docs/samples/home/issue-to-pr.yaml — the product's core loop as one pipeline:
+# a GitHub issue in, a tested change out as a DRAFT pull request (ADR-0045's
+# agent-held push token is what makes the push and the PR possible).
+#
+# Unlike the two samples beside this file, it is agent-driven: two agent.acp
+# nodes on pi coding agents inside the nono sandbox. A worker can run it only
+# with all of this in place:
+#
+#   • two agent profiles on the pi launcher
+#     (docs/adr/ADR-0059-pi-acp-launcher-api-key.md: the worker image ships
+#     pi + pi-acp, and the operator's COMMUNICATION_PI_API_KEY_FILE /
+#     COMMUNICATION_PI_BASE_URL / COMMUNICATION_PI_MODEL are what the launcher
+#     delivers into pi's models.json): `pi-planner` (read-only checkout, no
+#     token) and `pi-implementer` (run_workspace, holds the push token).
+#   • a project secret `github-push-token` (delivery mode env, env_name
+#     GH_TOKEN) allowlisted to pi-implementer ONLY — ADR-0045; the planner
+#     never sees it. The token rides the exec environment, never argv
+#     (ADR-0040), and git + gh are in the worker image.
+#   • worker agent egress widened past the api.anthropic.com default to
+#     github.com + api.github.com (COMMUNICATION_AGENT_EGRESS_ALLOW, ADR-0035)
+#     so the sandbox can git push and run `gh pr create`.
+#   • for a PRIVATE repository: the repository row's GitHub credential
+#     (docs/adr/ADR-0061-repository-github-credential.md) — without it the
+#     anonymous clone/issue read fails before node 1 runs.
+#
+# `goal` is the issue title + body (the project's GitHub issue trigger's
+# template fills it, ADR-0056); `repository` is the project's repository
+# BINDING name (07), not a URL, and the checkout lands at repos/<binding
+# name> in the run workspace.
+#
+# Paste into Library → New pipeline → New draft, Validate, Publish, then
+# assign to a project and start a run (by hand or via an issue trigger).
+# Nothing here publishes to main: the deliverable is a DRAFT PR a maintainer
+# reviews and a human merges.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: issue-to-pr
+  description: >-
+    Take a GitHub issue, plan it on the repository checkout with a pi agent, hold the plan behind a maintainer approval, implement it in the sandbox, push the branch and open a draft pull request with the allowlisted token, and publish the delivery report.
+spec:
+  inputs:
+    type: object
+    required:
+      - goal
+      - repository
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: The issue title + body — the issue trigger's template fills this.
+      repository:
+        type: string
+        minLength: 1
+        description: Project repository binding name, e.g. app.
+      issue_number:
+        type: integer
+        minimum: 0
+        default: 0
+        description: GitHub issue number; 0 = the goal carries no issue.
+      branch_prefix:
+        type: string
+        minLength: 1
+        default: comm/issue-
+        description: >-
+          Branch prefix; the branch is <prefix><issue_number>-<slug>, or
+          <prefix>run-<slug> when issue_number is 0.
+  outputs:
+    type: object
+    required:
+      - pr_url
+      - branch
+    properties:
+      pr_url:
+        type: string
+      branch:
+        type: string
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 7200
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+    # 1. The plan. A pi agent on the READ-ONLY checkout: it reads the repository
+    #    itself, not a survey digest. The reply contract is the probe document's
+    #    strict style (docs/compatibility/probes/m4/pipeline.yaml): summary is
+    #    REQUIRED and <=600 chars because the expression language has no join /
+    #    format function (ADR-0022 § 5) and it is the only plan text a human sees
+    #    at the approval gate; steps and test_plan stay in the node outputs.
+    - id: plan
+      kind: agent.acp
+      timeoutSeconds: 900
+      retry:
+        maxAttempts: 3
+        backoff:
+          baseSeconds: 5
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+          - invalid_output
+      config:
+        profile: pi-planner
+        sessionMode: new
+        workspace:
+          mode: read_only
+          repositories:
+            - '${{ inputs.repository }}'
+        prompt: |
+          Goal (a GitHub issue; the number is ${{ inputs.issue_number }} and 0
+          means no issue number — the text below is the whole brief):
+          ${{ inputs.goal }}
+
+          Repository checkout (read-only): ${{ inputs.repository }}
+          Read the repository — layout, the files the goal touches, how it is
+          tested — and plan the change. Reply with JSON of exactly this shape:
+          {"plan": {"goal": "<one-sentence objective>",
+                    "summary": "<the plan as a human reads it>",
+                    "steps": [{"file": "<repo path>", "action": "<the change to make>"}],
+                    "test_plan": "<what the implementer must run to prove it>"}}
+          goal is a non-empty string. summary is REQUIRED and is the ONLY plan text
+          a human sees at the approval gate: at most 600 characters, 2-6 short
+          lines, plain text or simple "- " bullets, one planned change per line in
+          order, no JSON, no braces or quotes, nothing that only makes sense next
+          to the full steps array. steps holds at least one step; every step's
+          file is a repository path and its action is a non-empty string. test_plan
+          is a non-empty string naming the test command(s) the implementer must get
+          green. Never wrap plan in a string.
+      outputs:
+        type: object
+        required:
+          - plan
+        properties:
+          plan:
+            type: object
+            required:
+              - goal
+              - summary
+              - steps
+              - test_plan
+            properties:
+              goal:
+                type: string
+                minLength: 1
+              summary:
+                type: string
+                minLength: 1
+                maxLength: 600
+              steps:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required:
+                    - file
+                    - action
+                  properties:
+                    file:
+                      type: string
+                      minLength: 1
+                    action:
+                      type: string
+                      minLength: 1
+              test_plan:
+                type: string
+                minLength: 1
+    # 2. A maintainer decides. The approval renders goal + plan summary + test
+    #    plan; steps stay in the node outputs the approver can open.
+    - id: approve
+      kind: human.approval
+      dependsOn:
+        - plan
+      retry:
+        maxAttempts: 1
+      config:
+        summary: |
+          Issue for repository ${{ inputs.repository }} (issue number ${{ inputs.issue_number }}):
+          ${{ inputs.goal }}
+
+          Plan:
+          ${{ nodes.plan.outputs.plan.summary }}
+
+          Test plan:
+          ${{ nodes.plan.outputs.plan.test_plan }}
+        approverRoles:
+          - maintainer
+        deadlineSeconds: 86400
+        onTimeout: fail
+    # 3. The change. A pi agent in the run workspace holding the allowlisted
+    #    push token (secretRefs: project/github-push-token, env GH_TOKEN — the
+    #    only profile the secret is authorized for). It implements, tests until
+    #    green, pushes the branch and opens a DRAFT PR itself; the token never
+    #    lands in argv or any file (ADR-0045, ADR-0040).
+    - id: implement
+      kind: agent.acp
+      dependsOn:
+        - approve
+      timeoutSeconds: 3600
+      retry:
+        maxAttempts: 2
+        backoff:
+          baseSeconds: 10
+          multiplier: 2
+          maxSeconds: 120
+          jitter: true
+        retriableErrors:
+          - infra
+          - interrupted
+          - timeout
+          - agent_error
+      config:
+        profile: pi-implementer
+        sessionMode: new
+        workspace:
+          mode: run_workspace
+          repositories:
+            - '${{ inputs.repository }}'
+        secretRefs:
+          - project/github-push-token
+        prompt: |
+          Implement the approved plan in repository ${{ inputs.repository }}.
+          Goal: ${{ inputs.goal }}
+          Approved plan (JSON): ${{ nodes.plan.outputs.plan }}
+          Approved test plan: ${{ nodes.plan.outputs.plan.test_plan }}
+
+          Issue number: ${{ inputs.issue_number }} (0 means no issue); branch
+          prefix: ${{ inputs.branch_prefix }}
+          1. Create the branch <branch_prefix><issue_number>-<short-slug> — a
+             short slug of a few lowercase words from the goal — or
+             <branch_prefix>run-<short-slug> when the issue number is 0.
+          2. Implement the plan step by step; add or adjust tests for the change.
+          3. Find the project's test command (README first, then package.json
+             scripts — for this sample's repo it is `npm test`) and run it; fix
+             and re-run until the whole suite is green.
+          4. Commit with a message referencing Fixes #<issue_number> when the
+             issue number is > 0.
+          5. Push: git push -u origin <branch>.
+          6. Open a DRAFT pull request: gh pr create --draft --title "<goal in
+             one line>" --body "<plan summary, then the tail of the final test
+             output, then a line Closes #<issue_number> when the issue number is
+             > 0>". Use the GH_TOKEN environment for authentication.
+          7. Reply with JSON of exactly this shape:
+          {"summary": "<what you changed and why, in prose>",
+           "branch": "<the branch you pushed, exactly as pushed>",
+           "pr_url": "<the draft PR URL gh reported>",
+           "tests_passed": true,
+           "files_changed": ["<repo path>"]}
+          summary is ONE non-empty plain-text string. branch is the exact ref you
+          pushed. pr_url is the exact URL gh printed,
+          https://github.com/<owner>/<repo>/pull/<n>. tests_passed is a JSON
+          boolean, true only if the last full test run was green. files_changed
+          is an ARRAY of repository path strings, one per element, [] when
+          nothing changed. Write nothing outside this object.
+      outputs:
+        type: object
+        required:
+          - summary
+          - branch
+          - pr_url
+          - tests_passed
+        properties:
+          summary:
+            type: string
+            minLength: 1
+          branch:
+            type: string
+            minLength: 1
+          pr_url:
+            type: string
+            pattern: ^https://github.com/.+/pull/[0-9]+$
+          tests_passed:
+            type: boolean
+          files_changed:
+            type: array
+            items:
+              type: string
+    # 4. The artifact a reviewer finds after the run closes: the implement
+    #    node's reply (summary, branch, pr_url, tests_passed, files_changed).
+    - id: report
+      kind: artifact.publish
+      dependsOn:
+        - implement
+      config:
+        name: delivery.md
+        kind: markdown
+        mediaType: text/markdown
+        sensitivity: standard
+        from:
+          mode: output_json
+          value: ${{ nodes.implement.outputs }}
+  resultBindings:
+    pr_url: ${{ nodes.implement.outputs.pr_url }}
+    branch: ${{ nodes.implement.outputs.branch }}

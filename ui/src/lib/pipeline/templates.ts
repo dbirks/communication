@@ -1,5 +1,5 @@
 /**
- * The two vetted sample pipelines, offered in the library's "Start from"
+ * The three vetted sample pipelines, offered in the library's "Start from"
  * picker so a new pipeline does not have to begin as a blank textarea.
  *
  * The YAML lives next to this file, imported with Vite's `?raw` suffix so the
@@ -17,13 +17,15 @@
  * compiler, zero diagnostics) or CI goes red.
  *
  * One-line descriptions are the wording of `docs/samples/home/README.md`; the
- * honesty that matters and is repeated there: both samples run on the
- * home-cluster worker with no `agent.acp` node, and neither is scheduled —
- * cron/timer triggers are M6, so a run starts by hand.
+ * honesty that matters and is repeated there: two samples run on the
+ * home-cluster worker with no `agent.acp` node, `issue-to-pr` runs on pi
+ * agents (the `pi` launcher, ADR-0059) with the allowlisted GitHub push token,
+ * and none is scheduled — cron/timer triggers are M6, so a run starts by hand.
  */
 import { parseGraph } from "./graphDoc";
 import planWithApprovalYaml from "./templates/plan-with-approval.yaml.txt?raw";
 import securityReviewYaml from "./templates/security-review.yaml.txt?raw";
+import issueToPrYaml from "./templates/issue-to-pr.yaml.txt?raw";
 
 /**
  * The minimal skeleton every zero-document start posts as its first draft —
@@ -45,7 +47,11 @@ spec:
       kind: process.exec
 `;
 
-export type TemplateId = "blank" | "plan-with-approval" | "security-review";
+export type TemplateId =
+  | "blank"
+  | "plan-with-approval"
+  | "security-review"
+  | "issue-to-pr";
 
 export interface PipelineTemplate {
   id: TemplateId;
@@ -96,6 +102,15 @@ export const PIPELINE_TEMPLATES: readonly PipelineTemplate[] = [
     source: "docs/samples/home",
     documentYaml: securityReviewYaml,
     stepCount: stepCountOf(securityReviewYaml),
+  },
+  {
+    id: "issue-to-pr",
+    label: "Issue to draft PR",
+    description:
+      "inputs goal, repository, issue_number, branch_prefix: plan the issue on the checkout, hold behind a maintainer approval, implement with a pi agent, push the branch and open a draft PR with the allowlisted token, publish delivery.md",
+    source: "docs/samples/home",
+    documentYaml: issueToPrYaml,
+    stepCount: stepCountOf(issueToPrYaml),
   },
 ];
 

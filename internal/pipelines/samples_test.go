@@ -1,6 +1,6 @@
 package samples_test
 
-// Tests for the two home-cluster sample pipelines under docs/samples/home/.
+// Tests for the home-cluster sample pipelines under docs/samples/home/.
 //
 // A sample the user pastes into the Library draft editor is only real if the
 // same three steps a publish performs accept it: loader → schema validator →
@@ -9,8 +9,9 @@ package samples_test
 // path). These tests assert ZERO diagnostics at each step — a warning-severity
 // diagnostic is still a document that surprised somebody — plus the handful of
 // properties that make the samples what they claim to be: worker-executable node
-// kinds only (no agent.acp, which this cluster has no ACP credentials for) and
-// every model.chat node naming the one model the operator allowlists.
+// kinds (the agent-driven issue-to-pr sample is the exception — it runs on pi
+// agents whose launcher needs no ACP harness credentials, ADR-0059) and every
+// model.chat node naming the one model the operator allowlists.
 //
 // ADR-0029 closed the gap this file used to document: configModelChat.messages is
 // typed {role, content} in the shipped schema asset, content is a bindingText
@@ -36,8 +37,13 @@ import (
 const sampleModel = "qwen3-8-27b"
 
 type sample struct {
-	path  string
-	kinds []string // node kinds, in document order
+	path string
+	// node kinds, in document order
+	kinds []string
+	// agentDriven marks samples whose nodes are agent.acp (pi launcher, ADR-0059)
+	// instead of the credential-free process.exec/model.chat pair the other
+	// samples use.
+	agentDriven bool
 }
 
 var samples = []sample{
@@ -50,6 +56,13 @@ var samples = []sample{
 	{
 		path:  "../../docs/samples/home/security-review.yaml",
 		kinds: []string{"process.exec", "model.chat", "artifact.publish"},
+	},
+	{
+		path: "../../docs/samples/home/issue-to-pr.yaml",
+		kinds: []string{
+			"agent.acp", "human.approval", "agent.acp", "artifact.publish",
+		},
+		agentDriven: true,
 	},
 }
 
@@ -112,11 +125,17 @@ func TestSamplePipelinesCompileWithZeroDiagnostics(t *testing.T) {
 	}
 }
 
-// TestSamplePipelinesUseNoAgentACPNodes guards the reason the samples exist:
-// the home-cluster worker holds no ACP harness credentials, so a sample that
-// leaned on agent.acp could be published and could never run.
+// TestSamplePipelinesUseNoAgentACPNodes guards the reason the two credential-free
+// samples exist: without the pi launcher (ADR-0059) the home-cluster worker holds
+// no ACP harness credentials, so a sample that leaned on agent.acp could be
+// published and could never run. The agent-driven issue-to-pr sample is excluded
+// because it names pi profiles, whose launcher is API-key delivery, not ACP
+// harness credentials.
 func TestSamplePipelinesUseNoAgentACPNodes(t *testing.T) {
 	for _, s := range samples {
+		if s.agentDriven {
+			continue
+		}
 		for _, n := range compileSample(t, s.path).Nodes {
 			if n.Kind == "agent.acp" {
 				t.Errorf("%s: node %q is agent.acp, which this worker cannot execute", s.path, n.ID)
@@ -130,6 +149,9 @@ func TestSamplePipelinesUseNoAgentACPNodes(t *testing.T) {
 // chooses only the model (ADR-0024 D11).
 func TestSampleModelChatNodesNameTheAllowlistedModel(t *testing.T) {
 	for _, s := range samples {
+		if s.agentDriven {
+			continue
+		}
 		plan := compileSample(t, s.path)
 		seen := 0
 		for _, n := range plan.Nodes {
@@ -160,6 +182,9 @@ func TestSampleModelChatNodesNameTheAllowlistedModel(t *testing.T) {
 // model was handed the author's raw `${{ inputs.goal }}` text.
 func TestSampleModelChatMessageContentBinds(t *testing.T) {
 	for _, s := range samples {
+		if s.agentDriven {
+			continue
+		}
 		plan := compileSample(t, s.path)
 		bound := 0
 		for _, n := range plan.Nodes {

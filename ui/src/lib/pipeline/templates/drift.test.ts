@@ -1,5 +1,5 @@
 /**
- * Drift guard for the two bundled sample documents.
+ * Drift guard for the three bundled sample documents.
  *
  * `ui/src/lib/pipeline/templates/*.yaml.txt` are copies of
  * `docs/samples/home/*.yaml` — they exist only because Vite refuses to import a
@@ -52,7 +52,7 @@ function bundledBytes(slug: string): Uint8Array {
   return new TextEncoder().encode(template?.documentYaml ?? "");
 }
 
-const SAMPLES = ["plan-with-approval", "security-review"] as const;
+const SAMPLES = ["plan-with-approval", "security-review", "issue-to-pr"] as const;
 
 describe("bundled pipeline templates", () => {
   it.each(SAMPLES)("is byte-identical to docs/samples/home/%s.yaml", async (slug) => {
@@ -63,16 +63,18 @@ describe("bundled pipeline templates", () => {
     expect(Array.from(bundledBytes(slug))).toEqual(Array.from(original));
   });
 
-  it("ships the two samples plus Blank, and only Blank is the skeleton", () => {
+  it("ships the three samples plus Blank, and only Blank is the skeleton", () => {
     expect(PIPELINE_TEMPLATES.map((template) => template.id)).toEqual([
       "blank",
       "plan-with-approval",
       "security-review",
+      "issue-to-pr",
     ]);
     // Blank seeds its first draft from the inlined skeleton, not from a
-    // sample; the two samples stay byte-identical to `docs/samples/home/`.
+    // sample; the three samples stay byte-identical to `docs/samples/home/`.
     expect(PIPELINE_TEMPLATES.map((template) => template.source)).toEqual([
       "skeleton",
+      "docs/samples/home",
       "docs/samples/home",
       "docs/samples/home",
     ]);
