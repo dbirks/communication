@@ -144,8 +144,11 @@ def show(label, out):
 
 
 def run(cmd, **kw):
-    p = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_DIR,
-                       env=COMPOSE_ENV, **kw)
+    # Caller-supplied env/cwd win over the defaults (a caller passing env= used to
+    # collide with these keywords and crash subprocess.run with "multiple values").
+    kw.setdefault("cwd", REPO_DIR)
+    kw.setdefault("env", COMPOSE_ENV)
+    p = subprocess.run(cmd, capture_output=True, text=True, **kw)
     out = (p.stdout or "") + (("\n" + p.stderr) if p.stderr else "")
     return p.returncode, out.rstrip()
 
