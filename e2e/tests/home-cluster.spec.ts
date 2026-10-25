@@ -211,6 +211,26 @@ const TEST_TIMEOUT_MS = GATE_TIMEOUT_MS + RUN_TIMEOUT_MS + 1_800_000;
  */
 const NAV_TIMEOUT_MS = Number(process.env.E2E_HOME_NAV_TIMEOUT_MS ?? 60_000);
 
+/**
+ * The bound for a plain UI interaction (click, fill) and for waiting on an
+ * element the page draws from data it already has. Playwright gives an
+ * UNBOUNDED locator action the whole test budget, so a selector for something
+ * the current page never renders — not something slow — burns an hour before
+ * it says so: that is exactly how the home lab proof at `176462e` spent 1h on
+ * a `run-stage-cell-*` click while the run sat parked at its gate with the
+ * approval card already open. Two minutes is slack for a rendered app; anything
+ * that has not appeared by then is missing.
+ */
+const UI_TIMEOUT_MS = Number(process.env.E2E_HOME_UI_TIMEOUT_MS ?? 120_000);
+
+/**
+ * The gate's definition-node id in the vetted sample this proof runs
+ * (`docs/samples/home/plan-with-approval.yaml:156`). The run page selects a
+ * node by that id (ADR-0043's URL/selection state), so the id is the suite's
+ * own expectation about the sample, not a guess read off a page.
+ */
+const GATE_NODE_ID = "approve";
+
 // § 5(c)'s served shapes — read-only, no worker internals (AttemptView has no
 // worker_id by construction; the checkpoint row is the attempt's identity).
 interface WorkerView {
@@ -936,15 +956,15 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     refusedWrites.length = 0;
     await test.step("New run: the revision's inputs (goal + the repository binding)", async () => {
       await gotoApp(page, `${projectPath}/runs`);
-      await expect(page.getByTestId("project-runs")).toBeVisible();
-      await page.getByTestId("runs-new").click();
-      await expect(page.getByTestId("new-run-form")).toBeVisible();
+      await expect(page.getByTestId("project-runs")).toBeVisible({ timeout: UI_TIMEOUT_MS });
+      await page.getByTestId("runs-new").click({ timeout: UI_TIMEOUT_MS });
+      await expect(page.getByTestId("new-run-form")).toBeVisible({ timeout: UI_TIMEOUT_MS });
       await selectByOptionText(page, "new-run-assignment", PLAN_SLUG);
-      await page.getByTestId("new-run-input-goal").fill(GOAL);
+      await page.getByTestId("new-run-input-goal").fill(GOAL, { timeout: UI_TIMEOUT_MS });
       // `repository` is the project binding name, offered as the project's
       // own list — not a URL a user has to remember.
       await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
-      await page.getByTestId("new-run-submit").click();
+      await page.getByTestId("new-run-submit").click({ timeout: UI_TIMEOUT_MS });
       await waitForNavAfterWrite(page, /\/runs\/[0-9a-f-]{36}$/, "start the plan run");
       planRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
       expect(planRunId).toMatch(/^[0-9a-f-]{36}$/);
@@ -990,9 +1010,9 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           `plan run ${shortRefOf(planRunId)}: transient model.chat deadline failure, UI retry ${retry + 1}`,
         );
         const retryButton = page.getByTestId("run-retry");
-        await expect(retryButton).toBeVisible({ timeout: 30_000 });
-        await expect(retryButton).toBeEnabled({ timeout: 30_000 });
-        await retryButton.click();
+        await expect(retryButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
+        await expect(retryButton).toBeEnabled({ timeout: UI_TIMEOUT_MS });
+        await retryButton.click({ timeout: UI_TIMEOUT_MS });
         // The advancer re-schedules the failed node; the run leaves the
         // failed state. If it failed again before the next leg read, the loop
         // sees it and counts it as the next retry.
@@ -1006,13 +1026,30 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       }
       // waiting_human — the gate parks the run; approve it as the owner.
       await test.step(`approve the gate in the UI as the owner [${retry ? `retry ${retry}` : "first attempt"}]`, async () => {
-        await page.getByTestId("run-stage-cell-approve").click();
-        await expect(page.getByTestId("approval-state")).toHaveText("needs your decision", {
-          timeout: 30_000,
+        // ADR-0043 / docs/design/studio-workbench.md § 6: the run page IS the
+        // graph-first Run Workbench. Its split view carries the tab row and the
+        // live graph — the stage strip is not part of it (the old inspector,
+        // strip included, survives as the Diagnostics tab; full screen swaps the
+        // tab row for the step strip). So the user opens a gate by clicking its
+        // box on the graph, and the dock answers with the ApprovalCard
+        // (§ 6's `human.approval` → ApprovalCard rule). Selecting the gate by
+        // its stage cell was the pre-ADR-0043 inspector page's path.
+        const gateBox = page.getByTestId(`canvas-step-${GATE_NODE_ID}`);
+        await expect(gateBox).toBeVisible({ timeout: UI_TIMEOUT_MS });
+        await gateBox.click({ timeout: UI_TIMEOUT_MS });
+        const approvalState = page.getByTestId("approval-state");
+        await expect(approvalState).toHaveText("needs your decision", {
+          timeout: UI_TIMEOUT_MS,
         });
-        await expect(page.getByTestId("approval-node")).toContainText("approve");
-        await page.getByTestId("approval-comment").fill(`${TARGET_TITLE} proof — approved.`);
-        await page.getByTestId("approval-approve").click();
+        await expect(page.getByTestId("approval-node")).toContainText(GATE_NODE_ID, {
+          timeout: UI_TIMEOUT_MS,
+        });
+        const comment = page.getByTestId("approval-comment");
+        await expect(comment).toBeVisible({ timeout: UI_TIMEOUT_MS });
+        await comment.fill(`${TARGET_TITLE} proof — approved.`, { timeout: UI_TIMEOUT_MS });
+        const approveButton = page.getByTestId("approval-approve");
+        await expect(approveButton).toBeVisible({ timeout: UI_TIMEOUT_MS });
+        await approveButton.click({ timeout: UI_TIMEOUT_MS });
         await expect(page.getByTestId("approval-decided")).toBeVisible({
           timeout: DECISION_TIMEOUT_MS,
         });
@@ -1257,7 +1294,13 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           // decided_by `node_policy:ask_unattended`.
           const runPath = `/runs/${claudeRunId}`;
           await gotoApp(page, runPath);
-          await page.getByTestId("run-tab-timeline").click();
+          // The same ADR-0043 surface as step 4: on the Workbench the Timeline
+          // tab is `workbench-tab-timeline` (`run-tab-*` is the inspector, now
+          // hosted by Diagnostics). Bounded, so a missing tab is a two-minute
+          // failure with the page's own testids, not the test budget.
+          const timelineTab = page.getByTestId("workbench-tab-timeline");
+          await expect(timelineTab).toBeVisible({ timeout: UI_TIMEOUT_MS });
+          await timelineTab.click({ timeout: UI_TIMEOUT_MS });
           const timelineText = await page
             .getByTestId("run-timeline")
             .innerText()
