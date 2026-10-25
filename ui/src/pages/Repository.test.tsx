@@ -91,6 +91,7 @@ function routes(): RouteStub[] {
     { path: `${projectPath}/assignments`, body: { assignments: [] } },
     { path: `${projectPath}/schedules`, body: { schedules: [] } },
     { path: `${projectPath}/issue-triggers`, body: { issue_triggers: [] } },
+    { path: `${projectPath}/secrets`, body: { secrets: [] } },
     { path: `${projectPath}/workspaces`, body: { workspaces: [workspace] } },
     {
       path: `/api/v1/workspaces/${workspaceId}/repos/${repositoryId}/status`,
@@ -238,5 +239,15 @@ describe("/p/:projectId/:repo", () => {
     // No workflow is used yet, so the form says that instead of offering an
     // empty assignment select.
     expect(screen.getByTestId("new-run-no-assignments")).toBeTruthy();
+  });
+
+  it("says how the repository reads GitHub, under the git URL (ADR-0061)", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+
+    const line = await screen.findByTestId("repo-github-access-state");
+    expect(line.textContent).toBe("public · no credential");
+    // The fixture's project has this caller as maintainer — the route's gate.
+    expect(screen.getByTestId("repo-github-access-change").textContent).toBe("change");
+    expect(screen.getByTestId("repo-github-access").className).toContain("font-mono");
   });
 });

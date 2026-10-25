@@ -270,7 +270,7 @@ export function WorkflowTriggers({ pipelineId }: { pipelineId: string }) {
           )),
         )}
         <p className="font-mono text-[10.5px] text-faint" data-testid="trigger-issue-note">
-          Checked every minute · public GitHub repositories only
+          Checked every minute
         </p>
       </div>
       <TriggersDialog

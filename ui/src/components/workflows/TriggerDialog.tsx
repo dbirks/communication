@@ -6,9 +6,11 @@
  * project or repository selects.
  *
  * Chrome is the New workflow dialog's (1c): 520px, ink border, `2px 2px 0`
- * ink shadow (`--shadow-raised`), radius 4. `START IT WHEN` is a segmented
- * control whose selected segment is `bg-ink text-surface`; the run-input
- * mapping is echoed back in the `THE RUN GETS` box (`bg-paper`).
+ * ink shadow (`--shadow-raised`), radius 4. `START IT WHEN` is a hug-content
+ * segmented control whose selected segment is `bg-ink text-surface` at 600
+ * over the unselected 400 label; the run-input mapping is echoed back in the
+ * `THE RUN GETS` box (`bg-paper`), where the fixed repository is named
+ * unquoted.
  *
  * Icons are Lucide at 14px / stroke 2 / `currentColor` (`Clock`, `Play`).
  * lucide-react 1.x dropped the brand glyphs, so the GitHub issue mark is the
@@ -101,6 +103,9 @@ export function runGetsValue(field: RunInputField, value: InputValue | undefined
   if (typeof value === "number") return String(value);
   const text = typeof value === "string" ? value.trim() : "";
   if (text === "") return "—";
+  // A repository input is not a choice this dialog offers — the trigger was
+  // opened from that repository — so the box names it plainly, unquoted.
+  if (field.kind === "repository") return text.replace(/\s+/g, " ");
   const words = issueValueInWords(text);
   if (words !== null) return words;
   const flat = text.replace(/\s+/g, " ");
@@ -188,6 +193,14 @@ function TriggerDialogBody({
   const fields = useMemo(
     () => (revision.data ? runInputFieldsOf(revision.data.canonical_document) : null),
     [revision.data],
+  );
+  // A `repository`-typed input is NOT a control here: opened from a repository
+  // page, the repository is fixed. It still rides along in `inputs` (seeded
+  // below) and the `THE RUN GETS` box names it; everything else the revision
+  // declares stays editable.
+  const editableFields = useMemo(
+    () => (fields ? fields.filter((field) => field.kind !== "repository") : null),
+    [fields],
   );
 
   // Seed once per dialog subject: declared defaults, this repository for a
@@ -368,7 +381,7 @@ function TriggerDialogBody({
               START IT WHEN
             </span>
             <div
-              className="flex w-max-content overflow-hidden rounded-[3px] border border-line-strong"
+              className="flex w-max overflow-hidden rounded-[3px] border border-line-strong"
               role="group"
               aria-label="start it when"
               data-testid="trigger-dialog-mode"
@@ -377,8 +390,10 @@ function TriggerDialogBody({
                 type="button"
                 aria-pressed={mode === "issue"}
                 onClick={() => setMode("issue")}
-                className={`flex items-center gap-[6px] px-3 py-[5px] text-[12.5px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
-                  mode === "issue" ? "bg-ink text-surface" : "bg-surface text-ink-2"
+                className={`flex items-center gap-[6px] px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
+                  mode === "issue"
+                    ? "bg-ink font-semibold text-surface"
+                    : "bg-surface font-normal text-ink-2"
                 }`}
                 data-testid="trigger-dialog-mode-issue"
               >
@@ -389,8 +404,10 @@ function TriggerDialogBody({
                 type="button"
                 aria-pressed={mode === "schedule"}
                 onClick={() => setMode("schedule")}
-                className={`flex items-center gap-[6px] border-l border-line-strong px-3 py-[5px] text-[12.5px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
-                  mode === "schedule" ? "bg-ink text-surface" : "bg-surface text-ink-2"
+                className={`flex items-center gap-[6px] border-l border-line-strong px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
+                  mode === "schedule"
+                    ? "bg-ink font-semibold text-surface"
+                    : "bg-surface font-normal text-ink-2"
                 }`}
                 data-testid="trigger-dialog-mode-schedule"
               >
@@ -402,7 +419,7 @@ function TriggerDialogBody({
 
           {mode === "issue" ? (
             <>
-              <Field id="trigger-dialog-event" label="IS" className="max-w-[16rem]">
+              <Field id="trigger-dialog-event" label="IS">
                 <Select
                   id="trigger-dialog-event"
                   value={event}
@@ -523,7 +540,7 @@ function TriggerDialogBody({
             </div>
           ) : null}
 
-          {fields?.map((field) => (
+          {editableFields?.map((field) => (
             <div key={field.name} className="flex flex-col gap-1">
               <InputFieldControl
                 field={field}
@@ -542,7 +559,7 @@ function TriggerDialogBody({
                       [field.name]: "{{issue.title}}\n\n{{issue.body}}",
                     }))
                   }
-                  className="w-max-content font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                   data-testid={`trigger-dialog-quickfill-${field.name}`}
                 >
                   use issue title/body

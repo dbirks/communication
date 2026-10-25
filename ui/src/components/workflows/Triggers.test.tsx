@@ -91,8 +91,11 @@ describe("WorkflowTriggers — the issue half", () => {
     expect(section).toBeTruthy();
     expect(await screen.findByTestId("trigger-issue-placeholder")).toBeTruthy();
     expect(screen.getByTestId("trigger-add-issue")).toBeTruthy();
-    expect(screen.getByTestId("trigger-issue-note").textContent).toContain(
-      "Checked every minute · public GitHub repositories only",
+    expect(screen.getByTestId("trigger-issue-note").textContent).toContain("Checked every minute");
+    // ADR-0061 gave repositories a GitHub credential: a private repository's
+    // issues are polled too, so the note must not claim public-only.
+    expect(screen.getByTestId("trigger-issue-note").textContent).not.toContain(
+      "public GitHub repositories only",
     );
   });
 

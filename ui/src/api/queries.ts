@@ -172,6 +172,41 @@ export function useRepositories(projectId: string) {
   });
 }
 
+/** `PATCH /api/v1/projects/{projectId}/repos/{repositoryId}` body (ADR-0061):
+ * the credential member is required — a uuid sets it, `null` clears it — so a
+ * body that named nothing could not answer 200 for a request that changed
+ * nothing. The secret's VALUE has no representation on this surface. */
+export type RepositoryPatch = components["schemas"]["RepositoryPatch"];
+
+/**
+ * `PATCH /api/v1/projects/{projectId}/repos/{repositoryId}` — ADR-0061's
+ * "GitHub access": point the repository at one `integration_broker` secret of
+ * this project (private clone/fetch and issue reads), or clear it to go back
+ * to anonymous. Maintainer only; a reference the project may not make is `422`
+ * `invalid_credential_secret`, which stays the mutation's error for the caller
+ * to render — the server's words, never a dressed-up saved state.
+ */
+export function usePatchRepository(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ repositoryId, body }: { repositoryId: string; body: RepositoryPatch }) =>
+      apiFetch<Repository>(`/api/v1/projects/${projectId}/repos/${repositoryId}`, {
+        method: "PATCH",
+        json: body,
+      }),
+    onSuccess: async (repository) => {
+      const list = queryClient.getQueryData<RepositoryList>(queryKeys.repos(projectId));
+      if (list) {
+        queryClient.setQueryData(queryKeys.repos(projectId), {
+          ...list,
+          items: list.items.map((item) => (item.id === repository.id ? repository : item)),
+        });
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.repos(projectId) });
+    },
+  });
+}
+
 export function useMembers(projectId: string) {
   return useQuery({
     queryKey: queryKeys.members(projectId),

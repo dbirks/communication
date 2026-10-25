@@ -120,6 +120,49 @@ describe("TriggerDialog — the 2c contract", () => {
     );
   });
 
+  it("holds the segments to their content and weights only the chosen one", async () => {
+    mount();
+    const group = await screen.findByTestId("trigger-dialog-mode");
+    // The control hugs its content (artboard: `width: max-content`), it does
+    // not stretch across the dialog.
+    expect(group.className).toContain("w-max");
+    const issue = screen.getByTestId("trigger-dialog-mode-issue");
+    const schedule = screen.getByTestId("trigger-dialog-mode-schedule");
+    expect(issue.className).toContain("font-semibold");
+    expect(issue.className).toContain("bg-ink");
+    expect(schedule.className).toContain("font-normal");
+    expect(schedule.className).not.toContain("bg-ink");
+
+    fireEvent.click(schedule);
+    expect(schedule.className).toContain("font-semibold");
+    expect(issue.className).toContain("font-normal");
+  });
+
+  it("shows the fixed repository in THE RUN GETS, never as a select", async () => {
+    mount();
+    const line = await screen.findByTestId("trigger-dialog-run-gets-repository");
+    // The value is the repository the dialog was opened from: mono key, sans
+    // value, no quotes around a name that is not free text.
+    expect(line.textContent).toBe("repository = storefront");
+    // `repository` is not something this dialog can change.
+    expect(screen.queryByTestId("new-run-input-repository")).toBeNull();
+    // The other declared inputs stay editable.
+    expect(screen.getByTestId("new-run-input-goal")).toBeTruthy();
+  });
+
+  it("keeps the label chips inside the label field", async () => {
+    mount();
+    const field = await screen.findByTestId("trigger-dialog-labels-row");
+    fireEvent.change(screen.getByTestId("trigger-dialog-labels"), { target: { value: "plan" } });
+    fireEvent.keyDown(screen.getByTestId("trigger-dialog-labels"), { key: "Enter" });
+    const chip = screen.getByTestId("trigger-dialog-label-chip-0");
+    // `plan ×` sits inside the bordered input the design draws, not below it.
+    expect(field.contains(chip)).toBe(true);
+    expect(chip.textContent).toContain("plan");
+    // The typing field stays in the same box, ready for the next label.
+    expect(field.contains(screen.getByTestId("trigger-dialog-labels"))).toBe(true);
+  });
+
   it("switches the segment to the schedule and reads the cron as it is typed", async () => {
     mount();
     fireEvent.click(await screen.findByTestId("trigger-dialog-mode-schedule"));
@@ -263,6 +306,8 @@ describe("TriggerDialog — the run-input reading", () => {
     expect(runGetsValue(field("boolean"), true)).toBe("yes");
     expect(runGetsValue(field("boolean"), undefined)).toBe("no");
     expect(runGetsValue(field("text"), "x".repeat(60))).toBe(`“${"x".repeat(48)}…”`);
+    // A repository is not free text and not a choice here: it is named plain.
+    expect(runGetsValue(field("repository"), "storefront")).toBe("storefront");
   });
 
   it("keeps the pipeline identity out of the body it posts", async () => {

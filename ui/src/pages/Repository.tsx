@@ -8,6 +8,9 @@
  * RECENT RUNS.
  *
  * Honest data only:
+ * - the GitHub access line says what the repository row says: no credential is
+ *   `public · no credential`, a credential is named by the secret's own slug
+ *   (ADR-0061), and an id the project does not list says so;
  * - the run list is project-scoped and the `RunSummary` row carries no
  *   repository, so the recent-runs section shows this project's runs and says
  *   so — it never claims a run belongs to this repository;
@@ -38,6 +41,7 @@ import { routes } from "../lib/routes";
 import { elapsed, RunStatusChip } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import NewConversationDialog from "../components/NewConversationDialog";
+import { GitHubAccess } from "../components/repo/GitHubAccess";
 import { RepoWorkflows } from "../components/workflows/RepoWorkflows";
 
 /** The honest one-line answer for a spent anonymous GitHub budget: the upstream
@@ -129,7 +133,10 @@ export default function Repository() {
 
   return (
     <div className="min-w-0 space-y-4" data-testid="repo-page">
-      <header className="flex flex-wrap items-end gap-x-4 gap-y-2" data-testid="repo-header">
+      <header
+        className="flex flex-col gap-2 min-[640px]:flex-row min-[640px]:flex-wrap min-[640px]:items-end min-[640px]:gap-x-4"
+        data-testid="repo-header"
+      >
         <div className="min-w-0 flex-1 space-y-1">
           <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
             <Link to={routes.project(id)} data-testid="repo-breadcrumb">
@@ -160,6 +167,7 @@ export default function Repository() {
             <span aria-hidden="true">·</span>
             <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
           </div>
+          <GitHubAccess project={projectData} repository={repositoryData} />
         </div>
         <div className="flex items-center gap-2">
           <Button
