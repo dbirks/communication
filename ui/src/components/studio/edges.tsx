@@ -106,7 +106,7 @@ export function InsertableEdge(props: EdgeProps<Edge<InsertableEdgeRender>>) {
         path={path}
         style={{
           stroke: preview ? "var(--color-accent)" : "var(--color-ink-2)",
-          strokeWidth: preview ? 2 : 1.25,
+          strokeWidth: preview ? 2 : 1.5,
         }}
       />
       <EdgeLabelRenderer>

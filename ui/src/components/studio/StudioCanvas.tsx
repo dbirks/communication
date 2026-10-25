@@ -84,6 +84,12 @@ export interface StudioCanvasProps {
    * with the definition node id (the Studio page wires it to its undoable op). */
   onDuplicate?: (id: string) => void;
   canConnect?(from: string, to: string): { ok: true } | { ok: false; reason: string };
+  /**
+   * Design 1g pass 2 #8: the Studio drops the `steps list` strip under the
+   * canvas (the status bar already counts the steps). The Run Workbench
+   * keeps it — it is that page's accessible definition table.
+   */
+  hideStepList?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +157,10 @@ const edgeTypes = {
  * 24px the doc names for a straight edge. */
 const DROP_EDGE_RADIUS_PX = 48;
 
+/** Width the node menu is measured at for the fits-on-the-right check
+ * (design 1g: a two-item menu, ~80–110px wide). */
+const MENU_WIDTH_PX = 110;
+
 /* ------------------------------------------------------------------ the
  * viewport-fit guards.
  *
@@ -183,7 +193,10 @@ export function computeFitViewport(
   paneWidth: number,
   paneHeight: number,
   minZoom = 0.4,
-  maxZoom = 1.25,
+  // Design 1g pass 2 #1: the fit never magnifies past 100% — a 200×52 step
+  // fits at its designed size, not the 250×65 a 1.25 cap rendered (the
+  // "nodes are too big, name ~16px" observation was this cap).
+  maxZoom = 1,
   padding = 0.08,
 ): { x: number; y: number; zoom: number } | null {
   if (!isPositiveFinite(paneWidth) || !isPositiveFinite(paneHeight)) return null;
@@ -317,6 +330,7 @@ function CanvasInner({
   onDuplicate,
   canConnect,
   focusNodeId,
+  hideStepList = false,
 }: StudioCanvasProps) {
   const { setViewport, zoomIn, zoomOut } = useReactFlow();
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -428,7 +442,14 @@ function CanvasInner({
   // at the pointer). The menu is kept in FLOW coordinates: it must track the
   // node through any pan/zoom, so its screen position is re-derived from the
   // rendered viewport transform every time that transform changes.
-  const [menu, setMenu] = useState<{ fx: number; fy: number; nodeId: string } | null>(null);
+  const [menu, setMenu] = useState<{
+    fx: number;
+    fy: number;
+    /** The node's left/bottom edges in flow coords — below-node fallback. */
+    fLeft: number;
+    fBottom: number;
+    nodeId: string;
+  } | null>(null);
   const [menuScreen, setMenuScreen] = useState<{ x: number; y: number } | null>(null);
   const menuFocusRef = useRef<HTMLElement | null>(null);
 
@@ -446,6 +467,29 @@ function CanvasInner({
     return nodeBoxes[node.id] ?? null;
   }, [base, nodeBoxes, selectedId]);
 
+  // Re-clicking the ALREADY-selected step re-opens the menu that a
+  // click-away closed: the selection prop never changes, so the effect below
+  // does not re-fire — the canvas answers the click itself.
+  const selectedMenuBoxRef = useRef(selectedMenuBox);
+  selectedMenuBoxRef.current = selectedMenuBox;
+  const reopenMenuFor = useCallback(
+    (id: string) => {
+      if (selectedMenuNodeId === null || id !== selectedMenuNodeId) return;
+      const box = selectedMenuBoxRef.current;
+      if (!box) return;
+      setMenu({
+        fx: box.x + box.width,
+        fy: box.y,
+        fLeft: box.x,
+        fBottom: box.y + box.height,
+        nodeId: id,
+      });
+    },
+    [selectedMenuNodeId],
+  );
+  const reopenMenuRef = useRef(reopenMenuFor);
+  reopenMenuRef.current = reopenMenuFor;
+
   useEffect(() => {
     if (selectedMenuNodeId === null) {
       setMenu(null);
@@ -462,9 +506,15 @@ function CanvasInner({
       menuFocusRef.current = active;
     }
     // Design 1g: right of the node with an 8px gap, top-aligned with it. The
-    // box is stored at the node's RIGHT EDGE; the 8px gap is added in SCREEN
-    // pixels so it stays 8px at any zoom.
-    setMenu({ fx: box.x + box.width, fy: box.y, nodeId: selectedMenuNodeId });
+    // box is stored at the node's RIGHT EDGE and BOTTOM; the 8px gap is added
+    // in SCREEN pixels so it stays 8px at any zoom.
+    setMenu({
+      fx: box.x + box.width,
+      fy: box.y,
+      fLeft: box.x,
+      fBottom: box.y + box.height,
+      nodeId: selectedMenuNodeId,
+    });
   }, [selectedMenuNodeId, selectedMenuBox]);
 
   const closeMenu = useCallback(() => {
@@ -477,7 +527,10 @@ function CanvasInner({
   const openMenuAt = useCallback((x: number, y: number, nodeId: string) => {
     const active = globalThis.document.activeElement;
     menuFocusRef.current = active instanceof HTMLElement ? active : null;
-    setMenu({ fx: x, fy: y, nodeId });
+    // A pointer menu opens AT the pointer; it has no node box, so the
+    // below-fallback (if the pointer hugs the right edge) drops it under the
+    // click point, left-aligned there.
+    setMenu({ fx: x, fy: y, fLeft: x, fBottom: y, nodeId });
   }, []);
 
   // Standard controlled pattern: apply every change (position, dimensions,
@@ -695,6 +748,7 @@ function CanvasInner({
           // Shift+click: React Flow multi-selects and reports via
           // onSelectionChange; the page's single-select would clobber it.
           if (shiftHeld.current) return;
+          reopenMenuRef.current(scope.nodeId);
           onSelectRef.current?.(scope.nodeId);
         },
         onAddAfter: b.data.terminal
@@ -809,7 +863,16 @@ function CanvasInner({
     const zoom = t?.zoom ?? 1;
     const tx = t?.x ?? 0;
     const ty = t?.y ?? 0;
-    setMenuScreen({ x: menu.fx * zoom + tx + 8, y: menu.fy * zoom + ty });
+    const right = { x: menu.fx * zoom + tx + 8, y: menu.fy * zoom + ty };
+    // Phone (design pass 2 #6): when the menu would be cut off at the pane's
+    // right edge, it sits BELOW the node instead, left-aligned to it, same
+    // 8px gap.
+    const paneWidth = paneRef.current?.clientWidth ?? 0;
+    if (paneWidth > 0 && right.x + MENU_WIDTH_PX > paneWidth - 8) {
+      setMenuScreen({ x: menu.fLeft * zoom + tx, y: menu.fBottom * zoom + ty + 8 });
+      return;
+    }
+    setMenuScreen(right);
   }, [menu, viewportEl]);
 
   useEffect(() => {
@@ -1168,48 +1231,52 @@ function CanvasInner({
       </div>
 
       {/* Design 1g: the accessible steps list is a collapsed one-line mono
-          disclosure (`steps list · N`), never a panel eating canvas height. */}
-      <section className="border-t border-line bg-surface" data-testid="canvas-step-list">
-        <button
-          type="button"
-          aria-expanded={stepsOpen}
-          aria-controls="studio-canvas-steps"
-          onClick={() => setStepsOpen((open) => !open)}
-          className="w-full px-3 py-1 text-left font-mono text-[10.5px] text-muted hover:bg-fill"
-        >
-          {stepsOpen ? "▾" : "▸"} steps list · {model.nodes.length}
-        </button>
-        {/* The rows stay in the DOM behind the disclosure (they are the
+          disclosure (`steps list · N`), never a panel eating canvas height.
+          Pass 2 #8 drops it entirely from the Studio — the status bar counts
+          the steps there; the Run Workbench keeps the definition table. */}
+      {hideStepList ? null : (
+        <section className="border-t border-line bg-surface" data-testid="canvas-step-list">
+          <button
+            type="button"
+            aria-expanded={stepsOpen}
+            aria-controls="studio-canvas-steps"
+            onClick={() => setStepsOpen((open) => !open)}
+            className="w-full px-3 py-1 text-left font-mono text-[10.5px] text-muted hover:bg-fill"
+          >
+            {stepsOpen ? "▾" : "▸"} steps list · {model.nodes.length}
+          </button>
+          {/* The rows stay in the DOM behind the disclosure (they are the
             accessible name list the Workbench reads); the disclosure just
             hides them visually, so they never eat canvas height. */}
-        <ol
-          id="studio-canvas-steps"
-          className={`max-h-48 overflow-y-auto px-3 pb-2 ${stepsOpen ? "" : "hidden"}`}
-        >
-          {model.nodes.map((node) => (
-            <li key={`${scopeKey(node.scope)}\u0000${node.id}`}>
-              <button
-                type="button"
-                data-testid={`canvas-step-row-${node.id}`}
-                onClick={() => onSelect(node.id)}
-                className={[
-                  "w-full rounded-md px-2 py-1 text-left text-[12px] hover:bg-fill",
-                  selectedId === node.id ||
-                  (selectedIds !== undefined && selectedIds.includes(node.id))
-                    ? "bg-accent-wash text-accent"
-                    : "text-ink",
-                ].join(" ")}
-              >
-                <span className="font-medium">{node.label}</span>{" "}
-                <span className="font-mono text-[11px] text-muted">{node.id}</span>
-                {node.dependsOn.length > 0 && (
-                  <span className="text-faint"> after {node.dependsOn.join(", ")}</span>
-                )}
-              </button>
-            </li>
-          ))}
-        </ol>
-      </section>
+          <ol
+            id="studio-canvas-steps"
+            className={`max-h-48 overflow-y-auto px-3 pb-2 ${stepsOpen ? "" : "hidden"}`}
+          >
+            {model.nodes.map((node) => (
+              <li key={`${scopeKey(node.scope)}\u0000${node.id}`}>
+                <button
+                  type="button"
+                  data-testid={`canvas-step-row-${node.id}`}
+                  onClick={() => onSelect(node.id)}
+                  className={[
+                    "w-full rounded-md px-2 py-1 text-left text-[12px] hover:bg-fill",
+                    selectedId === node.id ||
+                    (selectedIds !== undefined && selectedIds.includes(node.id))
+                      ? "bg-accent-wash text-accent"
+                      : "text-ink",
+                  ].join(" ")}
+                >
+                  <span className="font-medium">{node.label}</span>{" "}
+                  <span className="font-mono text-[11px] text-muted">{node.id}</span>
+                  {node.dependsOn.length > 0 && (
+                    <span className="text-faint"> after {node.dependsOn.join(", ")}</span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
     </div>
   );
 }

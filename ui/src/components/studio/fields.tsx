@@ -89,12 +89,15 @@ export function AutoTextareaField({
   const current = show(value);
   const [draft, setDraft] = useState(current);
   useEffect(() => setDraft(current), [current]);
-  const rows = Math.min(10, Math.max(2, Math.ceil(draft.length / 48)));
+  const rows = Math.min(10, Math.max(2, Math.ceil(draft.length / 48), draft.split("\n").length));
   return (
     <Field id={id} label={label} hint={hint} className="min-w-0 flex-1">
       <Textarea
         id={id}
         rows={rows}
+        // Pass 2 #2/#4: inspector textareas read as values — mono 12px, the
+        // ds `font-ui` default overridden inline so the cascade cannot flip.
+        style={{ fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5 }}
         disabled={readOnly}
         value={draft}
         data-testid={`insp-${id}`}
@@ -136,6 +139,11 @@ export function TextareaField({
         id={id}
         rows={rows}
         className={mono ? "font-mono" : undefined}
+        style={
+          mono
+            ? { fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5 }
+            : { fontSize: 12.5, lineHeight: 1.5 }
+        }
         disabled={readOnly}
         value={draft}
         data-testid={`insp-${id}`}
@@ -632,8 +640,9 @@ export function JsonField({
     >
       <Textarea
         id={id}
-        rows={Math.max(3, Math.ceil(draft.length / 48))}
+        rows={Math.min(10, Math.max(3, draft.split("\n").length))}
         className="font-mono"
+        style={{ fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.5 }}
         disabled={readOnly}
         value={draft}
         data-testid={`insp-${id}`}

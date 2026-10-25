@@ -627,8 +627,32 @@ export function layoutDefinition(
   // sibling scopes whose children fall in different ranks can end up with one
   // box's foot over the next box's label (`for each` over `until` in the
   // feature-development revision), so push siblings apart, deepest descendants
-  // riding along with the box they live in.
-  const moved = separateSiblingGroups(groups, nodes, s.groupGap);
+  // riding along with the box they live in. A group's multi-row bar is added
+  // ABOVE where dagre placed its cluster, so a plain step sitting in the rank
+  // just before a scope's first child ends up UNDER the bar (the `approve`
+  // node vanishing behind `UNTIL · …`): the group is pushed below any foreign
+  // box it overlaps, and the sibling pass runs again over the new positions.
+  let moved = separateSiblingGroups(groups, nodes, s.groupGap);
+  for (let round = 0; round < 4; round += 1) {
+    const pushedGroup = separateGroupFromForeignNodes(groups, nodes, s.groupGap);
+    const pushedSiblings = separateSiblingGroups(groups, nodes, s.groupGap);
+    moved = moved || pushedGroup || pushedSiblings;
+    if (!pushedGroup && !pushedSiblings) break;
+  }
+  // A tail shift moved bodies out of groups that stayed put — grow the boxes
+  // back around their content (deepest first, so an inner group is final
+  // before its parent measures against it).
+  const deepestFirstGrow = [...groups].sort((a, b) => b.depth - a.depth);
+  for (const group of deepestFirstGrow) {
+    growGroupsToContent([group], nodes, s.groupPad);
+    for (const inner of groups) {
+      if (inner === group) continue;
+      const path = groupPath(group.key);
+      if (isInside(groupPath(inner.key), path)) {
+        group.height = Math.max(group.height, inner.y + inner.height - group.y);
+      }
+    }
+  }
   const nodeByKey = new Map(nodes.map((node) => [node.key, node]));
 
   const edges: GraphEdgeView[] = graph.edges().map((edge) => {
@@ -832,6 +856,87 @@ export function separateSiblingGroups(
     if (!changed) break;
   }
   return moved;
+}
+
+/**
+ * Push a scope box clear of any FOREIGN step that crosses its band. A group's
+ * title bar is added ABOVE where dagre placed its cluster (`y = box.y - pad -
+ * header`), so a plain step in the rank just before the cluster's first child
+ * can end up underneath the bar — `approve` vanishing behind
+ * `UNTIL · BUILD_UN…VERIFIED` in the feature-development revision.
+ *
+ * The repair moves the whole layout tail below the group's top edge down
+ * together: ranks keep their order and their gaps, only the space above the
+ * group grows (dagre's dense ranksep cannot know the bar's height). Groups
+ * above the tail get grown afterwards so they still contain what lives in
+ * them. Exported for its own test, like the sibling pass.
+ */
+export function separateGroupFromForeignNodes(
+  groups: GraphGroupView[],
+  nodes: GraphNodeView[],
+  gap = GROUP_GAP,
+): boolean {
+  let moved = false;
+  for (let pass = 0; pass < 16; pass += 1) {
+    let changed = false;
+    for (const group of groups) {
+      const path = groupPath(group.key);
+      for (const node of nodes) {
+        // The group's own body is where it belongs; only foreign boxes are
+        // collisions.
+        if (isInside(node.key, path)) continue;
+        const xCrosses = node.x < group.x + group.width && group.x < node.x + node.width;
+        if (!xCrosses) continue;
+        const yCrosses = node.y < group.y + group.height && group.y < node.y + node.height;
+        if (!yCrosses) continue;
+        // A foreign box that STARTS above the group's top edge and reaches
+        // down over it (the bar case): the group rides down away from it.
+        // Everything else — a box crossing the band from inside or below
+        // (a too-short rank under the group's foot) — rides down instead,
+        // together with its own tail; moving the group in that case would
+        // move the node too, and the layout would run forever.
+        const nodeAbove = node.y < group.y;
+        const dy = nodeAbove
+          ? node.y + node.height + gap - group.y
+          : group.y + group.height + gap - node.y;
+        if (dy <= 0) continue;
+        const floor = nodeAbove ? group.y : node.y;
+        for (const g of groups) if (g.y >= floor) g.y += dy;
+        for (const n of nodes) if (n.y >= floor) n.y += dy;
+        changed = true;
+        moved = true;
+        break;
+      }
+      if (changed) break;
+    }
+    if (!changed) break;
+  }
+  return moved;
+}
+
+/**
+ * Grow every group box until it contains its member nodes and inner groups
+ * (plus the pad the bar/foot passes reserved). Run after tail shifts, which
+ * move a group's body down while the group above stayed put.
+ */
+export function growGroupsToContent(
+  groups: GraphGroupView[],
+  nodes: GraphNodeView[],
+  pad = GROUP_PAD,
+): void {
+  for (const group of groups) {
+    const path = groupPath(group.key);
+    let bottom = group.y + group.height;
+    for (const node of nodes) {
+      if (!isInside(node.key, path)) continue;
+      bottom = Math.max(bottom, node.y + node.height + pad);
+    }
+    for (const inner of groups) {
+      if (inner === group || !isInside(groupPath(inner.key), path)) continue;
+      bottom = Math.max(bottom, inner.y + inner.height);
+    }
+    group.height = bottom - group.y;
+  }
 }
 
 /**

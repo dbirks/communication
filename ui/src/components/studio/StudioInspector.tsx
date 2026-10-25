@@ -658,15 +658,45 @@ export function StudioInspector({
   const docObj = doc;
   const nodeObjRef = nodeObj;
 
-  /** Design 1g: the fields that hide behind the model.chat disclosure —
-   *  retries, timeout and outputs, the response schema. */
+  /** Design 1g pass 2 #2: model/agent/command/approval inspectors are the
+   *  design's TASK FORM — the few fields a step is about stay open and
+   *  EVERYTHING else (node id, provider, the full messages list, retry,
+   *  timeout, outputs, …) lives behind one collapsed disclosure. Other kinds
+   *  keep the full schema form. */
+  const PRIMARY_FIELDS: Record<string, string[]> = {
+    "model.chat": ["config.model", "config.temperature", "config.maxTokens"],
+    "agent.acp": ["config.profile", "config.prompt"],
+    "process.exec": ["config.executable", "config.args"],
+    "human.approval": ["config.summary", "config.approverRoles"],
+  };
+  const curated = kind in PRIMARY_FIELDS;
+  const primaryPaths = new Set(PRIMARY_FIELDS[kind] ?? []);
   const isAdvanced = (field: InspectorField): boolean =>
-    kind === "model.chat" &&
-    (field.path[0] === "retry" ||
-      field.path[0] === "onFailure" ||
-      field.path[0] === "timeoutSeconds" ||
-      field.path[0] === "outputs" ||
-      (field.path[0] === "config" && field.path[1] === "responseSchema"));
+    curated && !primaryPaths.has(field.path.join("."));
+
+  const fieldByPath = new Map<string, InspectorField>();
+  for (const section of sections) {
+    for (const field of section.fields) fieldByPath.set(field.path.join("."), field);
+  }
+
+  // The model.chat task form's "WHAT SHOULD IT DO?": the SYSTEM message's
+  // content as one mono textarea (design 1g) — committing rewrites just
+  // that message in the `messages` list, never inventing a second source of
+  // truth. With no system message, the first message stands in; with no
+  // messages at all, the first keystroke creates `[{role: system, …}]`.
+  const messageList = getAt(nodeObjRef, ["config", "messages"]);
+  const messages = Array.isArray(messageList) ? (messageList as Record<string, unknown>[]) : [];
+  const systemIndex = messages.findIndex((m) => m?.role === "system");
+  const taskIndex = systemIndex >= 0 ? systemIndex : messages.length > 0 ? 0 : -1;
+  const taskValue = taskIndex >= 0 ? (messages[taskIndex]?.content ?? "") : "";
+  function commitTask(value: string) {
+    if (readOnly) return;
+    const next: Record<string, unknown>[] =
+      taskIndex >= 0
+        ? messages.map((m, i) => (i === taskIndex ? { ...m, content: value } : m))
+        : [{ role: "system", content: value }];
+    apply((t) => updateConfig(t, nodeIdStr, { messages: next }));
+  }
 
   /** One field onto its widget; the agent prompt is the auto-growing UI-font
    *  textarea (design 1g: "WHAT SHOULD IT DO?"), everything else rides the
@@ -723,27 +753,106 @@ export function StudioInspector({
     );
   }
 
+  function renderNodeIdField() {
+    return (
+      <>
+        <TextField
+          id="node-id"
+          label="Node id"
+          hint="lowercase letters, digits, - and _ ; other steps may reference it"
+          mono
+          readOnly={readOnly}
+          value={nodeId}
+          onCommit={(v) => {
+            if (v === nodeId) return;
+            // Check the refusal against the current text so the reason can be
+            // shown inline; the op itself is applied only when it passes.
+            const res = renameNode(text, nodeId as string, v);
+            if (!res.ok) {
+              setRenameError("error" in res ? res.error : "referenced by other steps");
+              return;
+            }
+            setRenameError(null);
+            apply((t) => renameNode(t, nodeId as string, v));
+          }}
+        />
+        {renameError ? (
+          <p
+            className="font-mono text-[11px] text-st-failed-tag-fg"
+            data-testid="insp-rename-error"
+          >
+            {renameError}
+          </p>
+        ) : null}
+      </>
+    );
+  }
+
   const mainBlocks: ReactNode[] = [];
   const advancedBlocks: ReactNode[] = [];
-  for (const section of sections) {
-    const kept = section.fields.filter((field) => !isAdvanced(field));
-    if (kept.length > 0) {
-      mainBlocks.push(
-        <section key={section.title} className="space-y-[8px]">
-          <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-            {section.title}
-          </p>
-          {section.note ? <p className="font-mono text-[11px] text-faint">{section.note}</p> : null}
-          {kept.map((field) => renderField(field, field.path.join("-")))}
-        </section>,
-      );
+  if (kind === "model.chat") {
+    // The design's four-block form: MODEL, WHAT SHOULD IT DO?, and
+    // TEMPERATURE / MAX TOKENS side by side; the rest behind the disclosure.
+    const modelField = fieldByPath.get("config.model");
+    const temperature = fieldByPath.get("config.temperature");
+    const maxTokens = fieldByPath.get("config.maxTokens");
+    mainBlocks.push(
+      <div key="task-form" className="space-y-[8px]">
+        {modelField ? renderField(modelField, "config-model") : null}
+        <AutoTextareaField
+          key="task"
+          id="config-task"
+          label="What should it do?"
+          readOnly={readOnly}
+          value={taskValue}
+          onCommit={commitTask}
+        />
+        {temperature || maxTokens ? (
+          <div className="grid grid-cols-2 gap-[10px]">
+            {temperature ? renderField(temperature, "config-temperature") : <span />}
+            {maxTokens ? renderField(maxTokens, "config-maxTokens") : <span />}
+          </div>
+        ) : null}
+      </div>,
+    );
+    for (const section of sections) {
+      for (const field of section.fields) {
+        if (isAdvanced(field)) advancedBlocks.push(renderField(field, field.path.join("-")));
+      }
     }
-    for (const field of section.fields) {
-      if (isAdvanced(field)) {
-        advancedBlocks.push(renderField(field, field.path.join("-")));
+  } else {
+    for (const section of sections) {
+      const kept = section.fields.filter((field) => !isAdvanced(field));
+      if (kept.length > 0) {
+        mainBlocks.push(
+          curated ? (
+            <div key={section.title} className="space-y-[8px]">
+              {section.note ? (
+                <p className="font-mono text-[11px] text-faint">{section.note}</p>
+              ) : null}
+              {kept.map((field) => renderField(field, field.path.join("-")))}
+            </div>
+          ) : (
+            <section key={section.title} className="space-y-[8px]">
+              <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+                {section.title}
+              </p>
+              {section.note ? (
+                <p className="font-mono text-[11px] text-faint">{section.note}</p>
+              ) : null}
+              {kept.map((field) => renderField(field, field.path.join("-")))}
+            </section>
+          ),
+        );
+      }
+      for (const field of section.fields) {
+        if (isAdvanced(field)) advancedBlocks.push(renderField(field, field.path.join("-")));
       }
     }
   }
+  // Pass 2 #2: on the curated task forms the node id is part of "everything
+  // else" — it leads the disclosure.
+  if (curated) advancedBlocks.unshift(<div key="node-id-block">{renderNodeIdField()}</div>);
 
   function commit(field: InspectorField, value: unknown) {
     if (readOnly) return;
@@ -818,34 +927,9 @@ export function StudioInspector({
       </div>
 
       <div className="space-y-[12px]">
-        <TextField
-          id="node-id"
-          label="Node id"
-          hint="lowercase letters, digits, - and _ ; other steps may reference it"
-          mono
-          readOnly={readOnly}
-          value={nodeId}
-          onCommit={(v) => {
-            if (v === nodeId) return;
-            // Check the refusal against the current text so the reason can be
-            // shown inline; the op itself is applied only when it passes.
-            const res = renameNode(text, nodeId as string, v);
-            if (!res.ok) {
-              setRenameError("error" in res ? res.error : "referenced by other steps");
-              return;
-            }
-            setRenameError(null);
-            apply((t) => renameNode(t, nodeId as string, v));
-          }}
-        />
-        {renameError ? (
-          <p
-            className="font-mono text-[11px] text-st-failed-tag-fg"
-            data-testid="insp-rename-error"
-          >
-            {renameError}
-          </p>
-        ) : null}
+        {/* On the curated task forms the node id sits inside the disclosure
+            (pass 2 #2); every other kind keeps it on top. */}
+        {curated ? null : renderNodeIdField()}
 
         {mainBlocks}
 

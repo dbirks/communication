@@ -161,8 +161,8 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
         style={{ width: 200, height: 52 }}
       >
         <div
-          className="truncate text-[13px] font-semibold leading-none text-ink"
-          title={`${data.label} (${data.id})`}
+          className="truncate text-[13.5px] font-semibold leading-none text-ink"
+          title={`${data.id} (${data.label})`}
         >
           {data.id}
         </div>
@@ -183,7 +183,10 @@ export function StepNode(props: NodeProps<Node<StepNodeRender>>) {
           </div>
         )}
         <div className="flex items-center gap-1.5">
-          <span className="truncate text-[11px] leading-none text-ink-2" title={data.label}>
+          <span
+            className="truncate font-mono text-[11px] leading-none text-ink-2"
+            title={data.label}
+          >
             {secondLine}
           </span>
           {data.deferred && <span className={chip}>{data.deferred}</span>}

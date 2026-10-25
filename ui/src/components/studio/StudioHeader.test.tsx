@@ -47,7 +47,7 @@ describe("StudioHeader", () => {
   it("renders the breadcrumb Workflows / <folder> / and truncates the name", () => {
     renderHeader();
     const title = screen.getByTestId("studio-title") as HTMLElement;
-    expect(title.classList.contains("min-w-[160px]")).toBe(true);
+    expect(title.classList.contains("md:min-w-[160px]")).toBe(true);
     expect(title.classList.contains("truncate")).toBe(true);
     expect(title.title).toBe(LONG_NAME);
     const breadcrumb = screen.getByTestId("studio-breadcrumb");
@@ -113,9 +113,12 @@ describe("StudioHeader", () => {
 
   it("gives every phone action button a 44px tap target", () => {
     renderHeader();
+    // Pass 2 #6: at phone width the header is two tight rows — the 44px
+    // targets are the mobile undo/redo pair and the text buttons keep
+    // `min-h-[44px] md:min-h-[26px]`.
     for (const testid of [
-      "studio-undo",
-      "studio-redo",
+      "studio-undo-mobile",
+      "studio-redo-mobile",
       "studio-save",
       "studio-validate",
       "studio-publish",
@@ -124,6 +127,11 @@ describe("StudioHeader", () => {
         true,
       );
     }
+    // The desktop undo/redo pair (visible from md up) is the 26px design size.
+    expect((screen.getByTestId("studio-undo").parentElement as HTMLElement).className).toContain(
+      "md:flex",
+    );
+    expect((screen.getByTestId("studio-undo") as HTMLElement).className).toContain("h-[26px]");
   });
 
   it("offers the Steps/Inspect drawer toggles only on phone (design 1g)", () => {

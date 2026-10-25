@@ -122,6 +122,11 @@ export function StudioPalette({
         {kindGlyph(item.kind)}
       </span>
       <span className="truncate text-[13px] text-ink">{SHORT_LABELS[item.kind] ?? item.label}</span>
+      {/* Design 1g: the row of the kind the canvas selection holds carries the
+          drag hint — click adds after the selection, drag drops on a line. */}
+      {item.runnable && selectedKind === kind ? (
+        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">drag</span>
+      ) : null}
     </div>
   );
 

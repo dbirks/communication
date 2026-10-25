@@ -183,6 +183,10 @@ export function StudioPage() {
   const parse = studio.parse;
   const parseOk = parse.ok;
   const model: GraphModel = parseOk ? parse.model : (studio.lastGood?.model ?? EMPTY_MODEL);
+  // The selected step's kind — the palette row of the selected kind carries
+  // the design's `drag` hint (design 1g).
+  const selectedKind =
+    selectedId !== null ? (model.nodes.find((n) => n.id === selectedId)?.kind ?? null) : null;
   // Memoized: the canvas' flow model (and thus its rebuild effect) is keyed on
   // this object's identity — a fresh `toJsDocument(text)` on every render made
   // the canvas rebuild on every render, re-pushing the node array into the
@@ -493,6 +497,7 @@ export function StudioPage() {
       onDelete={readOnly ? undefined : handleDelete}
       onDuplicate={readOnly ? undefined : (id) => runOp((text) => duplicateNode(text, id))}
       canConnect={readOnly ? undefined : (from, to) => canConnectOf(model, from, to)}
+      hideStepList
     />
   );
   const yaml = <YamlEditor text={studio.text} error={parseError} onChange={studio.setText} />;
@@ -715,6 +720,7 @@ export function StudioPage() {
             <div className="absolute inset-y-0 left-0 z-20 w-[200px] border-r border-line bg-surface">
               <StudioPalette
                 selectedId={selectedId}
+                selectedKind={selectedKind}
                 readOnly={readOnly}
                 stale={!parseOk}
                 onAddAfter={readOnly ? undefined : handleAddAfter}
@@ -756,6 +762,7 @@ export function StudioPage() {
           <aside className="w-[200px] shrink-0 overflow-auto border-r border-line bg-surface">
             <StudioPalette
               selectedId={selectedId}
+              selectedKind={selectedKind}
               readOnly={readOnly}
               stale={!parseOk}
               onAddAfter={readOnly ? undefined : handleAddAfter}

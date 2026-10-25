@@ -64,7 +64,10 @@ function SegmentedControl({
   onViewChange(view: StudioView): void;
 }) {
   return (
-    <div className="flex rounded-[3px] border border-line p-[2px]" data-testid="studio-header-tabs">
+    <div
+      className="flex shrink-0 rounded-[3px] border border-line p-[2px]"
+      data-testid="studio-header-tabs"
+    >
       <div
         role="tablist"
         aria-label="Canvas and YAML views"
@@ -122,14 +125,21 @@ export function StudioHeader({
 }: StudioHeaderProps) {
   const versionText = savedVersion === null ? "" : ` V${savedVersion}`;
   const chipText = `· DRAFT${versionText}${dirty ? " · UNSAVED" : ""}`;
+  // Pass 2 #6 at 390px the header is exactly two rows — row 1: title +
+  // draft chip + undo/redo + the Steps/Inspect icon toggles; row 2: the
+  // Canvas|YAML tabs + Validate/Save/Publish — and never wraps into three.
+  // The breadcrumb (desktop design) hides below md; the icon-only toggles
+  // shrink the phone row.
+  const iconToggle =
+    "inline-flex h-[26px] w-[30px] min-h-[44px] shrink-0 items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0";
   return (
     <header
-      className="flex shrink-0 flex-col gap-[8px] border-b border-line bg-surface px-4 py-2 md:h-[52px] md:flex-row md:items-center md:overflow-x-auto md:py-0"
+      className="flex shrink-0 flex-row flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:h-[52px] md:flex-nowrap md:items-center md:gap-[10px] md:overflow-x-auto md:py-0"
       data-testid="studio-header"
     >
       <nav
         aria-label="Breadcrumb"
-        className="flex min-w-0 items-center gap-[6px]"
+        className="hidden min-w-0 items-center gap-[6px] md:flex"
         data-testid="studio-breadcrumb"
       >
         <Link
@@ -153,16 +163,13 @@ export function StudioHeader({
         </span>
       </nav>
       <h1
-        className="min-w-[160px] truncate text-[15px] font-semibold md:max-w-[320px]"
+        className="min-w-0 flex-1 truncate text-[15px] font-semibold md:max-w-[320px] md:min-w-[160px]"
         data-testid="studio-title"
         title={pipelineName}
       >
         {pipelineName}
       </h1>
-      <div
-        className="flex flex-wrap items-center gap-[8px] md:shrink-0"
-        data-testid="studio-header-chips"
-      >
+      <div className="flex shrink-0 items-center gap-[8px]" data-testid="studio-header-chips">
         <span
           className="shrink-0 rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
           data-testid="studio-draft-version"
@@ -175,54 +182,82 @@ export function StudioHeader({
           </span>
         ) : null}
       </div>
-      <SegmentedControl view={view} onViewChange={onViewChange} />
-      <span className="hidden md:block md:flex-1" />
-      <div
-        className="flex flex-wrap items-center gap-[8px] md:min-w-0 md:flex-nowrap"
-        data-testid="studio-header-actions"
-      >
+      {/* Row-1 tail (phone): undo/redo + the drawer toggles; the desktop
+          utility row sits right before Validate instead. */}
+      <div className="flex shrink-0 items-center gap-[4px] md:hidden">
         <button
           type="button"
           aria-label="Undo"
-          data-testid="studio-undo"
+          data-testid="studio-undo-mobile"
           disabled={!canUndo}
           onClick={onUndo}
-          className="inline-flex h-[26px] w-[30px] min-h-[44px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0"
+          className={iconToggle}
         >
           ↶
         </button>
         <button
           type="button"
           aria-label="Redo"
-          data-testid="studio-redo"
+          data-testid="studio-redo-mobile"
           disabled={!canRedo}
           onClick={onRedo}
-          className="inline-flex h-[26px] w-[30px] min-h-[44px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0"
+          className={iconToggle}
         >
           ↷
         </button>
         {phoneToggles ? (
-          <div className="flex gap-[6px] md:hidden">
+          <>
             <button
               type="button"
+              aria-label="Steps palette"
               aria-pressed={phoneToggles.paletteOpen}
               onClick={phoneToggles.onTogglePalette}
               data-testid="studio-phone-palette"
-              className="min-h-[44px] rounded-[4px] border border-line-strong bg-surface px-[8px] font-mono text-[11px] text-ink hover:bg-fill md:min-h-0"
+              className={iconToggle}
             >
-              Steps
+              ☰
             </button>
             <button
               type="button"
+              aria-label="Inspect"
               aria-pressed={phoneToggles.inspectorOpen}
               onClick={phoneToggles.onToggleInspector}
               data-testid="studio-phone-inspector"
-              className="min-h-[44px] rounded-[4px] border border-line-strong bg-surface px-[8px] font-mono text-[11px] text-ink hover:bg-fill md:min-h-0"
+              className={iconToggle}
             >
-              Inspect
+              ⇥
             </button>
-          </div>
+          </>
         ) : null}
+      </div>
+      <SegmentedControl view={view} onViewChange={onViewChange} />
+      <span className="hidden md:block md:flex-1" />
+      <div
+        className="ml-auto flex flex-nowrap items-center gap-[4px] md:ml-0 md:min-w-0 md:gap-[8px]"
+        data-testid="studio-header-actions"
+      >
+        <span className="hidden shrink-0 items-center gap-[4px] md:flex">
+          <button
+            type="button"
+            aria-label="Undo"
+            data-testid="studio-undo"
+            disabled={!canUndo}
+            onClick={onUndo}
+            className="inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            ↶
+          </button>
+          <button
+            type="button"
+            aria-label="Redo"
+            data-testid="studio-redo"
+            disabled={!canRedo}
+            onClick={onRedo}
+            className="inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            ↷
+          </button>
+        </span>
         <Button
           variant="secondary"
           compact

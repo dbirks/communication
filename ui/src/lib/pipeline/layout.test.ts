@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   GROUP_GAP,
+  growGroupsToContent,
   layoutDefinition,
+  separateGroupFromForeignNodes,
   separateSiblingGroups,
   type GraphGroupView,
   type GraphNodeView,
@@ -501,6 +503,108 @@ describe("canvas (dense) spacing", () => {
     for (const pane of panes) {
       const fit = Math.min(pane.width / tb.width, pane.height / tb.height);
       expect(fit, `pane ${pane.width}x${pane.height}`).toBeGreaterThanOrEqual(1.2);
+    }
+  });
+});
+
+describe("separateGroupFromForeignNodes", () => {
+  const scope = (key: string, x: number, y: number, width: number, height: number) =>
+    ({
+      key,
+      ownerId: key.replace(/^#\//, "").split("/").pop(),
+      x,
+      y,
+      width,
+      height,
+    }) as GraphGroupView;
+  const box = (key: string, y: number, x = 0) =>
+    ({ key, x, y, width: 108, height: 60 }) as GraphNodeView;
+
+  it("pushes the layout tail below a scope whose bar reached over a foreign step", () => {
+    // The live shape: `approve` sits in the rank above the until cluster's
+    // first child; the group box's title bar was added ABOVE the cluster, so
+    // approve ends up under the bar (approve bottom 60+… overlaps group.y).
+    const groups = [scope("#/build_until_verified", 0, 50, 200, 300)];
+    const nodes = [
+      box("/approve", 0), // bottom 60, crosses the group's x band, overlaps its top
+      box("/build_until_verified/implement", 80),
+      box("/verdict", 360),
+    ];
+    expect(separateGroupFromForeignNodes(groups, nodes)).toBe(true);
+    // The group clears the foreign box by the gap…
+    expect(groups[0].y).toBe(60 + GROUP_GAP);
+    // …its members rode along, and everything below the group's top edge
+    // shifted by the same amount (rank order preserved).
+    expect(nodes[1].y).toBe(80 + 22);
+    expect(nodes[2].y).toBe(360 + 22);
+    // The foreign box itself stayed put.
+    expect(nodes[0].y).toBe(0);
+    // And the repair converged: a second run moves nothing.
+    expect(separateGroupFromForeignNodes(groups, nodes)).toBe(false);
+  });
+
+  it("leaves a scope alone when no foreign box crosses its band", () => {
+    const groups = [scope("#/build_until_verified", 0, 100, 200, 300)];
+    const nodes = [box("/approve", 0, 0), box("/build_until_verified/implement", 130)];
+    expect(separateGroupFromForeignNodes(groups, nodes)).toBe(false);
+    expect(groups[0].y).toBe(100);
+  });
+});
+
+describe("growGroupsToContent", () => {
+  it("grows a group down to contain a member that moved below its old floor", () => {
+    const group = {
+      key: "#/build_until_verified",
+      ownerId: "build_until_verified",
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 100,
+    } as GraphGroupView;
+    const nodes = [
+      { key: "/build_until_verified/implement", x: 10, y: 20, width: 100, height: 52 },
+      { key: "/build_until_verified/review", x: 10, y: 120, width: 100, height: 52 },
+      { key: "/verdict", x: 10, y: 300, width: 100, height: 52 },
+    ] as GraphNodeView[];
+    growGroupsToContent([group], nodes, 6);
+    // Bottom covers the deepest member plus the pad; foreign nodes do not count.
+    expect(group.y + group.height).toBe(120 + 52 + 6);
+    // It never shrinks a box that was already big enough.
+    const before = group.height;
+    growGroupsToContent([group], nodes, 6);
+    expect(group.height).toBe(before);
+  });
+});
+
+describe("the until scope keeps its ranks clear (feature-development shape)", () => {
+  // The Studio canvas shape: always top-to-bottom, dense (flowModel's
+  // canvasLayout options).
+  const studioLayout = () =>
+    layoutDefinition(samplePipelineDocument, {
+      spacing: "dense",
+      rankdir: "TB",
+      subgraphRankdir: "same",
+    })!;
+
+  it("does not let a group's title bar sit over a plain step in the rank above", () => {
+    const layout = studioLayout();
+    const group = layout.groups.find((g) => g.ownerId === "build_until_verified")!;
+    const approve = layout.nodes.find((n) => n.key === "/approve")!;
+    const crosses = approve.x < group.x + group.width && group.x < approve.x + approve.width;
+    // approve is on the chain axis, so its x band crosses the group's — the
+    // case the bar-overlap needs.
+    expect(crosses).toBe(true);
+    expect(approve.y + approve.height).toBeLessThanOrEqual(group.y);
+  });
+
+  it("still contains every member inside its group box after the shift", () => {
+    const layout = studioLayout();
+    for (const group of layout.groups) {
+      for (const node of layout.nodes) {
+        if (node.groupKey !== group.key) continue;
+        expect(node.y).toBeGreaterThanOrEqual(group.y);
+        expect(node.y + node.height).toBeLessThanOrEqual(group.y + group.height);
+      }
     }
   });
 });
