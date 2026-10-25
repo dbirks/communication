@@ -14153,27 +14153,28 @@ def c13_out_of_scope_verdict(root, vresp, location):
 
 
 def c13_parameters_root_verdict(vresp):
-    """The `parameters` root exists only in a NodeTemplate expansion (ADR-0022 § 2),
-    and M4 validates templates without publishing them (§ 9.1 row 12). The accept is
-    'the root resolved in template scope' and the milestone refusal must stand."""
+    """The `parameters` root exists only in a NodeTemplate expansion (ADR-0022 § 2).
+    § 9.1 row 12's old acceptance ALSO demanded a template_publish_deferred refusal;
+    the step registry (6222d01) made NodeTemplates publishable and removed that
+    finding on purpose, so today's contract is just 'the root resolves in template
+    scope': PASS when the NodeTemplate validates with no compile-time refusal
+    (undeclared_root / cel_compile_error / cel_function_not_allowed /
+    binding_syntax_error) at /spec/config, FAIL when the engine refuses its own
+    declared root, GAP when there is no validate body to read."""
     label = "C13d declared CEL root `parameters` compiles in NodeTemplate scope"
     if not c13_validate_ok(vresp):
         return (label, None, "no NodeTemplate draft could be validated — ADR-0022 § 2 "
-                             "declares `parameters` unreachable in M4, so the root is "
-                             "unmeasured here rather than refused")
+                             "keeps `parameters` in template scope only, so the root "
+                             "is unmeasured here rather than refused")
     hits = c13_errors_at(vresp, "/spec/config")
     refused = [e for e in hits if e.get("code") in
                ("undeclared_root", "cel_compile_error", "cel_function_not_allowed",
                 "binding_syntax_error")]
-    deferred = [e for e in vresp["errors"] if isinstance(e, dict)
-                and e.get("code") == "template_publish_deferred"]
     if refused:
         return (label, False, f"the engine refused its own declared root: {c13_brief(refused)}")
-    if not deferred:
-        return (label, False, "the `parameters` root resolved but the template publish was "
-                             f"NOT refused: {c13_brief(hits) or '(no findings)'}")
-    return (label, True, "root resolved; publish refused as "
-                         f"{deferred[0].get('code')} (ADR-0024 § 2)")
+    return (label, True, "root resolved in NodeTemplate scope with no compile-time "
+                         "refusal at /spec/config (publish refusal no longer required: "
+                         "superseded by the step registry, 6222d01)")
 
 
 def c13_route_verdict(label, status, resolves_ok):
@@ -14325,8 +14326,8 @@ C13_SEVENTH = """  - id: k01
 """
 # ADR-0022 § 2 declares the eight roots POSITIONALLY: inputs/nodes/run exist at
 # pipeline scope, item/items only inside a for_each body, previous/iteration only
-# inside an until body, and parameters only inside a NodeTemplate expansion (which
-# M4 validates but never publishes — § 9.1 row 12). C13d therefore probes each root
+# inside an until body, and parameters only inside a NodeTemplate expansion (row 12's
+# old publish refusal was superseded by the step registry, 6222d01). C13d therefore probes each root
 # IN THE SCOPE THAT DECLARES IT; the same roots are probed a second time outside
 # their scope, where undeclared_root is the required answer.
 BIND_OPEN, BIND_CLOSE = "${{ ", " }}"        # an expression's delimiters, by name
@@ -14489,9 +14490,10 @@ spec:
 
 
 def c13_template_doc(name):
-    """The only document kind that declares the `parameters` root. M4 validates it
-    and refuses the publish (template_publish_deferred), which is exactly what makes
-    this probe honest: the root compiles, the template does not run."""
+    """The only document kind that declares the `parameters` root, so this is the
+    only scope in which the root can be probed. (Row 12's old extra demand that the
+    publish be refused — template_publish_deferred — is superseded by the step
+    registry (6222d01): NodeTemplates are publishable and validate clean.)"""
     return C13D_TEMPLATE_DOC.replace("@@NAME@@", name)
 
 
@@ -14738,9 +14740,10 @@ def c13():
     # ADR-0022 § 2 declares root availability POSITIONALLY, so one flat document
     # cannot test the table: inputs/nodes/run exist at pipeline scope, item/items
     # only in a for_each body, previous/iteration only in an until body, and
-    # parameters only in a NodeTemplate expansion (which M4 validates but cannot
-    # publish — § 9.1 row 12). Seven accepts here, plus the `parameters` accept
-    # measured on a template, plus the refusals that are the same rule's other half:
+    # parameters only in a NodeTemplate expansion (publishable since the step
+    # registry 6222d01; row 12's publish refusal no longer applies). Seven
+    # accepts here, plus the `parameters` accept measured on a template, plus
+    # the refusals that are the same rule's other half:
     # every positional root used OUT of scope, and the parser-reserved `loop`.
     doc, ptr_in, loop_at = c13_root_probe_doc("m4x-c13d-roots")
     res = c13_draft_probe(admin, pid_pipe, "C13d roots in scope", doc)
@@ -15650,8 +15653,8 @@ def c14():
 
 
 # --- gates: docs/m4-contract.md § 7.2 (W1–W11, Playwright legs) --------------
-# Driven with `pnpm dlx @playwright/cli`; screenshots stay in .playwright-cli/
-# and are never committed (AGENTS.md).
+# Driven with `pnpm dlx @playwright/cli@0.1.22` (pinned, see PW below);
+# screenshots stay in .playwright-cli/ and are never committed (AGENTS.md).
 
 
 def _playwright_stub(gid, intent):
@@ -15660,7 +15663,12 @@ def _playwright_stub(gid, intent):
 
 # --- shared browser helpers (ADR-0006: pnpm dlx @playwright/cli, nothing else) ---
 
-PW = ["pnpm", "dlx", "@playwright/cli"]
+# The version is PINNED: an unpinned `pnpm dlx @playwright/cli` silently tracks
+# whatever 0.1.x resolves today, and 0.1.22 (playwright-core 1.64.0-alpha)
+# defaults `open` to the Chrome *channel*, which the lab image has no
+# (/opt/google/chrome/chrome) — every arm died with "browser is not open".
+# `open` therefore also gets an explicit `--browser=chromium` (see pw_login).
+PW = ["pnpm", "dlx", "@playwright/cli@0.1.22"]
 PW_SHOTS = ".playwright-cli"          # gitignored; never committed
 _NODE_LINE = re.compile(r'^\s*-\s*(?P<role>[A-Za-z][\w.-]*)\s*(?P<tail>.*)$')
 _QUOTED = re.compile(r'"(?P<name>[^"]*)"')
@@ -15783,9 +15791,17 @@ def pw_shot(name, session="m4exit"):
 def pw_login(user, path="/projects", session="m4exit"):
     """The lab's mock IdP (same form /tmp/.../ui_check.sh drives by hand): open
     /auth/login?return_to=..., fill the username textbox, press Enter. True once
-    the page behind the login renders."""
+    the page behind the login renders. `open` is explicit about its browser
+    (--browser=chromium: 0.1.22 defaults to the Chrome channel the lab has no)
+    and its result is CHECKED: a non-zero open fails the arm with the open
+    output instead of a later misleading "form not rendered"."""
     url = f"{LB}/auth/login?return_to={urllib.parse.quote(path, safe='/')}"
-    pw("open", url, session=session, timeout=120)
+    rc_open, out_open = pw("open", "--browser=chromium", url,
+                           session=session, timeout=120)
+    if rc_open != 0:
+        check(f"{user}: browser session '{session}' opened", False,
+              f"playwright-cli open rc={rc_open}: {(out_open or '')[:300]}")
+        return False
     rc, snap = pw_snapshot(session=session)
     nodes = pw_snapshot_nodes(snap)
     refs = (pw_refs(nodes, role="textbox", name="username")

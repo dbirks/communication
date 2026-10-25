@@ -2,7 +2,9 @@
 
 `e2e_m4_exit.py` is the executable form of `docs/m4-contract.md` § 7. Every
 gate C1–C14 and W1–W11 has a real implementation (the W legs drive the
-browser through `pnpm dlx @playwright/cli`), and each one still prints an
+browser through `pnpm dlx @playwright/cli@0.1.22`, pinned — and every `open`
+passes `--browser=chromium` because that CLI defaults to the Chrome channel the
+lab image has no), and each one still prints an
 honest `SKIP`/`GAP` when the stack or the § 7.0 seed manifest is missing.
 What has actually been *seen* against a live lab is recorded in
 `docs/m4-exit-status.md` (evidence root `$HOME/.cache/communication-lab/m4-exit/`,
@@ -150,8 +152,12 @@ the longest worker-held attempt, whether the mounted script mentions
   **C8f** builds a real 3-level chain to prove no depth-3 run is booked. Pin the
   revision you publish; a shared seed revision proves nothing about the mode.
 * Browser helpers for the W legs (`pw`, `pw_login`, `pw_snapshot`, `pw_click`,
-  `pw_poll`, `pw_shot`) over `pnpm dlx @playwright/cli` with named sessions;
-  screenshots stay in gitignored `.playwright-cli/`.
+  `pw_poll`, `pw_shot`) over `pnpm dlx @playwright/cli@0.1.22` (version
+  pinned; unpinned resolution to 0.1.22 made `open` default to the Chrome
+  channel the lab has no) with named sessions; `pw_login` opens with
+  `--browser=chromium` and fails its arm on a non-zero `open` instead of
+  reporting a misleading "form not rendered". Screenshots stay in gitignored
+  `.playwright-cli/`.
 
 ## Prerequisites
 
@@ -162,7 +168,7 @@ the longest worker-held attempt, whether the mounted script mentions
 * Real agent logins for the ACP legs (`~/.claude`, `~/.codex` — same
   requirement as the M3 harness; gates C1/C2/C9/C11 spend real turns).
 * Host tools: `docker` (compose v2), `git`, CPython 3 (stdlib only), `bash`,
-  and `pnpm` for the W legs' `pnpm dlx @playwright/cli`. No new repo
+  and `pnpm` for the W legs' `pnpm dlx @playwright/cli@0.1.22`. No new repo
   dependencies. One new **image pull** is flagged in
   `compose.m4.yml` (`python:3.13-alpine`, the C11 collector).
 

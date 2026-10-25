@@ -207,11 +207,16 @@ class RootTableTest(unittest.TestCase):
         self.assertIsNone(m.c13_out_of_scope_verdict("item", None,
                                                      "/spec/nodes/0/config/prompt")[1])
 
-    def test_parameters_root_needs_template_scope_and_the_publish_block(self):
-        good = body([err("template_publish_deferred", "/kind", "compiler",
-                         msg="publishing templates is deferred to M5")])
-        self.assertTrue(m.c13_parameters_root_verdict(good)[1])
-        self.assertFalse(m.c13_parameters_root_verdict(body([]))[1])
+    def test_parameters_root_needs_only_template_scope_compile_clean(self):
+        # Re graded to today's contract: the step registry (6222d01) made
+        # NodeTemplates publishable and removed the template_publish_deferred
+        # finding on purpose, so the ONLY verdict is whether the root compiles
+        # at /spec/config. A stale publish refusal elsewhere is no longer a
+        # pass requirement (and no longer a refusal either).
+        self.assertTrue(m.c13_parameters_root_verdict(body([]))[1])
+        stale_block = body([err("template_publish_deferred", "/kind", "compiler",
+                                msg="publishing templates is deferred to M5")])
+        self.assertTrue(m.c13_parameters_root_verdict(stale_block)[1])
         refused = body([err("undeclared_root", "/spec/config/prompt",
                             msg='root "parameters" is not declared')])
         self.assertFalse(m.c13_parameters_root_verdict(refused)[1])
