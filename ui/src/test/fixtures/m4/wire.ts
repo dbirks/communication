@@ -357,7 +357,7 @@ export const wireApproval: Approval = {
   node_execution_id: WIRE_NODE_PLAN,
   node_instance_key: "/approve",
   kind: "pipeline_gate",
-  summary: "The plan is ready — approving starts the loop; rejecting fails the run.",
+  summary: "The plan is ready — approving starts the loop; rejecting records the decision.",
   artifact_refs: [ref("plan.md")],
   approver_roles: ["maintainer"],
   approver_user_ids: [wireUserId],

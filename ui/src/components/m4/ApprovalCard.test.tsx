@@ -36,10 +36,19 @@ describe("a pending gate you can decide", () => {
 
   it("says what rejecting does, in the same breath as the button", () => {
     render(<ApprovalCard approval={pendingApproval} canDecide now={now} />);
-    expect(screen.getByTestId("approval-cas-version").textContent).toContain(
-      "rejecting fails this run",
-    );
-    expect(screen.getByTestId("approval-consequence").textContent).toContain("does not merge");
+    // A rejection is a business outcome, not an execution failure
+    // (`docs/m4-contract.md` § 5.3, C9e): the card must say so and must NEVER
+    // promise that rejecting fails the run — the old "rejecting fails this
+    // run" sentence contradicted the engine and is a regression guard now.
+    const version = screen.getByTestId("approval-cas-version").textContent ?? "";
+    expect(version).toContain("rejecting records the decision");
+    expect(version).toContain("version 1");
+    expect(version).not.toContain("fails");
+    const consequence = screen.getByTestId("approval-consequence").textContent ?? "";
+    expect(consequence).toContain("does not merge");
+    expect(consequence).toContain("Rejecting records the decision as a business outcome");
+    expect(consequence).toContain("steps that need approval won't run");
+    expect(consequence).not.toMatch(/reject\w*\s+(will )?fail/);
   });
 
   it("names the roles, the deadline and the consequence of the deadline", () => {

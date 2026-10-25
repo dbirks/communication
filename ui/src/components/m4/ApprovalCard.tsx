@@ -10,8 +10,14 @@
  *     for a denied gate the reason the approver set stopped applying.
  *
  * The decision posts the row's `version` as a CAS token: a concurrent decision
- * is a *conflict*, stated as one, never a silent overwrite — and a `rejected`
- * decision is not a "no" in a log, it fails the run (`01` invariant 10).
+ * is a *conflict*, stated as one, never a silent overwrite. And a `rejected`
+ * decision is a business outcome, NOT an execution failure
+ * (`docs/m4-contract.md` § 5.3, C9e; `03`:49's success/fail split applied to
+ * gates): the gate row closes `succeeded` with outcome `rejected`, the
+ * dependants its graph guards on the decision don't run, and the run settles
+ * on the pipeline's terms — only an unanswered DEADLINE fails the node
+ * (`approval_expired`). The copy below says exactly that; the old
+ * "rejecting fails this run" promise contradicted the engine and is gone.
  */
 import { useState } from "react";
 import type { ApprovalDecision, ApprovalDetail } from "../../lib/pipeline/contract";
@@ -200,12 +206,14 @@ export function ApprovalCard({
                 className="font-mono text-[10.5px] text-faint"
                 data-testid="approval-cas-version"
               >
-                rejecting fails this run · version {approval.version}
+                rejecting records the decision · version {approval.version}
               </span>
             </div>
             <p className="font-mono text-[10.5px] text-muted" data-testid="approval-consequence">
               approving lets the loop start; it does not merge anything, and it is not a review of
-              the code — it is the gate the pipeline definition asked for.
+              the code — it is the gate the pipeline definition asked for. Rejecting records the
+              decision as a business outcome: steps that need approval won't run, and the run
+              finishes on the graph's terms — only an unanswered deadline fails the node.
             </p>
           </div>
         ) : null}

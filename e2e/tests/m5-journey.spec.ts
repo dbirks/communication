@@ -59,6 +59,8 @@ const REPO_BINDING = "app";
 const GOAL = "Document and fix add() in hello.py";
 /** The scratch pipeline's own goal, so its gate summary is identifiable. */
 const GATE_GOAL = "Let the scratch gate's deadline pass, then retry the run";
+/** The rejection twin's goal, so its gate summary is identifiable too. */
+const REJECT_GOAL = "Reject the scratch gate and settle the run as a business outcome";
 const PLAN_LINE = "Document add() with a docstring";
 const stamp = process.env.E2E_M5_STAMP ?? new Date().toISOString().slice(11, 19).replace(/:/g, "");
 const SLUG = `m5-journey-${stamp}`;
@@ -66,6 +68,9 @@ const SLUG = `m5-journey-${stamp}`;
 // (`assign-open-<slug>`) and Playwright matches test ids by substring, so a
 // prefixed child would collide with the journey's own rows.
 const GATE_SLUG = `m5-gate-${stamp}`;
+// Same rule for the rejection twin: `m5-reject-` shares no prefix with any
+// other slug in this suite.
+const REJECT_SLUG = `m5-reject-${stamp}`;
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -388,6 +393,87 @@ spec:
         after: {type: string, minLength: 1}
   resultBindings:
     after: \${{ nodes.after_gate.outputs.after }}
+`;
+
+/**
+ * The scratch copy the rejection arm needs, which neither existing twin can
+ * give: the journey's run answered its gate back in step 6, and `GATE_TWIN`
+ * races a 60 s schema-floor deadline that a person could lose. This document
+ * is `internal/pipelines/runtime/testdata/gate_sibling.yaml`'s shape driven
+ * through the real product: the gate is the ROOT node (so `waiting_human`
+ * and the decision cost no worker turn), its deadline is the journey's
+ * generous 600 s (the POINT is the human answer, not the clock), and its one
+ * dependant carries the guard the contract describes —
+ * `when: nodes.approve.outputs.decision == 'approved'`. Rejected, the
+ * dependant must come back `skipped` and the run `completed`: exactly C9e
+ * (`docs/m4-contract.md` § 5.3 / § 8) on a live lab instead of a runtime
+ * test. Authored through the library's own draft path like the other two.
+ */
+const REJECT_TWIN = `# scratch rejection arm: plan-with-approval's gate at the root, generous
+# deadline, and the one node behind it guarded by the decision itself.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: __REJECT_SLUG__
+  description: >-
+    Scratch: one maintainer approval gate whose dependant runs only when the
+    decision is approved, so a rejection settles the run as a business
+    outcome instead of an execution failure.
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: What the gate is asking about.
+  outputs:
+    type: object
+    required: [gate_decision]
+    properties:
+      gate_decision: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 7200
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: approve
+    kind: human.approval
+    retry:
+      maxAttempts: 1
+    config:
+      summary: |
+        Scratch rejection arm for \${{ inputs.goal }} — say no, and the guarded step must stay unrun.
+      approverRoles: [maintainer]
+      # Generous like the journey's gate and for the opposite reason of
+      # GATE_TWIN's 60 s: this deadline must NEVER pass before the person
+      # answers — the decision, not the clock, is the subject of this twin.
+      deadlineSeconds: 600
+      onTimeout: fail
+  - id: guarded
+    kind: process.exec
+    dependsOn: [approve]
+    when: nodes.approve.outputs.decision == 'approved'
+    timeoutSeconds: 120
+    retry:
+      maxAttempts: 1
+    config:
+      executable: printf
+      args:
+      - '%s\\n'
+      - '{"after":"only an approval runs this"}'
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [after]
+      properties:
+        after: {type: string, minLength: 1}
+  resultBindings:
+    gate_decision: \${{ nodes.approve.outputs.decision }}
 `;
 
 test.describe("M5 clone, customize, stall, take control, retry, evidence", () => {
@@ -1106,37 +1192,172 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
   });
 
   /**
-   * The rejection arm, answered against the contract rather than the card:
-   * rejecting a gate is a business outcome (M4 contract § 5.3 / C9e), the run
-   * terminates per the graph's `when`, and Retry does NOT re-open the gate — it
-   * answers `409 run_not_retriable` unless some other node genuinely failed. In
-   * THIS twin `publish_plan`/`verify` carry no `when` guard, so a rejection
-   * still runs `verify`, whose `exit_code: 1` envelope its own outputs schema
-   * refuses: the failed run is then legitimately retriable *at `/verify`*,
-   * never at `/approve`, and retrying it lands back at
-   * `failed` because the node is deterministic. "Back to waiting_human with the
-   * gate live again" is not what the spec asks for.
+   * The rejection arm, decided the way the spec decides it: `03`:49's
+   * `execution_status=success` / `business_outcome=fail` split applied to
+   * gates — `docs/m4-contract.md` § 5.3 and its C9e — rejecting a gate is a
+   * BUSINESS outcome: the gate row closes `succeeded` with outcome `rejected`,
+   * a dependant guarded by `when: nodes.approve.outputs.decision ==
+   * 'approved'` comes back `skipped` (`node.execution_skipped` /
+   * `condition_default`), and the run ends `completed`. Only a timeout is the
+   * execution-side failure (`approval_expired` — the expired-gate arm above).
+   *
+   * This test used to `test.fixme` a real product contradiction: the
+   * `ApprovalCard` promised “rejecting fails this run” while the engine
+   * recorded a business outcome. The spec/contract side won (the engine, the
+   * M4 contract § 5.3/C9e, the OpenAPI approval schema and
+   * `retryVerdict`' honest disabled arm all agree; the numbered spec has no
+   * Accepted statement that a rejection fails a run), so the card copy was
+   * fixed instead. The lab image still serves the OLD pending-card sentence
+   * until the orchestrator rebuilds — the fixed copy is proven by
+   * `ui/src/components/m4/ApprovalCard.test.tsx` and
+   * `ui/src/pages/Approval.test.tsx`; everything asserted below is a live
+   * engine fact or copy that already shipped. The journey's own run cannot
+   * carry this arm (its gate was approved in step 6, and its dependants are
+   * unguarded, so a rejection there would say nothing about the guard),
+   * `GATE_TWIN`'s 60 s floor races the person, and a rejection answered
+   * `409 run_not_retriable` never re-opens a gate — hence REJECT_TWIN, this
+   * test's third scratch pipeline.
    */
-  test("a rejected gate fails the run, as its own card promises", async () => {
-    // FINDING: `ApprovalCard` says “rejecting fails this run · version N” and
-    // links the claim to `01` invariant 10, but `closeGate`
-    // (internal/pipelines/runtime/advancer.go) succeeds the node with outcome
-    // `rejected` (docs/m4-contract.md § 5.3: “a rejection is a BUSINESS
-    // outcome, not an execution failure”) — observed in this lab: the gate node
-    // `succeeded` with outcome `rejected` and `publish_plan` published anyway.
-    // (The `run completed after a rejection` half of that evidence belongs to
-    // the pre-schema twin, where `verify`'s bare exit 1 was a business verdict;
-    // with `verify` now declaring `exit_code: 0`, this run ends `failed` at
-    // `/verify` for its own reason, so the card's claim must be judged by the
-    // gate row, not by the run status.)
-    // One of the two sentences is wrong; the journey keeps the check so the
-    // contradiction cannot be forgotten.
-    test.fixme(
-      true,
-      "product contradiction: the gate card promises that rejecting fails the run; the engine records a business outcome and the run completes (M4 contract § 5.3 vs ApprovalCard.tsx)",
-    );
-    await gotoApp(alice, runPath);
-    await expectRunStatus(alice, /failed/, DECISION_TIMEOUT_MS);
+  test("a rejected gate is a business outcome: gate succeeded/rejected, guarded step skipped, run completed", async () => {
+    let rejectPath = ""; // /runs/{rejection twin's run id}
+    let rejectRunId = "";
+
+    await test.step("publish the scratch rejection twin: root gate + one guarded step", async () => {
+      await gotoApp(admin, "/workflows");
+      await expect(admin.getByTestId("library-page")).toBeVisible();
+      await admin.getByTestId("workflows-new-workflow").click();
+      await expect(admin.getByTestId("new-workflow-dialog")).toBeVisible();
+      await admin.getByTestId("library-new-name-input").fill(REJECT_SLUG);
+      await admin.getByTestId("new-workflow-id-change").click();
+      await admin.getByTestId("library-new-slug-input").fill(REJECT_SLUG);
+      await admin.getByTestId("new-workflow-template-plan-with-approval").click();
+      await admin.getByTestId("library-new-submit").click();
+      await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/);
+      await admin.getByTestId("studio-view-yaml").click();
+      await admin
+        .getByTestId("studio-yaml")
+        .fill(REJECT_TWIN.replace("__REJECT_SLUG__", REJECT_SLUG));
+      await admin.getByTestId("studio-save").click();
+      await expect(admin.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
+      await admin.getByTestId("studio-validate").click();
+      await expect(admin.getByTestId("studio-validate-verdict")).toContainText(/^valid —/, {
+        timeout: 30_000,
+      });
+      await admin.getByTestId("studio-publish").click();
+      await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
+        timeout: 30_000,
+      });
+      await shot(admin, "m5-09-reject-twin-published");
+    });
+
+    await test.step("a person rejects the gate from its card", async () => {
+      await gotoApp(alice, `${projectPath}/pipelines`);
+      await expect(alice.getByTestId("project-pipelines")).toBeVisible();
+      await alice.getByTestId(`assign-open-${REJECT_SLUG}`).click();
+      await expect(alice.getByTestId(`assign-pinning-${REJECT_SLUG}`)).toContainText("r1", {
+        timeout: 30_000,
+      });
+      await alice.getByTestId(`assign-confirm-${REJECT_SLUG}`).click();
+      await expect(alice.getByTestId(`assign-form-${REJECT_SLUG}`)).toHaveCount(0, {
+        timeout: 30_000,
+      });
+      await gotoApp(alice, `${projectPath}/runs`);
+      await alice.getByTestId("runs-new").click();
+      await expect(alice.getByTestId("new-run-form")).toBeVisible();
+      await selectByOptionText(alice, "new-run-assignment", REJECT_SLUG);
+      await alice.getByTestId("new-run-input-goal").fill(REJECT_GOAL);
+      await alice.getByTestId("new-run-submit").click();
+      await alice.waitForURL(/\/runs\/[0-9a-f-]{36}$/);
+      rejectPath = new URL(alice.url()).pathname;
+      rejectRunId = rejectPath.split("/").pop() ?? "";
+      expect(rejectRunId).toMatch(/^[0-9a-f-]{36}$/);
+      // The gate is the root node: waiting_human costs no worker turn.
+      await expectRunStatus(alice, /waiting human/, DECISION_TIMEOUT_MS);
+      await canvasNode(alice, "approve").click();
+      await expect(alice.getByTestId("approval-state")).toHaveText("needs your decision", {
+        timeout: 30_000,
+      });
+      // The row identity BEFORE the decision: one pending approval row per
+      // node execution (ADR-0023 § 9), so this id IS the gate's row.
+      const gateId = await pendingGateFor(alice, rejectRunId, DECISION_TIMEOUT_MS);
+      // The version half of the card's one-line promise survives the copy
+      // fix; the fixed SENTENCE is vitest's job until the lab image rebuilds
+      // (see the doc comment above).
+      await expect(alice.getByTestId("approval-cas-version")).toContainText("version 1");
+      await alice.getByTestId("approval-comment").fill("No — this path is not taken.");
+      await alice.getByTestId("approval-reject").click();
+      // The decided card says `rejected` and nothing else failed it: the row
+      // closed with a decision, not an error.
+      await expect(alice.getByTestId("approval-decided")).toBeVisible({
+        timeout: DECISION_TIMEOUT_MS,
+      });
+      await expect(alice.getByTestId("approval-decided")).toContainText("rejected");
+      // The row's own truth, from the API rather than the chip colour.
+      const row = (await (await alice.request.get(`/api/v1/approvals/${gateId}`)).json()) as {
+        state: string;
+        decision: string | null;
+      };
+      expect(row.state, "the gate closed as DECIDED, not expired/denied").toBe("decided");
+      expect(row.decision).toBe("rejected");
+      await shot(alice, "m5-09-gate-rejected");
+    });
+
+    await test.step("the gate row is a SUCCESS with outcome rejected; the guarded step never ran; the run completed", async () => {
+      // Nothing here waits on a worker: the guarded node is skipped without
+      // ever being scheduled, so this settles on the advancer's ticks.
+      await expectRunStatus(alice, /completed/, DECISION_TIMEOUT_MS);
+      const nodes = (await (
+        await alice.request.get(`/api/v1/runs/${rejectRunId}/nodes`)
+      ).json()) as {
+        node_executions: {
+          node_instance_key: string;
+          kind: string;
+          status: string;
+          outcome?: string | null;
+        }[];
+      };
+      const gate = nodes.node_executions.find((n) => n.node_instance_key === "/approve");
+      expect(gate, "the gate row exists").toBeTruthy();
+      // C9e, observed: a rejection is NOT an execution failure.
+      expect(gate?.status, "a rejected gate is a succeeded execution").toBe("succeeded");
+      expect(gate?.outcome, "the business fact rides beside the execution fact").toBe("rejected");
+      const guarded = nodes.node_executions.find((n) => n.node_instance_key === "/guarded");
+      expect(guarded, "the guarded row exists").toBeTruthy();
+      expect(guarded?.status, "a step that needed approval never ran").toBe("skipped");
+      // The workbench tells the same story on the canvas itself: the card
+      // closed as DECIDED (a lifecycle state — not `expired`, not `denied`)
+      // with the `rejected` decision on its decided chip.
+      await canvasNode(alice, "approve").click();
+      await expect(alice.getByTestId("approval-state")).toHaveText("decided", {
+        timeout: 30_000,
+      });
+      await expect(alice.getByTestId("approval-decided")).toContainText("rejected");
+      await shot(alice, "m5-09-rejected-run-completed");
+    });
+
+    await test.step("and the run refuses to be retried — the rejection was final, and says why", async () => {
+      // The UI arm (already live in the lab image via `retryVerdict`): a
+      // rejected gate is not a retry target, so the control is disabled with
+      // the reason in words instead of arming a button that would only 409.
+      await expect(alice.getByTestId("run-retry")).toBeVisible({ timeout: 30_000 });
+      await expect(alice.getByTestId("run-retry")).toBeDisabled();
+      await expect(alice.getByTestId("run-retry-reason")).toContainText("answered rejected");
+      await expect(alice.getByTestId("run-retry-reason")).toContainText("business outcome");
+      // And the API agrees, so the UI is not the only truth: route 31
+      // refuses the completed run with a 409 whose problem type is
+      // `run-not-retriable`; a rejection never re-opens the gate. (The
+      // served body is RFC 7807 — the `run_not_retriable` code of the
+      // contract's spelling travels as the type URI, not a `code` field.)
+      const me = (await (await alice.request.get("/api/v1/me")).json()) as { csrf_token: string };
+      const refusal = await alice.request.post(`/api/v1/runs/${rejectRunId}/retry`, {
+        data: {},
+        headers: { "x-csrf-token": me.csrf_token },
+      });
+      expect(refusal.status()).toBe(409);
+      const problem = (await refusal.json()) as { type?: string; run_status?: string };
+      expect(problem.type).toBe("https://communication.dev/errors/run-not-retriable");
+      expect(problem.run_status, "the refusal names the run's current status").toBe("completed");
+    });
   });
 
   test("the run page itself offers a Retry control, and explains when it cannot", async () => {

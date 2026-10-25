@@ -61,12 +61,17 @@ export const gateRun: RunDetail = {
   started_at: "2026-07-31T10:44:02Z",
 };
 
-/** The gate was rejected: rejecting fails the run, and the cause names the node. */
+/**
+ * The gate answered `rejected`, and the run later failed DOWNSTREAM on its
+ * own terms: a rejection is a business outcome, not an execution failure
+ * (`docs/m4-contract.md` § 5.3, C9e), so the cause names the node that
+ * actually failed — never `/approve`.
+ */
 export const decidedRun: RunDetail = {
   ...gateRun,
   id: "01J8RUNREJECTED000000000",
   status: "failed",
-  failed_cause: "node_execution_failed:/approve",
+  failed_cause: "node_execution_failed:/verify",
   finished_at: "2026-07-31T14:02:19Z",
 };
 

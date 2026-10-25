@@ -278,4 +278,20 @@ describe("approval detail (4g)", () => {
     });
     expect(textOf(screen.getByTestId(`approval-detail-strip-${T}`))).toContain("DECIDED");
   });
+
+  it("promises the THEN line the engine actually performs — rejecting is a business outcome", async () => {
+    // The old copy said "a rejection fails it"; the engine closes the gate
+    // `succeeded` with outcome `rejected` and the guarded dependants skip
+    // (`docs/m4-contract.md` § 5.3, C9e). The rail must state that truth, and
+    // the false promise is now a regression guard.
+    renderApprovalPage([
+      { path: SUMMARY_PATH, method: "POST", status: 503, body: NOT_CONFIGURED },
+      { path: ARTIFACTS_PATH, body: { artifacts: [] } },
+    ]);
+    const then = await screen.findByTestId("approval-detail-then");
+    expect(textOf(then)).toContain(wireApproval.node_instance_key);
+    expect(textOf(then)).toContain("rejecting records the decision as a business outcome");
+    expect(textOf(then)).toContain("steps that need approval won't run");
+    expect(textOf(then)).not.toMatch(/rejection\s+fails|fails it/);
+  });
 });

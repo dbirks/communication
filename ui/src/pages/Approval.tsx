@@ -490,8 +490,9 @@ function WhoThenPanel({ approval, meId }: { approval: Approval; meId: string | n
         </div>
         <div>
           <dt className="font-mono text-[10.5px] tracking-[.04em] text-faint">THEN</dt>
-          <dd className="text-ink">
-            the run continues from {approval.node_instance_key ?? "this node"}; a rejection fails it
+          <dd className="text-ink" data-testid="approval-detail-then">
+            the run continues from {approval.node_instance_key ?? "this node"}; rejecting records
+            the decision as a business outcome — steps that need approval won't run
           </dd>
         </div>
       </dl>

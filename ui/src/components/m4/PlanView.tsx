@@ -4,8 +4,9 @@
  * A gate's `summary` carries the planner node's output as one JSON string
  * (`{"goal":…,"steps":[{"actions":…,"done_when":…,"id":1,"title":…}],"risks":…}`)
  * and printed raw it is a wall of escaped text — `live-run-inspector.png`. The
- * Approve/Reject call is made on that text (`01` invariant 10: a rejection
- * fails the run), so the payload is decoded into the shape of a plan: goal as a
+ * Approve/Reject call is made on that text (a rejection is a business outcome
+ * the graph's guards read — `docs/m4-contract.md` § 5.3), so the payload is
+ * decoded into the shape of a plan: goal as a
  * heading line, context as a paragraph, steps as an ordered list with their
  * actions and "done when", criteria and risks as short lists.
  *
