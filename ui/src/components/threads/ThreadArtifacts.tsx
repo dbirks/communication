@@ -29,20 +29,20 @@ export function ThreadArtifacts({
   const query = useConversationArtifacts(projectId, conversationId);
   const artifacts = query.data?.artifacts ?? [];
 
+  // The rail itself is ONE element in every state (docs/design/handoff-app-
+  // shell/gaps/threads.md W3): a reader (or the e2e proof) can always see the
+  // ARTIFACTS section — loading, refused, empty, or its rows — and the rows
+  // keep their own `thread-artifacts` list identity inside it.
   return (
-    <>
+    <div data-testid="artifacts-rail">
       {query.isPending ? (
-        <p className="text-[12.5px] text-muted" data-testid="artifacts-rail">
-          Loading this thread's artifacts…
-        </p>
+        <p className="text-[12.5px] text-muted">Loading this thread's artifacts…</p>
       ) : query.isError ? (
-        <Alert state="failed" label="FAILED" role="alert" testid="artifacts-rail">
+        <Alert state="failed" label="FAILED" role="alert" testid="artifacts-rail-error">
           {problemOf(query.error).detail || "Artifacts could not be loaded."}
         </Alert>
       ) : artifacts.length === 0 ? (
-        <p className="text-[12.5px] text-muted" data-testid="artifacts-rail">
-          No artifacts from this thread yet
-        </p>
+        <p className="text-[12.5px] text-muted">No artifacts from this thread yet</p>
       ) : (
         <ul className="space-y-[4px]" data-testid="thread-artifacts">
           {artifacts.slice(0, RAIL_ARTIFACT_LIMIT).map((artifact) => (
@@ -52,7 +52,7 @@ export function ThreadArtifacts({
           ))}
         </ul>
       )}
-    </>
+    </div>
   );
 }
 

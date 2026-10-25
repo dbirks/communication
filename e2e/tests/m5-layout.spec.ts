@@ -58,7 +58,7 @@ import {
 } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, gotoApp, openProjectBySlug, shot, signIn } from "./helpers.js";
-import { apiCreateConversation, apiCsrf, apiProjects, apiProfileId } from "./shell-helpers.js";
+import { apiCreateConversation, apiCsrf, apiProfileId } from "./shell-helpers.js";
 
 const M5_ENABLED = process.env.COMMUNICATION_E2E_M5 === "1";
 
@@ -570,10 +570,21 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
   const title = `m5-layout-${STAMP}`;
   const rowTestid = `conversation-row-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   const csrf = await apiCsrf(page.request);
-  const [project] = await apiProjects(page.request);
-  if (!project) throw new Error("the lab holds no project to open a thread in");
+  // The thread is created in the SAME project the arm then opens — the
+  // overview page it navigates to is `projectPath`, and "first project in
+  // the list" is whatever other suites left behind (the lab's project list
+  // grows scratch and emulator projects over time). The id is read off the
+  // discovered path itself (route contract C1: /p/:id).
+  const projectId =
+    projectPath
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .pop() ?? "";
+  expect(projectId, `the discovered project path ${projectPath} names no project id`).toMatch(
+    /^[0-9a-f-]{36}$/,
+  );
   const profileId = await apiProfileId(page.request);
-  await apiCreateConversation(page.request, csrf, project.id, profileId, title);
+  await apiCreateConversation(page.request, csrf, projectId, profileId, title);
   await gotoApp(page, projectPath);
   const row = page.getByTestId(rowTestid);
   await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({

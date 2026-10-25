@@ -277,7 +277,13 @@ export default function AssistantPopover() {
   );
 
   // ⌘K: closed opens the popover; open (either size) hands the chord to the
-  // jump palette — the assistant is already on screen.
+  // jump palette — the assistant is already on screen. The listener runs in
+  // the CAPTURE phase on purpose: the Studio draft footer (design 1g) listens
+  // for the same chord with `stopImmediatePropagation`, and after one open→
+  // close cycle this effect re-registers LAST, so in the bubble phase that
+  // hijack would swallow every further ⌘K and the ask surface could never
+  // reopen on the draft page (observed live: second ⌘K after Escape opened
+  // neither popover nor palette). Capture makes the global chord order-invariant.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -286,8 +292,8 @@ export default function AssistantPopover() {
         else window.dispatchEvent(new CustomEvent(PALETTE_OPEN_EVENT));
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open]);
 
   // The palette's Ask row: open (and, with a question carried over, send it).

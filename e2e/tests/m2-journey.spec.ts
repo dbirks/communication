@@ -24,13 +24,13 @@ import {
   PERMISSION_TIMEOUT_MS,
 } from "./env.js";
 import {
-  addMember,
   allowOpenPermission,
   expectTurnStatus,
   gotoApp,
   openPermissionCard,
   restartComposeServices,
   sendPrompt,
+  setMember,
   signIn,
   startConversation,
   takeControl,
@@ -96,11 +96,18 @@ test.describe("M2 shared conversation and control handoff", () => {
 
   test("the harness worker is registered and online", async () => {
     // Precondition for every turn below: with no worker claiming turns, the
-    // first prompt would simply sit in `queued — waiting for a worker`.
+    // first prompt would simply sit in `queued — waiting for a worker`. The
+    // stack this journey is named for brought exactly one worker, the
+    // `worker-e2e` of e2e/compose.e2e-harness.yml; the M4 lab stack this run
+    // targets brings worker-a and worker-b (compose.m4.yml, § 6.2: two
+    // workers by design). So the honest precondition is the API's own, read
+    // off the ops page: SOME registered worker of the stack under test is
+    // online — never a hardcoded name the stack may not have.
     await gotoApp(alice, "/settings/operations");
-    await expect(alice.getByTestId("worker-row-worker-e2e")).toContainText(/status: online/, {
-      timeout: 30_000,
+    const onlineWorker = alice.locator('[data-testid^="worker-row-"]').filter({
+      hasText: /status: online/,
     });
+    await expect(onlineWorker.first()).toBeVisible({ timeout: 30_000 });
   });
 
   test("alice creates the project, its repository, and adds bob", async () => {
@@ -115,16 +122,58 @@ test.describe("M2 shared conversation and control handoff", () => {
     if (!(await nameField.isVisible())) await toggle.click();
     await nameField.fill(PROJECT_NAME);
     await alice.getByTestId("create-project-submit").click();
+    // Idempotent re-run (the m1/home-cluster rule): on a stack this journey
+    // already wrote to, the create meets the slug conflict — the existing
+    // project IS the fact the create would have made, so open it and ride on.
+    const conflict = alice.getByRole("alert").filter({ hasText: /already exists/i });
+    if (
+      await conflict
+        .waitFor({ timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false)
+    ) {
+      await gotoApp(alice, "/projects");
+      await alice
+        .getByTestId(`project-link-${PROJECT_NAME.toLowerCase().replace(/ +/g, "-")}`)
+        .click();
+    }
     await expect(alice.getByTestId("project-name")).toHaveText(PROJECT_NAME);
     projectPath = new URL(alice.url()).pathname;
 
     const projectUrl = `${BASE_URL}${projectPath}`;
-    await alice.getByTestId("repo-name").fill(REPO_NAME);
-    await alice.getByTestId("repo-git-url").fill(REPO_GIT_URL);
-    await alice.getByTestId("repo-default-branch").fill(REPO_BRANCH);
-    await alice.getByTestId("repo-submit").click();
-    await expect(alice.getByTestId(`repo-row-${REPO_NAME}`)).toContainText(REPO_GIT_URL);
-    await addMember(alice, projectUrl, BOB.name, "contributor");
+    // The repository add is the same story: an existing row is the proof, and
+    // re-adding only earns a duplicate refusal. On a REUSED project the add
+    // form is collapsed and the rows mount with the overview's data fetch —
+    // wait for either to exist before deciding which path to take.
+    const repoRow = alice.getByTestId(`repo-row-${REPO_NAME}`);
+    const repoToggle = alice.getByTestId("repo-add-toggle");
+    const repoNameField = alice.getByTestId("repo-name");
+    // Give the overview's own fetch a beat to mount rows or form, then decide.
+    await expect
+      .poll(
+        async () =>
+          (await repoRow.count()) + (await repoNameField.count()) + (await repoToggle.count()),
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+    if ((await repoRow.count()) === 0) {
+      await alice.waitForTimeout(1_500); // rows mounting with the fetch beat the toggle
+      if ((await repoRow.count()) === 0) {
+        if (!(await repoNameField.isVisible().catch(() => false))) {
+          await repoToggle.waitFor({ state: "visible", timeout: 30_000 });
+          await repoToggle.click();
+          await expect(repoNameField).toBeVisible({ timeout: 15_000 });
+        }
+        await repoNameField.fill(REPO_NAME);
+        await alice.getByTestId("repo-git-url").fill(REPO_GIT_URL);
+        await alice.getByTestId("repo-default-branch").fill(REPO_BRANCH);
+        await alice.getByTestId("repo-submit").click();
+      }
+    }
+    await expect(repoRow).toContainText(REPO_GIT_URL);
+    // Idempotent: bob is already a contributor once a prior run added him —
+    // setMember takes the fast path then and corrects the role otherwise.
+    await setMember(alice, projectUrl, BOB.name, "contributor");
   });
 
   test("alice starts a Claude Code conversation and the first turn completes", async () => {
@@ -275,8 +324,10 @@ test.describe("M2 shared conversation and control handoff", () => {
       WRITE_PROMPT,
       "Turn cancelled",
       "Turn completed",
-      `Control taken (by`,
-      `Control returned (to`,
+      // The control-event copy names the people (4681dce: `Control taken by
+      // <name>` / `Control returned to <name>`) — assert the full sentence.
+      `Control taken by ${BOB.name}`,
+      `Control returned to ${ALICE.name}`,
     ]) {
       await expect(alice.getByTestId("transcript")).toContainText(expected);
       await expect(bob.getByTestId("transcript")).toContainText(expected);

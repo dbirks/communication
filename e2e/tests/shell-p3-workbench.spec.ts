@@ -9,14 +9,14 @@
 // Runs ONLY when COMMUNICATION_E2E_SHELL=1. The workbench reads are worker
 // polls, so every first-render wait is bounded (WORKBENCH_TIMEOUT_MS), never
 // open-ended. checkShellScreen on each view; evidence() per step.
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 import { AGENT_TURN_TIMEOUT_MS, BASE_URL } from "./env.js";
 import { signIn } from "./helpers.js";
 import {
   SHELL_ENABLED,
   SHELL_GATE,
   apiCsrf,
-  apiProjectWithRepo,
+  apiProjects,
   apiProfileForAgentRun,
   apiPublishPipeline,
   apiRuns,
@@ -24,11 +24,40 @@ import {
   apiWaitRunAgentConversation,
   checkShellScreen,
   evidence,
+  type ProjectRow,
 } from "./shell-helpers.js";
 
 const WORKBENCH_TIMEOUT_MS = Number(process.env.E2E_WORKBENCH_TIMEOUT_MS ?? 120_000);
 const VIEWS = ["graph", "timeline", "artifacts", "diagnostics"] as const;
 const STAMP = Date.now().toString(36);
+
+/**
+ * The project this journey starts its agent run in: one whose repository the
+ * WORKER can actually clone. The lab carries placeholder remotes
+ * (`https://example.invalid/…` from m1-journey) that no workspace preparation
+ * can resolve — the 8fd91f3 run died exactly there (`Could not resolve host:
+ * example.invalid`, error_class infra). The m4 lab fixture is a bare repo on
+ * the worker's own host (`file:///srv/m4/fixtures/app.git`, docs/
+ * compatibility/probes/m4), so its mirror clone cannot fail on DNS; this is
+ * the same repository every other lab-journey agent run uses.
+ */
+async function apiProjectWithCloneableRepo(request: APIRequestContext): Promise<ProjectRow> {
+  const projects = await apiProjects(request);
+  const seen: string[] = [];
+  for (const project of projects) {
+    const res = await request.get(`${BASE_URL}/api/v1/projects/${project.id}/repos?limit=50`);
+    if (!res.ok()) continue;
+    const body = (await res.json()) as { items?: { name: string; git_url: string }[] };
+    for (const repo of body.items ?? []) {
+      seen.push(`${project.name}/${repo.name} ${repo.git_url}`);
+      if (repo.git_url.startsWith("file://")) return project;
+    }
+  }
+  throw new Error(
+    `no project carries a repository the worker can clone (a file:// lab fixture); ` +
+      `repos seen: ${seen.join(", ") || "none"}`,
+  );
+}
 
 /**
  * The single-node agent pipeline the Take control journey runs. The 90 s
@@ -190,7 +219,7 @@ test.describe("shell p3 — run workbench: tabs, full screen, take control", () 
       `p3-take-${STAMP}`,
       TAKE_CONTROL_YAML(`p3-take-${STAMP}`, profile.name),
     );
-    const project = await apiProjectWithRepo(page.request);
+    const project = await apiProjectWithCloneableRepo(page.request);
     const runId = await apiStartRun(page.request, csrf, project.id, pipeline.revisionId, {});
     const conversationId = await apiWaitRunAgentConversation(
       page.request,

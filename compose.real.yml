@@ -43,7 +43,7 @@
 #
 # Host variables (with safe defaults where shown):
 #   COMMUNICATION_LLM_BASE_URL        (default https://llm-collective.e-gineering.com/v1)
-#   COMMUNICATION_LLM_MODEL           (default david-birks/qwen3-8-27b)
+#   COMMUNICATION_LLM_MODEL           (default david-birks/qwen3-8-flash-next)
 #   LLMC_API_KEY                      the gateway key, from the host environment
 #                                     only; must equal the file's contents
 #   COMMUNICATION_LLM_API_KEY_HOST_FILE  REQUIRED: host path of the key file
@@ -65,12 +65,12 @@ services:
       # kind is not registered and its nodes fail with the honest refusal).
       COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the host environment (file form: COMMUNICATION_LLM_API_KEY_HOST_FILE)}"
-      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       # pi launcher (ADR-0059): key via the mounted file, never env;
       # base URL + model into the agent-home models.json per turn.
       COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
-      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       # ADR-0035 worker-owned egress: claude (shipped default host) + GitHub
       # push (api.anthropic.com is nono's provisional default; the GitHub set
       # is agent-push.md step 3 plus its raw/archive/download hosts) + the
@@ -83,10 +83,10 @@ services:
     environment:
       COMMUNICATION_MODEL_CHAT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
       COMMUNICATION_MODEL_CHAT_API_KEY: "${LLMC_API_KEY:?set LLMC_API_KEY to the gateway key in the host environment (file form: COMMUNICATION_LLM_API_KEY_HOST_FILE)}"
-      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_MODEL_CHAT_MODELS: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_PI_API_KEY_FILE: /run/comm/llm-api-key
       COMMUNICATION_PI_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
-      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_PI_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_AGENT_EGRESS_ALLOW: "api.anthropic.com,github.com,api.github.com,codeload.github.com,objects.githubusercontent.com,${COMMUNICATION_LLM_HOST:-llm-collective.e-gineering.com}"
 
   api-a:
@@ -98,7 +98,7 @@ services:
       # replica egress app content to the gateway — which is the operator's
       # explicit intent in applying this overlay.
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
-      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key
 
   api-b:
@@ -106,5 +106,5 @@ services:
       - ${COMMUNICATION_LLM_API_KEY_HOST_FILE:?set COMMUNICATION_LLM_API_KEY_HOST_FILE to a host file holding the gateway key}:/run/comm/llm-api-key:ro
     environment:
       COMMUNICATION_ASSISTANT_BASE_URL: "${COMMUNICATION_LLM_BASE_URL:-https://llm-collective.e-gineering.com/v1}"
-      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-27b}"
+      COMMUNICATION_ASSISTANT_MODEL: "${COMMUNICATION_LLM_MODEL:-david-birks/qwen3-8-flash-next}"
       COMMUNICATION_ASSISTANT_API_KEY_FILE: /run/comm/llm-api-key

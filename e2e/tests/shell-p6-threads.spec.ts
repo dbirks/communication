@@ -20,7 +20,7 @@ import {
   apiCreateConversation,
   apiCsrf,
   apiProfileId,
-  apiProjects,
+  apiScratchProject,
   checkShellScreen,
   evidence,
   signInNarrow,
@@ -41,7 +41,7 @@ async function apiConversationsWithManual(
   let conversations = await apiConversations(request);
   if (conversations.some((c) => c.origin === "manual")) return conversations;
   const csrf = await apiCsrf(request);
-  const [project] = await apiProjects(request);
+  const project = await apiScratchProject(request);
   if (!project) throw new Error("no project available to seed the one-off thread");
   const profileId = await apiProfileId(request);
   await apiCreateConversation(request, csrf, project.id, profileId, `P6 one-off thread ${STAMP}`);

@@ -87,9 +87,20 @@ function isRefusedWriteResponse(response: PWResponse): boolean {
  * (the seeded identities; e2e/tests/helpers.ts' signIn — the subject plus a
  * derived email claim, exactly as m5-inbox.spec.ts does, no invented name
  * claim). Set for the local M4 lab run: step 1 then takes that path instead
- * of the tsidp redirect loop. Unset: the unchanged tsidp behaviour.
+ * of the tsidp redirect loop. Unset on a remote target: the unchanged tsidp
+ * behaviour. On a LOOPBACK target the tsidp chain can never close — there is
+ * no tailnet provider session in a local browser, only the lab's mock IdP —
+ * so an unset subject defaults to the seeded `admin` (the identity every
+ * other lab spec signs in with) rather than timing out on /me for 120 s.
  */
-const HOME_LOGIN_SUBJECT = process.env.E2E_HOME_LOGIN_SUBJECT ?? "";
+const HOME_TARGET_HOST = new URL(HOME_BASE_URL).hostname;
+const HOME_LOGIN_SUBJECT =
+  process.env.E2E_HOME_LOGIN_SUBJECT ??
+  (HOME_TARGET_HOST === "localhost" ||
+  HOME_TARGET_HOST === "127.0.0.1" ||
+  HOME_TARGET_HOST === "::1"
+    ? "admin"
+    : "");
 /** Lab mode: mock-OIDC sign-in through the lab's form, not tsidp. */
 const LAB_MODE = HOME_LOGIN_SUBJECT !== "";
 /** The target's report title: the lab when opted in, the cluster by default. */
@@ -414,7 +425,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
   let context: BrowserContext;
   let page: Page;
   let displayName = "";
-  let projectPath = ""; // /projects/{id}
+  let projectPath = ""; // /p/{id} (canonical C1 route)
   let projectId = "";
   let planPipelinePath = ""; // /workflows/{pipelineId}
   let planRunId = "";
@@ -569,7 +580,9 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
     // still start from a clean record so only this step's writes are judged.
     refusedWrites.length = 0;
     await test.step("an earlier run's same-named project is reused, never duplicated", async () => {
-      await gotoApp(page, "/");
+      // The projects index (create form + cards) lives at /projects since the
+      // app-shell redesign; `/` is the Home briefing and carries neither.
+      await gotoApp(page, "/projects");
       // A fresh target (or account) has the empty message instead of the
       // list; wait for whichever the served state is.
       await expect(
@@ -580,7 +593,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
         .filter({ hasText: PROJECT_NAME });
       if ((await existing.count()) > 0) {
         await existing.first().locator('[data-testid^="project-link-"]').click();
-        await page.waitForURL(/\/projects\/[0-9a-f-]{36}\/?$/, { timeout: NAV_TIMEOUT_MS });
+        await page.waitForURL(/\/p\/[0-9a-f-]{36}\/?$/, { timeout: NAV_TIMEOUT_MS });
         console.log(`reusing existing project: ${PROJECT_NAME}`);
       } else {
         await test.step("New project through the form (§ 2 step 2)", async () => {
@@ -592,7 +605,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           }
           await nameField.fill(PROJECT_NAME);
           await page.getByTestId("create-project-submit").click();
-          await waitForNavAfterWrite(page, /\/projects\/[0-9a-f-]{36}\/?$/, "create the project");
+          await waitForNavAfterWrite(page, /\/p\/[0-9a-f-]{36}\/?$/, "create the project");
         });
       }
       projectPath = new URL(page.url()).pathname;
@@ -932,11 +945,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       // own list — not a URL a user has to remember.
       await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
       await page.getByTestId("new-run-submit").click();
-      await waitForNavAfterWrite(
-        page,
-        /\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/,
-        "start the plan run",
-      );
+      await waitForNavAfterWrite(page, /\/runs\/[0-9a-f-]{36}$/, "start the plan run");
       planRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
       expect(planRunId).toMatch(/^[0-9a-f-]{36}$/);
       console.log(`plan run started: ${planRunId}`);
@@ -1046,17 +1055,28 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
 
   test("step 5 — one agent.acp node on the claude launcher profile", async () => {
     refusedWrites.length = 0;
-    await test.step("the claude-launcher profile exists (created on /agents when absent)", async () => {
-      await gotoApp(page, "/agents");
+    await test.step("the claude-launcher profile exists (created through the dialog when absent)", async () => {
+      await gotoApp(page, "/profiles");
       await expect(page.getByTestId("agents-page")).toBeVisible();
       const rows = page
         .getByTestId("agent-list")
         .locator('[data-testid^="agent-item-"]')
         .filter({ hasText: PROFILE_NAME });
       if ((await rows.count()) === 0) {
+        // The redesigned /profiles creates through the New profile dialog with
+        // a LAUNCHER CARD (shell-p5's proven flow) — there is no longer a
+        // launcher `<select>` on the list page itself.
+        await page.getByTestId("agents-new-open").click();
+        const dialog = page.getByTestId("new-profile-dialog");
+        await expect(dialog).toBeVisible();
+        await page.getByTestId("new-profile-card-claude").click();
         await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-        await page.getByTestId("agents-new-launcher-select").selectOption("claude");
         await page.getByTestId("agents-new-submit").click();
+        // The dialog closes and the journey lands on the new profile's detail
+        // (the caller acts on onCreated — shell-p5's evidence); return to the
+        // list so the row read below is the API's own row.
+        await expect(dialog).toBeHidden({ timeout: 30_000 });
+        await gotoApp(page, "/profiles");
         await expect(rows.first()).toBeVisible({ timeout: 30_000 });
         console.log(`created agent profile ${PROFILE_NAME} (claude launcher)`);
       } else {
@@ -1065,15 +1085,20 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       const testid = (await rows.first().getAttribute("data-testid")) ?? "";
       profileId = testid.replace(/^agent-item-/, "");
       expect(profileId).toMatch(/^[0-9a-f-]{36}$/);
-      // A profile created through the product can only ever be `ask`
-      // (ADR-0030: permission_mode has no write field) — the § 3 caveat's
-      // precondition, recorded as evidence.
-      await expect(page.getByTestId(`agent-permission-${profileId}`)).toHaveText(
-        /^permission: ask$/,
-      );
       await expect(page.getByTestId(`agent-launcher-${profileId}`)).toHaveText(
         /^launcher: claude$/,
       );
+      // A profile created through the product can only ever be `ask`
+      // (ADR-0030: permission_mode has no write field) — the § 3 caveat's
+      // precondition, recorded as evidence. The permission chip renders on
+      // the profile DETAIL page, so open the row.
+      await page.getByTestId(`agent-row-${profileId}`).click();
+      await expect(page.getByTestId("profile-version")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId(`agent-permission-${profileId}`)).toHaveText(
+        /^permission: ask$/,
+      );
+      await gotoApp(page, "/profiles");
+      await expect(page.getByTestId(`agent-item-${profileId}`)).toBeVisible();
       evidence.push(`agent profile ${PROFILE_NAME}: launcher claude, permission ask`);
       await shot(page, "home-09-profile");
     });
@@ -1164,11 +1189,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       await selectByOptionText(page, "new-run-assignment", CLAUDE_SLUG);
       await selectByOptionText(page, "new-run-input-repository", REPO_BINDING);
       await page.getByTestId("new-run-submit").click();
-      await waitForNavAfterWrite(
-        page,
-        /\/projects\/[0-9a-f-]{36}\/runs\/[0-9a-f-]{36}$/,
-        "start the claude run",
-      );
+      await waitForNavAfterWrite(page, /\/runs\/[0-9a-f-]{36}$/, "start the claude run");
       claudeRunId = new URL(page.url()).pathname.split("/").pop() ?? "";
       expect(claudeRunId).toMatch(/^[0-9a-f-]{36}$/);
       console.log(`claude run started: ${claudeRunId}`);
@@ -1234,7 +1255,7 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
           // § 3's evidence lives in the run's own journal: the page's Timeline
           // renders it, and the unattended ask is journalled as decided with
           // decided_by `node_policy:ask_unattended`.
-          const runPath = `/projects/${projectId}/runs/${claudeRunId}`;
+          const runPath = `/runs/${claudeRunId}`;
           await gotoApp(page, runPath);
           await page.getByTestId("run-tab-timeline").click();
           const timelineText = await page

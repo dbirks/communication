@@ -200,40 +200,45 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
             This repository uses no workflow yet — use a library workflow to give it one.
           </p>
         ) : null}
-        {rows.map((row) => (
-          <RepoWorkflowRow
-            key={row.assignment.id}
-            projectId={projectId}
-            repository={repository}
-            repositoryNames={repositories.data}
-            data={row}
-            canManage={canManage}
-            triggerReadsReady={triggerReadsReady}
-            triggerReadsFailed={triggerReadsFailed}
-            open={expanded[row.assignment.id] ?? false}
-            onToggle={() =>
-              setExpanded((current) => ({
-                ...current,
-                [row.assignment.id]: !(current[row.assignment.id] ?? false),
-              }))
-            }
-            onAddTrigger={() =>
-              setDialog({
-                assignment: row.assignment,
-                workflowLabel: row.name ?? row.assignment.pipeline_id,
-                editing: null,
-              })
-            }
-            onEdit={(editing) =>
-              setDialog({
-                assignment: row.assignment,
-                workflowLabel: row.name ?? row.assignment.pipeline_id,
-                editing,
-              })
-            }
-            onRun={() => setRunOpen(true)}
-          />
-        ))}
+        {/* The workflow rows are <li>s — they must live in a list element (axe
+            listitem rule), so the mapped rows get their own <ul> while the
+            panel-level states (spinner, banner, empty note) stay siblings. */}
+        <ul className="space-y-[6px]" data-testid="repo-workflows-list">
+          {rows.map((row) => (
+            <RepoWorkflowRow
+              key={row.assignment.id}
+              projectId={projectId}
+              repository={repository}
+              repositoryNames={repositories.data}
+              data={row}
+              canManage={canManage}
+              triggerReadsReady={triggerReadsReady}
+              triggerReadsFailed={triggerReadsFailed}
+              open={expanded[row.assignment.id] ?? false}
+              onToggle={() =>
+                setExpanded((current) => ({
+                  ...current,
+                  [row.assignment.id]: !(current[row.assignment.id] ?? false),
+                }))
+              }
+              onAddTrigger={() =>
+                setDialog({
+                  assignment: row.assignment,
+                  workflowLabel: row.name ?? row.assignment.pipeline_id,
+                  editing: null,
+                })
+              }
+              onEdit={(editing) =>
+                setDialog({
+                  assignment: row.assignment,
+                  workflowLabel: row.name ?? row.assignment.pipeline_id,
+                  editing,
+                })
+              }
+              onRun={() => setRunOpen(true)}
+            />
+          ))}
+        </ul>
         {runOpen ? (
           <Panel title="START A RUN" headingId="repo-workflow-run-heading" headingLevel={3}>
             <div className="p-[10px]">
@@ -545,7 +550,7 @@ function TriggerSummary({
       {issueTriggers.map((trigger) => (
         <span key={trigger.id} className="flex items-center gap-[5px]">
           <GithubIcon size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-          <span className={trigger.enabled ? "" : "line-through opacity-70"}>
+          <span className={trigger.enabled ? "" : "line-through"}>
             {issueTriggerSentence(trigger)}
           </span>
         </span>
@@ -553,7 +558,7 @@ function TriggerSummary({
       {schedules.map((schedule) => (
         <span key={schedule.id} className="flex items-center gap-[5px]">
           <Clock size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-          <span className={schedule.enabled ? "" : "line-through opacity-70"}>
+          <span className={schedule.enabled ? "" : "line-through"}>
             {scheduleSentence(schedule)}
           </span>
         </span>

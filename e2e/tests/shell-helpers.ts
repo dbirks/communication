@@ -193,6 +193,19 @@ export interface ProjectRow {
 export const apiProjects = (request: APIRequestContext) =>
   apiAll<ProjectRow>(request, "/api/v1/projects");
 
+/**
+ * The project a scratch journey write should land in: the seeded `m4-exit`
+ * when the reader can see it. The lab's project list is alphabetical and
+ * grows scratch rows from every suite that ran before (m1's Customer
+ * Platform, the emulator's short-lived `Emu proj …` rows an emu run may
+ * delete while a journey reads), so a first-row pick is no longer a stable
+ * fact. Falls back to the first row when m4-exit is not visible.
+ */
+export async function apiScratchProject(request: APIRequestContext): Promise<ProjectRow> {
+  const projects = await apiProjects(request);
+  return projects.find((p) => p.slug === "m4-exit") ?? projects[0];
+}
+
 export interface ProfileRow {
   id: string;
   name: string;

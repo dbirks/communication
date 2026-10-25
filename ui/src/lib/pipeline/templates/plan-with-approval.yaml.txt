@@ -126,9 +126,9 @@ spec:
           - timeout
           - invalid_output
       config:
-        model: qwen3-8-27b
+        model: david-birks/qwen3-8-flash-next
         temperature: 0.2
-        maxTokens: 16000 # reasoning models (qwen3-8-27b) spend part of this budget thinking before they answer
+        maxTokens: 16000 # reasoning models (qwen3-8-flash-next) spend part of this budget thinking before they answer
         messages:
           - role: system
             content: >-

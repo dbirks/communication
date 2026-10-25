@@ -10,6 +10,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, conversationConflictOf, setCsrfToken } from "./client";
+import { agentProfileVersionsKey } from "./useProfileVersions";
 import type { components } from "./schema";
 import type {
   AgentProfile,
@@ -262,6 +263,10 @@ export function usePatchAgentProfile(profileId: string) {
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentProfiles });
+      // ADR-0058: a versioned save LANDS A NEW VERSION — the HISTORY panel
+      // reads `agent-profile-versions` (not a prefix of `agent-profiles`), so
+      // without this the panel would keep showing the pre-save history.
+      await queryClient.invalidateQueries({ queryKey: agentProfileVersionsKey(profileId) });
     },
   });
 }

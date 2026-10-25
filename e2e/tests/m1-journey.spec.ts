@@ -22,6 +22,17 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+/**
+ * Idempotent re-run stamp (the home-cluster suite's rule): a second journey
+ * run against a lab that already carries this suite's writes must not fail —
+ * an existing project is reused (its slug conflict names it), and the live-
+ * update repository gets a run-unique name so "added on B, seen on A" is
+ * always a fresh fact, never a leftover row.
+ */
+const RUN_STAMP = Date.now().toString(36);
+const MOBILE_REPO = `mobile-${RUN_STAMP}`;
+const MOBILE_URL = `https://example.invalid/${MOBILE_REPO}.git`;
+
 let context: BrowserContext;
 let page: Page;
 let projectPath = ""; // /projects/{uuid}, filled by the create step
@@ -55,6 +66,19 @@ test("create the Customer Platform project", async () => {
   if (!(await nameField.isVisible())) await toggle.click();
   await nameField.fill("Customer Platform");
   await page.getByTestId("create-project-submit").click();
+  // A journey run over an already-seen stack meets the slug conflict here.
+  // The refusal is the proof the project exists — open it and continue on it
+  // rather than failing the journey on a leftover row.
+  const conflict = page.getByRole("alert").filter({ hasText: /already exists/i });
+  if (
+    await conflict
+      .waitFor({ timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    await gotoApp(page, "/projects");
+    await page.getByTestId("project-link-customer-platform").click();
+  }
   await expect(page.getByTestId("project-name")).toHaveText("Customer Platform");
   projectPath = new URL(page.url()).pathname;
   expect(projectPath).toMatch(/^\/p\/[0-9a-f-]{36}$/);
@@ -62,8 +86,16 @@ test("create the Customer Platform project", async () => {
 
 test("add the frontend and backend repositories", async () => {
   const projectUrl = `${BASE_URL}${projectPath}`;
-  await addRepository(page, projectUrl, "frontend", "https://example.invalid/frontend.git");
-  await addRepository(page, projectUrl, "backend", "https://example.invalid/backend.git");
+  for (const [name, gitUrl] of [
+    ["frontend", "https://example.invalid/frontend.git"],
+    ["backend", "https://example.invalid/backend.git"],
+  ] as const) {
+    // A row an earlier run left behind is the same proof the add would give;
+    // re-adding it would only earn a slug conflict.
+    await page.goto(projectUrl);
+    if ((await page.getByTestId(`repo-row-${name}`).count()) > 0) continue;
+    await addRepository(page, projectUrl, name, gitUrl);
+  }
   await expect(page.getByTestId("repo-list")).toContainText("frontend");
   await expect(page.getByTestId("repo-list")).toContainText("backend");
 });
@@ -101,17 +133,12 @@ test("a repository added on replica B appears live on replica A's open page", as
     await pageA.goto(`${API_A_URL}/settings/layout`);
     await expect(pageA.getByTestId("replica-badge")).toHaveText("replica: api-a");
     await pageA.goto(`${API_A_URL}${projectPath}`);
-    await expect(rowFor(pageA, "mobile")).toHaveCount(0);
+    await expect(rowFor(pageA, MOBILE_REPO)).toHaveCount(0);
 
-    await addRepository(
-      pageB,
-      `${API_B_URL}${projectPath}`,
-      "mobile",
-      "https://example.invalid/mobile.git",
-    );
+    await addRepository(pageB, `${API_B_URL}${projectPath}`, MOBILE_REPO, MOBILE_URL);
     // No reload on A: the project SSE stream must invalidate the repos query.
-    await expect(rowFor(pageA, "mobile")).toBeVisible();
-    await expect(rowFor(pageA, "mobile")).toContainText("https://example.invalid/mobile.git");
+    await expect(rowFor(pageA, MOBILE_REPO)).toBeVisible();
+    await expect(rowFor(pageA, MOBILE_REPO)).toContainText(MOBILE_URL);
   } finally {
     await pageB.close();
     // pageA stays open: the restart step resumes on it.
@@ -141,7 +168,7 @@ test("restarting api-a keeps the session and the data", async ({ request }) => {
   await pageA!.reload();
   await expect(pageA!.getByTestId("user-badge")).toContainText(ADMIN_SUBJECT);
   await expect(pageA!.getByTestId("project-name")).toHaveText("Customer Platform");
-  for (const repo of ["frontend", "backend", "mobile"]) {
+  for (const repo of ["frontend", "backend", MOBILE_REPO]) {
     await expect(rowFor(pageA!, repo)).toBeVisible();
   }
 });

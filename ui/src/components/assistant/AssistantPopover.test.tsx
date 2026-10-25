@@ -419,3 +419,35 @@ describe("conversation continuity across turns (ui-convfix)", () => {
     expect(stub.posted[0].conversationId).toBe(NEW_CONV);
   });
 });
+
+describe("the ⌘K chord survives the studio footer hijack (p789-t5)", () => {
+  it("reopens after a close even when a bubble-phase listener stops the chord", async () => {
+    stubFetch(() => json({ messages: [], next_cursor: null }));
+    renderPopover();
+
+    // The Studio draft footer (AssistantProposalBox, design 1g) answers ⌘K
+    // with stopImmediatePropagation(). Once the popover's chord effect has
+    // cycled (open → close), its reopened listener is registered LAST, so a
+    // bubble-phase hijack would swallow every later ⌘K and the ask surface
+    // could never reopen on the draft page — observed live on the M4 lab.
+    const hijack = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener("keydown", hijack);
+    try {
+      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      await screen.findByTestId("assistant-popover");
+      // esc closes the panel — the chord effect re-runs and re-registers last.
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("assistant-popover")).toBeNull());
+      // ADR-0050: ⌘K always re-opens the ask surface, chord order be damned.
+      fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+      await screen.findByTestId("assistant-popover");
+    } finally {
+      window.removeEventListener("keydown", hijack);
+    }
+  });
+});

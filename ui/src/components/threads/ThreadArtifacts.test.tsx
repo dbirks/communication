@@ -52,6 +52,9 @@ describe("the thread rail's ARTIFACTS section", () => {
 
     const list = await screen.findByTestId("thread-artifacts");
     expect(list).toBeTruthy();
+    // The rail element itself is present in every state, rows included — the
+    // ARTIFACTS section never disappears just because it has content.
+    expect(screen.getByTestId("artifacts-rail")).toBeTruthy();
     const row = screen.getByTestId("thread-artifact-row");
     expect(row.textContent).toContain(artifactFixture.name);
     expect(row.textContent).toContain(artifactFixture.kind);

@@ -341,3 +341,62 @@ describe("ProfileDetail — version glyph and stale writes", () => {
     );
   }, 20000);
 });
+
+describe("the versioned save re-reads the HISTORY (ADR-0058)", () => {
+  it("after a successful PATCH the versions query is invalidated and the panel can land v2", async () => {
+    const stubs: RouteStub[] = [
+      { path: "/api/v1/me", body: admin },
+      { path: "/api/v1/projects", body: { items: [] } },
+      { path: "/api/v1/launchers", body: launcherFixture },
+      { path: "/api/v1/system/sandbox", body: sandboxFixture },
+      { path: LIST_PATH, method: "GET", body: { items: [unlockedProfile] } },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}/versions`,
+        method: "GET",
+        body: { items: [versionV1] },
+      },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}`,
+        method: "PATCH",
+        body: { ...unlockedProfile, version: 2 },
+      },
+      {
+        path: `/api/v1/agent-profiles/${unlockedProfile.id}/usage`,
+        method: "GET",
+        body: { workflow_count: 0, step_count: 0, uses: [], truncated: false },
+      },
+    ];
+    const { requests } = mockFetch(stubs);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ProfileDetail
+            profile={unlockedProfile}
+            canWrite
+            launchers={launcherFixture.launchers}
+            sandbox={sandboxFixture}
+            apmOpen
+            onApmToggle={() => {}}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const save = (await screen.findByTestId(
+      `agents-apm-save-${unlockedProfile.id}`,
+    )) as HTMLButtonElement;
+    // Let the first history read land (v1 only — the save has not happened yet).
+    await screen.findByTestId("profile-history-row-v1");
+    fireEvent.click(save);
+    // The PATCH lands: the save is a NEW version, so the history must be
+    // re-read, not left on the pre-save answer.
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/agent-profiles/${unlockedProfile.id}/versions`, "GET").length,
+      ).toBeGreaterThan(1),
+    );
+  }, 20000);
+});

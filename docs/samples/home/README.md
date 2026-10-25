@@ -2,8 +2,8 @@
 
 Three sample pipelines: two that run on the home-cluster worker **without ACP
 credentials** — no `agent.acp` node, the thinking step is `model.chat`, one
-OpenAI-compatible completion against the operator's endpoint (`qwen3-8-27b`, the
-only model in the worker's `COMMUNICATION_MODEL_CHAT_MODELS` allowlist) — and
+OpenAI-compatible completion against the operator's endpoint (`david-birks/qwen3-8-flash-next`,
+the model the lab deployment allowlists — the collective retired the former `qwen3-8-27b` id) — and
 one agent-driven sample, `issue-to-pr.yaml`, on pi agents (the `pi` launcher,
 ADR-0059) with the allowlisted GitHub push token (ADR-0045).
 

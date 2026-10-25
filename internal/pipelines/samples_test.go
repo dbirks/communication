@@ -32,9 +32,11 @@ import (
 	"github.com/dbirks/communication/internal/pipelines/schema"
 )
 
-// sampleModel is the only model the home-cluster worker's
-// COMMUNICATION_MODEL_CHAT_MODELS allowlist is documented to serve.
-const sampleModel = "qwen3-8-27b"
+// sampleModel is the model the deployment default (compose.real.yml's
+// COMMUNICATION_MODEL_CHAT_MODELS one-model allowlist) is documented to
+// serve; the gateway retired the former `qwen3-8-27b` id (2026-10-25 model
+// catalogue), and the worker's allowlist match is an exact string.
+const sampleModel = "david-birks/qwen3-8-flash-next"
 
 type sample struct {
 	path string

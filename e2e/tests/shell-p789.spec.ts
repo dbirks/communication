@@ -29,13 +29,13 @@ import {
   apiAgentProfiles,
   apiLaunchers,
   apiPendingApprovals,
-  apiProjects,
   apiRuns,
+  apiScratchProject,
   checkShellScreen,
   evidence,
-  watchPageErrors,
   type ApprovalRow,
   type ProjectRow,
+  watchPageErrors,
 } from "./shell-helpers.js";
 
 const RUNS_OR_APPROVALS = /\/api\/v1\/(runs|approvals)([/?]|$)/;
@@ -470,7 +470,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
       `timer polls fired while the page sat idle: ${idlePolls.map((s) => s.url).join(" | ")}`,
     ).toEqual([]);
     // Now a real event: a scratch gate run enters waiting_human at the API.
-    const project = (await apiProjects(request))[0];
+    const project = await apiScratchProject(request);
     expect(project, "the lab holds a project to run the scratch gate in").toBeTruthy();
     const csrf = await apiCsrf(request);
     const stamp = String(Date.now());
@@ -1307,7 +1307,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
       `p789-approval-${stamp}`,
       GATE_YAML(`p789-approval-${stamp}`),
     );
-    const project = (await apiProjects(request))[0];
+    const project = await apiScratchProject(request);
     expect(project, "the lab holds a project to run the scratch gate in").toBeTruthy();
     const runId = await startGatedRun(request, csrf, project, pipeline.revisionId);
     const approval = await pendingApprovalForRun(request, runId);
