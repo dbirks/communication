@@ -15,6 +15,9 @@
 
 export type ProjectTab = "runs" | "pipelines" | "artifacts" | "conversations" | "settings";
 
+/** The workflow page's header tabs (design 1e): routes, not fragments. */
+export type WorkflowTab = "overview" | "yaml" | "used-in" | "history";
+
 function encode(value: string): string {
   return encodeURIComponent(value);
 }
@@ -46,6 +49,10 @@ export const routes = {
     `/p/${encode(projectId)}/${encode(repo)}`,
   workflows: (): string => "/workflows",
   workflow: (id: string): string => `/workflows/${encode(id)}`,
+  /** A workflow-page tab: `overview` is the page itself (`/workflows/:id`),
+   * the rest are their own routes (`/workflows/:id/yaml` …). */
+  workflowTab: (id: string, tab: WorkflowTab): string =>
+    tab === "overview" ? `/workflows/${encode(id)}` : `/workflows/${encode(id)}/${tab}`,
   draft: (pipelineId: string, draftId: string): string =>
     `/workflows/${encode(pipelineId)}/drafts/${encode(draftId)}`,
   steps: (): string => "/steps",

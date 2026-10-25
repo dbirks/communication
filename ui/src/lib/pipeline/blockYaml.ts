@@ -16,9 +16,10 @@
  */
 import { parseDocument, YAMLMap, YAMLSeq, type Document, type ToStringOptions } from "yaml";
 
-/** Block-style emission: no line folding (the `yaml` package default line width
- * re-wraps long scalars) and no flow collections. */
-export const BLOCK_OPTIONS: ToStringOptions = { lineWidth: 0 };
+/** Block-style emission at the design's measure: no flow collections, and
+ * long scalars (`>-` descriptions) fold around 100 columns instead of
+ * unfolding into one very long line (`lineWidth: 0` did). */
+export const BLOCK_OPTIONS: ToStringOptions = { lineWidth: 100 };
 
 function clearFlow(node: unknown): void {
   if (node instanceof YAMLMap) {

@@ -105,7 +105,10 @@ export default function App() {
     /^\/(workflows|library)\/[^/]+\/drafts\/[^/]+$/.test(pathname) ||
     // The Workflows index (design 1b) uses the full content column, not the
     // capped page column the other library screens keep.
-    /^\/(workflows|library)$/.test(pathname);
+    /^\/(workflows|library)$/.test(pathname) ||
+    // The workflow page and its tabs own the viewport too (design 1e): the
+    // shell's `py-6` would band the header with 24px of empty paper.
+    /^\/(workflows|library)\/[^/]+(\/(yaml|used-in|history))?$/.test(pathname);
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not
@@ -277,6 +280,32 @@ export default function App() {
         />
         <Route
           path="/workflows/:pipelineId"
+          element={
+            <RequireAuth>
+              <PipelinePage />
+            </RequireAuth>
+          }
+        />
+        {/* The workflow page's tabs are routes (design 1e): Overview is the
+            page itself; YAML, Used in and History are these. */}
+        <Route
+          path="/workflows/:pipelineId/yaml"
+          element={
+            <RequireAuth>
+              <PipelinePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/workflows/:pipelineId/used-in"
+          element={
+            <RequireAuth>
+              <PipelinePage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/workflows/:pipelineId/history"
           element={
             <RequireAuth>
               <PipelinePage />
