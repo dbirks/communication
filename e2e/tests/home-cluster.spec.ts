@@ -798,10 +798,12 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
    * Take the one-node claude document through the Workflow Studio's YAML
    * view: fill → save → validate → publish r1. The caller is either already
    * on the Studio route `/workflows/:pipelineId/drafts/:draftId` (the Blank
-   * create navigates straight there) or on the pipeline page, where the
-   * draft is the page's own state: an existing `draft-row-*` is selected
-   * when the page lists one (the resume of an interrupted run), otherwise
-   * the page's "New draft" control (`pipeline-new-draft`) is the click —
+   * create navigates straight there) or on the pipeline page's Overview, in
+   * which case the History tab (design 1e — commit a5b3f64 moved the drafts
+   * and the clone control there) is opened first: an existing `draft-row-*`
+   * is selected when the tab lists one (the resume of an interrupted run),
+   * otherwise the tab's "New draft" control (`pipeline-new-draft`) is the
+   * click —
    * with zero published revisions it posts the blank skeleton named for
    * the slug, so the control is enabled by construction. Every wait is
    * bounded; the only failure left is the page's own query settling on
@@ -809,6 +811,11 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
    */
   async function authorFirstRevision(slug: string): Promise<void> {
     if (!/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/.test(page.url())) {
+      // Drafts and the clone control are the History tab's surface now; the
+      // page opens on the read-only Overview graph.
+      const historyTab = page.getByTestId("workflow-tab-history");
+      await expect(historyTab).toBeVisible({ timeout: 30_000 });
+      await historyTab.click({ timeout: 30_000 });
       const draftRow = page.getByTestId(/^draft-row-.+$/).first();
       // Settle the drafts list first: it shows either a row or its own
       // `drafts-empty` line, and the decision below must not race the query.
@@ -818,13 +825,13 @@ test.describe(`${TARGET_TITLE} proof — § 2 click path, § 5 read-only verify`
       if (await draftRow.isVisible()) {
         // An interrupted run left the draft: select it and finish the
         // publish from wherever it stopped.
-        await draftRow.click();
+        await draftRow.click({ timeout: 30_000 });
       } else {
         // No row: "New draft" posts the skeleton (nothing to clone at zero
         // revisions) and the Studio route opens.
         const newDraft = page.getByTestId("pipeline-new-draft");
         await expect(newDraft).toBeEnabled({ timeout: 30_000 });
-        await newDraft.click();
+        await newDraft.click({ timeout: 30_000 });
       }
       await page.waitForURL(/\/workflows\/[0-9a-f-]{36}\/drafts\/[0-9a-f-]{36}$/, {
         timeout: 30_000,

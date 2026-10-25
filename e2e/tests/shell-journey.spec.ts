@@ -279,6 +279,46 @@ async function revisionDocument(page: Page, digestOrId: string): Promise<string>
   return res.text();
 }
 
+/**
+ * Take a FRESH draft of `pipelineId` through the workflow page's History tab
+ * and land on the Studio route, returning the draft id.
+ *
+ * Design 1e (commit a5b3f64) moved the clone control off the Overview: the
+ * header now has ONE primary verb, `Edit workflow` (`pipeline-customize`),
+ * and that button reopens the newest OPEN draft when one exists (it only
+ * creates when none does). This journey must edit a draft cloned from the
+ * newest PUBLISHED revision — a previous run's abandoned draft would carry
+ * the journey's own node and poison steps b/c — so it takes the History
+ * tab's `pipeline-new-draft`, which still always clones the newest revision
+ * (house style: issue2-studio.spec.ts `openNewDraft`, shell-p4-library.spec.ts,
+ * home-cluster.spec.ts). Called with the page on the workflow page.
+ *
+ * Every wait is explicit: a control that moved or never renders must fail in
+ * seconds, not at this file's 30-minute test timeout.
+ */
+async function openFreshDraft(page: Page, pipelineId: string): Promise<string> {
+  const historyTab = page.getByTestId("workflow-tab-history");
+  await expect(historyTab, "the workflow page has a History tab route").toBeVisible({
+    timeout: 30_000,
+  });
+  await historyTab.click({ timeout: 30_000 });
+  await expect(page.getByTestId("workflow-history")).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(new RegExp(`/workflows/${pipelineId}/history`), {
+    timeout: 30_000,
+  });
+  const newDraft = page.getByTestId("pipeline-new-draft");
+  await expect(
+    newDraft,
+    "the History tab's New draft clones the newest published revision",
+  ).toBeVisible({ timeout: 30_000 });
+  await newDraft.click({ timeout: 30_000 });
+  await expect(page).toHaveURL(new RegExp(`/workflows/${pipelineId}/drafts/`), {
+    timeout: 30_000,
+  });
+  await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
+  return new URL(page.url()).pathname.split("/").pop() as string;
+}
+
 interface NodeRow {
   id: string;
   node_id: string;
@@ -519,20 +559,21 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         (line) => `${line} (re-stored ${STAMP})`,
       );
       expect(restored, "the stamp must land on the description line").not.toBe(seedDoc);
-      await page.goto(BASE_URL + `/workflows/${state.pipeline.id}`);
-      await expect(page.getByTestId("pipeline-page")).toBeVisible();
-      await page.getByTestId("pipeline-new-draft").click();
-      await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipeline.id}/drafts/`));
-      await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
-      await page.getByTestId("studio-view-yaml").click();
-      await page.getByTestId("studio-yaml").fill(restored);
-      await page.getByTestId("studio-save").click();
+      await page.goto(BASE_URL + `/workflows/${state.pipeline.id}`, { timeout: 30_000 });
+      await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
+      // Design 1e: the clone control is on the History tab (see openFreshDraft)
+      // — and it must be that one: a fresh clone of the newest revision, not
+      // the header's Edit workflow, which would reopen a stale open draft.
+      await openFreshDraft(page, state.pipeline.id);
+      await page.getByTestId("studio-view-yaml").click({ timeout: 30_000 });
+      await page.getByTestId("studio-yaml").fill(restored, { timeout: 30_000 });
+      await page.getByTestId("studio-save").click({ timeout: 30_000 });
       await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
-      await page.getByTestId("studio-validate").click();
+      await page.getByTestId("studio-validate").click({ timeout: 30_000 });
       const verdict = page.getByTestId("studio-validate-verdict");
       await expect(verdict).toBeVisible({ timeout: 60_000 });
       expect((await verdict.textContent()) ?? "").toMatch(/^valid/i);
-      await page.getByTestId("studio-publish").click();
+      await page.getByTestId("studio-publish").click({ timeout: 30_000 });
       await expect(page.getByTestId("studio-published")).toBeVisible({ timeout: 60_000 });
       await evidence(
         page,
@@ -548,27 +589,26 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     await expect(page.getByTestId("workflows-list")).toBeVisible({ timeout: 30_000 });
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
     console.log("journey a: pipeline page answered");
-    await expect(page.getByTestId("pipeline-page")).toBeVisible();
-    await expect(page.getByTestId("pipeline-header-meta")).toContainText(PIPELINE_SLUG);
+    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("pipeline-header-meta")).toContainText(PIPELINE_SLUG, {
+      timeout: 30_000,
+    });
 
-    // New draft: the pipeline page's clone control (built from the newest revision).
-    await page.getByTestId("pipeline-new-draft").click();
-    await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipeline.id}/drafts/`));
-    state.draftId = new URL(page.url()).pathname.split("/").pop() as string;
+    // New draft: the History tab's clone control (built from the newest revision).
+    state.draftId = await openFreshDraft(page, state.pipeline.id);
     state.draftUrl = page.url();
     console.log(`journey a: new draft ${state.draftId}`);
-    await expect(page.getByTestId("studio-canvas")).toBeVisible({ timeout: 30_000 });
-    console.log("journey a: studio canvas shown — a11y pass");
     await checkShellScreen(page, "studio", stopWatching ?? undefined);
     console.log("journey a: studio a11y pass done");
 
     // The `+` on the plan → approve edge (revealed on hover) starts a new step.
     const edgeAdd = page.getByTestId("edge-add-plan-approve");
-    await edgeAdd.hover();
-    await edgeAdd.click();
+    await expect(edgeAdd).toBeVisible({ timeout: 30_000 });
+    await edgeAdd.hover({ timeout: 30_000 });
+    await edgeAdd.click({ timeout: 30_000 });
     console.log("journey a: edge + clicked");
-    await expect(page.getByTestId("step-picker")).toBeVisible();
-    await page.getByTestId("step-picker-item-agent.acp").click();
+    await expect(page.getByTestId("step-picker")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("step-picker-item-agent.acp").click({ timeout: 30_000 });
 
     // §4 ambiguity rule (issue #2 A3): the approve step is guarded (it reads
     // nodes.plan.*), so the insert op refuses to rewire silently — the dialog
@@ -580,6 +620,7 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
     if (await ambiguity.isVisible()) {
       await expect(page.getByTestId("studio-ambiguity-title")).toHaveText(
         /insert a step between plan and approve/i,
+        { timeout: 30_000 },
       );
       const reasons = page.locator('[data-testid^="studio-ambiguity-reason-"]');
       const reasonCount = await reasons.count();
@@ -595,48 +636,55 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
         `journey-a-ambiguity-${STAMP}`,
         `guarded-edge dialog before the insert: “${reasonText}” — the insert is accepted with the target's guard kept (issue #2 A3)`,
       );
-      await page.getByTestId("studio-ambiguity-insert").click();
-      await expect(ambiguity).toBeHidden();
+      await page.getByTestId("studio-ambiguity-insert").click({ timeout: 30_000 });
+      await expect(ambiguity).toBeHidden({ timeout: 30_000 });
     }
 
     // The new node is selected: the inspector names it — the id field lives
     // inside the design's collapsed "Retries, timeout and outputs"
     // disclosure (1g pass 2 #2), so open it first.
-    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
-    await expect(page.getByTestId("insp-node-id")).toBeVisible();
+    await page
+      .getByTestId("insp-advanced-disclosure")
+      .locator("summary")
+      .click({ timeout: 30_000 });
+    await expect(page.getByTestId("insp-node-id")).toBeVisible({ timeout: 30_000 });
     console.log("journey a: agent step inserted, inspector open");
 
     // Profile select → “+ New profile…”: the New-profile dialog (contract C6).
-    await page.getByTestId("insp-profile").selectOption({ label: "+ New profile…" });
+    await page
+      .getByTestId("insp-profile")
+      .selectOption({ label: "+ New profile…" }, { timeout: 30_000 });
     const dialog = page.getByTestId("new-profile-dialog");
-    await expect(dialog).toBeVisible();
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
     console.log("journey a: new-profile dialog open — a11y pass");
     await checkShellScreen(page, "new-profile-dialog", stopWatching ?? undefined);
     console.log("journey a: dialog a11y pass done");
-    await page.getByTestId("new-profile-card-claude").click();
-    await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME);
-    await expect(page.getByTestId("agents-new-submit")).toContainText("Create and use in");
+    await page.getByTestId("new-profile-card-claude").click({ timeout: 30_000 });
+    await page.getByTestId("agents-new-name-input").fill(PROFILE_NAME, { timeout: 30_000 });
+    await expect(page.getByTestId("agents-new-submit")).toContainText("Create and use in", {
+      timeout: 30_000,
+    });
     await evidence(
       page,
       `journey-a-dialog-${STAMP}`,
       `New-profile dialog open: the Claude Code card, name ${PROFILE_NAME}, and the footer reads “Create and use in <step>” (contract C6)`,
     );
-    await page.getByTestId("agents-new-submit").click();
-    await expect(dialog).toBeHidden();
-    await expect(page.getByTestId("insp-profile")).toHaveValue(PROFILE_NAME);
+    await page.getByTestId("agents-new-submit").click({ timeout: 30_000 });
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+    await expect(page.getByTestId("insp-profile")).toHaveValue(PROFILE_NAME, { timeout: 30_000 });
     console.log(`journey a: profile ${PROFILE_NAME} created and selected`);
 
     // “What should it do?” — a short, harmless instruction.
-    await page.getByTestId("insp-config-prompt").fill(STEP_INSTRUCTION);
+    await page.getByTestId("insp-config-prompt").fill(STEP_INSTRUCTION, { timeout: 30_000 });
     await page.getByTestId("insp-config-prompt").blur();
 
     // The id rename LAST: the rename commit drops the node selection.
     const nodeIdField = page.getByTestId("insp-node-id");
-    await nodeIdField.fill(NEW_NODE_ID);
-    await nodeIdField.press("Enter");
+    await nodeIdField.fill(NEW_NODE_ID, { timeout: 30_000 });
+    await nodeIdField.press("Enter", { timeout: 30_000 });
 
     // Save so the insertion persists (the Studio keeps edits in memory until saved).
-    await page.getByTestId("studio-save").click();
+    await page.getByTestId("studio-save").click({ timeout: 30_000 });
     await expect(page.getByTestId("studio-dirty")).toHaveCount(0, { timeout: 30_000 });
     await evidence(
       page,
@@ -943,7 +991,22 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
   test("f — assistant via ⌘K: add a step to the draft, then undo all", async ({ page }) => {
     await signIn(page, "admin"); // fresh context: re-establish the session (same subject)
     await gotoApp(page, `/workflows/${state.pipeline.id}`);
-    await expect(page.getByTestId("pipeline-page")).toBeVisible();
+    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
+
+    // The assistant edits the pipeline's NEWEST open draft (the
+    // workflow.draft lookup takes the newest non-published draft), and the
+    // lab is shared: a previous run's abandoned draft (cloned from an older
+    // revision, with no journey_step in it) shadows the ask — the assistant
+    // honestly asks where the step should go instead of editing, and the
+    // marker never lands. Open THIS run's own fresh draft from the newest
+    // published revision (the History tab's clone control — step b made
+    // step a's draft a revision, so it is no longer open), so the anchor
+    // node computed below exists in the draft the assistant finds, then go
+    // back to the workflow page for the ⌘K popover.
+    await openFreshDraft(page, state.pipeline.id);
+    console.log(`journey f: this run's fresh draft of r${state.revisionBefore + 1} is open`);
+    await gotoApp(page, `/workflows/${state.pipeline.id}`);
+    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
 
     // ⌘K opens the assistant popover (the app's own shortcut; Ctrl-K on a
     // headless browser where Meta is not delivered).
