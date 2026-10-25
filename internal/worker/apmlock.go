@@ -95,8 +95,10 @@ type APMLockResolver interface {
 	// Resolve runs one resolve and reports its result.
 	Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.ResolveResult, error)
 	// Wrap answers one resolve's launcher-wrapper request; nil when the resolve
-	// may run plain.
-	Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, error)
+	// may run plain. The second answer releases the resolve's private sandbox
+	// profile dir and must be called once the resolve is over, whatever its
+	// outcome (it is a no-op when no policy was materialized).
+	Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, func(), error)
 }
 
 // APMLockLoop claims queued APM lock requests and drives the resolve. It is
@@ -342,7 +344,11 @@ func (l *APMLockLoop) apmResolve(ctx context.Context, c APMLockClaim, workdir, h
 		Timeout:    DefaultAPMLockResolveTimeout,
 	}
 	if l.sandbox != nil {
-		wrap, err := l.sandbox.Wrap(ctx, req)
+		wrap, closePolicy, err := l.sandbox.Wrap(ctx, req)
+		// The resolve owns the private profile dir its launch names, and the
+		// scratch dirs above are removed the same way: nothing about one claimed
+		// lock outlives the lock.
+		defer closePolicy()
 		if err != nil {
 			return nil, err
 		}

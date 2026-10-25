@@ -205,6 +205,22 @@ live as the negative control of `TestShellStartupFilesAreReadableInsideTheSandbo
   `linux.af_unix_mediation = "pathname"` (C7), keep `process_info_mode: isolated`,
   and pass `-p <path>` so the policy is auditable and reproducible; the built-in
   `default` profile would otherwise be layered in silently.
+* **The `-p <path>` is per execution unit, not per worker.** nono takes the
+  profile by path and identifies it by `meta.name` inside the file, so nothing
+  requires a fixed location — and a fixed location was a bug. Every unit of a
+  kind used to share `<policy dir>/<kind>.json`, so two turns at once on one
+  worker wrote the same file, and the second write landed between the first
+  unit's write and its `AssertOwnBytes`: `profile … changed after it was
+  written`, and the attempt closed `sandbox_enforcement_failed`
+  (lab: issue2-workbench A6, concurrent `code_review` attempts). The assertion
+  is the only thing that can prove the shape (C-FC2b: no nono surface reveals
+  `external`), so the file it runs against is now private: a fresh 0700
+  directory under the worker's policy root, named for the attempt, holding the
+  unchanged per-kind file name, created exclusively and removed when the unit's
+  child is gone. The file is `0444` in a `0700` directory the worker owns, and
+  the slot is never a launch grant, so no sandboxed child has a rule naming it —
+  it can neither read nor replace the policy it is launched under. A writer that
+  finds a *different* policy already at a path never overwrites it: it fails.
 * Never accept `--sandbox-policy external` (or any delegation) in `required`
   mode unless the worker itself proved the outer boundary (cgroup/namespace/OCI)
   in the same run, and record which layer denied what in the run's

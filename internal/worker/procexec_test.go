@@ -86,12 +86,22 @@ type recordingSandbox struct {
 	specs  []nono.LaunchSpec
 	result *nono.VerificationResult
 	err    error
+	// argvs records the launch argv as it was BUILT, at the verify call. A
+	// spec's profile file belongs to the attempt that made it and is removed
+	// when the attempt ends (profile_slot.go), so an argv built afterwards
+	// would be measuring a policy file that no longer exists — and the real
+	// launcher builds it during the launch, never after it.
+	argvs    [][]string
+	argvErrs []error
 }
 
 func (s *recordingSandbox) Verify(_ context.Context, spec nono.LaunchSpec) (*nono.VerificationResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.specs = append(s.specs, spec)
+	argv, argvErr := spec.BuildLaunchArgv()
+	s.argvs = append(s.argvs, argv)
+	s.argvErrs = append(s.argvErrs, argvErr)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -113,6 +123,19 @@ func (s *recordingSandbox) calls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.specs)
+}
+
+// errNoLaunch keeps this fake's helpers from needing a *testing.T.
+var errNoLaunch = errors.New("recordingSandbox: no launch was verified")
+
+// lastArgv is the argv the launch carried, captured when the launch existed.
+func (s *recordingSandbox) lastArgv() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.argvs) == 0 {
+		return nil, errNoLaunch
+	}
+	return s.argvs[len(s.argvs)-1], s.argvErrs[len(s.argvErrs)-1]
 }
 
 func (s *recordingSandbox) lastSpec() nono.LaunchSpec {
@@ -864,11 +887,11 @@ func toolReadsLacks(t *testing.T, spec nono.LaunchSpec, unwanted string) {
 // broadening § Decision 3 forbids — Option A's writable copied tool — and N-d
 // would refuse it as grant_mismatch. It also pins that no tool path collides
 // with a plan grant, which is the two-levels-on-one-path refusal.
-func toolReadsAreReadOnly(t *testing.T, spec nono.LaunchSpec) {
+func toolReadsAreReadOnly(t *testing.T, fake *recordingSandbox, spec nono.LaunchSpec) {
 	t.Helper()
-	argv, err := spec.BuildLaunchArgv()
+	argv, err := fake.lastArgv()
 	if err != nil {
-		t.Fatalf("BuildLaunchArgv: %v", err)
+		t.Fatalf("BuildLaunchArgv at the launch: %v", err)
 	}
 	for i := 0; i+1 < len(argv); i++ {
 		if argv[i] == "--" {
@@ -923,7 +946,7 @@ func TestProcExecToolReads(t *testing.T) {
 					g.Role, g.Path, want)
 			}
 		}
-		toolReadsAreReadOnly(t, spec)
+		toolReadsAreReadOnly(t, fake, spec)
 	})
 
 	t.Run("#!/usr/bin/env sh contributes the PATH-resolved interpreter's directory", func(t *testing.T) {
@@ -947,7 +970,7 @@ func TestProcExecToolReads(t *testing.T) {
 		// granted, which is why a host where `env` and `sh` share /usr/bin
 		// dedupes to one interpreter grant rather than two.
 		toolReadsAreDirs(t, spec)
-		toolReadsAreReadOnly(t, spec)
+		toolReadsAreReadOnly(t, fake, spec)
 	})
 
 	t.Run("#!/bin/sh contributes that interpreter's directory", func(t *testing.T) {
@@ -960,7 +983,7 @@ func TestProcExecToolReads(t *testing.T) {
 		spec := fake.lastSpec()
 		toolReadsHas(t, spec, toolReadsWant(t, tool))
 		toolReadsHas(t, spec, toolReadsWant(t, "/bin/sh"))
-		toolReadsAreReadOnly(t, spec)
+		toolReadsAreReadOnly(t, fake, spec)
 	})
 
 	t.Run("a program already inside a workspace grant is not re-granted", func(t *testing.T) {
@@ -990,7 +1013,7 @@ func TestProcExecToolReads(t *testing.T) {
 		toolReadsLacks(t, spec, toolReadsWant(t, tool))
 		// The interpreter arm still arrives: it sits outside the workspace.
 		toolReadsHas(t, spec, toolReadsWant(t, "/bin/sh"))
-		toolReadsAreReadOnly(t, spec)
+		toolReadsAreReadOnly(t, fake, spec)
 	})
 
 	t.Run("a program the PATH does not resolve contributes no grant", func(t *testing.T) {

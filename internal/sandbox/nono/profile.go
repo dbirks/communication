@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // PinnedVersion is the nono release every capability claim in
@@ -429,6 +431,13 @@ func DigestProfile(data []byte) string {
 // purpose: the file is 0444 under a 0700 directory owned by the worker, and a
 // partially written profile makes `nono run` fail closed (C-MISSING/N6), which
 // is the right direction for a failure.
+//
+// dir must be PRIVATE to one execution unit — a temp dir, or an
+// OpenProfileSlot. The file name is one per kind, so a shared dir is one file
+// for every unit that uses it, and a second unit's write used to land on top of
+// the first unit's asserted bytes (see ProfileSlot for what that broke on the
+// lab). It cannot any more: publishing refuses to replace a foreign policy
+// rather than overwriting it, so a shared dir now fails closed.
 func WriteProfile(dir, kind string) (*Profile, error) {
 	return WriteProfileNetwork(dir, kind, "", nil)
 }
@@ -441,8 +450,17 @@ func WriteProfile(dir, kind string) (*Profile, error) {
 // because an agent must not choose which hosts it may talk to.
 //
 // The file name is still one per kind: the digest, not the path, is what
-// identifies the policy a unit ran under.
+// identifies the policy a unit ran under — which is precisely why the
+// DIRECTORY must be per-unit (OpenProfileSlot) and not a shared policy dir.
 func WriteProfileNetwork(dir, kind string, net NetworkEnforcement, allow []string) (*Profile, error) {
+	return writeProfileNetwork(dir, kind, net, allow)
+}
+
+// writeProfileNetwork is the one materializer: the shared-name path and a unit's
+// private slot produce the same bytes, the same publish rule and the same
+// Profile, so a digest recorded for a slot launch identifies exactly the policy
+// a shared-dir launch of the same kind and axis would have produced.
+func writeProfileNetwork(dir, kind string, net NetworkEnforcement, allow []string) (*Profile, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("sandbox: no directory to write profile %s into", kind)
 	}
@@ -457,20 +475,9 @@ func WriteProfileNetwork(dir, kind string, net NetworkEnforcement, allow []strin
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("sandbox: create profile dir %s: %w", dir, err)
 	}
-	path := filepath.Join(dir, kind+".json")
-	tmp := path + ".tmp"
-	// 0600 for the temp file: an agent must never get a window on a policy
-	// file mid-write, and the final file is world-readable only because it
-	// contains nothing secret.
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return nil, fmt.Errorf("sandbox: write profile %s: %w", path, err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("sandbox: publish profile %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o444); err != nil {
-		return nil, fmt.Errorf("sandbox: seal profile %s: %w", path, err)
+	path, err := publishProfileBytes(dir, kind, data)
+	if err != nil {
+		return nil, err
 	}
 	// The bytes on disk are re-read and re-digested, because the assertion
 	// chain below runs against this digest and a torn write would otherwise be
@@ -487,6 +494,279 @@ func WriteProfileNetwork(dir, kind string, net NetworkEnforcement, allow []strin
 		NetworkEnforced: net, EgressHosts: hosts,
 		ProfileVersion: profileVersion,
 	}, nil
+}
+
+// profileSlotPrefix names the private directory OpenProfileSlot creates. It is
+// a prefix and not the whole name because a unit id alone is not proof of
+// uniqueness (two workers may share a policy root, and a crashed attempt leaves
+// its id behind); the random suffix MkdirTemp appends is what makes the path
+// unpredictable, and openedSlots is what makes it provably ours.
+const profileSlotPrefix = "unit-"
+
+// openedSlots records the slot directories THIS process created. Close consults
+// it, so cleanup can never remove a directory it did not open — the pattern check
+// alone would be satisfied by a stray `unit-whatever` the worker or an operator
+// made in the same root, and "cleanup removed the wrong tree" is not a failure
+// mode worth having in the code that owns sandbox policy files.
+var (
+	slotsMu     sync.Mutex
+	openedSlots = map[string]struct{}{}
+)
+
+func recordSlot(dir string) {
+	slotsMu.Lock()
+	defer slotsMu.Unlock()
+	openedSlots[dir] = struct{}{}
+}
+
+func forgetSlot(dir string) bool {
+	slotsMu.Lock()
+	defer slotsMu.Unlock()
+	if _, ok := openedSlots[dir]; !ok {
+		return false
+	}
+	delete(openedSlots, dir)
+	return true
+}
+
+// ProfileSlot is ONE execution unit's private policy directory: a fresh 0700
+// directory under the worker's policy root, named for the unit that owns it,
+// holding the fixed per-kind file name `nono run -p` is handed.
+//
+// Why this type exists. The adapter used to materialize each kind once per
+// worker process at `<policy dir>/<kind>.json` and memoize it, which assumed one
+// unit per path per process. Concurrent turns broke that: two attempts on one
+// worker resolved the same file, and the second write replaced the bytes the
+// first had already handed to AssertOwnBytes, so the first launch died with
+//
+//	sandbox: profile …/communication-agent.json changed after it was written
+//
+// (lab: issue2-workbench A6, two agent turns at once, code_review attempts
+// closing sandbox_enforcement_failed). The assertion is the only thing that
+// proves the policy shape (C-FC2b: no nono surface reveals `external`), so the
+// file it runs against must be unshareable rather than the check being relaxed.
+//
+// Protection: the directory is created by MkdirTemp (exclusive: O_EXCL on the
+// directory, and a name nobody can predict), is 0700 and owned by the worker,
+// and never enters a launch grant set — the agent's sandbox has no rule naming
+// it, so no sandboxed child can read, replace or unlink a policy file. The file
+// inside is created without clobbering (publishProfileBytes). Close removes the
+// slot at the unit boundary; a slot left by a crashed worker holds nothing but
+// public policy bytes in a directory only the worker can enter.
+//
+// nono does not require a fixed profile name or location — the path is an
+// argument (`-p <path>`, ADR-0009 D4) and `meta.name` inside the file is what
+// identifies the kind — so the per-attempt directory keeps both the shipped
+// file name and the digest identity unchanged.
+type ProfileSlot struct {
+	root string
+	dir  string
+
+	// mu guards closed so a second Close (an attempt loop that retries its
+	// cleanup, or a deferred Close plus an explicit one) is a no-op rather than
+	// a refusal built from its own success.
+	mu     sync.Mutex
+	closed bool
+}
+
+// OpenProfileSlot creates a private policy directory for one execution unit
+// (attempt id, turn id, resolve id) under root. The id is sanitized and bounded
+// so it can name a directory and nothing else; uniqueness comes from the random
+// suffix, so two units never resolve the same path even with the same id.
+func OpenProfileSlot(root, unitID string) (*ProfileSlot, error) {
+	if root == "" {
+		return nil, fmt.Errorf("sandbox: no policy root to open a private profile directory in (ADR-0009 D4 requires -p <path>)")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("sandbox: create profile root %s: %w", root, err)
+	}
+	dir, err := os.MkdirTemp(root, profileSlotPrefix+sanitizeSlotID(unitID)+"-")
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: open private profile dir under %s: %w", root, err)
+	}
+	// MkdirTemp creates 0700; the chmod makes that an asserted fact of this
+	// package rather than an assumption about the standard library, and a dir
+	// that cannot be sealed is removed rather than used.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("sandbox: seal private profile dir %s: %w", dir, err)
+	}
+	recordSlot(dir)
+	return &ProfileSlot{root: root, dir: dir}, nil
+}
+
+// Dir is the slot's directory: the only place this unit's policy files live.
+func (s *ProfileSlot) Dir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dir
+}
+
+// Write materializes kind inside the slot.
+func (s *ProfileSlot) Write(kind string) (*Profile, error) {
+	return s.WriteNetwork(kind, "", nil)
+}
+
+// WriteNetwork materializes kind inside the slot with an explicit network axis
+// (the same resolution WriteProfileNetwork performs, so a slot profile and a
+// shared one of the same kind digest identically).
+func (s *ProfileSlot) WriteNetwork(kind string, net NetworkEnforcement, allow []string) (*Profile, error) {
+	if s == nil || s.dir == "" {
+		return nil, fmt.Errorf("sandbox: no profile slot to write %s into", kind)
+	}
+	return writeProfileNetwork(s.dir, kind, net, allow)
+}
+
+// Close removes the slot and everything in it. It removes only a directory this
+// process opened as a slot (openedSlots) and that still sits where and how such
+// a directory sits — the guard is what makes a deferred Close safe to call on
+// every exit path, and it is why a mistake cannot turn cleanup into an rm of
+// somebody else's tree. A slot already gone is not an error (Close is
+// idempotent).
+func (s *ProfileSlot) Close() error {
+	if s == nil || s.dir == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	base := filepath.Base(s.dir)
+	if s.dir == s.root || filepath.Dir(s.dir) != s.root || !strings.HasPrefix(base, profileSlotPrefix) || !forgetSlot(s.dir) {
+		return fmt.Errorf("sandbox: refusing to remove %s: not a profile slot this adapter opened under %s", s.dir, s.root)
+	}
+	if err := os.RemoveAll(s.dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Put the record back: the dir may still be there, and a later Close (the
+		// attempt loop retries its cleanup) must be able to finish the job.
+		recordSlot(s.dir)
+		return fmt.Errorf("sandbox: remove profile slot %s: %w", s.dir, err)
+	}
+	s.closed = true
+	return nil
+}
+
+// sanitizeSlotID keeps a unit id inside the character set a directory name may
+// carry: separators, traversal, dots and control characters all become dashes,
+// so an id that arrived from a claim can name a slot and nothing else. A dot is
+// replaced rather than allowed because it is how `.` and `..` are spelled, and a
+// bounded name is how a claim cannot make the worker build a path longer than
+// the filesystem's per-element limit.
+func sanitizeSlotID(id string) string {
+	const maxLen = 64
+	var b strings.Builder
+	for _, r := range id {
+		if b.Len() >= maxLen {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		out = "unknown"
+	}
+	return out
+}
+
+// publishProfileBytes makes `data` the content of <dir>/<kind>.json without ever
+// replacing a file that is already there.
+//
+// The bytes land in a uniquely named temp file (so a half-written policy is
+// never visible at the final path — C-MISSING/N6's fail-closed direction) and
+// are published with os.Link, which is atomic and refuses an existing target.
+// The old shape wrote a fixed `<path>.tmp` and renamed it over the target, which
+// is how one turn could replace another turn's asserted policy: the fixed temp
+// name was shared too, and the rename was unconditional.
+//
+// A refusal is honoured only when the file already there digests to the very
+// same bytes — the same policy, authored by somebody else — and is otherwise an
+// error naming the conflict. Two units wanting two different policies at one
+// path is a shared-path bug, and last-write-wins is the failure this closes.
+func publishProfileBytes(dir, kind string, data []byte) (string, error) {
+	path := filepath.Join(dir, kind+".json")
+	tmp, err := os.CreateTemp(dir, kind+".json.write-*")
+	if err != nil {
+		// No temp file here (some filesystems refuse them to this process):
+		// the exclusive create below is the same no-clobber guarantee, minus
+		// atomic visibility.
+		return publishProfileDirect(dir, kind, data)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("sandbox: write profile %s: %w", path, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("sandbox: sync profile %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("sandbox: close profile %s: %w", path, err)
+	}
+	// 0400 until the bytes are complete and synced; world-readable only
+	// afterwards, and only because a policy file contains nothing secret.
+	if err := os.Chmod(tmpName, 0o444); err != nil {
+		return "", fmt.Errorf("sandbox: seal profile %s: %w", path, err)
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return path, adoptExistingProfile(path, data)
+		}
+		return publishProfileDirect(dir, kind, data)
+	}
+	return path, nil
+}
+
+// publishProfileDirect is the no-hard-links shape of the same rule: O_EXCL
+// create, so the writer either owns a brand-new file or adopts/refuses an
+// existing one, and never truncates a policy another unit may be holding.
+func publishProfileDirect(dir, kind string, data []byte) (string, error) {
+	path := filepath.Join(dir, kind+".json")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return path, adoptExistingProfile(path, data)
+		}
+		return "", fmt.Errorf("sandbox: create profile %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("sandbox: write profile %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("sandbox: sync profile %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("sandbox: close profile %s: %w", path, err)
+	}
+	// Explicit chmod: OpenFile's mode passes through the process umask, and a
+	// worker running with a private umask must not produce a policy file the
+	// tooling cannot read.
+	if err := os.Chmod(path, 0o444); err != nil {
+		return "", fmt.Errorf("sandbox: seal profile %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// adoptExistingProfile is the only way an existing policy file is ever used: by
+// proving it is the same policy, never by overwriting it.
+func adoptExistingProfile(path string, data []byte) error {
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("sandbox: profile %s exists but is unreadable: %w", path, err)
+	}
+	if got := DigestProfile(onDisk); got != DigestProfile(data) {
+		return fmt.Errorf("sandbox: profile %s already holds a different policy (%s, expected %s): this adapter never replaces a policy file another unit may have asserted. Each execution unit materializes its policy in its own directory (OpenProfileSlot) — one shared path for two concurrent units is what let a second unit's write land between a first unit's write and its digest assertion", path, got, DigestProfile(data))
+	}
+	return nil
 }
 
 // AssertOwnBytes is the *only* mechanism that can prove the policy shape, and

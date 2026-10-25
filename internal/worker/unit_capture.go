@@ -382,6 +382,13 @@ func (u *Unit) cleanup(ctx context.Context) (bool, error) {
 	if err := os.RemoveAll(u.Layout.Home); err != nil {
 		log.Warn("the agent home could not be removed", slog.String("error", err.Error()))
 	}
+	// 2b. the unit's private sandbox policy dir. It is removed here, at the unit
+	// boundary — after the turn's child is gone — because the launch argv named
+	// it and nono read it at exec: it must outlive the argv and nothing more.
+	// A leftover is a 0700 worker-owned directory of public policy bytes, so it
+	// is warned about rather than treated as a quarantine condition (the secret
+	// rule above is about values, which a profile never carries).
+	closeUnitProfile(log, "acp_unit", u.TurnID, u.releaseUnitProfile())
 
 	// 3. worktrees, then prune (WORKSPACES.md W6). ReposPruned is reported
 	// rather than implied: a false here means the mirror keeps orphaned admin

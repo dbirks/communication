@@ -142,6 +142,12 @@ func (u *Unit) policyDigest() string {
 	if u.Verified != nil {
 		return u.Verified.PolicyDigest
 	}
+	// The unit's own file, if it built a launch spec: the digest of the policy
+	// this unit materialized for itself, not of a file some other unit happens
+	// to have written at a shared path.
+	if d := u.materializedDigest(); d != "" {
+		return d
+	}
 	if u.Enforcement == domain.EnforceDisabled || u.Enforcement == domain.EnforcePermissiveDev {
 		return ""
 	}

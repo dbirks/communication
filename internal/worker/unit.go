@@ -82,7 +82,9 @@ type UnitService struct {
 	// that exact failure (an unreachable credential under a numeric uid) and it
 	// presented as an agent problem.
 	LauncherAuth func(launcherID string) ([]string, error)
-	// PolicyDir is where the nono profile files are materialized.
+	// PolicyDir is the root under which each unit's own nono profile file is
+	// materialized (profile_slot.go: one private directory per unit, never one
+	// shared file per kind).
 	PolicyDir string
 	// LauncherHome is nono's own HOME: a worker-owned directory under no
 	// workspace and under no grant. Probe C-H1's refusal is permanent for a
@@ -103,37 +105,19 @@ type UnitService struct {
 	// unit can only ever run in the mode the worker was started with.
 	Enforcement domain.EnforcementMode
 	Logger      *slog.Logger
-
-	profileOnce *profileCache
-	memoMu      sync.Mutex
 }
 
-// profileCache memoizes the materialized policy file per kind, so a worker writes
-// and digests each one once. It is not a verification cache: every launch still
-// runs the whole chain, because ADR-0019's suggestion to "cache per (policy
-// digest, worker boot)" is about the cost of three nono invocations, and
-// Verified is still only ever reported for the unit that earned it.
-type profileCache struct {
-	mu sync.Mutex
-	m  map[string]*nono.Profile
-}
-
-func (c *profileCache) do(key string, fn func() (*nono.Profile, error)) (*nono.Profile, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.m == nil {
-		c.m = map[string]*nono.Profile{}
-	}
-	if p, ok := c.m[key]; ok {
-		return p, nil
-	}
-	p, err := fn()
-	if err != nil {
-		return nil, err
-	}
-	c.m[key] = p
-	return p, nil
-}
+// The worker used to memoize one materialized policy file per kind per process
+// (a `profileCache`). That memo is gone, and the race the lab measured is the
+// reason: two concurrent turns on one worker resolved the same
+// `<policy dir>/<kind>.json`, and the second write landed between the first
+// unit's write and its AssertOwnBytes. A policy file is materialized per
+// execution unit now, in a directory that unit owns alone (openUnitProfile /
+// nono.OpenProfileSlot). This is not a verification cache either way:
+// every launch still runs the whole chain, because ADR-0019's suggestion to
+// "cache per (policy digest, worker boot)" is about the cost of three nono
+// invocations, and Verified is still only ever reported for the unit that
+// earned it.
 
 // AgentSandbox is the seam UnitService consumes. The shape is what a workspace
 // plan needs — a profile plus a resolved grant set — which
@@ -301,6 +285,14 @@ type Unit struct {
 	released    bool
 	cleanupErr  error
 	logger      *slog.Logger
+
+	// unitPolicy is this unit's private sandbox profile (directory + file),
+	// materialized on first launch spec and removed at Cleanup. profileMu guards
+	// it because Verify and LaunchSpecFor both ask, and a policy file that two
+	// callers race over is the bug this field exists to avoid.
+	profileMu  sync.Mutex
+	unitPolicy *unitProfile
+	policy     *nono.Profile
 }
 
 // Prepare runs contract § 4.2 steps 1 through 4 and returns a unit that has
@@ -515,6 +507,53 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 	return unit, nil
 }
 
+// ownProfile returns this unit's private policy file, materializing it on first
+// use. It is memoized for the unit (not the process) and lives until Cleanup:
+// re-materializing the same kind in the same slot is cheap and, because the
+// bytes are identical, publishes nothing new (nono's writer adopts the file it
+// finds rather than replacing it).
+func (u *Unit) ownProfile() (*nono.Profile, error) {
+	u.profileMu.Lock()
+	defer u.profileMu.Unlock()
+	if u.policy != nil {
+		return u.policy, nil
+	}
+	id := u.TurnID
+	if id == "" {
+		id = u.WorkspaceID
+	}
+	up, err := u.svc.unitProfileFor(id)
+	if err != nil {
+		return nil, err
+	}
+	u.unitPolicy = up
+	u.policy = up.Profile()
+	return u.policy, nil
+}
+
+// materializedDigest is the digest of the policy this unit itself materialized,
+// or "" when it never did. Locked, because the launch path and the event path
+// both read it.
+func (u *Unit) materializedDigest() string {
+	u.profileMu.Lock()
+	defer u.profileMu.Unlock()
+	if u.policy == nil {
+		return ""
+	}
+	return u.policy.Digest
+}
+
+// releaseUnitProfile hands back the unit's private policy dir for removal at the
+// unit boundary and clears the field, so Cleanup stays idempotent and a second
+// call has nothing to remove.
+func (u *Unit) releaseUnitProfile() *unitProfile {
+	u.profileMu.Lock()
+	defer u.profileMu.Unlock()
+	up := u.unitPolicy
+	u.unitPolicy = nil
+	return up
+}
+
 // Verify computes the argv, runs N-a…N-d, and returns what the runtime should
 // exec. It never execs: the stdio pipes belong to the ACP runtime, and a sandbox
 // adapter that owned them could not be tested without a harness.
@@ -605,7 +644,7 @@ func (u *Unit) launchSpec(launcher acp.Launcher) (nono.LaunchSpec, error) {
 	if u.svc.Sandbox == nil {
 		return nono.LaunchSpec{}, errors.New("worker: no sandbox backend configured while enforcement is required")
 	}
-	prof, err := u.svc.profile()
+	prof, err := u.ownProfile()
 	if err != nil {
 		return nono.LaunchSpec{}, err
 	}
@@ -892,41 +931,30 @@ func (e *DenialError) Error() string {
 // under, without running any nono command. `communication doctor` prints it next
 // to the verdict so an operator can tell which policy file a green check
 // describes.
+//
+// It materializes in a private slot and removes it immediately: the digest is a
+// property of the bytes (which are a pure function of kind + this worker's
+// configuration), and writing it at the shared per-kind path would put a doctor
+// run — a different process, possibly a different build — in the same file a
+// live turn is asserting.
 func (s *UnitService) ProfileDigestFor(kind string) (string, error) {
 	if kind == "" {
 		kind = s.kind()
 	}
-	prof, err := s.materializeProfile(kind)
+	up, err := openUnitProfile(s.PolicyDir, "doctor-"+kind, kind, "", nil)
 	if err != nil {
 		return "", err
 	}
-	return prof.Digest, nil
+	defer closeUnitProfile(s.logger(), "doctor", kind, up)
+	return up.Profile().Digest, nil
 }
 
-// profile returns this worker's policy file for its configured kind, writing it
-// if this process has not yet done so.
-func (s *UnitService) profile() (*nono.Profile, error) {
-	return s.cache().do(s.kind(), func() (*nono.Profile, error) { return s.materializeProfile(s.kind()) })
-}
-
-// cache returns the profile memo, initializing it on first use. The field is
-// unexported and the struct is built with a literal by cmd/communication, so a
-// lazily-created memo is the only shape that cannot be nil at the point of use —
-// and a panic inside a launch path is a worse failure than a mutex allocation.
-func (s *UnitService) cache() *profileCache {
-	s.memoMu.Lock()
-	defer s.memoMu.Unlock()
-	if s.profileOnce == nil {
-		s.profileOnce = &profileCache{}
-	}
-	return s.profileOnce
-}
-
-func (s *UnitService) materializeProfile(kind string) (*nono.Profile, error) {
-	if s.PolicyDir == "" {
-		return nil, errors.New("worker: no policy directory is configured, so no profile file can be materialized (ADR-0009 D4 requires -p <path>: with CLI flags alone, nono mixes its built-in default profile in, and that default is what writes /tmp)")
-	}
-	return nono.WriteProfile(s.PolicyDir, kind)
+// unitProfileFor materializes this unit's own copy of the worker's policy file,
+// in a directory named for the unit id and reachable by no other unit (and by
+// no sandboxed child: the slot is never a grant). The unit owns it until
+// Cleanup.
+func (s *UnitService) unitProfileFor(unitID string) (*unitProfile, error) {
+	return openUnitProfile(s.PolicyDir, unitID, s.kind(), "", nil)
 }
 
 func (s *UnitService) kind() string {

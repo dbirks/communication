@@ -41,7 +41,7 @@ func TestAPMSandboxWrapBuildsTheNonoResolveLaunch(t *testing.T) {
 		Enforcement:  domain.EnforceRequired,
 		Binary:       bin,
 	}
-	wrap, err := s.Wrap(context.Background(), apm.ResolveRequest{
+	wrap, closePolicy, err := s.Wrap(context.Background(), apm.ResolveRequest{
 		PackageRef: "mattpocock/skills#v1.3.1",
 		Target:     apm.TargetClaude,
 		WorkDir:    workdir,
@@ -50,6 +50,7 @@ func TestAPMSandboxWrapBuildsTheNonoResolveLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
+	t.Cleanup(closePolicy)
 	if wrap == nil {
 		t.Fatal("under required enforcement the wrapper must exist")
 	}
@@ -132,7 +133,7 @@ func TestAPMSandboxWrapBuildsTheNonoResolveLaunch(t *testing.T) {
 // named error, never answer plainly.
 func TestAPMSandboxWrapRequiredWithoutSandboxFailsClosed(t *testing.T) {
 	s := &APMSandbox{LauncherHome: t.TempDir(), PolicyDir: t.TempDir(), Enforcement: domain.EnforceRequired}
-	if _, err := s.Wrap(context.Background(), apm.ResolveRequest{}); err == nil {
+	if _, _, err := s.Wrap(context.Background(), apm.ResolveRequest{}); err == nil {
 		t.Fatal("a required resolve must fail closed when no sandbox backend is configured")
 	} else if !strings.Contains(err.Error(), "apm resolve could not be sandboxed") {
 		t.Errorf("err = %v, want it to name the could-not-be-sandboxed refusal", err)
@@ -143,7 +144,8 @@ func TestAPMSandboxWrapRequiredWithoutSandboxFailsClosed(t *testing.T) {
 // the resolve answers plainly.
 func TestAPMSandboxWrapNotRequiredAnswersPlainly(t *testing.T) {
 	s := &APMSandbox{LauncherHome: t.TempDir(), PolicyDir: t.TempDir(), Enforcement: domain.EnforceDisabled}
-	wrap, err := s.Wrap(context.Background(), apm.ResolveRequest{})
+	wrap, closePolicy, err := s.Wrap(context.Background(), apm.ResolveRequest{})
+	defer closePolicy()
 	if err != nil || wrap != nil {
 		t.Fatalf("wrap = %v, err = %v, want nil/nil under a non-required mode", wrap, err)
 	}
@@ -185,12 +187,13 @@ func TestAPMSandboxWrapAcceptsWorkspaceRootScratch(t *testing.T) {
 		Binary:       bin,
 	}
 	ctx := context.Background()
-	wrap, err := s.Wrap(ctx, apm.ResolveRequest{
+	wrap, closePolicy, err := s.Wrap(ctx, apm.ResolveRequest{
 		PackageRef: "mattpocock/skills#v1.3.1",
 		Target:     apm.TargetClaude,
 		WorkDir:    workdir,
 		Home:       home,
 	})
+	t.Cleanup(closePolicy)
 	if err != nil {
 		t.Fatalf("Wrap under the workspace-rooted scratch root: %v", err)
 	}
@@ -283,7 +286,7 @@ func TestAPMSandboxWrapResolvesSymlinkedApmBinary(t *testing.T) {
 		Enforcement:  domain.EnforceRequired,
 		Binary:       bin,
 	}
-	wrap, err := s.Wrap(context.Background(), apm.ResolveRequest{
+	wrap, closePolicy, err := s.Wrap(context.Background(), apm.ResolveRequest{
 		PackageRef: "mattpocock/skills#v1.3.1",
 		Target:     apm.TargetClaude,
 		WorkDir:    workdir,
@@ -292,6 +295,7 @@ func TestAPMSandboxWrapResolvesSymlinkedApmBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
+	t.Cleanup(closePolicy)
 	if wrap == nil {
 		t.Fatal("under required enforcement the wrapper must exist")
 	}

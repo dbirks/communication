@@ -314,9 +314,9 @@ func (f *fakeAPMLockResolver) Resolve(ctx context.Context, req apm.ResolveReques
 	return f.result, f.err
 }
 
-func (f *fakeAPMLockResolver) Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, error) {
+func (f *fakeAPMLockResolver) Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, func(), error) {
 	f.wrapCalls++
-	return nil, f.err
+	return nil, func() {}, f.err
 }
 
 // TestAPMLockLoopResolvesThroughTheSandboxResolver pins the ADR-0054 §B.2 wiring

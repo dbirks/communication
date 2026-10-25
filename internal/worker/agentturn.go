@@ -153,7 +153,9 @@ type AgentTurn struct {
 	WorkspaceRoot string
 	// LauncherHome is nono's own HOME (probe C-H1: never a grant).
 	LauncherHome string
-	// PolicyDir materializes the agent-turn profile file (ADR-0009 D4).
+	// PolicyDir is the root under which each attempt's own agent-turn profile
+	// file is materialized (ADR-0009 D4; profile_slot.go for the per-attempt
+	// directory).
 	PolicyDir string
 	// EgressAllow overrides the agent-turn egress allowlist. Empty means read
 	// COMMUNICATION_AGENT_EGRESS_ALLOW, and an unset variable means nono's shipped
@@ -227,9 +229,6 @@ type AgentTurn struct {
 	// Clock drives the sink's idle flush; nil is the wall clock.
 	Clock  Clock
 	Logger *slog.Logger
-
-	profileOnce *profileCache
-	memoMu      sync.Mutex
 }
 
 var _ AttemptExecutor = (*AgentTurn)(nil)
@@ -283,30 +282,20 @@ func (a *AgentTurn) askMode(launcherID string) string {
 	return a.AskModeID(launcherID)
 }
 
-// profile returns the communication-agent policy file, materialized once per
-// process. Since ADR-0035 the agent-turn profile carries an egress allowlist, so
-// its NetworkEnforced claim is the worker's own configuration: allowlisted by
-// default (nono.DefaultEgressHosts, provisional pending the live turn), open on
-// an explicit COMMUNICATION_AGENT_EGRESS_ALLOW=open, and whatever host list the
-// operator set otherwise. What the profile *claims* is still not what the run
-// gets to *report* — see nono.VerificationResult.EgressReport.
-func (a *AgentTurn) profile() (*nono.Profile, error) {
-	a.memoMu.Lock()
-	if a.profileOnce == nil {
-		a.profileOnce = &profileCache{}
-	}
-	cache := a.profileOnce
-	a.memoMu.Unlock()
-	if a.PolicyDir == "" {
-		return nil, errors.New("worker: no policy directory is configured, so the agent-turn profile cannot be materialized (ADR-0009 D4 requires -p <path>)")
-	}
+// unitProfileFor materializes THIS attempt's own copy of the agent-turn policy,
+// in a private directory named for the attempt id (profile_slot.go names the
+// race this replaces). Since ADR-0035 the agent-turn profile carries an egress
+// allowlist, so its NetworkEnforced claim is the worker's own configuration:
+// allowlisted by default (nono.DefaultEgressHosts, provisional pending the live
+// turn), open on an explicit COMMUNICATION_AGENT_EGRESS_ALLOW=open, and whatever
+// host list the operator set otherwise. What the profile *claims* is still not
+// what the run gets to *report* — see nono.VerificationResult.EgressReport.
+func (a *AgentTurn) unitProfileFor(c AttemptClaim) (*unitProfile, error) {
 	net, hosts, err := agentEgressAllow(a.EgressAllow)
 	if err != nil {
 		return nil, err
 	}
-	return cache.do(nono.ProfileAgentTurn, func() (*nono.Profile, error) {
-		return nono.WriteProfileNetwork(a.PolicyDir, nono.ProfileAgentTurn, net, hosts)
-	})
+	return openUnitProfile(a.PolicyDir, c.AttemptID, nono.ProfileAgentTurn, net, hosts)
 }
 
 // agentTurnSpec is one parsed agent.acp config — the members the
@@ -609,7 +598,13 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		return failedResult(ErrorClassInfra, "agent launch plan: "+a.redact(err.Error())), nil
 	}
 
-	launch, chain, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, delivered, oauthKV, required, workspaceID)
+	launch, chain, launchPolicy, refusal := a.verifyThenPlan(ctx, sink, c, plan, launcher, adapterEnv, delivered, oauthKV, required, workspaceID)
+	// The attempt's private policy file outlives the argv that names it and the
+	// exec that read it, and nothing more: it goes when the attempt is done, on
+	// every exit path (profile_slot.go's rule for a leftover).
+	if launchPolicy != nil {
+		defer closeUnitProfile(a.logger(), "agent.acp", c.AttemptID, launchPolicy)
+	}
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -1151,7 +1146,7 @@ func (a *AgentTurn) conversationFor(ctx context.Context, c AttemptClaim) (Attemp
 // non-required modes run the adapter directly and LABEL themselves. The
 // agent-turn profile carries network_enforced=false and stays labelled that
 // way (M3's label, § 4 step 5).
-func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, delivered []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *AttemptResult) {
+func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, launcher acp.Launcher, adapterEnv []string, delivered []string, oauthKV string, required bool, workspaceID string) (acp.LaunchPlan, *nono.VerificationResult, *unitProfile, *AttemptResult) {
 	if !required {
 		// Unsandboxed: the token and the env-delivered mounts join the child's
 		// real exec environment — an environment, not argv (ADR-0040).
@@ -1170,18 +1165,19 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 		return acp.LaunchPlan{
 			Path: launcher.Executable, Args: launcher.Args, Env: env, Dir: plan.Cwd,
 			Unsandboxed: string(a.enforcement()),
-		}, nil, nil
+		}, nil, nil, nil
 	}
 	if a.Sandbox == nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail,
 			"enforcement is required but no sandbox backend is configured: refusing to launch an agent unsandboxed (ADR-0019 D6, no fallback exists)")
-		return acp.LaunchPlan{}, nil, &r
+		return acp.LaunchPlan{}, nil, nil, &r
 	}
-	prof, err := a.profile()
+	policy, err := a.unitProfileFor(c)
 	if err != nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail, "materialize the agent-turn profile: "+a.redact(err.Error()))
-		return acp.LaunchPlan{}, nil, &r
+		return acp.LaunchPlan{}, nil, nil, &r
 	}
+	prof := policy.Profile()
 	spec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: a.LauncherHome,
 		AdapterPath: launcher.Executable, AdapterArgs: launcher.Args, AdapterEnv: argvBoundEnv(adapterEnv, delivered),
@@ -1194,7 +1190,7 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 			// The stop signal arrived during the chain; reporting that as a
 			// sandbox refusal would be a lie nobody made (procexec's rule).
 			r := failedResult(ErrorClassInfra, "launch interrupted during sandbox verification")
-			return acp.LaunchPlan{}, nil, &r
+			return acp.LaunchPlan{}, nil, policy, &r
 		}
 		a.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, a.enforcementFailedPayload(c, workspaceID, res, verr))
 		msg := "sandbox refused the agent launch"
@@ -1203,13 +1199,13 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 			msg = "sandbox killed the launched agent"
 		}
 		r := failedResult(ErrorClassSandboxEnforcementFail, msg+": "+a.redact(verr.Error()))
-		return acp.LaunchPlan{}, res, &r
+		return acp.LaunchPlan{}, res, policy, &r
 	}
 	argv, berr := spec.BuildLaunchArgv()
 	if berr != nil {
 		a.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, a.enforcementFailedPayload(c, workspaceID, res, berr))
 		r := failedResult(ErrorClassSandboxEnforcementFail, "agent launch argv: "+a.redact(berr.Error()))
-		return acp.LaunchPlan{}, res, &r
+		return acp.LaunchPlan{}, res, policy, &r
 	}
 	a.journal(ctx, sink, c, events.TypeSandboxVerified, a.verifiedPayload(c, workspaceID, plan, res))
 	// ADR-0040: the token rides nono's own process environment (nono
@@ -1239,7 +1235,7 @@ func (a *AgentTurn) verifyThenPlan(ctx context.Context, sink AttemptSink, c Atte
 	return acp.LaunchPlan{
 		Path: a.nonoBinary(), Args: argv, Env: env, Dir: plan.Cwd,
 		Verified: verification(res, plan),
-	}, res, nil
+	}, res, policy, nil
 }
 
 func (a *AgentTurn) verifiedPayload(c AttemptClaim, workspaceID string, plan wsgit.LaunchPlan, res *nono.VerificationResult) events.SandboxVerifiedPayload {

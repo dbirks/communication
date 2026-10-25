@@ -131,7 +131,8 @@ type ProcExec struct {
 	// LauncherHome is nono's own HOME (probe C-H1: never a grant, never
 	// derived from a workspace).
 	LauncherHome string
-	// PolicyDir is where the profile file is materialized (ADR-0009 D4).
+	// PolicyDir is the root under which each attempt's own command profile file is
+	// materialized (ADR-0009 D4; profile_slot.go for the per-attempt directory).
 	PolicyDir string
 	// SandboxPath is the nono executable, recorded in the plan so the argv
 	// and the process agree.
@@ -183,11 +184,9 @@ type ProcExec struct {
 	// nono either way. Tests inject a fake.
 	BoundaryGit BoundaryGit
 
-	profileOnce *profileCache
-	memoMu      sync.Mutex
-	gitOnce     sync.Once
-	gitReader   BoundaryGit
-	gitErr      error
+	gitOnce   sync.Once
+	gitReader BoundaryGit
+	gitErr    error
 }
 
 var _ AttemptExecutor = (*ProcExec)(nil)
@@ -220,23 +219,15 @@ func (p *ProcExec) killGrace() time.Duration {
 	return procExecKillGrace
 }
 
-// profile returns the communication-command policy file, materialized once
-// per process (the same memo shape UnitService uses for agent-turn; the
-// command profile is a third kind, not a variant — its NetworkEnforced claim
-// is the file's own, never a launch-time guess).
-func (p *ProcExec) profile() (*nono.Profile, error) {
-	p.memoMu.Lock()
-	if p.profileOnce == nil {
-		p.profileOnce = &profileCache{}
-	}
-	cache := p.profileOnce
-	p.memoMu.Unlock()
-	if p.PolicyDir == "" {
-		return nil, errors.New("worker: no policy directory is configured, so the command profile cannot be materialized (ADR-0009 D4 requires -p <path>)")
-	}
-	return cache.do(nono.ProfileCommand, func() (*nono.Profile, error) {
-		return nono.WriteProfile(p.PolicyDir, nono.ProfileCommand)
-	})
+// unitProfileFor materializes THIS attempt's own copy of the command policy in a
+// private directory named for the attempt id. The per-process memo it replaces
+// was the bug: two attempts on one worker resolved one
+// `<policy dir>/<communication-command>.json`, and a second write could land
+// between a first attempt's write and its AssertOwnBytes (profile_slot.go has
+// the lab's failure). The command profile's NetworkEnforced claim is the file's
+// own, never a launch-time guess.
+func (p *ProcExec) unitProfileFor(c AttemptClaim) (*unitProfile, error) {
+	return openUnitProfile(p.PolicyDir, c.AttemptID, nono.ProfileCommand, "", nil)
 }
 
 // procExecSpec is one parsed process.exec config. The Config map is
@@ -429,11 +420,17 @@ func (p *ProcExec) executeAttempt(ctx context.Context, c AttemptClaim, sink Atte
 
 	path, args, env := spec.argv[0], spec.argv[1:], adapterEnv
 	if required {
-		res, refusal := p.verifyThenWrap(ctx, sink, c, plan, spec, adapterEnv, delivered)
+		wrapped, policy, refusal := p.verifyThenWrap(ctx, sink, c, plan, spec, adapterEnv, delivered)
+		// The attempt's private policy file is removed when this function
+		// returns, which is after p.run has reaped the sandboxed child: the
+		// file must outlive the argv that names it, not the attempt.
+		if policy != nil {
+			defer closeUnitProfile(p.logger(), "process.exec", c.AttemptID, policy)
+		}
 		if refusal != nil {
 			return *refusal, nil
 		}
-		path, args, env = p.nonoBinary(), res.argv, p.nonoLauncherEnv()
+		path, args, env = p.nonoBinary(), wrapped.argv, p.nonoLauncherEnv()
 	}
 	if materialized != nil {
 		// ADR-0045 / ADR-0040: the GitHub token wiring and the env-delivered mounts
@@ -628,17 +625,18 @@ func (p *ProcExec) cleanupSecrets(c AttemptClaim, m *Materialized, layout wsgit.
 		}
 	}
 }
-func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string, delivered []string) (*wrappedLaunch, *AttemptResult) {
+func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c AttemptClaim, plan wsgit.LaunchPlan, spec procExecSpec, adapterEnv []string, delivered []string) (*wrappedLaunch, *unitProfile, *AttemptResult) {
 	if p.Sandbox == nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail,
 			"enforcement is required but no sandbox backend is configured: refusing to exec unsandboxed (ADR-0019 D6, no fallback exists)")
-		return nil, &r
+		return nil, nil, &r
 	}
-	prof, err := p.profile()
+	policy, err := p.unitProfileFor(c)
 	if err != nil {
 		r := failedResult(ErrorClassSandboxEnforcementFail, "materialize the command profile: "+p.redact(err.Error()))
-		return nil, &r
+		return nil, nil, &r
 	}
+	prof := policy.Profile()
 	nspec := nono.LaunchSpec{
 		Profile: prof, Plan: plan, LauncherHome: p.LauncherHome,
 		AdapterPath: spec.argv[0], AdapterArgs: spec.argv[1:], AdapterEnv: argvBoundEnv(adapterEnv, delivered),
@@ -659,7 +657,7 @@ func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c Attem
 			// as a sandbox refusal would be a lie nobody made: the honest
 			// word is the stop arm itself.
 			r := p.classify(ctx, spec, procExecOutcome{}, true)
-			return nil, &r
+			return nil, policy, &r
 		}
 		p.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, p.enforcementFailedPayload(c, res, verr))
 		msg := "sandbox refused the launch"
@@ -668,16 +666,16 @@ func (p *ProcExec) verifyThenWrap(ctx context.Context, sink AttemptSink, c Attem
 			msg = "sandbox killed the launched process"
 		}
 		r := failedResult(ErrorClassSandboxEnforcementFail, msg+": "+p.redact(verr.Error()))
-		return nil, &r
+		return nil, policy, &r
 	}
 	argv, berr := nspec.BuildLaunchArgv()
 	if berr != nil {
 		p.journal(ctx, sink, c, events.TypeSandboxEnforcementFailed, p.enforcementFailedPayload(c, res, berr))
 		r := failedResult(ErrorClassSandboxEnforcementFail, "launch argv: "+p.redact(berr.Error()))
-		return nil, &r
+		return nil, policy, &r
 	}
 	p.journal(ctx, sink, c, events.TypeSandboxVerified, p.verifiedPayload(c, plan, res))
-	return &wrappedLaunch{argv: argv}, nil
+	return &wrappedLaunch{argv: argv}, policy, nil
 }
 
 func (p *ProcExec) verifiedPayload(c AttemptClaim, plan wsgit.LaunchPlan, res *nono.VerificationResult) events.SandboxVerifiedPayload {

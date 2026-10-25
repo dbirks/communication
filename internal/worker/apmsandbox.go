@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dbirks/communication/internal/agent/apm"
@@ -37,7 +36,8 @@ type APMSandbox struct {
 	Sandbox AgentSandbox
 	// LauncherHome is nono's own HOME (probe C-H1: never a grant).
 	LauncherHome string
-	// PolicyDir is where the profile file is materialized (ADR-0009 D4).
+	// PolicyDir is the root under which each resolve's own apm-resolve profile
+	// file is materialized (ADR-0009 D4; profile_slot.go for the per-unit directory).
 	PolicyDir string
 	// SandboxPath is the nono executable, so argv and process agree.
 	SandboxPath string
@@ -56,9 +56,6 @@ type APMSandbox struct {
 	Timeout time.Duration
 	// Logger replaces the resolve logger; nil keeps slog.Default.
 	Logger *slog.Logger
-
-	profileOnce *profileCache
-	memoMu      sync.Mutex
 }
 
 var _ APMLockResolver = (*APMSandbox)(nil)
@@ -68,16 +65,27 @@ var _ APMLockResolver = (*APMSandbox)(nil)
 // sandboxed launch; under any other mode it returns nil, which makes the resolve
 // run plain and report Sandboxed=false. A required resolve that cannot be
 // sandboxed fails the wrapper with the named error instead of answering.
-func (s *APMSandbox) Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, error) {
+//
+// The second answer is the resolve's private policy dir releaser: the launch it
+// builds names a profile file this resolve owns, and the caller must call the
+// returned func once the resolve is over (it is a no-op when there is nothing to
+// remove). A resolve that never cleaned up would leave one directory per
+// request in the worker's policy root.
+func (s *APMSandbox) Wrap(ctx context.Context, req apm.ResolveRequest) (APMLockResolveWrap, func(), error) {
+	noop := func() {}
 	if s.enforcement() != domain.EnforceRequired {
-		return nil, nil
+		return nil, noop, nil
 	}
 	if s.Sandbox == nil {
-		return nil, errors.New("apm resolve could not be sandboxed: enforcement is required but no sandbox backend is configured (ADR-0019 D6, no fallback exists)")
+		return nil, noop, errors.New("apm resolve could not be sandboxed: enforcement is required but no sandbox backend is configured (ADR-0019 D6, no fallback exists)")
+	}
+	policy, err := s.unitProfileFor(req)
+	if err != nil {
+		return nil, noop, fmt.Errorf("apm resolve could not be sandboxed: materializing the apm-resolve policy: %w", err)
 	}
 	return func(argv []string, env []string) (string, []string, []string, error) {
-		return s.launchResolve(ctx, req, argv, env)
-	}, nil
+		return s.launchResolve(ctx, req, argv, env, policy.Profile())
+	}, func() { closeUnitProfile(s.logger(), "apm_lock_resolve", apmResolveUnitID(req), policy) }, nil
 }
 
 // Resolve runs one APM lock resolve through this worker's sandbox discipline
@@ -92,10 +100,11 @@ func (s *APMSandbox) Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.
 		// and let the result record that the resolve did not run sandboxed.
 		return apm.Resolve(ctx, req)
 	}
-	wrap, err := s.Wrap(ctx, req)
+	wrap, closePolicy, err := s.Wrap(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	defer closePolicy()
 	if wrap == nil {
 		return nil, errors.New("apm resolve could not be sandboxed: the enforcement is required but no launcher wrapper could be built")
 	}
@@ -118,7 +127,7 @@ func (s *APMSandbox) Resolve(ctx context.Context, req apm.ResolveRequest) (*apm.
 // goes through the full verify chain (N-a…N-d) and refuses to return a wrapper
 // whose launch could not be verified, so a resolve can never be answered by a
 // launch the worker did not verify.
-func (s *APMSandbox) launchResolve(ctx context.Context, req apm.ResolveRequest, argv []string, env []string) (string, []string, []string, error) {
+func (s *APMSandbox) launchResolve(ctx context.Context, req apm.ResolveRequest, argv []string, env []string, prof *nono.Profile) (string, []string, []string, error) {
 	installArgs := argv
 	bin := req.APMPath
 	if bin == "" {
@@ -147,10 +156,6 @@ func (s *APMSandbox) launchResolve(ctx context.Context, req apm.ResolveRequest, 
 		return "", nil, nil, fmt.Errorf("apm resolve could not be sandboxed: the pinned apm binary %q does not resolve: %w", bin, err)
 	}
 	binPath = filepath.Clean(resolved)
-	prof, err := s.profile()
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("apm resolve could not be sandboxed: materializing the apm-resolve policy: %w", err)
-	}
 	spec := nono.LaunchSpec{
 		Profile: prof,
 		Plan: wsgit.LaunchPlan{
@@ -207,29 +212,27 @@ func (s *APMSandbox) apmEgressAllow() ([]string, error) {
 	return hosts, nil
 }
 
-// apmEgressAllowHosts is the allowlist the memoized apm-resolve profile was
-// materialized with; the memo caches by kind and the allowlist is fixed per
-// worker boot, so recomputing on a cache miss is the honest shape.
-func (s *APMSandbox) apmEgressAllowHosts() []string {
-	hosts, err := s.apmEgressAllow()
-	if err != nil {
-		return nil
+// apmResolveUnitID names the resolve's private policy directory. The loop hands
+// each claim a fresh MkdirTemp scratch work dir (apmlock.go), so its basename is
+// already a per-resolve identity; the slot adds its own random suffix on top.
+func apmResolveUnitID(req apm.ResolveRequest) string {
+	if req.WorkDir != "" {
+		return "apm-" + filepath.Base(req.WorkDir)
 	}
-	return hosts
+	return "apm-resolve"
 }
 
-// profile materializes the apm-resolve policy file once per process, memoized
-// per kind like the unit service does for the agent-turn and command kinds.
-func (s *APMSandbox) profile() (*nono.Profile, error) {
-	s.memoMu.Lock()
-	if s.profileOnce == nil {
-		s.profileOnce = &profileCache{}
+// unitProfileFor materializes THIS resolve's own apm-resolve policy, in a
+// directory no other resolve (or turn, or command) can resolve. It replaces the
+// once-per-process memo the worker kept for every kind: concurrent units on one
+// worker shared one file per kind, and a second unit's write could land between
+// a first unit's write and its AssertOwnBytes (profile_slot.go).
+func (s *APMSandbox) unitProfileFor(req apm.ResolveRequest) (*unitProfile, error) {
+	hosts, err := s.apmEgressAllow()
+	if err != nil {
+		return nil, err
 	}
-	cache := s.profileOnce
-	s.memoMu.Unlock()
-	return cache.do(nono.ProfileAPMResolve, func() (*nono.Profile, error) {
-		return nono.WriteProfileNetwork(s.PolicyDir, nono.ProfileAPMResolve, nono.NetworkAllowlisted, s.apmEgressAllowHosts())
-	})
+	return openUnitProfile(s.PolicyDir, apmResolveUnitID(req), nono.ProfileAPMResolve, nono.NetworkAllowlisted, hosts)
 }
 
 func (s *APMSandbox) enforcement() domain.EnforcementMode {
