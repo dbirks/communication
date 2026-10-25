@@ -137,9 +137,22 @@ type itIssueLister struct {
 	handler http.HandlerFunc
 
 	// issues answers the list at request time; labeledAt, when set, answers
-	// WHEN each issue's labels were applied (default: its updated_at).
+	// WHEN each issue's labels were applied (default: its updated_at; the
+	// empty string answers as if the event were not visible yet — the
+	// eventual-consistency shape the trigger must retry rather than skip).
 	issues    func() []itWireIssue
 	labeledAt func(itWireIssue) string
+
+	// githubDate, when set, is written as the Date header of EVERY response
+	// — the skew dial the store's GitHub-clock arming reads (the lab ran
+	// ~50 s ahead of GitHub's clock; a test dials +/-60 s through this).
+	githubDate func() time.Time
+}
+
+// ProbeGithubNow forwards to the real Client, so store tests exercise the
+// production clock-arming path (the Date header the fake server writes).
+func (l *itIssueLister) GithubNow(ctx context.Context, token string) (time.Time, error) {
+	return l.client.GithubNow(ctx, token)
 }
 
 func (l *itIssueLister) ListIssueEvents(ctx context.Context, repo github.Repository, number int, token string) ([]github.IssueEvent, error) {
@@ -202,7 +215,16 @@ func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLi
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/octo/widgets/issues", handler)
 	mux.HandleFunc("/repos/octo/widgets/issues/", l.serveEvents)
-	srv := httptest.NewServer(mux)
+	mux.HandleFunc("/rate_limit", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resources":{}}`))
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if l.githubDate != nil {
+			w.Header().Set("Date", l.githubDate().UTC().Format(http.TimeFormat))
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	c := github.New()
 	c.BaseURL = srv.URL
 	c.HTTP = &http.Client{Timeout: 5 * time.Second}
@@ -237,6 +259,14 @@ func (l *itIssueLister) serveEvents(w http.ResponseWriter, r *http.Request) {
 		at := it.UpdatedAt
 		if l.labeledAt != nil {
 			at = l.labeledAt(it)
+		}
+		if at == "" {
+			// The labeled event is not (yet) visible: GitHub answers the
+			// timeline without it, and the trigger must hold its cursor
+			// rather than decide anything about this issue.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+			return
 		}
 		out := make([]map[string]any, 0, len(it.Labels))
 		for _, lb := range it.Labels {

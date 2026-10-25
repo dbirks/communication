@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,12 +44,11 @@ type IssueEventLister interface {
 // the one that actually runs.
 var _ IssueEventLister = (*Client)(nil)
 
-// ListIssueEvents reads GET /repos/{owner}/{repo}/issues/{n}/events — the
-// issue events endpoint, per_page 100, one page: the trigger only asks
-// whether a labeled event exists at or after a timestamp that is minutes or
-// hours old, and a project whose issue has more than 100 lifetime events
-// still answers inside the first page in every sane ordering GitHub has
-// shipped (events come back oldest-first). Errors are the same typed
+// ListIssueEvents reads GET /repos/{owner}/{repo}/issues/{n}/events,
+// paginated to maxEventPages: GitHub answers events OLDEST first, so a
+// recent labeled event on a busy issue lives on a later page — and "I cannot
+// see the label event" is exactly the question the no-backfill rule must
+// never answer wrongly by reading only page one. Errors are the same typed
 // answers ListIssues gives.
 func (c *Client) ListIssueEvents(ctx context.Context, repo Repository, issueNumber int, token string) ([]IssueEvent, error) {
 	if repo.Owner == "" || repo.Name == "" {
@@ -57,7 +57,35 @@ func (c *Client) ListIssueEvents(ctx context.Context, repo Repository, issueNumb
 	if issueNumber <= 0 {
 		return nil, fmt.Errorf("github: issue number %d is not a positive integer", issueNumber)
 	}
-	query := url.Values{"per_page": []string{strconv.Itoa(100)}}
+	var out []IssueEvent
+	for page := 1; page <= maxEventPages; page++ {
+		query := url.Values{"per_page": []string{strconv.Itoa(100)}, "page": []string{strconv.Itoa(page)}}
+		items, err := c.getIssueEventPage(ctx, repo, issueNumber, token, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range items {
+			out = append(out, IssueEvent{
+				Event:     it.Event,
+				CreatedAt: parseTime(it.CreatedAt),
+				LabelName: it.Label.Name,
+			})
+		}
+		if len(items) < 100 {
+			return out, nil // the last page
+		}
+	}
+	return out, nil
+}
+
+// maxEventPages bounds the timeline walk at 500 events. Past that the caller
+// reports what it saw, and the trigger's "the label event is not visible
+// (yet)" rule — which holds the cursor and retries rather than firing or
+// backfill-refusing — is exactly the honest answer for a read that may have
+// been truncated or lagged.
+const maxEventPages = 5
+
+func (c *Client) getIssueEventPage(ctx context.Context, repo Repository, issueNumber int, token string, query url.Values) ([]rawIssueEvent, error) {
 	target := c.base() + "/repos/" + url.PathEscape(repo.Owner) + "/" +
 		url.PathEscape(repo.Name) + "/issues/" + strconv.Itoa(issueNumber) + "/events?" + query.Encode()
 
@@ -89,15 +117,7 @@ func (c *Client) ListIssueEvents(ctx context.Context, repo Repository, issueNumb
 	if err := json.Unmarshal(body, &items); err != nil {
 		return nil, fmt.Errorf("github: decode issue events: %w", err)
 	}
-	out := make([]IssueEvent, 0, len(items))
-	for _, it := range items {
-		out = append(out, IssueEvent{
-			Event:     it.Event,
-			CreatedAt: parseTime(it.CreatedAt),
-			LabelName: it.Label.Name,
-		})
-	}
-	return out, nil
+	return items, nil
 }
 
 // rawIssueEvent is GitHub's wire shape, narrowed. GitHub may answer `null`
@@ -110,4 +130,58 @@ type rawIssueEvent struct {
 	Label     struct {
 		Name string `json:"name"`
 	} `json:"label"`
+}
+
+// IssueClock answers "what time is it on GitHub, right now?" — every GitHub
+// response carries a Date header on GitHub's own clock, and GET /rate_limit
+// is the cheapest response to read it from (anonymous-OK, touches nothing,
+// exists on GHES too). It exists because the gh-loop of 2026-10-25 proved
+// that trigger created_at (the database clock) and event created_at (GitHub's
+// clock) can be 50 seconds apart on one healthy deployment — NTP discipline
+// is not a cross-service agreement — and a no-backfill rule that compares
+// them directly silently skipped issue #16: labeled after its trigger by
+// GitHub's own clock, "before" it by the naive one. A rule that compares two
+// clocks must first put them on one.
+type IssueClock interface {
+	GithubNow(ctx context.Context, token string) (time.Time, error)
+}
+
+var _ IssueClock = (*Client)(nil)
+
+// GithubNow reads the Date header of one GET /rate_limit response. The token
+// is the same per-call credential the listing uses (a credentialed repository
+// budgets its own rate pool); empty asks anonymously. A missing or malformed
+// Date header is an error — "GitHub's clock is unreadable" must be a declared
+// fallback for the caller, never a silent guess.
+func (c *Client) GithubNow(ctx context.Context, token string) (time.Time, error) {
+	target := c.base() + "/rate_limit"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("github: build request: %w", err)
+	}
+	req.Header.Set("Accept", acceptHeader)
+	req.Header.Set(apiVersionHead, apiVersion)
+	req.Header.Set("User-Agent", userAgent)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("github: GET %s: %w", target, err)
+	}
+	defer resp.Body.Close()
+	if err := classify(resp, Repository{Owner: "github", Name: "rate_limit"}); err != nil {
+		return time.Time{}, err
+	}
+	// Drain the small body so the connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	raw := resp.Header.Get("Date")
+	if raw == "" {
+		return time.Time{}, errors.New("github: the response carried no Date header")
+	}
+	at, err := http.ParseTime(raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("github: unparseable Date header %q: %w", raw, err)
+	}
+	return at.UTC(), nil
 }

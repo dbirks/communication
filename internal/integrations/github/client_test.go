@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -364,5 +365,81 @@ func TestListIssueEventsRefusesNonPositiveNumbers(t *testing.T) {
 	c, _ := ghiClient(t, 0, nil, `[]`)
 	if _, err := c.ListIssueEvents(context.Background(), Repository{Owner: "o", Name: "r"}, 0, ""); err == nil {
 		t.Fatal("ListIssueEvents(issue 0) = nil error, want a refusal that never hits the wire")
+	}
+}
+
+// --- GithubNow & event pagination ----------------------------------------
+
+func TestGithubNowReadsTheDateHeader(t *testing.T) {
+	const header = "Mon, 26 Oct 2026 09:00:00 GMT"
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rate_limit" {
+			t.Errorf("path = %q, want /rate_limit", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Date", header)
+		_, _ = w.Write([]byte(`{"resources":{"core":{"limit":60,"remaining":59}}}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL}
+	got, err := c.GithubNow(context.Background(), "tok")
+	if err != nil {
+		t.Fatalf("GithubNow: %v", err)
+	}
+	want := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("GithubNow = %v, want the Date header %v", got, want)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want the per-call bearer", gotAuth)
+	}
+}
+
+func TestGithubNowRefusesAnAbsentOrMalformedDate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Date", "not-a-date")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL}
+	if _, err := c.GithubNow(context.Background(), ""); err == nil {
+		t.Fatal("GithubNow on a malformed Date = nil error, want a refusal (the caller's fallback must be declared, not a guess)")
+	}
+}
+
+// TestListIssueEventsPaginatesToTheRecentPages: GitHub answers events OLDEST
+// first, so a busy issue's recent labeled event lives past page one — and
+// "I never saw the label event" must never come from reading only page one.
+func TestListIssueEventsPaginatesToTheRecentPages(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		per := make([]map[string]any, 0, 100)
+		if page == "" || page == "1" {
+			for i := 0; i < 100; i++ {
+				per = append(per, map[string]any{"event": "commented", "created_at": "2026-01-01T00:00:00Z"})
+			}
+		} else {
+			per = append(per, map[string]any{"event": "labeled", "created_at": "2026-10-16T06:30:00Z",
+				"label": map[string]any{"name": "comm:go"}})
+		}
+		_ = json.NewEncoder(w).Encode(per)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL}
+	got, err := c.ListIssueEvents(context.Background(), Repository{Owner: "octo", Name: "widgets"}, 7, "")
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(got) != 101 {
+		t.Fatalf("events = %d, want page one plus the labeled page", len(got))
+	}
+	if got[100].Event != "labeled" || got[100].LabelName != "comm:go" {
+		t.Errorf("last event = %+v, want the page-2 labeled row", got[100])
+	}
+	if len(pages) < 2 || pages[1] != "2" {
+		t.Errorf("pages requested = %v, want page 2 to be read", pages)
 	}
 }

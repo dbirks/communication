@@ -198,7 +198,9 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00017 (ADR-0062 unattended
+// version every replica demands. Current head: 00018 (ADR-0056 amendment: the
+// issue_triggers.github_created_at GitHub-clock baseline) on top of
+// 00017 (ADR-0062 unattended
 // agent turns: runs.trigger_id + the kind CHECK and the trigger-ledger
 // backfill, conversation_turns.submitted_via) on top of
 // 00016 (ADR-0061 repository
@@ -225,7 +227,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 17
+const migHeadVersion = 18
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.

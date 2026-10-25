@@ -98,6 +98,16 @@ const issueTriggerPollTimeout = 30 * time.Second
 // tick.
 const issueTriggerFireJoinGrace = 2 * time.Second
 
+// issueTriggerLabelTolerance is the acceptance slack on the labeled/no-backfill
+// comparison: a label event lands up to this far "before" the armed baseline
+// and still fires. Two minutes absorbs the residual clock noise (the Date
+// header is second-granular, arming happens once, and re-labels within a
+// couple of minutes of authoring are plainly the event the trigger subscribed
+// to) while an hour-old backfill label stays refused by orders of magnitude —
+// the gh-loop lesson that comparing across unsynced clocks at all is how
+// issue #16 got skipped.
+const issueTriggerLabelTolerance = 2 * time.Minute
+
 // maxIssueTriggerErrorLen bounds what a failed poll writes into the row's
 // last_error: an operator reads it, a browser must not, and the cap keeps one
 // pathological upstream message from growing the column's story forever.
@@ -166,7 +176,8 @@ func (s *IssueTriggerStore) logger() *slog.Logger {
 // --------------------------------------------------------------------- rows
 
 // IssueTrigger is one issue_triggers row: the intent, its template inputs,
-// and the poll bookkeeping (cursor / last polled / last error).
+// and the poll bookkeeping (cursor / last polled / last error / GitHub-clock
+// baseline).
 type IssueTrigger struct {
 	ID           string
 	ProjectID    string
@@ -183,25 +194,33 @@ type IssueTrigger struct {
 	CreatedBy    string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	// GithubCreatedAt is created_at as measured on GitHub's clock (migration
+	// 00018): the armed baseline every labeled-event comparison uses, because
+	// created_at (the database clock) and a labeled event's created_at
+	// (GitHub's) are not the same clock and were once ~50 s apart on one
+	// healthy host. nil means "not yet armed" — the poll then degrades to
+	// created_at (same tolerance) and says so at WARN.
+	GithubCreatedAt *time.Time
 }
 
-// issueTriggerColumns is the read list. cursor_at, last_polled_at and
-// last_error are nullable, so the scan goes through pointers; version is the
-// config-edit counter (a fire never bumps it).
+// issueTriggerColumns is the read list. cursor_at, last_polled_at,
+// last_error and github_created_at are nullable, so the scan goes through
+// pointers; version is the config-edit counter (a fire never bumps it).
 const issueTriggerColumns = `id, project_id, assignment_id, repository_id, event, labels,
-	inputs::text, enabled, cursor_at, last_polled_at, last_error, version, created_by, created_at, updated_at`
+	inputs::text, enabled, cursor_at, last_polled_at, last_error, version, created_by, created_at, updated_at, github_created_at`
 
 func (s *IssueTriggerStore) scan(row pgx.Row) (IssueTrigger, error) {
 	var (
-		it         IssueTrigger
-		inputs     string
-		cursorAt   *time.Time
-		lastPolled *time.Time
-		lastErr    *string
+		it            IssueTrigger
+		inputs        string
+		cursorAt      *time.Time
+		lastPolled    *time.Time
+		lastErr       *string
+		githubCreated *time.Time
 	)
 	err := row.Scan(&it.ID, &it.ProjectID, &it.AssignmentID, &it.RepositoryID, &it.Event,
 		&it.Labels, &inputs, &it.Enabled, &cursorAt, &lastPolled, &lastErr, &it.Version,
-		&it.CreatedBy, &it.CreatedAt, &it.UpdatedAt)
+		&it.CreatedBy, &it.CreatedAt, &it.UpdatedAt, &githubCreated)
 	if err != nil {
 		return IssueTrigger{}, err
 	}
@@ -216,6 +235,10 @@ func (s *IssueTriggerStore) scan(row pgx.Row) (IssueTrigger, error) {
 	}
 	if lastErr != nil {
 		it.LastError = *lastErr
+	}
+	if githubCreated != nil {
+		t := githubCreated.UTC()
+		it.GithubCreatedAt = &t
 	}
 	it.CreatedAt, it.UpdatedAt = it.CreatedAt.UTC(), it.UpdatedAt.UTC()
 	return it, nil
@@ -741,35 +764,89 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 		return s.recordIssueTriggerPoll(ctx, tx, id, now, err)
 	}
 
+	// Arm the trigger on GitHub's own clock (migration 00018, ADR-0056
+	// amendment): the labeled-event comparison must never pit the database's
+	// clock against GitHub's — the lab's 50 s skew silently "backfilled" a
+	// label applied after the trigger existed. The baseline is measured once,
+	// on the first poll that can read GitHub's Date, and kept forever (COALESCE
+	// below); until then (and for a lister with no clock at all) the poll
+	// degrades to created_at, loudly, at WARN.
+	armed := it.GithubCreatedAt
+	if armed == nil {
+		if clk, ok := lister.(github.IssueClock); ok {
+			ghNow, cerr := clk.GithubNow(ctx, token)
+			if cerr == nil {
+				base := it.CreatedAt.Add(-now.Sub(ghNow))
+				armed = &base
+				s.logger().InfoContext(ctx, "issue trigger armed on GitHub's clock",
+					slog.String("issue_trigger_id", id),
+					slog.String("github_created_at", base.UTC().Format(time.RFC3339)))
+			} else {
+				s.logger().WarnContext(ctx, "issue trigger could not read GitHub's clock; label times will be compared against created_at until one lands",
+					slog.String("issue_trigger_id", id), slog.String("error", cerr.Error()))
+			}
+		} else if it.Event == "labeled" {
+			s.logger().WarnContext(ctx, "issue trigger's lister carries no GitHub clock; label times will be compared against created_at",
+				slog.String("issue_trigger_id", id))
+		}
+	}
+	cutoff := it.CreatedAt.Add(-issueTriggerLabelTolerance)
+	if armed != nil {
+		cutoff = armed.Add(-issueTriggerLabelTolerance)
+	}
+
 	fired := 0
 	cursor := it.CursorAt
+	// heldBack is the oldest updated_at among issues whose label evidence was
+	// inconclusive; the cursor never advances past it, so GitHub's inclusive
+	// `since` keeps re-offering that issue until its labeled event surfaces
+	// (the events API is eventually consistent — an invisible event is not a
+	// verdict).
+	var heldBack *time.Time
 	for _, issue := range issues {
 		if it.Event == "opened" {
 			// No backfill: an issue created before the trigger was authored is
-			// never fired by the `opened` arm.
-			if issue.CreatedAt.IsZero() || !issue.CreatedAt.After(it.CreatedAt) {
+			// never fired by the `opened` arm — measured on the armed clock
+			// when there is one, same skew rule as the labeled arm.
+			if issue.CreatedAt.IsZero() || issue.CreatedAt.Before(cutoff) {
 				continue
 			}
 		}
 		if !issueLabelsMatch(issue.Labels, it.Labels) {
 			continue
 		}
-		if it.Event == "labeled" &&
-			!issueLabeledAtOrAfter(ctx, lister, s.logger(), repo, issue, it.Labels, token, it.CreatedAt) {
-			// No backfill on the `labeled` arm either (ADR-0056 amendment of
-			// 2026-10-25): a label applied before the trigger existed is old
-			// news, and the lab's first poll proved what "now carries the
-			// label" alone answers — eight runs for issues labeled hours
-			// before the trigger was written. The cursor still moves past a
-			// skipped issue: a NEW label bumps updated_at past the cursor and
-			// returns the issue to a later listing on its merits.
-			s.logger().DebugContext(ctx, "issue trigger skipped an issue whose watched label predates the trigger",
-				slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
-			if cursor == nil || issue.UpdatedAt.After(*cursor) {
-				t := issue.UpdatedAt
-				cursor = &t
+		if it.Event == "labeled" {
+			switch verdict := issueLabelTiming(ctx, lister, s.logger(), repo, issue, it.Labels, token, cutoff, armed != nil); verdict {
+			case labelVerdictUndecided:
+				// The watch label is ON the issue but its labeled event is not
+				// (yet) visible — GitHub's event timeline lagging, a truncated
+				// read, an events outage that outlived the updated_at proxy.
+				// Neither fire nor refuse: hold the cursor behind this issue
+				// and retry on the next polls. #16's shape: one poll's
+				// confidence was permanent silence.
+				s.logger().DebugContext(ctx, "issue trigger's label timeline is not conclusive yet; holding the cursor for a retry",
+					slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
+				if heldBack == nil || issue.UpdatedAt.Before(*heldBack) {
+					t := issue.UpdatedAt
+					heldBack = &t
+				}
+				continue
+			case labelVerdictStale:
+				// Decisively no-backfill (ADR-0056 amendment of 2026-10-25): a
+				// watched-label event is visible and predates the armed
+				// baseline. The cursor moves past it — a NEW label bumps
+				// updated_at past the cursor and returns the issue to a later
+				// listing on its merits.
+				s.logger().DebugContext(ctx, "issue trigger skipped an issue whose watched label predates the trigger",
+					slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
+				if cursor == nil || issue.UpdatedAt.After(*cursor) {
+					t := issue.UpdatedAt
+					cursor = &t
+				}
+				continue
+			case labelVerdictFresh:
+				// fall through to the fire below
 			}
-			continue
 		}
 		n, ferr := s.fireIssue(ctx, tx, it, pin, repo, issue)
 		if ferr != nil {
@@ -781,15 +858,23 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 			cursor = &t
 		}
 	}
+	if heldBack != nil && (cursor == nil || heldBack.Before(*cursor)) {
+		cursor = heldBack
+	}
 
 	var cursorArg any = cursor
 	if cursor != nil {
 		cursorArg = *cursor
 	}
+	var armedArg any
+	if armed != nil {
+		armedArg = *armed
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE issue_triggers
-		SET cursor_at = $1, last_polled_at = $2, last_error = ''
-		WHERE id = $3::uuid`, cursorArg, now, id); err != nil {
+		SET cursor_at = $1, last_polled_at = $2, last_error = '',
+		    github_created_at = COALESCE(github_created_at, $4::timestamptz)
+		WHERE id = $3::uuid`, cursorArg, now, id, armedArg); err != nil {
 		return 0, fmt.Errorf("postgres: advance issue trigger %s: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1109,24 +1194,54 @@ func (s *IssueTriggerStore) recordIssueTriggerDeferred(ctx context.Context, tx p
 	return nil
 }
 
-// issueLabeledAtOrAfter answers the `labeled` arm's no-backfill question:
-// was any of the trigger's watched labels APPLIED to this issue at or after
-// the trigger's created_at? The issue's event timeline is the witness
-// (GitHub GET /repos/{o}/{r}/issues/{n}/events); where no timeline can be
-// read, the fallback is the ADR amendment's degraded answer: updated_at as a
-// proxy (an edit can over-fire, a pre-trigger label can never sneak past it,
-// since applying the label is itself an update). An unlabeled event's
-// missing name is matched against nothing but time — GitHub always names
-// the label on labeled events, and an unnamed one is treated as the generic
-// yes its timestamp proves.
-func issueLabeledAtOrAfter(ctx context.Context, lister github.IssueLister, log *slog.Logger,
-	repo github.Repository, issue github.Issue, watch []string, token string, since time.Time) bool {
-	fallback := func(reason error) bool {
+// labelVerdict is the `labeled` arm's three-valued answer for one issue.
+type labelVerdict int
+
+const (
+	// labelVerdictFresh: a watched label's labeled event is visible at or
+	// after the armed baseline (minus the tolerance) — fire.
+	labelVerdictFresh labelVerdict = iota
+	// labelVerdictStale: the timeline decisively shows every watched-label
+	// event predating the baseline — refuse, and the cursor may pass.
+	labelVerdictStale
+	// labelVerdictUndecided: the issue carries a watched label but no
+	// labeled event for it is visible (the events API is eventually
+	// consistent, or the read was truncated) — do not fire, do not refuse,
+	// and do NOT let the cursor pass. Issue #16 of the gh-loop is what an
+	// over-confident verdict here costs: one poll's guess became silence
+	// forever.
+	labelVerdictUndecided
+)
+
+// issueLabelTiming answers the `labeled` arm's no-backfill question on
+// GitHub's own clock: was any of the trigger's watched labels APPLIED to this
+// issue at or after `cutoff` (the armed GitHub-clock baseline minus the
+// tolerance)? The issue's event timeline is the witness
+// (GET /repos/{o}/{r}/issues/{n}/events); where the timeline cannot be read
+// at all — a lister without that capability, or a failed event read — the
+// ADR amendment's degraded answer is updated_at against the same cutoff: an
+// edit can over-fire through it, but a pre-trigger label never can, since
+// applying the label is itself an update. A labeled event that names no
+// label is matched against nothing but time — GitHub always names the
+// label on labeled events, and an unnamed one is the generic yes its
+// timestamp proves.
+func issueLabelTiming(ctx context.Context, lister github.IssueLister, log *slog.Logger,
+	repo github.Repository, issue github.Issue, watch []string, token string, cutoff time.Time, armed bool) labelVerdict {
+	fallback := func(reason error) labelVerdict {
 		if reason != nil {
 			log.WarnContext(ctx, "issue trigger could not read an issue's label timeline; deciding from updated_at",
 				slog.String("issue_url", issue.HTMLURL), slog.String("error", reason.Error()))
 		}
-		return !issue.UpdatedAt.IsZero() && !issue.UpdatedAt.Before(since)
+		if !issue.UpdatedAt.IsZero() && !issue.UpdatedAt.Before(cutoff) {
+			return labelVerdictFresh
+		}
+		if !armed {
+			// A "before" measured against an un-armed baseline is a guess
+			// about clock skew, and the gh-loop's #16 is what that guess
+			// costs. Retry after the baseline lands.
+			return labelVerdictUndecided
+		}
+		return labelVerdictStale
 	}
 	el, ok := lister.(github.IssueEventLister)
 	if !ok {
@@ -1136,15 +1251,28 @@ func issueLabeledAtOrAfter(ctx context.Context, lister github.IssueLister, log *
 	if err != nil {
 		return fallback(err)
 	}
+	sawWatchedLabel := false
 	for _, ev := range events {
-		if ev.Event != "labeled" || ev.CreatedAt.Before(since) {
+		if ev.Event != "labeled" {
 			continue
 		}
-		if ev.LabelName == "" || issueLabelsMatch([]string{ev.LabelName}, watch) {
-			return true
+		if ev.LabelName != "" && !issueLabelsMatch([]string{ev.LabelName}, watch) {
+			continue
+		}
+		sawWatchedLabel = true
+		if !ev.CreatedAt.Before(cutoff) {
+			return labelVerdictFresh
 		}
 	}
-	return false
+	if !sawWatchedLabel {
+		// The label is on the issue NOW but its event is not in the timeline
+		// yet: no verdict, hold, retry.
+		return labelVerdictUndecided
+	}
+	if !armed {
+		return labelVerdictUndecided
+	}
+	return labelVerdictStale
 }
 
 // recordIssueTriggerPoll is the shared answer for a poll that failed — a

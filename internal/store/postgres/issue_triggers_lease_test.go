@@ -181,7 +181,11 @@ func TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing(t *testing.T
 	ctx := testCtx(t)
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
-	f.triggers.PollTimeout = 150 * time.Millisecond
+	// 2 s: the hang itself is what the bound must catch, and a race-build's
+	// claim-and-record statements need room the 150 ms of a fast build could
+	// spare. The bound assertion below (15 s) still fails loudly if the cut-
+	// loose machinery ever stops holding.
+	f.triggers.PollTimeout = 2 * time.Second
 	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
 	if err != nil {
 		t.Fatalf("itIssueFires: %v", err)
@@ -402,7 +406,9 @@ func TestIssueTriggerEveryPassRecordsLastPolled(t *testing.T) {
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
 	var logs bytes.Buffer
-	f.triggers.PollTimeout = 100 * time.Millisecond
+	// 2 s: the hung beat (beat 1) is bounded by this, and the commit beat of
+	// a race-build journal append must not lose to it.
+	f.triggers.PollTimeout = 2 * time.Second
 	f.triggers.Log = slog.New(slog.NewJSONHandler(&logs, nil))
 	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
 	if err != nil {

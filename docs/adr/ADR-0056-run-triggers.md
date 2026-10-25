@@ -177,3 +177,35 @@ through it, but a pre-trigger label never can, since applying the label is
 itself an update. A skipped issue still advances the cursor; a *new* label
 bumps `updated_at` past it and returns the issue to a later listing on its
 merits.
+
+## Amendment (2026-10-25) — the no-backfill comparison runs on GitHub's clock, and an invisible label event is never a verdict
+
+The amendment above hands the `labeled` arm a comparison — label event at or
+after `created_at` — that pits two clocks against each other: the trigger's
+`created_at` is the database's clock, GitHub's event times are GitHub's, and
+NTP discipline is not a cross-service agreement. The gh-loop of 2026-10-25
+measured the cost: the lab's clock ran ~50 s ahead of GitHub's (`date -u`
+17:10:50 while GitHub answered `Date: 17:10:00`), and issue #16 — labeled
+AFTER its trigger by GitHub's own timeline — compared as "before", was skipped,
+and the cursor advanced past it for good. The rule now:
+
+**Each trigger is armed on GitHub's own clock.** The first poll that can read
+GitHub's `Date` response header records `created_at − (local_now −
+github_now)` as the trigger's `github_created_at` baseline (migration 00018),
+and every later labeled-event comparison — and the `opened` arm's
+created-at gate — runs against that baseline, never the raw `created_at`.
+The tolerance is 2 minutes toward accepting: Date headers are
+second-granular, arming happens once, and a label landing within minutes of
+authoring is plainly the event the trigger subscribed to, while an hours-old
+backfill label stays refused by orders of magnitude. Where GitHub's clock
+cannot be read at all (a lister with no clock, a failed probe), the poll
+degrades to the old `created_at` comparison — loudly, at WARN — rather than
+refusing to fire anything.
+
+**An issue that carries a watched label whose `labeled` event is not yet
+visible gets no verdict at all**: the events API is eventually consistent, so
+the trigger neither fires nor refuses it, and the cursor does not advance
+past it (GitHub's `since` is inclusive, so the issue re-surfaces on every
+later poll until its timeline catches up, at which point it fires or is
+decisively refused). Silent-permanent-skip was the failure; retry is the
+answer.
