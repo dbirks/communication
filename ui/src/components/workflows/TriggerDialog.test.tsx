@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TriggerDialog,
   issueValueInWords,
+  numericIssueBinding,
   runGetsValue,
   type TriggerEditing,
 } from "./TriggerDialog";
@@ -67,15 +68,41 @@ function wireIssueTrigger(overrides: Partial<IssueTrigger> = {}): IssueTrigger {
   };
 }
 
-function mount(editing: TriggerEditing | null = null, overrides: RouteStub[] = []) {
+/** The fixture's pinned revision with one more declared input: the shipped
+ * `issue-to-pr` template's integer `issue_number` (type integer, default 0) is
+ * what the typed-binding tests need the form to render. */
+function revisionDeclaring(name: string, schema: Record<string, unknown>): unknown {
+  const doc = wireRevision.canonical_document as {
+    spec: { inputs: { properties: Record<string, unknown>; required?: string[] } };
+  };
+  return {
+    ...wireRevision,
+    canonical_document: {
+      ...doc,
+      spec: {
+        ...doc.spec,
+        inputs: {
+          ...doc.spec.inputs,
+          properties: { ...doc.spec.inputs.properties, [name]: schema },
+        },
+      },
+    },
+  };
+}
+
+function mount(
+  editing: TriggerEditing | null = null,
+  overrides: RouteStub[] = [],
+  revision: unknown = wireRevision,
+) {
   const { requests } = mockFetch([
     ...overrides,
+    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, method: "GET", body: revision as object },
     {
       path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
       method: "GET",
       body: { issue_triggers: [] },
     },
-    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, method: "GET", body: wireRevision },
   ]);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
@@ -248,6 +275,59 @@ describe("TriggerDialog — the 2c contract", () => {
     ).toMatchObject({ version: 5, labels: ["plan", "urgent"], enabled: true });
   });
 
+  it("binds an integer input to the issue the fire fills", async () => {
+    const { requests } = mount(
+      null,
+      [
+        {
+          path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+          method: "POST",
+          body: wireIssueTrigger({
+            inputs: {
+              goal: "{{issue.title}}\n\n{{issue.body}}",
+              issue_number: "{{issue.number}}",
+              repository: "storefront",
+            },
+          }),
+        },
+      ],
+      revisionDeclaring("issue_number", { type: "integer", minimum: 0, default: 0 }),
+    );
+
+    // The number control cannot type a placeholder, so the issue arm offers the
+    // binding ADR-0056's amendment renders as a JSON number.
+    fireEvent.click(await screen.findByTestId("trigger-dialog-quickfill-issue_number"));
+    expect(screen.getByTestId("trigger-dialog-numeric-binding-issue_number").textContent).toBe(
+      "the run gets the issue number — type a number to fix it instead",
+    );
+    expect(screen.getByTestId("trigger-dialog-run-gets-issue_number").textContent).toBe(
+      "issue_number = the issue number",
+    );
+
+    fireEvent.click(screen.getByTestId("trigger-dialog-quickfill-goal"));
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/issue-triggers`, "POST"),
+      ).toHaveLength(1),
+    );
+    const body = JSON.parse(
+      requestsTo(requests, `/api/v1/projects/${projectFixture.id}/issue-triggers`, "POST")[0].body!,
+    );
+    // The row carries the token; the fire is what renders it typed.
+    expect(body.inputs.issue_number).toBe("{{issue.number}}");
+  });
+
+  it("advertises no binding for the fixed number the schema declared", async () => {
+    mount(null, [], revisionDeclaring("issue_number", { type: "integer", minimum: 0, default: 0 }));
+    await screen.findByTestId("trigger-dialog-quickfill-issue_number");
+    // The declared default (0) is a fixed number, not a fire-time binding.
+    expect(screen.queryByTestId("trigger-dialog-numeric-binding-issue_number")).toBeNull();
+    expect(screen.getByTestId("trigger-dialog-run-gets-issue_number").textContent).toBe(
+      "issue_number = 0",
+    );
+  });
+
   it("keeps a stale-version 409 inline and the dialog open", async () => {
     mount({ kind: "issue", trigger: wireIssueTrigger({ labels: ["plan"] }) }, [
       {
@@ -295,6 +375,18 @@ describe("TriggerDialog — the run-input reading", () => {
     // Prose around a token stays prose: the box never paraphrases a human.
     expect(issueValueInWords("Goal: {{issue.title}}")).toBeNull();
     expect(issueValueInWords("ship it")).toBeNull();
+  });
+
+  it("reads a numeric binding only as the exact token the server renders typed", () => {
+    expect(numericIssueBinding("{{issue.number}}")).toBe(
+      "the run gets the issue number — type a number to fix it instead",
+    );
+    // Mixed text renders a string the integer input refuses, and a string token
+    // is no more a number binding: the dialog advertises only what fires.
+    expect(numericIssueBinding("#{{issue.number}}")).toBeNull();
+    expect(numericIssueBinding("{{issue.title}}")).toBeNull();
+    expect(numericIssueBinding(42)).toBeNull();
+    expect(numericIssueBinding(undefined)).toBeNull();
   });
 
   it("renders each declared input the way the trigger carries it", () => {

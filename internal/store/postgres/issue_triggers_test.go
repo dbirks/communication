@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -636,5 +637,199 @@ func TestIssueTriggerCredentialFailureLandsLastError(t *testing.T) {
 	}
 	if !strings.Contains(lastErr, "secret store") {
 		t.Errorf("unwired last_error = %q, want it to name the missing secret store", lastErr)
+	}
+}
+
+// ------------------------- ADR-0056 amendment (2026-10-25): typed placeholders
+
+// itPublishPlan publishes another revision of the fixture pipeline whose
+// compiled plan DECLARES `spec.inputs` (the real draft → validate → publish
+// path, as the schedule tests' m6PublishInputs does) and re-pins the fixture's
+// assignment to it. The typed-template tests need a revision that has something
+// to say no about: the default fixture plan is `{"nodes":[]}`, which admits
+// every trigger input unchecked.
+func (f *itFixture) itPublishPlan(t *testing.T, ctx context.Context, versionLabel string, inputs json.RawMessage) string {
+	t.Helper()
+	digest := m4Digest("rev/typed/" + migFixtureToken(t) + "/" + versionLabel)
+	doc := fmt.Sprintf("apiVersion: communication.dev/v1alpha1\nkind: Pipeline\n# %s\n", digest)
+	canonical := json.RawMessage(fmt.Sprintf(
+		`{"apiVersion":"communication.dev/v1alpha1","kind":"Pipeline","marker":%q}`, digest))
+	plan := json.RawMessage(fmt.Sprintf(`{"nodes":[],"inputs":%s}`, inputs))
+	draft, err := f.pipelines.CreateDraft(ctx, NewDraft{
+		PipelineID: f.pipelineID, DocumentText: doc, SourceKind: "manual",
+		SourceSHA256: m4Hex("src/" + digest), EditedBy: f.userID,
+	})
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := f.pipelines.RecordValidation(ctx, draft.ID, "valid", DraftValidation{
+		CanonicalDocument: canonical, RevisionDigest: digest,
+		CompiledPlan: plan, PlanDigest: m4Digest("plan-of/" + digest),
+		Validation: json.RawMessage(`[]`),
+	}); err != nil {
+		t.Fatalf("RecordValidation: %v", err)
+	}
+	rev, err := f.pipelines.PublishDraft(ctx, draft.ID, NewRevision{
+		VersionLabel: versionLabel, DocumentText: doc,
+		SchemaDigest: m4Digest("schema"), CelEnvDigest: m4Digest("celenv"),
+		PublishedBy: f.userID, ExpectedDraftVersion: draft.Version,
+	})
+	if err != nil {
+		t.Fatalf("PublishDraft %s: %v", versionLabel, err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE assignments SET pinned_revision_id = $2 WHERE id = $1::uuid`, f.assignment, rev.ID); err != nil {
+		t.Fatalf("re-pin the assignment: %v", err)
+	}
+	return rev.ID
+}
+
+// itIssueInputRaw reads one stored run input as its JSON text plus its jsonb
+// type — the pair that tells the number 42 from the string "42".
+func itIssueInputRaw(t *testing.T, ctx context.Context, f *itFixture, runID, name string) (string, string) {
+	t.Helper()
+	var value, kind string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT value::text, jsonb_typeof(value) FROM run_inputs WHERE run_id = $1::uuid AND name = $2`,
+		runID, name).Scan(&value, &kind); err != nil {
+		t.Fatalf("read the fired run's %q input: %v", name, err)
+	}
+	return value, kind
+}
+
+// itIssueToPRInputs declares the shipped template's shape: an integer
+// `issue_number` and a string `goal` (ui/src/lib/pipeline/templates/
+// issue-to-pr.yaml.txt).
+const itIssueToPRInputs = `{"type":"object","required":["issue_number","goal"],"properties":{` +
+	`"issue_number":{"type":"integer","minimum":0},"goal":{"type":"string","minLength":1}}}`
+
+// itRefusedInteger is the shape both write paths answer with: the shared
+// validator's per-input `invalid_input` for issue_number (its required arm may
+// ride along, exactly as it does for a manual POST /runs carrying the same
+// bad value).
+func itRefusedInteger(errs []api.ValidateError) bool {
+	for _, e := range errs {
+		if e.Code == "invalid_input" && strings.Contains(e.Message, `"issue_number"`) &&
+			strings.Contains(e.Message, "expected an integer") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestIssueTriggerTypedPlaceholderFiresAsNumber: the amendment's promise, end
+// to end against real Postgres. A trigger whose `issue_number` input is exactly
+// `{{issue.number}}` is ACCEPTED against a revision declaring it integer
+// (create validates what a fire would produce), the row keeps the raw template
+// text, and the fire writes the JSON number 42 — not `"42"`. Mixed text next to
+// it is still prose, so `goal` stays a string with its hole filled.
+func TestIssueTriggerTypedPlaceholderFiresAsNumber(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	f.itPublishPlan(t, ctx, "2.0.0", json.RawMessage(itIssueToPRInputs))
+
+	trigger, err := f.itIssueFires(ctx, "opened", []string{},
+		json.RawMessage(`{"issue_number":"{{issue.number}}","goal":"Fix #{{issue.number}}: {{issue.title}}"}`), nil)
+	if err != nil {
+		t.Fatalf("create the integer-input trigger: %v", err)
+	}
+	var stored string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT inputs::text FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored inputs: %v", err)
+	}
+	if !strings.Contains(stored, "{{issue.number}}") {
+		t.Errorf("stored inputs = %s, want the raw template text, not a rendered value", stored)
+	}
+
+	issue := itWireIssue{Number: 42, Title: "Crash on boot", Body: "it crashes", State: "open",
+		HTMLURL:   "https://github.com/octo/widgets/issues/42",
+		CreatedAt: trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339),
+		UpdatedAt: trigger.CreatedAt.Add(2 * time.Hour).Format(time.RFC3339),
+		Labels:    []itWireLabel{{Name: "bug"}}}
+	lister := newITIssueLister([]itWireIssue{issue}, nil)
+	defer lister.Close()
+	fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister)
+	if err != nil || fired != 1 {
+		t.Fatalf("tick = (%d, %v), want one fire", fired, err)
+	}
+
+	runID, kind := itIssueRunFor(t, ctx, f, "octo/widgets#42")
+	if kind != "issue" {
+		t.Fatalf("fired run kind = %s, want issue", kind)
+	}
+	value, jsonKind := itIssueInputRaw(t, ctx, f, runID, "issue_number")
+	if jsonKind != "number" || value != "42" {
+		t.Errorf("run input issue_number = %s of jsonb type %s, want the JSON number 42", value, jsonKind)
+	}
+	value, jsonKind = itIssueInputRaw(t, ctx, f, runID, "goal")
+	if jsonKind != "string" {
+		t.Fatalf("run input goal = %s of jsonb type %s, want a JSON string", value, jsonKind)
+	}
+	var goal string
+	if err := json.Unmarshal([]byte(value), &goal); err != nil {
+		t.Fatalf("decode goal %q: %v", value, err)
+	}
+	if goal != "Fix #42: Crash on boot" {
+		t.Errorf("goal = %q, want the mixed template rendered as text", goal)
+	}
+}
+
+// TestIssueTriggerTypedPlaceholderRefusals: the other side of the same rule.
+// A MIXED value (`#{{issue.number}}`) is text with a hole in it, so against an
+// integer input it is the 422 it always was — at create AND at patch — and so
+// is a whole placeholder that renders a string (`{{issue.title}}`) or plain
+// prose: only the exact `{{issue.number}}` becomes a number.
+func TestIssueTriggerTypedPlaceholderRefusals(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	f.itPublishPlan(t, ctx, "2.1.0", json.RawMessage(itIssueToPRInputs))
+
+	for _, tc := range []struct {
+		name   string
+		inputs string
+	}{
+		{"mixed text", `{"issue_number":"#{{issue.number}}","goal":"go"}`},
+		{"string placeholder", `{"issue_number":"{{issue.title}}","goal":"go"}`},
+		{"not a number at all", `{"issue_number":"seven","goal":"go"}`},
+	} {
+		_, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(tc.inputs), nil)
+		if err == nil {
+			t.Fatalf("%s: create accepted %s against an integer input", tc.name, tc.inputs)
+		}
+		var invalid *api.RunInputsInvalid
+		if !errors.As(err, &invalid) {
+			t.Fatalf("%s: create error = %v, want the run-inputs 422", tc.name, err)
+		}
+		// The 422's Detail only counts the refusals; its per-input messages are
+		// the ones that name issue_number, so that is what the assertion reads.
+		if !itRefusedInteger(invalid.Errors) {
+			t.Errorf("%s: create refusals = %+v, want issue_number refused with an integer mismatch", tc.name, invalid.Errors)
+		}
+	}
+
+	// The typed binding is accepted; the same rule then refuses an edit AWAY
+	// from it, so Update validates the rendered value and not the raw text too.
+	good := json.RawMessage(`{"issue_number":"{{issue.number}}","goal":"go"}`)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, good, nil)
+	if err != nil {
+		t.Fatalf("create the typed trigger: %v", err)
+	}
+	bad := json.RawMessage(`{"issue_number":"#{{issue.number}}","goal":"go"}`)
+	if _, err := f.triggers.UpdateIssueTrigger(ctx, UpdateIssueTriggerInput{
+		ID: trigger.ID, ExpectedVersion: trigger.Version, Inputs: &bad,
+	}); err == nil {
+		t.Fatalf("update accepted a mixed template into an integer input")
+	} else if invalid := (*api.RunInputsInvalid)(nil); !errors.As(err, &invalid) {
+		t.Fatalf("update error = %v, want the run-inputs 422", err)
+	} else if !itRefusedInteger(invalid.Errors) {
+		t.Errorf("update refusals = %+v, want the integer refusal restated", invalid.Errors)
+	}
+	if _, err := f.triggers.UpdateIssueTrigger(ctx, UpdateIssueTriggerInput{
+		ID: trigger.ID, ExpectedVersion: trigger.Version, Inputs: &good,
+	}); err != nil {
+		t.Errorf("update with the typed binding = %v, want it accepted", err)
 	}
 }

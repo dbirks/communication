@@ -240,8 +240,9 @@ func (s *IssueTriggerStore) issueTriggerFireable(pin schedulePin) error {
 
 // Create inserts one issue trigger. It refuses an event outside the recorded
 // vocabulary, an assignment outside the project or disabled or pinned to a
-// non-published revision, and inputs the pinned revision would refuse — every
-// one of which would otherwise show up as a trigger that quietly never runs.
+// non-published revision, and inputs the pinned revision would refuse AS A FIRE
+// WOULD SEND THEM (issueTriggerInputsValid) — every one of which would otherwise
+// show up as a trigger that quietly never runs.
 func (s *IssueTriggerStore) Create(ctx context.Context, in NewIssueTrigger) (IssueTrigger, error) {
 	if s.Pool == nil {
 		return IssueTrigger{}, errors.New("postgres: issue trigger store has no pool")
@@ -274,7 +275,7 @@ func (s *IssueTriggerStore) Create(ctx context.Context, in NewIssueTrigger) (Iss
 	if err != nil {
 		return IssueTrigger{}, err
 	}
-	if _, err := m4ValidateRunInputs(pin.plan, values, issueTriggerInputNames(values)...); err != nil {
+	if err := issueTriggerInputsValid(pin.plan, values); err != nil {
 		return IssueTrigger{}, fmt.Errorf("postgres: issue trigger inputs rejected by the pinned revision: %w", err)
 	}
 	enabled := true
@@ -419,7 +420,7 @@ func (s *IssueTriggerStore) UpdateIssueTrigger(ctx context.Context, in UpdateIss
 		if err != nil {
 			return IssueTrigger{}, err
 		}
-		if _, err := m4ValidateRunInputs(pin.plan, values, issueTriggerInputNames(values)...); err != nil {
+		if err := issueTriggerInputsValid(pin.plan, values); err != nil {
 			return IssueTrigger{}, fmt.Errorf("postgres: issue trigger %s inputs rejected by the pinned revision: %w", in.ID, err)
 		}
 	}
@@ -761,11 +762,24 @@ func issueLabelsMatch(issueLabels []string, triggerLabels []string) bool {
 // (number, title, body, url, labels = comma list). A string input without
 // placeholders passes through untouched; a non-string value is not a template
 // and is handed to the pinned revision as-is.
+//
+// The one exception (ADR-0056 amendment of 2026-10-25): a string that is
+// EXACTLY one placeholder renders TYPED, so `issue_number: "{{issue.number}}"`
+// reaches an input the pinned revision declares `integer` as a JSON number
+// instead of a quoted string. Mixed text (`"#{{issue.number}}"`) is prose with
+// a hole in it and stays a string, and so does every other member — number is
+// the only non-string fact GitHub's issue object carries.
 func renderIssueInputs(values map[string]json.RawMessage, issue github.Issue) (map[string]json.RawMessage, error) {
 	out := make(map[string]json.RawMessage, len(values))
 	for name, raw := range values {
 		var str string
 		if err := json.Unmarshal(raw, &str); err == nil {
+			if whole := issueTemplateWholeValue.FindStringSubmatch(str); whole != nil {
+				if typed, ok := typedIssuePlaceholder(whole[1], issue); ok {
+					out[name] = typed
+					continue
+				}
+			}
 			out[name] = json.RawMessage(strconv.Quote(renderIssueTemplate(str, issue)))
 			continue
 		}
@@ -774,9 +788,60 @@ func renderIssueInputs(values map[string]json.RawMessage, issue github.Issue) (m
 	return out, nil
 }
 
+// typedIssuePlaceholder is the typed arm of the whole-placeholder rule: of the
+// ADR's five members, `number` is the only one that is not a string, so it is
+// the only one with a typed rendering. An unknown member answers !ok and the
+// caller quotes it, which leaves `{{issue.footprint}}` visible to the author
+// exactly as it always was.
+func typedIssuePlaceholder(member string, issue github.Issue) (json.RawMessage, bool) {
+	switch member {
+	case "number":
+		return json.RawMessage(strconv.Itoa(issue.Number)), true
+	default:
+		return nil, false
+	}
+}
+
 // issueTemplatePlaceholder is the ADR-0056 § 5 template vocabulary: the
 // `{{issue.<member>}}` placeholders a trigger's inputs may carry.
 var issueTemplatePlaceholder = regexp.MustCompile(`\{\{issue\.([a-z]+)\}\}`)
+
+// issueTemplateWholeValue matches an input whose entire string is one
+// placeholder. Both anchors are the rule: unanchored, `"#{{issue.number}}"`
+// would render as the number 42 and lose the `#` its author typed.
+var issueTemplateWholeValue = regexp.MustCompile(`\A\{\{issue\.([a-z]+)\}\}\z`)
+
+// issueTriggerSampleIssue is the fixed issue Create/Update validate template
+// inputs against — the sample a fire is projected onto, so the pinned revision
+// judges the RENDERED value (`42`) and not the placeholder text
+// (`"{{issue.number}}"`). Its members carry values a type check can tell apart
+// (the one number, the strings that are not), so binding `{{issue.title}}` to
+// an integer input is refused here rather than at the first fire, and a stored
+// row keeps the raw template text either way.
+func issueTriggerSampleIssue() github.Issue {
+	return github.Issue{
+		Number:  1,
+		Title:   "sample",
+		Body:    "sample",
+		HTMLURL: "https://github.com/o/r/issues/1",
+		Labels:  []string{"sample"},
+	}
+}
+
+// issueTriggerInputsValid is the Create/Update input gate: render against the
+// sample issue, then run the SAME validator a manual POST /runs passes. The
+// fire (fireIssue) reaches for the same code path with the real issue, which
+// is why create-time acceptance and fire-time acceptance cannot disagree.
+func issueTriggerInputsValid(plan json.RawMessage, values map[string]json.RawMessage) error {
+	rendered, err := renderIssueInputs(values, issueTriggerSampleIssue())
+	if err != nil {
+		return err
+	}
+	if _, err := m4ValidateRunInputs(plan, rendered, issueTriggerInputNames(rendered)...); err != nil {
+		return err
+	}
+	return nil
+}
 
 // renderIssueTemplate resolves one placeholder family against the fired issue.
 func renderIssueTemplate(tmpl string, issue github.Issue) string {

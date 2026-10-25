@@ -95,6 +95,41 @@ export function issueValueInWords(value: string): string | null {
   return ordered.join(" and ");
 }
 
+/** The one placeholder a numeric input may carry: ADR-0056's amendment of
+ * 2026-10-25 renders a value that is EXACTLY this token as a JSON number, so an
+ * integer `issue_number` can be bound to the fired issue. Every other token
+ * renders a string, and mixed text (`"#{{issue.number}}"`) does too — which is
+ * why this is offered for numeric fields and not accepted for them elsewhere. */
+const ISSUE_NUMBER_TOKEN = "{{issue.number}}";
+
+/** The line under a numeric input that is bound to the fired issue: the control
+ * itself cannot show a template (it is a number field), so the binding the
+ * server will honour is spelled out where the author is looking. Nothing for a
+ * fixed number, an empty field, or anything the integer input would refuse. */
+export function numericIssueBinding(value: InputValue | undefined): string | null {
+  if (typeof value !== "string") return null;
+  // The server's rule is anchored (ADR-0056 amendment of 2026-10-25): the WHOLE
+  // value is the token or it renders a string the input refuses, so `#{{…}}`
+  // and `{{issue.title}}` are not bindings a numeric field has.
+  if (value !== ISSUE_NUMBER_TOKEN) return null;
+  return "the run gets the issue number — type a number to fix it instead";
+}
+
+/** The binding line rendered under a numeric input in issue mode (empty for a
+ * fixed number, so the author is never told a `0` default is a binding). */
+function NumericIssueBindingLine({ name, value }: { name: string; value: InputValue | undefined }) {
+  const binding = numericIssueBinding(value);
+  if (binding === null) return null;
+  return (
+    <span
+      className="font-mono text-[10.5px] text-faint"
+      data-testid={`trigger-dialog-numeric-binding-${name}`}
+    >
+      {binding}
+    </span>
+  );
+}
+
 /** One `THE RUN GETS` line: how the value the trigger carries reads to a
  * person. Honest to what is stored — a template made only of placeholders is
  * named in words, anything else is shown quoted and trimmed. */
@@ -564,6 +599,28 @@ function TriggerDialogBody({
                 >
                   use issue title/body
                 </button>
+              ) : null}
+              {/* An integer input (the shipped `issue-to-pr` template's
+                  `issue_number`) is unfillable without this: the number control
+                  cannot type a placeholder, and the fire fills the value the
+                  row carries. */}
+              {mode === "issue" && (field.kind === "integer" || field.kind === "number") ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setValues((current) => ({
+                        ...current,
+                        [field.name]: ISSUE_NUMBER_TOKEN,
+                      }))
+                    }
+                    className="w-max font-mono text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    data-testid={`trigger-dialog-quickfill-${field.name}`}
+                  >
+                    use issue number
+                  </button>
+                  <NumericIssueBindingLine name={field.name} value={values[field.name]} />
+                </>
               ) : null}
             </div>
           ))}

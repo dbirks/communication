@@ -118,3 +118,20 @@ control plane for the read half.
 table + its indexes, and the supporting `repositories (id, project_id)` UNIQUE). `migrate down`
 rolls the table back; the columns go with the table in the same file, forward-only per ADR-0013.
 Part 2 wires the poll and the issue-trigger routes.
+
+## Amendment (2026-10-25) — a whole-placeholder value renders typed
+
+§ 4's template vocabulary said strings "may carry `{{issue.number}}`" and the first
+implementation quoted every rendered value back into a JSON string, so the shipped
+`issue-to-pr` template — whose `issue_number` input is declared `type: integer` — could never
+have a trigger at all: `"{{issue.number}}"` failed the pinned revision's type check both when
+the trigger was written and at the fire. The rule now, with the vocabulary otherwise unchanged:
+**when a trigger's string input is EXACTLY one placeholder (the whole value, e.g.
+`{{issue.number}}`, no surrounding text), it renders with the type GitHub's own issue object
+carries — `number` as a JSON number; every other member (`title`, `body`, `url`, `labels`) and
+any mixed text (`"#{{issue.number}}"`) still renders a JSON string as before.** Because a
+placeholder-only value is then a typed fact rather than a string, Create/PATCH validate the
+inputs a fire WOULD produce (the template rendered against a fixed sample issue) instead of
+validating the raw template text; the row keeps storing the template. A string-typed input that
+wants the number as text still writes it as mixed text (`"issue {{issue.number}}"`), which is
+what the trigger dialog's numeric "use issue number" binding and its refusal messages advertise.
