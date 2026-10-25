@@ -1,11 +1,13 @@
 package assistant
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -20,7 +22,10 @@ import (
 // structural change to a draft, the server validates it against the draft
 // itself, and the UI applies it with the same graphDoc op a human gesture
 // uses. The model's text is never trusted: it is one JSON object from a fixed
-// enum, or a 422 at the route (the model is not re-asked).
+// enum, or a 422 at the route. A one-element array around a valid object
+// is unwrapped (small models answer [{...}] for {...}); any other malformed
+// shape earns exactly ONE corrective re-ask (issue2 A8 lab fix), and a
+// re-ask that still fails leaves the original 422 standing.
 
 // The three ops of the closed set (ADR-0044 § 2).
 const (
@@ -479,17 +484,21 @@ func hasEdge(deps []string, id string) bool {
 }
 
 // ExtractProposal pulls the ONE JSON object out of the model's answer. It
-// tolerates a ```json fence and a <think>...</think> prefix (reasoning
-// models) and nothing else: a second object, trailing prose or malformed
-// JSON is a refusal the route turns into 422 (the model is not re-asked).
+// tolerates a ```json fence, a reasoning think-block prefix and a
+// single-element JSON array wrapping the object (the lab's smaller models
+// sometimes answer [{...}] when asked for {...}) and nothing else: an array
+// of two or more values, a second object, trailing prose or malformed JSON
+// is a refusal the route turns into 422 — after CompleteText's single
+// corrective re-ask, whose failure leaves THIS error standing. Proposal
+// contents are validated by ValidateProposal; nothing here loosens that.
 func ExtractProposal(raw string) (Proposal, error) {
 	s := strings.TrimSpace(raw)
 	if strings.HasPrefix(s, "<think") {
-		i := strings.Index(s, "</think>")
+		i := strings.Index(s, thinkClose)
 		if i < 0 {
 			return Proposal{}, errors.New("the answer's think block never closes")
 		}
-		s = strings.TrimSpace(s[i+len("</think>"):])
+		s = strings.TrimSpace(s[i+len(thinkClose):])
 	}
 	if strings.HasPrefix(s, "```") {
 		end := strings.IndexByte(s, '\n')
@@ -504,13 +513,31 @@ func ExtractProposal(raw string) (Proposal, error) {
 		s = strings.TrimSpace(body[:closeIdx])
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
-	var p Proposal
-	if err := dec.Decode(&p); err != nil {
+	var first json.RawMessage
+	if err := dec.Decode(&first); err != nil {
 		return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
 		return Proposal{}, errors.New("the answer is not exactly one JSON object")
+	}
+	// A one-element array around an object is the same answer wearing a
+	// wrapper; anything wider (two proposals, an array of strings, a nested
+	// array) is the model not answering the question, not a formatting
+	// hiccup — it gets the re-ask, never an arbitrary pick.
+	if trimmed := bytes.TrimLeft(first, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
+		var elems []json.RawMessage
+		if err := json.Unmarshal(first, &elems); err != nil {
+			return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
+		}
+		if len(elems) != 1 {
+			return Proposal{}, fmt.Errorf("the answer is a JSON array of %d values, not a single JSON object", len(elems))
+		}
+		first = elems[0]
+	}
+	var p Proposal
+	if err := json.Unmarshal(first, &p); err != nil {
+		return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
 	}
 	if p.Op == "" {
 		return Proposal{}, errors.New("the answer object has no op")
@@ -578,11 +605,25 @@ func (d *Doc) Summaries() []ProposalNodeSummary {
 	return out
 }
 
+// proposalSystemLead is the opening clause of ProposalPrompt's system message.
+// It doubles as the marker CompleteText keys its corrective re-ask on: a text
+// completion whose system prompt starts with this lead is a proposal turn, and
+// only a proposal turn may be re-asked (interpret.go and summary.go share
+// CompleteText and keep their own no-re-ask contracts).
+const proposalSystemLead = "You edit pipeline drafts for a software engineering platform. "
+
+// proposalRepairInstruction is the single corrective user turn CompleteText
+// sends when a proposal answer is not one JSON object: it states the required
+// shape plainly, and a second failure is the route's 422, not another
+// question to the model.
+const proposalRepairInstruction = "Your previous answer was not one JSON object. Answer again with exactly one JSON object (a single JSON object, never a JSON array) in one of the shapes the instructions list, and no other text."
+
 // ProposalPrompt builds the one-shot (system, user) pair for a proposal turn:
 // the closed op set, the draft summary, the caller's profile list and the
-// instruction. One request, one JSON object, no re-ask (ADR-0044 § 3).
+// instruction. One request, one JSON object; only a shape-malformed answer
+// earns the single corrective re-ask (ADR-0044 § 3, issue2 A8 lab fix).
 func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string) (string, string) {
-	system := `You edit pipeline drafts for a software engineering platform. Answer with exactly ONE JSON object and no other text, one of:
+	system := proposalSystemLead + `Answer with exactly one JSON object — a single JSON object, never a JSON array — and no other text, one of:
 {"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"insert_on_edge","from":"<existing node id>","to":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
 {"op":"update_prompt","node":"<existing node id>","prompt":"<the new prompt text>","summary":"<one short sentence>"}
@@ -601,16 +642,52 @@ Worked example: the draft has nodes tests and review, where review depends on te
 // text. Egress failures carry the same Failure mapping the ask route uses
 // (503 unreachable / 504 timeout / 502 malformed), so the proposals route
 // and the ask route degrade identically.
+//
+// The ONE exception is the proposal turn (a system prompt starting with
+// proposalSystemLead): when its answer does not extract as a single proposal
+// object, the model is re-asked EXACTLY once — the malformed answer echoed
+// back (bounded) plus proposalRepairInstruction. If the re-ask hits an egress
+// failure or still does not extract, the FIRST answer is returned unchanged,
+// so the route reports the original error: the re-ask never replaces the
+// existing failure story, and no turn ever asks twice.
 func (b *Broker) CompleteText(ctx context.Context, system, user string) (string, *Failure) {
-	// enable_thinking=false: the proposal turn is one-shot extraction from a
-	// closed op set, not reasoning, and a thinking model spends minutes in
-	// the thinking budget before it ever emits the JSON the route needs.
+	messages := []chatMessage{
+		{Role: "system", Content: text(system)},
+		{Role: "user", Content: text(user)},
+	}
+	first, fail := b.completeText(ctx, messages)
+	if fail != nil {
+		return "", fail
+	}
+	if !strings.HasPrefix(system, proposalSystemLead) {
+		return first, nil
+	}
+	if _, err := ExtractProposal(first); err == nil {
+		return first, nil
+	}
+	b.logger().Info("assistant proposal re-asking once after a malformed answer",
+		slog.String("endpoint", b.EndpointHost()))
+	reask := append(append([]chatMessage(nil), messages...),
+		chatMessage{Role: "assistant", Content: text(bounded(first, MaxResultBytes))},
+		chatMessage{Role: "user", Content: text(proposalRepairInstruction)})
+	second, rfail := b.completeText(ctx, reask)
+	if rfail != nil {
+		return first, nil
+	}
+	if _, err := ExtractProposal(second); err != nil {
+		return first, nil
+	}
+	return second, nil
+}
+
+// completeText is one completion of the given envelope with thinking off —
+// enable_thinking=false: the proposal turn is one-shot extraction from a
+// closed op set, not reasoning, and a thinking model spends minutes in
+// the thinking budget before it ever emits the JSON the route needs.
+func (b *Broker) completeText(ctx context.Context, messages []chatMessage) (string, *Failure) {
 	ans, fail := b.complete(ctx, chatRequest{
-		Model: b.cfg.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: text(system)},
-			{Role: "user", Content: text(user)},
-		},
+		Model:              b.cfg.Model,
+		Messages:           messages,
 		ChatTemplateKwargs: map[string]any{"enable_thinking": false},
 	})
 	if fail != nil {

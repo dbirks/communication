@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -258,12 +259,20 @@ func TestExtractProposal(t *testing.T) {
 		{"surrounding whitespace", "  \n" + valid + "\n", false},
 		{"json fence", "```json\n" + valid + "\n```", false},
 		{"bare fence", "```\n" + valid + "\n```", false},
-		{"think prefix", "<think>\nlet me look at the graph...\n</think>" + valid, false},
-		{"think then fence", "<think>hmm</think>\n```json\n" + valid + "\n```", false},
+		{"think prefix", "<think>\nlet me look at the graph...\n" + thinkClose + valid, false},
+		{"think then fence", "<think>hmm" + thinkClose + "\n```json\n" + valid + "\n```", false},
 		{"malformed json", "```json\n{op: insert_after\n```", true},
 		{"a second op", valid + `{"op":"update_prompt","node":"plan","prompt":"x"}`, true},
 		{"trailing prose", valid + " let me know if that works", true},
 		{"no op member", `{"after":"plan","id":"n1"}`, true},
+		{"single-element array", "[" + valid + "]", false},
+		{"fenced single-element array", "```json\n[" + valid + "]\n```", false},
+		{"whitespace-padded single-element array", "  \n [ " + valid + " ] \n", false},
+		{"two-element array", "[" + valid + "," + valid + "]", true},
+		{"empty array", "[]", true},
+		{"array of a string", `["look again"]`, true},
+		{"nested array", "[[" + valid + "]]", true},
+		{"array then trailing object", "[" + valid + "] " + valid, true},
 		{"open think only", "<think>still reasoning", true},
 		{"empty answer", "", true},
 	}
@@ -431,4 +440,108 @@ func LoadDraftDocForTest(t *testing.T, yaml string) *Doc {
 		t.Fatalf("load doc: %v", err)
 	}
 	return d
+}
+
+// TestProposalAnswerRepair walks the issue2 A8 repair path against a scripted
+// endpoint: an object or a one-element array wrapping one finishes in ONE
+// completion (the array is unwrapped by ExtractProposal); any other malformed
+// answer earns exactly ONE corrective re-ask whose user turn states the
+// required shape; a re-ask that still fails leaves the FIRST answer — and
+// therefore the original error — standing.
+func TestProposalAnswerRepair(t *testing.T) {
+	const valid = `{"op":"insert_on_edge","from":"approve","to":"build_until_verified","kind":"model.chat","id":"check_plan","config":{"prompt":"look"},"summary":"adds a plan check"}`
+	cases := []struct {
+		name        string
+		answers     []string
+		wantCalls   int
+		wantAnswer  string
+		wantExtract bool
+	}{
+		{"object answers on the first try", []string{valid}, 1, valid, true},
+		{"one-element array is unwrapped without a re-ask", []string{"[" + valid + "]"}, 1, "[" + valid + "]", true},
+		{"two-object array gets one corrective re-ask", []string{"[" + valid + "," + valid + "]", valid}, 2, valid, true},
+		{"garbage gets one corrective re-ask", []string{"I am sure you can guess", valid}, 2, valid, true},
+		{"garbage twice keeps the original answer and its error", []string{"still prose", "also prose"}, 2, "still prose", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu    sync.Mutex
+				turns [][]chatMessage
+			)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+					http.Error(w, "wrong path", http.StatusNotFound)
+					return
+				}
+				var req chatRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "bad body", http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				turns = append(turns, req.Messages)
+				answer := tc.answers[len(turns)-1]
+				if len(turns) >= len(tc.answers) {
+					answer = tc.answers[len(tc.answers)-1]
+				}
+				mu.Unlock()
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{{
+						"message":       map[string]any{"role": "assistant", "content": answer},
+						"finish_reason": "stop",
+					}},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+			if err != nil {
+				t.Fatalf("broker: %v", err)
+			}
+			system, user := ProposalPrompt([]byte("[]"), nil, "insert a code reviewer after the approval gate")
+			if !strings.Contains(system, "a single JSON object") {
+				t.Fatalf("the proposal prompt must state the required shape plainly: %q", system)
+			}
+			raw, fail := broker.CompleteText(t.Context(), system, user)
+			if fail != nil {
+				t.Fatalf("completion: %v", fail)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(turns) != tc.wantCalls {
+				t.Fatalf("model calls = %d, want %d", len(turns), tc.wantCalls)
+			}
+			if raw != tc.wantAnswer {
+				t.Fatalf("answer = %q, want %q", raw, tc.wantAnswer)
+			}
+			_, xerr := ExtractProposal(raw)
+			if (xerr == nil) != tc.wantExtract {
+				t.Fatalf("extract err = %v, want extract success = %v", xerr, tc.wantExtract)
+			}
+			if !tc.wantExtract {
+				// The existing error stands: the route reports the FIRST
+				// answer's failure, not the re-ask's.
+				_, origErr := ExtractProposal(tc.answers[0])
+				if xerr.Error() != origErr.Error() {
+					t.Fatalf("error = %q, want the original %q", xerr, origErr)
+				}
+			}
+			if tc.wantCalls == 2 {
+				reask := turns[1]
+				if len(reask) != 4 {
+					t.Fatalf("re-ask envelope = %d messages, want system, user, assistant, user", len(reask))
+				}
+				if reask[0].Role != "system" || reask[1].Role != "user" || reask[2].Role != "assistant" || reask[3].Role != "user" {
+					t.Fatalf("re-ask roles = %v", []string{reask[0].Role, reask[1].Role, reask[2].Role, reask[3].Role})
+				}
+				if *reask[2].Content != bounded(tc.answers[0], MaxResultBytes) {
+					t.Fatalf("re-ask echo = %q, want the bounded first answer", *reask[2].Content)
+				}
+				if !strings.Contains(*reask[3].Content, "one JSON object") || !strings.Contains(*reask[3].Content, "never a JSON array") {
+					t.Fatalf("re-ask instruction does not state the required shape: %q", *reask[3].Content)
+				}
+			}
+		})
+	}
 }

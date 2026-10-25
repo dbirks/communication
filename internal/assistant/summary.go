@@ -218,17 +218,21 @@ func truncateRune(s string, n int) string {
 	return string(r[:n])
 }
 
-// stripModelProse removes a leading <think>...</think> block (reasoning models)
+// thinkClose ends a reasoning model's think block; it is assembled so the
+// literal tag never appears in source (some models stop generating on it).
+const thinkClose = "<" + "/think>"
+
+// stripModelProse removes a leading <think>... think-close block (reasoning models)
 // and an optional ``` / ```json fence, returning the trimmed body the JSON
 // decoder must read. A malformed fence or an unclosed think block is a refusal.
 func stripModelProse(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if strings.HasPrefix(s, "<think") {
-		i := strings.Index(s, "</think>")
+		i := strings.Index(s, thinkClose)
 		if i < 0 {
 			return "", errors.New("the answer's think block never closes")
 		}
-		s = strings.TrimSpace(s[i+len("</think>"):])
+		s = strings.TrimSpace(s[i+len(thinkClose):])
 	}
 	if strings.HasPrefix(s, "```") {
 		end := strings.IndexByte(s, '\n')
