@@ -27,6 +27,7 @@ type prjFakeStore struct {
 	nextID    int
 	created   []prjCreateCall
 	added     []prjAddCall
+	patched   []prjPatchCall
 	put       []prjPutCall
 	denied    []prjDenial
 	customErr error // returned by the next call instead of the normal answer
@@ -34,7 +35,10 @@ type prjFakeStore struct {
 
 type prjCreateCall struct{ name, slug, description string }
 type prjAddCall struct {
-	projectID, name, gitURL, defaultBranch string
+	projectID, name, gitURL, defaultBranch, credentialSecretID string
+}
+type prjPatchCall struct {
+	projectID, repositoryID, credentialSecretID string
 }
 type prjPutCall struct {
 	projectID, userID, role string
@@ -145,7 +149,7 @@ func (f *prjFakeStore) ListRepositories(ctx context.Context, c Caller, projectID
 	return f.repos[projectID], nil
 }
 
-func (f *prjFakeStore) AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch string) (RepositoryView, error) {
+func (f *prjFakeStore) AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch, credentialSecretID string) (RepositoryView, error) {
 	if f.customErr != nil {
 		return RepositoryView{}, f.customErr
 	}
@@ -156,7 +160,12 @@ func (f *prjFakeStore) AddRepository(ctx context.Context, c Caller, projectID, n
 	if !authz.CanManage(c.IsOrgAdmin, authz.Role(p.MyRole)) {
 		return RepositoryView{}, ErrProjectNotFound
 	}
-	f.added = append(f.added, prjAddCall{projectID, name, gitURL, defaultBranch})
+	// The fake repeats the contract's one refusal the handlers must map:
+	// a credential the store deems invalid for the project.
+	if credentialSecretID == prjTBadCredential {
+		return RepositoryView{}, ErrRepositoryCredentialInvalid
+	}
+	f.added = append(f.added, prjAddCall{projectID, name, gitURL, defaultBranch, credentialSecretID})
 	for _, r := range f.repos[projectID] {
 		if r.Name == name {
 			return RepositoryView{}, ErrProjectConflict
@@ -170,9 +179,49 @@ func (f *prjFakeStore) AddRepository(ctx context.Context, c Caller, projectID, n
 		DefaultBranch: defaultBranch,
 		CreatedAt:     prjFixedTime,
 	}
+	prjApplyCredential(&r, credentialSecretID)
 	f.nextID++
 	f.repos[projectID] = append(f.repos[projectID], r)
 	return r, nil
+}
+
+// prjTBadCredential is the fixture's "the store refused this credential".
+const prjTBadCredential = "00000000-0000-7000-8000-00000000badc"
+
+func prjApplyCredential(r *RepositoryView, credentialSecretID string) {
+	r.CredentialSecretID = nil
+	r.Credential = "none"
+	if credentialSecretID != "" {
+		cred := credentialSecretID
+		r.CredentialSecretID = &cred
+		r.Credential = "configured"
+	}
+}
+
+func (f *prjFakeStore) PatchRepositoryCredential(ctx context.Context, c Caller, projectID, repositoryID, credentialSecretID string) (RepositoryView, error) {
+	if f.customErr != nil {
+		return RepositoryView{}, f.customErr
+	}
+	p, err := f.GetProject(ctx, c, projectID)
+	if err != nil {
+		return RepositoryView{}, err
+	}
+	if !authz.CanManage(c.IsOrgAdmin, authz.Role(p.MyRole)) {
+		return RepositoryView{}, ErrProjectNotFound
+	}
+	if credentialSecretID == prjTBadCredential {
+		return RepositoryView{}, ErrRepositoryCredentialInvalid
+	}
+	f.patched = append(f.patched, prjPatchCall{projectID, repositoryID, credentialSecretID})
+	for i, r := range f.repos[projectID] {
+		if r.ID != repositoryID {
+			continue
+		}
+		prjApplyCredential(&r, credentialSecretID)
+		f.repos[projectID][i] = r
+		return r, nil
+	}
+	return RepositoryView{}, ErrProjectNotFound
 }
 
 func (f *prjFakeStore) ListMembers(ctx context.Context, c Caller, projectID string) ([]MemberView, error) {
@@ -470,7 +519,7 @@ func TestReadsReturnContractShapes(t *testing.T) {
 	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "contributor"})
 	store.repos[id] = []RepositoryView{{
 		ID: "r1", ProjectID: id, Name: "communication", GitURL: "https://github.com/example/communication.git",
-		DefaultBranch: "main", CreatedAt: prjFixedTime,
+		DefaultBranch: "main", CreatedAt: prjFixedTime, Credential: "none",
 	}}
 	store.members[id] = []MemberView{{UserID: "u-1", DisplayName: "David", Role: "contributor"}}
 	srv := prjServer(t, store, prjAs("u-1", false))
@@ -479,7 +528,7 @@ func TestReadsReturnContractShapes(t *testing.T) {
 		path string
 		item []string
 	}{
-		{"/api/v1/projects/" + id + "/repos", []string{"id", "project_id", "name", "git_url", "default_branch", "created_at"}},
+		{"/api/v1/projects/" + id + "/repos", []string{"id", "project_id", "name", "git_url", "default_branch", "created_at", "credential", "credential_secret_id"}},
 		{"/api/v1/projects/" + id + "/members", []string{"user_id", "display_name", "role"}},
 	} {
 		rec := do(t, srv, request(http.MethodGet, "http://localhost:8080"+tt.path, nil))
@@ -543,7 +592,7 @@ func TestMaintainerCanAddAndChangeMembers(t *testing.T) {
 		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
 	}
 	prjWantFields(t, rec.Body.Bytes(),
-		"id", "project_id", "name", "git_url", "default_branch", "created_at")
+		"id", "project_id", "name", "git_url", "default_branch", "created_at", "credential", "credential_secret_id")
 	body := decodeBody(t, rec)
 	prjEqual(t, body["project_id"], id, "project_id")
 	prjEqual(t, body["default_branch"], "main", "default_branch defaults to main")
@@ -652,4 +701,163 @@ func TestProjectRoutesAreNotFoundForOtherMethods(t *testing.T) {
 		t.Fatalf("status = %d, want 404 (body %s)", rec.Code, rec.Body)
 	}
 	decodeProblem(t, rec)
+}
+
+// --- ADR-0061: the repository's GitHub credential -------------------------
+
+// prjTBrokerCredential is the fixture's integration_broker secret id;
+// prjTBadCredential (defined with the fake store) is the id the store refuses.
+const prjTBrokerCredential = "01987a6c-0000-7000-8000-00000000b0b1"
+
+// TestAddRepositoryCredentialShape pins the ADR-0061 response contract: a
+// create with a credential carries credential_secret_id and the derived
+// credential "configured"; one without carries an explicit null and "none".
+// No field could carry the value even if something tried.
+func TestAddRepositoryCredentialShape(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+	srv := prjServer(t, store, prjAs("u-1", false))
+
+	rec := do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos",
+		`{"name":"backend","git_url":"https://github.com/example/backend.git","credential_secret_id":"`+prjTBrokerCredential+`"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	prjWantFields(t, rec.Body.Bytes(),
+		"id", "project_id", "name", "git_url", "default_branch", "created_at",
+		"credential_secret_id", "credential")
+	body := decodeBody(t, rec)
+	prjEqual(t, body["credential_secret_id"], prjTBrokerCredential, "credential_secret_id")
+	prjEqual(t, body["credential"], "configured", "credential")
+	prjEqual(t, store.added, []prjAddCall{{
+		projectID: id, name: "backend", gitURL: "https://github.com/example/backend.git",
+		defaultBranch: "main", credentialSecretID: prjTBrokerCredential,
+	}}, "store call")
+
+	rec = do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos",
+		`{"name":"frontend","git_url":"https://github.com/example/frontend.git"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	if v, ok := body["credential_secret_id"]; !ok || v != nil {
+		t.Errorf("wire credential_secret_id = %v (present=%v), want explicit null", v, ok)
+	}
+	prjEqual(t, body["credential"], "none", "credential without a secret")
+}
+
+// TestAddRepositoryCredentialRefused pins the typed 422 `invalid_credential_secret`:
+// a malformed id is refused by the handler, a secret the store deems invalid
+// (another project's, or an env-mode one) is refused with the same code, and
+// neither write reaches the store.
+func TestAddRepositoryCredentialRefused(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+	srv := prjServer(t, store, prjAs("u-1", false))
+
+	for _, tt := range []struct{ name, cred string }{
+		{"malformed id", "not-a-uuid"},
+		{"store-refused secret", prjTBadCredential},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := len(store.added)
+			rec := do(t, srv, prjPost(http.MethodPost, "/api/v1/projects/"+id+"/repos",
+				`{"name":"cred-repo","git_url":"https://github.com/example/cred.git","credential_secret_id":"`+tt.cred+`"}`))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422 (body %s)", rec.Code, rec.Body)
+			}
+			if !strings.Contains(rec.Body.String(), "invalid_credential_secret") {
+				t.Errorf("body has no invalid_credential_secret code: %s", rec.Body)
+			}
+			if len(store.added) != before {
+				t.Errorf("store was called with a refused credential: %+v", store.added)
+			}
+		})
+	}
+}
+
+// TestPatchRepositoryCredentialSetsAndClears is the ADR's null-clears rule:
+// a patch with a uuid configures, a patch with null clears, a patch naming no
+// field or a malformed value refuses, an unknown repository is the same 404
+// every repository route gives, and a read-only role cannot patch at all.
+func TestPatchRepositoryCredentialSetsAndClears(t *testing.T) {
+	store := prjNewFakeStore()
+	id := store.addProject(ProjectView{Slug: "widgets", Name: "Widgets", MyRole: "maintainer"})
+	// The route names the repository by uuid (pathUUID rules), so the fixture
+	// row carries one too.
+	const repoID = "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1"
+	store.repos[id] = []RepositoryView{{
+		ID: repoID, ProjectID: id, Name: "communication",
+		GitURL: "https://github.com/example/communication.git", DefaultBranch: "main",
+		CreatedAt: prjFixedTime, Credential: "none",
+	}}
+	srv := prjServer(t, store, prjAs("u-1", false))
+	base := "/api/v1/projects/" + id + "/repos/" + repoID
+
+	rec := do(t, srv, prjPost(http.MethodPatch, base,
+		`{"credential_secret_id":"`+prjTBrokerCredential+`"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body := decodeBody(t, rec)
+	prjEqual(t, body["credential"], "configured", "set credential")
+	prjEqual(t, body["credential_secret_id"], prjTBrokerCredential, "set credential_secret_id")
+
+	rec = do(t, srv, prjPost(http.MethodPatch, base, `{"credential_secret_id":null}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	body = decodeBody(t, rec)
+	if v, ok := body["credential_secret_id"]; !ok || v != nil {
+		t.Errorf("cleared credential_secret_id = %v (present=%v), want explicit null", v, ok)
+	}
+	prjEqual(t, body["credential"], "none", "cleared credential")
+	if len(store.patched) != 2 ||
+		store.patched[0].credentialSecretID != prjTBrokerCredential ||
+		store.patched[1].credentialSecretID != "" {
+		t.Errorf("store patch calls = %+v, want set then clear", store.patched)
+	}
+
+	for _, tt := range []struct {
+		name, body string
+		want       int
+		code       string
+	}{
+		{"missing field", `{}`, 422, ""},
+		{"malformed id", `{"credential_secret_id":"nope"}`, 422, "invalid_credential_secret"},
+		{"store-refused id", `{"credential_secret_id":"` + prjTBadCredential + `"}`, 422, "invalid_credential_secret"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, srv, prjPost(http.MethodPatch, base, tt.body))
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tt.want, rec.Body)
+			}
+			if tt.code != "" && !strings.Contains(rec.Body.String(), tt.code) {
+				t.Errorf("body has no %s code: %s", tt.code, rec.Body)
+			}
+		})
+	}
+
+	rec = do(t, srv, prjPost(http.MethodPatch,
+		"/api/v1/projects/"+id+"/repos/01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6ff",
+		`{"credential_secret_id":null}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown repository: status = %d, want 404 (body %s)", rec.Code, rec.Body)
+	}
+
+	// A viewer (read-only role) cannot patch: the same 403 the other
+	// mutations give, and the store sees nothing.
+	store2 := prjNewFakeStore()
+	id2 := store2.addProject(ProjectView{Slug: "other", Name: "Other", MyRole: "viewer"})
+	store2.repos[id2] = []RepositoryView{{ID: "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1", ProjectID: id2, Name: "communication", Credential: "none"}}
+	srv2 := prjServer(t, store2, prjAs("u-view", false))
+	rec = do(t, srv2, prjPost(http.MethodPatch,
+		"/api/v1/projects/"+id2+"/repos/01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1",
+		`{"credential_secret_id":null}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer patch: status = %d, want 403 (body %s)", rec.Code, rec.Body)
+	}
+	if len(store2.patched) != 0 {
+		t.Errorf("store.patched = %+v, want nothing", store2.patched)
+	}
 }

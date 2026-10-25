@@ -485,3 +485,156 @@ func TestIssueTriggerOtherOrganizationCannotListOrPatch(t *testing.T) {
 		t.Errorf("another org patches = %v, want the not-found sentinel", err)
 	}
 }
+
+// ------------------------------------------- ADR-0061: credentialed polls
+
+// itRecordingLister wraps the real-client lister and records the token the
+// poll passed per call — the assertion the ADR's § 5 rests on.
+type itRecordingLister struct {
+	inner  *itIssueLister
+	tokens []string
+}
+
+func (l *itRecordingLister) ListIssues(ctx context.Context, repo github.Repository,
+	q github.IssueQuery, token string) ([]github.Issue, error) {
+	l.tokens = append(l.tokens, token)
+	return l.inner.ListIssues(ctx, repo, q, token)
+}
+
+func (l *itRecordingLister) Close() { l.inner.Close() }
+
+// itSeedCredentialSecret writes an integration_broker secret in the
+// fixture's project and references it from the fixture's repository — the
+// same rows the store's own write paths produce (the trigger validates
+// them). Returns the secret store (with keyring) and the plaintext.
+func itSeedCredentialSecret(t *testing.T, f *itFixture) (*SecretStore, string) {
+	t.Helper()
+	ctx := testCtx(t)
+	store := &SecretStore{Pool: f.pool, Keys: secKeyring(t)}
+	secret, err := store.CreateSecret(ctx, f.caller, f.projectID, NewSecret{
+		Slug: "poller-cred-" + migFixtureToken(t), Purpose: "github_repo",
+		DeliveryMode: "integration_broker",
+		Profiles:     []string{"11111111-1111-4111-8111-111111111111"},
+		Value:        []byte(itCredValue),
+	})
+	if err != nil {
+		t.Fatalf("create broker secret: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE repositories SET credential_secret_id = $2::uuid WHERE id = $1::uuid`,
+		f.repository, secret.ID); err != nil {
+		t.Fatalf("reference credential: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = f.pool.Exec(bg, `UPDATE repositories SET credential_secret_id = NULL WHERE id = $1::uuid`, f.repository)
+		_, _ = f.pool.Exec(bg, `DELETE FROM secret_versions WHERE secret_id = $1::uuid`, secret.ID)
+		_, _ = f.pool.Exec(bg, `DELETE FROM secret_metadata WHERE id = $1::uuid`, secret.ID)
+		_, _ = f.pool.Exec(bg, `DELETE FROM audit_events WHERE action = 'secret.resolved' AND project_id = $1::uuid`, f.projectID)
+	})
+	return store, itCredValue
+}
+
+const itCredValue = "ghs_poller_fixture_value"
+
+// TestIssueTriggerPollPassesRepositoryCredential: the repository's credential
+// rides the poll (ADR-0061 § 5), and clearing it returns the poll to
+// anonymous — "" on the wire, never a stale token.
+func TestIssueTriggerPollPassesRepositoryCredential(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	if _, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{}`), nil); err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	store, want := itSeedCredentialSecret(t, f)
+	f.triggers.Credentials = store
+
+	lister := &itRecordingLister{inner: newITIssueLister(nil, nil)}
+	defer lister.Close()
+	if fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister); err != nil || fired != 0 {
+		t.Fatalf("tick = (%d, %v), want no fire on an empty list", fired, err)
+	}
+	if len(lister.tokens) != 1 || lister.tokens[0] != want {
+		t.Fatalf("recorded tokens = %q, want exactly [%q]", lister.tokens, want)
+	}
+
+	// Clear the credential, make the trigger due again, and the same poll is
+	// anonymous.
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE repositories SET credential_secret_id = NULL WHERE id = $1::uuid`, f.repository); err != nil {
+		t.Fatalf("clear credential: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE issue_triggers SET last_polled_at = NULL WHERE project_id = $1::uuid`, f.projectID); err != nil {
+		t.Fatalf("reset poll cursor: %v", err)
+	}
+	if fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister); err != nil || fired != 0 {
+		t.Fatalf("anonymous tick = (%d, %v), want no fire", fired, err)
+	}
+	if len(lister.tokens) != 2 || lister.tokens[1] != "" {
+		t.Fatalf("recorded tokens = %q, want the second one empty (anonymous)", lister.tokens)
+	}
+}
+
+// TestIssueTriggerCredentialFailureLandsLastError: a credential that will not
+// resolve (revoked here) fails the poll onto the row's last_error, names the
+// repository, and never reaches GitHub anonymously.
+func TestIssueTriggerCredentialFailureLandsLastError(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	store, _ := itSeedCredentialSecret(t, f)
+	f.triggers.Credentials = store
+	secretID := ""
+	if err := f.pool.QueryRow(ctx,
+		`SELECT credential_secret_id::text FROM repositories WHERE id = $1::uuid`, f.repository).Scan(&secretID); err != nil {
+		t.Fatalf("read credential id: %v", err)
+	}
+	if _, err := store.RevokeSecret(ctx, f.caller, f.projectID, secretID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	lister := &itRecordingLister{inner: newITIssueLister(nil, nil)}
+	defer lister.Close()
+	if fired, err := f.triggers.TickIssueTriggers(ctx, time.Now().UTC(), lister); err != nil || fired != 0 {
+		t.Fatalf("tick = (%d, %v), want a green tick with no fire", fired, err)
+	}
+	if len(lister.tokens) != 0 {
+		t.Errorf("GitHub was polled after a failed credential resolve: %q", lister.tokens)
+	}
+	var lastErr string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT COALESCE(last_error, '') FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&lastErr); err != nil {
+		t.Fatalf("read last_error: %v", err)
+	}
+	if !strings.Contains(lastErr, "credential") || !strings.Contains(lastErr, "octo/widgets") {
+		t.Errorf("last_error = %q, want it to name the credential and the repository", lastErr)
+	}
+
+	// A replica that wired no secret store answers the same fail-closed way
+	// rather than polling a credentialed repository anonymously.
+	unwired := &IssueTriggerStore{Pool: f.pool, Runs: f.runs}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE issue_triggers SET last_polled_at = NULL, last_error = '' WHERE id = $1::uuid`, trigger.ID); err != nil {
+		t.Fatalf("reset trigger: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE repositories SET credential_secret_id = $2::uuid WHERE id = $1::uuid`, f.repository, secretID); err != nil {
+		t.Fatalf("restore credential: %v", err)
+	}
+	if fired, err := unwired.TickIssueTriggers(ctx, time.Now().UTC(), lister); err != nil || fired != 0 {
+		t.Fatalf("unwired tick = (%d, %v), want no fire and no tick error", fired, err)
+	}
+	if err := f.pool.QueryRow(ctx,
+		`SELECT COALESCE(last_error, '') FROM issue_triggers WHERE id = $1::uuid`, trigger.ID).Scan(&lastErr); err != nil {
+		t.Fatalf("read last_error: %v", err)
+	}
+	if !strings.Contains(lastErr, "secret store") {
+		t.Errorf("unwired last_error = %q, want it to name the missing secret store", lastErr)
+	}
+}

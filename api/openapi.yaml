@@ -609,17 +609,75 @@ paths:
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /api/v1/projects/{projectId}/repos/{repositoryId}:
+    patch:
+      operationId: patchRepository
+      tags: [repositories]
+      summary: Set or clear a repository's GitHub credential (ADR-0061)
+      description: >
+        The repository's one mutable field today: `credential_secret_id` —
+        the id of an `integration_broker` secret of this project (or its
+        organization) that the platform resolves for the mirror clone/fetch
+        and issue reads. `null` clears it and the repository reads anonymous
+        again. A reference the project may not make is `422` with
+        `code: invalid_credential_secret`; the value is never accepted or
+        returned through this surface. Maintainer only; appends no event and
+        bumps the project version.
+      security:
+        - sessionCookie: []
+          csrfHeader: []
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/RepositoryId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepositoryPatch"
+      responses:
+        "200":
+          description: The repository with its derived `credential` state.
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Repository"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: >
+            `credential_secret_id` names no usable secret for this project
+            (`code: invalid_credential_secret`).
+          headers:
+            X-Communication-Replica:
+              $ref: "#/components/headers/XCommunicationReplica"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/projects/{projectId}/repos/{repositoryId}/issues:
     get:
       operationId: listRepositoryIssues
       tags: [repositories]
-      summary: List GitHub issues for one repository (read-only, anonymous upstream)
+      summary: List GitHub issues for one repository (read-only, per-repository credential)
       description: >
         Answers "what is in the tracker right now" so a run can be started
-        from an issue (ADR-0031, wishlist W3's read half). The adapter calls
-        `GET https://api.github.com/repos/{owner}/{repo}/issues` with no
-        token, so only public repositories answer; `git_url` is parsed into
-        `owner/repo` and pull requests are filtered out. Nothing is stored —
+        from an issue (ADR-0031, wishlist W3's read half; ADR-0061 makes it
+        work for private repositories). The adapter calls
+        `GET https://api.github.com/repos/{owner}/{repo}/issues` anonymously
+        for a repository without an ADR-0061 credential and with
+        `Authorization: Bearer <token>` for one that has it, so private
+        repositories answer too; a credential that cannot be resolved is
+        `502` with `code: github_credential_unresolvable`, never a silent
+        anonymous retry. `git_url` is parsed into `owner/repo` and pull
+        requests are filtered out. Nothing is stored —
         GitHub owns the issue data (`07`), and this route is not a trigger:
         webhooks/invocations and the `integration.query` node kind need the
         M6 tables and dedupe. `viewer` or above; bodies are truncated to
@@ -674,11 +732,13 @@ paths:
                 $ref: "#/components/schemas/Problem"
         "502":
           description: >
-            GitHub refused or failed the anonymous read: an upstream `404`
-            (private or missing repository) becomes
-            `github_repository_not_found`, a spent anonymous budget becomes
-            `github_rate_limited`, anything else (including the 10 s
-            timeout) becomes `github_upstream_error`.
+            GitHub refused or failed the read: an upstream `404` (private or
+            missing repository) becomes `github_repository_not_found`, a
+            spent budget (anonymous or the repository's token) becomes
+            `github_rate_limited`, a configured credential this process could
+            not resolve becomes `github_credential_unresolvable`, anything
+            else (including the 10 s timeout) becomes
+            `github_upstream_error`.
           headers:
             X-Communication-Replica:
               $ref: "#/components/headers/XCommunicationReplica"
@@ -2202,8 +2262,9 @@ paths:
         **this project** and a relative path with no `..`, no leading `/` and no
         empty segment), and against the filesystem only later, at materialization
         time — "relative to what" has no answer until a workspace exists.
-        `integration_broker` is refused here with `422` until it is implemented
-        (`ADR-0018` clause 8), so a declaration can never silently degrade to env
+        `integration_broker` is refused here with `422`: broker secrets are
+        used by integrations, never mounted (`ADR-0018` clause 8, kept true by
+        `ADR-0061`), so a declaration can never silently degrade to env
         delivery. `maintainer` or above.
       security:
         - sessionCookie: []
@@ -6313,6 +6374,25 @@ components:
         created_at:
           type: string
           format: date-time
+        credential_secret_id:
+          type:
+            - string
+            - "null"
+          format: uuid
+          description: >
+            The ADR-0061 GitHub credential: an `integration_broker` secret of
+            this project (or its organization) used for the mirror clone/fetch
+            and issue reads. Null means no credential — anonymous. The
+            secret's VALUE has no representation on this schema or anywhere
+            else on the surface.
+        credential:
+          type: string
+          enum: [none, configured]
+          description: >
+            Derived from the presence of `credential_secret_id` so a client
+            can render "GitHub access: configured" without resolving the
+            secret. Never anything but this enum. Servers emit it on every
+            repository; a client must read a missing member as `none`.
       example:
         id: 01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f0
         project_id: 01987a6c-4d5e-7f1a-9b2c-3d4e5f6a7b80
@@ -6320,6 +6400,8 @@ components:
         git_url: https://github.com/example/communication.git
         default_branch: main
         created_at: "2026-10-14T18:00:00Z"
+        credential_secret_id: null
+        credential: none
     RepositoryCreate:
       title: RepositoryCreate
       description: Request body for adding a repository to a project.
@@ -6346,6 +6428,34 @@ components:
           minLength: 1
           maxLength: 200
           default: main
+        credential_secret_id:
+          type:
+            - string
+            - "null"
+          format: uuid
+          description: >
+            Optional ADR-0061 GitHub credential: the id of an
+            `integration_broker` secret of this project (or its organization).
+            Anything else — a missing secret, another project's secret, or a
+            secret whose delivery mode is `env`/`env_file` — is `422` with
+            `code: invalid_credential_secret`.
+    RepositoryPatch:
+      title: RepositoryPatch
+      description: >
+        Request body for `patchRepository` (ADR-0061): the repository's one
+        mutable field today is its GitHub credential. `credential_secret_id`
+        is required — a uuid sets it, `null` clears it — so a body that named
+        nothing could not silently answer 200 for a request that changed
+        nothing.
+      type: object
+      required: [credential_secret_id]
+      additionalProperties: false
+      properties:
+        credential_secret_id:
+          type:
+            - string
+            - "null"
+          format: uuid
     Member:
       title: Member
       description: A project membership with the member's display name resolved.
@@ -7490,9 +7600,10 @@ components:
           type: string
           enum: [env, env_file, integration_broker]
           description: >
-            `integration_broker` is declared in `05` and refused in M3
-            (`ADR-0018` clause 8) — it can be stored as a policy so the intent
-            survives, but no mount may be created for it yet.
+            `integration_broker` (ADR-0018, built by ADR-0061) is a secret the
+            platform uses on the team's behalf through an integration
+            consumer. It is creatable but never mountable: it never enters
+            an agent's environment, argv, file tree or sandbox.
         current_version:
           type: integer
           minimum: 1
@@ -7554,12 +7665,13 @@ components:
           maxLength: 512
         delivery_mode:
           type: string
-          enum: [env, env_file]
+          enum: [env, env_file, integration_broker]
           description: >
-            `integration_broker` is not acceptable on create either: a secret with
-            no deliverable placement is a secret nobody can use, and refusing it
-            here is what keeps `05`'s "prefer a restricted broker" from silently
-            degrading into env delivery.
+            `integration_broker` is creatable (ADR-0061): the platform uses
+            such a secret on the team's behalf — today a repository's GitHub
+            credential for private clone/fetch/issue reads — and it is never
+            mountable, so it cannot silently degrade into env delivery
+            (`ADR-0018` clause 8 stays true for agents).
         scope:
           type: string
           enum: [project, org]
@@ -7773,7 +7885,12 @@ components:
           format: uuid
         delivery_mode:
           type: string
-          enum: [env, env_file]
+          enum: [env, env_file, integration_broker]
+          description: >
+            The same mode vocabulary as `SecretCreate`; `integration_broker`
+            is named here only to say what happens to it — a mount that
+            declares it is refused with `422` (`ADR-0061`: broker secrets
+            are used by integrations, never mounted).
         repository_id:
           type: string
           format: uuid

@@ -685,9 +685,9 @@ func TestSecretBodiesAreHeldToTheirSchemas(t *testing.T) {
 		{"create with an oversized value", http.MethodPost, "/api/v1/projects/" + secTProject + "/secrets", map[string]any{
 			"slug": "big-value", "delivery_mode": "env", "value": strings.Repeat("v", secMaxValueLen+1),
 		}, 422, "65536"},
-		{"create with broker delivery", http.MethodPost, "/api/v1/projects/" + secTProject + "/secrets", map[string]any{
-			"slug": "broker-secret", "delivery_mode": "integration_broker", "value": secTSentinel,
-		}, 422, "integration_broker"},
+		{"create with an unknown delivery mode", http.MethodPost, "/api/v1/projects/" + secTProject + "/secrets", map[string]any{
+			"slug": "wrong-mode", "delivery_mode": "carrier-pigeon", "value": secTSentinel,
+		}, 422, "delivery_mode must be env, env_file or integration_broker"},
 		{"create with a bad slug", http.MethodPost, "/api/v1/projects/" + secTProject + "/secrets", map[string]any{
 			"slug": "Bad Slug", "delivery_mode": "env", "value": secTSentinel,
 		}, 422, "slug"},
@@ -1341,4 +1341,62 @@ func secOpenAPISchemaFields(name string) ([]string, error) {
 func sortStrings(in []string) []string {
 	sort.Strings(in)
 	return in
+}
+
+// TestBrokerSecretIsCreatableButNeverMountable is the ADR-0061 half of the
+// secrets surface: integration_broker moved from "declared but unbuilt" to
+// CREATABLE (a repository names it as its GitHub credential), and it stays
+// UNMOUNTABLE — a broker secret is used by integrations and never mounted
+// into an agent's tree or environment. The mount refusal answers 422 both at
+// the handler's shape gate and at the store's policy gate.
+func TestBrokerSecretIsCreatableButNeverMountable(t *testing.T) {
+	f := secNewFixture(t, prjAs("u-1", false))
+
+	rec := do(t, f.server, secMutation(http.MethodPost, "/api/v1/projects/"+secTProject+"/secrets", map[string]any{
+		"slug": "github-repo-token", "purpose": "github_repo", "delivery_mode": "integration_broker",
+		"value": secTSentinel,
+	}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create integration_broker: status = %d, want 201 (%s)", rec.Code, rec.Body)
+	}
+	created := decodeBody(t, rec)
+	if created["delivery_mode"] != "integration_broker" {
+		t.Errorf("created delivery_mode = %v, want integration_broker", created["delivery_mode"])
+	}
+	if strings.Contains(rec.Body.String(), secTSentinel) {
+		t.Fatalf("the create response quoted the value: %s", rec.Body)
+	}
+	if len(f.secrets.created) == 0 || f.secrets.created[len(f.secrets.created)-1].DeliveryMode != "integration_broker" {
+		t.Errorf("store never saw the broker create: %+v", f.secrets.created)
+	}
+	createdID, _ := created["id"].(string)
+
+	// Mounting it is refused — and the refusal says what a broker secret is
+	// FOR, not that the mode is unbuilt.
+	mount := func(delivery string) *httptest.ResponseRecorder {
+		return do(t, f.server, secMutation(http.MethodPost, "/api/v1/projects/"+secTProject+"/secret-mounts", map[string]any{
+			"secret_id": createdID, "delivery_mode": delivery, "env_name": "BROKER_TOKEN",
+		}))
+	}
+	rec = mount("integration_broker")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("broker mount: status = %d, want 422 (%s)", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "integration_broker") || !strings.Contains(strings.ToLower(body), "mount") {
+		t.Errorf("mount refusal should say broker secrets are used by integrations, never mounted: %s", body)
+	}
+
+	// And the store-side gate (a mount whose delivery mode arrives as
+	// integration_broker past the handler) maps to the same 422 class.
+	f.secrets.err = ErrSecretDeliveryUnsupported
+	rec = do(t, f.server, secMutation(http.MethodPost, "/api/v1/projects/"+secTProject+"/secret-mounts", map[string]any{
+		"secret_id": createdID, "delivery_mode": "env", "env_name": "BROKER_TOKEN",
+	}))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("store-side refusal: status = %d, want 422 (%s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "mount") {
+		t.Errorf("store-side refusal should name mounting: %s", rec.Body)
+	}
 }

@@ -732,7 +732,8 @@ func (s *TurnStore) SetConversationStatus(ctx context.Context, conversationID, s
 // ProjectRepos lists the project's repositories for workspace prep.
 func (s *TurnStore) ProjectRepos(ctx context.Context, projectID string) ([]worker.Repo, error) {
 	rows, err := s.Pool.Query(ctx, `
-		SELECT id::text, name, git_url, default_branch FROM repositories WHERE project_id = $1 ORDER BY name`,
+		SELECT id::text, name, git_url, default_branch, COALESCE(credential_secret_id::text, '')
+		FROM repositories WHERE project_id = $1 ORDER BY name`,
 		projectID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list repositories for %s: %w", projectID, err)
@@ -741,7 +742,7 @@ func (s *TurnStore) ProjectRepos(ctx context.Context, projectID string) ([]worke
 	var out []worker.Repo
 	for rows.Next() {
 		var r worker.Repo
-		if err := rows.Scan(&r.ID, &r.Name, &r.GitURL, &r.DefaultBranch); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.GitURL, &r.DefaultBranch, &r.CredentialSecretID); err != nil {
 			return nil, fmt.Errorf("postgres: scan repository: %w", err)
 		}
 		out = append(out, r)

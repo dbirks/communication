@@ -252,7 +252,7 @@ func TestProjectOrgAdminSeesEveryProjectAsMaintainer(t *testing.T) {
 	}
 	// An org admin with no membership can still add a repository.
 	if _, err := store.AddRepository(ctx, caller, p.ID, "communication",
-		"https://github.com/example/communication.git", "main"); err != nil {
+		"https://github.com/example/communication.git", "main", ""); err != nil {
 		t.Errorf("AddRepository as org admin: %v", err)
 	}
 }
@@ -266,7 +266,7 @@ func TestProjectRepositoriesAppendEventsInOrder(t *testing.T) {
 
 	for _, name := range []string{"api", "ui"} {
 		if _, err := store.AddRepository(ctx, caller, p.ID, name,
-			"git@github.com:example/"+name+".git", "main"); err != nil {
+			"git@github.com:example/"+name+".git", "main", ""); err != nil {
 			t.Fatalf("AddRepository(%q): %v", name, err)
 		}
 	}
@@ -357,12 +357,12 @@ func TestProjectRepositoryDuplicateNameRollsBack(t *testing.T) {
 	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
 	caller := Caller{UserID: a, OrganizationID: orgID}
 
-	if _, err := store.AddRepository(ctx, caller, p.ID, "api", "https://host/api.git", "main"); err != nil {
+	if _, err := store.AddRepository(ctx, caller, p.ID, "api", "https://host/api.git", "main", ""); err != nil {
 		t.Fatalf("first AddRepository: %v", err)
 	}
 	before := prjCount(t, store, `SELECT count(*) FROM domain_events`)
 
-	if _, err := store.AddRepository(ctx, caller, p.ID, "api", "https://host/other.git", "main"); !errors.Is(err, ErrConflict) {
+	if _, err := store.AddRepository(ctx, caller, p.ID, "api", "https://host/other.git", "main", ""); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate repository name error = %v, want ErrConflict", err)
 	}
 	// The transaction rolled back, so the failed insert appended nothing.
@@ -410,7 +410,7 @@ func TestProjectPutMemberGrantsVisibilityToContributor(t *testing.T) {
 		t.Errorf("MyRole = %q, want contributor", got.MyRole)
 	}
 	// Read-only: a contributor cannot add a repository or change roles...
-	if _, err := store.AddRepository(ctx, contributor, p.ID, "ui", "https://host/ui.git", "main"); !errors.Is(err, ErrProjectNotFound) {
+	if _, err := store.AddRepository(ctx, contributor, p.ID, "ui", "https://host/ui.git", "main", ""); !errors.Is(err, ErrProjectNotFound) {
 		t.Errorf("AddRepository as contributor = %v, want ErrProjectNotFound", err)
 	}
 	if _, err := store.PutMember(ctx, contributor, p.ID, b, "maintainer"); !errors.Is(err, ErrProjectNotFound) {
@@ -471,7 +471,7 @@ func TestProjectEventsAfterTruncatesToLimit(t *testing.T) {
 	p := prjCreateProject(t, store, a, orgID, "Widgets", "widgets")
 	caller := Caller{UserID: a, OrganizationID: orgID}
 	for _, name := range []string{"one", "two", "three"} {
-		if _, err := store.AddRepository(ctx, caller, p.ID, name, "https://host/"+name+".git", ""); err != nil {
+		if _, err := store.AddRepository(ctx, caller, p.ID, name, "https://host/"+name+".git", "", ""); err != nil {
 			t.Fatalf("AddRepository(%q): %v", name, err)
 		}
 	}
@@ -528,7 +528,7 @@ func TestProjectAPIStoreConversionDrivesTheHandlers(t *testing.T) {
 	if _, err := adapter.GetProject(ctx, stranger, created.ID); !errors.Is(err, api.ErrProjectNotFound) {
 		t.Errorf("non-member through adapter = %v, want api.ErrProjectNotFound", err)
 	}
-	repo, err := adapter.AddRepository(ctx, maintainer, created.ID, "api", "https://host/api.git", "main")
+	repo, err := adapter.AddRepository(ctx, maintainer, created.ID, "api", "https://host/api.git", "main", "")
 	if err != nil {
 		t.Fatalf("adapter.AddRepository: %v", err)
 	}

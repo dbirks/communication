@@ -50,6 +50,7 @@ import (
 	"github.com/dbirks/communication/internal/api"
 	"github.com/dbirks/communication/internal/events"
 	"github.com/dbirks/communication/internal/integrations/github"
+	"github.com/dbirks/communication/internal/secrets"
 )
 
 // issueTriggerInputNames lists the submitted run-input names of one issue
@@ -105,6 +106,12 @@ type IssueTriggerStore struct {
 	// Runs is the run-creation path the fire reuses (ADR-0056 § 5): the same
 	// committed create a manual POST /runs takes.
 	Runs *RunStore
+
+	// Credentials resolves the issue_read token for a repository that has an
+	// ADR-0061 GitHub credential. serve wires the replica's SecretStore; nil
+	// means this replica cannot resolve any, and a credentialed repository's
+	// poll then fails onto last_error rather than going anonymous silently.
+	Credentials *SecretStore
 
 	Log *slog.Logger
 }
@@ -566,6 +573,10 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	if err != nil {
 		return 0, err
 	}
+	credentialID, err := issueTriggerCredentialID(ctx, tx, it.RepositoryID, it.ProjectID)
+	if err != nil {
+		return 0, err
+	}
 
 	ghQuery := github.IssueQuery{
 		State:   github.StateOpen,
@@ -578,28 +589,20 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	if len(it.Labels) == 1 {
 		ghQuery.Labels = it.Labels
 	}
-	issues, err := lister.ListIssues(ctx, repo, ghQuery, "") // no credential yet; ADR-0061 wiring lands in a later task
+	token := ""
+	if credentialID != "" {
+		// ADR-0061 § 5: a credentialed repository polls AS itself. A resolve
+		// failure lands on the row's last_error exactly like a failed list —
+		// the trigger stays due, the tick keeps going, and the poll never
+		// silently falls back to anonymous.
+		token, err = s.issueTriggerToken(ctx, it.RepositoryID)
+		if err != nil {
+			return s.recordIssueTriggerPoll(ctx, tx, id, now, err)
+		}
+	}
+	issues, err := lister.ListIssues(ctx, repo, ghQuery, token)
 	if err != nil {
-		// The honest half of "never crash the tick": record the failure on the
-		// row (bounded message) and keep the trigger due for the next beat.
-		msg := err.Error()
-		if len(msg) > maxIssueTriggerErrorLen {
-			msg = msg[:maxIssueTriggerErrorLen]
-		}
-		if _, uerr := tx.Exec(ctx, `
-			UPDATE issue_triggers SET last_polled_at = $1, last_error = $2 WHERE id = $3::uuid`,
-			now, msg, id); uerr != nil {
-			return 0, fmt.Errorf("postgres: record issue trigger %s poll failure: %w", id, uerr)
-		}
-		if cerr := tx.Commit(ctx); cerr != nil {
-			return 0, fmt.Errorf("postgres: commit issue trigger fire %s: %w", id, cerr)
-		}
-		// The honest half of "never crash the tick": the failure is recorded
-		// on the row (bounded message) and the trigger stays due for the next
-		// beat, but this tick answered and kept going.
-		s.logger().ErrorContext(ctx, "issue trigger poll failed",
-			slog.String("issue_trigger_id", id), slog.String("error", err.Error()))
-		return 0, nil
+		return s.recordIssueTriggerPoll(ctx, tx, id, now, err)
 	}
 
 	fired := 0
@@ -822,6 +825,55 @@ func (s *IssueTriggerStore) issueTriggerGitRepo(ctx context.Context, q issueQuer
 	}
 	_ = name
 	return repo, nil
+}
+
+// issueTriggerCredentialID reads the repository's ADR-0061 credential id
+// ("" = none) inside the fire's transaction, beside the git-repo read it
+// belongs to.
+func issueTriggerCredentialID(ctx context.Context, q issueQueryRower, repositoryID, projectID string) (string, error) {
+	var credentialID string
+	if err := q.QueryRow(ctx, `
+		SELECT COALESCE(credential_secret_id::text, '') FROM repositories
+		WHERE id = $1::uuid AND project_id = $2::uuid`, repositoryID, projectID).Scan(&credentialID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("%w: repository %s is gone", ErrIssueTriggerNotFound, repositoryID)
+		}
+		return "", fmt.Errorf("postgres: read issue trigger credential %s: %w", repositoryID, err)
+	}
+	return credentialID, nil
+}
+
+// issueTriggerToken resolves the issue_read bearer token for one trigger
+// poll. The audit actor is "system": this is the platform polling its own
+// tracker, not a human click and not an agent.
+func (s *IssueTriggerStore) issueTriggerToken(ctx context.Context, repositoryID string) (string, error) {
+	if s.Credentials == nil {
+		return "", fmt.Errorf("%w: this replica has no secret store wired, so a credentialed repository cannot poll anonymously either", ErrRepositoryCredential)
+	}
+	return s.Credentials.ResolveRepositoryCredential(ctx, repositoryID, secrets.ConsumerIssueRead, "system")
+}
+
+// recordIssueTriggerPoll is the shared answer for a poll that failed — a
+// credential that would not resolve or a GitHub list that did not land: the
+// honest half of "never crash the tick". The failure is recorded on the row
+// (bounded message), the trigger stays due for the next beat, the tick
+// answers (0, nil) and keeps going.
+func (s *IssueTriggerStore) recordIssueTriggerPoll(ctx context.Context, tx pgx.Tx, id string, now time.Time, cause error) (int, error) {
+	msg := cause.Error()
+	if len(msg) > maxIssueTriggerErrorLen {
+		msg = msg[:maxIssueTriggerErrorLen]
+	}
+	if _, uerr := tx.Exec(ctx, `
+		UPDATE issue_triggers SET last_polled_at = $1, last_error = $2 WHERE id = $3::uuid`,
+		now, msg, id); uerr != nil {
+		return 0, fmt.Errorf("postgres: record issue trigger %s poll failure: %w", id, uerr)
+	}
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return 0, fmt.Errorf("postgres: commit issue trigger fire %s: %w", id, cerr)
+	}
+	s.logger().ErrorContext(ctx, "issue trigger poll failed",
+		slog.String("issue_trigger_id", id), slog.String("error", cause.Error()))
+	return 0, nil
 }
 
 // ------------------------------------------- api.IssueTriggerStore adapter

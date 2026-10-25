@@ -61,6 +61,10 @@ type Repository struct {
 	GitURL        string
 	DefaultBranch string
 	CreatedAt     time.Time
+	// CredentialSecretID is the ADR-0061 GitHub credential: the
+	// integration_broker secret this repository's clone/fetch/issue reads
+	// resolve through. Empty means none — anonymous, today's default.
+	CredentialSecretID string
 }
 
 // Member is a project membership with the member's display name resolved.
@@ -103,7 +107,8 @@ const prjProjectSelectOne = prjProjectSelect + `
 	  AND p.id = $4::uuid`
 
 const prjRepositorySelect = `
-	SELECT id, project_id::text, name, git_url, default_branch, created_at
+	SELECT id, project_id::text, name, git_url, default_branch, created_at,
+	       COALESCE(credential_secret_id::text, '')
 	FROM repositories
 	WHERE project_id = $1::uuid
 	ORDER BY name, id`
@@ -256,7 +261,8 @@ func prjListRepositories(ctx context.Context, q prjQuerier, projectID string) ([
 	out := make([]Repository, 0, 4)
 	for rows.Next() {
 		var r Repository
-		if err := rows.Scan(&r.ID, &r.ProjectID, &r.Name, &r.GitURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.ProjectID, &r.Name, &r.GitURL, &r.DefaultBranch, &r.CreatedAt,
+			&r.CredentialSecretID); err != nil {
 			return nil, fmt.Errorf("postgres: scan repository: %w", err)
 		}
 		r.CreatedAt = r.CreatedAt.UTC()
@@ -273,8 +279,11 @@ func prjListRepositories(ctx context.Context, q prjQuerier, projectID string) ([
 // manage the project reach the insert: the read and the write share the
 // transaction, so a membership revoked between the handler's check and this
 // one cannot sneak a repository in. A duplicate name within the project is
-// ErrConflict.
-func (s *ProjectStore) AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch string) (Repository, error) {
+// ErrConflict. credentialSecretID (ADR-0061) is "" for none; a non-empty one
+// is validated against the project before the insert (ErrRepositoryCredential
+// Invalid otherwise), and the migration-00016 trigger backs the same rule at
+// the row.
+func (s *ProjectStore) AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch, credentialSecretID string) (Repository, error) {
 	if err := prjRequireCaller(c); err != nil {
 		return Repository{}, err
 	}
@@ -302,17 +311,32 @@ func (s *ProjectStore) AddRepository(ctx context.Context, c Caller, projectID, n
 		// defence-in-depth, not the only gate.
 		return Repository{}, ErrProjectNotFound
 	}
+	if credentialSecretID != "" {
+		if err := prjValidateCredential(ctx, tx, projectID, credentialSecretID); err != nil {
+			return Repository{}, err
+		}
+	}
 
 	var repo Repository
 	err = tx.QueryRow(ctx, `
-		INSERT INTO repositories (project_id, name, git_url, default_branch, created_by)
-		VALUES ($1::uuid, $2, $3, $4, $5::uuid)
-		RETURNING id, project_id::text, name, git_url, default_branch, created_at`,
-		projectID, name, gitURL, defaultBranch, c.UserID).
-		Scan(&repo.ID, &repo.ProjectID, &repo.Name, &repo.GitURL, &repo.DefaultBranch, &repo.CreatedAt)
+		INSERT INTO repositories (project_id, name, git_url, default_branch, created_by, credential_secret_id)
+		VALUES ($1::uuid, $2, $3, $4, $5::uuid, NULLIF($6, '')::uuid)
+		RETURNING id, project_id::text, name, git_url, default_branch, created_at,
+		          COALESCE(credential_secret_id::text, '')`,
+		projectID, name, gitURL, defaultBranch, c.UserID, credentialSecretID).
+		Scan(&repo.ID, &repo.ProjectID, &repo.Name, &repo.GitURL, &repo.DefaultBranch, &repo.CreatedAt,
+			&repo.CredentialSecretID)
 	if err != nil {
 		if prjIsConflict(err) {
 			return Repository{}, ErrConflict
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23514" &&
+			strings.Contains(pgErr.Message, "credential") {
+			// The migration-00016 trigger refused what the Go check above
+			// raced past (a concurrent policy change): the same typed answer,
+			// not a 500.
+			return Repository{}, fmt.Errorf("%w: %s", ErrRepositoryCredentialInvalid, pgErr.Message)
 		}
 		return Repository{}, fmt.Errorf("postgres: insert repository: %w", err)
 	}
@@ -585,6 +609,8 @@ func prjAPIErr(err error) error {
 		return fmt.Errorf("%w: %w", api.ErrProjectNotFound, err)
 	case errors.Is(err, ErrConflict):
 		return fmt.Errorf("%w: %w", api.ErrProjectConflict, err)
+	case errors.Is(err, ErrRepositoryCredentialInvalid):
+		return fmt.Errorf("%w: %w", api.ErrRepositoryCredentialInvalid, err)
 	default:
 		return err
 	}
@@ -650,13 +676,28 @@ func (a APIProjectStore) ListRepositories(ctx context.Context, c api.Caller, pro
 	return out, nil
 }
 
-// AddRepository implements api.ProjectStore.
-func (a APIProjectStore) AddRepository(ctx context.Context, c api.Caller, projectID, name, gitURL, defaultBranch string) (api.RepositoryView, error) {
+// AddRepository implements api.ProjectStore. credentialSecretID "" means no
+// ADR-0061 credential.
+func (a APIProjectStore) AddRepository(ctx context.Context, c api.Caller, projectID, name, gitURL, defaultBranch, credentialSecretID string) (api.RepositoryView, error) {
 	s, err := a.pool()
 	if err != nil {
 		return api.RepositoryView{}, err
 	}
-	r, err := s.AddRepository(ctx, prjAPICaller(c), projectID, name, gitURL, defaultBranch)
+	r, err := s.AddRepository(ctx, prjAPICaller(c), projectID, name, gitURL, defaultBranch, credentialSecretID)
+	if err != nil {
+		return api.RepositoryView{}, prjAPIErr(err)
+	}
+	return prjAPIRepository(r), nil
+}
+
+// PatchRepositoryCredential implements api.ProjectStore: set (uuid text) or
+// clear ("") a repository's GitHub credential.
+func (a APIProjectStore) PatchRepositoryCredential(ctx context.Context, c api.Caller, projectID, repositoryID, credentialSecretID string) (api.RepositoryView, error) {
+	s, err := a.pool()
+	if err != nil {
+		return api.RepositoryView{}, err
+	}
+	r, err := s.PatchRepositoryCredential(ctx, prjAPICaller(c), projectID, repositoryID, credentialSecretID)
 	if err != nil {
 		return api.RepositoryView{}, prjAPIErr(err)
 	}
@@ -715,14 +756,21 @@ func prjAPIProject(p Project) api.ProjectView {
 }
 
 func prjAPIRepository(r Repository) api.RepositoryView {
-	return api.RepositoryView{
+	view := api.RepositoryView{
 		ID:            r.ID,
 		ProjectID:     r.ProjectID,
 		Name:          r.Name,
 		GitURL:        r.GitURL,
 		DefaultBranch: r.DefaultBranch,
 		CreatedAt:     r.CreatedAt,
+		Credential:    "none",
 	}
+	if r.CredentialSecretID != "" {
+		cred := r.CredentialSecretID
+		view.CredentialSecretID = &cred
+		view.Credential = "configured"
+	}
+	return view
 }
 
 func prjAPIMember(m Member) api.MemberView {

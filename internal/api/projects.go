@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,11 @@ var (
 	// ErrProjectConflict is a unique-constraint clash: duplicate project slug
 	// in the organization, or duplicate repository name in the project.
 	ErrProjectConflict = errors.New("api: unique constraint violation")
+	// ErrRepositoryCredentialInvalid is ADR-0061's reference-rule refusal: a
+	// credential_secret_id that names no secret, another project's secret, or
+	// a secret whose delivery mode is not integration_broker. Handlers answer
+	// it with 422 and the typed code `invalid_credential_secret`.
+	ErrRepositoryCredentialInvalid = errors.New("api: repository credential secret is not valid for this project")
 )
 
 // Caller is the authenticated principal reduced to what project
@@ -50,14 +56,19 @@ type ProjectView struct {
 	MyRole      string    `json:"my_role"`
 }
 
-// RepositoryView is the Repository schema of api/openapi.yaml.
+// RepositoryView is the Repository schema of api/openapi.yaml. Credential is
+// derived ("none" | "configured") from the presence of CredentialSecretID —
+// the ADR-0061 response never carries the value, and nothing here could: the
+// store surface has no read path that returns one.
 type RepositoryView struct {
-	ID            string    `json:"id"`
-	ProjectID     string    `json:"project_id"`
-	Name          string    `json:"name"`
-	GitURL        string    `json:"git_url"`
-	DefaultBranch string    `json:"default_branch"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                 string    `json:"id"`
+	ProjectID          string    `json:"project_id"`
+	Name               string    `json:"name"`
+	GitURL             string    `json:"git_url"`
+	DefaultBranch      string    `json:"default_branch"`
+	CreatedAt          time.Time `json:"created_at"`
+	CredentialSecretID *string   `json:"credential_secret_id"`
+	Credential         string    `json:"credential"`
 }
 
 // MemberView is the Member schema of api/openapi.yaml.
@@ -77,7 +88,12 @@ type ProjectStore interface {
 	CreateProject(ctx context.Context, c Caller, name, slug, description string) (ProjectView, error)
 	GetProject(ctx context.Context, c Caller, projectID string) (ProjectView, error)
 	ListRepositories(ctx context.Context, c Caller, projectID string) ([]RepositoryView, error)
-	AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch string) (RepositoryView, error)
+	// AddRepository attaches a remote; credentialSecretID (ADR-0061) is ""
+	// for none and must be a same-project (or same-org) integration_broker
+	// secret, else ErrRepositoryCredentialInvalid.
+	AddRepository(ctx context.Context, c Caller, projectID, name, gitURL, defaultBranch, credentialSecretID string) (RepositoryView, error)
+	// PatchRepositoryCredential sets or clears ("") the ADR-0061 credential.
+	PatchRepositoryCredential(ctx context.Context, c Caller, projectID, repositoryID, credentialSecretID string) (RepositoryView, error)
 	ListMembers(ctx context.Context, c Caller, projectID string) ([]MemberView, error)
 	PutMember(ctx context.Context, c Caller, projectID, userID, role string) (MemberView, error)
 	RecordDenied(ctx context.Context, c Caller, projectID, action string) error
@@ -123,6 +139,7 @@ func RegisterProjects(s *Server, store ProjectStore) {
 	s.HandleAuthed("GET /api/v1/projects/{projectId}", http.HandlerFunc(h.getProject))
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos", http.HandlerFunc(h.listRepositories))
 	s.HandleAuthed("POST /api/v1/projects/{projectId}/repos", http.HandlerFunc(h.addRepository))
+	s.HandleAuthed("PATCH /api/v1/projects/{projectId}/repos/{repositoryId}", http.HandlerFunc(h.patchRepository))
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/members", http.HandlerFunc(h.listMembers))
 	s.HandleAuthed("PUT /api/v1/projects/{projectId}/members/{userId}", http.HandlerFunc(h.putMember))
 }
@@ -144,6 +161,19 @@ type prjRepositoryCreateBody struct {
 	Name          string `json:"name"`
 	GitURL        string `json:"git_url"`
 	DefaultBranch string `json:"default_branch,omitempty"`
+	// CredentialSecretID (ADR-0061): absent/null means no credential; a uuid
+	// must name a same-project (or same-org) integration_broker secret.
+	CredentialSecretID *string `json:"credential_secret_id,omitempty"`
+}
+
+// prjRepositoryPatchBody keeps the field as raw JSON so "absent" and "null"
+// answer differently: the ADR's one rule is that null CLEARS the credential,
+// and a decoded *string would make the two requests the same one. A plain
+// json.RawMessage distinguishes them exactly — absent leaves the bytes nil,
+// null arrives as the four bytes "null" (a *RawMessage would be set to nil
+// for null and collapse the two again).
+type prjRepositoryPatchBody struct {
+	CredentialSecretID json.RawMessage `json:"credential_secret_id"`
 }
 
 type prjMemberPutBody struct {
@@ -285,13 +315,86 @@ func (h *prjHandlers) addRepository(w http.ResponseWriter, r *http.Request) {
 	if !h.requireManage(w, r, c, projectID, "repository.add") {
 		return
 	}
-	repo, err := h.store.AddRepository(r.Context(), c, projectID, body.Name, body.GitURL, branch)
+	credentialSecretID := ""
+	if body.CredentialSecretID != nil {
+		credentialSecretID = strings.TrimSpace(*body.CredentialSecretID)
+		if credentialSecretID != "" && !validUUIDString(credentialSecretID) {
+			prjCredentialProblem(w, "credential_secret_id must be a uuid naming an integration_broker secret of this project.")
+			return
+		}
+	}
+	repo, err := h.store.AddRepository(r.Context(), c, projectID, body.Name, body.GitURL, branch, credentialSecretID)
 	if err != nil {
+		if errors.Is(err, ErrRepositoryCredentialInvalid) {
+			prjCredentialProblem(w, "credential_secret_id must name an integration_broker secret of this project or its organization.")
+			return
+		}
 		h.fail(w, r, c, projectID, "repository.add",
 			fmt.Sprintf("A repository named %q already exists in this project.", body.Name), err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, repo)
+}
+
+// patchRepository is ADR-0061 Decision 3's patch verb: the one mutable
+// repository field today is the GitHub credential. `credential_secret_id`
+// is required in the body — a uuid sets it, null clears it — because a
+// patch that named nothing would silently answer 200 for a request whose
+// author meant to change something. Maintainer only, same gate as add.
+func (h *prjHandlers) patchRepository(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.caller(w, r)
+	if !ok {
+		return
+	}
+	projectID := r.PathValue("projectId")
+	repositoryID := r.PathValue("repositoryId")
+	if !validUUIDString(repositoryID) {
+		WriteProblem(w, http.StatusNotFound, "Not Found", "No such repository in this project.")
+		return
+	}
+	var body prjRepositoryPatchBody
+	if err := DecodeJSON(r, &body); err != nil {
+		h.badRequest(w, r, err)
+		return
+	}
+	if len(body.CredentialSecretID) == 0 {
+		prjInvalid(w, "credential_secret_id is required: a uuid to set it, null to clear it.")
+		return
+	}
+	credentialSecretID := ""
+	if raw := strings.TrimSpace(string(body.CredentialSecretID)); raw != "null" {
+		var s string
+		if err := json.Unmarshal([]byte(raw), &s); err != nil || !validUUIDString(s) {
+			prjCredentialProblem(w, "credential_secret_id must be a uuid naming an integration_broker secret of this project, or null to clear it.")
+			return
+		}
+		credentialSecretID = s
+	}
+	if !h.requireManage(w, r, c, projectID, "repository.update") {
+		return
+	}
+	repo, err := h.store.PatchRepositoryCredential(r.Context(), c, projectID, repositoryID, credentialSecretID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrRepositoryCredentialInvalid):
+			prjCredentialProblem(w, "credential_secret_id must name an integration_broker secret of this project or its organization.")
+		case errors.Is(err, ErrProjectNotFound):
+			h.denied(w, r, c, projectID, "repository.update", "no such repository in this project")
+			WriteProblem(w, http.StatusNotFound, "Not Found", "No such repository in this project.")
+		default:
+			h.fail(w, r, c, projectID, "repository.update", prjNoConflict, err)
+		}
+		return
+	}
+	WriteJSON(w, http.StatusOK, repo)
+}
+
+// prjCredentialProblem is the 422 with the `invalid_credential_secret` code
+// (the ADR-0030 convention the github issue route established: the `type`
+// URI ends in the code and `code` repeats it, so clients switch on `code`).
+func prjCredentialProblem(w http.ResponseWriter, detail string) {
+	ghiProblem(w, http.StatusUnprocessableEntity, "invalid_credential_secret",
+		"Invalid Credential Secret", detail)
 }
 
 func (h *prjHandlers) listMembers(w http.ResponseWriter, r *http.Request) {

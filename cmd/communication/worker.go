@@ -814,6 +814,13 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 	workspaces := &postgres.WorkspaceStore{Pool: pool}
 	runs := &postgres.RunWorkspaces{Pool: pool}
 	repoRead := &postgres.TurnStore{Pool: pool}
+	// ADR-0061 § 4: the mirror's clone/fetch carries the repository's GitHub
+	// credential when the row names one. The worker holds the keyring, so it
+	// resolves for itself; a credential that will not resolve fails the
+	// prepare with a typed error naming the repository — never an anonymous
+	// clone that would half-succeed against a public repo and confusingly
+	// fail against a private one.
+	mirrorCreds := &postgres.SecretStore{Pool: pool, Keys: keyringFromEnvOrDefault(log)}
 	return func(ctx context.Context, c worker.AttemptClaim) error {
 		if mgrErr != nil {
 			return fmt.Errorf("run workspace roots: %w", mgrErr)
@@ -872,7 +879,15 @@ func newRunWorkspacePreparer(opts workerOptions, pool *pgxpool.Pool, workerID fu
 		}
 		specs := make([]wsgit.RepoSpec, 0, len(repos))
 		for _, r := range repos {
-			specs = append(specs, wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch, BaseCommit: bases[r.ID]})
+			spec := wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch, BaseCommit: bases[r.ID]}
+			if r.CredentialSecretID != "" {
+				token, err := mirrorCreds.ResolveRepositoryCredential(ctx, r.ID, secrets.ConsumerRepoMirror, id)
+				if err != nil {
+					return fmt.Errorf("prepare the run workspace for %s: %w", c.RunID, err)
+				}
+				spec.Token = token
+			}
+			specs = append(specs, spec)
 		}
 		prep, err := mgr.Prepare(ctx, wsgit.PrepareRequest{
 			// The run scope and the run id: <workspaces>/run/<run-id> with work/
@@ -1240,18 +1255,19 @@ func newUnitService(opts workerOptions, pool *pgxpool.Pool, log *slog.Logger) (*
 	secretStore := &postgres.SecretStore{Pool: pool, Keys: keyring}
 	unitsSecrets := &postgres.UnitSecrets{Secrets: secretStore, Workspaces: unitStore}
 	svc := &worker.UnitService{
-		Store:        unitStore,
-		Workspaces:   workMgr,
-		Sandbox:      nano,
-		SandboxPath:  nonoPath(),
-		Profiles:     &postgres.ProfileReader{Pool: pool},
-		LauncherHome: opts.sandboxLauncherHome,
-		PolicyDir:    opts.policyDir,
-		GitIdentity:  opts.agentGit,
-		Enforcement:  opts.sandboxEnforcement,
-		LauncherAuth: launcherCredentialDirs,
-		Logger:       log,
-		Secrets:      unitsSecrets,
+		Store:             unitStore,
+		Workspaces:        workMgr,
+		Sandbox:           nano,
+		SandboxPath:       nonoPath(),
+		Profiles:          &postgres.ProfileReader{Pool: pool},
+		LauncherHome:      opts.sandboxLauncherHome,
+		PolicyDir:         opts.policyDir,
+		GitIdentity:       opts.agentGit,
+		Enforcement:       opts.sandboxEnforcement,
+		LauncherAuth:      launcherCredentialDirs,
+		Logger:            log,
+		Secrets:           unitsSecrets,
+		MirrorCredentials: unitsSecrets,
 		Artifacts: &postgres.UnitArtifacts{
 			Pool:  pool,
 			Bytes: artifactBytes,

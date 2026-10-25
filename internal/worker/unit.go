@@ -63,6 +63,13 @@ type UnitService struct {
 	APM APMTyper
 	// Secrets materializes mounts. Nil is the same honest "not configured".
 	Secrets SecretMaterializer
+	// MirrorCredentials resolves a repository's ADR-0061 GitHub credential
+	// before the mirror clone/fetch. It is a separate seam from Secrets
+	// because it answers a different question ("what does the mirror's git
+	// call send") and its plaintext must reach only the mirror's environment.
+	// Nil means no resolve is wired: a repository that names a credential
+	// then fails its prepare, it does not go anonymous.
+	MirrorCredentials MirrorCredentialSource
 	// Artifacts publishes the unit-boundary capture. Nil means the capture still
 	// runs and still reports: an artifact is a record of work, and the absence of
 	// a store must not hide the work itself.
@@ -199,6 +206,47 @@ type ProjectRepo struct {
 	Name          string
 	GitURL        string
 	DefaultBranch string
+	// CredentialSecretID (ADR-0061): non-empty when the repository's mirror
+	// clone/fetch must resolve this project's GitHub credential first.
+	CredentialSecretID string
+}
+
+// MirrorCredentialSource is the ADR-0061 seam between the unit and the
+// secret store: it resolves one repository's GitHub credential (consumer
+// repo_mirror, fixed by the implementation side of this boundary) to the
+// bearer token the mirror's clone/fetch runs with. The returned string is
+// material: the unit hands it to exactly one wsgit.RepoSpec, whose Token
+// field reaches only the mirror child process's environment — never argv,
+// never the worktree, never an error string the loop journals.
+type MirrorCredentialSource interface {
+	ResolveMirrorCredential(ctx context.Context, repositoryID, workerID string) (string, error)
+}
+
+// ErrMirrorCredential is what a prepare refuses with when a repository's
+// credential cannot be resolved. It names the repository, never a value.
+var ErrMirrorCredential = errors.New("worker: repository GitHub credential could not be resolved")
+
+// mirrorSpec builds one RepoSpec, resolving the ADR-0061 credential when the
+// repository names one. Fail closed: an unwired seam or a refused resolve is
+// a prepare failure that says which repository, because a mirror cloned
+// anonymously against a private repository produces a worse failure (a
+// confusing git auth error mid-fetch) and a lie about what was prepared.
+// workerID is the audit actor for the resolve (the claim's worker; "" lets
+// the store name the process).
+func (s *UnitService) mirrorSpec(ctx context.Context, r ProjectRepo, workerID string) (wsgit.RepoSpec, error) {
+	spec := wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch}
+	if r.CredentialSecretID == "" {
+		return spec, nil
+	}
+	if s.MirrorCredentials == nil {
+		return wsgit.RepoSpec{}, fmt.Errorf("%w: repository %q has a GitHub credential but this worker has no credential resolver wired", ErrMirrorCredential, r.Name)
+	}
+	token, err := s.MirrorCredentials.ResolveMirrorCredential(ctx, r.ID, workerID)
+	if err != nil {
+		return wsgit.RepoSpec{}, fmt.Errorf("%w: repository %q: %v", ErrMirrorCredential, r.Name, err)
+	}
+	spec.Token = token
+	return spec, nil
 }
 
 // Unit is one execution unit: the workspace, the policy computed for it, and
@@ -365,7 +413,11 @@ func (s *UnitService) Prepare(ctx context.Context, req UnitRequest) (*Unit, erro
 
 	specs := make([]wsgit.RepoSpec, 0, len(req.Repos))
 	for _, r := range req.Repos {
-		specs = append(specs, wsgit.RepoSpec{RepositoryID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch})
+		spec, err := s.mirrorSpec(ctx, r, req.WorkerID)
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
 	}
 	prep, err := s.Workspaces.Prepare(ctx, wsgit.PrepareRequest{
 		ScopeKind: "conversation", ScopeID: req.ConversationID, ProjectID: req.ProjectID,

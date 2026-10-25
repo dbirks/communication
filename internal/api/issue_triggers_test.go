@@ -53,9 +53,13 @@ func (p *itProjects) CreateProject(context.Context, Caller, string, string, stri
 func (p *itProjects) ListRepositories(context.Context, Caller, string) ([]RepositoryView, error) {
 	return nil, notExpectedIT("ListRepositories")
 }
-func (p *itProjects) AddRepository(context.Context, Caller, string, string, string, string) (RepositoryView, error) {
+func (p *itProjects) AddRepository(context.Context, Caller, string, string, string, string, string) (RepositoryView, error) {
 	return RepositoryView{}, notExpectedIT("AddRepository")
 }
+func (p *itProjects) PatchRepositoryCredential(context.Context, Caller, string, string, string) (RepositoryView, error) {
+	return RepositoryView{}, notExpectedIT("PatchRepositoryCredential")
+}
+
 func (p *itProjects) ListMembers(context.Context, Caller, string) ([]MemberView, error) {
 	return nil, notExpectedIT("ListMembers")
 }

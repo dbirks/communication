@@ -163,15 +163,17 @@ func (f *secFixture) delete() {
 	}{
 		{`DELETE FROM secret_materializations WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM secret_mounts WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
+		// ADR-0061: repositories now reference secret_metadata, so the
+		// referencing rows must go before the referenced ones.
+		{`DELETE FROM workspace_repos WHERE workspace_id IN (SELECT id FROM workspaces WHERE project_id = ANY($1::uuid[]))`, []any{[]string{f.projA, f.projB}}},
+		{`DELETE FROM workspaces WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
+		{`DELETE FROM conversations WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
+		{`DELETE FROM repositories WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM secret_versions WHERE secret_id IN (SELECT id FROM secret_metadata WHERE slug LIKE $1)`, []any{"%" + f.token + "%"}},
 		{`DELETE FROM secret_metadata WHERE slug LIKE $1 OR project_id = ANY($2::uuid[])`, []any{"%" + f.token + "%", []string{f.projA, f.projB}}},
 		{`DELETE FROM outbox WHERE global_seq IN (SELECT global_seq FROM domain_events WHERE project_id = ANY($1::uuid[]))`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM domain_events WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM audit_events WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
-		{`DELETE FROM workspace_repos WHERE workspace_id IN (SELECT id FROM workspaces WHERE project_id = ANY($1::uuid[]))`, []any{[]string{f.projA, f.projB}}},
-		{`DELETE FROM workspaces WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
-		{`DELETE FROM conversations WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
-		{`DELETE FROM repositories WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM memberships WHERE project_id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM projects WHERE id = ANY($1::uuid[])`, []any{[]string{f.projA, f.projB}}},
 		{`DELETE FROM workers WHERE name = $1`, []any{"sec-worker-" + f.token}},

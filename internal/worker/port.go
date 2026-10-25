@@ -91,6 +91,10 @@ type Repo struct {
 	Name          string
 	GitURL        string
 	DefaultBranch string
+	// CredentialSecretID (ADR-0061) is non-empty when the repository has a
+	// GitHub credential the mirror clone/fetch must resolve; it names the
+	// secret, never a value.
+	CredentialSecretID string
 }
 
 // TurnStore is the loop's persistence port, implemented by

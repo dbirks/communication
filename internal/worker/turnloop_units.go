@@ -104,7 +104,7 @@ func (s *UnitService) profileName(ctx context.Context, c Claim) (ProfileAxes, er
 func toProjectRepos(in []Repo) []ProjectRepo {
 	out := make([]ProjectRepo, 0, len(in))
 	for _, r := range in {
-		out = append(out, ProjectRepo{ID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch})
+		out = append(out, ProjectRepo{ID: r.ID, Name: r.Name, GitURL: r.GitURL, DefaultBranch: r.DefaultBranch, CredentialSecretID: r.CredentialSecretID})
 	}
 	return out
 }

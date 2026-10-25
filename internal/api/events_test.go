@@ -124,9 +124,13 @@ func (p *evtProject) CreateProject(context.Context, Caller, string, string, stri
 func (p *evtProject) ListRepositories(context.Context, Caller, string) ([]RepositoryView, error) {
 	return nil, errors.New("evtProject: ListRepositories not expected")
 }
-func (p *evtProject) AddRepository(context.Context, Caller, string, string, string, string) (RepositoryView, error) {
+func (p *evtProject) AddRepository(context.Context, Caller, string, string, string, string, string) (RepositoryView, error) {
 	return RepositoryView{}, errors.New("evtProject: AddRepository not expected")
 }
+func (p *evtProject) PatchRepositoryCredential(context.Context, Caller, string, string, string) (RepositoryView, error) {
+	return RepositoryView{}, errors.New("evtProject: PatchRepositoryCredential not expected")
+}
+
 func (p *evtProject) ListMembers(context.Context, Caller, string) ([]MemberView, error) {
 	return nil, errors.New("evtProject: ListMembers not expected")
 }

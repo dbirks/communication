@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -21,11 +22,12 @@ import (
 //     no `integration.query` node kind — those need the M6 tables and dedupe
 //     (ADR-0031 § Consequences). The node kind stays in
 //     `internal/pipelines/compiler`'s deferredKinds.
-//   - It is anonymous upstream. The adapter (internal/integrations/github)
-//     sends no token, so only public repositories answer, and GitHub's
-//     unauthenticated budget is what bounds this route. A token would come
-//     from the `SecretRef` path (ADR-0018), not from a new column and not
-//     from the environment.
+//   - It reads the tracker as the repository's own member: anonymous for a
+//     repository without an ADR-0061 credential, `Authorization: Bearer` for
+//     one with (the adapter takes a per-call token; the credential is an
+//     integration_broker secret resolved through the SecretRef path, never a
+//     new column of its own and never the environment). A credential that
+//     cannot be resolved is a typed 502, not a silent anonymous retry.
 //   - It never stores what it reads. GitHub owns the issue data (`07`: "this
 //     does not create a second generic issue tracker"); the rows behind this
 //     response are not written anywhere, which is also why no migration is
@@ -75,26 +77,52 @@ const (
 	// GitHubIssueCodeNotFound: GitHub answered 404. For an anonymous request
 	// that also covers "private", which is what the detail says.
 	GitHubIssueCodeNotFound = "github_repository_not_found"
-	// GitHubIssueCodeRateLimited: the anonymous budget is spent.
+	// GitHubIssueCodeRateLimited: the caller's budget (anonymous or the
+	// repository's token) is spent.
 	GitHubIssueCodeRateLimited = "github_rate_limited"
 	// GitHubIssueCodeUpstream: any other upstream failure, including the
 	// 10 s timeout.
 	GitHubIssueCodeUpstream = "github_upstream_error"
+	// GitHubIssueCodeCredentialUnresolvable: the repository names an ADR-0061
+	// credential and this process could not open it. Fail closed: the read
+	// does not fall back to anonymous (that would answer "not found" for a
+	// private repository and teach everyone the wrong lesson).
+	GitHubIssueCodeCredentialUnresolvable = "github_credential_unresolvable"
 )
+
+// ghConsumerIssueRead names this route's ADR-0061 integration consumer to the
+// credential resolver. It repeats the internal/secrets constant rather than
+// importing it: api has no business pulling the crypto package into the HTTP
+// layer, and the value is part of the audit contract, not an implementation
+// detail clients can observe.
+const ghConsumerIssueRead = "issue_read"
+
+// RepositoryCredentialResolver is the ADR-0061 broker resolve seam: it hands
+// this process the repository's current bearer token for an integration
+// consumer, authorized by the repository row rather than an agent profile,
+// and audited like a mount delivery. postgres.SecretStore is the
+// implementation; the interface lives here because api owns its seams.
+type RepositoryCredentialResolver interface {
+	ResolveRepositoryCredential(ctx context.Context, repositoryID, consumer, actorID string) (string, error)
+}
 
 // RegisterGitHubIssues mounts the issue-listing route beside the repository
 // routes. lister may be nil, in which case the route answers 503 rather than
-// pretending a repository has no issues.
-func RegisterGitHubIssues(s *Server, projects ProjectStore, lister github.IssueLister) {
-	h := &ghHandlers{projects: projects, lister: lister, srv: s}
+// pretending a repository has no issues. credentials may be nil: a
+// deployment without it answers credentialed repositories with the typed
+// 502 (it cannot use their credential and will not pretend otherwise),
+// anonymous ones exactly as before.
+func RegisterGitHubIssues(s *Server, projects ProjectStore, lister github.IssueLister, credentials RepositoryCredentialResolver) {
+	h := &ghHandlers{projects: projects, lister: lister, credentials: credentials, srv: s}
 	s.HandleAuthed("GET /api/v1/projects/{projectId}/repos/{repositoryId}/issues",
 		http.HandlerFunc(h.listIssues))
 }
 
 type ghHandlers struct {
-	projects ProjectStore
-	lister   github.IssueLister
-	srv      *Server
+	projects    ProjectStore
+	lister      github.IssueLister
+	credentials RepositoryCredentialResolver
+	srv         *Server
 }
 
 func (h *ghHandlers) listIssues(w http.ResponseWriter, r *http.Request) {
@@ -141,10 +169,36 @@ func (h *ghHandlers) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0061 § 5: the repository's credential when it has one, anonymous
+	// when it does not — and a resolve failure is this route's typed 502,
+	// never a silent fall back to anonymous.
+	token := ""
+	if repo.CredentialSecretID != nil && *repo.CredentialSecretID != "" {
+		if h.credentials == nil {
+			ghiProblem(w, http.StatusBadGateway, GitHubIssueCodeCredentialUnresolvable,
+				"GitHub Credential Unresolvable",
+				"Repository \""+repo.Name+"\" has a GitHub credential configured, but this deployment cannot resolve it.")
+			return
+		}
+		resolved, err := h.credentials.ResolveRepositoryCredential(r.Context(), repo.ID, ghConsumerIssueRead, "system")
+		if err != nil {
+			prj.log(r).WarnContext(r.Context(), "repository GitHub credential could not be resolved",
+				slog.String("repository", repo.Name),
+				slog.String("project_id", projectID),
+				slog.String("request_id", RequestIDFrom(r)),
+				slog.String("error", err.Error())) // the error names the repo, never a value
+			ghiProblem(w, http.StatusBadGateway, GitHubIssueCodeCredentialUnresolvable,
+				"GitHub Credential Unresolvable",
+				"The GitHub credential configured for repository \""+repo.Name+"\" could not be resolved; the read was not attempted anonymously.")
+			return
+		}
+		token = resolved
+	}
+
 	issues, err := h.lister.ListIssues(r.Context(), ghRepo, github.IssueQuery{
 		State: state,
 		Label: label,
-	}, "") // anonymous for now; the repository's ADR-0061 credential is wired in a later task
+	}, token)
 	if err != nil {
 		h.upstreamFailure(w, r, prj, c, projectID, action, ghRepo, err)
 		return
@@ -207,11 +261,11 @@ func (h *ghHandlers) upstreamFailure(w http.ResponseWriter, r *http.Request, prj
 			slog.String("project_id", projectID),
 			slog.String("request_id", RequestIDFrom(r)))
 		ghiProblem(w, http.StatusBadGateway, GitHubIssueCodeNotFound, "GitHub Repository Not Found",
-			"GitHub has no readable repository at \""+repo.String()+"\". An anonymous request cannot read a private repository.")
+			"GitHub has no readable repository at \""+repo.String()+"\". An anonymous request cannot read a private repository; a repository with an ADR-0061 credential is read with it.")
 		return
 	case errors.Is(err, github.ErrRateLimited):
 		var rl *github.RateLimitError
-		detail := "GitHub's anonymous API budget is exhausted for this replica. Token-backed requests are not yet supported (ADR-0031)."
+		detail := "GitHub's API budget for this caller is exhausted for this replica."
 		if errors.As(err, &rl) && !rl.Reset.IsZero() {
 			detail += " Budget resets at " + rl.Reset.Format(time.RFC3339) + "."
 		}

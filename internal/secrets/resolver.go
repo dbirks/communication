@@ -22,6 +22,18 @@ const (
 	ScopeOrg     = "org"
 )
 
+// Integration consumers (ADR-0061): the in-process callers of the broker
+// resolve path. A broker secret is used by the platform on the team's behalf
+// and never reaches an agent, so the consumer is what the audit row names —
+// anything else is refused rather than quietly treated as a generic reader.
+const (
+	// ConsumerRepoMirror is the worker's mirror clone/fetch (ADR-0061 § 4).
+	ConsumerRepoMirror = "repo_mirror"
+	// ConsumerIssueRead is the control plane's GitHub issue listing
+	// (ADR-0061 § 5): the repository-issues route and the ADR-0056 poller.
+	ConsumerIssueRead = "issue_read"
+)
+
 // StoredVersion is what a resolver needs about one secret_versions row: the
 // ciphertext, and the metadata that decides whether to open it. It is the
 // boundary between "reading the database" and "having a secret": every field
@@ -112,6 +124,46 @@ type Resolution struct {
 	ContentSHA256 string
 }
 
+// IntegrationRequest is the repository asking for a broker secret's current
+// plaintext (ADR-0061). Authorization for this path is NOT the agent-profile
+// allowlist — a broker secret is denied to every profile by construction —
+// it is the repository row: the caller (the postgres store) has already read
+// `repositories.credential_secret_id` and passes the same secret id here, so
+// the only fact this type can assert wrongly is one that came from a row the
+// caller does not own. Consumer names which integration is asking; it is the
+// audit row's `consumer` field and nothing else.
+type IntegrationRequest struct {
+	// RepositoryID and RepositoryName identify the asking row. The name is
+	// what a refusal error may quote; the id is what the audit detail carries.
+	RepositoryID   string
+	RepositoryName string
+	ProjectID      string
+	OrganizationID string
+	// Consumer must be ConsumerRepoMirror or ConsumerIssueRead.
+	Consumer string
+}
+
+// Validate rejects the requests that cannot be audited or attributed: an
+// empty repository id, a consumer the ADR does not name, or a caller that
+// cannot say which project/org the repository lives in (the scope axis of
+// authorizeAgainst has nothing to compare against then, and a resolver that
+// guessed would be an oracle).
+func (a IntegrationRequest) Validate() error {
+	if a.RepositoryID == "" || !isCanonicalUUID(a.RepositoryID) {
+		return fmt.Errorf("%w: integration request names no canonical repository id", ErrNotAuthorized)
+	}
+	switch a.Consumer {
+	case ConsumerRepoMirror, ConsumerIssueRead:
+	default:
+		return fmt.Errorf("%w: unknown integration consumer %q", ErrNotAuthorized, a.Consumer)
+	}
+	if a.ProjectID == "" || a.OrganizationID == "" {
+		return fmt.Errorf("%w: integration request for repository %s names no project/organization",
+			ErrNotAuthorized, a.RepositoryID)
+	}
+	return nil
+}
+
 // Resolver is the only path from a database row to a plaintext inside a
 // process. Construction requires both a VersionSource and a KeyProvider: a
 // Resolver that can read the database but not the keyring, or the reverse, is
@@ -186,6 +238,93 @@ func (r *Resolver) Resolve(ctx context.Context, a Attempt, secretID string, vers
 		return nil, err
 	}
 
+	value, err := Open(ctx, r.keys, ref, stored.Sealed)
+	if err != nil {
+		return nil, err
+	}
+	return &Resolution{
+		Value:          value,
+		OrganizationID: stored.OrganizationID,
+		ProjectID:      stored.ProjectID,
+		SecretID:       ref.SecretID,
+		Slug:           ref.Slug,
+		Version:        ref.Version,
+		DeliveryMode:   stored.DeliveryMode,
+		ContentSHA256:  stored.Sealed.ContentSHA256,
+	}, nil
+}
+
+// ResolveForIntegration returns the CURRENT version's plaintext of an
+// integration_broker secret to an in-process integration consumer
+// (ADR-0061). This is the one path where a broker secret opens, and the
+// checks are deliberately different from Resolve's:
+//
+//   - delivery mode must be integration_broker (the inverse of Resolve's
+//     refusal): a mount-deliverable secret reaching this path means the
+//     caller confused the two axes, and an env secret must never be usable
+//     as a platform credential through a back door;
+//   - revocation still refuses (ADR-0018 D2.4 — rotation is a new version,
+//     and the resolver reads the current one on each use);
+//   - the scope axis is the repository's: a project-scope secret must belong
+//     to the repository's project, an org-scope secret to its organization;
+//   - the agent-profile/node-template allowlists are NOT consulted — ADR-0061
+//     replaces that axis with "the repository row references this secret",
+//     which the postgres caller proved by reading the row before calling.
+//
+// The value it returns is the caller's to zero: like Resolve, nothing here
+// caches the plaintext beyond this call.
+func (r *Resolver) ResolveForIntegration(ctx context.Context, a IntegrationRequest, secretID string) (*Resolution, error) {
+	if err := a.Validate(); err != nil {
+		return nil, err
+	}
+	if secretID == "" || !isCanonicalUUID(secretID) {
+		return nil, fmt.Errorf("%w: integration resolve names no canonical secret id", ErrNotAuthorized)
+	}
+	stored, err := r.source.LoadVersion(ctx, secretID, 0) // 0 = the current version
+	if err != nil {
+		return nil, err
+	}
+	if stored.Ref.SecretID != secretID {
+		return nil, fmt.Errorf("secrets: source returned %s for a request about %s", stored.Ref.SecretID, secretID)
+	}
+	if stored.Version == 0 {
+		stored.Version = stored.CurrentVersion
+	}
+	ref := VersionRef{SecretID: stored.Ref.SecretID, Version: stored.Version, Slug: stored.Slug}
+	if err := ref.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotAuthorized, err)
+	}
+	if stored.SecretRevoked || stored.VersionRevoked {
+		return nil, fmt.Errorf("%w: %s v%d", ErrRevoked, ref.SecretID, ref.Version)
+	}
+	if stored.DeliveryMode != DeliveryBrokerLiteral {
+		return nil, fmt.Errorf("%w: %s is mount-deliverable, not an integration credential",
+			ErrDeliveryUnsupported, stored.DeliveryMode)
+	}
+	// The scope axis, stated against the repository row rather than an
+	// attempt: the same two-branch rule as authorizeAgainst, minus the
+	// allowlist axis ADR-0061 replaces.
+	switch stored.Scope {
+	case ScopeProject:
+		if stored.ProjectID == "" || stored.ProjectID != a.ProjectID {
+			return nil, fmt.Errorf("%w: repository %s is not in the project that owns secret %s",
+				ErrNotAuthorized, a.RepositoryName, ref.SecretID)
+		}
+		if stored.OrganizationID != "" && stored.OrganizationID != a.OrganizationID {
+			return nil, fmt.Errorf("%w: repository %s is not in the secret's organization",
+				ErrNotAuthorized, a.RepositoryName)
+		}
+	case ScopeOrg:
+		if stored.ProjectID != "" {
+			return nil, fmt.Errorf("%w: org-scope secret %s carries a project id", ErrNotAuthorized, ref.SecretID)
+		}
+		if stored.OrganizationID != a.OrganizationID {
+			return nil, fmt.Errorf("%w: repository %s is not in the organization that owns secret %s",
+				ErrNotAuthorized, a.RepositoryName, ref.SecretID)
+		}
+	default:
+		return nil, fmt.Errorf("%w: unknown scope %q", ErrNotAuthorized, stored.Scope)
+	}
 	value, err := Open(ctx, r.keys, ref, stored.Sealed)
 	if err != nil {
 		return nil, err

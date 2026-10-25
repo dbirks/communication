@@ -61,9 +61,13 @@ func (p *m4Projects) GetProject(context.Context, Caller, string) (ProjectView, e
 func (p *m4Projects) ListRepositories(context.Context, Caller, string) ([]RepositoryView, error) {
 	return nil, nil
 }
-func (p *m4Projects) AddRepository(context.Context, Caller, string, string, string, string) (RepositoryView, error) {
+func (p *m4Projects) AddRepository(context.Context, Caller, string, string, string, string, string) (RepositoryView, error) {
 	return RepositoryView{}, nil
 }
+func (p *m4Projects) PatchRepositoryCredential(context.Context, Caller, string, string, string) (RepositoryView, error) {
+	return RepositoryView{}, nil
+}
+
 func (p *m4Projects) ListMembers(context.Context, Caller, string) ([]MemberView, error) {
 	return nil, nil
 }

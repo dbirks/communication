@@ -422,16 +422,15 @@ func (h *secHandlers) createSecret(w http.ResponseWriter, r *http.Request) {
 		secInvalid(w, "purpose must be at most 512 characters.")
 		return
 	}
-	// The enum in SecretCreate is narrower than Secret.delivery_mode: a create
-	// that asked for integration_broker would be a secret with no deliverable
-	// placement (ADR-0018 clause 8), and 400 is what the schema says.
+	// ADR-0061 builds integration_broker's first consumer: the secret is now
+	// creatable (a repository names one as its GitHub credential), but it is
+	// still never MOUNTABLE — a broker secret is used by the platform on the
+	// team's behalf and never enters an agent's environment, argv, file tree
+	// or sandbox (ADR-0018 clause 8, ADR-0061 Decision 2).
 	switch body.Delivery {
-	case "env", "env_file":
-	case "integration_broker":
-		secInvalid(w, "delivery_mode integration_broker is declared but unbuilt: no secret may be created with it.")
-		return
+	case "env", "env_file", "integration_broker":
 	default:
-		secInvalid(w, "delivery_mode must be env or env_file.")
+		secInvalid(w, "delivery_mode must be env, env_file or integration_broker.")
 		return
 	}
 	switch body.Scope {
@@ -698,11 +697,12 @@ func (h *secHandlers) createMount(w http.ResponseWriter, r *http.Request) {
 	switch body.Delivery {
 	case "env", "env_file":
 	case "integration_broker":
-		// 422, not 400: the shape is well-formed and the *policy* is what M3
-		// cannot honour (ADR-0018 clause 8).
-		h.denied(w, r, c, projectID, action, "integration_broker delivery is declared but not implemented")
+		// 422, not 400: the shape is well-formed and the *policy* is what no
+		// mount may ever carry (ADR-0018 clause 8, kept true by ADR-0061 —
+		// creatable, never mountable).
+		h.denied(w, r, c, projectID, action, "integration_broker secrets are never mounted")
 		WriteProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity",
-			"delivery_mode integration_broker is not implemented; no mount may declare it yet.")
+			"delivery_mode integration_broker secrets are used by integrations, never mounted.")
 		return
 	default:
 		secInvalid(w, "delivery_mode must be env or env_file.")
@@ -861,7 +861,7 @@ func (h *secHandlers) fail(w http.ResponseWriter, r *http.Request, c Caller, pro
 	switch {
 	case errors.Is(err, ErrSecretDeliveryUnsupported):
 		WriteProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity",
-			"That delivery mode is not implemented and no placement may use it.")
+			"Integration broker secrets are used by integrations and may never be mounted.")
 	case errors.Is(err, ErrSecretPlacementInvalid):
 		WriteProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity",
 			"That placement cannot be declared in this project.")

@@ -841,7 +841,16 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	handler := api.New(d.API, d.Readiness, authenticator, d.UI)
 	authenticator.Register(handler)
 	api.RegisterProjects(handler, apiProjects)
-	api.RegisterGitHubIssues(handler, apiProjects, github.New())
+	// M3 surfaces (docs/m3-contract.md § 2). The mounts are unconditional and
+	// the *capability* is conditional: with no keyring the secret write routes
+	// refuse through SecretStore.Keys == nil rather than accepting a rotation
+	// the process could never decrypt, and with no artifact bytes mounted the
+	// content route answers 503 instead of pretending a row has no bytes.
+	// Built here (before the routes that consume it) because ADR-0061 gives
+	// the issue-listing route a second reason to hold the secret store: a
+	// credentialed repository's issues are read WITH its credential.
+	secretStore := &postgres.SecretStore{Pool: d.Pool, Keys: d.M3.Keyring}
+	api.RegisterGitHubIssues(handler, apiProjects, github.New(), secretStore)
 	api.RegisterEvents(handler, apiProjects,
 		postgres.APIEventStream{S: projectStore, Wakes: wakes})
 	// The org-level stream multiplexes the same journal across the caller's
@@ -861,12 +870,6 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 		HeartbeatInterval: d.WorkerHeartbeat,
 	})
 
-	// M3 surfaces (docs/m3-contract.md § 2). The mounts are unconditional and
-	// the *capability* is conditional: with no keyring the secret write routes
-	// refuse through SecretStore.Keys == nil rather than accepting a rotation
-	// the process could never decrypt, and with no artifact bytes mounted the
-	// content route answers 503 instead of pretending a row has no bytes.
-	secretStore := &postgres.SecretStore{Pool: d.Pool, Keys: d.M3.Keyring}
 	api.RegisterSecrets(handler, postgres.APISecretStore{S: secretStore}, apiProjects)
 
 	artifactStore := &postgres.ArtifactStore{Pool: d.Pool}
@@ -1112,7 +1115,11 @@ func serveStack(d serveStackDeps) (http.Handler, func(), error) {
 	// mutex, so no advisory lock here.
 	issueTriggerStore := &postgres.IssueTriggerStore{
 		Pool: d.Pool,
-		Log:  log.With(slog.String("component", "issue-tick")),
+		// ADR-0061 § 5: a credentialed repository's poll resolves its token
+		// through this replica's secret store; without the wiring the poll
+		// fails onto last_error rather than going anonymous silently.
+		Credentials: secretStore,
+		Log:         log.With(slog.String("component", "issue-tick")),
 	}
 	issueTriggerRunner := d.issueTriggerTickRunner
 	if issueTriggerRunner == nil {
