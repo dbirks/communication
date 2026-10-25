@@ -22,7 +22,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { test as base } from "@playwright/test";
-import type { APIResponse, Page } from "@playwright/test";
+import type { APIResponse, Page, Request } from "@playwright/test";
 import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
@@ -124,6 +124,24 @@ export function designPngFor(badge: string): string | null {
 
 const MAX_DETAIL = 500;
 
+/**
+ * A `net::ERR_ABORTED` on an event stream is the browser cancelling an SSE
+ * subscription because the page navigated away or closed — normal behaviour,
+ * not a defect — but ONLY when a navigation/close actually happened around
+ * it. Any other abort (server went away mid-journal, the socket died for a
+ * reason the page did not cause) still counts.
+ */
+const ABORT_NAV_GRACE_MS = 1_000;
+
+/** The request is one of the app's journal feeds (SSE or a fetch reading a
+ * `text/event-stream` body). */
+function isEventStreamRequest(request: Request): boolean {
+  if (request.resourceType() === "eventsource") return true;
+  if ((request.headers()["accept"] ?? "").toLowerCase().includes("text/event-stream")) return true;
+  const pathname = new URL(request.url()).pathname;
+  return pathname.endsWith("/events") || pathname.endsWith("/stream");
+}
+
 class EmuRecorder {
   private screens: EmuScreen[] = [];
   private defects: EmuDefect[] = [];
@@ -131,6 +149,13 @@ class EmuRecorder {
   private currentScreen = "(before first screen)";
   private lastShot: string | null = null;
   private currentViewport = "";
+  /** Timestamps of main-frame navigations, and of the page closing — the
+   * events that make an event-stream abort legitimate. */
+  private navTimes: number[] = [];
+  private closedAt: number | null = null;
+  /** `net::ERR_ABORTED` on an event stream: held until finish(), when the
+   * navigation timestamps around it are all known, then dropped or recorded. */
+  private deferredAborts: { at: number; defect: EmuDefect }[] = [];
   private isExpected(urlPath: string, status?: number): boolean {
     return this.expected.some(
       (entry) =>
@@ -143,6 +168,14 @@ class EmuRecorder {
     private page: Page,
     private journey: string,
   ) {
+    this.page.on("framenavigated", (frame) => {
+      if (frame !== this.page.mainFrame()) return;
+      this.navTimes.push(Date.now());
+      if (this.navTimes.length > 100) this.navTimes.shift();
+    });
+    this.page.on("close", () => {
+      this.closedAt ??= Date.now();
+    });
     this.page.on("pageerror", (error) => {
       this.record(
         "pageerror",
@@ -178,8 +211,23 @@ class EmuRecorder {
       const url = new URL(request.url());
       if (this.isExpected(url.pathname, undefined)) return;
       const failure = request.failure()?.errorText ?? "request failed";
+      if (failure.trim() === "net::ERR_ABORTED" && isEventStreamRequest(request)) {
+        this.deferredAborts.push({
+          at: Date.now(),
+          defect: this.defectFor("api", `${request.method()} ${url.pathname} failed: ${failure}`),
+        });
+        return;
+      }
       this.record("api", `${request.method()} ${url.pathname} failed: ${failure}`);
     });
+  }
+
+  /** True when a navigation (or the page closing) happened within the grace
+   * window of `at` — in either direction, since the abort and the navigation
+   * event do not race each other in a fixed order. */
+  private nearNavigation(at: number): boolean {
+    if (this.closedAt !== null && Math.abs(this.closedAt - at) <= ABORT_NAV_GRACE_MS) return true;
+    return this.navTimes.some((nav) => Math.abs(nav - at) <= ABORT_NAV_GRACE_MS);
   }
 
   expectFailure(re: RegExp, status?: number): void {
@@ -246,10 +294,16 @@ class EmuRecorder {
 
   /** Record a defect (and keep the last screen/shot for context). */
   private record(kind: EmuDefectKind, detail: string): void {
+    this.defects.push(this.defectFor(kind, detail));
+  }
+
+  /** Build a defect now, with the screen/viewport/shot as of now (a deferred
+   * abort must report where it happened, not where the test ended). */
+  private defectFor(kind: EmuDefectKind, detail: string): EmuDefect {
     // eslint-disable-next-line no-control-regex -- intentional: strip ANSI escapes
     const clean = detail.replace(/\u001b\[[0-9;]*m/g, "");
     const trimmed = clean.length > MAX_DETAIL ? `${clean.slice(0, MAX_DETAIL)}…` : clean;
-    this.defects.push({
+    return {
       kind,
       journey: this.journey,
       screen: this.currentScreen,
@@ -257,7 +311,7 @@ class EmuRecorder {
       detail: trimmed,
       fingerprint: fingerprintOf(kind, this.journey, this.currentScreen, trimmed),
       screenshot: this.lastShot,
-    });
+    };
   }
 
   /**
@@ -283,6 +337,12 @@ class EmuRecorder {
         .trim();
       this.record("assertion", `assertion: ${message}`);
     }
+    // Decide the held event-stream aborts now: dropped when a navigation or
+    // the page close happened within the grace window, recorded otherwise.
+    for (const held of this.deferredAborts) {
+      if (!this.nearNavigation(held.at)) this.defects.push(held.defect);
+    }
+    this.deferredAborts = [];
     await mkdir(EMU_OUT_DIR, { recursive: true });
     const lines = [
       ...this.screens.map((screen) =>
