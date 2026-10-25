@@ -5,6 +5,7 @@
  * English reading, the `THE RUN GETS` mapping, and the two refusals the server
  * answers inline (`422 invalid_cron`, a stale-version `409`).
  */
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -17,6 +18,7 @@ import {
   type TriggerEditing,
 } from "./TriggerDialog";
 import type { IssueTrigger } from "../../api/useIssueTriggers";
+import type { Schedule } from "../../api/pipelines";
 import type { RunInputField } from "../m4/NewRunForm";
 import type { Assignment, Repository } from "../../api/types";
 import { meFixture, mockFetch, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
@@ -45,6 +47,26 @@ const assignment: Assignment = {
 };
 
 const ISSUE_TRIGGER_ID = "01987b24-0009-7000-8000-abcdef012345";
+const SCHEDULE_ID = "01987b24-0001-7000-8000-abcdef012345";
+
+function wireSchedule(overrides: Partial<Schedule> = {}): Schedule {
+  return {
+    id: SCHEDULE_ID,
+    project_id: projectFixture.id,
+    assignment_id: WIRE_ASSIGNMENT_ID,
+    cron_expr: "0 6 * * 1",
+    inputs: { goal: "Plan this week's upgrades" },
+    enabled: true,
+    next_run_at: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+    last_run_at: null,
+    last_run_id: null,
+    version: 3,
+    created_by: meFixture.id,
+    created_at: "2026-10-19T09:00:00Z",
+    updated_at: "2026-10-20T09:00:00Z",
+    ...overrides,
+  };
+}
 
 function wireIssueTrigger(overrides: Partial<IssueTrigger> = {}): IssueTrigger {
   return {
@@ -126,7 +148,251 @@ function mount(
   return { requests, onClose };
 }
 
+/**
+ * The dialog as its caller actually mounts it (RepoWorkflows keeps the dialog
+ * in state and unmounts it on close): a close is a real unmount, so these
+ * cases prove what the emulator's `expect(trigger-dialog).toBeHidden()`
+ * proves — nothing of the dialog is left on screen after a saved trigger.
+ */
+function mountInHost(editing: TriggerEditing | null = null, overrides: RouteStub[] = []) {
+  const { requests } = mockFetch([
+    ...overrides,
+    { path: `/api/v1/revisions/${WIRE_REVISION_ID}`, method: "GET", body: wireRevision as object },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+      method: "GET",
+      body: { issue_triggers: [] },
+    },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/schedules`,
+      method: "GET",
+      body: { schedules: [] },
+    },
+  ]);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+  });
+  const closes: number[] = [];
+  function Host() {
+    const [open, setOpen] = useState(true);
+    if (!open) return <p data-testid="host-dialog-unmounted">the caller closed the dialog</p>;
+    return (
+      <TriggerDialog
+        open
+        onClose={() => {
+          closes.push(1);
+          setOpen(false);
+        }}
+        workflowLabel="plan-with-approval"
+        project={{ id: projectFixture.id, name: projectFixture.name }}
+        repository={repository}
+        assignment={assignment}
+        editing={editing}
+      />
+    );
+  }
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <Host />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return { requests, closes };
+}
+
+/** The problem body the server answers a refused write with. */
+function problem(status: number, title: string, detail: string): Record<string, unknown> {
+  return {
+    type: `https://communication.dev/errors/${title.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
+    title,
+    status,
+    detail,
+  };
+}
+
 afterEach(cleanup);
+
+describe("TriggerDialog — a saved trigger closes the dialog (2c)", () => {
+  it("unmounts after a successful schedule create", async () => {
+    const { requests, closes } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/schedules`,
+        method: "POST",
+        body: wireSchedule({ cron_expr: "* * * * *" }),
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId("trigger-dialog-mode-schedule"));
+    fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "* * * * *" } });
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), {
+      target: { value: "Prove the schedule trigger fires" },
+    });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/schedules`, "POST"),
+      ).toHaveLength(1),
+    );
+    // A saved trigger means the dialog is GONE: the caller's close runs, the
+    // node leaves the DOM, and no error is dressed up over the success.
+    await screen.findByTestId("host-dialog-unmounted");
+    expect(screen.queryByTestId("trigger-dialog")).toBeNull();
+    expect(closes).toHaveLength(1);
+    expect(screen.queryByTestId("trigger-dialog-error")).toBeNull();
+  });
+
+  it("stays open with the server's words when the schedule create fails", async () => {
+    const { requests } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/schedules`,
+        method: "POST",
+        status: 422,
+        body: problem(422, "Invalid cron", "invalid_cron: expected five UTC fields"),
+      },
+    ]);
+    fireEvent.click(await screen.findByTestId("trigger-dialog-mode-schedule"));
+    fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "nonsense" } });
+    fireEvent.change(screen.getByTestId("new-run-input-goal"), {
+      target: { value: "Prove the schedule trigger fires" },
+    });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    const error = await screen.findByTestId("trigger-dialog-error");
+    expect(error.textContent).toContain("invalid_cron");
+    expect(screen.getByTestId("trigger-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("host-dialog-unmounted")).toBeNull();
+    expect(
+      requestsTo(requests, `/api/v1/projects/${projectFixture.id}/schedules`, "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("unmounts after a successful schedule update", async () => {
+    const { requests, closes } = mountInHost({ kind: "schedule", schedule: wireSchedule() }, [
+      {
+        path: `/api/v1/schedules/${SCHEDULE_ID}`,
+        method: "PATCH",
+        body: wireSchedule({ cron_expr: "*/5 * * * *", version: 4 }),
+      },
+    ]);
+    await screen.findByTestId("trigger-dialog-run-gets-goal");
+    fireEvent.change(screen.getByTestId("trigger-dialog-cron"), {
+      target: { value: "*/5 * * * *" },
+    });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")).toHaveLength(1),
+    );
+    await screen.findByTestId("host-dialog-unmounted");
+    expect(screen.queryByTestId("trigger-dialog")).toBeNull();
+    expect(closes).toHaveLength(1);
+  });
+
+  it("unmounts after a successful issue trigger create", async () => {
+    const { requests, closes } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+        method: "POST",
+        body: wireIssueTrigger({ labels: ["plan"] }),
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("trigger-dialog-event"), { target: { value: "labeled" } });
+    fireEvent.change(screen.getByTestId("trigger-dialog-labels"), { target: { value: "plan" } });
+    fireEvent.keyDown(screen.getByTestId("trigger-dialog-labels"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("trigger-dialog-quickfill-goal"));
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/issue-triggers`, "POST"),
+      ).toHaveLength(1),
+    );
+    await screen.findByTestId("host-dialog-unmounted");
+    expect(screen.queryByTestId("trigger-dialog")).toBeNull();
+    expect(closes).toHaveLength(1);
+  });
+
+  it("stays open with the server's words when the issue trigger create fails", async () => {
+    const { requests } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+        method: "POST",
+        status: 422,
+        body: problem(
+          422,
+          "Not A Github Repository",
+          "this repository has no GitHub remote, so an issue trigger would never fire",
+        ),
+      },
+    ]);
+    fireEvent.change(screen.getByTestId("trigger-dialog-event"), { target: { value: "labeled" } });
+    fireEvent.change(screen.getByTestId("trigger-dialog-labels"), { target: { value: "plan" } });
+    fireEvent.keyDown(screen.getByTestId("trigger-dialog-labels"), { key: "Enter" });
+    fireEvent.click(await screen.findByTestId("trigger-dialog-quickfill-goal"));
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    const error = await screen.findByTestId("trigger-dialog-error");
+    expect(error.textContent).toContain("no GitHub remote");
+    expect(screen.getByTestId("trigger-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("host-dialog-unmounted")).toBeNull();
+    // The refusal is re-tryable from the same dialog: the label chip and the
+    // mapping survive it, so the author fixes the form instead of losing it.
+    expect(screen.getByTestId("trigger-dialog-label-chip-0").textContent).toContain("plan");
+    expect(
+      requestsTo(requests, `/api/v1/projects/${projectFixture.id}/issue-triggers`, "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("carries no refusal across the two START IT WHEN arms", async () => {
+    // A refused issue trigger (a file:// repository has no issues to watch)
+    // belongs to the issue arm: switching to the schedule arm must not leave
+    // that sentence hanging over a cron form that cannot produce it.
+    const { requests } = mountInHost(null, [
+      {
+        path: `/api/v1/projects/${projectFixture.id}/issue-triggers`,
+        method: "POST",
+        status: 422,
+        body: problem(422, "Validation Failed", "not_a_github_repository: no GitHub remote"),
+      },
+      {
+        path: `/api/v1/projects/${projectFixture.id}/schedules`,
+        method: "POST",
+        body: wireSchedule({ cron_expr: "0 9 * * *" }),
+      },
+    ]);
+    fireEvent.click(screen.getByTestId("trigger-dialog-mode-issue"));
+    fireEvent.click(await screen.findByTestId("trigger-dialog-quickfill-goal"));
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await screen.findByTestId("trigger-dialog-error");
+
+    fireEvent.click(screen.getByTestId("trigger-dialog-mode-schedule"));
+    expect(screen.queryByTestId("trigger-dialog-error")).toBeNull();
+
+    fireEvent.change(screen.getByTestId("trigger-dialog-cron"), { target: { value: "0 9 * * *" } });
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    await waitFor(() =>
+      expect(
+        requestsTo(requests, `/api/v1/projects/${projectFixture.id}/schedules`, "POST"),
+      ).toHaveLength(1),
+    );
+    await screen.findByTestId("host-dialog-unmounted");
+    expect(screen.queryByTestId("trigger-dialog")).toBeNull();
+  });
+
+  it("stays open with the server's words when the schedule update hits a stale 409", async () => {
+    const { requests } = mountInHost({ kind: "schedule", schedule: wireSchedule() }, [
+      {
+        path: `/api/v1/schedules/${SCHEDULE_ID}`,
+        method: "PATCH",
+        status: 409,
+        body: problem(409, "Schedule Version Stale", "someone else saved this schedule first"),
+      },
+    ]);
+    await screen.findByTestId("trigger-dialog-run-gets-goal");
+    fireEvent.click(screen.getByTestId("trigger-dialog-submit"));
+    const error = await screen.findByTestId("trigger-dialog-error");
+    expect(error.textContent).toContain("someone else saved this schedule first");
+    expect(screen.getByTestId("trigger-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("host-dialog-unmounted")).toBeNull();
+    expect(requestsTo(requests, `/api/v1/schedules/${SCHEDULE_ID}`, "PATCH")).toHaveLength(1);
+  });
+});
 
 describe("TriggerDialog — the 2c contract", () => {
   it("names the workflow, project and repository in mono, with nothing to pick", async () => {

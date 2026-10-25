@@ -15,17 +15,29 @@
  *   records it as `origin: default` (`09`'s run_inputs) instead of the UI
  *   inventing a value.
  *
+ * A refused start is never silent: the problem shows verbatim, and the
+ * `max_concurrent_runs` `409` — the refusal a hand-started run hits while a
+ * schedule-fired run sits at its approval gate — also says why in words and
+ * links every run that holds a slot, because the problem names no run (there
+ * is no run yet to name).
+ *
  * Submission carries one idempotency key per form instance (ADR-0023 § 12):
  * the key is minted once on mount, so a double click, a retry after a network
  * failure, or a `max_concurrent_runs` retry re-answers with the same run
  * rather than creating a second one.
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { useAssignments, usePipelines, useRevision } from "../../api/pipelines";
 import { useRepositories } from "../../api/queries";
-import { useCreateRun } from "../../api/runs";
-import { isNotGitHubRepository, useRepoIssues, type GitHubIssue } from "../../api/issues";
+import { useCreateRun, useProjectRuns } from "../../api/runs";
+import { shortId } from "../../api/names";
+import {
+  isGitHubRepository,
+  isNotGitHubRepository,
+  useRepoIssues,
+  type GitHubIssue,
+} from "../../api/issues";
 import { problemOf } from "../../api/client";
 import type { Repository, RunCreate } from "../../api/types";
 import { formatAge } from "../../lib/format";
@@ -462,7 +474,13 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
         />
       ) : null}
 
-      {createRun.isError ? <RunCreateError error={createRun.error} /> : null}
+      {createRun.isError ? (
+        <RunCreateError
+          error={createRun.error}
+          projectId={projectId}
+          assignmentId={active?.id ?? null}
+        />
+      ) : null}
 
       <div className="mt-3 flex items-center gap-2">
         <Button
@@ -494,13 +512,94 @@ export function NewRunForm({ projectId, onCreated, onCancel }: NewRunFormProps) 
   );
 }
 
-/** The API's problem verbatim, plus the `errors[]` locations a `422` carries. */
-export function RunCreateError({ error }: { error: unknown }) {
+/** The statuses the assignment's `max_concurrent_runs` ceiling counts — the
+ * same list the refusal's own SQL counts (the create-run tx in
+ * `internal/store/postgres/m4api_runs_write.go`), so the form never blames a
+ * run that is not holding a slot. */
+export const CEILING_RUN_STATUSES = [
+  "queued",
+  "preparing",
+  "running",
+  "waiting_human",
+  "paused",
+] as const;
+
+/** Why each slot-holding status refuses a new run, in the reader's words — the
+ * wire's token translated, not a hoped-for reason (`waiting_human` is the run
+ * waiting for a decision, which is the case the lab actually hits). */
+const CEILING_STATUS_REASON: Record<string, string> = {
+  queued: "is still queued",
+  preparing: "is starting",
+  running: "is running",
+  waiting_human: "is waiting for approval",
+  paused: "is paused",
+};
+
+/** The `422`/`409` refusal the ceiling answers with, read off the problem. */
+export interface RunCeilingConflict {
+  /** The active runs the server counted. */
+  active: number;
+  /** The assignment's `max_concurrent_runs`. */
+  allows: number;
+}
+
+/**
+ * The `POST /runs` refusal for an assignment already at its concurrency
+ * ceiling: a `409` whose detail carries the counts — today's server says
+ * `"assignment <id> has N active runs and allows M (max_concurrent_runs)"`
+ * under `run-state-conflict`, and the ceiling code an older wording used is
+ * accepted too. It names no run: the refusal happens before a run exists, so
+ * the problem carries no `run_id` — which is why the form reads the slot's
+ * occupants from the project's own run list instead of inventing them.
+ */
+export function runCeilingConflictOf(error: unknown): RunCeilingConflict | null {
+  const problem = problemOf(error) as { status?: number; type?: string; detail?: string };
+  if (problem.status !== 409) return null;
+  const detail = typeof problem.detail === "string" ? problem.detail : "";
+  const type = typeof problem.type === "string" ? problem.type : "";
+  const counts =
+    /has (\d+) active runs? and allows (\d+)/.exec(detail) ??
+    /has (\d+) of (\d+) allowed runs? in flight/.exec(detail);
+  if (!counts) return null;
+  const namedTheCeiling =
+    type.endsWith("/run-state-conflict") ||
+    type.endsWith("/max_concurrent_runs") ||
+    detail.includes("max_concurrent_runs");
+  if (!namedTheCeiling) return null;
+  return { active: Number(counts[1]), allows: Number(counts[2]) };
+}
+
+/** The ceiling sentence in the author's words: what the workflow allows and how
+ * many runs hold it, read off the counts the server itself reported — never
+ * off a guess. `one run at a time` for the assignment default of 1. */
+export function runCeilingSentence(allows: number, active: number): string {
+  const cadence = `This workflow allows ${allows === 1 ? "one run at a time" : `${allows} runs at a time`}`;
+  const held = active === 1 ? "one run already holds a slot" : `${active} runs already hold a slot`;
+  return `${cadence}; ${held}`;
+}
+
+/**
+ * The form's answer to a refused start: the server's problem verbatim, plus —
+ * for the concurrency ceiling, the refusal a manual `Run` actually hits while a
+ * schedule-fired run sits at a gate — the reason in words and a link to every
+ * run that holds a slot. A refusal the author cannot act on is not honest just
+ * because it printed a status code.
+ */
+export function RunCreateError({
+  error,
+  projectId,
+  assignmentId,
+}: {
+  error: unknown;
+  projectId?: string;
+  assignmentId?: string | null;
+}) {
   const problem = problemOf(error);
   const raw = (problem as { errors?: unknown }).errors;
   const findings = Array.isArray(raw)
     ? (raw as { instance_location?: unknown; code?: unknown; message?: unknown }[])
     : [];
+  const ceiling = runCeilingConflictOf(error);
   return (
     <div className="space-y-1" data-testid="new-run-error">
       <ProblemBanner
@@ -508,6 +607,13 @@ export function RunCreateError({ error }: { error: unknown }) {
         fallback={`The control plane answered ${problem.status}.`}
         testid="new-run-error-problem"
       />
+      {ceiling !== null && (projectId ?? "") !== "" ? (
+        <RunCeilingConflictLine
+          projectId={projectId ?? ""}
+          assignmentId={assignmentId ?? ""}
+          conflict={ceiling}
+        />
+      ) : null}
       {findings.length > 0 ? (
         <ul className="space-y-[2px] font-mono text-[11px] text-muted">
           {findings.map((finding, index) => (
@@ -518,6 +624,74 @@ export function RunCreateError({ error }: { error: unknown }) {
             </li>
           ))}
         </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** The slot's occupants, read from the project's runs — only while a start
+ * actually stands refused, so the form costs no read until it owes an answer. */
+function RunCeilingConflictLine({
+  projectId,
+  assignmentId,
+  conflict,
+}: {
+  projectId: string;
+  assignmentId: string;
+  conflict: RunCeilingConflict;
+}) {
+  const runs = useProjectRuns(projectId);
+  const holders = (runs.data?.runs ?? []).filter(
+    (run) =>
+      assignmentId !== "" &&
+      (run.assignment_id ?? "") === assignmentId &&
+      (CEILING_RUN_STATUSES as readonly string[]).includes(run.status),
+  );
+  // Which run(s) hold the slot is only sayable once the project's runs have
+  // read; until then the sentence stays the server's own counts.
+  const named = runs.data !== undefined && holders.length > 0;
+  return (
+    <div className="space-y-[2px]" data-testid="new-run-error-ceiling">
+      <p className="text-[12.5px] text-ink" data-testid="new-run-error-reason">
+        {runCeilingSentence(conflict.allows, named ? holders.length : conflict.active)}
+        {named ? ":" : "."}
+      </p>
+      {named ? (
+        <ul className="space-y-[2px]" data-testid="new-run-error-holders">
+          {holders.map((run) => (
+            <li key={run.id} className="text-[12.5px]">
+              {/* The whole point of the sentence: the run to go and decide. */}
+              <Link
+                to={routes.run(run.id)}
+                className="font-mono text-accent-text hover:underline"
+                data-testid={`new-run-error-holder-${run.id}`}
+              >
+                {`#${shortId(run.id)}`}
+              </Link>
+              <span className="text-muted">
+                {` ${CEILING_STATUS_REASON[run.status] ?? `is ${run.status}`}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {runs.data !== undefined && holders.length === 0 ? (
+        <p
+          className="font-mono text-[11px] text-faint"
+          data-testid="new-run-error-holders-unlisted"
+        >
+          {`none of this project's listed runs names that assignment — the server counted ${conflict.active} active against ${conflict.allows}`}
+        </p>
+      ) : null}
+      {runs.isError ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="new-run-error-holders-unread">
+          the runs that hold the slots could not be read
+        </p>
+      ) : null}
+      {runs.isPending ? (
+        <p className="font-mono text-[11px] text-faint" data-testid="new-run-error-holders-loading">
+          reading the runs that hold the slots…
+        </p>
       ) : null}
     </div>
   );
@@ -680,13 +854,15 @@ interface GitHubIssueSectionProps {
 }
 
 /**
- * "Start from a GitHub issue" (W3's UI half, ADR-0031). The list is fetched as
- * soon as a repository is chosen — that request is also how the form *learns*
- * the remote is not GitHub — and the rows stay collapsed until the reader asks.
- * A repository whose remote is not GitHub answers `422
- * not_a_github_repository`, and this section collapses into a muted line rather
- * than showing an empty tracker. Repeated label filters are the caller's click,
- * never a keystroke, because the anonymous GitHub budget is 60 req/h per IP.
+ * "Start from a GitHub issue" (W3's UI half, ADR-0031). The section only asks
+ * the server when the chosen repository's `git_url` is a GitHub remote —
+ * deciding that locally from the payload the form already holds — so a local
+ * or file remote never produces the `422 not_a_github_repository` the issues
+ * route would answer; it collapses into a muted line instead. A `422` that
+ * still arrives (the server has the last word on what counts as GitHub)
+ * collapses the section the same way. Repeated label filters are the
+ * caller's click, never a keystroke, because the anonymous GitHub budget is
+ * 60 req/h per IP.
  */
 export function GitHubIssueSection({
   projectId,
@@ -697,13 +873,15 @@ export function GitHubIssueSection({
   const [open, setOpen] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
   const [label, setLabel] = useState("");
-  const issues = useRepoIssues(projectId, repository.id, label);
-  const notGitHub = isNotGitHubRepository(issues.error);
+  const githubHosted = isGitHubRepository(repository.git_url);
+  const issues = useRepoIssues(projectId, repository.id, label, githubHosted);
+  const notGitHub = !githubHosted || isNotGitHubRepository(issues.error);
 
   if (notGitHub) {
     return (
       <p className="mt-3 font-mono text-[10.5px] text-faint" data-testid="issue-section-not-github">
-        {repository.name} is not a GitHub remote, so there is no issue to start a run from.
+        Issue triggers need a GitHub repository — {repository.name} is not one, so there is no issue
+        to start a run from.
       </p>
     );
   }

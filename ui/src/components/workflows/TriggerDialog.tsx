@@ -21,7 +21,13 @@
  * The server stays the authority for the cron grammar, the label set and the
  * fixed inputs: a `422 invalid_cron`, a `422 not_a_github_repository` /
  * `repository_mismatch` or a stale-version `409` renders inline and the
- * dialog stays open — never dressed up as a saved state. The footnote says
+ * dialog stays open — never dressed up as a saved state. The converse is
+ * just as hard: a create or update the server ACCEPTED closes the dialog
+ * (`onSuccess` → `onClose`) so a saved trigger is never left sitting over a
+ * form that still claims to be editing it — and the error line belongs to
+ * ONE write attempt, the arm (issue/schedule, create/edit) that made it, so a
+ * refusal from the other arm cannot haunt a form the author has since moved
+ * to. The footnote says
  * only "Checked every minute": ADR-0061 adds per-repository GitHub
  * credentials, so nothing here claims public-repositories-only.
  *
@@ -151,6 +157,10 @@ export type TriggerEditing =
   | { kind: "schedule"; schedule: Schedule }
   | { kind: "issue"; trigger: IssueTrigger };
 
+/** The four writes this dialog can spend: each is its own mutation, and the
+ * inline error is the one THIS attempt answered with. */
+type TriggerWrite = "schedule-create" | "schedule-patch" | "issue-create" | "issue-patch";
+
 export interface TriggerDialogProps {
   open: boolean;
   onClose: () => void;
@@ -217,6 +227,9 @@ function TriggerDialogBody({
   );
   const [values, setValues] = useState<Record<string, InputValue>>({});
   const [showProblems, setShowProblems] = useState(false);
+  // Which of the four writes the LAST submit attempted: the error line on
+  // screen is that write's answer, never another arm's leftover.
+  const [lastWrite, setLastWrite] = useState<TriggerWrite | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<Element | null>(null);
 
@@ -308,6 +321,15 @@ function TriggerDialogBody({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  /** Moving between the two `START IT WHEN` arms abandons the refusal the
+   * other arm answered with: that message names labels or a cron this form no
+   * longer shows, so leaving it up would describe a form the author is not
+   * looking at. */
+  function chooseMode(next: "issue" | "schedule") {
+    setMode(next);
+    setLastWrite(null);
+  }
+
   function addLabel() {
     const next = labelDraft.trim();
     if (next === "") return;
@@ -321,6 +343,17 @@ function TriggerDialogBody({
     setShowProblems(true);
     if (blocked) return;
     const inputs = fields ? wireInputsOf(fields, values) : {};
+    // Name the arm this submit spends before it leaves, so what renders below
+    // is this attempt's answer and nothing else's.
+    setLastWrite(
+      mode === "issue"
+        ? editing?.kind === "issue"
+          ? "issue-patch"
+          : "issue-create"
+        : editing?.kind === "schedule"
+          ? "schedule-patch"
+          : "schedule-create",
+    );
     if (mode === "issue") {
       if (editing?.kind === "issue") {
         patchIssue.mutate(
@@ -377,8 +410,13 @@ function TriggerDialogBody({
     );
   }
 
-  const writeError =
-    createSchedule.error ?? patchSchedule.error ?? createIssue.error ?? patchIssue.error;
+  const writeErrors: Record<TriggerWrite, unknown> = {
+    "schedule-create": createSchedule.error,
+    "schedule-patch": patchSchedule.error,
+    "issue-create": createIssue.error,
+    "issue-patch": patchIssue.error,
+  };
+  const writeError = lastWrite === null ? null : writeErrors[lastWrite];
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/25 p-4">
@@ -424,7 +462,7 @@ function TriggerDialogBody({
               <button
                 type="button"
                 aria-pressed={mode === "issue"}
-                onClick={() => setMode("issue")}
+                onClick={() => chooseMode("issue")}
                 className={`flex items-center gap-[6px] px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
                   mode === "issue"
                     ? "bg-ink font-semibold text-surface"
@@ -438,7 +476,7 @@ function TriggerDialogBody({
               <button
                 type="button"
                 aria-pressed={mode === "schedule"}
-                onClick={() => setMode("schedule")}
+                onClick={() => chooseMode("schedule")}
                 className={`flex items-center gap-[6px] border-l border-line-strong px-3 py-[5px] text-[12.5px] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent-ring ${
                   mode === "schedule"
                     ? "bg-ink font-semibold text-surface"

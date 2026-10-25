@@ -6,9 +6,14 @@
  */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { ApiError } from "../../api/client";
+import { runCeilingConflictOf, runCeilingSentence } from "./NewRunForm";
+import type { RunSummary } from "../../api/types";
 import { meFixture, projectFixture, requestsTo, type RouteStub } from "../../test/fakes";
 import { renderApp } from "../../test/render";
 import {
+  WIRE_ASSIGNMENT_ID,
+  WIRE_RUN_ID,
   WIRE_REVISION_ID,
   wireAssignmentList,
   wirePipelineList,
@@ -40,6 +45,16 @@ const repos: Repository[] = [
     project_id: wireProjectId,
     name: "docs",
     git_url: "https://github.com/example/docs.git",
+    default_branch: "main",
+    created_at: "2026-07-29T18:00:00Z",
+  },
+  {
+    // The lab seeds local remotes; the issues route would only answer `422`
+    // for this one, so the form must not ask.
+    id: "01987b40-0002-7000-8000-abcdef012345",
+    project_id: wireProjectId,
+    name: "lab",
+    git_url: "file:///srv/git/lab.git",
     default_branch: "main",
     created_at: "2026-07-29T18:00:00Z",
   },
@@ -240,12 +255,112 @@ describe("NewRunForm — submit is one run", () => {
     expect(second.headers.get("idempotency-key")).toMatch(/^newrun-/);
     expect(screen.getByTestId("new-run-idempotency-key").textContent).toBe(key);
   });
+
+  it("says why the ceiling refused the run and links to the run that holds the slot", async () => {
+    // The lab's real arm: a schedule-fired run is parked at its approval gate,
+    // so the hand-started `Run` answers 409 run-state-conflict. The problem
+    // names no run (there is no run yet), so the form reads the slot's occupant
+    // off the project's runs and links to it — never a silent failure.
+    const HELD_RUN_ID = "01987b30-1111-7000-8000-abcdef012345";
+    const held = { ...wireRun, id: HELD_RUN_ID, status: "waiting_human" } satisfies RunSummary;
+    await openForm([
+      { path: RUNS_PATH, method: "GET", body: { runs: [held] } },
+      createResponse(409, {
+        type: "https://communication.dev/errors/run-state-conflict",
+        title: "Run State Conflict",
+        status: 409,
+        detail: `assignment ${WIRE_ASSIGNMENT_ID} has 1 active runs and allows 1 (max_concurrent_runs)`,
+      }),
+    ]);
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("new-run-submit"));
+
+    // The server's own words stay on screen…
+    const error = await screen.findByTestId("new-run-error");
+    expect(error.textContent).toContain("max_concurrent_runs");
+    // …and the reason the author can act on sits under them.
+    const reason = await screen.findByTestId("new-run-error-reason");
+    expect(reason.textContent).toBe(
+      "This workflow allows one run at a time; one run already holds a slot:",
+    );
+    const holders = await screen.findByTestId("new-run-error-holders");
+    expect(holders.textContent).toContain("is waiting for approval");
+    const link = screen.getByTestId(`new-run-error-holder-${HELD_RUN_ID}`);
+    expect(link.getAttribute("href")).toBe(`/runs/${HELD_RUN_ID}`);
+    expect(link.textContent).toBe(`#${HELD_RUN_ID.slice(-8)}`);
+    // A run outside this assignment is never blamed for the refusal.
+    expect(screen.queryByTestId(`new-run-error-holder-${WIRE_RUN_ID}`)).toBeNull();
+  });
+
+  it("keeps the ceiling sentence honest when the runs cannot be read", async () => {
+    await openForm([
+      { path: RUNS_PATH, method: "GET", status: 500 },
+      createResponse(409, {
+        type: "https://communication.dev/errors/run-state-conflict",
+        title: "Run State Conflict",
+        status: 409,
+        detail: `assignment ${WIRE_ASSIGNMENT_ID} has 2 active runs and allows 2 (max_concurrent_runs)`,
+      }),
+    ]);
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("new-run-submit"));
+
+    const reason = await screen.findByTestId("new-run-error-reason");
+    // The sentence is the server's own counts, not a guessed run list.
+    expect(reason.textContent).toBe(
+      "This workflow allows 2 runs at a time; 2 runs already hold a slot.",
+    );
+    expect(await screen.findByTestId("new-run-error-holders-unread")).toBeTruthy();
+    expect(screen.queryByTestId("new-run-error-holders")).toBeNull();
+  });
+});
+
+describe("NewRunForm — reading the ceiling refusal", () => {
+  function conflict409(detail: string, type = "run-state-conflict"): ApiError {
+    const body = {
+      type: `https://communication.dev/errors/${type}`,
+      title: "Run State Conflict",
+      status: 409,
+      detail,
+    };
+    return new ApiError(body, body);
+  }
+
+  it("reads the counts the refusal carries and refuses to guess others", () => {
+    expect(
+      runCeilingConflictOf(
+        conflict409("assignment a has 1 active runs and allows 1 (max_concurrent_runs)"),
+      ),
+    ).toEqual({ active: 1, allows: 1 });
+    expect(
+      runCeilingConflictOf(
+        conflict409(
+          "assignment a already has 1 of 1 allowed runs in flight",
+          "max_concurrent_runs",
+        ),
+      ),
+    ).toEqual({ active: 1, allows: 1 });
+    // A lifecycle 409 (a gate decided twice) is not a ceiling: no counts.
+    expect(runCeilingConflictOf(conflict409("the run is already waiting_human"))).toBeNull();
+    expect(runCeilingConflictOf(new Error("network"))).toBeNull();
+  });
+
+  it("words the ceiling from the server's counts only", () => {
+    expect(runCeilingSentence(1, 1)).toBe(
+      "This workflow allows one run at a time; one run already holds a slot",
+    );
+    expect(runCeilingSentence(3, 2)).toBe(
+      "This workflow allows 3 runs at a time; 2 runs already hold a slot",
+    );
+  });
 });
 
 /* -------------------------------------------------- W3: start from an issue */
 
 const APP_REPO_ID = "01987b40-0000-7000-8000-abcdef012345";
 const ISSUES_PATH = `/api/v1/projects/${wireProjectId}/repos/${APP_REPO_ID}/issues`;
+const LAB_REPO_ID = "01987b40-0002-7000-8000-abcdef012345";
+const LAB_ISSUES_PATH = `/api/v1/projects/${wireProjectId}/repos/${LAB_REPO_ID}/issues`;
 
 const issueList = {
   repository: "example/app",
@@ -308,7 +423,12 @@ async function openIssueSection(
 
 describe("NewRunForm — start from a GitHub issue", () => {
   it("lists the repository's open issues once one is chosen", async () => {
-    await openIssueSection([{ path: ISSUES_PATH, method: "GET", body: issueList }]);
+    const { requests } = await openIssueSection([
+      { path: ISSUES_PATH, method: "GET", body: issueList },
+    ]);
+
+    // A GitHub-hosted remote does ask — this is the half that must keep working.
+    expect(requestsTo(requests, ISSUES_PATH, "GET").length).toBeGreaterThan(0);
 
     const list = await screen.findByTestId("issue-list");
     expect(within(list).getByTestId("issue-row-12").textContent).toContain(
@@ -373,24 +493,19 @@ describe("NewRunForm — start from a GitHub issue", () => {
     expect(screen.getByTestId("issue-fill-note").textContent).toBe("filled goal from #9");
   });
 
-  it("a non-GitHub remote collapses the section into a muted line", async () => {
-    await openIssueSection([
-      {
-        path: ISSUES_PATH,
-        method: "GET",
-        status: 422,
-        body: {
-          type: "https://communication.dev/errors/not_a_github_repository",
-          title: "Not a GitHub repository",
-          status: 422,
-          detail: "git_url is not a GitHub remote.",
-          code: "not_a_github_repository",
-        },
-      },
-    ]);
+  it("a non-GitHub remote states the reason and never asks the issues route", async () => {
+    // No stub on the local remote's issues path: any request would answer 404
+    // from the fake fetch, and the zero-request assertion below is the real
+    // gate — the old contract (ask, eat a 422, then collapse) is what the
+    // emulator's failed-request lines came from.
+    const { requests } = await openForm();
+    fireEvent.change(await screen.findByTestId("new-run-input-repository"), {
+      target: { value: "lab" },
+    });
 
     const note = await screen.findByTestId("issue-section-not-github");
-    expect(note.textContent).toContain("not a GitHub remote");
+    expect(note.textContent).toContain("Issue triggers need a GitHub repository");
     expect(screen.queryByTestId("issue-section-toggle")).toBeNull();
+    expect(requestsTo(requests, LAB_ISSUES_PATH, "GET")).toHaveLength(0);
   });
 });

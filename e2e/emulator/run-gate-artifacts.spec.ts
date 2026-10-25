@@ -2,11 +2,13 @@
 //
 // Starts the pass's "Emu sched <passId>" plan-with-approval workflow from
 // the repo page's `Run` button (repo-triggers.spec.ts pinned it to M4 Exit /
-// app in this same pass; a schedule-fired run from that file may also be
-// around — this journey starts its own so it owns the run it approves).
-// Then: wait (≤ 10 min, model calls are real) until the approval gate waits
-// for a decision → approve it in the UI → wait for the run to complete →
-// open plan.md and prove the content renders. Polling everywhere; model
+// app in this same pass AND decided the gate of the run its own schedule
+// fired, so this pin's single concurrent-run slot is free — an assignment
+// allows `max_concurrent_runs` = 1 run, and a run parked at a gate holds it:
+// the refusal below is therefore a journey-ordering failure, not a product
+// bug). Then: wait (≤ 10 min, model calls are real) until the approval gate
+// waits for a decision → approve it in the UI → wait for the run to complete
+// → open plan.md and prove the content renders. Polling everywhere; model
 // calls can take minutes.
 import { expect, test } from "./fixtures.js";
 import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
@@ -14,6 +16,12 @@ import { EMU_ALICE_STATE, EMU_BASE_URL, EMU_PASS_ID } from "./env.js";
 const SCHED_NAME = `Emu sched ${EMU_PASS_ID}`;
 
 type Json = Record<string, unknown>;
+
+/** `lib/format.ts`'s `testidOf`: the run rows on the repo page are keyed on the
+ * compacted uuid's first 13 characters, which is a test id and NOT a run id. */
+function testidOf(id: string): string {
+  return id.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+}
 
 test.describe("run-gate-artifacts (alice)", () => {
   test.describe.configure({ mode: "serial", timeout: 25 * 60_000 });
@@ -41,12 +49,17 @@ test.describe("run-gate-artifacts (alice)", () => {
 
     let runIdsBefore: string[] = [];
     await test.step("start the run from the dialog", async () => {
-      runIdsBefore = await page
-        .getByTestId("repo-runs")
-        .locator('[data-testid^="repo-run-"]:not([data-testid*="status"])')
-        .evaluateAll((els: Element[]) =>
-          els.map((el) => (el.getAttribute("data-testid") ?? "").replace(/^repo-run-/, "")),
-        );
+      // Remember the runs that already exist, by FULL id from the API: the
+      // repo page's rows are keyed `repo-run-<testidOf(id)>` — a 13-character
+      // compacted test id, not an id `GET /runs/{id}` knows (the 2026-10-25
+      // pass read that form back as a run id and polled a 404 forever).
+      const runIds = async (): Promise<string[]> => {
+        const res = await page.request.get(`${EMU_BASE_URL}/api/v1/projects/${projectId}/runs`);
+        expect(res.status(), "GET /projects/{id}/runs answers").toBe(200);
+        const body = (await res.json()) as { runs?: { id: string; depth?: number }[] };
+        return (body.runs ?? []).filter((r) => (r.depth ?? 0) === 0).map((r) => String(r.id));
+      };
+      runIdsBefore = await runIds();
       await wfRow().locator('[data-testid^="repo-workflow-run-"]').click({ timeout: 20_000 });
       const form = page.getByTestId("new-run-form");
       await expect(form, "the row's `Run` opens the new-run form").toBeVisible({ timeout: 20_000 });
@@ -54,10 +67,7 @@ test.describe("run-gate-artifacts (alice)", () => {
       if (await assignment.isVisible().catch(() => false)) {
         // Pick the pass's own pin: both its name and its slug carry the
         // pass id; the seeded options do not.
-        const opt = assignment
-          .locator("option")
-          .filter({ hasText: EMU_PASS_ID })
-          .first();
+        const opt = assignment.locator("option").filter({ hasText: EMU_PASS_ID }).first();
         await assignment.selectOption({ label: ((await opt.textContent()) ?? "").trim() });
       }
       const goal = form.getByTestId("new-run-input-goal");
@@ -73,32 +83,62 @@ test.describe("run-gate-artifacts (alice)", () => {
       }
       // Remember the run rows that already exist — the newest NEW row (by
       // id, not by list position: other agents share this lab) is ours.
-      const runIds = async (): Promise<string[]> => {
-        await page.goto(`/p/${projectId}/app`);
-        await page.getByTestId("repo-runs").waitFor({ state: "visible", timeout: 20_000 });
-        return page
-          .getByTestId("repo-runs")
-          .locator('[data-testid^="repo-run-"]:not([data-testid*="status"])')
-          .evaluateAll((els) =>
-            els.map((el) => (el.getAttribute("data-testid") ?? "").replace(/^repo-run-/, "")),
-          );
-      };
       await form.getByTestId("new-run-submit").click({ timeout: 20_000 });
+      // A start the ceiling refuses must say so on screen — the form answers
+      // the `409` with the reason AND a link to the run that holds the slot.
+      // Reaching this branch means the journey before this one left its own
+      // run parked at a gate, so it is a red with two halves: the honest
+      // message is proven, and the ordering defect is named.
+      const refused = page.getByTestId("new-run-error-reason");
+      const outcome = await Promise.race([
+        page
+          .waitForURL(/runs\/[0-9a-f-]{36}/, { timeout: 60_000 })
+          .then(() => "started" as const)
+          .catch(() => "pending" as const),
+        refused.waitFor({ state: "visible", timeout: 60_000 }).then(() => "refused" as const),
+      ]);
+      if (outcome === "refused") {
+        const why = ((await refused.textContent({ timeout: 5_000 })) ?? "").trim();
+        const holder = page.locator('[data-testid^="new-run-error-holder-"]').first();
+        await expect(
+          holder,
+          "design: a ceiling refusal links to the run that holds the slot: " + JSON.stringify(why),
+        ).toBeVisible({ timeout: 10_000 });
+        await emu.screen("run-gate", "start-refused-by-the-ceiling");
+        expect(
+          why,
+          "the hand-started run was refused by max_concurrent_runs — repo-triggers must " +
+            `approve the gate of the run its schedule fired before it ends: ${JSON.stringify(why)} ` +
+            `(linked run: ${((await holder.getAttribute("href", { timeout: 5_000 })) ?? "").trim()})`,
+        ).toBe("");
+      }
       await Promise.race([
         page.waitForURL(/runs\/[0-9a-f-]{36}/, { timeout: 60_000 }),
         page.getByTestId("new-run-form").waitFor({ state: "hidden", timeout: 60_000 }),
       ]).catch(() => undefined);
-      const beforeIds = new Set<string>(runIdsBefore);
-      await expect
-        .poll(
-          async () => {
-            const now = await runIds();
-            runId = now.find((id) => !beforeIds.has(id)) ?? "";
-            return runId;
-          },
-          { message: "the new run shows on the repo page's Recent runs", timeout: 60_000 },
-        )
-        .toBeTruthy();
+      // The form navigates to the run it created; that URL is the run's real
+      // id. Only when it did not navigate does the journey diff the run list.
+      if (/\/runs\/[0-9a-f-]{36}$/.test(new URL(page.url()).pathname)) {
+        runId = new URL(page.url()).pathname.split("/")[2] ?? "";
+      } else {
+        const beforeIds = new Set<string>(runIdsBefore);
+        await expect
+          .poll(
+            async () => {
+              runId = (await runIds()).find((id) => !beforeIds.has(id)) ?? "";
+              return runId;
+            },
+            { message: "the new run lands as a run of this project", timeout: 60_000 },
+          )
+          .toMatch(/^[0-9a-f-]{36}$/);
+      }
+      expect(runId, "the started run has a full run id").toMatch(/^[0-9a-f-]{36}$/);
+      // design 2e: the run the person just started is on the repo page too.
+      await page.goto(`/p/${projectId}/app`);
+      await expect(
+        page.getByTestId(`repo-run-${testidOf(runId)}`),
+        "design 2e: the started run shows under RECENT RUNS",
+      ).toBeVisible({ timeout: 30_000 });
       await page.goto(`/runs/${runId}`);
     });
 
@@ -143,8 +183,8 @@ test.describe("run-gate-artifacts (alice)", () => {
             return st;
           },
           {
-          message:
-            "the plan-with-approval run parks in waiting_human within 10 min (the model legs are real)",
+            message:
+              "the plan-with-approval run parks in waiting_human within 10 min (the model legs are real)",
             timeout: 10 * 60_000,
             intervals: [5_000],
           },
@@ -214,10 +254,9 @@ test.describe("run-gate-artifacts (alice)", () => {
       await page.goto(`${new URL(page.url()).pathname}?view=artifacts`);
       const list = page.getByTestId("workbench-artifacts-list");
       const link = list.getByText(/plan\.md/).first();
-      await expect(
-        link,
-        "design: the completed run's Artifacts view lists plan.md",
-      ).toBeVisible({ timeout: 60_000 });
+      await expect(link, "design: the completed run's Artifacts view lists plan.md").toBeVisible({
+        timeout: 60_000,
+      });
       await link.click();
       await page.waitForURL(/artifacts\/[0-9a-f-]{36}/, { timeout: 30_000 }).catch(() => undefined);
       await expect(page.getByTestId("artifact-not-found")).toHaveCount(0);
