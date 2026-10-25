@@ -682,17 +682,28 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 		s.logger().WarnContext(ctx, "issue trigger is due but its assignment will not fire; left pending",
 			slog.String("issue_trigger_id", id), slog.String("assignment_id", it.AssignmentID),
 			slog.String("reason", err.Error()))
-		return 0, nil
+		// The pass still records that it looked (ADR-0063's rule: poll
+		// bookkeeping never depends on the poll succeeding) — a row nobody
+		// ever touches is indistinguishable from a dead replica, which is
+		// exactly how the lab's second failure read as "the poller died".
+		return 0, s.recordIssueTriggerDeferred(ctx, tx, id, now)
 	}
 	live, err := scheduleLiveRuns(ctx, tx, it.AssignmentID)
 	if err != nil {
 		return 0, err
 	}
 	if live >= pin.maxConcurrent {
-		s.logger().DebugContext(ctx, "issue trigger fire deferred at the assignment ceiling",
+		// WARN, not Debug: this deferral is the trigger's whole answer for
+		// as long as the ceiling holds, and the 2026-10-25 lab's second
+		// pass sat in exactly this arm for 20 minutes with no visible word
+		// while its row looked frozen. The pass records last_polled_at and
+		// commits (the cursor does NOT advance: the fire is retried as soon
+		// as capacity frees), so the row says "alive, deferred" rather than
+		// silently aging.
+		s.logger().WarnContext(ctx, "issue trigger fire deferred at the assignment ceiling; the trigger stays due",
 			slog.String("issue_trigger_id", id),
 			slog.Int("live_runs", live), slog.Int("max_concurrent_runs", pin.maxConcurrent))
-		return 0, nil
+		return 0, s.recordIssueTriggerDeferred(ctx, tx, id, now)
 	}
 	repo, err := s.issueTriggerGitRepo(ctx, tx, it.RepositoryID, it.ProjectID)
 	if err != nil {
@@ -741,6 +752,23 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 			}
 		}
 		if !issueLabelsMatch(issue.Labels, it.Labels) {
+			continue
+		}
+		if it.Event == "labeled" &&
+			!issueLabeledAtOrAfter(ctx, lister, s.logger(), repo, issue, it.Labels, token, it.CreatedAt) {
+			// No backfill on the `labeled` arm either (ADR-0056 amendment of
+			// 2026-10-25): a label applied before the trigger existed is old
+			// news, and the lab's first poll proved what "now carries the
+			// label" alone answers — eight runs for issues labeled hours
+			// before the trigger was written. The cursor still moves past a
+			// skipped issue: a NEW label bumps updated_at past the cursor and
+			// returns the issue to a later listing on its merits.
+			s.logger().DebugContext(ctx, "issue trigger skipped an issue whose watched label predates the trigger",
+				slog.String("issue_trigger_id", id), slog.Int("issue_number", issue.Number))
+			if cursor == nil || issue.UpdatedAt.After(*cursor) {
+				t := issue.UpdatedAt
+				cursor = &t
+			}
 			continue
 		}
 		n, ferr := s.fireIssue(ctx, tx, it, pin, repo, issue)
@@ -1062,6 +1090,61 @@ func (s *IssueTriggerStore) issueTriggerToken(ctx context.Context, repositoryID 
 		return "", fmt.Errorf("%w: this replica has no secret store wired, so a credentialed repository cannot poll anonymously either", ErrRepositoryCredential)
 	}
 	return s.Credentials.ResolveRepositoryCredential(ctx, repositoryID, secrets.ConsumerIssueRead, "system")
+}
+
+// recordIssueTriggerDeferred is the deferral arms' bookkeeping: the pass
+// looked at this trigger, so last_polled_at says so and commits, while the
+// cursor and last_error stay exactly as they were (the fire is retried from
+// the same position as soon as the deferral lifts). It runs on the fire's own
+// transaction — nothing was read that could fail — and a failed record here
+// is a warning, not a lost fire: the due test re-derives everything.
+func (s *IssueTriggerStore) recordIssueTriggerDeferred(ctx context.Context, tx pgx.Tx, id string, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE issue_triggers SET last_polled_at = $1 WHERE id = $2::uuid`, now, id); err != nil {
+		return fmt.Errorf("postgres: record deferred issue trigger %s poll: %w", id, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: commit deferred issue trigger %s poll: %w", id, err)
+	}
+	return nil
+}
+
+// issueLabeledAtOrAfter answers the `labeled` arm's no-backfill question:
+// was any of the trigger's watched labels APPLIED to this issue at or after
+// the trigger's created_at? The issue's event timeline is the witness
+// (GitHub GET /repos/{o}/{r}/issues/{n}/events); where no timeline can be
+// read, the fallback is the ADR amendment's degraded answer: updated_at as a
+// proxy (an edit can over-fire, a pre-trigger label can never sneak past it,
+// since applying the label is itself an update). An unlabeled event's
+// missing name is matched against nothing but time — GitHub always names
+// the label on labeled events, and an unnamed one is treated as the generic
+// yes its timestamp proves.
+func issueLabeledAtOrAfter(ctx context.Context, lister github.IssueLister, log *slog.Logger,
+	repo github.Repository, issue github.Issue, watch []string, token string, since time.Time) bool {
+	fallback := func(reason error) bool {
+		if reason != nil {
+			log.WarnContext(ctx, "issue trigger could not read an issue's label timeline; deciding from updated_at",
+				slog.String("issue_url", issue.HTMLURL), slog.String("error", reason.Error()))
+		}
+		return !issue.UpdatedAt.IsZero() && !issue.UpdatedAt.Before(since)
+	}
+	el, ok := lister.(github.IssueEventLister)
+	if !ok {
+		return fallback(nil)
+	}
+	events, err := el.ListIssueEvents(ctx, repo, issue.Number, token)
+	if err != nil {
+		return fallback(err)
+	}
+	for _, ev := range events {
+		if ev.Event != "labeled" || ev.CreatedAt.Before(since) {
+			continue
+		}
+		if ev.LabelName == "" || issueLabelsMatch([]string{ev.LabelName}, watch) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordIssueTriggerPoll is the shared answer for a poll that failed — a

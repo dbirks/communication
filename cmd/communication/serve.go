@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -731,10 +732,16 @@ type issueTriggerTicker interface {
 }
 
 // runIssueTriggerTicker is ADR-0056 part 2's serve-side tick: every `every`,
-// fire the due issue triggers. A failed tick is logged and retried next beat
-// (the due-row claim is idempotent, so a retry cannot double-fire); fired runs
-// are logged at INFO only when there were runs, so a healthy idle replica
-// stays quiet. Same shape as runScheduleTicker, which is why it lives beside it.
+// fire the due issue triggers. A failed tick is logged at WARN and retried
+// next beat (the due-row claim is idempotent, so a retry cannot double-fire);
+// a tick that PANICS is recovered, logged and retried too — the loop outlives
+// everything a pass can do, because a poller that died quietly is exactly how
+// the 2026-10-25 lab read as "the trigger stopped polling" (the second
+// failure's real story was a silent ceiling deferral, fixed in the store; the
+// recover here is the guarantee that no future cause can end this loop while
+// serve runs). Fired runs are logged at INFO only when there were runs, so a
+// healthy idle replica stays quiet. Same shape as runScheduleTicker, which is
+// why it lives beside it.
 func runIssueTriggerTicker(ctx context.Context, st issueTriggerTicker, lister github.IssueLister, every time.Duration, log *slog.Logger) error {
 	if st == nil {
 		return errors.New("serve: issue trigger ticker has no store")
@@ -752,16 +759,25 @@ func runIssueTriggerTicker(ctx context.Context, st issueTriggerTicker, lister gi
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			n, err := st.TickIssueTriggers(ctx, time.Now(), lister)
-			if err != nil {
-				log.ErrorContext(ctx, "issue trigger tick failed; retrying next tick",
-					slog.String("error", err.Error()))
-				continue
-			}
-			if n > 0 {
-				log.InfoContext(ctx, "issue triggers fired",
-					slog.Int("runs_created", n), slog.String("every", every.String()))
-			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.WarnContext(ctx, "issue trigger tick panicked; retrying next tick",
+							slog.Any("panic", r),
+							slog.String("stack", string(debug.Stack())))
+					}
+				}()
+				n, err := st.TickIssueTriggers(ctx, time.Now(), lister)
+				if err != nil {
+					log.WarnContext(ctx, "issue trigger tick failed; retrying next tick",
+						slog.String("error", err.Error()))
+					return
+				}
+				if n > 0 {
+					log.InfoContext(ctx, "issue triggers fired",
+						slog.Int("runs_created", n), slog.String("every", every.String()))
+				}
+			}()
 		}
 	}
 }

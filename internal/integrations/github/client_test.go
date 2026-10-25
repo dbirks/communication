@@ -324,3 +324,45 @@ func TestListIssuesPassesAnyOfLabelsForTheIssuePoll(t *testing.T) {
 		t.Errorf("labels = %q, want bug,docs", got)
 	}
 }
+
+// --- ListIssueEvents ----------------------------------------------------
+
+const ghiLabeledEvents = `[{"event":"subscribed","created_at":"2026-10-16T06:00:00Z"},
+	{"event":"labeled","created_at":"2026-10-16T06:30:00Z","label":{"name":"comm:go","color":"ededed"}}]`
+
+func TestListIssueEventsReadsTheTimelineWithItsPinHeaders(t *testing.T) {
+	c, stub := ghiClient(t, 0, nil, ghiLabeledEvents)
+	got, err := c.ListIssueEvents(context.Background(), Repository{Owner: "octo", Name: "widgets"}, 11, "tok-1")
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("events = %+v, want both timeline rows", got)
+	}
+	if got[1].Event != "labeled" || got[1].LabelName != "comm:go" {
+		t.Errorf("labeled event = %+v, want event=labeled name=comm:go", got[1])
+	}
+	want := time.Date(2026, 10, 16, 6, 30, 0, 0, time.UTC)
+	if !got[1].CreatedAt.Equal(want) {
+		t.Errorf("created_at = %v, want %v", got[1].CreatedAt, want)
+	}
+	if stub.gotPath != "/repos/octo/widgets/issues/11/events" {
+		t.Errorf("path = %q, want the issue events endpoint", stub.gotPath)
+	}
+	if per := stub.gotQuery.Get("per_page"); per != "100" {
+		t.Errorf("per_page = %q, want 100", per)
+	}
+	if a := stub.gotHead.Get("Accept"); a != acceptHeader {
+		t.Errorf("Accept = %q, want %q", a, acceptHeader)
+	}
+	if auth := stub.gotHead.Get("Authorization"); auth != "Bearer tok-1" {
+		t.Errorf("Authorization = %q, want the per-call bearer", auth)
+	}
+}
+
+func TestListIssueEventsRefusesNonPositiveNumbers(t *testing.T) {
+	c, _ := ghiClient(t, 0, nil, `[]`)
+	if _, err := c.ListIssueEvents(context.Background(), Repository{Owner: "o", Name: "r"}, 0, ""); err == nil {
+		t.Fatal("ListIssueEvents(issue 0) = nil error, want a refusal that never hits the wire")
+	}
+}

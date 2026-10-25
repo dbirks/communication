@@ -18,10 +18,14 @@ package postgres
 //     fire's own transaction as a savepoint.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,9 +134,14 @@ func TestIssueTriggerTwoMatchingIssuesFireInOnePoll(t *testing.T) {
 		t.Fatalf("itIssueFires: %v", err)
 	}
 	mk := func(n int) itWireIssue {
+		// Labeled after the trigger was authored — the no-backfill rule
+		// (ADR-0056 amendment) skips pre-trigger labels, pinned by
+		// TestIssueTriggerLabeledNeverBackfillsPreTriggerLabel; this test is
+		// about ONE poll matching TWO issues (the lab's self-deadlock shape).
+		at := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
 		return itWireIssue{Number: n, Title: "Ship it", State: "open",
-			HTMLURL:   "https://github.com/octo/widgets/issues/" + string(rune('A'+n)),
-			CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+			HTMLURL:   "https://github.com/octo/widgets/issues/" + strconv.Itoa(n),
+			CreatedAt: at, UpdatedAt: at,
 			Labels: []itWireLabel{{Name: "comm:go"}}}
 	}
 	lister := newITIssueLister([]itWireIssue{mk(11), mk(12)}, nil)
@@ -177,9 +186,10 @@ func TestIssueTriggerHungPollIsCutLooseAndRecordedAndTickKeepsGoing(t *testing.T
 	if err != nil {
 		t.Fatalf("itIssueFires: %v", err)
 	}
+	labeledAfter := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
 	issues := []itWireIssue{{Number: 11, Title: "Go go", State: "open",
 		HTMLURL:   "https://github.com/octo/widgets/issues/11",
-		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		CreatedAt: labeledAfter, UpdatedAt: labeledAfter,
 		Labels: []itWireLabel{{Name: "comm:go"}}}}
 
 	// Beat 1: the hang. The tick must come back bounded, and the row must
@@ -260,4 +270,224 @@ type failingLister struct{ err error }
 
 func (l failingLister) ListIssues(context.Context, github.Repository, github.IssueQuery, string) ([]github.Issue, error) {
 	return nil, l.err
+}
+
+// issuesOnlyLister hides the timeline capability: it forwards the list and
+// refuses to BE an IssueEventLister, forcing the store's declared fallback
+// (updated_at as the label-time proxy).
+type issuesOnlyLister struct{ inner *itIssueLister }
+
+func (l issuesOnlyLister) ListIssues(ctx context.Context, repo github.Repository, q github.IssueQuery, token string) ([]github.Issue, error) {
+	return l.inner.ListIssues(ctx, repo, q, token)
+}
+
+// TestIssueTriggerLabeledNeverBackfillsPreTriggerLabel is the gh-loop
+// 2026-10-25 second failure (D): the trigger was created 15:57:03 and its
+// FIRST poll — no cursor, no `since`, every labeled issue returned — fired
+// EIGHT runs for issues labeled hours earlier, because the `labeled` arm
+// asked only "does the issue carry the label NOW". ADR-0056 §5's no-backfill
+// sentence sat on the `opened` arm; the amendment of 2026-10-25 gives the
+// same rule to `labeled`: a label event at or after the trigger's own
+// created_at, or it is old news.
+//
+// The fake serves the strongest skew: issue #11 carries comm:go and was
+// EDITED after the trigger existed (updated_at is fresh — the listing hands
+// it to every poll), but its label was applied BEFORE the trigger was
+// authored; issue #15's label lands after. Only #15 may fire.
+func TestIssueTriggerLabeledNeverBackfillsPreTriggerLabel(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	oldLabel := trigger.CreatedAt.Add(-time.Hour).Format(time.RFC3339)
+	freshEdit := trigger.CreatedAt.Add(2 * time.Hour).Format(time.RFC3339)
+	newLabel := trigger.CreatedAt.Add(30 * time.Minute).UTC().Truncate(time.Second).Format(time.RFC3339)
+	issues := []itWireIssue{
+		{Number: 11, Title: "Old label, fresh edit", State: "open",
+			HTMLURL:   "https://github.com/octo/widgets/issues/11",
+			CreatedAt: oldLabel, UpdatedAt: freshEdit,
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+		{Number: 15, Title: "Labeled after", State: "open",
+			HTMLURL:   "https://github.com/octo/widgets/issues/15",
+			CreatedAt: newLabel, UpdatedAt: newLabel,
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+	}
+	lister := newITIssueListerLabeledAt(issues, func(it itWireIssue) string {
+		if it.Number == 11 {
+			return oldLabel // labeled before the trigger existed
+		}
+		return newLabel
+	})
+	defer lister.Close()
+
+	fired, terr := waitTick(t, ctx, f, time.Now().UTC(), lister, 60*time.Second)
+	if terr != nil {
+		t.Fatalf("tick: %v", terr)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want exactly issue #15 — #11's label predates the trigger (ADR-0056 amendment)", fired)
+	}
+	if _, kind := itIssueRunFor(t, ctx, f, "octo/widgets#15"); kind != "issue" {
+		t.Fatalf("the post-trigger label did not fire")
+	}
+	var n int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM runs WHERE trigger_ref = 'octo/widgets#11'`).Scan(&n); err != nil {
+		t.Fatalf("count #11 runs: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("a pre-trigger label fired %d run(s): the backfill is the defect this amendment exists for", n)
+	}
+	polled, lastErr := itPollState(t, ctx, f, trigger.ID)
+	if !polled.Valid {
+		t.Fatal("last_polled_at is NULL after the poll")
+	}
+	if lastErr.Valid && lastErr.String != "" {
+		t.Fatalf("last_error = %q after a clean poll", lastErr.String)
+	}
+}
+
+// TestIssueTriggerLabeledFallbackWithoutTimelineIsUpdatedAt: when the lister
+// carries no timeline (the capability assertion fails — the store's declared
+// degraded answer, recorded by the ADR amendment), the gate is
+// updated_at >= created_at: #11 was last touched before the trigger existed
+// and must not fire; #15 was labeled and updated after it, and must.
+func TestIssueTriggerLabeledFallbackWithoutTimelineIsUpdatedAt(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	stale := trigger.CreatedAt.Add(-30 * time.Minute).Format(time.RFC3339)
+	fresh := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
+	inner := newITIssueLister([]itWireIssue{
+		{Number: 11, Title: "Touched before", State: "open",
+			HTMLURL:   "https://github.com/octo/widgets/issues/11",
+			CreatedAt: stale, UpdatedAt: stale,
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+		{Number: 15, Title: "Touched after", State: "open",
+			HTMLURL:   "https://github.com/octo/widgets/issues/15",
+			CreatedAt: fresh, UpdatedAt: fresh,
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+	}, nil)
+	defer inner.Close()
+
+	fired, terr := waitTick(t, ctx, f, time.Now().UTC(), issuesOnlyLister{inner}, 60*time.Second)
+	if terr != nil {
+		t.Fatalf("tick: %v", terr)
+	}
+	if fired != 1 {
+		t.Fatalf("fired = %d, want only the updated-at-or-after issue", fired)
+	}
+	if _, kind := itIssueRunFor(t, ctx, f, "octo/widgets#15"); kind != "issue" {
+		t.Fatal("the fresh issue did not fire on the fallback gate")
+	}
+}
+
+// TestIssueTriggerEveryPassRecordsLastPolled is the C arm end to end: five
+// beats in a row — a HUNG poll cut loose at the per-poll timeout, an ERRORED
+// poll, a clean no-match poll, a firing poll, and a poll DEFERRED AT THE
+// ASSIGNMENT CEILING (the lab's silent 20-minute freeze: seven waiting_human
+// runs against a max_concurrent_runs of 1, deferred at Debug level, recorded
+// nowhere, read as a dead poller). Every beat returns, every beat advances
+// last_polled_at, the ceiling deferral says so at WARN and fires nothing, and
+// no beat wedges the loop.
+func TestIssueTriggerEveryPassRecordsLastPolled(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	var logs bytes.Buffer
+	f.triggers.PollTimeout = 100 * time.Millisecond
+	f.triggers.Log = slog.New(slog.NewJSONHandler(&logs, nil))
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{"comm:go"}, json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	labeled := trigger.CreatedAt.Add(time.Hour)
+
+	// Beat 1: the hang.
+	if _, terr := waitTick(t, ctx, f, time.Now().UTC(), blockingLister{}, 30*time.Second); terr == nil {
+		t.Fatal("the hung tick reported success")
+	}
+	prev := mustPollTime(t, ctx, f, trigger.ID)
+
+	// Beat 2: the hard error.
+	if fired, terr := waitTick(t, ctx, f, prev.Add(time.Minute), failingLister{err: errors.New("github: 403 rate limited")}, 30*time.Second); fired != 0 || terr != nil {
+		t.Fatalf("errored tick = (%d, %v)", fired, terr)
+	}
+	prev = mustPollTimeAfter(t, ctx, f, trigger.ID, prev)
+
+	// Beat 3: clean, nothing matches (wrong label).
+	if fired, terr := waitTick(t, ctx, f, prev.Add(time.Minute), newITIssueLister([]itWireIssue{
+		{Number: 3, Title: "docs", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/3",
+			CreatedAt: labeled.Format(time.RFC3339), UpdatedAt: labeled.Format(time.RFC3339),
+			Labels: []itWireLabel{{Name: "docs"}}},
+	}, nil), 30*time.Second); fired != 0 || terr != nil {
+		t.Fatalf("no-match tick = (%d, %v)", fired, terr)
+	}
+	prev = mustPollTimeAfter(t, ctx, f, trigger.ID, prev)
+
+	// Beat 4: a match fires.
+	if fired, terr := waitTick(t, ctx, f, prev.Add(time.Minute), newITIssueLister([]itWireIssue{
+		{Number: 11, Title: "go", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/11",
+			CreatedAt: labeled.Format(time.RFC3339), UpdatedAt: labeled.Format(time.RFC3339),
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+	}, nil), 30*time.Second); fired != 1 || terr != nil {
+		t.Fatalf("firing tick = (%d, %v)", fired, terr)
+	}
+	prev = mustPollTimeAfter(t, ctx, f, trigger.ID, prev)
+
+	// Beat 5: the ceiling. The beat-4 run is still queued; drop the ceiling
+	// to one and the fire must defer — visibly (WARN) and recorded — while
+	// the loop itself stays green and a NEW issue in the same beat fires
+	// nothing.
+	if _, err := f.pool.Exec(ctx, `UPDATE assignments SET max_concurrent_runs = 1 WHERE id = $1::uuid`, f.assignment); err != nil {
+		t.Fatalf("tighten the ceiling: %v", err)
+	}
+	later := labeled.Add(time.Hour)
+	if fired, terr := waitTick(t, ctx, f, prev.Add(time.Minute), newITIssueLister([]itWireIssue{
+		{Number: 12, Title: "go too", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/12",
+			CreatedAt: later.Format(time.RFC3339), UpdatedAt: later.Format(time.RFC3339),
+			Labels: []itWireLabel{{Name: "comm:go"}}},
+	}, nil), 30*time.Second); fired != 0 || terr != nil {
+		t.Fatalf("ceiling tick = (%d, %v), want a green deferred pass", fired, terr)
+	}
+	prev = mustPollTimeAfter(t, ctx, f, trigger.ID, prev)
+	var n int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM runs WHERE trigger_ref = 'octo/widgets#12'`).Scan(&n); err != nil {
+		t.Fatalf("count #12 runs: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("the ceiling deferral still fired a run")
+	}
+	if text := logs.String(); !strings.Contains(text, "issue trigger fire deferred at the assignment ceiling") {
+		t.Fatalf("the ceiling deferral must speak at WARN (the lab read silence as death), got:\n%s", text)
+	}
+	if text := logs.String(); !strings.Contains(text, `"level":"WARN"`) || !strings.Contains(text, "issue trigger tick failed") {
+		t.Fatalf("a failed pass must be logged at WARN and continued, got:\n%s", text)
+	}
+}
+
+func mustPollTime(t *testing.T, ctx context.Context, f *itFixture, id string) time.Time {
+	t.Helper()
+	polled, _ := itPollState(t, ctx, f, id)
+	if !polled.Valid {
+		t.Fatal("last_polled_at is NULL where a pass promised to record it")
+	}
+	return polled.Time.UTC()
+}
+
+func mustPollTimeAfter(t *testing.T, ctx context.Context, f *itFixture, id string, prev time.Time) time.Time {
+	t.Helper()
+	now := mustPollTime(t, ctx, f, id)
+	if !now.After(prev) {
+		t.Fatalf("last_polled_at did not advance: %v -> %v", prev, now)
+	}
+	return now
 }

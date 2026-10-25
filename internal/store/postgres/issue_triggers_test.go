@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,11 +126,24 @@ func itWireToIssue(in itWireIssue) github.Issue {
 }
 
 // itIssueLister is the github.IssueLister the real client answers from a local
-// httptest server, honouring the `since` / `labels` query params the poll sends.
+// httptest server, honouring the `since` / `labels` query params the poll
+// sends — and the per-issue `events` timeline the `labeled` arm reads (ADR-0056
+// amendment: a trigger never fires a label applied before it existed). It is
+// deliberately ALSO a github.IssueEventLister (via the wrapped Client), so
+// store tests exercise the timeline path, never only the fallback.
 type itIssueLister struct {
 	client  *github.Client
 	server  *httptest.Server
 	handler http.HandlerFunc
+
+	// issues answers the list at request time; labeledAt, when set, answers
+	// WHEN each issue's labels were applied (default: its updated_at).
+	issues    func() []itWireIssue
+	labeledAt func(itWireIssue) string
+}
+
+func (l *itIssueLister) ListIssueEvents(ctx context.Context, repo github.Repository, number int, token string) ([]github.IssueEvent, error) {
+	return l.client.ListIssueEvents(ctx, repo, number, token)
 }
 
 // itServeIssues is the fake GitHub handler: it answers from whatever the
@@ -180,16 +194,63 @@ func itServeIssues(issues func() []itWireIssue) http.HandlerFunc {
 }
 
 func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLister {
+	get := func() []itWireIssue { return issues }
 	if handler == nil {
-		handler = itServeIssues(func() []itWireIssue { return issues })
+		handler = itServeIssues(get)
 	}
+	l := &itIssueLister{issues: get}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/octo/widgets/issues", handler)
+	mux.HandleFunc("/repos/octo/widgets/issues/", l.serveEvents)
 	srv := httptest.NewServer(mux)
 	c := github.New()
 	c.BaseURL = srv.URL
 	c.HTTP = &http.Client{Timeout: 5 * time.Second}
-	return &itIssueLister{client: c, server: srv, handler: handler}
+	l.client = c
+	l.server = srv
+	l.handler = handler
+	return l
+}
+
+// serveEvents answers GET /repos/octo/widgets/issues/{n}/events with one
+// `labeled` event per label the issue carries, timestamped at labeledAt (the
+// issue's updated_at by default — applying a label is an update). A PR row
+// (or an unknown issue) answers 404 exactly like GitHub's events endpoint
+// does for an issue that is not there.
+func (l *itIssueLister) serveEvents(w http.ResponseWriter, r *http.Request) {
+	numStr, tail, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/octo/widgets/issues/"), "/")
+	if !ok || tail != "events" {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		return
+	}
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		return
+	}
+	for _, it := range l.issues() {
+		if it.Number != n || len(it.PR) > 0 {
+			continue
+		}
+		at := it.UpdatedAt
+		if l.labeledAt != nil {
+			at = l.labeledAt(it)
+		}
+		out := make([]map[string]any, 0, len(it.Labels))
+		for _, lb := range it.Labels {
+			out = append(out, map[string]any{
+				"event": "labeled", "created_at": at,
+				"label": map[string]any{"name": lb.Name},
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 }
 
 func (l *itIssueLister) ListIssues(ctx context.Context, repo github.Repository, q github.IssueQuery, token string) ([]github.Issue, error) {
@@ -334,21 +395,27 @@ func TestIssueTriggerOpenedFiresPerNewIssue(t *testing.T) {
 }
 
 // TestIssueTriggerLabeledFiresOnlyOnMatchingLabel: the any-of label rule is
-// case-insensitive, and an empty trigger label set means "every issue".
+// case-insensitive, and an empty trigger label set means "every issue". The
+// labels ride issues updated AFTER the trigger was authored — ADR-0056's
+// amendment of 2026-10-25 says `labeled` never backfills a label that predates
+// the trigger, and the no-backfill case has its own test
+// (TestIssueTriggerLabeledNeverBackfillsPreTriggerLabel).
 func TestIssueTriggerLabeledFiresOnlyOnMatchingLabel(t *testing.T) {
 	ctx := testCtx(t)
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
-	if _, err := f.itIssueFires(ctx, "labeled", []string{"Bug"}, json.RawMessage(`{}`), nil); err != nil {
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{"Bug"}, json.RawMessage(`{}`), nil)
+	if err != nil {
 		t.Fatalf("itIssueFires: %v", err)
 	}
+	labeled := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
 	issues := []itWireIssue{
 		{Number: 5, Title: "A", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/5",
-			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "bug"}}},
+			CreatedAt: labeled, UpdatedAt: labeled, Labels: []itWireLabel{{Name: "bug"}}},
 		{Number: 6, Title: "B", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/6",
-			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "Feature"}}},
+			CreatedAt: labeled, UpdatedAt: labeled, Labels: []itWireLabel{{Name: "Feature"}}},
 		{Number: 8, Title: "C", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/issues/8",
-			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{}},
+			CreatedAt: labeled, UpdatedAt: labeled, Labels: []itWireLabel{}},
 	}
 	lister := newITIssueLister(issues, nil)
 	defer lister.Close()
@@ -530,12 +597,14 @@ func TestIssueTriggerSkipsPullRequests(t *testing.T) {
 	ctx := testCtx(t)
 	f := itSetup(t)
 	f.itDropTriggers(t, ctx)
-	if _, err := f.itIssueFires(ctx, "labeled", []string{}, json.RawMessage(`{}`), nil); err != nil {
+	trigger, err := f.itIssueFires(ctx, "labeled", []string{}, json.RawMessage(`{}`), nil)
+	if err != nil {
 		t.Fatalf("itIssueFires: %v", err)
 	}
+	recent := trigger.CreatedAt.Add(time.Hour).Format(time.RFC3339)
 	issues := []itWireIssue{
 		{Number: 9, Title: "A PR", Body: "", State: "open", HTMLURL: "https://github.com/octo/widgets/pull/9",
-			CreatedAt: "2026-03-10T08:00:00Z", UpdatedAt: "2026-03-10T08:30:00Z", Labels: []itWireLabel{{Name: "bug"}},
+			CreatedAt: recent, UpdatedAt: recent, Labels: []itWireLabel{{Name: "bug"}},
 			PR: json.RawMessage(`{"url":"https://api.github.com/repos/octo/widgets/pulls/9"}`)},
 	}
 	lister := newITIssueLister(issues, nil)
@@ -992,4 +1061,14 @@ func TestIssueTriggerTypedPlaceholderRefusals(t *testing.T) {
 	}); err != nil {
 		t.Errorf("update with the typed binding = %v, want it accepted", err)
 	}
+}
+
+// newITIssueListerLabeledAt is the timeline dial: the same fake lister, with
+// the answer to "when was this issue labeled?" decoupled from its
+// updated_at — the exact skew (a pre-trigger label, a post-trigger edit) the
+// `labeled` no-backfill rule must survive.
+func newITIssueListerLabeledAt(issues []itWireIssue, labeledAt func(itWireIssue) string) *itIssueLister {
+	l := newITIssueLister(issues, nil)
+	l.labeledAt = labeledAt
+	return l
 }

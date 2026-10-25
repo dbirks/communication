@@ -153,3 +153,27 @@ listing fires normally. Every other idempotency-key caller (`POST /runs`,
 schedule fires) keeps ADR-0023 § 12's mismatch answer unchanged: this narrows
 what a trigger promises about its own (trigger, issue) dedupe, not the meaning
 of an API idempotency key.
+
+## Amendment (2026-10-25) — `labeled` never backfills either
+
+§ 5 attached "never backfills old issues" to the `opened` arm, and the shipped
+`labeled` arm read that literally: its first poll — no cursor, no `since`, the
+whole labeled listing — fired on "does this issue carry a watched label NOW".
+The gh-loop of 2026-10-25 showed what that answers: one poll fired eight runs
+for issues whose labels had been applied hours before the trigger was written,
+and those backfilled runs (seven waiting on human gates against a
+`max_concurrent_runs` of 1) then deferred every real fire the trigger saw
+afterwards. The rule now, in the spirit of the ADR rather than its letter:
+**a `labeled` trigger fires only for a label applied at or after the trigger's
+own `created_at`** — the event the intent subscribes to, not the state the
+intent finds. The witness is GitHub's issue event timeline
+(`GET /repos/{o}/{r}/issues/{n}/events`, a `labeled` event whose `created_at`
+is at or after `issue_triggers.created_at`, matched case-insensitively against
+the trigger's label set when GitHub names it), read with the same anonymous or
+per-credential call as the listing. Where no timeline can be read at all — a
+lister without that capability, or a failed event read — the declared degraded
+fallback is the issue's `updated_at >= created_at`: an edit can over-fire
+through it, but a pre-trigger label never can, since applying the label is
+itself an update. A skipped issue still advances the cursor; a *new* label
+bumps `updated_at` past it and returns the issue to a later listing on its
+merits.
