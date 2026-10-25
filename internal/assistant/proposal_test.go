@@ -545,3 +545,121 @@ func TestProposalAnswerRepair(t *testing.T) {
 		})
 	}
 }
+
+// TestProposalStructuralAnswerRepair walks the issue2 A8 amendment: an
+// answer that parses as one JSON object but the draft itself refuses
+// (target_has_dependents and friends) earns the SAME single corrective
+// re-ask the malformed answer earned — echoing the bounded bad answer plus
+// the exact reason and detail — and the two failure kinds share the one
+// budget: no turn ever asks twice. A re-ask that is refused too leaves the
+// FIRST answer and therefore the ORIGINAL error standing.
+func TestProposalStructuralAnswerRepair(t *testing.T) {
+	const refused = `{"op":"insert_after","after":"test","kind":"human.approval","id":"approve_test","config":{},"summary":"Approve after the tests"}`
+	const accepted = `{"op":"insert_after","after":"review","kind":"human.approval","id":"approve_review","config":{},"summary":"Approve after the review"}`
+	const refusedAgain = `{"op":"insert_after","after":"plan","kind":"human.approval","id":"approve_plan","config":{},"summary":"Approve right after the plan"}`
+	probe := probeDoc(t)
+	summaries, err := json.Marshal(probe.Summaries())
+	if err != nil {
+		t.Fatalf("summaries: %v", err)
+	}
+	cases := []struct {
+		name       string
+		answers    []string
+		wantCalls  int
+		wantAnswer string
+		wantReason string // ValidateProposal reason the returned answer earns
+	}{
+		{"refused then accepted", []string{refused, accepted}, 2, accepted, ""},
+		{"refused twice keeps the original error", []string{refused, refusedAgain}, 2, refused, "target_has_dependents"},
+		{"malformed then refused spends the budget with no second re-ask", []string{"I am sure you can guess", refused}, 2, refused, "target_has_dependents"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				mu    sync.Mutex
+				turns [][]chatMessage
+			)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req chatRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "bad body", http.StatusBadRequest)
+					return
+				}
+				mu.Lock()
+				turns = append(turns, req.Messages)
+				answer := tc.answers[len(turns)-1]
+				if len(turns) >= len(tc.answers) {
+					answer = tc.answers[len(tc.answers)-1]
+				}
+				mu.Unlock()
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{{
+						"message":       map[string]any{"role": "assistant", "content": answer},
+						"finish_reason": "stop",
+					}},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+			if err != nil {
+				t.Fatalf("broker: %v", err)
+			}
+			system, user := ProposalPrompt(summaries, nil, "insert a code reviewer agent step after the tests")
+			raw, fail := broker.CompleteText(t.Context(), system, user)
+			if fail != nil {
+				t.Fatalf("completion: %v", fail)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(turns) != tc.wantCalls {
+				t.Fatalf("model calls = %d, want %d", len(turns), tc.wantCalls)
+			}
+			if raw != tc.wantAnswer {
+				t.Fatalf("answer = %q, want %q", raw, tc.wantAnswer)
+			}
+			p, xerr := ExtractProposal(raw)
+			if xerr != nil {
+				t.Fatalf("extract: %v", xerr)
+			}
+			verr := ValidateProposal(probe, p)
+			switch {
+			case tc.wantReason == "" && verr != nil:
+				t.Fatalf("returned answer refused: %v", verr)
+			case tc.wantReason != "" && (verr == nil || verr.Reason != tc.wantReason):
+				t.Fatalf("returned answer = %v, want refusal %q", verr, tc.wantReason)
+			}
+			if tc.wantCalls != 2 {
+				return
+			}
+			reask := turns[1]
+			if len(reask) != 4 {
+				t.Fatalf("re-ask envelope = %d messages, want system, user, assistant, user", len(reask))
+			}
+			if reask[0].Role != "system" || reask[1].Role != "user" || reask[2].Role != "assistant" || reask[3].Role != "user" {
+				t.Fatalf("re-ask roles = %v", []string{reask[0].Role, reask[1].Role, reask[2].Role, reask[3].Role})
+			}
+			if *reask[2].Content != bounded(tc.answers[0], MaxResultBytes) {
+				t.Fatalf("re-ask echo = %q, want the bounded first answer", *reask[2].Content)
+			}
+			repair := *reask[3].Content
+			if !strings.Contains(repair, "one JSON object") || !strings.Contains(repair, "never a JSON array") {
+				t.Fatalf("re-ask repair turn does not restate the required shape: %q", repair)
+			}
+			if tc.answers[0][0] == '{' {
+				// A structural re-ask names the exact reason and message.
+				first, e := ExtractProposal(tc.answers[0])
+				if e != nil {
+					t.Fatalf("extract scripted answer: %v", e)
+				}
+				want := ValidateProposal(probe, first)
+				if want == nil || !strings.Contains(repair, want.Error()) {
+					t.Fatalf("structural repair %q does not echo the refusal %v", repair, want)
+				}
+				if !strings.Contains(repair, "insert_on_edge") {
+					t.Fatalf("structural repair must hint the fix: %q", repair)
+				}
+			}
+		})
+	}
+}

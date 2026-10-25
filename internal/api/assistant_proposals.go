@@ -133,9 +133,11 @@ func (h *asstHandlers) proposals(w http.ResponseWriter, r *http.Request) {
 
 	// 4. ONE completion through the ADR-0034 broker (no tool loop): the
 	// compact node summary plus the caller's profile list, never a config
-	// value or a secret. CompleteText may re-ask a shape-malformed PROPOSAL
-	// answer exactly once (assistant.CompleteText, ADR-0044 amendment
-	// 2026-10-25); when even that re-ask fails it returns the FIRST answer,
+	// value or a secret. CompleteText may re-ask a PROPOSAL answer exactly
+	// once — when it is shape-malformed OR when it parses but the draft's
+	// own structural rules refuse it; the two share the single re-ask
+	// (assistant.CompleteText, ADR-0044 amendments 2026-10-25 and
+	// 2026-10-26); when even that re-ask fails it returns the FIRST answer,
 	// so the failure mapping below is the original answer's story.
 	summaries, err := json.Marshal(doc.Summaries())
 	if err != nil {
@@ -155,8 +157,12 @@ func (h *asstHandlers) proposals(w http.ResponseWriter, r *http.Request) {
 	// the closed set, validated against THIS draft (a one-element array
 	// around a valid object is unwrapped). Anything else is a 422 with the
 	// reason named — the broker's single corrective re-ask was already spent
-	// upstream in CompleteText (ADR-0044 amendment 2026-10-25); this route
-	// never asks the model again.
+	// upstream in CompleteText, shared by malformed and structurally refused
+	// answers (ADR-0044 amendments 2026-10-25 and 2026-10-26); this route
+	// never asks the model again. The checks here stay authoritative: the
+	// broker re-runs them only on the draft data the prompt carried, so an
+	// error_route or edge_guarded refusal (config bytes never travel to the
+	// model) surfaces here as the single-call 422 it always was.
 	p, err := assistant.ExtractProposal(raw)
 	if err != nil {
 		writeAssistantProposalProblem(w, err.Error())

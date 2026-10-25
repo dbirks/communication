@@ -24,8 +24,11 @@ import (
 // uses. The model's text is never trusted: it is one JSON object from a fixed
 // enum, or a 422 at the route. A one-element array around a valid object
 // is unwrapped (small models answer [{...}] for {...}); any other malformed
-// shape earns exactly ONE corrective re-ask (issue2 A8 lab fix), and a
-// re-ask that still fails leaves the original 422 standing.
+// shape — or an answer that parses but the draft itself refuses
+// (target_has_dependents, id_taken, unknown_node, no_edge, scope_mismatch,
+// …) — earns exactly ONE corrective re-ask, the two failure kinds sharing
+// the single budget (issue2 A8 lab fixes), and a re-ask that still fails
+// leaves the original 422 standing.
 
 // The three ops of the closed set (ADR-0044 § 2).
 const (
@@ -618,10 +621,95 @@ const proposalSystemLead = "You edit pipeline drafts for a software engineering 
 // question to the model.
 const proposalRepairInstruction = "Your previous answer was not one JSON object. Answer again with exactly one JSON object (a single JSON object, never a JSON array) in one of the shapes the instructions list, and no other text."
 
+// proposalDraftSummaryLead opens the user turn ProposalPrompt builds. It is
+// the anchor proposalDocFromUser cuts the draft summary back out of, so the
+// broker can re-run ValidateProposal on a proposal turn — the prompt and the
+// parse must agree on this exact text.
+const proposalDraftSummaryLead = "Draft nodes (id, kind, scope, depends_on, when guard, prompt preview, profile):\n"
+
+// proposalStructuralRepair is the corrective user turn for an answer that
+// parsed as one of the closed ops but the draft itself refused (issue2 A8:
+// a well-formed insert_after the draft rejected as target_has_dependents):
+// it names the exact reason code and message, hints the fix the refusal
+// already carries, and restates the required shape — a re-ask that answers
+// prose still earns nothing more.
+func proposalStructuralRepair(err *ProposalError) string {
+	return "Your previous answer was one JSON object, but this draft refuses it: " + err.Error() +
+		". Fix exactly that problem against the draft nodes listed in these instructions (when insert_after is refused because the target already has dependents, answer with insert_on_edge naming the \"from\" and \"to\" ids of the edge to split). Answer again with exactly one JSON object (a single JSON object, never a JSON array) in one of the shapes the instructions list, and no other text."
+}
+
+// proposalDocFromUser rebuilds the draft's node tree from the summary
+// ProposalPrompt embedded in the user turn, so CompleteText can run the SAME
+// ValidateProposal the route runs — against exactly the draft data the model
+// was shown. The summary carries ids, kinds, scopes, edges and when guards,
+// but no config and no error routes (configs never travel to the model, the
+// ADR-0044 secret rule), so the two rules that read config bytes
+// (error_route, edge_guarded) cannot fire here: those refusals keep the
+// original single-call route-side 422, which no re-ask could fix anyway —
+// the model was never shown that data. A user turn ProposalPrompt did not
+// build (or a summary listing no nodes) gives nil: extraction-shape re-ask
+// only, the pre-2026-10-26 behavior.
+func proposalDocFromUser(user string) *Doc {
+	body, ok := strings.CutPrefix(user, proposalDraftSummaryLead)
+	if !ok {
+		return nil
+	}
+	var rows []ProposalNodeSummary
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&rows); err != nil || len(rows) == 0 {
+		return nil
+	}
+	d := &Doc{byID: map[string]DocNode{}}
+	for _, r := range rows {
+		if r.ID == "" {
+			return nil
+		}
+		if d.HasID(r.ID) {
+			continue
+		}
+		d.byID[r.ID] = DocNode{ID: r.ID, Kind: r.Kind, Scope: r.Scope,
+			DependsOn: r.DependsOn, When: r.When}
+		d.order = append(d.order, r.ID)
+	}
+	return d
+}
+
+// proposalDefect is one proposal answer's verdict for CompleteText's single
+// re-ask decision.
+type proposalDefect struct {
+	repair    string // the corrective user turn for the (single) re-ask
+	malformed bool   // not one proposal object at all (the shape story)
+	present   bool   // there is a defect that earns the re-ask
+}
+
+// proposalAnswerDefect classifies a proposal answer against the draft
+// summary the user turn carries. A malformed answer gets
+// proposalRepairInstruction; an answer that parses as one of the three
+// closed ops but fails ValidateProposal gets proposalStructuralRepair naming
+// the exact reason and detail. An op outside the closed set is NOT a defect
+// here: unknown_op is not a draft-structural refusal, and the route's
+// unknown_op 422 stands after exactly one model call, as the route test
+// pins. A nil doc skips the structural half (no draft to refuse against).
+func proposalAnswerDefect(doc *Doc, raw string) proposalDefect {
+	p, err := ExtractProposal(raw)
+	if err != nil {
+		return proposalDefect{repair: proposalRepairInstruction, malformed: true, present: true}
+	}
+	if doc == nil || (p.Op != OpInsertAfter && p.Op != OpInsertOnEdge && p.Op != OpUpdatePrompt) {
+		return proposalDefect{}
+	}
+	if verr := ValidateProposal(doc, p); verr != nil {
+		return proposalDefect{repair: proposalStructuralRepair(verr), present: true}
+	}
+	return proposalDefect{}
+}
+
 // ProposalPrompt builds the one-shot (system, user) pair for a proposal turn:
 // the closed op set, the draft summary, the caller's profile list and the
-// instruction. One request, one JSON object; only a shape-malformed answer
-// earns the single corrective re-ask (ADR-0044 § 3, issue2 A8 lab fix).
+// instruction. One request, one JSON object; a shape-malformed answer or one
+// the draft itself refuses earns the single corrective re-ask (ADR-0044 § 3,
+// issue2 A8 lab fix and its 2026-10-26 amendment). proposalDraftSummaryLead
+// is what lets CompleteText read the draft summary back out of this user
+// turn, so the two sides must keep agreeing on it.
 func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string) (string, string) {
 	system := proposalSystemLead + `Answer with exactly one JSON object — a single JSON object, never a JSON array — and no other text, one of:
 {"op":"insert_after","after":"<existing node id>","kind":"<node kind>","id":"<new node id>","config":{...},"summary":"<one short sentence>"}
@@ -629,7 +717,7 @@ func ProposalPrompt(summariesJSON []byte, profiles []string, instruction string)
 {"op":"update_prompt","node":"<existing node id>","prompt":"<the new prompt text>","summary":"<one short sentence>"}
 Rules: kind is one of ` + strings.Join(executableKindList(), ", ") + `. The new id must match ^[a-z][a-z0-9_]{0,62}$ and must not already be used in the draft. insert_after is only possible when the node named by "after" has no dependents in its scope: if depends_on of ANY node in the draft names it, insert_after is invalid for it and you MUST use insert_on_edge with "from" set to that node and "to" set to one of its dependents (split the first such edge). insert_on_edge splits the edge from->to, where "to" depends on "from"; never insert on an edge whose target has a when guard, whose source is a condition node, or whose target reads nodes.<source>. anywhere in its when/config. For an agent.acp config give {"profile":"<one of the available profile names>","prompt":"<the prompt text>"}. Never invent node ids, profile names or kinds.
 Worked example: the draft has nodes tests and review, where review depends on tests. Instruction \"insert a code reviewer after tests\" => the target node already has a dependent, so the answer is {\"op\":\"insert_on_edge\",\"from\":\"tests\",\"to\":\"review\",\"kind\":\"agent.acp\",\"id\":\"code_reviewer\",\"config\":{\"profile\":\"m4-reviewer\",\"prompt\":\"Review the code.\"},\"summary\":\"Insert a code reviewer between tests and review\"} — NOT insert_after.`
-	user := "Draft nodes (id, kind, scope, depends_on, when guard, prompt preview, profile):\n"
+	user := proposalDraftSummaryLead
 	user += string(summariesJSON)
 	if len(profiles) > 0 {
 		user += "\nAvailable agent profiles: " + strings.Join(profiles, ", ")
@@ -645,11 +733,17 @@ Worked example: the draft has nodes tests and review, where review depends on te
 //
 // The ONE exception is the proposal turn (a system prompt starting with
 // proposalSystemLead): when its answer does not extract as a single proposal
-// object, the model is re-asked EXACTLY once — the malformed answer echoed
-// back (bounded) plus proposalRepairInstruction. If the re-ask hits an egress
-// failure or still does not extract, the FIRST answer is returned unchanged,
-// so the route reports the original error: the re-ask never replaces the
-// existing failure story, and no turn ever asks twice.
+// object, or extracts as one of the closed ops but the draft summary carried
+// in the user turn refuses it (the SAME ValidateProposal the route runs),
+// the model is re-asked EXACTLY once — the bad answer echoed back (bounded)
+// plus the matching repair instruction, which for a refusal names the exact
+// reason code and message. Malformed and refused answers SHARE that single
+// re-ask — one corrective turn per proposal, whatever the mix. If the re-ask
+// hits an egress failure or still does not extract, or the first answer
+// already named a real refusal and the re-ask is refused too, the FIRST
+// answer is returned unchanged, so the route reports the original error: the
+// re-ask never replaces the existing failure story, and no turn ever asks
+// twice.
 func (b *Broker) CompleteText(ctx context.Context, system, user string) (string, *Failure) {
 	messages := []chatMessage{
 		{Role: "system", Content: text(system)},
@@ -662,21 +756,30 @@ func (b *Broker) CompleteText(ctx context.Context, system, user string) (string,
 	if !strings.HasPrefix(system, proposalSystemLead) {
 		return first, nil
 	}
-	if _, err := ExtractProposal(first); err == nil {
+	doc := proposalDocFromUser(user)
+	firstDefect := proposalAnswerDefect(doc, first)
+	if !firstDefect.present {
 		return first, nil
 	}
-	b.logger().Info("assistant proposal re-asking once after a malformed answer",
+	b.logger().Info("assistant proposal re-asking once after a malformed or refused answer",
 		slog.String("endpoint", b.EndpointHost()))
 	reask := append(append([]chatMessage(nil), messages...),
 		chatMessage{Role: "assistant", Content: text(bounded(first, MaxResultBytes))},
-		chatMessage{Role: "user", Content: text(proposalRepairInstruction)})
+		chatMessage{Role: "user", Content: text(firstDefect.repair)})
 	second, rfail := b.completeText(ctx, reask)
 	if rfail != nil {
 		return first, nil
 	}
-	if _, err := ExtractProposal(second); err != nil {
+	// Malformed and refused answers share the ONE re-ask: whatever the
+	// re-ask answered, the budget is spent and nothing asks twice here.
+	if d := proposalAnswerDefect(doc, second); d.present && (d.malformed || !firstDefect.malformed) {
+		// Still not one JSON object — or the first answer already named a
+		// real structural refusal, whose ORIGINAL error must stand and
+		// cannot be replaced by a differently-bad answer.
 		return first, nil
 	}
+	// The re-ask is accepted, or it parsed into a proposal object after a
+	// malformed first answer: the route has the last word either way.
 	return second, nil
 }
 

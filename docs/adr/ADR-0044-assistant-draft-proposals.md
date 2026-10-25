@@ -135,3 +135,35 @@ interpret and summary turns that share `CompleteText` keep their no-re-ask
 contracts. Everything else in § 2 is untouched: the same structural validation
 runs on whatever is finally extracted, and the § 4 ambiguity rules still refuse
 rather than return.
+
+## Amendment (2026-10-26) — a structurally refused proposal answer shares the ONE corrective re-ask
+
+The 2026-10-25 amendment re-asked only answers that did not *extract* as one
+proposal object. The issue2 A8 lab run then failed on the other half of the
+same problem: asked "insert a code reviewer agent step after the tests", the
+model answered a well-formed `insert_after` on a node that already has a
+dependent, and the route answered `422 assistant_proposal_invalid
+(target_has_dependents)` — without ever telling the model its own draft
+disagreed. The rule now, in `internal/assistant/proposal.go`
+(`CompleteText` / `proposalAnswerDefect`): **an answer that parses as one of
+the three closed ops but fails `ValidateProposal` against the draft earns the
+same exactly-ONE corrective re-ask** — the bad answer echoed back (size-
+bounded) plus the refusal's exact reason code and message and the hint the
+message carries (e.g. split the named edge with `insert_on_edge`). Malformed
+and structurally refused answers **share the single budget**: one corrective
+turn per proposal, whatever the mix; there is never a second re-ask. The
+`invalid → invalid` case returns the FIRST answer, so the route reports the
+ORIGINAL error, and the `malformed → refused` case returns the re-ask's parse
+for the route's 422 — in both, the re-ask never replaces a standing failure
+story with another question to the model. Two scopes of the rule are
+deliberate: the broker re-runs `ValidateProposal` on the draft summary the
+prompt itself carries (the data the model was shown), so the two rules that
+read config bytes — `error_route` and `edge_guarded` — can never fire there
+(configs never travel to the model, the secret rule) and keep their original
+single-call 422; and an op outside the closed set (`unknown_op`) is not a
+draft-structural refusal, so it is not re-asked either — the route's
+`unknown_op` 422 still stands after exactly one model call. Only a proposal
+turn (system prompt starting with `proposalSystemLead`) may be re-asked;
+interpret and summary keep their no-re-ask contracts, and everything else in
+§ 2 is untouched — the route's validation remains the authority that whatever
+is finally returned must pass.
