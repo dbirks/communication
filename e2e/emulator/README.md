@@ -101,9 +101,44 @@ e2e/emulator/out/<passId>/
 
 ## Current journeys
 
-- `workflows-index` (admin): `/workflows` → 1b; New workflow dialog → 1c;
-  create from the "Plan with approval" template ("Emu plan <passId>") →
-  Studio → 1g.
+- `workflows-index` (admin, `journeys.spec.ts`): `/workflows` → 1b; New
+  workflow dialog → 1c; create from the "Plan with approval" template
+  ("Emu plan <passId>") → Studio → 1g.
 - `thread` (alice — the seeded M4 lab gives the org admin no project
-  membership, and a thread starts in a project workspace): `/threads` →
-  New thread → send one message → threads-1g.
+  membership, and a thread starts in a project workspace; `journeys.spec.ts`):
+  `/threads` → New thread → send one message → threads-1g.
+- `workflow-lifecycle` (admin authors, alice uses): create "Emu lc <passId>"
+  from the template → Studio (1g): edit the plan step's prompt in the
+  inspector, Save, Validate, Publish → workflow page (1e) → YAML tab (2d,
+  block style: no inline `{ … }` maps) → Used in tab (2a, honest empty
+  state) → `Use in a repo…` → the repo lists under Used in.
+- `repo-triggers` (alice): pin "Emu sched <passId>" to M4 Exit / app → repo
+  page (2e) → `+ Add trigger` (2c): a labeled issue trigger with label
+  `emu-<passId>`, then a schedule trigger on `* * * * *` (the server ticks
+  every 30 s — `defaultScheduleTick`, ADR-0032) → wait ≤ 4 min for the
+  schedule-fired run and open it → pause the schedule trigger so later
+  passes stay quiet.
+- `run-gate-artifacts` (alice): start the pass's pinned plan-with-approval
+  run from the repo row's `Run` → wait ≤ 10 min for `waiting_human` (the
+  model legs are real) → approve the gate in the run view (`?node=` selects
+  the approve node; the ApprovalCard offers Approve to a maintainer) → wait
+  ≤ 10 min for `completed` → open plan.md and prove the artifact renders.
+- `thread-control` (alice): start "Emu ctrl <passId>" → Return control (the
+  composer locks for the non-controller) → Take control (composer enabled
+  again), screens both sides of the handoff.
+- `empty-and-error`: 1b no-match search and 2e's "uses no workflow yet" +
+  `+ use a library workflow` CTA (alice creates a pass-stamped empty project
+  + repo over the API first — project-wide pins cover every repo of a
+  project, ADR-0060); 1e not-found for a random UUID (the 404 is declared
+  via `emu.expectFailure`).
+
+Journeys share the pass's lab serially (`workers: 1`); names are
+pass-stamped (`EMU_PASS_ID`) so passes never collide. Cleanup is only for
+what would make the NEXT pass differ (triggers are paused); pass-stamped
+workflows/projects/repos are left behind.
+
+API writes from a journey go through `apiMutate(page, …)` (fixtures.ts) —
+it replays the `GET /api/v1/me` CSRF token as `X-CSRF-Token`, exactly like
+the web client, because the lab guards mutations with the double-submit
+header. An `expectFailure` declaration also silences the browser's own
+"Failed to load resource" console error for the declared URL.

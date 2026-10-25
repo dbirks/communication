@@ -34,6 +34,13 @@ export default defineConfig({
   projects: [
     // Signs in once per pass and saves the storage states the journeys load.
     { name: "setup", testMatch: "setup.spec.ts" },
-    { name: "journeys", testMatch: "journeys.spec.ts", dependencies: ["setup"] },
+    {
+      name: "journeys",
+      // Every journey spec except the setup one (one shared lab: serial,
+      // one worker, no retries — see the header).
+      testMatch: /.*\.spec\.ts/,
+      testIgnore: "setup.spec.ts",
+      dependencies: ["setup"],
+    },
   ],
 });

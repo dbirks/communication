@@ -22,7 +22,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { test as base } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { APIResponse, Page } from "@playwright/test";
 import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
@@ -63,6 +63,28 @@ export interface Emu {
   expectFailure(re: RegExp, status?: number): void;
   /** See the header comment: settle the page, sidescroll check, screenshot. */
   screen(badge: string, name: string): Promise<void>;
+}
+
+/**
+ * A journey's authenticated API mutation through the page's own session.
+ * The lab guards mutations with the double-submit CSRF header, and the
+ * token is handed out by `GET /api/v1/me` — the same way the web client
+ * bootstraps it. Returns the raw response; the journey asserts the status.
+ */
+export async function apiMutate(
+  page: Page,
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  url: string,
+  data?: unknown,
+): Promise<APIResponse> {
+  const me = await page.request.fetch(new URL("/api/v1/me", url).toString());
+  const token =
+    ((await me.json().catch(() => ({}))) as { csrf_token?: string }).csrf_token ?? "";
+  return page.request.fetch(url, {
+    method,
+    data: data as never,
+    headers: { "x-csrf-token": token },
+  });
 }
 
 const resultsFile = path.join(EMU_OUT_DIR, "results.json");
@@ -130,6 +152,16 @@ class EmuRecorder {
     this.page.on("console", (message) => {
       if (message.type() !== "error") return;
       const location = message.location();
+      // A journey-declared expected failure also mints a browser-level
+      // "Failed to load resource" console error; when the declared regex
+      // matches the message text or the resource URL it is not a defect.
+      const url = location?.url ?? "";
+      if (
+        url.startsWith("http") &&
+        this.expected.some((entry) => entry.re.test(url) || entry.re.test(message.text()))
+      ) {
+        return;
+      }
       this.record(
         "console",
         `console.error: ${message.text()}${location?.url ? ` @ ${location.url}` : ""}`,
