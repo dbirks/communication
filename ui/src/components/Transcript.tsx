@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { problemOf } from "../api/client";
-import { planDocumentOf, toolTimingLabel, type TranscriptItem } from "../api/transcript";
+import {
+  planDocumentOf,
+  toolTimingLabel,
+  automationViaWords,
+  type TranscriptItem,
+} from "../api/transcript";
 import { deciderLabel } from "../api/actors";
 import type { PermissionOption } from "../api/types";
 import { formatClock } from "../lib/format";
@@ -409,19 +414,39 @@ export default function Transcript({
     >
       {items.map((item) => {
         switch (item.kind) {
-          case "user":
+          case "user": {
+            // 4f: the user's own prompt reads as a bubble in the accent
+            // tint — the agent's prose stays plain text beside it.
+            // ADR-0062: it is only ever the *author's* line when the turn row
+            // says a human submitted it. For an automation the bubble names who
+            // authorised it on a meta line, because this prompt is not
+            // something that person typed.
+            const automation = automationViaWords(item.submittedVia);
             return (
-              // 4f: the user's own prompt reads as a bubble in the accent
-              // tint — the agent's prose stays plain text beside it.
               <li
                 key={item.id}
                 data-testid="transcript-item"
                 className="rounded-[3px] border border-accent-edge bg-accent-tint px-[10px] py-2 text-[12.5px]"
               >
-                <span className="font-semibold">{nameOf(item.authorUserId)}:</span>{" "}
-                <span className="whitespace-pre-wrap">{item.text}</span>
+                {automation ? (
+                  <>
+                    <span
+                      className="block font-mono text-[11px] text-muted"
+                      data-testid="turn-on-behalf-of"
+                    >
+                      on behalf of {nameOf(item.authorUserId)} · {automation}
+                    </span>
+                    <span className="whitespace-pre-wrap">{item.text}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold">{nameOf(item.authorUserId)}:</span>{" "}
+                    <span className="whitespace-pre-wrap">{item.text}</span>
+                  </>
+                )}
               </li>
             );
+          }
           case "agent":
             return (
               <li key={item.id} data-testid="transcript-item" className="px-1 py-1">

@@ -30,6 +30,7 @@ import { describeTurn, projectTranscript, type Transcript } from "../../api/tran
 import type {
   Conversation,
   ConversationControl,
+  ConversationTurn,
   EventEnvelope,
   PermissionOption,
 } from "../../api/types";
@@ -53,6 +54,12 @@ export interface ConversationSession {
   status: ConnectionState;
   /** The journal fold: messages, tool calls, permission prompts, turns. */
   transcript: Transcript;
+  /**
+   * The turn rows this surface holds — today `active_turn`, the one turn whose
+   * `submitted_via` the API reports (ADR-0062). The fold and the turn markers
+   * join it by id so an unattended turn is not read as a person's typing.
+   */
+  turnRows: ConversationTurn[];
   /** One description of the turn: its status, its record, whether it is open. */
   described: ReturnType<typeof describeTurn>;
   /** True while a turn is open — a second prompt into it is refused. */
@@ -110,14 +117,27 @@ export function useConversationSession(
       ...(data?.control.display_name && data.control.user_id
         ? ([[data.control.user_id, data.control.display_name]] as const)
         : []),
+      // An automation turn's submitter is named by the turn row itself, which
+      // joins `users.display_name` server-side (ADR-0062).
+      ...(activeTurn?.submitted_by_display_name
+        ? ([[activeTurn.submitted_by, activeTurn.submitted_by_display_name]] as const)
+        : []),
     ]);
     const merged = mergeLookups(local, actors.lookup);
     return (userId: string) => merged(userId) ?? actors.nameOf(userId);
-  }, [actors, data]);
+  }, [actors, data, activeTurn]);
+
+  // The one turn row the conversation read carries. It is the only source of
+  // `submitted_via` on the wire, and the fold needs it stable — a fresh array
+  // each render would re-project the journal on every keystroke.
+  const turnRows = useMemo(() => (activeTurn ? [activeTurn] : []), [activeTurn]);
 
   // The fold names the people it mentions, so it re-projects when the actor
   // directory lands — an id in a sentence nobody can act on is not information.
-  const transcript = useMemo(() => projectTranscript(events, nameOf), [events, nameOf]);
+  const transcript = useMemo(
+    () => projectTranscript(events, nameOf, turnRows),
+    [events, nameOf, turnRows],
+  );
 
   // `active` is set only while nobody has proved the turn is over: a terminal
   // journal record clears it immediately (the DB would refuse a competing
@@ -160,6 +180,7 @@ export function useConversationSession(
     events,
     status,
     transcript,
+    turnRows,
     described,
     turnInProgress,
     prompt,

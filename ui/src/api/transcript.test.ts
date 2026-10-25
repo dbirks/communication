@@ -6,15 +6,17 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  automationViaWords,
   formatElapsed,
   interruptedCopy,
   meaningfulPreview,
   planDocumentOf,
   projectTranscript,
+  submitterCopy,
   toolTimingLabel,
   turnStatusText,
 } from "./transcript";
-import { conversationEvent, turnId } from "../test/fakes";
+import { conversationEvent, turnFixture, turnId } from "../test/fakes";
 import type { EventEnvelope } from "./types";
 
 function frames(...pairs: Array<[string, Record<string, unknown>, number?]>): EventEnvelope[] {
@@ -516,5 +518,62 @@ describe("planDocumentOf", () => {
     expect(planDocumentOf(JSON.stringify({ status: "ok", diff: "--- a" }))).toBeNull();
     expect(planDocumentOf("")).toBeNull();
     expect(planDocumentOf(undefined as unknown as string)).toBeNull();
+  });
+});
+
+describe("submitted_via (ADR-0062)", () => {
+  it("names each automation kind and says nothing for a human turn", () => {
+    expect(automationViaWords("issue_trigger")).toBe("issue trigger");
+    expect(automationViaWords("schedule")).toBe("schedule");
+    expect(automationViaWords("child_run")).toBe("child run");
+    // `human` is the plain case, and an absent value is a control plane that
+    // predates the column — neither is an automation.
+    expect(automationViaWords("human")).toBeNull();
+    expect(automationViaWords(undefined)).toBeNull();
+    expect(automationViaWords(null)).toBeNull();
+    // A kind this build never heard of is still not a person typing, so it is
+    // named by its own wire value rather than dropped.
+    expect(automationViaWords("webhook")).toBe("webhook");
+  });
+
+  it("writes the submitter as the author for a human turn and on behalf of one for an automation", () => {
+    expect(submitterCopy("Ada Lovelace", "human")).toBe("Ada Lovelace");
+    expect(submitterCopy("Ada Lovelace", undefined)).toBe("Ada Lovelace");
+    expect(submitterCopy("Ada Lovelace", "issue_trigger")).toBe(
+      "on behalf of Ada Lovelace · issue trigger",
+    );
+    expect(submitterCopy("Ada Lovelace", "schedule")).toBe("on behalf of Ada Lovelace · schedule");
+    expect(submitterCopy("Ada Lovelace", "child_run")).toBe(
+      "on behalf of Ada Lovelace · child run",
+    );
+  });
+
+  it("joins the turn row's submitted_via onto the prompt it describes", () => {
+    // The journal frame only ever carries `submitted_by`; the turn row is what
+    // says whether that person typed the prompt or authorised an automation.
+    const transcript = projectTranscript(
+      frames([
+        "conversation.message.user",
+        { turn_id: turnId, submitted_by: "u1", text: "Ship it" },
+      ]),
+      undefined,
+      [turnFixture({ id: turnId, submitted_by: "u1", submitted_via: "issue_trigger" })],
+    );
+    const user = transcript.items[0];
+    expect(user?.kind === "user" && user.submittedVia).toBe("issue_trigger");
+  });
+
+  it("leaves a prompt nobody's turn row explains unqualified", () => {
+    const transcript = projectTranscript(
+      frames([
+        "conversation.message.user",
+        { turn_id: "01987a99-9999-7000-8000-abcdef012345", submitted_by: "u1", text: "Ship it" },
+      ]),
+      undefined,
+      // The row belongs to a different turn — the join is by id, not by nearness.
+      [turnFixture({ submitted_via: "schedule" })],
+    );
+    const user = transcript.items[0];
+    expect(user?.kind === "user" ? "submittedVia" in user : true).toBe(false);
   });
 });

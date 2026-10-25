@@ -21,12 +21,59 @@ import type {
   PermissionRequestStatus,
 } from "./types";
 
+/**
+ * The turn's origin vocabulary (`conversation_turns.submitted_via`, migration
+ * 00017, ADR-0062): WHAT actually queued the prompt. `human` is a person
+ * typing (or starting the run the turn belongs to); the other three are
+ * automations, and for those `submitted_by` is the person who authorised the
+ * automation — on whose behalf the turn runs — never a person who typed it.
+ */
+export type TurnSubmittedVia = NonNullable<ConversationTurn["submitted_via"]>;
+
+/** The automation kinds spelled for a reader; `human` is deliberately absent. */
+const AUTOMATION_VIA_WORDS: Partial<Record<TurnSubmittedVia, string>> = {
+  schedule: "schedule",
+  issue_trigger: "issue trigger",
+  child_run: "child run",
+};
+
+/**
+ * Words for the automation that submitted a turn, or `null` when no automation
+ * did: `human` and an absent value (a pre-ADR-0062 producer sent none, and a
+ * turn nobody qualified is not evidence of a machine) both keep today's plain
+ * author rendering. A kind this build has never seen is named by its own wire
+ * value rather than falling through to the plain author — the honest failure
+ * direction is a strange-looking label, never a claim that a person typed an
+ * unattended prompt.
+ */
+export function automationViaWords(via: string | null | undefined): string | null {
+  if (!via || via === "human") return null;
+  return AUTOMATION_VIA_WORDS[via as TurnSubmittedVia] ?? via;
+}
+
+/**
+ * The submitter line for a turn: the person's name when a person submitted it,
+ * and who the automation ran on behalf of when one did (ADR-0062). The
+ * on-behalf-of reading always carries the automation's name — a bare "on behalf
+ * of Ada" would hide the fact that nobody typed this prompt.
+ */
+export function submitterCopy(name: string, via: string | null | undefined): string {
+  const automation = automationViaWords(via);
+  return automation ? `on behalf of ${name} · ${automation}` : name;
+}
+
 export type TranscriptItem =
   | {
       kind: "user";
       id: string;
       turnId: string;
       authorUserId: string;
+      /**
+       * What queued this prompt, joined off the turn row when the surface holds
+       * one (`getConversation.active_turn`); absent for every turn the journal
+       * is all the page has, and for a pre-ADR-0062 control plane.
+       */
+      submittedVia?: TurnSubmittedVia;
       text: string;
       at: string;
     }
@@ -308,7 +355,19 @@ export function projectTranscript(
    * is the honest "someone (abc12345)" fallback, never a bare uuid.
    */
   nameOf: (userId: string) => string = fallbackName,
+  /**
+   * The `ConversationTurn` rows this surface holds (today: `getConversation`'s
+   * `active_turn`). A journal `conversation.message.user` frame carries only
+   * `submitted_by`, which since ADR-0062 is not always the person who typed —
+   * the turn row is what says whether it was. A turn no row names keeps the
+   * old rendering: an unknown origin is never guessed to be an automation.
+   */
+  turnRows: readonly ConversationTurn[] = [],
 ): Transcript {
+  const viaByTurn = new Map<string, TurnSubmittedVia>();
+  for (const row of turnRows) {
+    if (row.submitted_via) viaByTurn.set(row.id, row.submitted_via);
+  }
   const items: TranscriptItem[] = [];
   const turns = new Map<string, TurnRecord>();
   const agentByTurn = new Map<string, Extract<TranscriptItem, { kind: "agent" }>>();
@@ -351,11 +410,13 @@ export function projectTranscript(
 
     switch (event.type) {
       case "conversation.message.user": {
+        const submittedVia = turnId ? viaByTurn.get(turnId) : undefined;
         push({
           kind: "user",
           id: event.event_id,
           turnId,
           authorUserId: str(payload, "submitted_by"),
+          ...(submittedVia ? { submittedVia } : {}),
           text: str(payload, "text"),
           at,
         });

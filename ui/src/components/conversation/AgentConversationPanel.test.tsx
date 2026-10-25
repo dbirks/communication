@@ -24,9 +24,11 @@ import {
   conversationId,
   controlledByOther,
   meFixture,
+  otherUserId,
   projectFixture,
   mockFetch,
   requestsTo,
+  turnFixture,
   turnId,
   type RouteStub,
 } from "../../test/fakes";
@@ -199,6 +201,132 @@ describe("AgentConversationPanel (dock)", () => {
     );
     expect(humanMarker).toBeDefined();
     expect(items.indexOf(humanMarker as HTMLElement)).toBe(2);
+  });
+
+  it("marks the attempt's unattended turn as one nobody typed (ADR-0062)", async () => {
+    // A schedule fire's agent turn: the seam stamps the turn row (no
+    // `conversation.message.user` frame — the prompt row belongs to a human's
+    // own POST), so the only thing naming this turn is `active_turn`, and what
+    // it names is the member who authorised the schedule.
+    const fired: Conversation = {
+      ...runControlled,
+      active_turn: turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: "schedule",
+      }),
+    };
+    renderPanel(dock({ attemptTurnId: turnId }), routes(fired));
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.agent", { turn_id: turnId, text: "Planning." }),
+      );
+    });
+
+    const transcript = await screen.findByTestId("transcript");
+    const marker = within(transcript)
+      .getAllByTestId("transcript-item")
+      .find((item) => item.textContent?.includes("this attempt's turn starts here"));
+    expect(marker?.textContent).toContain(
+      "unattended turn — on behalf of Dana Observer · schedule",
+    );
+    // The line that would credit a person with typing it is gone.
+    expect(marker?.textContent).not.toContain("human turn");
+  });
+
+  it("refuses to call an issue trigger's turn a human turn, even with a prompt row", async () => {
+    // Precedence: the frame names a person and the row says no person queued
+    // it, and the row is the fact (ADR-0062) — the old code called any user
+    // frame proof a member had taken over and typed the prompt.
+    const fired: Conversation = {
+      ...runControlled,
+      active_turn: turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: "issue_trigger",
+      }),
+    };
+    renderPanel(dock({ attemptTurnId: turnId }), routes(fired));
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent(
+          "conversation.message.user",
+          { turn_id: turnId, submitted_by: otherUserId, text: "Open the PR for issue #7" },
+          { global_seq: 5100 },
+        ),
+      );
+    });
+
+    const transcript = await screen.findByTestId("transcript");
+    expect(transcript.textContent).toContain(
+      "unattended turn — on behalf of Dana Observer · issue trigger",
+    );
+    expect(transcript.textContent).not.toContain("human turn — prompted by");
+    // The prompt bubble itself says the same thing rather than a bare author.
+    const onBehalf = within(transcript).getAllByTestId("turn-on-behalf-of");
+    expect(onBehalf).toHaveLength(1);
+    expect(onBehalf[0].textContent).toBe("on behalf of Dana Observer · issue trigger");
+  });
+
+  it("keeps the human wording for a turn the row says a person typed", async () => {
+    // The child_run/automation branch must not swallow the honest case: a turn
+    // whose row says `human` still reads exactly as it did before.
+    const typed: Conversation = {
+      ...conversationFixture,
+      active_turn: turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: "human",
+      }),
+    };
+    renderPanel(dock({ attemptTurnId: "01987a99-0000-7000-8000-abcdef012346" }), routes(typed));
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent(
+          "conversation.message.user",
+          { turn_id: turnId, submitted_by: otherUserId, text: "Keep the diff minimal" },
+          { global_seq: 5200 },
+        ),
+      );
+    });
+
+    const transcript = await screen.findByTestId("transcript");
+    expect(transcript.textContent).toContain("human turn — prompted by Dana Observer");
+    expect(transcript.textContent).not.toContain("on behalf of");
+    expect(within(transcript).queryAllByTestId("turn-on-behalf-of")).toHaveLength(0);
+  });
+
+  it("marks a child run's inherited turn as unattended too", async () => {
+    const child: Conversation = {
+      ...runControlled,
+      active_turn: turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: "child_run",
+      }),
+    };
+    renderPanel(dock({ attemptTurnId: turnId }), routes(child));
+    const source = FakeEventSource.last();
+    act(() => {
+      source.emit(
+        conversationEvent("conversation.message.agent", { turn_id: turnId, text: "Reviewing." }),
+      );
+    });
+    const transcript = await screen.findByTestId("transcript");
+    expect(transcript.textContent).toContain(
+      "unattended turn — on behalf of Dana Observer · child run",
+    );
   });
 
   it("makes the dock's Take control a two-step confirm, and the card says what a takeover does", async () => {

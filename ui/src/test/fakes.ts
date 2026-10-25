@@ -8,6 +8,7 @@ import type {
   Artifact,
   Conversation,
   ConversationSummary,
+  ConversationTurn,
   EventEnvelope,
   Me,
   PermissionRequest,
@@ -289,6 +290,27 @@ export const controlledByOther: Conversation = {
     version: 7,
   },
 };
+
+/**
+ * One `ConversationTurn` row as the API sends it (`getConversation.active_turn`,
+ * the `.../messages` reply). Since ADR-0062 `submitted_via` says what queued the
+ * prompt: `human` is a person typing, while `schedule` / `issue_trigger` /
+ * `child_run` mean `submitted_by` is the member who authorised the automation,
+ * not whoever wrote this prompt. Omit the field to stand for a control plane
+ * predating the column — the wire keeps it optional on purpose.
+ */
+export function turnFixture(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
+  return {
+    id: turnId,
+    conversation_id: conversationId,
+    status: "running",
+    submitted_by: otherUserId,
+    submitted_by_display_name: "Dana Observer",
+    submitted_via: "human",
+    created_at: "2026-10-14T18:02:00Z",
+    ...overrides,
+  };
+}
 
 export const conversationSummaryFixture: ConversationSummary = {
   id: conversationId,

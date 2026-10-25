@@ -4,7 +4,7 @@
  * the fetch boundary and the SSE stream is a fake `EventSource` the test drives,
  * so every assertion below is about what a member actually sees.
  */
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { queryKeys } from "../api/queries";
 import { renderApp } from "../test/render";
@@ -21,6 +21,7 @@ import {
   permissionRequestFixture,
   projectFixture,
   requestsTo,
+  turnFixture,
   turnId,
   turnSandboxFixture,
   workerId,
@@ -112,6 +113,77 @@ describe("/p/:projectId/conversations/:conversationId", () => {
     expect(items[1].textContent).toContain("Reading the test file.");
     expect(within(transcript).queryByText("the test file.")).toBeNull();
     expect(screen.getByTestId("stream-status").textContent).toBe("live");
+  });
+
+  it("names the automation that queued the turn, not a person who typed it (ADR-0062)", async () => {
+    // The fired run's thread: `submitted_by` is the member who wrote the issue
+    // trigger, and nothing in the transcript says they typed anything.
+    const fired: Conversation = {
+      ...conversationFixture,
+      origin: "run",
+      control: { kind: "run_attempt", version: 2 },
+      active_turn: turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: "issue_trigger",
+      }),
+    };
+    renderApp({ path, routes: routes(fired) });
+    await screen.findByTestId("conversation-title");
+    expect(screen.getByTestId("turn-origin").textContent).toBe(
+      "on behalf of Dana Observer · issue trigger",
+    );
+
+    act(() => {
+      FakeEventSource.last().emit(
+        conversationEvent("conversation.message.user", {
+          turn_id: turnId,
+          submitted_by: otherUserId,
+          text: "label added: bug",
+        }),
+      );
+    });
+    const transcript = await screen.findByTestId("transcript");
+    expect(within(transcript).getByTestId("turn-on-behalf-of").textContent).toBe(
+      "on behalf of Dana Observer · issue trigger",
+    );
+    // The bold author prefix — the claim that this person submitted the prompt —
+    // is gone, and with it any reading of the line as something a member typed.
+    expect(transcript.textContent).not.toContain("Dana Observer:");
+  });
+
+  it("keeps today's rendering for a human turn and for a control plane that sends no submitted_via", async () => {
+    for (const via of ["human", undefined] as const) {
+      const active = turnFixture({
+        id: turnId,
+        status: "running",
+        submitted_by: otherUserId,
+        submitted_by_display_name: "Dana Observer",
+        submitted_via: via,
+      });
+      renderApp({
+        path,
+        routes: routes({ ...conversationFixture, active_turn: active }),
+      });
+      await screen.findByTestId("conversation-title");
+      expect(screen.queryByTestId("turn-origin")).toBeNull();
+
+      act(() => {
+        FakeEventSource.last().emit(
+          conversationEvent("conversation.message.user", {
+            turn_id: turnId,
+            submitted_by: otherUserId,
+            text: "Fix the flaky spec",
+          }),
+        );
+      });
+      const transcript = await screen.findByTestId("transcript");
+      expect(within(transcript).queryByTestId("turn-on-behalf-of")).toBeNull();
+      expect(transcript.textContent).toContain("Dana Observer:");
+      cleanup();
+    }
   });
 
   it("updates a tool call in place as its status changes", async () => {

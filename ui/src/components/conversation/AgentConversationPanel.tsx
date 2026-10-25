@@ -31,8 +31,9 @@ import { Textarea } from "../ds/Field";
 import Transcript from "../Transcript";
 import { TakeControlCard } from "../workbench/TakeControlCard";
 import { useConversationSession, type ConversationSession } from "./useConversationSession";
-import type { ConversationControl } from "../../api/types";
+import type { ConversationControl, ConversationTurn } from "../../api/types";
 import type { TranscriptItem } from "../../api/transcript";
+import { automationViaWords, submitterCopy } from "../../api/transcript";
 
 /**
  * Copy for the controller badge — ownership is always written in words.
@@ -421,15 +422,24 @@ export interface AgentConversationPanelProps {
  * A takeover cancels the attempt's turn and opens a NEW one in the same
  * conversation, so the dock shows every turn; this inserts a marker row
  * before the first frame of (a) the attempt's own turn and (b) each turn a
- * human started — the journal only ever records `conversation.message.user`
- * for real members, so a user message is proof a human took over and
- * prompted. Markers are plain system rows, so they render through the same
+ * human started — `conversation.message.user` is appended only by a person's
+ * own `POST …/messages` or thread creation, so a user frame is a human
+ * submission. Markers are plain system rows, so they render through the same
  * journal styling as everything the stream itself wrote.
+ *
+ * Since ADR-0062 `submitted_by` alone is no longer proof a person typed the
+ * prompt: an unattended turn carries the authorising human's id with
+ * `submitted_via='schedule'|'issue_trigger'|'child_run'`, and a marker that
+ * read "human turn" off the id alone would say something the turn row
+ * contradicts. Where the two disagree the row wins, and the row is also the
+ * only name an unattended turn has: the claim seam stamps the turn without a
+ * prompt frame, so without it this dock would call the factory's work nobody's.
  */
 function markTurns(
   items: TranscriptItem[],
   attemptTurnId: string | undefined,
   nameOf: (userId: string) => string,
+  turnRows: readonly ConversationTurn[] = [],
 ): TranscriptItem[] {
   if (!attemptTurnId) return items;
   const authorByTurn = new Map<string, string>();
@@ -438,6 +448,7 @@ function markTurns(
       authorByTurn.set(item.turnId, item.authorUserId);
     }
   }
+  const rowByTurn = new Map(turnRows.map((row) => [row.id, row]));
   const out: TranscriptItem[] = [];
   let lastTurn: string | null = null;
   for (const item of items) {
@@ -445,8 +456,18 @@ function markTurns(
     if (turn !== null && turn !== lastTurn) {
       lastTurn = turn;
       const author = authorByTurn.get(turn);
+      const row = rowByTurn.get(turn);
       const labels: string[] = [];
-      if (author) labels.push(`human turn — prompted by ${nameOf(author)}`);
+      if (automationViaWords(row?.submitted_via)) {
+        // The wire's own name for the person outranks a directory read, exactly
+        // as the controller badge prefers `control.display_name`; the journal's
+        // `submitted_by` names the same human when it is present at all.
+        const submitterId = row?.submitted_by ?? author;
+        const named = row?.submitted_by_display_name || (submitterId ? nameOf(submitterId) : "");
+        labels.push(`unattended turn — ${submitterCopy(named, row?.submitted_via)}`);
+      } else if (author) {
+        labels.push(`human turn — prompted by ${nameOf(author)}`);
+      }
       if (turn === attemptTurnId) labels.push("this attempt's turn starts here");
       if (labels.length > 0) {
         out.push({
@@ -528,7 +549,7 @@ function PanelInner({
   // turn the conversation ever ran.
   const items = turnFilter
     ? session.transcript.items.filter((item) => "turnId" in item && item.turnId === turnFilter)
-    : markTurns(session.transcript.items, attemptTurnId, session.nameOf);
+    : markTurns(session.transcript.items, attemptTurnId, session.nameOf, session.turnRows);
 
   const transcriptBlock =
     empty && items.length === 0 ? (

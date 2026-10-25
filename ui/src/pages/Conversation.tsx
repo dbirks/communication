@@ -2,7 +2,13 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import { useProject, useTurnSandbox } from "../api/queries";
-import { interruptedCopy, runLinkOf, turnStatusText } from "../api/transcript";
+import {
+  automationViaWords,
+  interruptedCopy,
+  runLinkOf,
+  submitterCopy,
+  turnStatusText,
+} from "../api/transcript";
 import { formatAge } from "../lib/format";
 import { conversationRunHref, instanceLeaf } from "../components/Conversations";
 import { shortId } from "../api/names";
@@ -155,6 +161,18 @@ export default function ConversationPage({
   // and whether the composer may accept a prompt.
   const turnStatus = turnStatusText(transcript.turns, activeTurn);
   const interrupted = described.status === "interrupted";
+  // ADR-0062: `active_turn.submitted_by` is the person who typed the prompt only
+  // when the row says `submitted_via: human`. For a fired run's turn it is the
+  // member who authorised the schedule or the issue trigger, and the meta line
+  // says so — an unattended thread has no prompt row at all, so this is the one
+  // place the page can be honest about who this turn is running for.
+  const activeVia = activeTurn?.submitted_via;
+  const turnOrigin = automationViaWords(activeVia)
+    ? submitterCopy(
+        activeTurn?.submitted_by_display_name || session.nameOf(activeTurn?.submitted_by ?? ""),
+        activeVia,
+      )
+    : null;
 
   return (
     <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -228,6 +246,14 @@ export default function ConversationPage({
                 labelProps={{ "data-testid": "turn-status" }}
               />
             </span>
+            {turnOrigin ? (
+              <>
+                <span className="px-2" aria-hidden="true">
+                  ·
+                </span>
+                <span data-testid="turn-origin">{turnOrigin}</span>
+              </>
+            ) : null}
             {data.origin === "manual" ? (
               <span
                 className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
