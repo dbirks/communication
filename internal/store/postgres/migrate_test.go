@@ -198,7 +198,10 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00016 (ADR-0061 repository
+// version every replica demands. Current head: 00017 (ADR-0062 unattended
+// agent turns: runs.trigger_id + the kind CHECK and the trigger-ledger
+// backfill, conversation_turns.submitted_via) on top of
+// 00016 (ADR-0061 repository
 // GitHub credential: repositories.credential_secret_id + the same-project /
 // integration_broker scope trigger) on top of
 // 00015 (ADR-0060 repo attachments:
@@ -222,7 +225,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 16
+const migHeadVersion = 17
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
@@ -1226,9 +1229,23 @@ func TestMigrate0003TranscriptJournal(t *testing.T) {
 		return out
 	}
 
+	// The gap-safety watermark is cluster-global: any other open write
+	// transaction (another test in this binary, another `go test` run, a
+	// session in some other process) pins pg_snapshot_xmin below these
+	// commits, and the gate hides rows that are merely not-yet-admitted,
+	// not lost. A real reader of this stream polls it; so does this test.
+	// A fixed single read was the flake: "returned 2 rows, want 3" while
+	// somebody else held a transaction open. On timeout the report names
+	// the live watermark and the open transactions, so a real bug (rows
+	// that never become visible) stays diagnosable.
 	got := replay(first)
+	for deadline := time.Now().Add(10 * time.Second); len(got) < 3 && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+		got = replay(first)
+	}
 	if len(got) != 3 {
-		t.Fatalf("transcript replay returned %d rows (%v), want the 3 appended", len(got), got)
+		t.Fatalf("transcript replay returned %d rows (%v), want the 3 appended\n%s",
+			len(got), got, migOpenTransactionReport(ctx, pool))
 	}
 	for i := 1; i < len(got); i++ {
 		if got[i] <= got[i-1] {
@@ -1282,6 +1299,52 @@ func TestMigrate0003TranscriptJournal(t *testing.T) {
 	}
 	prows.Close()
 	t.Logf("transcript read plan:\n%s", plan)
+}
+
+// migOpenTransactionReport spells out why a gap-safe replay can still be
+// short: the current snapshot's xmin plus every transaction open on the
+// server besides this session's own. A replay timeout with open
+// transactions below the watermark is the environment pinning the gate;
+// a timeout with none is the real bug, and the report says which it was.
+func migOpenTransactionReport(ctx context.Context, pool *pgxpool.Pool) string {
+	var report string
+	var xmin string
+	if err := pool.QueryRow(ctx,
+		"SELECT pg_snapshot_xmin(pg_current_snapshot())::text").Scan(&xmin); err != nil {
+		report += fmt.Sprintf("snapshot: %v\n", err)
+	} else {
+		report += fmt.Sprintf("pg_current_snapshot xmin = %s\n", xmin)
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT pid, state, COALESCE(usename::text, '?'), COALESCE(datname::text, '?'),
+		       xact_start::text, (now() - xact_start)::text, left(query, 120)
+		FROM pg_stat_activity
+		WHERE xact_start IS NOT NULL AND pid <> pg_backend_pid()
+		ORDER BY xact_start`)
+	if err != nil {
+		return report + fmt.Sprintf("pg_stat_activity: %v", err)
+	}
+	defer rows.Close()
+	report += "open transactions:\n"
+	n := 0
+	for rows.Next() {
+		var pid int
+		var state, user, db, start, held, query string
+		if err := rows.Scan(&pid, &state, &user, &db, &start, &held, &query); err != nil {
+			return report + fmt.Sprintf("scan pg_stat_activity: %v", err)
+		}
+		n++
+		report += fmt.Sprintf("  pid=%d state=%s user=%s db=%s xact_start=%s held=%s query=%s\n",
+			pid, state, user, db, start, held, query)
+	}
+	if err := rows.Err(); err != nil {
+		return report + fmt.Sprintf("read pg_stat_activity: %v", err)
+	}
+	if n == 0 {
+		report += "  (none — the watermark is not pinned by any session; rows that never " +
+			"become visible through the gap-safety gate are a real bug)\n"
+	}
+	return report
 }
 
 // ------------------------------------------------------- 00004 (M3) contract
