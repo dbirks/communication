@@ -345,14 +345,53 @@ func (a APIRunStore) CreateRun(ctx context.Context, c api.Caller, in api.RunCrea
 // minted the id can supply it. The run either exists pinned, with every
 // input row, the key claiming it and the journal row, or nothing happened.
 func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool, error) {
-	ev := in.Event
-	in.Event = nil // appended here, once the run id exists
+	// A caller that already owns a transaction (issue trigger's fire: it
+	// appended this run's trigger event into the project journal, and the
+	// journal's per-project advisory lock is held to COMMIT) must not open a
+	// second one on another connection: that transaction would wait for the
+	// advisory lock its own caller holds. Postgres cannot see that as a
+	// deadlock — the holder is idle in transaction, not waiting — so it hangs
+	// forever. The 2026-10-25 lab is exactly this shape: a fire transaction,
+	// idle in transaction holding the project journal lock since 13:48:34, a
+	// nested create-run transaction behind it, and the attempt fence and the
+	// lease-recovery pass queued behind those two. Such a caller carries its
+	// transaction on the context (passtx.go); this creates the run inside it
+	// as a savepoint, so the all-or-nothing per-run rule survives an idempotent
+	// replay (which rolls back to the savepoint, not the caller's work).
+	if outer, ok := passTx(ctx); ok {
+		sp, err := outer.Begin(ctx)
+		if err != nil {
+			return Run{}, false, fmt.Errorf("postgres: begin create run savepoint: %w", err)
+		}
+		defer func() { _ = sp.Rollback(ctx) }()
+		run, created, err := a.createRunPinnedTx(ctx, sp, in)
+		if err != nil || !created {
+			return run, created, err
+		}
+		if err := sp.Commit(ctx); err != nil {
+			return Run{}, false, fmt.Errorf("postgres: release create run savepoint: %w", err)
+		}
+		return run, true, nil
+	}
 
 	tx, err := a.Runs.Pool.Begin(ctx)
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: begin create run tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	run, created, err := a.createRunPinnedTx(ctx, tx, in)
+	if err != nil || !created {
+		return run, created, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Run{}, false, fmt.Errorf("postgres: commit create run: %w", err)
+	}
+	return run, true, nil
+}
+
+func (a APIRunStore) createRunPinnedTx(ctx context.Context, tx pgx.Tx, in NewRun) (Run, bool, error) {
+	ev := in.Event
+	in.Event = nil // appended here, once the run id exists
 
 	agentProfileVersion := 1
 	if in.SourceConversationID != "" {
@@ -467,9 +506,6 @@ func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool,
 		if _, err := runAppendTx(ctx, tx, run.ID, "", "", *ev); err != nil {
 			return Run{}, false, err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Run{}, false, fmt.Errorf("postgres: commit create run: %w", err)
 	}
 	return run, true, nil
 }

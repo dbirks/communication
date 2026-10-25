@@ -70,6 +70,30 @@ type RuntimeStore struct {
 	Now func() time.Time
 	// Lease is the attempt lease duration (ADR-0023 § 4: 30 s).
 	Lease time.Duration
+	// PassTimeout bounds one whole lock→hydrate→apply→write-back→commit
+	// settle pass. The M4 lab found the fleet's only lease-expiry recovery
+	// (the m4 driver's per-run pass) waiting 90+ minutes for a row lock held
+	// by a wedged worker's fence — itself queued behind a wedged trigger
+	// transaction — while the driver held the fleet's session advisory lock,
+	// which locked every other replica out of the backstop too. A pass is a
+	// short scripted transaction over ONE run; anything legitimately in
+	// flight finishes in milliseconds, so this bound exists purely to stop a
+	// wedged peer from converting one stuck row into a frozen fleet. The
+	// loop that owns the driver/reconciler treats the timeout as an ordinary
+	// pass failure and retries on the next tick (ADR-0016 § 4: every input
+	// to a pass is a row whose deadline already passed).
+	PassTimeout time.Duration
+}
+
+// defaultRuntimePassTimeout is the settle-pass bound when PassTimeout is
+// unset.
+const defaultRuntimePassTimeout = 15 * time.Second
+
+func (s *RuntimeStore) passTimeout() time.Duration {
+	if s.PassTimeout > 0 {
+		return s.PassTimeout
+	}
+	return defaultRuntimePassTimeout
 }
 
 var _ runtime.Store = (*RuntimeStore)(nil)
@@ -118,11 +142,23 @@ func (s *RuntimeStore) settle(ctx context.Context, runID string,
 	if !prjValidUUID(runID) {
 		return fmt.Errorf("postgres: RuntimeStore addresses runs by their ledger uuid, got %q", runID)
 	}
+	// Every pool-owned pass gets its own deadline (see PassTimeout): a lock
+	// held by a wedged peer must never pin this transaction open past the
+	// bound. The deferred rollback runs on a FRESH context, because
+	// rolling back with the pass's own (possibly expired) context is what
+	// lets a refused pass sit on its locks until the connection dies.
+	pctx, cancel := context.WithTimeout(ctx, s.passTimeout())
+	defer cancel()
+	ctx = pctx
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("postgres: begin runtime tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer rcancel()
+		_ = tx.Rollback(rctx)
+	}()
 	ready, err := s.settleTx(ctx, tx, runID, op, commitOnRefusal)
 	if !ready {
 		return err

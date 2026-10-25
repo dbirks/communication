@@ -20,7 +20,20 @@ const (
 	MaxAttemptCapacity          = 16 // workers.capacity's CHECK bound (contract § 1)
 	DefaultAttemptDrainGrace    = 10 * time.Second
 	attemptTerminalWriteTimeout = 10 * time.Second
+	// attemptBeginTimeout bounds the leased→running write. The M4 lab claimed
+	// an attempt and never started it: BeginAttempt's journal append queued
+	// behind a wedged transaction's per-project advisory lock, and because
+	// the call shared the loop's untimed context it blocked forever — before
+	// the renew goroutine ever started, without a log line, without releasing
+	// the claim, leaving a leased row whose lease silently expired while the
+	// worker ran every other attempt behind it. Begin is one small fenced
+	// write; the same bound as the terminal writes is generous, and spending
+	// it means this worker stops speaking for the attempt and leaves it to
+	// the lease (with the reconciler's interrupt + retry pass as the honest
+	// backstop), never to a permanent stall. A var so tests drive the cadence.
 )
+
+var attemptBeginTimeout = attemptTerminalWriteTimeout
 
 // AttemptConfig tunes the attempt loop; zero values take the defaults.
 // Capacity mirrors workers.capacity (§ 4 step 1: the heartbeat publishes it
@@ -391,13 +404,23 @@ func (l *AttemptLoop) runAttempt(ctx context.Context, c AttemptClaim) {
 		l.mu.Unlock()
 	}()
 
-	if err := l.store.BeginAttempt(actx, c); err != nil {
-		if errors.Is(err, ErrLeaseLost) {
+	// The begin write is bounded like every other store contact: a journal
+	// queue that cannot drain in attemptBeginTimeout is a wedged control
+	// plane, not a reason to park this claim forever. On the timeout the
+	// attempt was never started, so the close below is the honest failed
+	// terminal (or, if even that write cannot land, the expired lease speaks
+	// through the reconciler's lease pass — never a silent drop).
+	bctx, bcancel := context.WithTimeout(actx, attemptBeginTimeout)
+	beginErr := l.store.BeginAttempt(bctx, c)
+	bcancel()
+	if beginErr != nil {
+		if errors.Is(beginErr, ErrLeaseLost) {
 			rt.noteLeaseLost("begin")
 			return
 		}
-		l.log.Error("begin attempt failed", slog.String("attempt_id", c.AttemptID), slog.String("error", err.Error()))
-		l.closeAttempt(base, rt, AttemptResult{Status: AttemptStatusFailed, ErrorClass: ErrorClassInfra, Detail: bounded(err.Error(), 512)}, nil)
+		l.log.Error("begin attempt failed; the attempt is not started",
+			slog.String("attempt_id", c.AttemptID), slog.String("error", beginErr.Error()))
+		l.closeAttempt(base, rt, AttemptResult{Status: AttemptStatusFailed, ErrorClass: ErrorClassInfra, Detail: bounded(beginErr.Error(), 512)}, nil)
 		return
 	}
 
@@ -690,7 +713,12 @@ func (l *AttemptLoop) fenced(base context.Context, rt *runningAttempt, write fun
 		// stands untouched.
 		l.log.Error("attempt terminal write failed",
 			slog.String("attempt_id", rt.claim.AttemptID), slog.String("error", err.Error()))
-		l.honestFail(ctx, rt, "worker: the store refused this attempt's terminal write: "+bounded(err.Error(), 400))
+		// A FRESH bounded context: the original write may have spent the
+		// budget that produced this failure, and an honest follow-up word
+		// must not be born already expired.
+		fctx, fcancel := context.WithTimeout(base, attemptTerminalWriteTimeout)
+		defer fcancel()
+		l.honestFail(fctx, rt, "worker: the store refused this attempt's terminal write: "+bounded(err.Error(), 400))
 	}
 	return false
 }

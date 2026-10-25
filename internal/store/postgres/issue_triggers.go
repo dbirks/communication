@@ -76,6 +76,28 @@ const issueTriggerTickBatch = 100
 // The serve tick runs this pass on its own ticker.
 const issueTriggerPollInterval = 60 * time.Second
 
+// issueTriggerPollTimeout bounds ONE attempt at ONE trigger: the claim, the
+// credential resolve, the GitHub list and the fire transaction together. It
+// exists because the fire runs a network call and a nested create
+// transaction inside an open row lock, and the 2026-10-25 lab proved what
+// happens without a bound: one parked poll held the trigger row and the
+// project's journal advisory lock forever — last_polled_at was never
+// recorded again, the replica's ticker goroutine never returned, and every
+// fenced writer queueing behind that advisory lock froze with it. A poll
+// that cannot finish in this window is cut loose, its deadline cancels its
+// statements, its failure lands on the row, and the tick moves on. Well
+// under issueTriggerPollInterval, so a cut-loose poll cannot outlive its
+// own beat.
+const issueTriggerPollTimeout = 30 * time.Second
+
+// issueTriggerFireJoinGrace is how long the tick waits for a timed-out fire
+// goroutine to acknowledge its own cancellation before continuing without
+// it. A fire that honours its context is already rolling back; one that
+// ignores it is bounded by the poll deadline's effect on its database
+// statements and by the pool's idle-in-transaction timeout, never by the
+// tick.
+const issueTriggerFireJoinGrace = 2 * time.Second
+
 // maxIssueTriggerErrorLen bounds what a failed poll writes into the row's
 // last_error: an operator reads it, a browser must not, and the cap keeps one
 // pathological upstream message from growing the column's story forever.
@@ -113,7 +135,18 @@ type IssueTriggerStore struct {
 	// poll then fails onto last_error rather than going anonymous silently.
 	Credentials *SecretStore
 
+	// PollTimeout overrides issueTriggerPollTimeout (tests drive it); zero
+	// takes the default.
+	PollTimeout time.Duration
+
 	Log *slog.Logger
+}
+
+func (s *IssueTriggerStore) pollTimeout() time.Duration {
+	if s.PollTimeout > 0 {
+		return s.PollTimeout
+	}
+	return issueTriggerPollTimeout
 }
 
 func (s *IssueTriggerStore) runs() *RunStore {
@@ -479,7 +512,7 @@ func (s *IssueTriggerStore) TickIssueTriggers(ctx context.Context, now time.Time
 		if ctx.Err() != nil {
 			break
 		}
-		n, err := s.fireIssueTrigger(ctx, id, now, lister)
+		n, err := s.fireIssueTriggerBounded(ctx, id, now, lister)
 		fired += n
 		if err != nil {
 			errs = append(errs, fmt.Errorf("issue trigger %s: %w", id, err))
@@ -488,6 +521,78 @@ func (s *IssueTriggerStore) TickIssueTriggers(ctx context.Context, now time.Time
 		}
 	}
 	return fired, errors.Join(errs...)
+}
+
+// fireIssueTriggerBounded runs one trigger's poll under its own deadline and
+// guarantees the tick returns within that deadline plus a join grace even if
+// the poll's goroutine parks somewhere that ignores the cancellation.
+//
+// Every exit records the poll: the success path lands last_polled_at inside
+// the fire transaction, and any failure — including the cut-loose timeout —
+// is recorded by a separate, detached write that commits whatever the fire
+// transaction's fate was. Poll bookkeeping must never depend on the success
+// of the poll it describes: a trigger whose poll vanished without a trace
+// (last_polled_at NULL forever, the 2026-10-25 lab) is indistinguishable
+// from one that was never scheduled.
+func (s *IssueTriggerStore) fireIssueTriggerBounded(ctx context.Context, id string, now time.Time, lister github.IssueLister) (int, error) {
+	every := s.pollTimeout()
+	fctx, fcancel := context.WithTimeout(ctx, every)
+
+	type fireResult struct {
+		n   int
+		err error
+	}
+	// Buffered: the fire goroutine must be able to hand off its answer (and
+	// release its connection) after the tick has already walked away.
+	done := make(chan fireResult, 1)
+	go func() {
+		defer fcancel()
+		n, err := s.fireIssueTrigger(fctx, id, now, lister)
+		done <- fireResult{n, err}
+	}()
+
+	timer := time.NewTimer(every + issueTriggerFireJoinGrace)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		// The in-fire recorders commit on their own happy paths ((0, nil)
+		// answers); anything that comes back as an error left the row
+		// unrecorded, and the net below lands it.
+		if r.err != nil {
+			s.recordIssueTriggerPollFailed(ctx, id, now, r.err)
+		}
+		return r.n, r.err
+	case <-timer.C:
+		cause := fmt.Errorf("issue trigger poll exceeded %s and was cut loose; its deadline is spent and its rows stand as they committed them", every)
+		s.recordIssueTriggerPollFailed(ctx, id, now, cause)
+		return 0, cause
+	case <-ctx.Done():
+		// Shutdown is not a failing poll: the next replica's tick re-derives
+		// everything from rows. Nothing is recorded, exactly as the interval
+		// ticker that stops mid-beat records nothing.
+		return 0, ctx.Err()
+	}
+}
+
+// recordIssueTriggerPollFailed lands last_polled_at/last_error for a poll
+// that did not (or could not) record itself. It runs on a DETACHED, bounded
+// context — the failed poll's context is precisely what is no longer fit to
+// write with — and its own failure is only logged: the next tick re-derives
+// candidacy from the same NULL due test and tries again.
+func (s *IssueTriggerStore) recordIssueTriggerPollFailed(ctx context.Context, id string, now time.Time, cause error) {
+	msg := cause.Error()
+	if len(msg) > maxIssueTriggerErrorLen {
+		msg = msg[:maxIssueTriggerErrorLen]
+	}
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, err := s.Pool.Exec(rctx, `
+		UPDATE issue_triggers SET last_polled_at = $1, last_error = $2 WHERE id = $3::uuid`,
+		now, msg, id); err != nil {
+		s.logger().ErrorContext(ctx, "could not record the failed issue trigger poll",
+			slog.String("issue_trigger_id", id), slog.String("poll_error", cause.Error()),
+			slog.String("record_error", err.Error()))
+	}
 }
 
 // issueTriggerDueIDs reads the due candidates (enabled, cursor NULL or older
@@ -531,7 +636,26 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 	if err != nil {
 		return 0, fmt.Errorf("postgres: begin issue trigger fire tx: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// The rollback must land even when the fire's own deadline is what
+	// failed: rolling back with that expired context sends nothing, and an
+	// uncommitted fire would keep the trigger row (and the journal advisory
+	// lock its appends took) locked against every other replica's tick for
+	// as long as the wedged caller keeps the connection. Fresh, bounded,
+	// detached — the same rule the m4 driver's unlock follows.
+	defer func() {
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer rcancel()
+		_ = tx.Rollback(rctx)
+	}()
+
+	// The fire's run creates ride THIS transaction (savepoints inside it):
+	// this transaction takes the project's journal advisory lock on its
+	// first event append and holds it to commit, and a create-run on a
+	// second connection would wait for that lock forever — a self-deadlock
+	// Postgres cannot name (the holder is idle in transaction, not waiting).
+	// The 2026-10-25 lab wedge is that exact cycle, fired by one poll that
+	// matched two issues (docs: this file's fireIssueTrigger, gh-loop 13:48).
+	ctx = withPassTx(ctx, tx)
 
 	it, err := s.scan(tx.QueryRow(ctx, `
 		SELECT `+issueTriggerColumns+` FROM issue_triggers

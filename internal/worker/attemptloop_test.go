@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,6 +77,12 @@ type fakeAttemptStore struct {
 	// store answered with an honest error that is not a stale fence, the arm
 	// TestAttemptNonFenceRefusalFailsTheAttempt exercises.
 	completeErr error
+
+	// beginBlock parks BeginAttempt (the wedged-control-plane shape the M4
+	// lab left behind: the claim landed, the journal queue behind a wedged
+	// advisory lock never drained). BeginAttempt honours the worker's bound
+	// and returns ctx.Err(); the loop must abandon the claim, not the loop.
+	beginBlock <-chan struct{}
 }
 
 func newFakeAttemptStore(capacity int) *fakeAttemptStore {
@@ -244,7 +251,14 @@ func (s *fakeAttemptStore) RenewAttempt(_ context.Context, c AttemptClaim) error
 	return nil
 }
 
-func (s *fakeAttemptStore) BeginAttempt(_ context.Context, c AttemptClaim) error {
+func (s *fakeAttemptStore) BeginAttempt(ctx context.Context, c AttemptClaim) error {
+	if s.beginBlock != nil {
+		select {
+		case <-s.beginBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, err := s.verify(c)
@@ -909,5 +923,78 @@ func TestAttemptNonFenceRefusalFailsTheAttempt(t *testing.T) {
 	// The slot came back in the terminal write, not the reconciler's arm.
 	if _, active, _ := store.counts(); active != 0 {
 		t.Fatalf("active_attempts=%d after the honest fail, want 0", active)
+	}
+}
+
+// TestAttemptWedgedBeginIsNotADropOnTheFloor is the M4 lab's A1 arm in
+// miniature: the claim landed, and BeginAttempt then parked on a control
+// plane that would not answer (the lab's journal-advisory queue behind a
+// wedged trigger fire). Untimed, the goroutine never returned: no started
+// row, no release, no log line, no lease renewal (that loop only starts
+// after begin succeeds), and the worker's capacity slot stayed spent while
+// it happily ran every other attempt. The bound turns the silent stall into
+// the loud, bounded one: begin times out, the worker says so, the attempt
+// gets its honest failed terminal, the slot comes back, and the loop keeps
+// claiming.
+func TestAttemptWedgedBeginIsNotADropOnTheFloor(t *testing.T) {
+	prev := attemptBeginTimeout
+	attemptBeginTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { attemptBeginTimeout = prev })
+
+	store := newFakeAttemptStore(1)
+	store.queue("a1", "process.exec", 0, time.Now())
+	releaseBegin := make(chan struct{})
+	store.beginBlock = releaseBegin
+	var closeOnce sync.Once
+	release := func() { closeOnce.Do(func() { close(releaseBegin) }) }
+	t.Cleanup(release)
+
+	var calls int32
+	exec := execFn(func(ctx context.Context, _ AttemptClaim, _ AttemptSink) (AttemptResult, error) {
+		atomic.AddInt32(&calls, 1)
+		return okResult(), nil
+	})
+
+	var logs bytes.Buffer
+	l, err := NewAttemptLoop(fastAttemptConfig(1), store, AttemptExecutors{"process.exec": exec},
+		func() string { return "worker-1" },
+		WithAttemptLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatalf("NewAttemptLoop: %v", err)
+	}
+	startLoop(t, l)
+
+	waitFor(t, "wedged begin abandoned", func() bool { return l.attemptsCompleted() >= 1 })
+
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("executor ran %d times for an attempt that never began", n)
+	}
+	a := store.snapshot("a1")
+	if a.status != AttemptStatusFailed || a.errorClass != ErrorClassInfra {
+		t.Fatalf("attempt = %s/%s, want failed/infra: begin never landed, nothing was started",
+			a.status, a.errorClass)
+	}
+	if !strings.Contains(logs.String(), "begin attempt failed; the attempt is not started") {
+		t.Fatalf("the wedged begin must be loud in the worker log, got:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "a1") {
+		t.Fatalf("the log line must name the attempt id so the row is findable, got:\n%s", logs.String())
+	}
+	// The capacity slot came back with the abandon, not with a reconciler
+	// 85 minutes later.
+	if _, active, _ := store.counts(); active != 0 {
+		t.Fatalf("active_attempts=%d after the abandoned begin, want 0", active)
+	}
+
+	// The wedge releases, and the loop is alive: a fresh claim runs to its
+	// honest terminal on the same loop that abandoned a1.
+	release()
+	store.queue("a2", "process.exec", 0, time.Now())
+	waitFor(t, "next attempt terminal", func() bool {
+		s := store.snapshot("a2")
+		return s.status == AttemptStatusSucceeded
+	})
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("executor calls = %d, want exactly a2's one", n)
 	}
 }
