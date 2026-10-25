@@ -600,6 +600,21 @@ describe("/workflows — the index (3a)", () => {
         .querySelector("input");
       expect(radio).not.toBeNull();
       expect((radio as HTMLInputElement).checked).toBe(true);
+      // Each card's second line is the template document's own chain — the
+      // ids the canvas draws, never a hand-written "n steps" caption.
+      expect(
+        within(dialog).getByTestId("new-workflow-template-plan-with-approval").textContent,
+      ).toContain("survey › plan › approve › publish_plan");
+      expect(
+        within(dialog).getByTestId("new-workflow-template-security-review").textContent,
+      ).toContain("scan › summarize › publish_report");
+      expect(within(dialog).getByTestId("new-workflow-template-blank").textContent).toContain(
+        "first",
+      );
+      // The selected starter's description line is the metadata's own words.
+      expect(within(dialog).getByTestId("library-new-template-hint").textContent).toContain(
+        "survey the checkout",
+      );
     });
 
     it("a card create posts the pipeline under the starter's slug, then its draft, and lands on Studio", async () => {

@@ -22,7 +22,9 @@ import { Button } from "../ds/Button";
 import { Field, Input, Select } from "../ds/Field";
 import {
   PIPELINE_TEMPLATES,
+  firstSentence,
   templateById,
+  templateChain,
   withMetadataName,
   type TemplateId,
 } from "../../lib/pipeline/templates";
@@ -241,11 +243,15 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
           </span>
         </div>
         <form
-          className="flex max-h-[calc(100vh-8rem)] flex-col gap-[14px] px-[16px] py-[16px]"
+          className="flex max-h-[calc(100vh-8rem)] flex-col gap-[14px] overflow-y-auto px-[16px] py-[16px]"
           onSubmit={submit}
           data-testid="new-workflow-form"
         >
           <Field id="new-workflow-name" label="NAME">
+            {/* The NAME field is a human sentence, not a machine value: the
+                important markers beat `fieldClass`'s font-mono/text-[12.5px],
+                which plain utilities lose to in stylesheet order (measured
+                live in the browser). */}
             <Input
               id="new-workflow-name"
               value={name}
@@ -254,17 +260,18 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
                 if (!idEdited) setId(generateSlug(event.target.value));
               }}
               placeholder="Retry payments plan"
+              className="font-ui! text-[14px]!"
               data-testid="library-new-name-input"
             />
           </Field>
           <div className="flex flex-col gap-1" data-testid="new-workflow-id-line">
-            <span className="flex flex-wrap items-baseline gap-x-[8px] font-mono text-[12.5px] text-ink">
+            <span className="flex flex-wrap items-baseline gap-x-[8px] font-mono text-[11px] text-muted">
               <span data-testid="new-workflow-id">{`id: ${effectiveSlug || "…"}`}</span>
               {!idEdited && !idError ? (
                 <button
                   type="button"
                   onClick={() => setIdEdited(true)}
-                  className="text-[11.5px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  className="text-[11px] text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
                   data-testid="new-workflow-id-change"
                 >
                   change
@@ -294,7 +301,7 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
               START FROM
             </span>
             <div
-              className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-[8px]"
+              className="grid grid-cols-1 gap-[8px] min-[520px]:grid-cols-[repeat(3,minmax(0,1fr))]"
               role="radiogroup"
               aria-label="start from"
               data-testid="library-new-template-select"
@@ -319,19 +326,25 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
                       onChange={() => setTemplateId(option.id)}
                     />
                     <span className="text-[12.5px] font-semibold">{option.label}</span>
-                    <span className="font-mono text-[10.5px] text-muted">
-                      {option.stepCount === null
-                        ? option.description
-                        : option.stepCount === 1
-                          ? "One agent step"
-                          : `${option.stepCount} steps`}
-                    </span>
+                    {/* Second line: the template document's own step chain —
+                        the ids the canvas will draw, never a hand-written
+                        caption. No chain when the document does not parse. */}
+                    {templateChain(option) ? (
+                      <span className="font-mono text-[11px] text-muted">
+                        {templateChain(option)}
+                      </span>
+                    ) : null}
                   </label>
                 );
               })}
             </div>
-            <p className="font-mono text-[12px] text-muted" data-testid="library-new-template-hint">
-              {template?.description}
+            {/* The selected starter's one-line description, trimmed to its
+                first sentence — the metadata's own words. */}
+            <p
+              className="text-[12px] leading-[17px] text-muted"
+              data-testid="library-new-template-hint"
+            >
+              {template ? firstSentence(template.description) : ""}
             </p>
           </div>
           <div className="flex flex-col gap-1">

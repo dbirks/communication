@@ -58,18 +58,13 @@ import {
 } from "../api/pipelines";
 import type { AssignmentList, Draft, PipelineSummary } from "../api/types";
 import { isDefinitionDocument } from "../lib/pipeline/definition";
-import { parseGraph } from "../lib/pipeline/graphDoc";
 import { routes } from "../lib/routes";
 import { useLayoutPrefs } from "../lib/prefs";
 import { WorkflowRow, MoveToFolderDialog } from "../components/workflows/WorkflowRow";
 import { ImportYamlDialog } from "../components/workflows/ImportYamlDialog";
 import { NewWorkflowDialog } from "../components/workflows/NewWorkflowDialog";
 import { hasLibraryRole, LIBRARY_ROLE_LABEL } from "../lib/pipeline/authoring";
-import {
-  PIPELINE_TEMPLATES,
-  type PipelineTemplate,
-  type TemplateId,
-} from "../lib/pipeline/templates";
+import { PIPELINE_TEMPLATES, templateChain, type TemplateId } from "../lib/pipeline/templates";
 
 /* ------------------------------------------------------------- /workflows */
 
@@ -158,28 +153,6 @@ function FolderGroup({
       {open ? <ul className="px-3">{children}</ul> : null}
     </section>
   );
-}
-
-/** The card's step chain: the template document's own top-level node ids in
- * definition order, a scope node folded to one `loop: …` cell — the same
- * reading `WorkflowRow` shows on the rows, computed from the document that
- * card actually posts. Empty when the document does not parse (honest: the
- * card then says what it is in words instead). */
-export function templateChain(template: PipelineTemplate): string {
-  const parsed = parseGraph(template.documentYaml);
-  if (!parsed.ok) return "";
-  const { nodes } = parsed.model;
-  return nodes
-    .filter((node) => node.scope.length === 0)
-    .map((node) => {
-      if (!node.isScope) return node.id;
-      const children = nodes
-        .filter((child) => child.scope.length > 0 && child.scope[0] === node.id)
-        .map((child) => child.id)
-        .join(" · ");
-      return children ? `loop: ${children}` : node.id;
-    })
-    .join(" › ");
 }
 
 export function LibraryPage() {
