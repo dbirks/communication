@@ -868,7 +868,7 @@ describe("legacy and layout", () => {
 
 describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
   it("a 404 shows an honest not-found state, not the id as a title", async () => {
-    mount(detail, [
+    const { requests } = mount(detail, [
       {
         path: pipelinePath,
         status: 404,
@@ -884,6 +884,11 @@ describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
     // testid pipeline-page-failure, honest words).
     const banner = await screen.findByTestId("pipeline-page-failure");
     expect(banner.textContent).toMatch(/not found/i);
+    // The refusal is the page's one failed read: the sub-resource fan-out is
+    // enabled only once the pipeline read succeeds (the emulator pass counts
+    // every undeclared 404 — `/revisions`/`/drafts` must not fire here).
+    expect(requestsTo(requests, revisionsPath, "GET")).toHaveLength(0);
+    expect(requestsTo(requests, draftsPath, "GET")).toHaveLength(0);
     // The shell around it is gone: no tabs, no actions, no revision chip,
     // and the id is not the title — the heading is the screen's own name.
     expect(screen.queryByTestId("workflow-tabs")).toBeNull();

@@ -71,19 +71,24 @@ export function usePipeline(pipelineId: string) {
   return useQuery(pipelineQueryOptions(pipelineId));
 }
 
-/** `GET /api/v1/pipelines/{pipelineId}/revisions` — summaries, newest first. */
-export function usePipelineRevisions(pipelineId: string) {
+/** `GET /api/v1/pipelines/{pipelineId}/revisions` — summaries, newest first.
+ * `enabled` gates the read behind something else settling — the workflow page
+ * holds it until the pipeline read succeeded, so a missing id 404s once
+ * (the refusal the page renders) instead of minting noise per sub-resource. */
+export function usePipelineRevisions(pipelineId: string, enabled = true) {
   return useQuery({
     queryKey: queryKeys.pipelineRevisions(pipelineId),
     queryFn: () =>
       apiFetch<PipelineRevisionSummaryList>(`/api/v1/pipelines/${pipelineId}/revisions`),
-    enabled: pipelineId.length > 0,
+    enabled: pipelineId.length > 0 && enabled,
   });
 }
 
-/** `GET /api/v1/pipelines/{pipelineId}/drafts` — where uncommitted work lives. */
-export function usePipelineDrafts(pipelineId: string) {
-  return useQuery(pipelineDraftsQueryOptions(pipelineId));
+/** `GET /api/v1/pipelines/{pipelineId}/drafts` — where uncommitted work lives.
+ * Same `enabled` gate as {@link usePipelineRevisions}. */
+export function usePipelineDrafts(pipelineId: string, enabled = true) {
+  const options = pipelineDraftsQueryOptions(pipelineId);
+  return useQuery({ ...options, enabled: options.enabled && enabled });
 }
 
 /** `GET /api/v1/drafts/{draftId}` — the document plus the last validate body. */

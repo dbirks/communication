@@ -110,8 +110,11 @@ test.describe("empty-and-error (admin: 1b no-match, 1e not-found)", () => {
     await test.step("1e — a workflow page for a random UUID", async () => {
       const missing = randomUUID();
       // The 404 the page provokes is the journey exercising an inline error
-      // state — declared, not a defect.
-      emu.expectFailure(/\/api\/v1\/pipelines\/[0-9a-f-]{36}/, 404);
+      // state — declared, not a defect. The `$` says ONLY the pipeline read
+      // itself may 404: the page must not fan out to `/revisions` or
+      // `/drafts` for an id the pipeline read already refused, and any such
+      // extra 404 is real noise the pass must catch.
+      emu.expectFailure(/\/api\/v1\/pipelines\/[0-9a-f-]{36}$/, 404);
       await page.goto(`/workflows/${missing}`);
       const banner = page.getByTestId("pipeline-page-failure");
       const bannerShown = await banner

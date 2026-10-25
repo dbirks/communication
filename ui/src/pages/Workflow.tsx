@@ -144,8 +144,11 @@ export function PipelinePage() {
   const canAuthor = hasLibraryRole(me.data);
 
   const pipeline = usePipeline(pipelineId);
-  const revisions = usePipelineRevisions(pipelineId);
-  const drafts = usePipelineDrafts(pipelineId);
+  // Sub-resource reads ride on the pipeline read: a missing id gets exactly
+  // one honest 404 (the refusal this page renders), not a `/revisions` and a
+  // `/drafts` 404 beside it (the emulator counts every undeclared failure).
+  const revisions = usePipelineRevisions(pipelineId, pipeline.isSuccess);
+  const drafts = usePipelineDrafts(pipelineId, pipeline.isSuccess);
   const createDraft = useCreateDraft(pipelineId);
 
   // Server order is newest-first (`GET /pipelines/{id}/revisions`); nothing is
