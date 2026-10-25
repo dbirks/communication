@@ -132,49 +132,56 @@ type itIssueLister struct {
 	handler http.HandlerFunc
 }
 
-func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLister {
-	if handler == nil {
-		handler = func(w http.ResponseWriter, r *http.Request) {
-			q := r.URL.Query()
-			// GitHub's contract for `since`: an ISO 8601 timestamp or the whole
-			// request is refused with 422, and a well-formed one is an
-			// INCLUSIVE, second-granular lower bound on updated_at. A client
-			// that regressed to Unix seconds must fail here exactly like the
-			// lab's real repo did.
-			var sinceTS *time.Time
-			if s := q.Get("since"); s != "" {
-				ts, err := time.Parse(time.RFC3339, s)
-				if err != nil {
-					w.WriteHeader(http.StatusUnprocessableEntity)
-					_, _ = w.Write([]byte(`{"message":"The since parameter needs to be in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ"}`))
-					return
-				}
-				sinceTS = &ts
+// itServeIssues is the fake GitHub handler: it answers from whatever the
+// getter returns at request time, so a test can edit an issue between polls
+// (or append a new one) exactly like the real repo does.
+func itServeIssues(issues func() []itWireIssue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		// GitHub's contract for `since`: an ISO 8601 timestamp or the whole
+		// request is refused with 422, and a well-formed one is an
+		// INCLUSIVE, second-granular lower bound on updated_at. A client
+		// that regressed to Unix seconds must fail here exactly like the
+		// lab's real repo did.
+		var sinceTS *time.Time
+		if s := q.Get("since"); s != "" {
+			ts, err := time.Parse(time.RFC3339, s)
+			if err != nil {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"The since parameter needs to be in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ"}`))
+				return
 			}
-			var out []itWireIssue
-			for _, it := range issues {
-				if sinceTS != nil {
-					if t, terr := time.Parse(time.RFC3339, it.UpdatedAt); terr == nil && t.Before(*sinceTS) {
-						continue
-					}
+			sinceTS = &ts
+		}
+		var out []itWireIssue
+		for _, it := range issues() {
+			if sinceTS != nil {
+				if t, terr := time.Parse(time.RFC3339, it.UpdatedAt); terr == nil && t.Before(*sinceTS) {
+					continue
 				}
-				if len(q["labels"]) > 0 {
-					matched := false
-					for _, l := range q["labels"] {
-						for _, il := range it.Labels {
-							if len(l) > 0 && len(il.Name) > 0 && strings.EqualFold(l, il.Name) {
-								matched = true
-							}
+			}
+			if len(q["labels"]) > 0 {
+				matched := false
+				for _, l := range q["labels"] {
+					for _, il := range it.Labels {
+						if len(l) > 0 && len(il.Name) > 0 && strings.EqualFold(l, il.Name) {
+							matched = true
 						}
 					}
-					if !matched {
-						continue
-					}
 				}
-				out = append(out, it)
+				if !matched {
+					continue
+				}
 			}
-			_ = json.NewEncoder(w).Encode(out)
+			out = append(out, it)
 		}
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
+func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLister {
+	if handler == nil {
+		handler = itServeIssues(func() []itWireIssue { return issues })
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/octo/widgets/issues", handler)
@@ -425,6 +432,96 @@ func issueTimeRFC3339(t *testing.T, s string) time.Time {
 		t.Fatalf("parse wire timestamp %q: %v", s, err)
 	}
 	return ts.UTC()
+}
+
+// TestIssueTriggerEditedAfterFireReplaysGreen (ADR-0056 amendment of
+// 2026-10-25): an already-fired (trigger, issue) pair is DONE. When the issue
+// is edited after the fire, its rendered inputs — and with them the fire's
+// request sha — change, so the replay of `issue-<trigger>-<number>` collides
+// with a different sha. That must be a silent skip, never an error: the poll
+// advances its cursor past the edited issue and the NEW issue in the same
+// listing still fires.
+func TestIssueTriggerEditedAfterFireReplaysGreen(t *testing.T) {
+	ctx := testCtx(t)
+	f := itSetup(t)
+	f.itDropTriggers(t, ctx)
+	trigger, err := f.itIssueFires(ctx, "opened", []string{}, json.RawMessage(`{"prompt":"Fix {{issue.number}}: {{issue.title}}"}`), nil)
+	if err != nil {
+		t.Fatalf("itIssueFires: %v", err)
+	}
+	createdAt := trigger.CreatedAt
+	served := []itWireIssue{
+		{Number: 7, Title: "Crash on boot", Body: "it crashes", State: "open",
+			HTMLURL:   "https://github.com/octo/widgets/issues/7",
+			CreatedAt: createdAt.Add(time.Hour).Format(time.RFC3339),
+			UpdatedAt: createdAt.Add(2 * time.Hour).Format(time.RFC3339)},
+	}
+	lister := newITIssueLister(nil, itServeIssues(func() []itWireIssue { return served }))
+	defer lister.Close()
+
+	now := time.Now().UTC()
+	if fired, err := f.triggers.TickIssueTriggers(ctx, now, lister); err != nil || fired != 1 {
+		t.Fatalf("first tick = (%d, %v), want one fire for #7", fired, err)
+	}
+	before, err := f.triggers.GetIssueTrigger(ctx, trigger.ID)
+	if err != nil || before.CursorAt == nil {
+		t.Fatalf("GetIssueTrigger after the first tick = (%v, %v)", before.CursorAt, err)
+	}
+
+	// The issue is EDITED: the title moves (so the rendered prompt, and the
+	// request sha built from it, differ from the fire's) and updated_at moves
+	// past the cursor, putting #7 back inside GitHub's inclusive `since`.
+	served[0].Title = "Crash on boot (edited)"
+	served[0].UpdatedAt = createdAt.Add(5 * time.Hour).Format(time.RFC3339)
+	// A brand-new issue #8 arrives in the same poll window.
+	served = append(served, itWireIssue{Number: 8, Title: "New report", Body: "new", State: "open",
+		HTMLURL:   "https://github.com/octo/widgets/issues/8",
+		CreatedAt: createdAt.Add(4 * time.Hour).Format(time.RFC3339),
+		UpdatedAt: createdAt.Add(6 * time.Hour).Format(time.RFC3339)})
+
+	fired, err := f.triggers.TickIssueTriggers(ctx, now.Add(time.Minute), lister)
+	if err != nil {
+		t.Fatalf("second tick = (%d, %v), want the edited-#7 replay to skip without erroring", fired, err)
+	}
+	if fired != 1 {
+		t.Fatalf("second tick fired %d runs, want exactly 1 (the new #8; the edited #7 is DONE)", fired)
+	}
+
+	after, err := f.triggers.GetIssueTrigger(ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("GetIssueTrigger after the second tick: %v", err)
+	}
+	if after.LastError != "" {
+		t.Errorf("last_error = %q, want empty: the replay must not mark the trigger failed", after.LastError)
+	}
+	if after.CursorAt == nil || !after.CursorAt.After(*before.CursorAt) {
+		t.Fatalf("cursor = %v, want advanced past the first tick's %v: the skip must not stall the poll", after.CursorAt, before.CursorAt)
+	}
+
+	var runs7 int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM runs WHERE trigger_ref = 'octo/widgets#7'`).Scan(&runs7); err != nil {
+		t.Fatalf("count #7 runs: %v", err)
+	}
+	if runs7 != 1 {
+		t.Fatalf("runs for octo/widgets#7 = %d, want 1: the mismatched replay creates no second run", runs7)
+	}
+	runID7, _ := itIssueRunFor(t, ctx, f, "octo/widgets#7")
+	itIssueFiredEvent(t, ctx, f, runID7) // fails unless #7 still has exactly one fired event
+	if got := itIssuePrompt(t, ctx, f, runID7); got != "Fix 7: Crash on boot" {
+		t.Errorf("#7's run prompt = %q, want the value rendered at the original fire", got)
+	}
+
+	runID8, kind := itIssueRunFor(t, ctx, f, "octo/widgets#8")
+	if kind != "issue" {
+		t.Fatalf("#8 run kind = %s, want issue", kind)
+	}
+	if got := itIssuePrompt(t, ctx, f, runID8); got != "Fix 8: New report" {
+		t.Errorf("#8's run prompt = %q, want the rendered template value", got)
+	}
+	if p := itIssueFiredEvent(t, ctx, f, runID8); p.IssueNumber != 8 || p.TriggerID != trigger.ID {
+		t.Errorf("#8 issue_trigger.fired payload = %+v", p)
+	}
 }
 
 // TestIssueTriggerSkipsPullRequests: a pull request is not an issue, through

@@ -657,7 +657,11 @@ func (s *IssueTriggerStore) fireIssueTrigger(ctx context.Context, id string, now
 // fact and the `issue-<trigger id>-<number>` idempotency key (ADR-0056 § 5), and
 // appends issue_trigger.fired in that same transaction. A replay under the
 // same key (crash between key claim and run insert) returns without writing —
-// the stored run is the answer — and writes no second event.
+// the stored run is the answer — and writes no second event. A replay whose
+// rendered inputs changed (the issue was edited after the fire, so the key
+// comes back with a different request sha) is DONE too: ADR-0056's amendment
+// of 2026-10-25 skips it with a debug log instead of surfacing
+// ErrIdempotencyMismatch, so one edited issue can never jam the whole poll.
 func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTrigger, pin schedulePin, repo github.Repository, issue github.Issue) (int, error) {
 	key := "issue-" + it.ID + "-" + fmt.Sprint(issue.Number)
 	values, _, err := scheduleCleanInputs(it.Inputs)
@@ -711,6 +715,21 @@ func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTr
 
 	api := APIRunStore{Runs: s.runs()}
 	run, created, err := api.createRunPinned(ctx, newRun)
+	if errors.Is(err, ErrIdempotencyMismatch) {
+		// ADR-0056 amendment (2026-10-25): an already-fired (trigger, issue)
+		// pair is DONE. GitHub's `since` is inclusive, so an edit that moves
+		// title/body returns the issue to the poll with rendered inputs — and
+		// a request sha — that differ from the fire's. That replay is skipped
+		// (no second run, no second event) and the caller's loop still
+		// advances the cursor past it; the mismatch error would abort the poll
+		// before the cursor moves and jam this trigger forever. Every other
+		// idempotency caller (POST /runs, schedules) keeps the 409 answer.
+		s.logger().DebugContext(ctx, "issue trigger re-saw an already-fired issue with changed inputs; skipping the replay",
+			slog.String("issue_trigger_id", it.ID),
+			slog.String("idempotency_key", key),
+			slog.Int("issue_number", issue.Number))
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("postgres: fire issue %s#%d: %w", repo.String(), issue.Number, err)
 	}

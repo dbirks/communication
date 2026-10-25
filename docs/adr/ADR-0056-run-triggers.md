@@ -135,3 +135,21 @@ inputs a fire WOULD produce (the template rendered against a fixed sample issue)
 validating the raw template text; the row keeps storing the template. A string-typed input that
 wants the number as text still writes it as mixed text (`"issue {{issue.number}}"`), which is
 what the trigger dialog's numeric "use issue number" binding and its refusal messages advertise.
+
+## Amendment (2026-10-25) — a replay of an already-fired (trigger, issue) pair is DONE, not an error
+
+§ 5 keys the fire on `issue-<trigger id>-<number>` and ADR-0023 § 12 answers a
+same-key/different-body collision with the idempotency mismatch; but the issue
+trigger's request body is rendered from the issue's *mutable* content (title,
+body) and GitHub's `since` cursor is inclusive, so an edit after the fire
+guarantees a replay of that key with a different sha — and treating that as an
+error jammed the trigger forever: the poll aborted before the cursor advanced,
+every later tick re-polled from the same stale cursor, re-saw the same edited
+issue, and no other issue ever fired again. The rule now: **for the issue-trigger
+fire only, an already-fired (trigger, issue) pair is DONE** — a mismatched replay
+is skipped (debug-logged, no second run, no second `issue_trigger.fired` event)
+and the poll still advances its cursor past that issue, so the rest of the same
+listing fires normally. Every other idempotency-key caller (`POST /runs`,
+schedule fires) keeps ADR-0023 § 12's mismatch answer unchanged: this narrows
+what a trigger promises about its own (trigger, issue) dedupe, not the meaning
+of an API idempotency key.
