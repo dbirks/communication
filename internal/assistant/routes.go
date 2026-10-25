@@ -35,6 +35,9 @@ var allowedRoutes = []*regexp.Regexp{
 	// Global pages.
 	regexp.MustCompile(`^/workflows$`),
 	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}$`),
+	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/yaml$`),
+	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/used-in$`),
+	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/history$`),
 	regexp.MustCompile(`^/workflows/[A-Za-z0-9_-]{1,64}/drafts/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/steps$`),
 	regexp.MustCompile(`^/steps/[A-Za-z0-9_-]{1,64}$`),

@@ -90,7 +90,17 @@ func seedBareRepo(t *testing.T, root string) string {
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"GIT_AUTHOR_NAME=Seed", "GIT_AUTHOR_EMAIL=seed@communication.test",
-			"GIT_COMMITTER_NAME=Seed", "GIT_COMMITTER_EMAIL=seed@communication.test")
+			"GIT_COMMITTER_NAME=Seed", "GIT_COMMITTER_EMAIL=seed@communication.test",
+			// The fixture ignores the developer's/runner's git config entirely:
+			// every branch is created with an explicit --initial-branch, and
+			// the ownership opt-in rides the GIT_CONFIG_* env (below) rather
+			// than a `config --global` write — a runner (or proof command)
+			// that points global config at /dev/null must not be able to
+			// fail the fixture for want of a lock file.
+			"GIT_CONFIG_NOSYSTEM=1",
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=safe.directory",
+			"GIT_CONFIG_VALUE_0=*")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -98,13 +108,6 @@ func seedBareRepo(t *testing.T, root string) string {
 		return string(out)
 	}
 	run(bare, "init", "--bare", "--initial-branch=main")
-	// `git init` on a writable directory does not always mark it safe, and an
-	// "unsafe repository" refusal inside a test is indistinguishable from a real
-	// topology bug when it arrives as a fetch failure three layers away.
-	run(bare, "config", "--global", "safe.directory", bare)
-	t.Cleanup(func() {
-		exec.Command("git", "config", "--global", "--unset-all", "safe.directory", bare).Run()
-	})
 	run(work, "init", "--initial-branch=main")
 	// git refuses to commit with no identity at all, and the fixture must not
 	// depend on the developer's global config: an operator without one would see

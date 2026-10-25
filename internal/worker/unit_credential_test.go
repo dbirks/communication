@@ -54,7 +54,14 @@ func (r *recordingGit) spawn(ctx context.Context, c wsgit.Command) (wsgit.Result
 	cmd := exec.CommandContext(cctx, c.Path, c.Argv...)
 	cmd.Dir = c.Dir
 	cmd.Env = c.Env
+	// The streams must be captured, not dropped: the prepare asks git
+	// questions through Stdout (`rev-parse --verify` for the base commit,
+	// ADR-0017 D2), and a recorder that answers "" makes every ref look
+	// missing — the mirror fixture is fine, the recorder just ate the
+	// answer. defaultRun captures; this seam must behave like it.
 	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	out := wsgit.Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err != nil {
