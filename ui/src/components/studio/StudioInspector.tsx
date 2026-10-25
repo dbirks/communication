@@ -128,7 +128,7 @@ function PipelinePanel({
   const description = getAt(doc, ["metadata", "description"]);
   const inputs = getAt(doc, ["spec", "inputs"]);
   return (
-    <div className="min-h-full space-y-[12px] p-[16px]" data-testid="insp-pipeline">
+    <div className="space-y-[12px] p-[16px]" data-testid="insp-pipeline">
       <p className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
         Pipeline
       </p>
@@ -891,7 +891,7 @@ export function StudioInspector({
   return (
     // Design 1g: 16px padding, the header row (glyph + step id 15/600 +
     // mono `kind · after <prev>` + Delete) over a divider, then the fields.
-    <div className="min-h-full space-y-[14px] p-[16px]" data-testid="insp-node">
+    <div className="space-y-[14px] p-[16px]" data-testid="insp-node">
       <div className="space-y-[8px]" data-testid="insp-header">
         <div className="flex items-center gap-[8px] border-b border-line-soft pb-[12px]">
           <span aria-hidden="true" className="font-mono text-[14px] leading-none text-ink-2">

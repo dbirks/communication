@@ -232,6 +232,51 @@ export function computeFitViewport(
   return { x, y, zoom: clampedZoom };
 }
 
+/** CSS px between the pane's top edge and the graph's first box when the
+ * canvas fits itself (design 1g: the chain starts ~50px below the top and
+ * rides top-aligned, it is NOT vertically centred). */
+export const FIT_TOP_PAD_PX = 50;
+
+/**
+ * The design-1g fit: same guards and zoom as `computeFitViewport` (whose
+ * cap is 1.0 here — never magnify), but the result is TOP-aligned
+ * (`FIT_TOP_PAD_PX` under the pane's top edge) and horizontally centred:
+ * a tall chain overflows downward and pans, rather than the whole graph
+ * shrinking into the middle.
+ */
+export function computeTopFitViewport(
+  boxes: { x: number; y: number; width: number; height: number }[],
+  paneWidth: number,
+  paneHeight: number,
+  topPad = FIT_TOP_PAD_PX,
+  minZoom = 0.4,
+  maxZoom = 1,
+): { x: number; y: number; zoom: number } | null {
+  const fit = computeFitViewport(boxes, paneWidth, paneHeight, minZoom, maxZoom);
+  if (fit === null) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  for (const box of boxes) {
+    if (
+      !Number.isFinite(box.x) ||
+      !Number.isFinite(box.y) ||
+      !isPositiveFinite(box.width) ||
+      !isPositiveFinite(box.height)
+    ) {
+      return null;
+    }
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+  }
+  const zoom = fit.zoom;
+  const x = paneWidth / 2 - (minX + (maxX - minX) / 2) * zoom;
+  const y = topPad - minY * zoom;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(zoom)) return null;
+  return { x, y, zoom };
+}
+
 /** Centre `box` in the pane at `zoom` (the user's current zoom, clamped
  * into the 0.4→1.25 band). Null when inputs are degenerate. */
 export function centerOnBox(
@@ -922,7 +967,7 @@ function CanvasInner({
       const h = mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : box.height;
       return { x: box.x, y: box.y, width: w, height: h };
     });
-    const vp = computeFitViewport(boxes, rect.width, rect.height);
+    const vp = computeTopFitViewport(boxes, rect.width, rect.height);
     if (vp === null) return false;
     setViewport(vp, { duration: 0 });
     lastGoodRef.current = vp;

@@ -32,25 +32,33 @@ export function StudioStatusBar({
 }: StudioStatusBarProps) {
   return (
     <div
-      className="flex h-[30px] shrink-0 items-center gap-[12px] border-t border-line bg-surface px-4 font-mono text-[10.5px] text-faint"
+      className="flex h-[30px] shrink-0 items-center gap-[8px] overflow-hidden border-t border-line bg-surface px-4 font-mono text-[10.5px] text-faint md:gap-[12px]"
       data-testid="studio-status-bar"
     >
-      <span data-testid="studio-status-bar-summary">
+      <span className="shrink-0 truncate" data-testid="studio-status-bar-summary">
         {stepCount} {stepCount === 1 ? "step" : "steps"} · {dirty ? "unsaved changes" : "saved"}
       </span>
-      <span data-testid="studio-validation-chip" title={validation ?? ""}>
+      {/* Pass 3 #1: below md the strip carries ONLY the count/state left and
+          the short reason right — one line, never wrapped or clipped. The
+          validation verdict and the diff link stay on md+ (e2e clicks
+          `studio-diff` at desktop widths). */}
+      <span
+        className="hidden shrink-0 md:inline"
+        data-testid="studio-validation-chip"
+        title={validation ?? ""}
+      >
         {validation ?? "not validated"}
       </span>
       <button
         type="button"
         onClick={onDiff}
         data-testid="studio-diff"
-        className="text-muted underline decoration-line underline-offset-2 hover:text-ink"
+        className="hidden shrink-0 text-muted underline decoration-line underline-offset-2 hover:text-ink md:inline"
       >
         {diffLabel ?? "diff"}
       </button>
       <span
-        className="ml-auto truncate"
+        className="ml-auto min-w-0 shrink truncate text-right"
         data-testid="studio-publish-reason"
         title={publishReason ?? ""}
       >

@@ -401,57 +401,62 @@ export function StudioPage() {
 
   const baseDocument = newestRevision.data?.canonical_document ?? null;
 
+  // Design 1g (pass 3 #3): the inspector column is a flex column at least as
+  // tall as the aside — the form fills it and the assistant row is PINNED to
+  // the bottom behind a top border, exactly where 1g draws it.
   const inspector = (
-    <>
-      {selectedIds.length > 1 ? (
-        <div
-          className="rounded-[3px] border border-line bg-paper p-[8px]"
-          data-testid="multi-select-panel"
-        >
-          <p
-            className="font-mono text-[11px] font-semibold text-ink"
-            data-testid="multi-select-count"
+    <div className="flex min-h-full flex-col">
+      <div className="min-h-0 flex-1">
+        {selectedIds.length > 1 ? (
+          <div
+            className="rounded-[3px] border border-line bg-paper p-[8px]"
+            data-testid="multi-select-panel"
           >
-            {selectedIds.length} steps selected
-          </p>
-          <ul className="mt-1 flex flex-wrap gap-1" data-testid="multi-select-ids">
-            {selectedIds.map((id) => (
-              <li
-                key={id}
-                className="rounded-[3px] bg-accent-wash px-[5px] py-[1px] font-mono text-[10px] text-accent"
-              >
-                {id}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1.5 font-mono text-[10px] text-faint">
-            Wrap the selection in a bounded repeat scope, or clear the selection to edit a single
-            step.
-          </p>
-          <div className="mt-2">
-            <SelectionToolbar
-              variant="panel"
-              selectedIds={selectedIds}
-              model={model}
-              readOnly={readOnly}
-              onWrap={handleWrap}
-              onUnwrap={handleUnwrap}
-            />
+            <p
+              className="font-mono text-[11px] font-semibold text-ink"
+              data-testid="multi-select-count"
+            >
+              {selectedIds.length} steps selected
+            </p>
+            <ul className="mt-1 flex flex-wrap gap-1" data-testid="multi-select-ids">
+              {selectedIds.map((id) => (
+                <li
+                  key={id}
+                  className="rounded-[3px] bg-accent-wash px-[5px] py-[1px] font-mono text-[10px] text-accent"
+                >
+                  {id}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 font-mono text-[10px] text-faint">
+              Wrap the selection in a bounded repeat scope, or clear the selection to edit a single
+              step.
+            </p>
+            <div className="mt-2">
+              <SelectionToolbar
+                variant="panel"
+                selectedIds={selectedIds}
+                model={model}
+                readOnly={readOnly}
+                onWrap={handleWrap}
+                onUnwrap={handleUnwrap}
+              />
+            </div>
           </div>
-        </div>
-      ) : (
-        <StudioInspector
-          model={model}
-          nodeId={selectedId}
-          document={document}
-          text={studio.text}
-          readOnly={readOnly}
-          apply={studio.apply}
-          onDelete={(id) => handleDelete([id])}
-        />
-      )}
+        ) : (
+          <StudioInspector
+            model={model}
+            nodeId={selectedId}
+            document={document}
+            text={studio.text}
+            readOnly={readOnly}
+            apply={studio.apply}
+            onDelete={(id) => handleDelete([id])}
+          />
+        )}
+      </div>
       {studio.guard.pending === null && studio.conflict === null && selectedIds.length <= 1 ? (
-        <>
+        <div className="shrink-0" data-testid="studio-assistant-dock">
           <AssistantProposalBox
             draftId={draftId}
             version={studio.savedVersion}
@@ -473,9 +478,9 @@ export function StudioPage() {
               {proposalSummary ? ` — ${proposalSummary}` : ""}
             </p>
           ) : null}
-        </>
+        </div>
       ) : null}
-    </>
+    </div>
   );
   const canvas = (
     <StudioCanvas

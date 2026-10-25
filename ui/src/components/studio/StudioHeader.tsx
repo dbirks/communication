@@ -163,21 +163,27 @@ export function StudioHeader({
         </span>
       </nav>
       <h1
-        className="min-w-0 flex-1 truncate text-[15px] font-semibold md:max-w-[320px] md:min-w-[160px]"
+        className="min-w-[80px] flex-1 truncate text-[15px] font-semibold md:max-w-[320px] md:min-w-[160px]"
         data-testid="studio-title"
         title={pipelineName}
       >
         {pipelineName}
       </h1>
-      <div className="flex shrink-0 items-center gap-[8px]" data-testid="studio-header-chips">
+      <div
+        className="flex min-w-0 items-center gap-[6px] md:shrink-0 md:gap-[8px]"
+        data-testid="studio-header-chips"
+      >
         <span
-          className="shrink-0 rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
+          className="min-w-0 truncate rounded-[3px] border border-line bg-fill px-[6px] py-[1px] font-mono text-[10px]"
           data-testid="studio-draft-version"
         >
           {chipText}
         </span>
         {dirty ? (
-          <span className="shrink-0 font-mono text-[10px] text-muted" data-testid="studio-dirty">
+          <span
+            className="hidden font-mono text-[10px] text-muted md:inline"
+            data-testid="studio-dirty"
+          >
             unsaved
           </span>
         ) : null}

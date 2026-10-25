@@ -335,10 +335,16 @@ export const LAYOUT_SPACING = {
    * Tuned so the feature-development twin fits the 1500×950 Studio at
    * zoom ≥ 1.0 and the Workbench run at zoom ≥ 0.85 with zero
    * node/label overlaps (e2e/.canvas-check.mjs).
+   *
+   * Pass 3 #2: design 1g's vertical rhythm is a ~114px top-to-top pitch
+   * between consecutive steps (52px card + ~62px of line with the `+` at
+   * its midpoint) — with the ~60px measured box height that is a 54px
+   * ranksep, not the pill-height floor of 24 that compressed the chain to
+   * ~78px.
    */
   dense: {
     nodesep: 14,
-    ranksep: 24,
+    ranksep: 54,
     edgesep: 12,
     margin: 8,
     groupPad: 6,

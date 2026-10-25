@@ -599,7 +599,10 @@ test.describe.serial("shell journey — the app-shell acceptance journey end to 
       await expect(ambiguity).toBeHidden();
     }
 
-    // The new node is selected: the inspector names it.
+    // The new node is selected: the inspector names it — the id field lives
+    // inside the design's collapsed "Retries, timeout and outputs"
+    // disclosure (1g pass 2 #2), so open it first.
+    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toBeVisible();
     console.log("journey a: agent step inserted, inspector open");
 

@@ -120,6 +120,36 @@ function stepCountOf(document: string): number | null {
   return parsed.ok ? parsed.model.nodes.length : null;
 }
 
+/** The template document's own top-level chain — the node ids a reader sees
+ * on the Studio canvas in definition order, a scope node folded to one
+ * `loop: <child> · <child>…` cell, joined with `›`. Empty when the document
+ * does not parse: a card then shows nothing rather than an invented step. */
+export function templateChain(template: PipelineTemplate): string {
+  const parsed = parseGraph(template.documentYaml);
+  if (!parsed.ok) return "";
+  const { nodes } = parsed.model;
+  return nodes
+    .filter((node) => node.scope.length === 0)
+    .map((node) => {
+      if (!node.isScope) return node.id;
+      const children = nodes
+        .filter((child) => child.scope.length > 0 && child.scope[0] === node.id)
+        .map((child) => child.id)
+        .join(" · ");
+      return children ? `loop: ${children}` : node.id;
+    })
+    .join(" › ");
+}
+
+/** A description trimmed to its first sentence — the short form a card or
+ * dialog line quotes. It is a cut of the metadata, never a second
+ * hand-written copy that can drift from the sample it names. */
+export function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  const match = /^(.+?[.!?])(?:\s|$)/u.exec(trimmed);
+  return (match ? match[1] : trimmed).trim();
+}
+
 /**
  * The template's document with the single `name:` line under `metadata:`
  * rewritten to the new pipeline's slug, so the pasted document agrees with the

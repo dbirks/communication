@@ -233,6 +233,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
 
     // The new node is selected between them: the inspector now names it.
     const nodeIdField = page.getByTestId("insp-node-id");
+    // The node id lives inside the design's collapsed "Retries, timeout
+    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
+    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(nodeIdField).toBeVisible();
     const autoId = await nodeIdField.inputValue();
     expect(autoId, "the inserted node is auto-named, not code_review yet").not.toBe("code_review");
@@ -304,10 +307,16 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // process.exec) are both covered by the axe pass.
     await page.getByTestId("canvas-step-code_review").click();
     await expect(page.getByTestId("insp-node")).toBeVisible();
+    // The node id lives inside the design's collapsed "Retries, timeout
+    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
+    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("code_review");
     await checkA11y(page, "studio inspector (agent.acp)");
 
     await page.getByTestId("canvas-step-review").click();
+    // The node id lives inside the design's collapsed "Retries, timeout
+    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
+    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("review");
     await checkA11y(page, "studio inspector (process.exec)");
     await evidence(
@@ -736,6 +745,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // Selecting a step opens the inspector for it.
     await page.getByTestId("step-outline-plan").click();
     await expect(page.getByTestId("insp-node")).toBeVisible();
+    // The node id lives inside the design's collapsed "Retries, timeout
+    // and outputs" disclosure (1g pass 2 #2) — open it before reading.
+    await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
     await expect(page.getByTestId("insp-node-id")).toHaveValue("plan");
 
     // No horizontal page scroll.

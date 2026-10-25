@@ -128,7 +128,13 @@ export function AssistantProposalBox({
   return (
     <section
       data-testid="assistant-proposal-box"
-      className="overflow-hidden rounded-[3px] border border-line bg-surface"
+      className={
+        footer
+          ? // Design 1g: the studio's assistant row is a pinned bottom strip
+            // of the inspector column — a top border, no box.
+            "overflow-hidden border-t border-line bg-surface"
+          : "overflow-hidden rounded-[3px] border border-line bg-surface"
+      }
     >
       {footer && !open ? (
         <button
@@ -136,7 +142,7 @@ export function AssistantProposalBox({
           data-testid="assistant-proposal-footer"
           onClick={() => setOpen(true)}
           aria-expanded={false}
-          className="flex w-full items-center gap-2 px-[10px] py-[6px] text-left text-body hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
+          className="flex w-full items-center gap-[8px] px-[14px] py-[10px] text-left text-body hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring"
         >
           Ask to change this draft…
           <span className="ml-auto font-mono text-[10.5px] tracking-[.04em] text-faint">⌘K</span>

@@ -11,6 +11,7 @@ import { parseGraph } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
   computeFitViewport,
+  computeTopFitViewport,
   evaluateConnect,
   mirrorOwnedChanges,
   parseViewportTransform,
@@ -422,6 +423,37 @@ describe("viewport fit guards (issue #2 blank canvas)", () => {
       expect(vp.x + cx * vp.zoom).toBeCloseTo(500, 1);
       expect(vp.y + cy * vp.zoom).toBeCloseTo(300, 1);
     }
+  });
+});
+
+describe("computeTopFitViewport (design 1g: top-aligned, never magnified)", () => {
+  const boxes = [
+    { x: 0, y: 0, width: 200, height: 52 },
+    { x: 0, y: 114, width: 200, height: 52 },
+    { x: 0, y: 228, width: 200, height: 52 },
+  ];
+
+  it("aligns the first box FIT_TOP_PAD_PX under the pane top and centres X", () => {
+    const vp = computeTopFitViewport(boxes, 700, 900)!;
+    expect(vp).not.toBeNull();
+    expect(vp.zoom).toBeLessThanOrEqual(1);
+    // The graph's top box (y=0) lands exactly FIT_TOP_PAD_PX under the pane.
+    expect(vp.y).toBe(50);
+    // The graph (x 0..200) centres in the 700px pane at its zoom.
+    expect(vp.x + 100 * vp.zoom).toBeCloseTo(350, 6);
+  });
+
+  it("caps at zoom 1 — a tall chain overflows and pans instead of shrinking", () => {
+    const vp = computeTopFitViewport(boxes, 700, 400)!;
+    // Content 280px tall + padding fits in 400 → still exactly top-aligned
+    // at full scale, no magnification.
+    expect(vp.zoom).toBe(1);
+    expect(vp.y).toBe(50);
+  });
+
+  it("refuses degenerate panes and boxes like the centred fit does", () => {
+    expect(computeTopFitViewport(boxes, 0, 400)).toBeNull();
+    expect(computeTopFitViewport([{ x: 0, y: 0, width: 0, height: 0 }], 700, 400)).toBeNull();
   });
 });
 

@@ -482,27 +482,29 @@ describe("canvas (dense) spacing", () => {
     expect(group.height).toBeGreaterThan(group.width);
   });
 
-  it("keeps the dense top-to-bottom cut inside fit zoom 1.2 of the canvas panes", () => {
+  it("keeps the dense top-to-bottom cut at the design's rhythm and width", () => {
     const tb = layoutDefinition(samplePipelineDocument, {
       spacing: "dense",
       rankdir: "TB",
-      subgraphRankdir: "opposite",
+      subgraphRankdir: "same",
     })!;
-    // The panes `chooseCanvasOrientation` (flowModel's CANVAS_PANES) is
-    // picked against: the Workbench graph pane and the Studio canvas. The
-    // Studio pane carries the step-list section, which consumes ~220px of
-    // the 776px fit space at the 1500x950 check viewport (e2e/
-    // .canvas-check.mjs floors it at zoom >= 1.0 there; the 1.2 here leaves
-    // room for the fitView padding). The ranksep floor is the collision-
-    // checked edge-label pill's height, not the old "twice the widest
-    // label" gap that kept the twin at zoom ~0.8.
+    // Pass 3 #2 (design 1g rhythm): consecutive steps keep a ~114px
+    // top-to-top pitch — the card height plus a 54px rank gap carrying the
+    // `+` at its midpoint — and the graph still fits the canvas panes at
+    // zoom 1 sideways (the fit now aligns the chain TOP and caps at 1.0,
+    // so vertical overflow pans rather than shrinking the cards).
+    const byKey = new Map(tb.nodes.map((n) => [n.key, n]));
+    const plan = byKey.get("/plan")!;
+    const approve = byKey.get("/approve")!;
+    expect(approve.y - (plan.y + plan.height)).toBe(54);
+    expect(approve.y - plan.y).toBeGreaterThanOrEqual(106);
+    expect(approve.y - plan.y).toBeLessThanOrEqual(124);
     const panes = [
       { width: 1020, height: 610 },
       { width: 920, height: 556 },
     ];
     for (const pane of panes) {
-      const fit = Math.min(pane.width / tb.width, pane.height / tb.height);
-      expect(fit, `pane ${pane.width}x${pane.height}`).toBeGreaterThanOrEqual(1.2);
+      expect(tb.width, `pane ${pane.width}x${pane.height}`).toBeLessThanOrEqual(pane.width);
     }
   });
 });
