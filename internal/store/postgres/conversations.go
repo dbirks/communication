@@ -131,12 +131,16 @@ type CnvTurn struct {
 	Prompt                 string
 	SubmittedBy            string
 	SubmittedByDisplayName string
-	WorkerID               string
-	CancelRequestedAt      *time.Time
-	StopReason             *string
-	CreatedAt              time.Time
-	StartedAt              *time.Time
-	FinishedAt             *time.Time
+	// SubmittedVia is the turn's origin (00017, ADR-0062): human | schedule |
+	// issue_trigger | child_run. submitted_by names the human it runs ON
+	// BEHALF OF; this says what actually submitted it.
+	SubmittedVia      string
+	WorkerID          string
+	CancelRequestedAt *time.Time
+	StopReason        *string
+	CreatedAt         time.Time
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
 }
 
 // IsActive reports whether the turn still occupies the conversation
@@ -527,7 +531,8 @@ func cnvConversationRunLink(ctx context.Context, q prjQuerier, conversationID st
 const cnvActiveTurnSQL = `
 	SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 	       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
-	       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at
+	       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
+	       t.submitted_via
 	FROM conversation_turns t
 	LEFT JOIN users u ON u.id = t.submitted_by
 	WHERE t.conversation_id = $1::uuid
@@ -539,7 +544,8 @@ func cnvScanTurn(row interface{ Scan(dest ...any) error }) (CnvTurn, error) {
 	var t CnvTurn
 	err := row.Scan(&t.ID, &t.ConversationID, &t.Status, &t.Prompt, &t.SubmittedBy,
 		&t.SubmittedByDisplayName, &t.WorkerID,
-		&t.CancelRequestedAt, &t.StopReason, &t.CreatedAt, &t.StartedAt, &t.FinishedAt)
+		&t.CancelRequestedAt, &t.StopReason, &t.CreatedAt, &t.StartedAt, &t.FinishedAt,
+		&t.SubmittedVia)
 	if err != nil {
 		return CnvTurn{}, err
 	}
@@ -571,7 +577,8 @@ func cnvActiveTurnForUpdate(ctx context.Context, tx pgx.Tx, conversationID strin
 	row := tx.QueryRow(ctx, `
 		SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 		       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
-		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at
+		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
+		       t.submitted_via
 		FROM conversation_turns t
 		LEFT JOIN users u ON u.id = t.submitted_by
 		WHERE t.conversation_id = $1::uuid
@@ -1851,7 +1858,8 @@ func cnvTurnByID(ctx context.Context, q prjQuerier, turnID string) (CnvTurn, err
 	t, err := cnvScanTurn(q.QueryRow(ctx, `
 		SELECT t.id::text, t.conversation_id::text, t.status, t.prompt, t.submitted_by::text,
 		       COALESCE(u.display_name, ''), COALESCE(t.worker_id::text, ''),
-		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at
+		       t.cancel_requested_at, t.stop_reason, t.created_at, t.started_at, t.finished_at,
+		       t.submitted_via
 		FROM conversation_turns t
 		LEFT JOIN users u ON u.id = t.submitted_by
 		WHERE t.id = $1::uuid`, turnID))
@@ -2207,6 +2215,7 @@ func cnvAPITurn(t CnvTurn, withPrompt bool) api.ConversationTurnView {
 		Status:                 t.Status,
 		SubmittedBy:            t.SubmittedBy,
 		SubmittedByDisplayName: apiNullString(t.SubmittedByDisplayName),
+		SubmittedVia:           t.SubmittedVia,
 		WorkerID:               apiNullString(t.WorkerID),
 		CancelRequestedAt:      t.CancelRequestedAt,
 		StopReason:             t.StopReason,

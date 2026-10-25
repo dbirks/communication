@@ -103,6 +103,12 @@ type Run struct {
 	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
 	// thread start keeps source_conversation_id, ADR-0053).
 	TriggerRef string
+	// TriggerID (ADR-0062) is the primary key of the trigger table that fired
+	// this run: schedules.id for 'schedule', issue_triggers.id for 'issue';
+	// empty for 'manual'/'thread' and propagated to children along with kind
+	// and ref. It is the row the unattended agent turn's submitter is read
+	// from — the trigger's author authorised the automation.
+	TriggerID string
 	// RepositoryID (ADR-0060) is the repository this run works on; empty string
 	// is NULL (the run started against no named repository — a project-wide
 	// intent or a resolved inputs.repository).
@@ -196,7 +202,7 @@ const runColumns = `id, organization_id, project_id, pipeline_id, pipeline_revis
 	COALESCE(parent_run_id::text, ''), COALESCE(triggered_by::text, ''),
 	COALESCE(worker_affinity::text, ''), worker_volume_id,
 	priority, expression_evaluations, created_at, started_at, finished_at,
-	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, ''),
+	COALESCE(trigger_kind, ''), COALESCE(trigger_ref, ''), COALESCE(trigger_id::text, ''),
 	COALESCE(repository_id::text, ''), agent_profile_version`
 
 func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
@@ -213,7 +219,7 @@ func (s *RunStore) scanRun(row pgx.Row) (Run, error) {
 		&r.Status, &cause, &paused, &cancelled, &r.Depth,
 		&r.ParentRunID, &r.TriggeredBy, &r.WorkerAffinity, &volume,
 		&r.Priority, &r.ExpressionEvals, &r.CreatedAt, &started, &finished,
-		&r.TriggerKind, &r.TriggerRef, &r.RepositoryID, &r.AgentProfileVersion)
+		&r.TriggerKind, &r.TriggerRef, &r.TriggerID, &r.RepositoryID, &r.AgentProfileVersion)
 	if err != nil {
 		return Run{}, err
 	}
@@ -256,6 +262,10 @@ type NewRun struct {
 	// `owner/repo#<number>` for 'issue'; empty for 'manual' and 'thread' (a
 	// thread start keeps source_conversation_id, ADR-0053).
 	TriggerRef string
+	// TriggerID (ADR-0062) is the firing trigger row's primary key
+	// (schedules.id / issue_triggers.id); empty for 'manual'/'thread'. A child
+	// inherits it with the kind and ref.
+	TriggerID string
 	// RepositoryID (ADR-0060) is the repository this run works on; empty string
 	// is NULL (the run started against no named repository — a project-wide
 	// intent or a resolved inputs.repository).
@@ -337,18 +347,18 @@ func (s *RunStore) createRunTx(ctx context.Context, tx pgx.Tx, in NewRun) (run R
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 				source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 				policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-				trigger_kind, trigger_ref, repository_id, agent_profile_version)
+				trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($18, '')::uuid, $19)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion)); err != nil {
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID)); err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
 

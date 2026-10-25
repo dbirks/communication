@@ -703,8 +703,11 @@ func (s *ScheduleStore) fireSchedule(ctx context.Context, id string, now time.Ti
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
 		// ADR-0056: the fire is a 'schedule' start and names the trigger it
 		// came from; a retried slot replays the same row, keeping this trigger.
+		// ADR-0062: TriggerID is the schedules row itself — the author whose
+		// agent turns this run submits is schedules.created_by, read from it.
 		TriggerKind:  "schedule",
 		TriggerRef:   sc.ID,
+		TriggerID:    sc.ID,
 		RepositoryID: repositoryID,
 		Inputs:       inputs,
 		Key:          key,

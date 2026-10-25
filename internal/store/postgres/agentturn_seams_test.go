@@ -146,14 +146,20 @@ func TestAttemptSessionConversationStamp(t *testing.T) {
 	// The turn: leased on the ATTEMPT's triple, linked by node_attempt_id, and
 	// holding the resolved prompt — never queued, so M2's human-turn claim
 	// scan (status='queued') can never reach it (contract § 4 step 2).
-	var status, tWorker string
+	var status, tWorker, via string
 	var token int64
 	var prompt, attemptLink string
 	if err := f.pool.QueryRow(ctx, `
-		SELECT status, worker_id::text, fencing_token, prompt, node_attempt_id::text
+		SELECT status, worker_id::text, fencing_token, prompt, node_attempt_id::text, submitted_via
 		FROM conversation_turns WHERE id = $1::uuid`, conv.TurnID).
-		Scan(&status, &tWorker, &token, &prompt, &attemptLink); err != nil {
+		Scan(&status, &tWorker, &token, &prompt, &attemptLink, &via); err != nil {
 		t.Fatalf("read stamped turn: %v", err)
+	}
+	// ADR-0062: this run was started by a human (f.m4QueuedRun stamps
+	// triggered_by), so its attempt turn says so — submitted_via is what
+	// stops a transcript from rendering an automation's author as a typer.
+	if via != "human" {
+		t.Errorf("turn submitted_via = %q, want human for a manually started run", via)
 	}
 	if status != "leased" || tWorker != workerID || token != c.FencingToken || attemptLink != c.AttemptID {
 		t.Fatalf("turn = (%s, owner %s, token %d, attempt %s), want leased on the attempt triple (%s/%d/%s)",

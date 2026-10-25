@@ -367,18 +367,18 @@ func (a APIRunStore) createRunPinned(ctx context.Context, in NewRun) (Run, bool,
 			(organization_id, project_id, pipeline_id, pipeline_revision_id, assignment_id,
 			 source_conversation_id, revision_digest, plan_digest, plan_snapshot,
 			 policies_snapshot, repo_snapshot, depth, parent_run_id, triggered_by, priority,
-			 trigger_kind, trigger_ref, repository_id, agent_profile_version)
+			 trigger_kind, trigger_ref, trigger_id, repository_id, agent_profile_version)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NULLIF($5, '')::uuid,
 		        NULLIF($6, '')::uuid, $7, $8, $9::jsonb, $10::jsonb,
 		        COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
 		        $12, NULLIF($13, '')::uuid, NULLIF($14, '')::uuid, $15,
-		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($18, '')::uuid, $19)
+		        COALESCE(NULLIF($16, ''), 'manual'), NULLIF($17, '')::text, NULLIF($20, '')::uuid, NULLIF($18, '')::uuid, $19)
 		RETURNING `+runColumns,
 		in.OrganizationID, in.ProjectID, in.PipelineID, in.PipelineRevisionID, in.AssignmentID,
 		in.SourceConversationID, in.RevisionDigest, in.PlanDigest,
 		string(orEmptyJSON(in.PlanSnapshot)), string(orEmptyJSON(in.PoliciesSnapshot)),
 		string(in.RepoSnapshot),
-		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion))
+		in.Depth, in.ParentRunID, in.TriggeredBy, in.Priority, in.TriggerKind, in.TriggerRef, in.RepositoryID, agentProfileVersion, in.TriggerID))
 	if err != nil {
 		return Run{}, false, fmt.Errorf("postgres: insert run for project %s: %w", in.ProjectID, err)
 	}
@@ -1320,9 +1320,12 @@ func (ch *M4Children) CreateChild(ctx context.Context, req runtime.ChildRequest)
 		ParentRunID:        parent.ID,
 		// ADR-0056: a child run inherits its parent's trigger — a schedule
 		// fire's children and a thread handoff's children both carry the
-		// fact that started them.
+		// fact that started them. ADR-0062: it inherits trigger_id with them,
+		// so the unattended turn's author stays derivable from the child's own
+		// row (and the turn-time resolver walks the parent chain anyway).
 		TriggerKind: parent.TriggerKind,
 		TriggerRef:  parent.TriggerRef,
+		TriggerID:   parent.TriggerID,
 		Inputs:      inputs,
 		Event: &RunEvent{
 			Type: events.TypeRunCreated, ActorKind: kind, ActorID: actor,

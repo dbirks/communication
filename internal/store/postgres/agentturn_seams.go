@@ -70,10 +70,12 @@ func (s *AttemptSessions) turns() *TurnStore {
 // the claim could enqueue turns the fence never approved" actually guards.
 //
 // ok=false is the § 4 step 6 wiring gap stated as one — a claim whose Config
-// carries no prompt/profile, or a run with no triggering user:
-// conversation_turns.submitted_by is NOT NULL REFERENCES users, so a
-// system-started or child run (runs.triggered_by NULL) has no honest submitter
-// to name, and this seam refuses rather than forging one.
+// carries no prompt/profile. When a run itself cannot name an honest
+// submitter, this seam ERRORS (a fail-closed node failure with a detail,
+// not a silent wiring gap): ADR-0062 resolved the "no triggering user" case
+// — an unattended run's agent turns are submitted on behalf of the human who
+// authorised the automation (attemptSubmitter), and when even that walk
+// finds no provable user the node fails rather than forge one.
 func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptClaim) (worker.AttemptConversation, bool, error) {
 	pool, err := s.pool()
 	if err != nil {
@@ -118,15 +120,20 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 		}
 
 		var projectID, orgID string
-		var triggeredBy *string
 		err := tx.QueryRow(ctx, `
-			SELECT project_id::text, organization_id::text, triggered_by::text
-			FROM runs WHERE id = $1::uuid`, st.RunID).Scan(&projectID, &orgID, &triggeredBy)
+			SELECT project_id::text, organization_id::text
+			FROM runs WHERE id = $1::uuid`, st.RunID).Scan(&projectID, &orgID)
 		if err != nil {
 			return fmt.Errorf("postgres: read run %s for the attempt conversation: %w", st.RunID, err)
 		}
-		if derefStr(triggeredBy) == "" {
-			return errAttemptNoSubmitter
+		// ADR-0062: the human this attempt's turn is submitted on behalf of —
+		// the run's own triggering user, else the author of the trigger row
+		// that fired it (schedule / issue trigger), else the same answer read
+		// off an ancestor run (a pipeline.invoke child). No provable human ⇒
+		// no rows, and the error says why.
+		submitter, submittedVia, err := attemptSubmitter(ctx, tx, st.RunID)
+		if err != nil {
+			return err
 		}
 
 		// A retry of the same node execution rides the conversation its
@@ -156,7 +163,7 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 			if err := tx.QueryRow(ctx, `
 				INSERT INTO conversations (project_id, agent_profile_id, title, created_by)
 				VALUES ($1::uuid, $2::uuid, $3, $4::uuid) RETURNING id::text`,
-				projectID, profileID, attemptConversationTitle(st), derefStr(triggeredBy)).Scan(&conversationID); err != nil {
+				projectID, profileID, attemptConversationTitle(st), submitter).Scan(&conversationID); err != nil {
 				return fmt.Errorf("postgres: create attempt conversation for %s: %w", st.AttemptID, err)
 			}
 		}
@@ -218,13 +225,13 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 		var turnID string
 		stampErr := tx.QueryRow(ctx, `
 			INSERT INTO conversation_turns
-				(conversation_id, prompt, submitted_by, status, worker_id,
+				(conversation_id, prompt, submitted_by, submitted_via, status, worker_id,
 				 fencing_token, lease_expires_at, started_at, node_attempt_id)
-			VALUES ($1::uuid, $2, $3::uuid, 'leased', $4::uuid, $5,
+			VALUES ($1::uuid, $2, $3::uuid, $8, 'leased', $4::uuid, $5,
 			        now() + make_interval(secs => $6::double precision), NULL, $7::uuid)
 			RETURNING id::text`,
-			convID, spec.prompt, derefStr(triggeredBy), st.WorkerID, st.FencingToken,
-			s.Runs.leaseTTL().Seconds(), st.AttemptID).Scan(&turnID)
+			convID, spec.prompt, submitter, st.WorkerID, st.FencingToken,
+			s.Runs.leaseTTL().Seconds(), st.AttemptID, submittedVia).Scan(&turnID)
 		if stampErr != nil {
 			if idnUniqueViolation(stampErr) {
 				return fmt.Errorf("postgres: conversation %s still carries a non-terminal turn: its owner owes conversation.turn.<terminal> before this retry enqueues its own (one-active-turn index, ADR-0016 § 5; the holder is the human's own prompt when a return-control landed inside it): %w", convID, worker.ErrAttemptConversationBusy)
@@ -245,10 +252,124 @@ func (s *AttemptSessions) ConversationFor(ctx context.Context, c worker.AttemptC
 	return out, out.ConversationID != "" && out.TurnID != "", nil
 }
 
-// errAttemptNoSubmitter is the honest wiring gap: the NOT NULL, user-FK'd
-// submitted_by has no value to carry for an unparented run start. It is
-// reported as ok=false, not papered over with a forged submitter.
-var errAttemptNoSubmitter = errors.New("postgres: run has no triggering user (runs.triggered_by is NULL for a child or system start) and conversation_turns.submitted_by is NOT NULL REFERENCES users: an unattended agent turn cannot honestly name its submitter (00005 would need a nullable-with-kind column or a per-org system principal)")
+// The conversation_turns.submitted_via vocabulary (migration 00017,
+// ADR-0062): WHAT put the prompt in the queue, read next to submitted_by's
+// "on whose behalf". A transcript that renders only submitted_by is honest
+// exactly when this says 'human'.
+const (
+	turnSubmittedViaHuman        = "human"
+	turnSubmittedViaSchedule     = "schedule"
+	turnSubmittedViaIssueTrigger = "issue_trigger"
+	turnSubmittedViaChildRun     = "child_run"
+)
+
+// errAttemptNoSubmitter is the honest fail-closed refusal: no provable human
+// stands behind this run's agent turn. It names the constraint it obeys and
+// every detail wraps the reason into it, so the attempt's failure detail
+// always says both.
+var errAttemptNoSubmitter = errors.New("postgres: an unattended agent turn has no honest submitter: conversation_turns.submitted_by is NOT NULL REFERENCES users and this seam will not forge a user (ADR-0062)")
+
+// attemptQuerier is the read face the submitter walk needs — the fenced
+// transaction answers it, and a pool would too, but the walk runs inside the
+// stamp transaction so the attribution and the rows it names commit together.
+type attemptQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// attemptSubmitterMaxHops bounds the ancestor walk: 00005's depth CHECK caps
+// a run chain at three rows (0 → 1 → 2), so two hops past the first row is
+// already past the legal chain; the bound is a loop guard, not a policy.
+const attemptSubmitterMaxHops = 3
+
+// attemptSubmitter names the human the run's agent turns are submitted on
+// behalf of, and the submitted_via kind that says so (ADR-0062):
+//
+//   - the run's own triggered_by (a manual or thread start — 'human');
+//   - else the author of the trigger row the run names — schedules.created_by
+//     for a 'schedule' fire, issue_triggers.created_by for an 'issue' fire
+//     (the human who WROTE the automation authorised it — 'schedule' /
+//     'issue_trigger');
+//   - else the same walk one run up, following parent_run_id to an ancestor
+//     whose triggered_by or trigger row answers — 'child_run' when a person's
+//     triggered_by was reached through the chain, the ancestor's automation
+//     kind when its trigger row was.
+//
+// A deleted trigger row or a dangling author is a CLOSED failure, never a
+// guessed user: the run keeps failing until an operator decides, because the
+// alternative is attributing an unattended agent's prompts to somebody the
+// audit trail cannot prove.
+func attemptSubmitter(ctx context.Context, q attemptQuerier, runID string) (string, string, error) {
+	cur := runID
+	for hop := 0; hop <= attemptSubmitterMaxHops; hop++ {
+		var triggeredBy, kind, triggerID, parentID string
+		err := q.QueryRow(ctx, `
+			SELECT COALESCE(triggered_by::text, ''), trigger_kind,
+			       COALESCE(trigger_id::text, ''), COALESCE(parent_run_id::text, '')
+			FROM runs WHERE id = $1::uuid`, cur).
+			Scan(&triggeredBy, &kind, &triggerID, &parentID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Only reachable mid-walk: a run row deleted while a child of
+			// theirs was being stamped. The chain's authority is gone.
+			return "", "", fmt.Errorf("%w: run %s of the attribution chain is gone", errAttemptNoSubmitter, cur)
+		}
+		if err != nil {
+			return "", "", fmt.Errorf("postgres: read submitter columns of run %s: %w", cur, err)
+		}
+		if triggeredBy != "" {
+			if !attemptUserExists(ctx, q, triggeredBy) {
+				return "", "", fmt.Errorf("%w: run %s names triggering user %s, which is not a users row", errAttemptNoSubmitter, cur, triggeredBy)
+			}
+			if hop == 0 {
+				return triggeredBy, turnSubmittedViaHuman, nil
+			}
+			return triggeredBy, turnSubmittedViaChildRun, nil
+		}
+		if triggerID != "" {
+			var author string
+			var via string
+			var rowErr error
+			switch kind {
+			case "schedule":
+				rowErr = q.QueryRow(ctx, `
+					SELECT created_by::text FROM schedules WHERE id = $1::uuid`, triggerID).Scan(&author)
+				via = turnSubmittedViaSchedule
+			case "issue":
+				rowErr = q.QueryRow(ctx, `
+					SELECT created_by::text FROM issue_triggers WHERE id = $1::uuid`, triggerID).Scan(&author)
+				via = turnSubmittedViaIssueTrigger
+			default:
+				// 00017's runs_trigger_id_names_a_trigger makes this row
+				// unrepresentable; if the CHECK is ever dropped, refusing is
+				// still the honest answer.
+				return "", "", fmt.Errorf("%w: run %s carries trigger_id %s under kind %q, which cannot name an author", errAttemptNoSubmitter, cur, triggerID, kind)
+			}
+			if errors.Is(rowErr, pgx.ErrNoRows) {
+				return "", "", fmt.Errorf("%w: run %s was fired by %s %s, whose row is gone — the human who authorised the automation can no longer be named", errAttemptNoSubmitter, cur, kind, triggerID)
+			}
+			if rowErr != nil {
+				return "", "", fmt.Errorf("postgres: read the author of %s %s: %w", kind, triggerID, rowErr)
+			}
+			if !attemptUserExists(ctx, q, author) {
+				return "", "", fmt.Errorf("%w: %s %s names author %s, which is not a users row", errAttemptNoSubmitter, kind, triggerID, author)
+			}
+			return author, via, nil
+		}
+		if parentID == "" {
+			break
+		}
+		cur = parentID
+	}
+	return "", "", fmt.Errorf("%w: run %s and its ancestor runs name no triggering user and no live trigger author", errAttemptNoSubmitter, runID)
+}
+
+// attemptUserExists re-proves the FK the columns already assert: users rows
+// are not deleted under referencers today, and if that ever changes the
+// stamp must still refuse to name a submitter that cannot be displayed.
+func attemptUserExists(ctx context.Context, q attemptQuerier, userID string) bool {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1::uuid)`, userID).Scan(&ok)
+	return err == nil && ok
+}
 
 // attemptTurnSpec pulls the two hydration-owned members the conversation
 // creation needs from the claim config: the resolved prompt text and the

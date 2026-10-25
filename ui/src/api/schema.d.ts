@@ -3089,10 +3089,15 @@ export interface components {
       prompt?: string;
       /**
        * Format: uuid
-       * @description User who submitted the prompt (always a human in M2).
+       * @description User who submitted the prompt. For `submitted_via: human` this is the person who typed it or started the run it belongs to; for an automation turn (`schedule`, `issue_trigger`, `child_run`) it is the human who authorised the automation — on whose behalf the turn runs — never a person who typed this prompt (ADR-0062).
        */
       submitted_by: string;
       submitted_by_display_name?: string | null;
+      /**
+       * @description What actually submitted the turn (ADR-0062). Control planes always send it (the column is NOT NULL); it is optional on the wire only so the addition stays non-breaking for pre-ADR-0062 producers. `human` — typed or run-started through the API; `schedule` / `issue_trigger` — the automation fired and `submitted_by` is that trigger's author; `child_run` — a `pipeline.invoke` child inherited the submitter from an ancestor run's triggering user. A transcript renders the submitter as the author only for `human`; for the others it says who authorised it, not who typed it.
+       * @enum {string}
+       */
+      submitted_via?: "human" | "schedule" | "issue_trigger" | "child_run";
       /**
        * Format: uuid
        * @description Worker that claimed the turn; null while `queued`.

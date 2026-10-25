@@ -687,10 +687,13 @@ func (s *IssueTriggerStore) fireIssue(ctx context.Context, tx pgx.Tx, it IssueTr
 		TriggeredBy:        "", // NULL: a system start, exactly as 00005 models it
 		TriggerKind:        "issue",
 		TriggerRef:         repo.String() + "#" + fmt.Sprint(issue.Number),
-		RepositoryID:       it.RepositoryID,
-		Inputs:             inputs,
-		Key:                key,
-		RequestSHA:         scheduleRequestSHA(key, pin.revisionID, rendered),
+		// ADR-0062: the issue_triggers row this fire came from — the author
+		// whose name its agent turns carry is this row's created_by.
+		TriggerID:    it.ID,
+		RepositoryID: it.RepositoryID,
+		Inputs:       inputs,
+		Key:          key,
+		RequestSHA:   scheduleRequestSHA(key, pin.revisionID, rendered),
 		Event: &RunEvent{
 			Type: events.TypeRunCreated, ActorKind: events.ActorKindSystem, ActorID: "system",
 			Payload: events.RunCreatedPayload{

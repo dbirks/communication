@@ -178,18 +178,24 @@ type AgentSessionBindingView struct {
 // participate in lease arbitration (ADR-0016 §8), so a token a client could use
 // to pretend it owns work never leaves the server.
 type ConversationTurnView struct {
-	ID                     string     `json:"id"`
-	ConversationID         string     `json:"conversation_id"`
-	Status                 string     `json:"status"`
-	Prompt                 string     `json:"prompt,omitempty"`
-	SubmittedBy            string     `json:"submitted_by"`
-	SubmittedByDisplayName *string    `json:"submitted_by_display_name"`
-	WorkerID               *string    `json:"worker_id"`
-	CancelRequestedAt      *time.Time `json:"cancel_requested_at"`
-	StopReason             *string    `json:"stop_reason"`
-	CreatedAt              time.Time  `json:"created_at"`
-	StartedAt              *time.Time `json:"started_at"`
-	FinishedAt             *time.Time `json:"finished_at"`
+	ID                     string  `json:"id"`
+	ConversationID         string  `json:"conversation_id"`
+	Status                 string  `json:"status"`
+	Prompt                 string  `json:"prompt,omitempty"`
+	SubmittedBy            string  `json:"submitted_by"`
+	SubmittedByDisplayName *string `json:"submitted_by_display_name"`
+	// SubmittedVia is the turn's origin (ADR-0062): human | schedule |
+	// issue_trigger | child_run. An automation turn's submitted_by names the
+	// human who authorised the automation, NOT a person who typed this
+	// prompt — a transcript renders the author only alongside this kind, or
+	// it pretends a human submitted an unattended run's prompt.
+	SubmittedVia      string     `json:"submitted_via"`
+	WorkerID          *string    `json:"worker_id"`
+	CancelRequestedAt *time.Time `json:"cancel_requested_at"`
+	StopReason        *string    `json:"stop_reason"`
+	CreatedAt         time.Time  `json:"created_at"`
+	StartedAt         *time.Time `json:"started_at"`
+	FinishedAt        *time.Time `json:"finished_at"`
 }
 
 // PermissionOptionView is the PermissionOption schema — one choice the agent
