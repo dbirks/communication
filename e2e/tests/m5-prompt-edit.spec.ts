@@ -195,13 +195,25 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
     await test.step("the textarea rewrite turns the plan node into an agent.acp step", async () => {
       const input = admin.getByTestId("studio-yaml");
       const doc = await input.inputValue();
-      const start = doc.indexOf("\n  - id: plan\n");
-      const end = doc.indexOf("\n  - id: approve\n");
+      // The New workflow dialog ships the template's own bytes: the node
+      // blocks carry the template's indentation, not a fixed two spaces.
+      // Locate the blocks by regex and rebuild the replacement at the same
+      // indent — one node block out, its `agent.acp` replacement in, the
+      // rest of the document byte-identical: the textarea is the editor's
+      // own surface.
+      const planMatch = /\n([ \t]*)- id: plan\n/.exec(doc);
+      const approveMatch = /\n[ \t]*- id: approve\n/.exec(doc);
+      expect(planMatch, "the sample carries a plan node block").not.toBeNull();
+      expect(approveMatch, "the sample carries an approve node block").not.toBeNull();
+      const start = doc.indexOf(planMatch![0]);
+      const end = doc.indexOf(approveMatch![0]);
       expect(start).toBeGreaterThan(0);
       expect(end).toBeGreaterThan(start + 1);
-      // One node block out, its `agent.acp` replacement in, the rest of the
-      // document byte-identical: the textarea is the editor's own surface.
-      await input.fill(doc.slice(0, start + 1) + AGENT_PLAN_NODE + "\n" + doc.slice(end + 1));
+      const pad = " ".repeat(Math.max(0, planMatch![1].length - 2));
+      const agentBlock = AGENT_PLAN_NODE.split("\n")
+        .map((line) => pad + line)
+        .join("\n");
+      await input.fill(doc.slice(0, start + 1) + agentBlock + "\n" + doc.slice(end + 1));
       await expect(input).toHaveValue(/kind: agent\.acp/);
       await expect(input).not.toHaveValue(/kind: model\.chat/);
       await expect(input).toHaveValue(literal(PLACEHOLDER_PROMPT));
@@ -258,7 +270,8 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
-      await gotoApp(admin, pipelinePath);
+      // Design 1e: the revision rows list on the workflow page's History tab.
+      await gotoApp(admin, `${pipelinePath}/history`);
       await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
       await shot(admin, "w4-04-published-r1");
     });
@@ -295,7 +308,10 @@ test.describe("W4 — edit an agent.acp step's prompt through the step form, pub
       expect(text).toContain("id: plan");
     });
     await test.step("the UI's YAML view shows the same served bytes", async () => {
-      await gotoApp(admin, pipelinePath);
+      // The History tab's r1 row deep-links into the YAML tab, which renders
+      // the served revision document (design 1e/2d).
+      await gotoApp(admin, `${pipelinePath}/history`);
+      await expect(admin.getByTestId("revision-row-1")).toBeVisible({ timeout: 30_000 });
       await admin.getByTestId("revision-row-1").click();
       const yaml = admin.getByTestId("yaml-view");
       await expect(yaml).toBeVisible({ timeout: 30_000 });

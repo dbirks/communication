@@ -69,6 +69,20 @@ async function clickVisiblePart(page: Page, testId: string): Promise<void> {
   });
 }
 
+/**
+ * Design 1e moved the clone control: the workflow page opens on the read-
+ * only Overview graph, and `New draft` — still `pipeline-new-draft`, still
+ * cloning the NEWEST published revision — lives on the page's History tab.
+ * Open that tab and take the draft, landing on the Studio route.
+ */
+async function openNewDraft(page: Page, pipelineId: string): Promise<void> {
+  await expect(page.getByTestId("pipeline-page")).toBeVisible();
+  await page.getByTestId("workflow-tab-history").click();
+  await expect(page.getByTestId("workflow-history")).toBeVisible();
+  await clickVisiblePart(page, "pipeline-new-draft");
+  await expect(page).toHaveURL(new RegExp(`/workflows/${pipelineId}/drafts/`));
+}
+
 /** Resolve a pipeline in the org library by slug (no list UI: `/workflows` is the create form). */
 async function pipelineInfo(
   page: Page,
@@ -178,8 +192,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
         (line) => `${line} (re-stored ${STAMP})`,
       );
       expect(seededDoc, "the stamp must land on the description line").not.toBe(seededDocRaw);
-      await clickVisiblePart(page, "pipeline-new-draft");
-      await expect(page).toHaveURL(new RegExp(`/workflows/${pipeline.id}/drafts/`));
+      await openNewDraft(page, pipeline.id);
       await expect(page.getByTestId("studio-canvas")).toBeVisible();
       await page.getByTestId("studio-view-yaml").click();
       await page.getByTestId("studio-yaml").fill(seededDoc);
@@ -200,9 +213,8 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       await expect(page.getByTestId("pipeline-page")).toBeVisible();
     }
 
-    // New draft: the pipeline page's clone control, built from the newest revision.
-    await clickVisiblePart(page, "pipeline-new-draft");
-    await expect(page).toHaveURL(new RegExp(`/workflows/${pipeline.id}/drafts/`));
+    // New draft: the History tab's clone control, built from the newest revision.
+    await openNewDraft(page, pipeline.id);
     state.draftUrl = new URL(page.url()).href;
     state.draftId = state.draftUrl.split("/").pop() as string;
 
@@ -505,26 +517,26 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       ),
     );
 
-    // Reopen the published revision from the pipeline page.
+    // Reopen the published revision from the workflow page (design 1e/2d):
+    // the Overview tab draws the newest revision's read-only graph (scope
+    // boxes included), and the History tab's revision rows deep-link into
+    // the YAML tab, which renders the whole regenerated document.
     await page.goto(`/workflows/${state.pipelineId}`);
     await expect(page.getByTestId("pipeline-page")).toBeVisible();
+    await expect(page.getByTestId("workflow-graph")).toBeVisible();
+    await expect(page.getByTestId(`workflow-graph-scope-${state.untilId}`)).toBeVisible();
+    await page.getByTestId("workflow-tab-history").click();
+    await expect(page.getByTestId("workflow-history")).toBeVisible();
     await clickVisiblePart(page, `revision-row-${state.revisionNumber}`);
-    await expect(page.getByTestId("definition-graph")).toBeVisible();
-    await expect(page.getByTestId(`definition-graph-scope-${state.untilId}`)).toBeVisible();
+    await expect(page.getByTestId("workflow-yaml-tab")).toBeVisible();
     const revisionYaml = page.getByTestId("yaml-view");
-    // The read-only YAML view renders in 220-line windows (a "show more" button
-    // extends the window) — the until scope sits past the first window, so
-    // expand until the whole document is on the page.
-    const more = page.getByTestId("yaml-view-more");
-    for (let guard = 0; guard < 10 && (await more.count()) > 0; guard++) {
-      await more.click();
-    }
+    await expect(revisionYaml).toBeVisible();
     await expect(revisionYaml).toContainText("kind: until");
     await expect(revisionYaml).toContainText("maxIterations: 2");
     await evidence(
       page,
       "studio-a2-reopened",
-      `reopened r${state.revisionNumber} from the pipeline page: the definition graph shows the new ${state.untilId} Repeat until scope and the regenerated YAML shows kind: until with maxIterations: 2`,
+      `reopened r${state.revisionNumber} from the workflow page: the Overview graph shows the new ${state.untilId} Repeat until scope and the YAML tab shows the regenerated document with kind: until and maxIterations: 2`,
     );
   });
 
@@ -535,8 +547,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // of the newest revision. The plan → approve and verdict → publish edges
     // it exercises exist in that clone too.
     await gotoApp(page, `/workflows/${state.pipelineId}`);
-    await clickVisiblePart(page, "pipeline-new-draft");
-    await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipelineId}/drafts/`));
+    await openNewDraft(page, state.pipelineId);
     state.draftA3 = new URL(page.url()).href;
     await gotoApp(page, state.draftA3);
     await backToCanvas(page);
@@ -668,16 +679,21 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     // A fresh draft: proposals are made against the saved version, and a dirty
     // draft blocks the assistant box entirely.
     await gotoApp(page, `/workflows/${state.pipelineId}`);
-    await clickVisiblePart(page, "pipeline-new-draft");
-    await expect(page).toHaveURL(new RegExp(`/workflows/${state.pipelineId}/drafts/`));
+    await openNewDraft(page, state.pipelineId);
     const draft2Id = new URL(page.url()).pathname.split("/").pop() as string;
 
     const versionBefore = await draftVersion(page, draft2Id);
     const pipelineBefore = await pipelineInfo(page, PIPELINE_SLUG);
 
-    await page
-      .getByTestId("assistant-proposal-input")
-      .fill("Insert a code reviewer agent step after the tests");
+    // Design 1g: the Studio's assistant row is a pinned footer that starts
+    // collapsed behind its "Ask to change this draft… ⌘K" strip — wait for
+    // the dock to mount, open it, then ask.
+    const footer = page.getByTestId("assistant-proposal-footer");
+    const assistantInput = page.getByTestId("assistant-proposal-input");
+    await expect(footer.or(assistantInput).first()).toBeVisible({ timeout: 30_000 });
+    if (await footer.isVisible().catch(() => false)) await footer.click();
+    await expect(assistantInput).toBeVisible({ timeout: 30_000 });
+    await assistantInput.fill("Insert a code reviewer agent step after the tests");
     await page.getByTestId("assistant-proposal-submit").click();
 
     const caption = page.getByTestId("assistant-proposal-caption");

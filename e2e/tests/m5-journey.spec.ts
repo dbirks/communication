@@ -490,6 +490,10 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       // The canvas steps are addressed by node id: the survey node's timeout.
       await admin.getByTestId("canvas-step-survey").click();
       await expect(admin.getByTestId("insp-node")).toBeVisible();
+      // Design 1g pass 2 keeps the curated task form to executable/args: the
+      // node's timeout lives inside the collapsed "Retries, timeout and
+      // outputs" disclosure — open it before touching the field.
+      await admin.getByTestId("insp-advanced-disclosure").locator("summary").click();
       const timeout = admin.getByTestId("insp-timeoutSeconds");
       await expect(timeout).toHaveValue("300");
       await timeout.fill("420");
@@ -515,7 +519,9 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
-      await gotoApp(admin, pipelinePath);
+      // Design 1e: the revision rows left the workflow page's front face —
+      // they list on its History tab.
+      await gotoApp(admin, `${pipelinePath}/history`);
       await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
       await shot(admin, "m5-02-published-r1");
     });
@@ -551,17 +557,39 @@ test.describe("M5 clone, customize, stall, take control, retry, evidence", () =>
       }
       if (arm === "maintainer") {
         // The happy path: the viewer maintains a project, so the library can
-        // pin the revision and hand straight over to a run.
+        // pin the revision and hand straight over. ADR-0060 moved the pin
+        // into the `Use in a repo…` dialog: the pin now NAMES the repository
+        // it serves — pick `whole project (every repo in it)` to keep the
+        // whole-project semantics the old dialog carried implicitly.
         await assign.click();
+        await expect(admin.getByTestId("use-in-repo-dialog")).toBeVisible();
         await selectByOptionText(admin, "assign-project-select", ALICE.projectName);
+        await selectByOptionText(admin, "assign-repo-select", "whole project");
+        const created = admin.waitForResponse(
+          (response) =>
+            response.url().includes("/api/v1/projects/") &&
+            response.url().includes("/assignments") &&
+            response.request().method() === "POST",
+          { timeout: 30_000 },
+        );
         await admin.getByTestId("assign-confirm").click();
-        await expect(admin.getByTestId("assign-success-panel")).toContainText("Assigned to", {
+        const createdBody = (await (await created).json()) as { id?: string };
+        await expect(admin.getByTestId("assign-success-panel")).toContainText("Used in", {
           timeout: 30_000,
         });
-        const runsHref = await admin.getByTestId("assign-start-run-link").getAttribute("href");
-        projectPath = (runsHref ?? "").replace(/\/runs$/, "");
+        // The success card hands over to the workflow's Used-in tab, where
+        // the fresh pin lists as its own row.
+        const assignmentId = createdBody.id ?? "";
+        expect(assignmentId, "the POST answered the assignment").toMatch(/^[0-9a-f-]{36}$/);
         await admin.getByTestId("assign-start-run-link").click();
-        await admin.waitForURL(/\/p\/[0-9a-f-]{36}\/runs$/);
+        await admin.waitForURL(/\/workflows\/[0-9a-f-]{36}\/used-in$/);
+        await expect(admin.getByTestId(`used-in-row-${assignmentId}`)).toBeVisible({
+          timeout: 30_000,
+        });
+        // The journey works on the project side: alice's project now pins r1
+        // and its runs list is the start point for step 4.
+        projectPath = await openProjectBySlug(alice, ALICE.projectSlug);
+        await gotoApp(alice, `${projectPath}/runs`);
         await shot(admin, "m5-03-assigned");
       } else {
         // The lab's arm: `admin` is the org admin with no project membership,

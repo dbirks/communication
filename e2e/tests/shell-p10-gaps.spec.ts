@@ -8,7 +8,7 @@
 // evidence() per step; zero page errors. Scratch schedules / threads / steps
 // are created through the API where the journey needs them and are left clean.
 
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 import { BASE_URL } from "./env.js";
 import { openProjectBySlug, signIn } from "./helpers.js";
@@ -20,8 +20,8 @@ import {
   apiCsrf,
   apiPipelines,
   apiProfileForAgentRun,
-  apiProjects,
   apiProfileId,
+  apiScratchProject,
   checkShellScreen,
   evidence,
   noSidewaysScroll,
@@ -62,6 +62,50 @@ async function apiPost(
   return (await res.json().catch(() => ({}))) as Record<string, unknown>;
 }
 
+/**
+ * ADR-0060 moved trigger authoring onto the repository page: a workflow is
+ * a library template, a repository *uses* it through an assignment, and the
+ * triggers belong to that use (design 2e/2c). The panel keys its rows by the
+ * assignment id stripped like the UI's own `testidOf` — so the journey
+ * resolves the workflow's row from the API instead of guessing position.
+ */
+async function openRepoWorkflowRow(
+  page: Page,
+  slug: string,
+): Promise<{ projectId: string; repoName: string; key: string; pipelineId: string }> {
+  const projectPath = await openProjectBySlug(page, "m4-exit");
+  const projectId = projectPath.split("/").pop() ?? "";
+  expect(projectId, "the opened project answers with its uuid").toMatch(/^[0-9a-f-]{36}$/);
+  const pipelines = await apiPipelines(page.request);
+  const pipeline = pipelines.find((row) => row.slug === slug);
+  if (!pipeline) throw new Error(`the seeded ${slug} pipeline must be in the library`);
+  const reposRes = await page.request.get(`${BASE_URL}/api/v1/projects/${projectId}/repos`);
+  expect(reposRes.status(), `GET repos -> ${reposRes.status()}`).toBe(200);
+  const repos = (await reposRes.json()) as { items?: { name: string }[] };
+  const repoName = repos.items?.[0]?.name ?? "";
+  expect(repoName, "the lab project holds a repository").toBeTruthy();
+  const assignsRes = await page.request.get(`${BASE_URL}/api/v1/projects/${projectId}/assignments`);
+  expect(assignsRes.status(), `GET assignments -> ${assignsRes.status()}`).toBe(200);
+  const assigns = (await assignsRes.json()) as {
+    assignments?: { id: string; pipeline_id: string; repository_id?: string | null }[];
+  };
+  // The row the panel lists: this pipeline's use that covers the repository
+  // (the repo's own pin, or a whole-project one).
+  const assignment = (assigns.assignments ?? []).find(
+    (row) => row.pipeline_id === pipeline.id && !row.repository_id,
+  );
+  expect(assignment, `${slug} is assigned to the lab project (whole-project pin)`).toBeTruthy();
+  const key = (assignment?.id ?? "").replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+  await page.goto(`${BASE_URL}${projectPath}/${repoName}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("repo-workflows")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId(`repo-workflow-row-${key}`)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId(`repo-workflow-name-${key}`)).toContainText(slug, {
+    timeout: 30_000,
+  });
+  return { projectId, repoName, key, pipelineId: pipeline.id };
+}
+
 test.describe("shell p10 gaps — workflow triggers, repository page, usage, thread artifacts", () => {
   test.skip(!SHELL_ENABLED, SHELL_GATE);
   test.use({ viewport: { width: 1500, height: 950 } });
@@ -73,34 +117,38 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     const request = page.request;
-    const pipelines = await apiPipelines(request);
-    const pipeline = pipelines.find((row) => row.slug === "feature-development");
-    if (!pipeline)
-      throw new Error("the seeded feature-development pipeline must be in the library");
+    // ADR-0060/2e: triggers are authored where the workflow is USED — the
+    // repository page's WORKFLOWS ON THIS REPO panel — never on the library
+    // page. Open that row and expand its STARTS WHEN box.
+    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
+    await page.getByTestId(`repo-workflow-toggle-${key}`).click();
+    await expect(page.getByTestId(`repo-workflow-starts-${key}`)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId(`repo-workflow-add-box-${key}`)).toBeVisible({ timeout: 30_000 });
 
-    await page.goto(BASE_URL + `/workflows/${pipeline.id}`, { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("workflow-triggers")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("trigger-add-schedule")).toBeVisible({ timeout: 30_000 });
-
-    await page.getByTestId("trigger-add-schedule").click();
-    const dialog = page.getByTestId("trigger-add-schedule-dialog");
+    await page.getByTestId(`repo-workflow-add-box-${key}`).click();
+    const dialog = page.getByTestId("trigger-dialog");
     await expect(dialog).toBeVisible({ timeout: 30_000 });
+    // The dialog is opened FROM a repository row: no repo select — the
+    // repository is fixed by the page and echoed back in THE RUN GETS.
+    await expect(page.getByTestId("trigger-dialog-context")).toContainText(repoName, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId("trigger-dialog-run-gets-repository")).toContainText(repoName, {
+      timeout: 30_000,
+    });
+    await page.getByTestId("trigger-dialog-mode-schedule").click();
     const goal = page.getByTestId("new-run-input-goal");
     await expect(goal).toBeVisible({ timeout: 30_000 });
     await goal.fill(`P10 weekdays schedule ${STAMP}`);
-    const repoSelect = page.getByTestId("new-run-input-repository");
-    await expect(repoSelect).toBeVisible();
-    const optionValues = await repoSelect
-      .locator("option")
-      .evaluateAll((els: HTMLOptionElement[]) => els.map((e) => e.value));
-    const repoValue = optionValues.find((value) => value && value !== "");
-    expect(repoValue, "the dialog's run-input repository offers a repository").toBeTruthy();
-    await repoSelect.selectOption(repoValue ?? "");
-    const confirm = page.getByTestId("trigger-add-confirm");
+    // "weekdays 09:00 UTC" is the cadence, typed in the grammar the server
+    // owns; the dialog reads it back in plain English as the author watches.
+    await page.getByTestId("trigger-dialog-cron").fill("0 9 * * 1-5");
+    await expect(page.getByTestId("trigger-dialog-cron-words")).toContainText(
+      "every weekday at 09:00 UTC",
+      { timeout: 30_000 },
+    );
+    const confirm = page.getByTestId("trigger-dialog-submit");
     await expect(confirm).toBeEnabled({ timeout: 30_000 });
-    await page.getByRole("button", { name: "weekdays 09:00 UTC", exact: true }).click();
-    await expect(page.getByTestId("trigger-add-cron")).toHaveValue("0 9 * * 1-5");
     await confirm.click();
     const post = page.waitForResponse(
       (response) =>
@@ -124,12 +172,13 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const projectId = created.project_id;
     await expect(dialog).toBeHidden({ timeout: 30_000 });
 
-    const row = page.getByTestId(`trigger-row-${scheduleId}`);
+    const rowKey = scheduleId.replace(/[^A-Za-z0-9]/g, "").slice(0, 13);
+    const row = page.getByTestId(`repo-workflow-trigger-${rowKey}`);
     await expect(row).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId(`trigger-cron-${scheduleId}`)).toHaveText("0 9 * * 1-5");
-    await expect(page.getByTestId(`trigger-cron-words-${scheduleId}`)).toContainText(
-      "every weekday at 09:00 UTC",
+    await expect(page.getByTestId(`repo-workflow-trigger-detail-${rowKey}`)).toContainText(
+      "0 9 * * 1-5",
     );
+    await expect(row).toContainText("every weekday at 09:00 UTC");
 
     const schedules = await apiSchedules(request, projectId);
     const createdRow = schedules.find((schedule) => schedule.id === scheduleId);
@@ -140,12 +189,13 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     expect(createdRow?.cron_expr).toBe("0 9 * * 1-5");
     expect(createdRow?.enabled).toBe(true);
 
-    const enabledBox = page.getByTestId(`trigger-enabled-${scheduleId}`);
+    const enabledBox = page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}`);
     await expect(enabledBox).toBeChecked();
     await enabledBox.click();
-    await expect(page.getByTestId(`trigger-state-${scheduleId}`)).toHaveText("paused", {
-      timeout: 30_000,
-    });
+    await expect(page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}-state`)).toHaveText(
+      "paused",
+      { timeout: 30_000 },
+    );
     const pausedRow = (await apiSchedules(request, projectId)).find(
       (schedule) => schedule.id === scheduleId,
     );
@@ -155,14 +205,16 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     await evidence(
       page,
       "shell-p10-gaps-triggers-add",
-      `the ${pipeline.slug} page's Triggers section added a "weekdays 09:00 UTC" schedule: the row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron`,
+      `the repository page's WORKFLOWS ON THIS REPO row for ${repoName} added a "weekdays 09:00 UTC" schedule through the 2c dialog: the trigger row shows the cron "0 9 * * 1-5" and the plain-English reading "every weekday at 09:00 UTC", and GET /api/v1/projects/{id}/schedules echoes the same cron`,
     );
 
     // Clean up: ADR-0032 exposes no DELETE — the off-switch for a scratch
     // schedule is the enabled flag, so the journey disables what it added.
-    const cleanupBox = page.getByTestId(`trigger-enabled-${scheduleId}`);
+    const cleanupBox = page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}`);
     if (await cleanupBox.isChecked().catch(() => false)) await cleanupBox.click();
-    await expect(page.getByTestId(`trigger-state-${scheduleId}`)).toHaveText("paused");
+    await expect(page.getByTestId(`repo-workflow-trigger-enabled-${rowKey}-state`)).toHaveText(
+      "paused",
+    );
     const endRow = (await apiSchedules(request, projectId)).find(
       (schedule) => schedule.id === scheduleId,
     );
@@ -294,7 +346,7 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     if (!conversation) {
       const csrf = await apiCsrf(request);
       const profileId = await apiProfileId(request);
-      const [project] = await apiProjects(request);
+      const project = await apiScratchProject(request);
       if (!project) throw new Error("no project available to seed the one-off thread");
       const conversationId = await apiCreateConversation(
         request,
@@ -340,32 +392,26 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     test.setTimeout(10 * 60_000);
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
-    const request = page.request;
-    const pipelines = await apiPipelines(request);
-    const pipeline = pipelines.find((row) => row.slug === "feature-development");
-    if (!pipeline)
-      throw new Error("the seeded feature-development pipeline must be in the library");
-
-    await page.goto(BASE_URL + `/workflows/${pipeline.id}`, { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("pipeline-page")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("workflow-triggers")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("trigger-add-issue")).toBeVisible({ timeout: 30_000 });
-
-    await page.getByTestId("trigger-add-issue").click();
-    const dialog = page.getByTestId("trigger-add-issue-dialog");
+    // Same move as the schedule arm (ADR-0060/2e): the issue trigger is
+    // added from the repository page's row, where the repository is fixed —
+    // the lab's one repository is a file:// remote, so this is exactly the
+    // surface that must answer the server's not-a-GitHub 422 inline.
+    const { repoName, key } = await openRepoWorkflowRow(page, "feature-development");
+    await page.getByTestId(`repo-workflow-add-${key}`).click();
+    const dialog = page.getByTestId("trigger-dialog");
     await expect(dialog).toBeVisible({ timeout: 30_000 });
-    const repoSelect = page.getByTestId("trigger-add-issue-repository");
-    await expect(repoSelect).toBeVisible({ timeout: 30_000 });
-    const optionValues = await repoSelect
-      .locator("option")
-      .evaluateAll((els: HTMLOptionElement[]) => els.map((e) => e.value));
-    const repoValue = optionValues.find((value) => value && value !== "");
-    expect(repoValue, "the dialog's repository offers a repository").toBeTruthy();
-    await repoSelect.selectOption(repoValue ?? "");
-    const goal = page.getByTestId("trigger-add-issue-input-goal");
+    // A fresh dialog starts on the issue arm, bound to THIS repository.
+    await expect(page.getByTestId("trigger-dialog-mode-issue")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByTestId("trigger-dialog-context")).toContainText(repoName, {
+      timeout: 30_000,
+    });
+    const goal = page.getByTestId("new-run-input-goal");
     await expect(goal).toBeVisible({ timeout: 30_000 });
     await goal.fill(`P10 issue trigger ${STAMP}`);
-    const confirm = page.getByTestId("trigger-add-issue-confirm");
+    const confirm = page.getByTestId("trigger-dialog-submit");
     await expect(confirm).toBeEnabled({ timeout: 30_000 });
     const post = page.waitForResponse(
       (response) =>
@@ -383,14 +429,14 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const problem = (await postResponse.json()) as { detail?: string };
     expect(problem.detail).toContain("not a GitHub repository");
     await expect(dialog).toBeVisible();
-    const alert = page.getByTestId("trigger-add-issue-error");
+    const alert = page.getByTestId("trigger-dialog-error");
     await expect(alert).toContainText("Not A GitHub Repository");
 
     await checkShellScreen(page, "workflow issue triggers", stopWatching);
     await evidence(
       page,
       "shell-p10-gaps-issue-trigger-422",
-      `the issue-trigger dialog POSTed to /api/v1/projects/{id}/issue-triggers against the lab's file:// repository and answered the server's 422 not_a_github_repository inline`,
+      `the repository page's issue-trigger dialog POSTed to /api/v1/projects/{id}/issue-triggers against the lab's file:// repository ${repoName} and answered the server's 422 not_a_github_repository inline, dialog still open`,
     );
   });
 });

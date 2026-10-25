@@ -190,10 +190,12 @@ test.describe("shell p4 — workflows, step picker, registry, edit for all", () 
     });
     await page.getByTestId(`workflow-open-${source!.slug}`).click();
     await page.waitForURL(new RegExp(`/workflows/${source!.id}$`), { timeout: 30_000 });
-    // Pipeline page → start a fresh draft into the Studio. "New draft"
-    // clones the newest published revision — the graph `pipelineHasEdge`
-    // verified above — so the canvas is guaranteed to carry an edge and its
-    // "+" affordance, independent of any stale draft a previous run left.
+    // Workflow page → start a fresh draft into the Studio. Design 1e moved
+    // the rows to the page's History tab; `New draft` there still clones the
+    // newest published revision — the graph `pipelineHasEdge` verified above
+    // — so the canvas is guaranteed to carry an edge and its "+"
+    // affordance, independent of any stale draft a previous run left.
+    await page.getByTestId("workflow-tab-history").click();
     await expect(page.getByTestId("pipeline-new-draft")).toBeVisible({
       timeout: 30_000,
     });

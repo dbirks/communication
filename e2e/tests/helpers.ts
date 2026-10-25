@@ -2,6 +2,7 @@
 // handed to the mock OIDC provider's interactive login form (ADR-0012) — they
 // are not credentials and nothing secret crosses this code.
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -409,9 +410,58 @@ export async function expectNoLegacyAppBar(page: Page): Promise<void> {
 export function restartComposeServices(...services: string[]): void {
   const args = ["compose", "-p", COMPOSE_PROJECT];
   for (const file of COMPOSE_FILES) args.push("-f", file);
-  execFileSync("docker", [...args, "restart", ...services], {
-    cwd: repoRoot,
-    stdio: "pipe",
-    timeout: 180_000,
-  });
+  args.push("restart", ...services);
+  execDocker(args);
+}
+
+/**
+ * The env the compose layers interpolate against. `compose.real.yml` marks
+ * the gateway key vars REQUIRED (`:?`) — docker compose resolves them on
+ * EVERY subcommand, `restart` included, even though a restart never applies
+ * new config. A runner that started the lab with these exported does not
+ * hand them to the Playwright process, so fall back to the documented host
+ * file (the file form compose.real.yml itself names): only the variables
+ * that are absent get filled, and the key's contents never leave the child
+ * environment (nothing here prints them).
+ */
+function composeInterpolationEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const keyFile =
+    env.COMMUNICATION_LLM_API_KEY_HOST_FILE ??
+    path.join(process.env.HOME ?? "", ".config", "communication", "llmc-api-key");
+  if (!env.COMMUNICATION_LLM_API_KEY_HOST_FILE && existsSync(keyFile)) {
+    env.COMMUNICATION_LLM_API_KEY_HOST_FILE = keyFile;
+  }
+  if (!env.LLMC_API_KEY && existsSync(keyFile)) {
+    env.LLMC_API_KEY = readFileSync(keyFile, "utf8").trim();
+  }
+  return env;
+}
+
+/**
+ * Run one docker command against the daemon. On this host the runner user
+ * is not in the `docker` group — the socket refuses it (`permission denied
+ * … docker.sock`) — while passwordless sudo is available, so the first
+ * permission-denied answer falls back to `sudo -n -E docker` and every later
+ * call goes straight there.
+ */
+let dockerNeedsSudo = false;
+function execDocker(args: string[]): Buffer {
+  const env = composeInterpolationEnv();
+  const run = (prefix: string[]) =>
+    execFileSync(prefix[0], [...prefix.slice(1), ...args], {
+      cwd: repoRoot,
+      env,
+      stdio: "pipe",
+      timeout: 180_000,
+    });
+  if (dockerNeedsSudo) return run(["sudo", "-n", "-E", "docker"]);
+  try {
+    return run(["docker"]);
+  } catch (error) {
+    const message = `${(error as { stderr?: Buffer | string }).stderr ?? error}`;
+    if (!/permission denied.*docker\.sock/i.test(message)) throw error;
+    dockerNeedsSudo = true;
+    return run(["sudo", "-n", "-E", "docker"]);
+  }
 }

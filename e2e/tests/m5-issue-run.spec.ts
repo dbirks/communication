@@ -299,7 +299,8 @@ test.describe("W3 start a run from a GitHub issue", () => {
       await expect(admin.getByTestId("studio-published")).toContainText("published as r1", {
         timeout: 30_000,
       });
-      await gotoApp(admin, pipelinePath);
+      // Design 1e: the revision rows list on the workflow page's History tab.
+      await gotoApp(admin, `${pipelinePath}/history`);
       await expect(admin.getByTestId("revision-row-1")).toContainText("r1");
       await shot(admin, "m5w3-02-published-r1");
     });
