@@ -747,20 +747,36 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     );
   });
 
-  test("narrow: the Studio collapses to a step outline at 390x844", async ({ page }) => {
+  test("narrow: the phone Studio keeps the 1g canvas at 390x844", async ({ page }) => {
     await signIn(page, "admin");
     await page.setViewportSize({ width: 390, height: 844 });
     await gotoApp(page, state.draftA3);
     await expect(page.getByTestId("studio-page")).toBeVisible();
 
-    // No React Flow canvas at this width — the step outline is the surface.
-    expect(await page.locator(".react-flow").count(), "no canvas below 1024px").toBe(0);
-    const outline = page.getByTestId("step-outline");
-    await expect(outline).toBeVisible();
+    // Design 1g renders the canvas as the Studio surface — `png/1g.png` /
+    // screens.txt `===== [1g]`: palette | canvas | inspector, "always top
+    // to bottom · lines leave the bottom and enter the top" — and the 1g
+    // set carries no phone-specific step-outline screen. The 1g rework
+    // (29226d6 "2-row phone header", 2c4f55b "phone header keeps the title
+    // and a one-line status bar") applies that canvas to phone widths:
+    // below 768px the canvas runs full width with drawer toggles. The
+    // studio-workbench §9 outline fallback survives only at 768–1023px
+    // (covered by the vitest that stubs "(max-width: 1023px)").
+    await expect(page.getByTestId("studio-canvas")).toBeVisible();
+    expect(await page.locator(".react-flow").count(), "the canvas is the phone surface").toBe(1);
+    expect(await page.getByTestId("step-outline").count(), "no outline below 768px").toBe(0);
 
-    // Selecting a step opens the inspector for it.
-    await page.getByTestId("step-outline-plan").click();
-    await expect(page.getByTestId("insp-node")).toBeVisible();
+    // The two-row phone header carries the Steps / Inspect drawer toggles.
+    const paletteToggle = page.getByTestId("studio-phone-palette");
+    const inspectorToggle = page.getByTestId("studio-phone-inspector");
+    await expect(paletteToggle).toBeVisible();
+    await expect(inspectorToggle).toBeVisible();
+
+    // Selecting a step on the canvas and opening Inspect gives its inspector.
+    await page.getByTestId("canvas-step-plan").click();
+    await inspectorToggle.click();
+    const outline = page.getByTestId("insp-node");
+    await expect(outline).toBeVisible();
     // The node id lives inside the design's collapsed "Retries, timeout
     // and outputs" disclosure (1g pass 2 #2) — open it before reading.
     await page.getByTestId("insp-advanced-disclosure").locator("summary").click();
@@ -778,7 +794,7 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await evidence(
       page,
       "studio-narrow",
-      "at 390x844 the Studio drops the React Flow canvas for the step outline; selecting 'plan' opens the inspector and the page does not scroll horizontally",
+      "at 390x844 the Studio keeps the 1g canvas (full width, always top-to-bottom, per png/1g.png) with the phone header's Steps/Inspect toggles; selecting 'plan' and opening Inspect shows its inspector and the page does not scroll horizontally",
     );
   });
 });

@@ -131,9 +131,12 @@ func (h *asstHandlers) proposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. ONE completion through the ADR-0034 broker (no tool loop, no
-	// re-ask): the compact node summary plus the caller's profile list,
-	// never a config value or a secret.
+	// 4. ONE completion through the ADR-0034 broker (no tool loop): the
+	// compact node summary plus the caller's profile list, never a config
+	// value or a secret. CompleteText may re-ask a shape-malformed PROPOSAL
+	// answer exactly once (assistant.CompleteText, ADR-0044 amendment
+	// 2026-10-25); when even that re-ask fails it returns the FIRST answer,
+	// so the failure mapping below is the original answer's story.
 	summaries, err := json.Marshal(doc.Summaries())
 	if err != nil {
 		h.proposalServer(w, r, err)
@@ -149,8 +152,11 @@ func (h *asstHandlers) proposals(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. The model's answer is untrusted input: exactly one JSON object from
-	// the closed set, validated against THIS draft. Anything else is a 422
-	// with the reason named; the model is not re-asked.
+	// the closed set, validated against THIS draft (a one-element array
+	// around a valid object is unwrapped). Anything else is a 422 with the
+	// reason named — the broker's single corrective re-ask was already spent
+	// upstream in CompleteText (ADR-0044 amendment 2026-10-25); this route
+	// never asks the model again.
 	p, err := assistant.ExtractProposal(raw)
 	if err != nil {
 		writeAssistantProposalProblem(w, err.Error())

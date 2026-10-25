@@ -113,3 +113,25 @@ The constraints that pin the design:
   never invoked.
 - Egress: the request goes through the ADR-0034 broker with the existing
   `COMMUNICATION_ASSISTANT_*` configuration; no new environment variables.
+
+## Amendment (2026-10-25) — a malformed proposal answer earns exactly ONE corrective re-ask
+
+§ 2 said "the model is not re-asked". Commit `2c6ab65` changed that for the
+proposal turn only, because the small models in the lab answer shape-malformed
+often enough to fail A8 outright: they wrap the object in a one-element array
+(`[{...}]` for `{...}`) or answer with prose around the JSON. The rule now, in
+`internal/assistant/proposal.go` (`CompleteText` / `ExtractProposal`): **a
+one-element array around a valid proposal object is unwrapped and accepted as
+is — no second request; any other malformed answer (prose, a two-element
+array, a second object, invalid JSON) earns exactly ONE corrective re-ask** —
+the malformed answer echoed back (size-bounded) plus a plain restatement of the
+required shape — and nothing else about the turn changes. If the re-ask hits an
+egress failure or still does not extract, the FIRST answer is returned
+unchanged, so the route reports the original `422 assistant_proposal_invalid`:
+the re-ask never replaces the existing failure story, never picks an arbitrary
+member of a multi-value answer, and no turn ever asks twice. Only a proposal
+turn (a system prompt starting with `proposalSystemLead`) may be re-asked; the
+interpret and summary turns that share `CompleteText` keep their no-re-ask
+contracts. Everything else in § 2 is untouched: the same structural validation
+runs on whatever is finally extracted, and the § 4 ambiguity rules still refuse
+rather than return.
