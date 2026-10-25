@@ -10,7 +10,7 @@
 // issue2 suites' env-gate idiom). Every page runs checkShellScreen (axe
 // serious/critical, no sideways scroll, no pageerror); every step leaves an
 // evidence() screenshot + log line.
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { expectNoLegacyAppBar, signIn } from "./helpers.js";
 import {
@@ -25,6 +25,36 @@ import {
   signInNarrow,
   watchPageErrors,
 } from "./shell-helpers.js";
+
+/**
+ * Click a Settings → Layout radio option and wait until the choice is
+ * durably applied before the caller may navigate. Two races this closes:
+ * the page renders the defaults until `GET /me/preferences` lands, so the
+ * pre-click DOM cannot be trusted — the click may or may not fire a PATCH
+ * (none fires when the option turns out to be the loaded value, and that is
+ * success too); and navigating over the click's PATCH tears it down, so the
+ * caller only proceeds once the write was answered 2xx (0 here means the
+ * PATCH was requested but never answered — the failure this waits for).
+ */
+async function setLayoutOption(page: Page, testid: string): Promise<void> {
+  const patch = page.waitForRequest(
+    (req) => req.url().includes("/api/v1/me/preferences") && req.method() === "PATCH",
+    { timeout: 10_000 },
+  ).catch(() => null);
+  await page.getByTestId(testid).click();
+  const request = await patch;
+  if (request) {
+    const status = (await request.response())?.status() ?? 0;
+    expect(
+      status,
+      `${testid}: the preference PATCH answers 2xx (0 = cancelled before answering)`,
+    ).toBeGreaterThanOrEqual(200);
+    expect(status, `${testid}: the preference PATCH answers 2xx`).toBeLessThan(300);
+  }
+  // Whichever path brought it — the write landed, or the option already
+  // carried the stored value — the choice must now show as selected.
+  await expect(page.getByTestId(testid).locator("input[type=radio]")).toBeChecked();
+}
 
 /** The sidebar's seven nav rows and the canonical route each must point at. */
 const NAV: { testid: string; href: string }[] = [
@@ -166,8 +196,9 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       "shell-p1-settings-layout",
       "the Settings → Layout tab renders the projects-mode, ask-placement and workflow-folder groups",
     );
-    // Projects mode: tree → switcher changes the shell's project block.
-    await page.getByTestId("settings-layout-projects-mode-option-switcher").click();
+    // Projects mode: tree → switcher changes the shell's project block —
+    // after the write is proven saved (see setLayoutOption).
+    await setLayoutOption(page, "settings-layout-projects-mode-option-switcher");
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("project-switcher")).toBeVisible();
     await evidence(
@@ -177,7 +208,7 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
     );
     // Ask placement: sidebar → floating moves the assistant to the float.
     await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
-    await page.getByTestId("settings-layout-ask-placement-option-floating").click();
+    await setLayoutOption(page, "settings-layout-ask-placement-option-floating");
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("ask-float")).toBeVisible();
     await checkShellScreen(page, "home with floating ask", stopWatching);
@@ -186,10 +217,11 @@ test.describe("shell p1 — app shell, nav, redirects, preferences, palette, dra
       "shell-p1-ask-floating",
       "choosing the floating ask placement renders the ask-float control on the home page",
     );
-    // Restore the defaults so later suites see the shell's default state.
+    // Restore the defaults (each write proven 2xx) so later suites see the
+    // shell's default state.
     await page.goto(BASE_URL + "/settings/layout", { waitUntil: "domcontentloaded" });
-    await page.getByTestId("settings-layout-projects-mode-option-tree").click();
-    await page.getByTestId("settings-layout-ask-placement-option-sidebar").click();
+    await setLayoutOption(page, "settings-layout-projects-mode-option-tree");
+    await setLayoutOption(page, "settings-layout-ask-placement-option-sidebar");
   });
 
   test("⌘K opens the ask surface (ADR-0050); ⌘K again opens the palette; esc closes", async ({
