@@ -27,7 +27,8 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
 import { REVISION_STATE, stateOf } from "../components/ds/states";
-import { ProblemBanner } from "../components/Feedback";
+import { ProblemBanner, Spinner } from "../components/Feedback";
+import { ApiError } from "../api/client";
 import { UseInRepoDialog } from "../components/workflows/UseInRepoDialog";
 import { UsedInPanel } from "../components/workflows/UsedIn";
 import { useActorNames } from "../api/actors";
@@ -220,6 +221,60 @@ export function PipelinePage() {
     createDraft,
     navigate,
   ]);
+
+  // A pipeline the reader cannot open is not a page that renders the id as a
+  // title: the read itself decides what the page says (design 1e; the
+  // Repository/Conversation pattern). A 404 is an honest not-found, any other
+  // failure quotes the server and offers a retry, and both carry the way back
+  // to the index. All hooks have run by this point.
+  if (pipeline.isPending) return <Spinner label="Loading workflow" />;
+  if (pipeline.isError) {
+    const notFound = pipeline.error instanceof ApiError && pipeline.error.status === 404;
+    return (
+      <div data-testid="pipeline-page" className="min-h-[calc(100dvh-44px)] bg-paper">
+        <section
+          aria-labelledby="pipeline-load-error-heading"
+          className="px-[22px] py-[22px] md:px-[28px]"
+        >
+          <h1 id="pipeline-load-error-heading" className="text-[22px] leading-[28px] font-semibold">
+            Workflow
+          </h1>
+          <div className="mt-[12px] max-w-[70ch]">
+            <ProblemBanner
+              error={pipeline.error}
+              fallback={
+                notFound
+                  ? "Workflow not found or you do not have access."
+                  : "The workflow could not be loaded."
+              }
+              testid="pipeline-page-failure"
+            />
+          </div>
+          <div className="mt-[12px] flex flex-wrap items-center gap-[8px]">
+            {notFound ? null : (
+              <Button
+                variant="secondary"
+                compact
+                className="h-[30px]"
+                onClick={() => void pipeline.refetch()}
+                disabled={pipeline.isFetching}
+                data-testid="workflow-load-retry"
+              >
+                {pipeline.isFetching ? "Retrying…" : "Retry"}
+              </Button>
+            )}
+            <Link
+              to={routes.workflows()}
+              className="ds-btn ds-btn--secondary h-[30px]"
+              data-testid="workflow-back-to-list"
+            >
+              ← Back to workflows
+            </Link>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   const summary = pipeline.data ? viewPipelineSummary(pipeline.data) : null;
   const usedInRevisions = revisionRows.map((row) => ({

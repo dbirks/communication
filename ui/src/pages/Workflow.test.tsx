@@ -865,3 +865,66 @@ describe("legacy and layout", () => {
     expect(screen.getByTestId("workflow-overview").className).toContain("grid-cols-1");
   });
 });
+
+describe("/workflows/:pipelineId — the page cannot be read (1e)", () => {
+  it("a 404 shows an honest not-found state, not the id as a title", async () => {
+    mount(detail, [
+      {
+        path: pipelinePath,
+        status: 404,
+        body: {
+          type: "https://communication.dev/errors/not-found",
+          title: "Not Found",
+          status: 404,
+          detail: "no such pipeline",
+        },
+      },
+    ]);
+    // The page-level failure banner is the not-found state (e2e contract:
+    // testid pipeline-page-failure, honest words).
+    const banner = await screen.findByTestId("pipeline-page-failure");
+    expect(banner.textContent).toMatch(/not found/i);
+    // The shell around it is gone: no tabs, no actions, no revision chip,
+    // and the id is not the title — the heading is the screen's own name.
+    expect(screen.queryByTestId("workflow-tabs")).toBeNull();
+    expect(screen.queryByTestId("workflow-revision-chip")).toBeNull();
+    expect(screen.queryByTestId("pipeline-customize")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Workflow");
+    expect(document.body.textContent).not.toContain(WIRE_PIPELINE_ID);
+    // The way back to the index.
+    expect((await screen.findByTestId("workflow-back-to-list")).getAttribute("href")).toBe(
+      "/workflows",
+    );
+    // A missing workflow is not retryable — retry is for failures, not refusals.
+    expect(screen.queryByTestId("workflow-load-retry")).toBeNull();
+  });
+
+  it("any other load error quotes the server and offers a retry that refetches", async () => {
+    const { requests } = mount(detail, [
+      {
+        path: pipelinePath,
+        status: 500,
+        body: {
+          type: "https://communication.dev/errors/internal",
+          title: "Internal Server Error",
+          status: 500,
+          detail: "storage is having a bad day",
+        },
+      },
+    ]);
+    const banner = await screen.findByTestId("pipeline-page-failure");
+    expect(banner.textContent).toContain("Internal Server Error");
+    expect(banner.textContent).toContain("storage is having a bad day");
+    expect(banner.textContent).not.toMatch(/not found/i);
+    expect((await screen.findByTestId("workflow-back-to-list")).getAttribute("href")).toBe(
+      "/workflows",
+    );
+    // Retry re-issues the read; the stub still fails, but the request proves
+    // the button is wired to the pipeline query, not a dead end.
+    const before = requestsTo(requests, pipelinePath, "GET").length;
+    fireEvent.click(screen.getByTestId("workflow-load-retry"));
+    await waitFor(() =>
+      expect(requestsTo(requests, pipelinePath, "GET").length).toBeGreaterThan(before),
+    );
+  });
+});
