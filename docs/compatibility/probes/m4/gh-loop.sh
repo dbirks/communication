@@ -28,6 +28,19 @@
 # failing node's error (attempt detail via GET /runs/{id}/nodes/{ne}) and the
 # run's last journal events (SELECT-only psql). Exit non-zero on any FAIL.
 #
+# THE ADMIN CSRF TOKEN. lib.sh's m4_jar keys the cookie jar on the USER alone
+# (jars/<user>.jar under M4_PROBE_ROOT_BASE), not on the probe: so when this
+# driver has to seed the lab itself, seed-github-loop.sh's own `login admin`
+# deletes and rewrites that same file with a NEW session row, and each session
+# carries its own csrf_token (internal/store/postgres/identity.go:180).
+# Whatever login() cached then belongs to a session no longer in the jar and
+# every later mutation answers 403 "CSRF Token Invalid" — which is exactly the
+# pass-2 gate failure. Two defences, both here: refresh_csrf re-reads the token
+# for the session the jar currently holds (and runs right after the seed), and
+# req retries a mutation ONCE after such a 403 by refreshing first. Any other
+# 403 (authz, origin) is a real answer and still FAILs. Never print a token —
+# only its length.
+#
 # THE TOKEN. COMMUNICATION_TEST_REPO_TOKEN_FILE is required (GitHub writes are
 # the point of this driver). The value is never read into argv, printed or
 # written: every GitHub call builds a curl --config on stdout (piped to
@@ -40,7 +53,9 @@
 # through `sudo docker exec communication-m4-postgres-1 psql` — the documented
 # operator path for this lab (seed-pi.sh's header). Stack up/down not owned.
 set -uo pipefail
-M4_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: this file is also SOURCED (see the sourcing guard ahead of
+# main) to exercise the helpers without driving GitHub, and then $0 is the caller's.
+M4_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export M4_PROBE=gh-loop
 # shellcheck source=lib.sh
 . "$M4_DIR/lib.sh"
@@ -151,7 +166,7 @@ sys.exit(1)
 
 # ---- communication API: seed.sh's shape (cookies + CSRF; NO token) -----------
 LAST_STATUS="" LAST_BODY_FILE="" LAST_NOTE=""
-req() { # req <user> <METHOD> <path> [json]
+_req() { # _req <user> <METHOD> <path> [json] — one call, no retry; use req()
     local user="$1" method="$2" path="$3" body="${4:-}" sttab rc
     LAST_NOTE=""; LAST_BODY_FILE="$WORK/resp.json"; : > "$LAST_BODY_FILE"
     local -a args=(-sS --max-time 60 -o "$LAST_BODY_FILE" -w '%{http_code}\t%{content_type}')
@@ -165,6 +180,56 @@ req() { # req <user> <METHOD> <path> [json]
     rc=$?
     if [ $rc -ne 0 ]; then LAST_NOTE="curl rc=$rc reaching $M4_URL$path"; LAST_STATUS=""; return 2; fi
     LAST_STATUS="${sttab%%$'\t'*}"; LAST_NOTE="$method $path -> $sttab"; return 0
+}
+# refresh_csrf <user> — re-read csrf_token for the session ${JAR[$user]} NOW
+# holds from GET /api/v1/me (lib.sh:90-98's shape) into CSRF[$user]. Prints the
+# token LENGTH only. On failure it appends why to LAST_NOTE (keeping the
+# caller's note) and returns 1 WITHOUT touching LAST_STATUS, so the 403 the
+# caller is reacting to is still what `need`/`loud` report.
+refresh_csrf() { # refresh_csrf <user>
+    local user="$1" jar sttok rc tok note=""
+    local me="$WORK/me-$user.json"
+    jar="${JAR[$user]:-}"
+    if [ -z "$jar" ]; then
+        LAST_NOTE="${LAST_NOTE:+$LAST_NOTE; }refresh_csrf($user): no jar (login first)"
+        return 1
+    fi
+    sttok=$(curl -sS --max-time 30 -b "$jar" -o "$me" -w '%{http_code}' \
+                "$M4_URL/api/v1/me" 2>"$WORK/me-curl.err")
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        note="GET /api/v1/me unreachable: curl rc=$rc ($(m4_oneline < "$WORK/me-curl.err"))"
+    elif [ "$sttok" != 200 ]; then
+        note="GET /api/v1/me -> $sttok ($(m4_oneline < "$me"))"
+    else
+        tok=$(jget "$me" csrf_token) || tok=""
+        [ -n "$tok" ] || note="GET /api/v1/me 200 but the body has no csrf_token"
+    fi
+    if [ -n "$note" ]; then
+        LAST_NOTE="${LAST_NOTE:+$LAST_NOTE; }refresh_csrf($user): $note"
+        return 1
+    fi
+    CSRF[$user]="$tok"
+    say "csrf($user): token re-read from GET /api/v1/me (length ${#tok})"
+    return 0
+}
+req() { # req <user> <METHOD> <path> [json] — _req plus ONE stale-CSRF repair
+    local user="$1" method="$2" path="$3" body="${4:-}" st
+    _req "$user" "$method" "$path" "$body" || return $?
+    # Only a 403 naming the CSRF token is retryable here: that is a stale
+    # credential the driver can re-read (the shared per-user jar rotated under
+    # it — e.g. by the seed it just ran). A 403 from authorization or the
+    # strict-origin check is the server's real answer: pass it through so the
+    # caller's `need` FAILs on it unchanged.
+    [ "$LAST_STATUS" = 403 ] || return 0
+    grep -qi 'CSRF Token Invalid' "$LAST_BODY_FILE" 2>/dev/null || return 0
+    st="$LAST_STATUS"
+    if ! refresh_csrf "$user"; then
+        LAST_STATUS="$st"; return 0
+    fi
+    say "csrf($user): retrying $method $path once after a stale-token 403"
+    _req "$user" "$method" "$path" "$body"
+    return 0
 }
 # (No ok() helper here on purpose: every branch in this driver is an explicit
 # `need` allow-list or a case on LAST_STATUS — an unused status helper is
@@ -192,10 +257,8 @@ login() { # login <user> — seed.sh's IdP legs
     [ -n "$cb" ] || loud "login($user): IdP POST did not redirect to the callback"
     curl -sSL --max-time 30 -b "${JAR[$user]}" -c "${JAR[$user]}" -o /dev/null "$cb" 2>"$WORK/curl.err" \
         || { LAST_NOTE="curl: $(m4_oneline < "$WORK/curl.err")"; loud "login($user): follow callback $cb"; }
-    req "$user" GET /api/v1/me || loud "login($user): GET /api/v1/me unreachable"
-    need "login($user): signed-in principal" 200
-    CSRF[$user]="$(jget "$LAST_BODY_FILE" csrf_token)" || loud "login($user): no csrf_token"
-    say "login($user): signed in (jar ${JAR[$user]##*/})"
+    refresh_csrf "$user" || loud "login($user): GET /api/v1/me returned no live session/csrf_token"
+    say "login($user): signed in (jar ${JAR[$user]##*/}, csrf length ${#CSRF[$user]})"
 }
 
 # ---- GitHub REST: the token rides ONLY a header piped into curl's stdin ------
@@ -236,6 +299,10 @@ resolve_ids() {
     if [ -z "$PROJECT_ID" ]; then
         say "project $PROJECT_SLUG absent — running seed-github-loop.sh first"
         bash "$M4_DIR/seed-github-loop.sh" || loud "seed-github-loop.sh failed"
+        # That seed ran its own `login admin`, which rewrote THIS admin jar
+        # with a new session, so the token login() cached is dead: re-read it
+        # before anything mutates (belt and braces: req() also retries once).
+        refresh_csrf admin || loud "refresh CSRF for admin after the seed"
         req admin GET /api/v1/projects || loud "list projects (after seed)"
         need "list projects (after seed)" 200
         PROJECT_ID=$(jfind "$LAST_BODY_FILE" items slug "$PROJECT_SLUG" id) \
@@ -423,6 +490,12 @@ PY
     say "last events (journal tail):"
     run_sql "SELECT '      E ' || global_seq || ' ' || type || ' ' || LEFT(payload::text, 240) FROM domain_events WHERE run_id = '$rid' ORDER BY global_seq DESC LIMIT 15" | tac
 }
+
+# Sourced (`. gh-loop.sh`, so BASH_SOURCE[0] != $0) this file defines the
+# helpers and runs nothing else — that is how the CSRF-refresh path is
+# demonstrated against a live lab without driving real GitHub issues. Executed,
+# it runs main below.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then return 0; fi
 
 # ================================= main =========================================
 say "driver target $M4_URL (repo $GH_REPO via $GH_API; the stack is never rebuilt, restarted or configured here)"
