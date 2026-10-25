@@ -2,7 +2,13 @@
 //
 // Home's count line and its decision callouts must equal the cross-project
 // reads (contract C3: GET /api/v1/runs + GET /api/v1/approvals) — no invented
-// numbers. The Board's five columns carry the same per-status counts, the
+// numbers. The callouts are the same list under the briefing's designed cap:
+// at most three, in the API's order (ui/src/components/home/DecisionCallout.tsx
+// CALLOUT_MAX, `api/home.ts` — "The Home callout shows at most three; the rest
+// wait in the Inbox"), the rest named by the "N more in Inbox ›" line. The
+// spec seeds scratch gates through the API when the lab holds ≤ 3 pending so
+// the cap path is proven whether 1 or 12 gates were pending at entry.
+// The Board's five columns carry the same per-status counts, the
 // repo / workflow groupings re-group the same cards, a card click opens the
 // 440px drawer on `?run=`, the drawer traps focus and Escape closes it, and
 // the drawer's Approve always shows a confirm step (cancelled here — the
@@ -10,20 +16,119 @@
 //
 // Runs ONLY when COMMUNICATION_E2E_SHELL=1. checkShellScreen on every page;
 // evidence() per step.
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { signIn, testidOf } from "./helpers.js";
 import {
   SHELL_ENABLED,
   SHELL_GATE,
+  apiCsrf,
   apiPendingApprovals,
+  apiPublishPipeline,
   apiRuns,
+  apiScratchProject,
+  apiStartRun,
   checkShellScreen,
   evidence,
   signInNarrow,
   watchPageErrors,
   type RunRow,
 } from "./shell-helpers.js";
+
+/** The briefing's callout cap (ui/src/components/home/DecisionCallout.tsx:
+ * `CALLOUT_MAX`) — the first gates of GET /approvals?status=pending get a
+ * callout, the rest are named by the overflow line pointing at the Inbox. */
+const CALLOUT_MAX = 3;
+
+/**
+ * The scratch gate (the m5-journey GATE_TWIN / shell-p789 GATE_YAML pattern):
+ * a `human.approval` ROOT node, so the run enters `waiting_human` the moment
+ * it exists — no worker turn — and its gate stays pending. The 24 h deadline
+ * keeps the seeded gates pending across the three verification runs; the
+ * journey never decides them.
+ */
+const GATE_YAML = (slug: string): string => `# home-cap scratch gate: one maintainer approval at the root.
+apiVersion: communication.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: ${slug}
+  description: >-
+    Home-cap scratch gate for acceptance: a pending gate the journey never decides.
+spec:
+  inputs:
+    type: object
+    required: [goal]
+    properties:
+      goal:
+        type: string
+        minLength: 1
+        description: What the gate is asking about.
+  outputs:
+    type: object
+    required: [after]
+    properties:
+      after: {type: string}
+  policies:
+    maxConcurrentNodes: 1
+    maxDurationSeconds: 604800
+    maxNodeExecutions: 20
+    maxChildDepth: 0
+    workspaceMode: worktree
+    cancelPolicy: cascade
+  nodes:
+  - id: approve
+    kind: human.approval
+    retry:
+      maxAttempts: 1
+    config:
+      summary: |-
+        Home cap acceptance gate for \${{ inputs.goal }} — pending, never decided.
+      approverRoles: [maintainer]
+      deadlineSeconds: 86400
+      onTimeout: fail
+  - id: after_gate
+    kind: process.exec
+    dependsOn: [approve]
+    timeoutSeconds: 120
+    retry:
+      maxAttempts: 1
+    config:
+      executable: printf
+      args:
+      - '%s\\n'
+      - '{"after":"ran off the home-cap gate"}'
+      outputExtraction: {mode: json_from_stdout}
+    outputs:
+      type: object
+      required: [after]
+      properties:
+        after: {type: string}
+  resultBindings:
+    after: \${{ nodes.after_gate.outputs.after }}
+`;
+
+/** Grow the lab's pending list past the cap (≥ CALLOUT_MAX + 1 gates) so the
+ * briefing always renders the capped path. Gates already beyond the cap are
+ * used as they are; nothing is decided or deleted. */
+async function ensureMoreGatesThanCap(request: APIRequestContext): Promise<void> {
+  const before = await apiPendingApprovals(request);
+  if (before.length > CALLOUT_MAX) return;
+  const csrf = await apiCsrf(request);
+  const project = await apiScratchProject(request);
+  const slug = `home-cap-${Date.now()}`;
+  const { revisionId } = await apiPublishPipeline(request, csrf, slug, GATE_YAML(slug));
+  for (let i = before.length + 1; i <= CALLOUT_MAX + 1; i += 1) {
+    await apiStartRun(request, csrf, project.id, revisionId, {
+      goal: `Home cap acceptance gate ${i}`,
+    });
+  }
+  await expect
+    .poll(async () => (await apiPendingApprovals(request)).length, {
+      message: "the scratch gates must reach the cross-project pending list",
+      timeout: 60_000,
+    })
+    .toBeGreaterThan(CALLOUT_MAX);
+}
 
 /** The board's status → column mapping (ui/src/components/board/columns.ts). */
 const STATUS_COLUMN: Record<string, string> = {
@@ -74,13 +179,18 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
   test.use({ viewport: { width: 1500, height: 950 } });
   test.setTimeout(10 * 60_000);
 
-  test("Home: count line and a decision callout per pending approval", async ({ page }) => {
+  test("Home: count line, callouts for the first three pending approvals, the rest named by the Inbox line", async ({
+    page,
+  }) => {
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
+    // Prove the cap path on any lab: with ≤ 3 pending the cap could hide a
+    // missing row, so seed scratch gates past it first (the m5-gate pattern —
+    // a root human.approval parks the run the moment it exists).
+    await ensureMoreGatesThanCap(page.request);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-count-line")).toBeVisible({ timeout: 20_000 });
     const runs = await apiRuns(page.request);
-    const approvals = await apiPendingApprovals(page.request);
     const counts = perColumn(runs);
 
     // Count line: every segment printed must equal the API's column count;
@@ -109,16 +219,65 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
       `home count line equals GET /api/v1/runs per-column counts (${counts["needs-you"]} need you, ${counts.failed} failed, ${counts.running} running, ${counts.queued} queued); zero segments are omitted`,
     );
 
-    // One callout per pending approval, keyed by the approval's testid.
-    expect(approvals.length).toBeGreaterThan(0); // the lab seeds pending gates
-    for (const approval of approvals) {
-      await expect(page.getByTestId(`home-callout-${testidOf(approval.id)}`)).toBeVisible();
-    }
+    // The briefing renders the SAME list the API returns, under the designed
+    // cap: a callout for each of the first CALLOUT_MAX gates in the API's
+    // order, none for the rest, and an overflow line naming their count.
+    // Polled so the page's own SSE-driven refetch (≤1 s coalescing) settles
+    // against the API read it is being compared to; exact once settled —
+    // every id, in order, plus the absence of every overflow id.
+    const calloutProblems = async (): Promise<string[]> => {
+      const list = await apiPendingApprovals(page.request);
+      const problems: string[] = [];
+      if (list.length === 0) return ["the API returned no pending approvals"];
+      const shown = list.slice(0, CALLOUT_MAX);
+      const rest = list.slice(CALLOUT_MAX);
+      for (const approval of shown) {
+        if (!(await page.getByTestId(`home-callout-${testidOf(approval.id)}`).isVisible())) {
+          problems.push(`callout for ${approval.id.slice(0, 8)}… is not visible`);
+        }
+      }
+      for (const approval of rest) {
+        const hidden = page.getByTestId(`home-callout-${testidOf(approval.id)}`);
+        if ((await hidden.count()) > 0) {
+          problems.push(`overflow gate ${approval.id.slice(0, 8)}… still renders a callout`);
+        }
+      }
+      // DOM order equals the API order for the rendered callouts.
+      const rendered = await page
+        .locator('[data-testid="home-callouts"] > div[data-testid^="home-callout-"]')
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-testid") ?? ""));
+      const want = shown.map((approval) => `home-callout-${testidOf(approval.id)}`);
+      if (JSON.stringify(rendered) !== JSON.stringify(want)) {
+        problems.push(`callout rows are [${rendered.join(", ")}], want [${want.join(", ")}]`);
+      }
+      // The overflow line names the rest — present exactly when there is a rest.
+      const more = page.getByTestId("home-more-inbox");
+      if (rest.length > 0) {
+        if (!(await more.isVisible())) {
+          problems.push("the 'more in Inbox' line is missing while gates overflow");
+        } else {
+          const text = (await more.innerText()).trim();
+          const wantText = `${rest.length} more in Inbox ›`;
+          if (text !== wantText) problems.push(`overflow line says "${text}", want "${wantText}"`);
+        }
+      } else if ((await more.count()) > 0) {
+        problems.push("the overflow line rendered although every pending gate has a callout");
+      }
+      return problems;
+    };
+    await expect
+      .poll(calloutProblems, {
+        message:
+          "home renders the first three gates of GET /api/v1/approvals?status=pending as callouts and names the rest in the Inbox line",
+        timeout: 30_000,
+      })
+      .toEqual([]);
+    const finalList = await apiPendingApprovals(page.request);
     stopWatching();
     await evidence(
       page,
       "shell-p2-home-callouts",
-      `home shows one decision callout per pending approval from GET /api/v1/approvals?status=pending (${approvals.length} callout(s))`,
+      `home renders a callout for the first ${Math.min(CALLOUT_MAX, finalList.length)} of the ${finalList.length} pending approvals from GET /api/v1/approvals?status=pending (the briefing's designed cap of ${CALLOUT_MAX}) and the overflow line names the other ${Math.max(finalList.length - CALLOUT_MAX, 0)}`,
     );
   });
 
