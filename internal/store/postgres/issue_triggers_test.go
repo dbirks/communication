@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -137,13 +136,26 @@ func newITIssueLister(issues []itWireIssue, handler http.HandlerFunc) *itIssueLi
 	if handler == nil {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
+			// GitHub's contract for `since`: an ISO 8601 timestamp or the whole
+			// request is refused with 422, and a well-formed one is an
+			// INCLUSIVE, second-granular lower bound on updated_at. A client
+			// that regressed to Unix seconds must fail here exactly like the
+			// lab's real repo did.
+			var sinceTS *time.Time
+			if s := q.Get("since"); s != "" {
+				ts, err := time.Parse(time.RFC3339, s)
+				if err != nil {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = w.Write([]byte(`{"message":"The since parameter needs to be in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ"}`))
+					return
+				}
+				sinceTS = &ts
+			}
 			var out []itWireIssue
 			for _, it := range issues {
-				if since := q.Get("since"); since != "" {
-					if ts, err := strconv.ParseInt(since, 10, 64); err == nil {
-						if t, terr := time.Parse(time.RFC3339, it.UpdatedAt); terr == nil && t.Unix() < ts {
-							continue
-						}
+				if sinceTS != nil {
+					if t, terr := time.Parse(time.RFC3339, it.UpdatedAt); terr == nil && t.Before(*sinceTS) {
+						continue
 					}
 				}
 				if len(q["labels"]) > 0 {
@@ -359,9 +371,60 @@ func TestIssueTriggerRepollDoesNotDoubleFire(t *testing.T) {
 	if fired, err := f.triggers.TickIssueTriggers(ctx, now, lister); err != nil || fired != 1 {
 		t.Fatalf("first tick = (%d, %v), want one fire", fired, err)
 	}
+	// The fire left the cursor at the issue's updated_at, so the second poll
+	// sends it as `since` — and GitHub's since is inclusive and second-granular:
+	// the SAME issue comes back. The fire is idempotent per (trigger, issue)
+	// through the `issue-<trigger id>-<issue number>` key in
+	// run_idempotency_keys, so the replay must neither error nor re-fire.
+	before, err := f.triggers.GetIssueTrigger(ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("GetIssueTrigger after the first tick: %v", err)
+	}
+	if before.CursorAt == nil || !before.CursorAt.Equal(issueTimeRFC3339(t, issue.UpdatedAt)) {
+		t.Fatalf("cursor after the first tick = %v, want the fired issue's updated_at %s",
+			before.CursorAt, issue.UpdatedAt)
+	}
 	if fired, err := f.triggers.TickIssueTriggers(ctx, now.Add(time.Minute), lister); err != nil || fired != 0 {
 		t.Fatalf("second tick = (%d, %v), want no double fire", fired, err)
 	}
+	after, err := f.triggers.GetIssueTrigger(ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("GetIssueTrigger after the second tick: %v", err)
+	}
+	// A failed poll (a 422 on a bad `since` included) lands on last_error:
+	// the second tick polled with the cursor and the replay was silent.
+	if after.LastError != "" {
+		t.Errorf("last_error = %q, want empty: the cursor poll must not fail", after.LastError)
+	}
+	if after.LastPolledAt == nil || !after.LastPolledAt.After(*before.LastPolledAt) {
+		t.Errorf("last_polled_at = %v, want advanced past the first poll %v", after.LastPolledAt, before.LastPolledAt)
+	}
+	if after.CursorAt == nil || !after.CursorAt.Equal(*before.CursorAt) {
+		t.Errorf("cursor = %v, want the boundary issue's replay to leave it at %v", after.CursorAt, before.CursorAt)
+	}
+	var runs int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM runs WHERE trigger_ref = 'octo/widgets#7'`).Scan(&runs); err != nil {
+		t.Fatalf("count fired runs: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("runs for octo/widgets#7 = %d, want 1: the replay created no second run", runs)
+	}
+	runID, _ := itIssueRunFor(t, ctx, f, "octo/widgets#7")
+	p := itIssueFiredEvent(t, ctx, f, runID) // fails unless there is exactly one fired event
+	if p.IssueNumber != issue.Number {
+		t.Errorf("issue_trigger.fired payload = %+v, want issue %d", p, issue.Number)
+	}
+}
+
+// issueTimeRFC3339 parses a wire timestamp the fake lister served.
+func issueTimeRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("parse wire timestamp %q: %v", s, err)
+	}
+	return ts.UTC()
 }
 
 // TestIssueTriggerSkipsPullRequests: a pull request is not an issue, through

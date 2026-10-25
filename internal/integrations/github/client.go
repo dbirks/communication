@@ -132,7 +132,10 @@ func (c *Client) ListIssues(ctx context.Context, repo Repository, q IssueQuery, 
 		query.Set("labels", label)
 	}
 	if !q.Since.IsZero() {
-		query.Set("since", strconv.FormatInt(q.Since.Unix(), 10))
+		// GitHub's `since` is an ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SSZ, UTC,
+		// second-granular and inclusive): a Unix-seconds value is refused with
+		// 422 "The since parameter needs to be in ISO 8601 format".
+		query.Set("since", q.Since.UTC().Format(time.RFC3339))
 	}
 	target := c.base() + "/repos/" + url.PathEscape(repo.Owner) + "/" +
 		url.PathEscape(repo.Name) + "/issues?" + query.Encode()

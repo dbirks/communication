@@ -82,19 +82,21 @@ func TestParseRepositoryRefusesEverythingElse(t *testing.T) {
 
 // ghiStub serves a canned response and records the request that produced it.
 type ghiStub struct {
-	t        *testing.T
-	status   int
-	headers  http.Header
-	body     string
-	gotPath  string
-	gotQuery url.Values
-	gotHead  http.Header
+	t         *testing.T
+	status    int
+	headers   http.Header
+	body      string
+	gotPath   string
+	gotQuery  url.Values
+	gotRawQry string
+	gotHead   http.Header
 }
 
 func (s *ghiStub) server() *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.gotPath = r.URL.Path
 		s.gotQuery = r.URL.Query()
+		s.gotRawQry = r.URL.RawQuery
 		s.gotHead = r.Header.Clone()
 		for k, vs := range s.headers {
 			for _, v := range vs {
@@ -276,11 +278,39 @@ func TestListIssuesPassesSinceAndSortForTheIssuePoll(t *testing.T) {
 	if got := stub.gotQuery.Get("sort"); got != "updated" {
 		t.Errorf("sort = %q, want updated", got)
 	}
-	if got := stub.gotQuery.Get("since"); got != "1760000000" {
-		t.Errorf("since = %q, want 1760000000", got)
+	if got := stub.gotQuery.Get("since"); got != "2025-10-09T08:53:20Z" {
+		t.Errorf("since = %q, want 2025-10-09T08:53:20Z", got)
 	}
 	if got := stub.gotQuery.Get("per_page"); got != "100" {
 		t.Errorf("per_page = %q, want 100", got)
+	}
+}
+
+// TestListIssuesSendsSinceAsISO8601NotUnixSeconds guards the lab failure
+// (dbirks/comms-test-repo-1): once a trigger's cursor is set every poll died
+// with 422 "The since parameter needs to be in ISO 8601 format:
+// YYYY-MM-DDTHH:MM:SSZ" because the cursor rode the wire as Unix seconds.
+// The request must carry the ISO form, in UTC, whatever zone the cursor came
+// from, and never a bare epoch count.
+func TestListIssuesSendsSinceAsISO8601NotUnixSeconds(t *testing.T) {
+	c, stub := ghiClient(t, 0, nil, `[]`)
+	// 2026-10-25T12:31:26+02:00 is 2026-10-25T10:31:26Z: the rendering must
+	// convert to UTC, not just print the wall clock GitHub will not accept.
+	since := time.Date(2026, 10, 25, 12, 31, 26, 0, time.FixedZone("UTC+2", 2*3600))
+	if _, err := c.ListIssues(context.Background(), Repository{Owner: "octo", Name: "widgets"},
+		IssueQuery{State: "open", Sort: "updated", Since: since, PerPage: 100}, ""); err != nil {
+		t.Fatalf("ListIssues: %v", err)
+	}
+	if got, want := stub.gotQuery.Get("since"), "2026-10-25T10:31:26Z"; got != want {
+		t.Errorf("since = %q, want %q", got, want)
+	}
+	// The exact wire form: url.Values.Encode escapes the colons, and the
+	// parameters ride in their sorted order.
+	if want := "per_page=100&since=2026-10-25T10%3A31%3A26Z&sort=updated&state=open"; stub.gotRawQry != want {
+		t.Errorf("RawQuery = %q, want %q", stub.gotRawQry, want)
+	}
+	if strings.Contains(stub.gotRawQry, "1792924286") {
+		t.Errorf("RawQuery = %q must not carry Unix seconds", stub.gotRawQry)
 	}
 }
 
