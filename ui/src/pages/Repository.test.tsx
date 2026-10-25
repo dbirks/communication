@@ -180,6 +180,78 @@ describe("/p/:projectId/:repo", () => {
     expect(screen.queryByTestId("repo-issues-list")).toBeNull();
   });
 
+  // ADR-0061 § 6 second half: GitHub hides a private repo from the anonymous
+  // read as a 404 — with no credential on the row the panel says so in the
+  // ADR's words and one click opens the GitHub-access picker. With a
+  // credential (or for a reader who cannot manage it) it does not claim
+  // privacy it cannot prove.
+  const notFoundRoutes = (): RouteStub[] => [
+    { path: "/api/v1/me", body: meFixture },
+    { path: `/api/v1/projects/${projectFixture.id}`, body: projectFixture },
+    { path: `/api/v1/projects/${projectFixture.id}/repos`, body: { items: [repository] } },
+    { path: `/api/v1/projects/${projectFixture.id}/secrets`, body: { secrets: [] } },
+    {
+      path: `/api/v1/projects/${projectFixture.id}/repos/${repositoryId}/issues`,
+      status: 502,
+      body: {
+        type: "https://communication.dev/errors/github_repository_not_found",
+        title: "GitHub repository not found",
+        status: 502,
+        code: "github_repository_not_found",
+        detail: "GitHub answered 404 for example/communication",
+      },
+    },
+  ];
+
+  it("names the private-repo case on a not-found with no credential, and opens the access picker", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: notFoundRoutes() });
+    const line = await screen.findByTestId("repo-issues-private");
+    expect(line.textContent).toBe("private repo? add GitHub access");
+    // The generic not-found banner is NOT what the reader gets.
+    expect(screen.queryByTestId("repo-issues-private-maintainer")).toBeNull();
+    fireEvent.click(screen.getByTestId("repo-issues-add-github-access"));
+    expect(await screen.findByTestId("github-access-dialog")).toBeTruthy();
+  });
+
+  it("points a reader who cannot manage credentials at a maintainer instead of the picker", async () => {
+    const viewer = { ...projectFixture, my_role: "viewer" as const };
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: [
+        { path: `/api/v1/projects/${projectFixture.id}`, body: viewer },
+        ...notFoundRoutes().filter((r) => r.path !== `/api/v1/projects/${projectFixture.id}`),
+      ],
+    });
+    const line = await screen.findByTestId("repo-issues-private");
+    expect(line.textContent).toContain("a project maintainer can add GitHub access");
+    expect(screen.queryByTestId("repo-issues-add-github-access")).toBeNull();
+  });
+
+  it("keeps the server's own words when a credential WAS sent and the read still 404s", async () => {
+    renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: [
+        {
+          path: `/api/v1/projects/${projectFixture.id}/repos`,
+          body: {
+            items: [
+              {
+                ...repository,
+                credential: "configured" as const,
+                credential_secret_id: "01987a77-7777-7000-8000-abcdef012345",
+              },
+            ],
+          },
+        },
+        ...notFoundRoutes().filter((r) => r.path !== `/api/v1/projects/${projectFixture.id}/repos`),
+      ],
+    });
+    // With a credential in play the 404 is not the private-repo hint — the
+    // upstream's own problem answer stays on screen.
+    expect(await screen.findByText(/GitHub repository not found/)).toBeTruthy();
+    expect(screen.queryByTestId("repo-issues-private")).toBeNull();
+  });
+
   it("shows the workspace status row with branch and dirty state", async () => {
     renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
 

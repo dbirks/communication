@@ -409,7 +409,9 @@ describe("Overview (1e)", () => {
     expect(rail.className).toContain("lg:border-l");
     expect(rail.className).toContain("bg-surface");
     // The caption is one line, nowrap, whatever the canvas width.
-    expect(screen.getByTestId("workflow-graph-caption").className).toContain("whitespace-nowrap");
+    expect(screen.getByTestId("workflow-graph-caption").className).toContain(
+      "lg:whitespace-nowrap",
+    );
   });
 
   it("the rail answers draft / used-in / inputs / last-runs with the API's own values", async () => {

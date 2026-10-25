@@ -17,7 +17,7 @@
  * - the issue list is GitHub's, read anonymously; a refused or spent read
  *   renders the upstream's own answer, never an invented list.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { ApiError } from "../api/client";
 import {
@@ -41,7 +41,11 @@ import { routes } from "../lib/routes";
 import { elapsed, RunStatusChip } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import NewConversationDialog from "../components/NewConversationDialog";
-import { GitHubAccess } from "../components/repo/GitHubAccess";
+import {
+  GitHubAccess,
+  hasCredential,
+  type GitHubAccessHandle,
+} from "../components/repo/GitHubAccess";
 import { RepoWorkflows } from "../components/workflows/RepoWorkflows";
 
 /** The honest one-line answer for a spent anonymous GitHub budget: the upstream
@@ -91,6 +95,9 @@ export default function Repository() {
   );
 
   const issues = useRepoIssues(id, repository?.id ?? "", "");
+  // ADR-0061 § 6: the ISSUES refusal line opens the GitHub-access picker
+  // rendered up in the header — one dialog, opened from where the refusal is.
+  const ghAccess = useRef<GitHubAccessHandle | null>(null);
   const [issueRunOpen, setIssueRunOpen] = useState(false);
   // The header's two ways in (design 1e): the shared new-thread dialog with
   // this project fixed, and the same new-run form the issue section opens.
@@ -167,7 +174,7 @@ export default function Repository() {
             <span aria-hidden="true">·</span>
             <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
           </div>
-          <GitHubAccess project={projectData} repository={repositoryData} />
+          <GitHubAccess ref={ghAccess} project={projectData} repository={repositoryData} />
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -219,6 +226,8 @@ export default function Repository() {
           issueRunOpen={issueRunOpen}
           onRun={() => setIssueRunOpen(true)}
           onClose={() => setIssueRunOpen(false)}
+          canManageGitHub={projectData.my_role === "maintainer"}
+          onAddGitHubAccess={() => ghAccess.current?.open()}
         />
         <RepoRuns projectId={id} slugs={slugs} />
       </div>
@@ -324,6 +333,20 @@ function RepoWorkspaceRow({
   );
 }
 
+/** GitHub refused the read the way a hidden repository answers: GitHub hides
+ * private repos from anonymous callers as a 404 (`502
+ * github_repository_not_found` through the proxy), and an upstream that
+ * challenges the anonymous request says unauthorized. With no credential on
+ * the row this is the private-repo case ADR-0061 § 6 names — with a
+ * credential it is something else, and the generic banner's server words
+ * stay on screen. */
+function privateRepoRefusal(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const code = (error.body as { code?: unknown } | null)?.code;
+  if (code === "github_repository_not_found") return true;
+  return error.status === 404 || error.status === 401;
+}
+
 /** ISSUES — the open GitHub issues of this repository, read through the
  * anonymous upstream proxy. */
 function RepoIssues({
@@ -333,6 +356,8 @@ function RepoIssues({
   issueRunOpen,
   onRun,
   onClose,
+  canManageGitHub,
+  onAddGitHubAccess,
 }: {
   repository: Repository;
   projectId: string;
@@ -340,6 +365,10 @@ function RepoIssues({
   issueRunOpen: boolean;
   onRun: () => void;
   onClose: () => void;
+  /** ADR-0061 § 6: a Maintainer may open the GitHub-access picker from the
+   * refusal line; others are pointed at a maintainer instead. */
+  canManageGitHub: boolean;
+  onAddGitHubAccess: () => void;
 }) {
   const list = issues.data;
   return (
@@ -358,6 +387,26 @@ function RepoIssues({
               data-testid="repo-issues-rate-limited"
             >
               GitHub is rate-limiting anonymous requests — try again later.
+            </p>
+          ) : !hasCredential(repository) && privateRepoRefusal(issues.error) ? (
+            <p className="text-[12.5px] text-muted" data-testid="repo-issues-private">
+              {canManageGitHub ? (
+                // ADR-0061 § 6: the 404-without-credential answer is the
+                // private-repo hint, one click into the access picker — not
+                // the generic not-found.
+                <button
+                  type="button"
+                  onClick={onAddGitHubAccess}
+                  className="text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  data-testid="repo-issues-add-github-access"
+                >
+                  private repo? add GitHub access
+                </button>
+              ) : (
+                <span data-testid="repo-issues-private-maintainer">
+                  private repo — a project maintainer can add GitHub access.
+                </span>
+              )}
             </p>
           ) : (
             <ProblemBanner error={issues.error} fallback="GitHub issues could not be read." />

@@ -19,7 +19,16 @@
  *
  * The secret VALUE is never on this surface, so nothing here can render it.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useImperativeHandle,
+  type FormEvent,
+  type Ref,
+} from "react";
 import { Link } from "react-router";
 import { usePatchRepository, useSecrets } from "../../api/queries";
 import type { Project, Repository } from "../../api/types";
@@ -34,6 +43,16 @@ const FOCUSABLE =
 export interface GitHubAccessProps {
   project: Project;
   repository: Repository;
+  /** React 19 ref-as-prop handle: the ISSUES panel's
+   * "private repo? add GitHub access" line opens the picker from wherever it
+   * sits on the page (ADR-0061 § 6 second half). */
+  ref?: Ref<GitHubAccessHandle>;
+}
+
+/** The imperative surface: open the picker. Only offered on the line that
+ * renders it; no other state is reachable from outside. */
+export interface GitHubAccessHandle {
+  open: () => void;
 }
 
 /** The id the ADR-0061 credential carries: the explicit member, read as none
@@ -44,13 +63,15 @@ function credentialId(repository: Repository): string | null {
 }
 
 /** Does the row say a credential is configured — the derived member, or the
- * id itself when the member is missing. */
-function hasCredential(repository: Repository): boolean {
+ * id itself when the member is missing. Exported because the ISSUES panel
+ * refuses to blame a 404 on privacy when a credential was in fact sent. */
+export function hasCredential(repository: Repository): boolean {
   return repository.credential === "configured" || credentialId(repository) !== null;
 }
 
-export function GitHubAccess({ project, repository }: GitHubAccessProps) {
+export function GitHubAccess({ project, repository, ref }: GitHubAccessProps) {
   const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
   const secrets = useSecrets(project.id);
   const canManage = project.my_role === "maintainer";
   const configured = hasCredential(repository);
