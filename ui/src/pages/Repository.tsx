@@ -29,7 +29,12 @@ import {
 } from "../api/queries";
 import { useProjectRuns } from "../api/runs";
 import { usePipelines } from "../api/pipelines";
-import { isNotGitHubRepository, useRepoIssues, type GitHubIssue } from "../api/issues";
+import {
+  isGitHubRepository,
+  isNotGitHubRepository,
+  useRepoIssues,
+  type GitHubIssue,
+} from "../api/issues";
 import type { Repository, Workspace } from "../api/types";
 import { StatusChip, Row } from "../components/ds/Row";
 import { Button } from "../components/ds/Button";
@@ -94,7 +99,11 @@ export default function Repository() {
     [repos.data, name],
   );
 
-  const issues = useRepoIssues(id, repository?.id ?? "", "");
+  // The GitHub-ness of this repository's remote is decided from the `git_url`
+  // the payload already carries: a local/file remote never asks the issues
+  // route (which would only answer `422 not_a_github_repository`).
+  const githubHosted = repository ? isGitHubRepository(repository.git_url) : false;
+  const issues = useRepoIssues(id, repository?.id ?? "", "", githubHosted);
   // ADR-0061 § 6: the ISSUES refusal line opens the GitHub-access picker
   // rendered up in the header — one dialog, opened from where the refusal is.
   const ghAccess = useRef<GitHubAccessHandle | null>(null);
@@ -223,6 +232,7 @@ export default function Repository() {
           repository={repositoryData}
           projectId={id}
           issues={issues}
+          githubHosted={githubHosted}
           issueRunOpen={issueRunOpen}
           onRun={() => setIssueRunOpen(true)}
           onClose={() => setIssueRunOpen(false)}
@@ -353,6 +363,7 @@ function RepoIssues({
   repository,
   projectId,
   issues,
+  githubHosted,
   issueRunOpen,
   onRun,
   onClose,
@@ -362,6 +373,9 @@ function RepoIssues({
   repository: Repository;
   projectId: string;
   issues: ReturnType<typeof useRepoIssues>;
+  /** The `git_url` mirror of the server's parse: false means the request was
+   * never made and the refusal line is shown up front. */
+  githubHosted: boolean;
   issueRunOpen: boolean;
   onRun: () => void;
   onClose: () => void;
@@ -371,16 +385,18 @@ function RepoIssues({
   onAddGitHubAccess: () => void;
 }) {
   const list = issues.data;
+  const notGitHub = !githubHosted || isNotGitHubRepository(issues.error);
   return (
     <Panel id="repo-issues" title="ISSUES" headingId="repo-issues-heading" headingLevel={2}>
       <div data-testid="repo-issues" className="space-y-[6px] p-[10px]">
-        {issues.isPending ? <Spinner label="Reading GitHub" /> : null}
-        {issues.error ? (
-          isNotGitHubRepository(issues.error) ? (
-            <p className="text-[12.5px] text-muted" data-testid="repo-issues-not-github">
-              {repository.name} is not a GitHub remote, so there is no issue to start a run from.
-            </p>
-          ) : githubRateLimited(issues.error) ? (
+        {issues.isPending && !notGitHub ? <Spinner label="Reading GitHub" /> : null}
+        {notGitHub ? (
+          <p className="text-[12.5px] text-muted" data-testid="repo-issues-not-github">
+            Issue triggers need a GitHub repository — {repository.name}'s remote is not one, so
+            there is no issue to start a run from.
+          </p>
+        ) : issues.error ? (
+          githubRateLimited(issues.error) ? (
             <p
               className="font-mono text-[11px] text-st-failed-tag-fg"
               role="alert"

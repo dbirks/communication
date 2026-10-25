@@ -5,7 +5,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
-import { meFixture, projectFixture, type RouteStub } from "../test/fakes";
+import { meFixture, projectFixture, requestsTo, type RouteStub } from "../test/fakes";
 import type { GitHubIssue } from "../api/issues";
 import type { Repository, RunSummary, Workspace, WorkspaceRepoStatus } from "../api/types";
 import { wirePipelineList } from "../test/fixtures/m4/wire";
@@ -21,6 +21,16 @@ const repository: Repository = {
   default_branch: "main",
   created_at: "2026-10-14T18:00:00Z",
   credential: "none",
+};
+
+/** What the lab actually seeds: a local remote the issues route could only
+ * answer `422 not_a_github_repository` for — the page must not ask. */
+const localRepositoryId = "01987a6f-7a8b-7c9d-a0e1-f2b3c4d5e6f1";
+const localRepository: Repository = {
+  ...repository,
+  id: localRepositoryId,
+  name: "lab",
+  git_url: "file:///srv/git/lab.git",
 };
 
 const issue: GitHubIssue = {
@@ -108,7 +118,10 @@ function routes(): RouteStub[] {
 
 describe("/p/:projectId/:repo", () => {
   it("renders the repository header and its sections from the mocked API", async () => {
-    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+    const { requests } = renderApp({
+      path: `/p/${projectFixture.id}/communication`,
+      routes: routes(),
+    });
 
     expect(await screen.findByTestId("repo-page")).toBeTruthy();
     expect(screen.getByTestId("repo-name").textContent).toBe("communication");
@@ -131,6 +144,15 @@ describe("/p/:projectId/:repo", () => {
     expect(screen.getByTestId("repo-workspaces").textContent).toContain("dirty");
 
     expect(await screen.findByTestId("repo-issues")).toBeTruthy();
+    // A GitHub-hosted remote does make the issues request — gating on
+    // git_url must not silence the working half.
+    expect(
+      requestsTo(
+        requests,
+        `/api/v1/projects/${projectFixture.id}/repos/${repositoryId}/issues`,
+        "GET",
+      ).length,
+    ).toBeGreaterThan(0);
     expect(screen.getByTestId(`repo-issue-${issue.number}`)).toBeTruthy();
     expect(screen.getByTestId(`repo-issue-title-${issue.number}`).getAttribute("href")).toBe(
       issue.html_url,
@@ -151,6 +173,33 @@ describe("/p/:projectId/:repo", () => {
     });
 
     expect(await screen.findByTestId("repo-not-found")).toBeTruthy();
+  });
+
+  it("shows the honest reason for a non-GitHub remote and never asks the issues route", async () => {
+    // No stub on the issues path at all: the page decides from `git_url` that
+    // there is nothing to read, so the request the emulator logged as a
+    // failed 422 must simply not happen.
+    const { requests } = renderApp({
+      path: `/p/${projectFixture.id}/lab`,
+      routes: [
+        { path: "/api/v1/me", body: meFixture },
+        { path: `/api/v1/projects/${projectFixture.id}`, body: projectFixture },
+        { path: `/api/v1/projects/${projectFixture.id}/repos`, body: { items: [localRepository] } },
+      ],
+    });
+
+    expect(await screen.findByTestId("repo-page")).toBeTruthy();
+    const line = await screen.findByTestId("repo-issues-not-github");
+    expect(line.textContent).toContain("Issue triggers need a GitHub repository");
+    expect(screen.queryByTestId("repo-issues-list")).toBeNull();
+    expect(screen.queryByText("Reading GitHub")).toBeNull();
+    expect(
+      requestsTo(
+        requests,
+        `/api/v1/projects/${projectFixture.id}/repos/${localRepositoryId}/issues`,
+        "GET",
+      ),
+    ).toHaveLength(0);
   });
 
   it("shows the honest rate-limited state when GitHub refuses the anonymous read", async () => {
