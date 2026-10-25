@@ -37,6 +37,8 @@ import { shortCommit, shortId, testidOf } from "../lib/format";
 import { routes } from "../lib/routes";
 import { elapsed, RunStatusChip } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
+import NewConversationDialog from "../components/NewConversationDialog";
+import { RepoWorkflows } from "../components/workflows/RepoWorkflows";
 
 /** The honest one-line answer for a spent anonymous GitHub budget: the upstream
  * refused the read (`502 github_rate_limited`). Say so, and stop there. */
@@ -86,6 +88,10 @@ export default function Repository() {
 
   const issues = useRepoIssues(id, repository?.id ?? "", "");
   const [issueRunOpen, setIssueRunOpen] = useState(false);
+  // The header's two ways in (design 1e): the shared new-thread dialog with
+  // this project fixed, and the same new-run form the issue section opens.
+  const [threadOpen, setThreadOpen] = useState(false);
+  const [startRunOpen, setStartRunOpen] = useState(false);
 
   if (project.isPending) return <Spinner label="Loading project" />;
   if (project.error || !project.data) {
@@ -123,49 +129,91 @@ export default function Repository() {
 
   return (
     <div className="min-w-0 space-y-4" data-testid="repo-page">
-      <header className="space-y-2" data-testid="repo-header">
-        <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
-          <Link to={routes.project(id)} data-testid="repo-breadcrumb">
-            {projectData.name}
-          </Link>
-          <span aria-hidden="true" className="px-1">
-            ›
-          </span>
-          <span data-testid="repo-breadcrumb-repo">{repositoryData.name}</span>
-        </nav>
-        <h1 data-testid="repo-name" className="text-title-l font-bold">
-          {repositoryData.name}
-        </h1>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-muted">
-          <span>
-            branch: <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
-          </span>
-          {/^https?:\/\//i.test(repositoryData.git_url.trim()) ? (
-            <a
-              href={repositoryData.git_url}
-              target="_blank"
-              rel="noreferrer"
-              data-testid="repo-git-url"
-              className="break-all underline"
-            >
-              {repositoryData.git_url}
-            </a>
-          ) : (
-            <span className="break-all">{repositoryData.git_url}</span>
-          )}
+      <header className="flex flex-wrap items-end gap-x-4 gap-y-2" data-testid="repo-header">
+        <div className="min-w-0 flex-1 space-y-1">
+          <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
+            <Link to={routes.project(id)} data-testid="repo-breadcrumb">
+              {projectData.name}
+            </Link>
+            <span aria-hidden="true" className="px-1.5">
+              /
+            </span>
+            <span data-testid="repo-breadcrumb-repo">{repositoryData.name}</span>
+          </nav>
+          <h1 data-testid="repo-name" className="text-[22px] leading-[28px] font-semibold">
+            {repositoryData.name}
+          </h1>
+          <div className="flex flex-wrap items-center gap-x-2 font-mono text-[11px] text-muted">
+            {/^https?:\/\//i.test(repositoryData.git_url.trim()) ? (
+              <a
+                href={repositoryData.git_url}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="repo-git-url"
+                className="break-all underline"
+              >
+                {repositoryData.git_url}
+              </a>
+            ) : (
+              <span className="break-all">{repositoryData.git_url}</span>
+            )}
+            <span aria-hidden="true">·</span>
+            <span data-testid="repo-default-branch">{repositoryData.default_branch}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setThreadOpen(true)}
+            data-testid="repo-new-thread"
+          >
+            New thread here
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => setStartRunOpen(true)}
+            data-testid="repo-start-run"
+          >
+            Start run
+          </Button>
         </div>
       </header>
 
-      <RepoStatus repository={repositoryData} projectId={id} />
-      <RepoIssues
-        repository={repositoryData}
+      {startRunOpen ? (
+        <Panel
+          id="repo-start-run"
+          title="START A RUN"
+          headingId="repo-start-run-heading"
+          headingLevel={2}
+          className="max-w-[900px]"
+        >
+          <div className="p-[10px]">
+            <NewRunForm projectId={id} onCancel={() => setStartRunOpen(false)} />
+          </div>
+        </Panel>
+      ) : null}
+
+      <RepoWorkflows projectId={id} project={projectData} repository={repositoryData} />
+
+      <NewConversationDialog
+        open={threadOpen}
+        onClose={() => setThreadOpen(false)}
         projectId={id}
-        issues={issues}
-        issueRunOpen={issueRunOpen}
-        onRun={() => setIssueRunOpen(true)}
-        onClose={() => setIssueRunOpen(false)}
+        project={projectData}
       />
-      <RepoRuns projectId={id} slugs={slugs} />
+
+      <div className="max-w-[900px] space-y-4">
+        <RepoStatus repository={repositoryData} projectId={id} />
+        <RepoIssues
+          repository={repositoryData}
+          projectId={id}
+          issues={issues}
+          issueRunOpen={issueRunOpen}
+          onRun={() => setIssueRunOpen(true)}
+          onClose={() => setIssueRunOpen(false)}
+        />
+        <RepoRuns projectId={id} slugs={slugs} />
+      </div>
     </div>
   );
 }

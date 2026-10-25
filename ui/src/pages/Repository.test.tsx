@@ -2,7 +2,7 @@
  * `/p/:projectId/:repo` — the repository page: header, STATUS, ISSUES and
  * RECENT RUNS sections, against the fake fetch.
  */
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../test/render";
 import { meFixture, projectFixture, type RouteStub } from "../test/fakes";
@@ -20,6 +20,7 @@ const repository: Repository = {
   git_url: "https://github.com/example/communication.git",
   default_branch: "main",
   created_at: "2026-10-14T18:00:00Z",
+  credential: "none",
 };
 
 const issue: GitHubIssue = {
@@ -83,8 +84,13 @@ function routes(): RouteStub[] {
   const issuesPath = `/api/v1/projects/${projectFixture.id}/repos/${repositoryId}/issues`;
   return [
     { path: "/api/v1/me", body: meFixture },
+    { path: "/api/v1/projects", body: { items: [projectFixture] } },
+    { path: "/api/v1/agent-profiles", body: { items: [] } },
     { path: projectPath, body: projectFixture },
     { path: `${projectPath}/repos`, body: { items: [repository] } },
+    { path: `${projectPath}/assignments`, body: { assignments: [] } },
+    { path: `${projectPath}/schedules`, body: { schedules: [] } },
+    { path: `${projectPath}/issue-triggers`, body: { issue_triggers: [] } },
     { path: `${projectPath}/workspaces`, body: { workspaces: [workspace] } },
     {
       path: `/api/v1/workspaces/${workspaceId}/repos/${repositoryId}/status`,
@@ -108,6 +114,16 @@ describe("/p/:projectId/:repo", () => {
     expect(screen.getByTestId("repo-default-branch").textContent).toBe("main");
     expect(screen.getByTestId("repo-git-url").getAttribute("href")).toBe(repository.git_url);
     expect(screen.getByTestId("repo-breadcrumb-repo").textContent).toBe("communication");
+
+    // The 1e header carries the two ways in; neither is a dead button.
+    expect(screen.getByTestId("repo-new-thread").textContent).toBe("New thread here");
+    expect(screen.getByTestId("repo-start-run").textContent).toBe("Start run");
+
+    // WORKFLOWS ON THIS REPO (2e) sits in the left column, above STATUS.
+    expect(await screen.findByTestId("repo-workflows")).toBeTruthy();
+    expect(screen.getByTestId("repo-workflows-empty").textContent).toContain(
+      "uses no workflow yet",
+    );
 
     expect(await screen.findByTestId("repo-workspaces")).toBeTruthy();
     expect(await screen.findByTestId(`repo-workspace-${workspaceId}`)).toBeTruthy();
@@ -201,5 +217,26 @@ describe("/p/:projectId/:repo", () => {
     expect(runLink.textContent).toContain("run #");
     // The bare id stays a title attribute, never a label in the row text.
     expect(row.textContent).not.toContain(runWorkspace.id);
+  });
+
+  it("opens the existing new-thread flow from the header's New thread here", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+
+    fireEvent.click(await screen.findByTestId("repo-new-thread"));
+    expect(await screen.findByTestId("new-conversation-dialog")).toBeTruthy();
+    // The thread is opened *here*: the project is fixed, not a picker.
+    expect(screen.getByTestId("new-conversation-dialog-project").textContent).toBe(
+      projectFixture.name,
+    );
+  });
+
+  it("opens the existing new-run flow from the header's Start run", async () => {
+    renderApp({ path: `/p/${projectFixture.id}/communication`, routes: routes() });
+
+    fireEvent.click(await screen.findByTestId("repo-start-run"));
+    expect(await screen.findByTestId("new-run-form")).toBeTruthy();
+    // No workflow is used yet, so the form says that instead of offering an
+    // empty assignment select.
+    expect(screen.getByTestId("new-run-no-assignments")).toBeTruthy();
   });
 });
