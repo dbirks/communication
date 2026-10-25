@@ -7683,6 +7683,12 @@ components:
           items:
             type: string
             format: uuid
+          default: []
+          description: >
+            Optional; an omitted field means the empty list, not a null —
+            empty means denied to every profile (`ADR-0018` D3). An
+            `integration_broker` secret (ADR-0061) is used by integrations and
+            never mounted to agents, so it is legitimately created without one.
         value:
           type: string
           minLength: 1

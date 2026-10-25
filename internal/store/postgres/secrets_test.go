@@ -534,6 +534,91 @@ func TestSecretStorePolicyUpdate(t *testing.T) {
 	}
 }
 
+// TestSecretStoreNilAllowlistStoresEmptyArray is the lab 500 (request
+// a08d58f7fabcb19ac966c828eaa2dbf0): a delivery_mode integration_broker secret
+// (ADR-0061) with no allowed_agent_profile_ids — legitimately, a broker secret
+// is used by integrations and never mounted to agents. pgx encodes a nil
+// []string as NULL, and the column is NOT NULL (migration 00004), so the insert
+// died on the not-null constraint. An omitted allowlist means the empty list
+// (ADR-0018 D3: empty means denied to every profile), and the store boundary is
+// where nil becomes '{}', so every caller is safe.
+func TestSecretStoreNilAllowlistStoresEmptyArray(t *testing.T) {
+	f := secSetup(t)
+	ctx := testCtx(t)
+
+	// cardinality is the NULL-distinguishing count (array_length says NULL for
+	// both a NULL *and* an empty array), so -1 below means "the column is
+	// NULL" and 0 means "the column is '{}'" — the two states the bug conflated.
+	rawAllowlistLens := func(t *testing.T, id, label string) (profilesLen, templatesLen int) {
+		t.Helper()
+		if err := f.pool.QueryRow(ctx, `
+			SELECT COALESCE(cardinality(allowed_agent_profile_ids), -1),
+			       COALESCE(cardinality(allowed_node_template_ids), -1)
+			FROM secret_metadata WHERE id = $1::uuid`, id).Scan(&profilesLen, &templatesLen); err != nil {
+			t.Fatalf("read raw allowlist lengths for %s: %v", label, err)
+		}
+		return profilesLen, templatesLen
+	}
+
+	for _, delivery := range []string{"env", "integration_broker"} {
+		label := "nil-allow-" + strings.ReplaceAll(delivery, "_", "-")
+		created, err := f.store.CreateSecret(ctx, f.caller(f.alice), f.projA, NewSecret{
+			Slug: f.slug(label), Purpose: "nil allowlist " + delivery,
+			DeliveryMode: delivery, Profiles: nil, Value: []byte(secSentinel),
+		})
+		if err != nil {
+			t.Fatalf("CreateSecret(%s) with a nil allowlist: %v", delivery, err)
+		}
+		if created.Profiles == nil || len(created.Profiles) != 0 {
+			t.Errorf("%s: created row scanned %v, want the empty list", delivery, created.Profiles)
+		}
+		if profilesLen, templatesLen := rawAllowlistLens(t, created.ID, delivery); profilesLen != 0 || templatesLen != 0 {
+			t.Errorf("%s: raw allowlist lengths = %d/%d (-1 means NULL), want 0/0 ('{}'/'{}')",
+				delivery, profilesLen, templatesLen)
+		}
+		// The resolver's read path agrees: [], never nil, never a not-found.
+		stored, err := f.store.LoadVersion(ctx, created.ID, 0)
+		if err != nil {
+			t.Fatalf("LoadVersion(%s): %v", delivery, err)
+		}
+		if stored.AllowedAgentProfileIDs == nil || len(stored.AllowedAgentProfileIDs) != 0 {
+			t.Errorf("%s: the resolver saw %v, want the empty list", delivery, stored.AllowedAgentProfileIDs)
+		}
+		// And the journal says [] in the payload, not null: an event consumer
+		// must be able to tell "granted to none" without a null check.
+		var payload string
+		if err := f.pool.QueryRow(ctx, `
+			SELECT payload::text FROM domain_events
+			WHERE project_id = $1::uuid AND type = 'secret.created' ORDER BY global_seq DESC LIMIT 1`,
+			f.projA).Scan(&payload); err != nil {
+			t.Fatalf("read secret.created event: %v", err)
+		}
+		var ev events.SecretCreatedPayload
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			t.Fatalf("decode secret.created payload: %v", err)
+		}
+		if ev.AllowedAgentProfileIDs == nil || len(ev.AllowedAgentProfileIDs) != 0 {
+			t.Errorf("%s: secret.created payload allowlist = %v, want []", delivery, ev.AllowedAgentProfileIDs)
+		}
+	}
+
+	// The policy write takes the same rule: a nil allowlist clears the list,
+	// it does not NULL the column.
+	secret := f.create(t, "nil-clear", secSentinel)
+	updated, err := f.store.UpdateSecretPolicy(ctx, f.caller(f.alice), f.projA, secret.ID, NewSecretPolicy{
+		Purpose: "cleared by a nil write", Profiles: nil, Audit: "materialization",
+	})
+	if err != nil {
+		t.Fatalf("UpdateSecretPolicy with a nil allowlist: %v", err)
+	}
+	if updated.Profiles == nil || len(updated.Profiles) != 0 {
+		t.Errorf("policy update scanned %v, want the empty list", updated.Profiles)
+	}
+	if profilesLen, _ := rawAllowlistLens(t, secret.ID, "policy update"); profilesLen != 0 {
+		t.Errorf("policy update stored raw length %d (-1 means NULL), want 0 ('{}')", profilesLen)
+	}
+}
+
 func TestSecretStoreRevokeRefusesMaterialization(t *testing.T) {
 	f := secSetup(t)
 	ctx := testCtx(t)

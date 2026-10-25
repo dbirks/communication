@@ -1400,3 +1400,64 @@ func TestBrokerSecretIsCreatableButNeverMountable(t *testing.T) {
 		t.Errorf("store-side refusal should name mounting: %s", rec.Body)
 	}
 }
+
+// TestSecretCreateWithoutAllowlistMeansEmptyList is the API half of the lab 500
+// (request a08d58f7fabcb19ac966c828eaa2dbf0): a delivery_mode
+// integration_broker secret (ADR-0061) created with no
+// allowed_agent_profile_ids — legitimately, a broker secret is used by
+// integrations, never mounted to agents — is a 201, not a failure, and an
+// omitted allowlist reaches the store as the empty list (denied to every
+// profile, ADR-0018 D3), never a nil a NOT NULL column would turn into NULL.
+func TestSecretCreateWithoutAllowlistMeansEmptyList(t *testing.T) {
+	f := secNewFixture(t, prjAs("u-1", false))
+
+	for _, delivery := range []string{"env", "integration_broker"} {
+		rec := do(t, f.server, secMutation(http.MethodPost, "/api/v1/projects/"+secTProject+"/secrets", map[string]any{
+			"slug": "no-allowlist-" + delivery, "purpose": "github_repo", "delivery_mode": delivery,
+			"value": secTSentinel,
+		}))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s without an allowlist: status = %d, want 201 (%s)", delivery, rec.Code, rec.Body)
+		}
+		in := f.secrets.created[len(f.secrets.created)-1]
+		if in.Profiles == nil {
+			t.Errorf("%s: the store seam received a nil allowlist; an omitted field means the empty list", delivery)
+		}
+		if len(in.Profiles) != 0 {
+			t.Errorf("%s: the store seam received %v, want the empty list", delivery, in.Profiles)
+		}
+		// The view the client gets back says "granted to none", not "unset":
+		// the field is present and [], never null.
+		created := decodeBody(t, rec)
+		profiles, present := created["allowed_agent_profile_ids"]
+		if !present || profiles == nil {
+			t.Errorf("%s: response allowed_agent_profile_ids = %v, want [] (%s)", delivery, profiles, rec.Body)
+		}
+		if list, ok := profiles.([]any); !ok || len(list) != 0 {
+			t.Errorf("%s: response allowed_agent_profile_ids = %v, want []", delivery, profiles)
+		}
+		if strings.Contains(rec.Body.String(), secTSentinel) {
+			t.Fatalf("the create response quoted the value: %s", rec.Body)
+		}
+	}
+
+	// The policy verb too: PUT names the field as required, and an explicit []
+	// must reach the store as the empty list, not a nil.
+	f.secrets.putSecret(secTProject, SecretView{
+		ID: secTSecret, Slug: "allow-clear", Scope: "project", Delivery: "env",
+		CurrentVS: 1, Profiles: []string{secTProfile}, Audit: "materialization",
+	})
+	rec := do(t, f.server, secMutation(http.MethodPut, secSecretURL(secTProject, secTSecret), map[string]any{
+		"purpose": "cleared", "allowed_agent_profile_ids": []string{}, "audit_policy": "materialization",
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear the allowlist: status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	call := f.secrets.policies[len(f.secrets.policies)-1]
+	if call.in.Profiles == nil {
+		t.Errorf("the store seam received a nil allowlist from an explicit [], want the empty list")
+	}
+	if len(call.in.Profiles) != 0 {
+		t.Errorf("the store seam received %v from an explicit [], want the empty list", call.in.Profiles)
+	}
+}

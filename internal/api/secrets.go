@@ -470,7 +470,7 @@ func (h *secHandlers) createSecret(w http.ResponseWriter, r *http.Request) {
 		Purpose:      body.Purpose,
 		DeliveryMode: body.Delivery,
 		Scope:        body.Scope,
-		Profiles:     append([]string(nil), body.Profiles...),
+		Profiles:     secProfilesOrEmpty(body.Profiles),
 		Value:        value,
 	}
 	created, err := h.secrets.CreateSecret(r.Context(), c, projectID, in)
@@ -535,7 +535,7 @@ func (h *secHandlers) updateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := h.secrets.UpdateSecret(r.Context(), c, projectID, secretID, SecretPolicyInput{
 		Purpose:  *body.Purpose,
-		Profiles: append([]string(nil), *body.Profiles...),
+		Profiles: secProfilesOrEmpty(*body.Profiles),
 		Audit:    *body.Audit,
 	})
 	if err != nil {
@@ -982,6 +982,17 @@ func relativePathRefusal(rel string) string {
 // in one case, decode into a field that must not be there).
 func secInvalid(w http.ResponseWriter, detail string) {
 	WriteProblem(w, http.StatusUnprocessableEntity, "Validation Failed", detail)
+}
+
+// secProfilesOrEmpty copies an allowlist so an omitted (or empty) JSON field
+// means the empty list — denied to every profile (ADR-0018 D3) — and never
+// reaches a store as a nil slice that could become a NULL column. A plain
+// append([]string(nil), in...) collapses to nil when in is empty, which is the
+// exact shape the store must not receive.
+func secProfilesOrEmpty(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 // validUUIDString is the local uuid shape check. api must not import

@@ -3418,7 +3418,11 @@ export interface components {
        * @enum {string}
        */
       scope?: "project" | "org";
-      allowed_agent_profile_ids?: string[];
+      /**
+       * @description Optional; an omitted field means the empty list, not a null — empty means denied to every profile (`ADR-0018` D3). An `integration_broker` secret (ADR-0061) is used by integrations and never mounted to agents, so it is legitimately created without one.
+       * @default []
+       */
+      allowed_agent_profile_ids: string[];
       /** @description Encrypted with a per-version data key (AES-256-GCM, fresh 12-byte nonce, AAD binding `secret_id || version || key_id || sha256(slug)`) and stored in `secret_versions` v1. A retried create compares `content_sha256` server-side instead of writing a second version. */
       value: string;
     };

@@ -368,6 +368,12 @@ func (s *SecretStore) CreateSecret(ctx context.Context, c Caller, projectID stri
 	if scope == secrets.ScopeOrg && !c.IsOrgAdmin {
 		return Secret{}, fmt.Errorf("%w: an org-scope secret needs organization admin", ErrSecretForbidden)
 	}
+	// An omitted allowlist means the empty list — denied to every profile
+	// (ADR-0018 D3) — never a NULL. The column is NOT NULL and pgx encodes a
+	// nil []string as NULL, so normalising here (the store boundary) is what
+	// makes every caller safe, including the integration_broker create of
+	// ADR-0061, which legitimately names no agent profile at all.
+	in.Profiles = secNonNil(in.Profiles)
 	digest := hex.EncodeToString(sha256Sum(in.Value))
 	var out Secret
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -530,6 +536,9 @@ func (s *SecretStore) UpdateSecretPolicy(ctx context.Context, c Caller, projectI
 		if before.RevokedAt != nil {
 			return ErrSecretRevoked
 		}
+		// Same rule as CreateSecret: a nil allowlist clears the list, it does not
+		// NULL the column.
+		in.Profiles = secNonNil(in.Profiles)
 		if _, err := tx.Exec(ctx, `
 			UPDATE secret_metadata
 			   SET purpose = $2, allowed_agent_profile_ids = $3::uuid[], audit_policy = $4
