@@ -3,7 +3,7 @@
  * through the same hooks the preview's live seam proved, the filter chips are
  * the design's, and the empty/404 states are honest.
  */
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
@@ -154,7 +154,25 @@ describe("the opening lens of the runs list", () => {
   it("keeps the lens a person clicked through a refetch", async () => {
     const { queryClient, requests } = mountRuns({ runs: WAITING });
 
-    expect(await screen.findByTestId("runs-filter-attention")).toBeTruthy();
+    // Wait for what the refetch actually depends on: the first response on
+    // screen and the query settled. The chips render while the first GET is
+    // still in flight, and while it is, `refetchQueries` reuses that in-flight
+    // request rather than starting a second one (query-core `Query#fetch`
+    // cancels only a fetch that already has data) — so counting "the second
+    // request" after a chip alone was the flake: on a fast tick the response
+    // had landed, on a loaded CI runner it had not, and the refetch was
+    // deduped away. Requiring `success` + `fetchStatus: "idle"` + exactly one
+    // request closes that window instead of racing it.
+    expect(await screen.findByTestId(`run-row-${WAITING[0].id}`)).toBeTruthy();
+    await waitFor(() => {
+      const state = queryClient.getQueryState(queryKeys.runs(wireProjectId));
+      expect(state?.status).toBe("success");
+      expect(state?.fetchStatus).toBe("idle");
+    });
+    expect(requestsTo(requests, RUNS_PATH)).toHaveLength(1);
+    // The data latched the lens onto `attention`; the click below is the human
+    // choice that a later refetch must not move.
+    expect(screen.getByTestId("runs-filter-attention").getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTestId("runs-filter-active").getAttribute("aria-pressed")).toBe("false");
 
     fireEvent.click(screen.getByTestId("runs-filter-active"));
