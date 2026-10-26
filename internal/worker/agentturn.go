@@ -43,6 +43,13 @@ const (
 	agentAckGrace      = 10 * time.Second
 	agentPumpDrainWait = 2 * time.Second
 
+	// maxAttemptStderrTailBytes bounds the agent stderr tail carried on the
+	// attempt teardown: the disconnect event's stderr_tail and the failed
+	// detail. The newest words are the ones that name the death; the ring
+	// behind them is 64 KiB (runtime.go's maxStderrBytes) and never travels
+	// whole into the journal.
+	maxAttemptStderrTailBytes = 768
+
 	// agentConversationBusyPoll is the retry cadence of the
 	// ErrAttemptConversationBusy wait: the conversation is a live agent the
 	// human is still driving, and its terminal arrives in seconds-to-minutes,
@@ -733,6 +740,12 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// turn was in flight? ACP handles answer (acp.DisconnectReporter); a
 	// session that cannot answer is honest absence, not a disconnect.
 	discInfo, midTurnDisc := acp.SessionDisconnect(sess)
+	// The CLI's own last words, read while the handle is alive. The transport
+	// records only *that* a process died; a harness killed by a model gateway
+	// or a sandbox usually said so on stderr first, and the attempt's ledger
+	// rows are the only place a later reader will look. Redacted like every
+	// other host fact, bounded like every journal payload.
+	agentStderr := bounded(a.redact(acp.StderrTail(sess, maxAttemptStderrTailBytes)), maxAttemptStderrTailBytes)
 
 	_ = sess.Close()
 	select {
@@ -775,6 +788,15 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 		}
 	}
 
+	// An honest failure carries its evidence. The disconnect reason already
+	// rides the detail for a proved transport death; the stderr tail is the
+	// half that was missing — the same death seen through the CLI's own
+	// output. Deterministic arms (refusal, schema failure) keep their class:
+	// they gain evidence, never a reclassification.
+	if res.Status == AttemptStatusFailed {
+		res.Detail = failureDiagnostics(res.Detail, agentStderr)
+	}
+
 	// The transcript closes before the attempt speaks its terminal row: the
 	// chunks and tool lines are the run's conversation, and a member watching
 	// the run page must see them in order under the terminal event.
@@ -784,8 +806,20 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	// fence already proved us stale: runner.go's abandon rule then skips the
 	// binding — the new owner's RecordBinding closes it, ours must not.
 	disconnected := "process_exited"
-	if stopAsked {
+	switch {
+	case stopAsked:
 		disconnected = "shutdown"
+	case midTurnDisc && discInfo.Reason != "":
+		// Name the death the adapter observed, not the coarse guess. The
+		// old spelling hid whether the harness exited, was killed, or only
+		// lost its stdio pipe — different stories for the retry decision and
+		// for whoever reads this row next (the vocabulary is disconnect.go's,
+		// shared with agent.session.disconnected per ADR-0016 § 5).
+		disconnected = discInfo.Reason
+	}
+	discDetail := ""
+	if midTurnDisc && !stopAsked {
+		discDetail = bounded(a.redact(strings.TrimSpace(discInfo.Detail)), 240)
 	}
 	// The teardown runs on a detached, bounded context: a cancelled attempt
 	// must still be able to say its session went away (runner.go's finish
@@ -795,6 +829,7 @@ func (a *AgentTurn) executeAttempt(ctx context.Context, c AttemptClaim, sink Att
 	if a.journal(dctx, sink, c, events.TypeAgentSessionDisconnected, events.SessionDisconnectedPayload{
 		ConversationID: conv.ConversationID, BindingID: bindingID, WorkerID: c.WorkerID,
 		ACPSessionID: info.ACPSessionID, Reason: disconnected,
+		Detail: discDetail, StderrTail: agentStderr,
 	}) {
 		if _, cerr := a.Sessions.CloseBinding(dctx, conv.ConversationID, c.WorkerID, disconnected); cerr != nil {
 			a.logger().Warn("closing attempt session binding failed",
@@ -1405,6 +1440,34 @@ func disconnectDetail(info acp.DisconnectInfo) string {
 	}
 	detail += ") — the ACP turn never completed, so there is no reply for the output schema to judge; invalid_output is reserved for a reply that violates its schema (ADR-0023 § 7)"
 	return bounded(detail, 512)
+}
+
+// failureDiagnostics appends the agent's bounded stderr tail to a failed
+// attempt's detail. It adds evidence and changes nothing else: the class is
+// chosen by mapTurnOutcome and the endTurn guards, and a deterministic agent
+// verdict (refusal, truncated answer, bad schema) stays exactly as classified
+// — retryability is the node author's retriableErrors list to decide
+// (ADR-0023 § 7), not a word choice made here.
+func failureDiagnostics(detail, stderr string) string {
+	if stderr == "" {
+		return detail
+	}
+	// Make room for the evidence: the closing sentence of a disconnect detail
+	// is spec prose that repeats in every row; the stderr never does.
+	if i := strings.Index(detail, " — the ACP turn never completed"); i >= 0 {
+		detail = detail[:i]
+	}
+	if detail == "" {
+		detail = "agent turn failed"
+	}
+	const marker = "; the agent's last stderr: "
+	if len(stderr) > 220 {
+		stderr = "…" + stderr[len(stderr)-220:]
+	}
+	if room := 512 - len(marker) - len(stderr); len(detail) > room {
+		detail = bounded(detail, max(0, room))
+	}
+	return detail + marker + stderr
 }
 
 // ptrResult lifts a value refusal into the pointer the parse helpers return.

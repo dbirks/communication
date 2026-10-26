@@ -614,13 +614,25 @@ type SessionConnectedPayload struct {
 }
 
 // SessionDisconnectedPayload is agent.session.disconnected. Reason is a short
-// machine-readable cause ("shutdown", "lease_expired", "process_exited", ...).
+// machine-readable cause ("shutdown", "lease_expired", "process_exited",
+// "agent_process_exited", "acp_connection_closed", ...).
 type SessionDisconnectedPayload struct {
 	ConversationID string `json:"conversation_id"`
 	BindingID      string `json:"binding_id"`
 	WorkerID       string `json:"worker_id"`
 	ACPSessionID   string `json:"acp_session_id,omitempty"`
 	Reason         string `json:"reason"`
+	// Detail is the observed transport evidence behind a mid-turn death (the
+	// exit verdict or the SDK's message), redacted and bounded by the emitter.
+	// It is present only when the emitter observed a disconnect that carried
+	// evidence; a graceful shutdown or replacement says nothing more than its
+	// reason.
+	Detail string `json:"detail,omitempty"`
+	// StderrTail is the last bytes the agent harness wrote to stderr before
+	// its session went away, redacted and bounded by the emitter. It is the
+	// CLI's own words — what a gateway failure or a crash left behind.
+	// Absent when the emitter could not read the process's stderr.
+	StderrTail string `json:"stderr_tail,omitempty"`
 }
 
 // ------------------------------------------------------- M3: workspaces ----

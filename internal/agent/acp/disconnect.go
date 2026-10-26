@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dbirks/communication/internal/domain"
 )
@@ -71,10 +72,43 @@ type DisconnectReporter interface {
 	Disconnect() (DisconnectInfo, bool)
 }
 
+// StderrObserver is the optional third question a session answers after a
+// turn: what did the harness write to its stderr? The transport records only
+// *that* a process died; a CLI killed by a model-gateway 5xx usually says so
+// on stderr first, and the ledger is the only place the next reader of a
+// failed attempt will look. A live ACP handle keeps a bounded ring of the
+// process's stderr; a session that cannot answer reports the honest nothing.
+type StderrObserver interface {
+	Stderr() string
+}
+
 var (
 	_ DisconnectReporter = (*handle)(nil)
+	_ StderrObserver     = (*handle)(nil)
 	_ error              = (*DisconnectedError)(nil)
 )
+
+// StderrTail reads the session's last stderr, keeping the TAIL bounded to
+// maxBytes (cut on a rune boundary): the newest words are the ones that name
+// the death. A session that cannot answer (a test double, a non-ACP adapter)
+// reports "" — no observation, no claim.
+func StderrTail(sess domain.AgentSession, maxBytes int) string {
+	o, ok := sess.(StderrObserver)
+	if !ok {
+		return ""
+	}
+	s := strings.TrimSpace(o.Stderr())
+	if s == "" {
+		return ""
+	}
+	if maxBytes > 0 && len(s) > maxBytes {
+		s = s[len(s)-maxBytes:]
+		for i := 0; i < utf8.UTFMax && len(s) > 0 && !utf8.RuneStart(s[0]); i++ {
+			s = s[1:]
+		}
+	}
+	return s
+}
 
 // SessionDisconnect asks a live session for its mid-turn disconnect. A
 // session that cannot answer (a test double, a non-ACP adapter) reports

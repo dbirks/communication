@@ -1714,7 +1714,7 @@ paths:
         | `conversation.turn.interrupted` | `conversation_id`, `turn_id`, `worker_id`, `fencing_token`, `reason` |
         | `conversation.control.transferred` | `conversation_id`, `turn_id`, `from_kind`, `from_user_id`, `to_kind`, `to_user_id`, `reason`, `control_version` |
         | `agent.session.connected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `protocol_version`, `launcher_id`, `launcher_version`, `session_origin`, `agent_capabilities` |
-        | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason` |
+        | `agent.session.disconnected` | `conversation_id`, `binding_id`, `worker_id`, `acp_session_id`, `reason`, `detail`, `stderr_tail` |
 
         Enumerated values, spelled exactly: `permission.decided`'s `status` is
         `decided`, `expired` or `cancelled`; `turn.interrupted`'s `reason` is
@@ -1733,6 +1733,13 @@ paths:
         offered them (`kind` = the observed ACP option kind, e.g. `allow_once`);
         `agent.session.connected`'s `agent_capabilities` is the agent's own
         capability object, verbatim.
+
+        `agent.session.disconnected`'s `reason` is a short machine-readable
+        cause (`shutdown`, `replaced`, `process_exited`, or the observed
+        mid-turn death names `agent_process_exited` / `acp_connection_closed`);
+        `detail` and `stderr_tail` ride it only when the emitter observed the
+        evidence — the adapter's exit/transport verdict and the last bytes the
+        harness wrote to stderr, both redacted and bounded by the emitter.
 
         `conversation.message.agent` is the worker's coalesced, readable chunk
         (`09` "worker may batch/coalesce to reduce DB costs, while preserving

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/dbirks/communication/internal/domain"
@@ -61,6 +63,11 @@ func TestPromptDiesMidTurnIsDisconnect(t *testing.T) {
 	}
 	if d.Err == nil {
 		t.Errorf("want the underlying SDK error retained, got %+v", d)
+	}
+	// The reader leg of the same death: the harness's stderr survives the
+	// process, and the tail is where the newest words — the diagnosis — live.
+	if tail := StderrTail(sess, 4096); !strings.Contains(tail, "upstream model gateway returned 502") {
+		t.Errorf("StderrTail = %q, want the stderr the harness wrote before it died", tail)
 	}
 }
 
@@ -175,3 +182,44 @@ type requestErrShim struct{ err error }
 
 func (s *requestErrShim) Error() string { return "wrapped: " + s.err.Error() }
 func (s *requestErrShim) Unwrap() error { return s.err }
+
+// noObserverSession is a domain.AgentSession that cannot answer the stderr
+// question — a test double, a future non-ACP adapter. The honest answer is
+// the empty string, never an invented one.
+type noObserverSession struct{ domain.AgentSession }
+
+// tailingSession answers Stderr like a live handle: the reader works through
+// the interface, not against the concrete type.
+type tailingSession struct {
+	domain.AgentSession
+	out string
+}
+
+func (s tailingSession) Stderr() string { return s.out }
+
+// TestStderrTail pins the three promises the worker's diagnostics depend on:
+// an unreadable session reports "", the TAIL (not the head) survives a bound,
+// and a bound never cuts mid-rune into mojibake or invalid UTF-8.
+func TestStderrTail(t *testing.T) {
+	if got := StderrTail(noObserverSession{}, 64); got != "" {
+		t.Errorf("a session that cannot answer reported %q; honest absence is an empty string", got)
+	}
+	if got := StderrTail(tailingSession{out: "  \n\t \n"}, 64); got != "" {
+		t.Errorf("blank stderr = %q, want the empty string", got)
+	}
+	whole := "first line\nsecond line"
+	if got := StderrTail(tailingSession{out: whole}, 0); got != whole {
+		t.Errorf("maxBytes 0 = %q, want the whole trimmed stderr", got)
+	}
+	long := strings.Repeat("0123456789", 40) + "\napi error 502 from gateway: 💊 overloaded"
+	got := StderrTail(tailingSession{out: long}, 32)
+	if len(got) > 32 {
+		t.Errorf("tail %q (%d bytes) exceeds the 32-byte bound", got, len(got))
+	}
+	if !strings.HasSuffix(got, "overloaded") {
+		t.Errorf("tail %q is not the newest stderr — the tail is the diagnosis", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("tail %q was cut mid-rune", got)
+	}
+}

@@ -742,6 +742,10 @@ func runFakeAgentProcess() {
 				SessionUpdate: "agent_message_chunk", Content: textBlock("working on it")}})
 			send(acp.SessionUpdate{ToolCall: &acp.SessionUpdateToolCall{
 				SessionUpdate: "tool_call", ToolCallId: "t1", Title: "edit hello.py"}})
+			// The CLI's own last words, printed as the newest stderr so the
+			// tail the client reads names the death even behind whatever
+			// noise (a race dump) the test child emits earlier.
+			fmt.Fprintln(os.Stderr, "die-mid-turn: upstream model gateway returned 502, exiting")
 			// No answer after the tool call: the process is gone.
 			os.Exit(7)
 			return acp.PromptResponse{}, nil

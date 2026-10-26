@@ -62,6 +62,17 @@ type agentSessionStub struct {
 	// disc, when set, makes the stub answer like an acp handle whose
 	// transport died while the turn was in flight.
 	disc *acp.DisconnectInfo
+
+	// stderr, when set, makes the stub answer the stderr question a live
+	// acp handle answers (acp.StderrObserver).
+	stderr string
+}
+
+// Stderr implements acp.StderrObserver for the stub.
+func (s *agentSessionStub) Stderr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stderr
 }
 
 // Disconnect implements acp.DisconnectReporter for the stub.
@@ -656,6 +667,150 @@ func TestAgentTurnMidTurnDisconnectIsNotInvalidOutput(t *testing.T) {
 		}
 		if res.Status != AttemptStatusSucceeded {
 			t.Fatalf("res = %+v, want succeeded — the harness answered before it exited", res)
+		}
+	})
+}
+
+// TestAgentTurnDisconnectDiagnosticsRetriableVsDeterministic is the
+// agent-disconnect-retry finding, told from the executor's side. The retry
+// decision belongs to the node author's retriableErrors (ADR-0023 § 7); what
+// belongs here is that the CLASS names what actually happened and the record
+// carries the evidence: a transient transport death is infra (the class the
+// M4 implement node lists as retriable), a deterministic agent verdict keeps
+// its class, and both spellings carry the disconnect reason and the agent's
+// last stderr so a one-off disconnect that never reproduces is still
+// diagnosable from the ledger — the shape of the C1c run at d3466df.
+func TestAgentTurnDisconnectDiagnosticsRetriableVsDeterministic(t *testing.T) {
+	disconnectPayload := func(t *testing.T, f *agentTurnFixture) events.SessionDisconnectedPayload {
+		t.Helper()
+		for _, ev := range f.sink.events {
+			if ev.Type == events.TypeAgentSessionDisconnected {
+				return ev.Payload.(events.SessionDisconnectedPayload)
+			}
+		}
+		t.Fatalf("no agent.session.disconnected row in %v", f.sink.types())
+		return events.SessionDisconnectedPayload{}
+	}
+
+	t.Run("transient transport death: infra, reason and stderr on both rows", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.mu.Lock()
+			s.stderr = "warn: upstream model gateway returned 502 overloaded\nerror: retry exhausted, exiting"
+			s.mu.Unlock()
+			s.diedMidTurn(acp.DisconnectInfo{
+				Reason: acp.DisconnectReasonConnectionClosed,
+				Detail: `{"code":-32603,"message":"Internal error","data":{"error":"peer disconnected before response"}}`,
+			})
+			return "", &acp.DisconnectedError{
+				Info: acp.DisconnectInfo{Reason: acp.DisconnectReasonConnectionClosed, Detail: "peer disconnected before response"},
+				Err:  errors.New("peer disconnected before response"),
+			}
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInfra {
+			t.Fatalf("res = %+v, want failed/infra — a transport death is not an agent verdict and the node's retriableErrors decide the retry", res)
+		}
+		for _, want := range []string{acp.DisconnectReasonConnectionClosed, "502 overloaded", "the agent's last stderr"} {
+			if !strings.Contains(res.Detail, want) {
+				t.Errorf("attempt detail %q must carry %q", res.Detail, want)
+			}
+		}
+		if len(res.Detail) > 512 {
+			t.Errorf("attempt detail is %d bytes; attempts.detail is bounded at 512", len(res.Detail))
+		}
+		p := disconnectPayload(t, f)
+		if p.Reason != acp.DisconnectReasonConnectionClosed {
+			t.Errorf("disconnect event reason = %q, want the observed %q (not the coarse process_exited)", p.Reason, acp.DisconnectReasonConnectionClosed)
+		}
+		if !strings.Contains(p.Detail, "peer disconnected") {
+			t.Errorf("disconnect event detail = %q, want the transport evidence", p.Detail)
+		}
+		if !strings.Contains(p.StderrTail, "502 overloaded") {
+			t.Errorf("disconnect event stderr_tail = %q, want the CLI's last words", p.StderrTail)
+		}
+	})
+
+	t.Run("a killed harness reports the process-exit reason", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.mu.Lock()
+			s.stderr = "killed by policy"
+			s.mu.Unlock()
+			s.diedMidTurn(acp.DisconnectInfo{Reason: acp.DisconnectReasonProcessExited, Detail: "signal: killed"})
+			return "", &acp.DisconnectedError{
+				Info: acp.DisconnectInfo{Reason: acp.DisconnectReasonProcessExited, Detail: "signal: killed"},
+				Err:  errors.New("signal: killed"),
+			}
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.ErrorClass != ErrorClassInfra || !strings.Contains(res.Detail, acp.DisconnectReasonProcessExited) {
+			t.Fatalf("res = %+v, want infra naming %q", res, acp.DisconnectReasonProcessExited)
+		}
+		if p := disconnectPayload(t, f); p.Reason != acp.DisconnectReasonProcessExited || !strings.Contains(p.Detail, "signal: killed") {
+			t.Errorf("disconnect event = %+v, want the observed exit reason and its evidence", p)
+		}
+	})
+
+	t.Run("a bad reply after the answer stays invalid_output — but says why", func(t *testing.T) {
+		// The C1c shape: the harness ANSWERED (end_turn arrived, the turn
+		// window closed), then died with a truncated reply. The silence is
+		// not a transport death the executor can prove — it is a reply that
+		// fails extraction — so the class stays invalid_output and the node
+		// author's retriableErrors (which do not list it) own the retry.
+		// What was missing, and is pinned here, is the diagnosis: the
+		// gateway's words survive into the attempt detail.
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.mu.Lock()
+			s.stderr = "api error: model gateway 500 (try 3/3)"
+			s.mu.Unlock()
+			s.sendChunk("I'll summarize the JSON after the model reco") // truncated reply
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusFailed || res.ErrorClass != ErrorClassInvalidOutput {
+			t.Fatalf("res = %+v, want failed/invalid_output — an answered turn is judged by its reply (ADR-0023 § 7)", res)
+		}
+		if !strings.Contains(res.Detail, "model gateway 500") || !strings.Contains(res.Detail, "the agent's last stderr") {
+			t.Errorf("invalid_output detail %q must carry the agent's stderr so the one-off is diagnosable", res.Detail)
+		}
+	})
+
+	t.Run("a refusal keeps its class and gains the same evidence", func(t *testing.T) {
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.mu.Lock()
+			s.stderr = "policy: prompt refused"
+			s.mu.Unlock()
+			return domain.StopRefusal, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.ErrorClass != ErrorClassAgentError || !strings.Contains(res.Detail, "refused") {
+			t.Fatalf("res = %+v, want agent_error naming the refusal — a verdict is never reclassified by its stderr", res)
+		}
+		if !strings.Contains(res.Detail, "policy: prompt refused") {
+			t.Errorf("detail %q must carry the stderr tail", res.Detail)
 		}
 	})
 }

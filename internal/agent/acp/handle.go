@@ -113,7 +113,12 @@ func (h *handle) Info() domain.SessionInfo { return h.info }
 func (h *handle) ProtocolVersion() int { return h.protocolVersion }
 
 // Stderr returns the last bytes the agent wrote to stderr (bounded ring).
-func (h *handle) Stderr() string { return h.stderr.String() }
+func (h *handle) Stderr() string {
+	if h.stderr == nil {
+		return ""
+	}
+	return h.stderr.String()
+}
 
 // Events returns the normalized event stream (buffered, capacity 1024).
 func (h *handle) Events() <-chan domain.ConversationEvent { return h.events }
