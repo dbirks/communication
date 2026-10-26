@@ -17099,11 +17099,75 @@ def w11_rendered_children(dom_text):
     return out
 
 
-def w11_tree_verdicts(children, dom_text):
+def w11_tree_children(client, run_id):
+    """The `/tree` route's child rows as of THIS call — the one spelling of the read W11
+    makes twice: once to wait the fan-out open, once the moment after the DOM snapshot.
+    [] when the route did not answer."""
+    doc = c8_tree_doc(client, run_id) or {}
+    return [c for c in (doc.get("children") or []) if isinstance(c, dict)]
+
+
+def w11_wait_fanout_children(client, run_id, want, seconds=300, delay=5, project_id="",
+                             tag="W11"):
+    """Poll `/tree` until it reports the WHOLE fan-out (`want` children), then return it.
+
+    accept/20261026-035125-77a1219 W11: the answer key was read the moment THREE
+    children existed while the 25-item fan-out was still opening child runs, and the
+    browser snapshot came later — 17 honest rows were then graded against a 3-child key,
+    14 of them as "rows naming no child of this run". A key is only an answer key once
+    it is as full as the DOM it will be compared against.
+
+    With `project_id` set the poll also DECIDES the approval gate whenever it finds the
+    run in `waiting_human` (C1b's own route, the same call `wait_live_past_gate` makes):
+    the fan-out sits BEHIND that gate, so a run held there opens no child at all and the
+    whole leg GAPs on an empty tree. `--only W11` proved it — the earlier gate wait
+    returned on the PRE-gate `/plan` lease, nothing approved the run, and postgres still
+    read `waiting_human` after the leg finished. A leg that needs a fan-out guarantees
+    the fan-out is released instead of assuming the full-order run happened to be past it.
+
+    If the route never reaches `want` inside `seconds`, the LAST read is returned: the
+    verdict then reports honestly on a partial key instead of burning the deadline on a
+    fan-out that is not happening."""
+    children, deadline, in_gate = [], time.time() + seconds, False
+    while time.time() < deadline:
+        if project_id:
+            if run_status(run_id) != "waiting_human":
+                in_gate = False
+            elif not in_gate:
+                # one decide per gate: a pending approval that is already decided comes
+                # back non-200, and the next `waiting_human` (a later ask, if the twin
+                # grows one) gets its own decide and its own check line.
+                in_gate = bool(approve_gate(client, project_id, run_id))
+                if in_gate:
+                    check(f"{tag} the approval gate was decided (C1b's route) so the "
+                          "fan-out could open", True,
+                          f"run {run_id} released from waiting_human — /fan_out's "
+                          f"{want} child runs are next")
+        children = w11_tree_children(client, run_id)
+        if len(children) >= want:
+            break
+        time.sleep(delay)
+    if project_id and not in_gate and run_status(run_id) == "waiting_human":
+        check(f"{tag} the approval gate was decided (C1b's route) so the fan-out could "
+              "open", False,
+              f"the {seconds}s fan-out window ran out with run {run_id} still "
+              "waiting_human and POST /api/v1/approvals/{id}/decide never returning 200 — "
+              "no child run was ever released, so the tree has nothing to render")
+    return children
+
+
+def w11_tree_verdicts(children, dom_text, prior_children=None):
     """Row W11's first half: "the tree renders depth 1 children with their own
     statuses". `children` is what `GET /runs/{id}/tree` reports (the answer key —
     its ids, depths and statuses, never invented here); the DOM is searched for the
     sentence the component emits, row by row.
+
+    `prior_children` is optional: the SAME `/tree` read taken immediately BEFORE the
+    snapshot. A 25-child fan-out is still opening while the page renders and a child's
+    status moves (queued → running → completed) across those seconds, so a row is
+    honest when its chip carries EITHER read's status for that child — and a row naming
+    a child either read saw belongs to this run. Without it, the fresh key alone decides
+    (the original behaviour).
 
     Two verdicts, because they fail for different reasons: the rows that DO render
     must be honest (depth 1, the child's own status word, no invented one), and the
@@ -17112,6 +17176,7 @@ def w11_tree_verdicts(children, dom_text):
     the page cannot be opened from the tree at all."""
     out = []
     rows = [w11_child_view(c) for c in (children or []) if isinstance(c, dict)]
+    before = [w11_child_view(c) for c in (prior_children or []) if isinstance(c, dict)]
     rendered = w11_rendered_children(dom_text)
     label = "W11 the tree renders depth-1 children with their own statuses"
     if not rows:
@@ -17128,14 +17193,31 @@ def w11_tree_verdicts(children, dom_text):
                 ("W11 every child the tree reports is reachable in the DOM", False,
                  f"0 of {len(rows)} child rows in the DOM")]
     keyed = {w11_short_id(c.get("child_run_id")): c for c in rows}
-    wrong = [(s, rendered[s]["depth"], keyed[s]["depth"]) for s in rendered
-             if s in keyed and rendered[s]["depth"] != (keyed[s].get("depth") or 0)]
-    unknown = sorted(s for s in rendered if s not in keyed)
-    statusless = [s for s in rendered
-                  if s in keyed and str(keyed[s].get("status") or "") not in rendered[s]["line"]]
+    prior = {w11_short_id(c.get("child_run_id")): c for c in before}
+    # The fresh read answers for a child both reads saw; the pre-snapshot read only
+    # adds children the fresh one lost (a route that blinked), never a new answer.
+    answered = dict(prior)
+    answered.update(keyed)
+    wrong = [(s, rendered[s]["depth"], answered[s]["depth"]) for s in rendered
+             if s in answered and rendered[s]["depth"] != (answered[s].get("depth") or 0)]
+    unknown = sorted(s for s in rendered if s not in answered)
+    moved, statusless = {}, []
+    for s in rendered:
+        if s not in answered:
+            continue
+        words = [str(src[s].get("status") or "") for src in (keyed, prior) if s in src]
+        if s in keyed and s in prior and keyed[s].get("status") != prior[s].get("status"):
+            moved[s] = (prior[s].get("status"), keyed[s].get("status"))
+        if not any(w in rendered[s]["line"] for w in words):
+            statusless.append(s)
     detail = (f"{len(rendered)} of {len(rows)} child rows rendered; depth wrong for "
               f"{wrong or 'none'}; rows naming no child of this run: {unknown or 'none'}; "
               f"rows carrying no status word: {statusless or 'none'}")
+    if before:
+        detail += (f"; key re-read after the snapshot ({len(rows)} rows) against the "
+                   f"pre-snapshot read ({len(before)} rows), a row's status word is "
+                   f"honest against either; children whose status moved between the "
+                   f"two reads: {moved or 'none'}")
     out.append((label, not wrong and not unknown and not statusless,
                 detail + "; child statuses the route reports: "
                 + str(sorted({str(c.get("status")) for c in rows}))))
@@ -19923,13 +20005,20 @@ def w11():
     c5_emit([w_gate_release_verdict(live, run_status(run_id), c1_attempt_count(run_id),
                                     tag="W11")])
     # --- the fan-out really happened: GET /runs/{id}/tree is the answer key ----
-    children, deadline = [], time.time() + 300
-    while time.time() < deadline:
-        doc = c8_tree_doc(client, run_id) or {}
-        children = [c for c in (doc.get("children") or []) if isinstance(c, dict)]
-        if len(children) >= 3:
-            break
-        time.sleep(5)
+    # The key is waited out to the FULL fan-out, not to the third child: run
+    # 20261026-035125-77a1219 read it while the run was still opening children, then
+    # graded a later DOM against that half-open answer and called 14 honest rows
+    # 'invented'. Whatever the route reports the moment after the snapshot is the answer
+    # (below); if the fan-out never fills in inside 300 s the leg keeps today's
+    # behaviour with what was read — the verdict says so rather than pretending.
+    #
+    # The gate is decided INSIDE that wait, not assumed from it: `--only W11` left both
+    # passes with 'PASS the gate released the run into real work' (the PRE-gate /plan
+    # lease) then 'GAP the child-run tree arms — the /tree route holds no children', with
+    # the run still waiting_human in postgres afterwards. /fan_out is behind the approval
+    # gate, so W11 decides it on C1b's own route and says so in its own report.
+    children = w11_wait_fanout_children(client, run_id, C8_ITEMS, 300,
+                                        project_id=project_id)
     show(f"W11 GET /runs/{run_id}/tree",
          f"{len(children)} child row(s); depths={sorted({w11_child_view(c)['depth'] for c in children})}; "
          f"statuses={sorted({w11_child_view(c)['status'] for c in children} or {'(none)'})} "
@@ -19959,10 +20048,20 @@ def w11():
         tree_nodes = pw_snapshot_nodes(raw)
         tree_dom = w8_dom_text(tree_nodes, raw)
         dom_all.append(tree_dom)
+        # The answer key is re-read the moment AFTER the snapshot these verdicts grade,
+        # so the ids and statuses compared were observed at the same moment as the rows.
+        # The pre-snapshot read rides along as the second opinion a child whose status
+        # moved mid-render can still be matched against; if the re-read comes back empty
+        # the leg falls back to today's behaviour with the key it has.
+        children_after = w11_tree_children(client, run_id)
+        show(f"W11 GET /runs/{run_id}/tree re-read after the DOM snapshot",
+             f"{len(children_after)} child row(s) vs {len(children)} before; statuses now "
+             + str(sorted({w11_child_view(c)['status'] for c in children_after}) or ['(none)']))
         shot = pw_shot("w11-tree", session="m4w11")
         show(f"W11 the tree after {len(clicked)} expand click(s) over {snaps} snapshot(s)",
              "rows named: " + str(clicked)[:260] + f" [{shot}]")
-        c5_emit(w11_tree_verdicts(children, tree_dom))
+        c5_emit(w11_tree_verdicts(children_after or children, tree_dom,
+                                  prior_children=children if children_after else None))
 
         # --- one node execution's attempt list, on the page's own ?node= route ----
         nodes_r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")

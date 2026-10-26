@@ -1099,6 +1099,287 @@ def test_w11_reads_the_tree_route_its_own_shape():
         CANNED_TREE), "depth-1 children") is False, "one child of 2 never drawn"
 
 
+# --- W11: the answer key and the DOM must be read at the SAME moment ----------
+# accept/20261026-035125-77a1219 W11 line 2401:
+#   FAIL W11 the tree renders depth-1 children with their own statuses — 17 of 3 child
+#   rows rendered; rows naming no child of this run: [14 ids]; rows carrying no status
+#   word: ['841761ed','673031a8','983d9781']; child statuses the route reports: ['queued']
+# at d3466df the same gate read "25 of 25". The fan-out was still opening while the key
+# was read; the page was snapshotted after it. The canned fan-out below is C8's 25
+# children in both readings — the key the route reports, and the rows RunTree writes.
+
+W11_FANOUT = [f"01a144d1-0000-7000-8000-0000{i:08x}" for i in range(1, 26)]
+W11_TAILS = [r[-8:] for r in W11_FANOUT]
+
+
+def w11_fanout_key(count, status_at=lambda i: "queued"):
+    """`count` of the fan-out's children as `GET /runs/{id}/tree` reports them — W11's
+    answer key, the i-th child carrying `status_at(i)`."""
+    return [{"child_run_id": W11_FANOUT[i], "status": status_at(i), "depth": 1,
+             "wait_policy": "completion",
+             "node_instance_key": f"/fan_out[{i + 1}]/invoke"} for i in range(count)]
+
+
+def w11_fanout_dom(count, status_at=lambda i: "queued", extra=()):
+    """The tree page as `RunTree.tsx:478` writes it — `<chip> child run <short id> ·
+    depth 1 · waits for completion` — one row per RENDERED child; `extra` appends rows
+    naming run ids no read of the route ever reported."""
+    lines = ["### Snapshot", "```yaml", "- tree:", '  - treeitem "fan_out" [ref=e70]']
+    lines += [f'  - treeitem "invoke {status_at(i)} child run {W11_TAILS[i]} · depth 1 '
+              f'· waits for completion" [ref=e{80 + i}]' for i in range(count)]
+    lines += [f'  - treeitem "invoke completed child run {s} · depth 1 '
+              f'· waits for completion" [ref=e{200 + n}]' for n, s in enumerate(extra)]
+    return "\n".join(lines)
+
+
+# the page as the browser drew it seconds after the key: the first children have moved
+# past `queued`, and the fan-out has opened 17 of its 25 rows.
+W11_LIVE_DOM = w11_fanout_dom(17, lambda i: ("completed" if i == 0 else
+                                             "running" if i < 3 else "queued"))
+W11_STALE_KEY = w11_fanout_key(3)
+W11_FRESH_KEY = w11_fanout_key(17, lambda i: ("completed" if i == 0 else
+                                              "running" if i < 3 else "queued"))
+
+
+def test_w11_a_key_read_mid_fanout_is_the_race_that_false_failed():
+    """The OLD reading is kept under test on purpose: a key that stops at 3 children
+    against a 17-row DOM is exactly the live FAIL, so the fix is graded against the
+    symptom and not just against a happy path."""
+    v = w11_tree_verdicts(W11_STALE_KEY, W11_LIVE_DOM)
+    assert one(v, "depth-1 children with their own statuses") is False, \
+        "the stale key is what produced the live FAIL"
+    det = one(v, "depth-1 children", detail=True)
+    assert "17 of 3 child rows rendered" in det, det
+    assert len(W11_TAILS[:17]) - 3 == 14, "14 honest rows the stale key never saw"
+    assert all(t in det for t in W11_TAILS[3:17]), det
+    assert "'00000001', '00000002', '00000003'" in det, f"the moved chips: {det}"
+
+
+def test_w11_grades_the_dom_against_a_key_read_at_the_same_moment():
+    """Fix (1)+(2): the key is waited out to the whole fan-out and re-read right after
+    the snapshot, so ids and statuses were observed when the page was drawn — the rows
+    the stale key called invented and statusless are honest under the fresh key."""
+    v = w11_tree_verdicts(W11_FRESH_KEY, W11_LIVE_DOM, prior_children=W11_STALE_KEY)
+    assert one(v, "depth-1 children with their own statuses") is True, \
+        one(v, "depth-1 children", detail=True)
+    assert "re-read after the snapshot" in one(v, "depth-1 children", detail=True)
+    # the whole fan-out rendered (what d3466df measured as 25 of 25) is a clean PASS on
+    # both arms, with the mid-fan-out read along as the second opinion.
+    dom25 = w11_fanout_dom(25)
+    both = w11_tree_verdicts(w11_fanout_key(25), dom25, prior_children=W11_STALE_KEY)
+    assert one(both, "depth-1 children with their own statuses") is True, both
+    assert one(both, "reachable in the DOM") is True, both
+
+
+def test_w11_accepts_the_status_either_tree_read_saw():
+    """A child moves `queued → running → completed` between the pre-snapshot read, the
+    snapshot and the re-read. The chip is honest against EITHER read; a chip matching
+    neither is still a wrong status, and with no `prior_children` supplied the verdict
+    is exactly the old one."""
+    dom_running = w11_fanout_dom(1, lambda i: "running")
+    queued_before, running_now = (w11_fanout_key(1, lambda i: "queued"),
+                                  w11_fanout_key(1, lambda i: "running"))
+    # queued -> running between the two reads (the live case): PASS either way.
+    assert one(w11_tree_verdicts(running_now, dom_running, prior_children=queued_before),
+               "depth-1 children") is True, "the status moved after the key was read"
+    assert one(w11_tree_verdicts(running_now, dom_running), "depth-1 children") is True
+    # running -> succeeded between the reads: the chip holds the PRE-snapshot truth.
+    succeeded_now = w11_fanout_key(1, lambda i: "succeeded")
+    with_prior = w11_tree_verdicts(succeeded_now, dom_running, prior_children=running_now)
+    assert one(with_prior, "depth-1 children") is True, one(with_prior, "depth-1",
+                                                            detail=True)
+    det = one(with_prior, "depth-1 children", detail=True)
+    assert "status moved between the two reads" in det and "running" in det, det
+    assert one(w11_tree_verdicts(succeeded_now, dom_running), "depth-1 children") is False, \
+        "prior_children defaults to the current single-read behaviour"
+    failed_now = w11_fanout_key(1, lambda i: "failed")
+    assert one(w11_tree_verdicts(failed_now, dom_running, prior_children=queued_before),
+               "depth-1 children") is False, "a chip no read ever saw is a wrong status"
+
+
+def test_w11_still_fails_a_row_that_names_no_child_of_this_run():
+    """The tolerance is for the driver's own two reads of THIS run's tree, never for the
+    page: a row naming an id neither read reported stays a FAIL."""
+    dom = w11_fanout_dom(25, extra=["deadbeef"])
+    v = w11_tree_verdicts(w11_fanout_key(25), dom, prior_children=W11_STALE_KEY)
+    assert one(v, "depth-1 children with their own statuses") is False, \
+        "an invented row is not made honest by a second read"
+    assert "deadbeef" in one(v, "depth-1 children", detail=True)
+    assert one(v, "reachable in the DOM") is True, "the 25 real children are all on screen"
+    # a child the fresh read LOST but the pre-snapshot read saw is still a child of this
+    # run, so its row is not 'invented'; the stranded arm is graded on the fresh key.
+    dropped = w11_tree_verdicts(w11_fanout_key(1), w11_fanout_dom(3),
+                                prior_children=w11_fanout_key(3))
+    assert one(dropped, "depth-1 children") is True, one(dropped, "depth-1", detail=True)
+    assert one(dropped, "reachable in the DOM") is True
+
+
+def test_w11_waits_for_the_whole_fanout_before_reading_its_key():
+    """Fix (1) over canned `/tree` reads (fake clock, no stack): the leg may stop polling
+    only when the fan-out is FULL, and must keep today's behaviour — report what it read
+    — when it never gets there."""
+    import e2e_m4_exit as m
+
+    class Clock:
+        """Monotonic fake clock so a 300 s cap costs no wall time."""
+
+        def __init__(self):
+            self.now = 1000.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, secs):
+            self.now += secs
+
+    def drive(reads, want=25, seconds=300, delay=5):
+        polls, pos = [0], [0]
+
+        def fake_tree(client, run_id):
+            polls[0] += 1
+            n = reads[min(pos[0], len(reads) - 1)]
+            pos[0] += 1
+            return {"children": w11_fanout_key(n)}
+
+        orig = (m.time, m.c8_tree_doc)
+        m.time, m.c8_tree_doc = Clock(), fake_tree
+        try:
+            out = m.w11_wait_fanout_children(object(), "r1", want, seconds, delay)
+        finally:
+            m.time, m.c8_tree_doc = orig
+        return out, polls[0]
+
+    out, n = drive([3, 9, 24, 25])
+    assert len(out) == 25 and n == 4, (len(out), n)
+    full = w11_tree_verdicts(out, w11_fanout_dom(25))
+    assert one(full, "depth-1 children") is True, full
+    assert one(full, "reachable in the DOM") is True, full
+    # already-full route: one read, no sleeping at all
+    out, n = drive([25])
+    assert len(out) == 25 and n == 1, (len(out), n)
+    # a fan-out stuck at 3 children costs its window and is then reported honestly
+    out, n = drive([3], seconds=60, delay=5)
+    assert len(out) == 3 and n == 12, (len(out), n)
+    partial = w11_tree_verdicts(out, w11_fanout_dom(3))
+    assert one(partial, "depth-1 children") is True, partial
+    assert one(w11_tree_verdicts(out, W11_LIVE_DOM), "depth-1 children") is False, \
+        "and the honest 3-of-17 verdict is still the FAIL it always was"
+
+
+def test_w11_fanout_wait_decides_the_approval_gate_it_waits_behind():
+    """Two `--only W11` passes both said `PASS W11 the gate released the run into real
+    work` (the PRE-gate `/plan` lease) and then `GAP W11 the child-run tree arms — the
+    /tree route holds no children`, with the run STILL `waiting_human` in postgres: no
+    approval was ever decided, and /fan_out sits behind that gate. Over canned ledger
+    reads the wait must decide the gate (C1b's route) and still return the full fan-out."""
+    import e2e_m4_exit as m
+
+    class Clock:
+        def __init__(self):
+            self.now = 1000.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, secs):
+            self.now += secs
+
+    def drive(statuses, approve, reads, want=25, seconds=60, delay=5, project_id="p-1"):
+        """Drive the wait over canned reads: `statuses` is the run's status per poll (the
+        last repeats), `approve` what decide returns, `reads` the /tree child count per
+        poll. Returns (children, decide_calls, check_lines)."""
+        polls, pos, calls, checks = [0], [0], [], []
+
+        def fake_status(run_id):
+            return statuses[min(polls[0], len(statuses) - 1)]
+
+        def fake_tree(client, run_id):
+            n = reads[min(pos[0], len(reads) - 1)]
+            pos[0] += 1
+            polls[0] += 1
+            return {"children": w11_fanout_key(n)}
+
+        orig = (m.time, m.c8_tree_doc, m.run_status, m.approve_gate, m.check)
+        m.time, m.c8_tree_doc, m.run_status = Clock(), fake_tree, fake_status
+        m.approve_gate = lambda client, pid, rid: calls.append(pid) or approve
+        m.check = lambda label, ok, detail="": checks.append((label, ok, detail)) or ok
+        try:
+            out = m.w11_wait_fanout_children(object(), "r1", want, seconds, delay,
+                                             project_id=project_id)
+        finally:
+            m.time, m.c8_tree_doc, m.run_status, m.approve_gate, m.check = orig
+        return out, calls, checks
+
+    def gate_lines(rows):
+        return [c for c in rows if "the approval gate was decided" in c[0]]
+
+    # the live shape: held in waiting_human, decided once, then the 25 children open.
+    out, calls, checks = drive(["waiting_human", "running"], True, [0, 25])
+    assert len(out) == 25, (len(out), calls)
+    assert len(calls) == 1 and len(gate_lines(checks)) == 1, checks
+    label, ok, detail = gate_lines(checks)[0]
+    assert ok is True and "C1b's route" in label, (label, ok)
+    assert "released from waiting_human" in detail, detail
+    assert one(w11_tree_verdicts(out, w11_fanout_dom(25)), "depth-1 children") is True, \
+        "with the gate decided the tree arms have a fan-out to grade"
+
+    # a gate this leg cannot decide is an honest FAIL naming the route, not a GAP that
+    # blames the /tree route for a run nobody ever released.
+    out, calls, checks = drive(["waiting_human"], False, [0])
+    assert out == [] and len(calls) == 12, (out, calls)
+    assert len(gate_lines(checks)) == 1 and gate_lines(checks)[0][1] is False, checks
+    assert "never returning 200" in gate_lines(checks)[0][2], gate_lines(checks)
+
+    # a run that was never held (what the full acceptance order usually handed W11)
+    # is not touched at all.
+    out, calls, checks = drive(["running"], True, [25])
+    assert len(out) == 25 and calls == [] and gate_lines(checks) == [], (out, calls, checks)
+
+    # a SECOND waiting_human (a later ask) gets its own decide and its own line.
+    out, calls, checks = drive(["waiting_human", "running", "running", "waiting_human",
+                                "running"], True, [0, 0, 0, 0, 25])
+    assert len(out) == 25 and len(calls) == 2 and len(gate_lines(checks)) == 2, \
+        (len(out), calls, checks)
+
+    # with no project named the wait reads the tree and NOTHING else: the behaviour
+    # every other caller of a tree poll keeps.
+    def boom(run_id):
+        raise AssertionError("read the ledger with no project to decide a gate for")
+
+    orig = (m.time, m.c8_tree_doc, m.run_status)
+    m.time, m.run_status = Clock(), boom
+    m.c8_tree_doc = lambda client, run_id: {"children": w11_fanout_key(25)}
+    try:
+        out = m.w11_wait_fanout_children(object(), "r1", 25, 60, 5)
+    finally:
+        m.time, m.c8_tree_doc, m.run_status = orig
+    assert len(out) == 25, "no project -> the wait stays a pure /tree poll"
+
+
+def test_w11_leg_rereads_the_tree_after_its_snapshot():
+    """The fix is the LEG's ordering, not only the verdict algebra: wait the fan-out
+    open, snapshot the page, re-read the key, and hand both reads to the verdict."""
+    import ast
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    src = open(os.path.join(here, "e2e_m4_exit.py"), encoding="utf-8").read()
+    fns = {n.name: n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)}
+    leg = ast.get_source_segment(src, fns["w11"])
+    assert "w11_wait_fanout_children(client, run_id, C8_ITEMS" in leg, \
+        "W11 still reads its key mid-fan-out"
+    assert "project_id=project_id" in leg[leg.index("w11_wait_fanout_children("):], \
+        "the fan-out wait cannot decide the gate W11's own run is held in"
+    assert "len(children) >= 3" not in leg, "the >= 3 break is the race itself"
+    snap = leg.index('pw_snapshot(session="m4w11")')
+    reread = leg.index("w11_tree_children(client, run_id)")
+    verdict = leg.index("w11_tree_verdicts(")
+    assert snap < reread < verdict, (snap, reread, verdict)
+    call = leg[verdict:leg.index(")", verdict)]
+    assert "prior_children=" in call, call
+    assert "children_after or children" in call, \
+        "an unreadable re-read falls back to the key the leg has"
+
+
 # --- W5/W6: the interrupted page, the forbidden words, the lost workspace -----
 # Row § 7.2 W5 quotes three pieces of copy and forbids three words; W6 quotes one
 # sentence, one chip and one withheld control. All of it is text work over a snapshot,
@@ -1645,6 +1926,13 @@ if __name__ == "__main__":
                test_w6_wires_the_engine_retry_and_never_posts_its_own,
                test_w5_w6_aim_their_kill_at_the_held_post_gate_attempt,
                test_w11_reads_the_tree_route_its_own_shape,
+               test_w11_a_key_read_mid_fanout_is_the_race_that_false_failed,
+               test_w11_grades_the_dom_against_a_key_read_at_the_same_moment,
+               test_w11_accepts_the_status_either_tree_read_saw,
+               test_w11_still_fails_a_row_that_names_no_child_of_this_run,
+               test_w11_waits_for_the_whole_fanout_before_reading_its_key,
+               test_w11_fanout_wait_decides_the_approval_gate_it_waits_behind,
+               test_w11_leg_rereads_the_tree_after_its_snapshot,
                test_c11_report_honesty_tolerates_a_labelled_true_row,
                test_http_connection_blip_retry):
         print(f"\n{fn.__name__}")
