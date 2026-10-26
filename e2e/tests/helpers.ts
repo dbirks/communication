@@ -251,27 +251,78 @@ export function openPermissionCard(page: Page): Locator {
 }
 
 /**
+ * A handle to ONE specific permission card, captured while it is on screen.
+ * The app stamps `data-permission-request-id` on the card's transcript row
+ * (`ui/src/components/Transcript.tsx`); a page built before that markup falls
+ * back to the positional handle, which is sound for the same reason: decided
+ * cards are never removed from the transcript and new cards only ever append,
+ * so a card's index among `permission-card`s does not shift under a decision.
+ */
+export interface PermissionCardRef {
+  requestId: string | null;
+  position: number;
+}
+
+/** Pin one card (default: the single open one) BEFORE it is decided. */
+export async function pinPermissionCard(page: Page, card?: Locator): Promise<PermissionCardRef> {
+  const target = card ?? openPermissionCard(page).first();
+  const ref = await target.evaluate((el) => {
+    const cards = Array.from(document.querySelectorAll('[data-testid="permission-card"]'));
+    const id =
+      el.getAttribute("data-permission-request-id") ??
+      el.closest("[data-permission-request-id]")?.getAttribute("data-permission-request-id");
+    return { requestId: id ?? null, position: cards.indexOf(el) };
+  });
+  if (ref.requestId === null && ref.position < 0)
+    throw new Error("the permission card vanished before it could be pinned to an identity");
+  return ref;
+}
+
+/** The one card a previous {@link pinPermissionCard} captured. */
+export function pinnedPermissionCard(page: Page, ref: PermissionCardRef): Locator {
+  // The request id is a UUID ([0-9a-f-]), safe inside a quoted attribute
+  // selector without escaping.
+  return ref.requestId !== null
+    ? page.locator(
+        `[data-permission-request-id="${ref.requestId}"] [data-testid="permission-card"]`,
+      )
+    : page.getByTestId("permission-card").nth(ref.position);
+}
+
+/**
  * Allow the open permission request as the controller, preferring the
  * allow-once option (Claude's `"Yes"`) over an "always allow" that would stop
- * the journey from ever asking again. Resolves once that exact request is
- * journalled as decided with the chosen option, and returns the option label.
+ * the journey from ever asking again. The card is PINNED to its own identity
+ * before the click and the decided assertion is made on that same card only —
+ * never on a transcript-wide count, because earlier turns of the same
+ * conversation can hold decided cards (e.g. a cancelled turn's request) that
+ * would make any transcript-wide count a coin flip on real-agent behaviour.
+ * Resolves once that exact request is journalled as decided with the chosen
+ * option (and, when `expectedBy` is given, by that person), and returns the
+ * option label.
  *
  * Note the trap this avoids: `openPermissionCard` filters on "awaiting a
  * decision", so a decided card stops matching it — asserting "says decided"
- * through that filter can never be true. The closed state is read from an
- * unfiltered card instead.
+ * through that filter can never be true. The closed state is read from the
+ * pinned card instead.
  */
-export async function allowOpenPermission(page: Page, timeout = AGENT_TURN_TIMEOUT_MS) {
+export async function allowOpenPermission(
+  page: Page,
+  timeout = AGENT_TURN_TIMEOUT_MS,
+  expectedBy?: string,
+): Promise<string> {
   const pending = openPermissionCard(page);
   await expect(pending).toHaveCount(1, { timeout });
+  const ref = await pinPermissionCard(page, pending.first());
   const yes = pending.getByRole("button", { name: "Yes", exact: true });
   const chosen = (await yes.count()) > 0 ? yes.first() : pending.getByTestId("permission-allow");
   const label = (await chosen.textContent())?.trim() ?? "";
   await chosen.click();
-  const decided = label
-    ? page.getByTestId("permission-card").filter({ hasText: `answered "${label}"` })
-    : page.getByTestId("permission-card").filter({ hasText: "status: decided" });
+  const decided = pinnedPermissionCard(page, ref);
   await expect(decided).toHaveCount(1, { timeout });
+  await expect(decided).toContainText("status: decided", { timeout });
+  if (label) await expect(decided).toContainText(`answered "${label}"`, { timeout });
+  if (expectedBy) await expect(decided).toContainText(`by ${expectedBy}`, { timeout });
   return label;
 }
 

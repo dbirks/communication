@@ -232,7 +232,7 @@ test.describe("M2 shared conversation and control handoff", () => {
     await expect(bobCard.getByRole("button")).toHaveCount(0);
 
     // Alice allows; the decision is journalled with her name on it.
-    const label = await allowOpenPermission(alice);
+    const label = await allowOpenPermission(alice, undefined, ALICE.name);
     expect(label.length).toBeGreaterThan(0);
     await expect(alice.getByTestId("transcript")).toContainText(
       `answered "${label}" by ${ALICE.name}`,
@@ -262,7 +262,7 @@ test.describe("M2 shared conversation and control handoff", () => {
     const card = openPermissionCard(bob);
     await expect(card).toHaveCount(1, { timeout: PERMISSION_TIMEOUT_MS });
     await expect(card.getByTestId("permission-readonly")).toHaveCount(0);
-    const label = await allowOpenPermission(bob);
+    const label = await allowOpenPermission(bob, undefined, BOB.name);
     await expectTurnStatus(bob, /completed/);
 
     // The write happened in the conversation's workspace and the transcript

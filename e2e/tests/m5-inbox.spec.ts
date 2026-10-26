@@ -43,10 +43,13 @@ import {
   gotoApp,
   openPermissionCard,
   openProjectBySlug,
+  pinPermissionCard,
+  pinnedPermissionCard,
   shot,
   signIn,
   startConversation,
   testidOf,
+  type PermissionCardRef,
 } from "./helpers.js";
 
 // The lab's seeded identities: display names are the bare subjects (seed.sh
@@ -96,6 +99,8 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
   let conversationId = "";
   /** The request the pending card exposed; every later step reads this one. */
   let permissionLabel = "";
+  /** Bob's view of that same card, pinned while it was open on his screen. */
+  let permissionCard: PermissionCardRef | null = null;
 
   test.beforeAll(async ({ browser }) => {
     // Three contexts = three cookie jars = three signed-in members of one lab
@@ -277,6 +282,10 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
       const card = openPermissionCard(bob);
       await expect(card).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
       await expect(card.first()).toContainText("awaiting a decision");
+      // Pin THIS card (by request id, positional on older markup) while it is
+      // open, so the decision step below can follow the same card to decided
+      // instead of counting answered cards transcript-wide.
+      permissionCard = await pinPermissionCard(bob, card.first());
     });
     await test.step("answering is not offered to him, so he does not answer", async () => {
       // The honest arm of "do not answer as bob unless the UI offers it": the
@@ -293,12 +302,14 @@ test.describe("M5 inbox: a pending prompt reaches another member's Inbox", () =>
     await test.step("the controller decides", async () => {
       const label = await allowOpenPermission(alice);
       expect(label.length).toBeGreaterThan(0);
-      await expect(
-        bob.getByTestId("permission-card").filter({ hasText: /answered "/ }),
-      ).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
-      await expect(
-        bob.getByTestId("permission-card").filter({ hasText: `answered "${label}"` }),
-      ).toContainText("decided");
+      if (!permissionCard) throw new Error("bob's pinned permission card is missing");
+      // The exact card bob was looking at learned the decision — not a
+      // transcript-wide count of answered cards, which earlier turns could
+      // contaminate.
+      const decided = pinnedPermissionCard(bob, permissionCard);
+      await expect(decided).toHaveCount(1, { timeout: INBOX_TIMEOUT_MS });
+      await expect(decided).toContainText("decided", { timeout: INBOX_TIMEOUT_MS });
+      await expect(decided).toContainText(`answered "${label}"`, { timeout: INBOX_TIMEOUT_MS });
       // The open request is gone from bob's screen, and it is the same document
       // he was looking at a minute ago: no reload, only the journal arriving.
       await expect(openPermissionCard(bob)).toHaveCount(0, { timeout: INBOX_TIMEOUT_MS });

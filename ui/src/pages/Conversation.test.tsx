@@ -430,6 +430,11 @@ describe("/p/:projectId/conversations/:conversationId", () => {
     });
 
     const card = await screen.findByTestId("permission-card");
+    // The row pins the request id, so a reader can follow THIS card across the
+    // pending→decided transition (two turns of one prompt share a title).
+    expect(
+      card.closest("[data-permission-request-id]")?.getAttribute("data-permission-request-id"),
+    ).toBe(permissionRequestFixture.id);
     expect(within(card).getByTestId("permission-allow")).toBeTruthy();
     expect(within(card).getByTestId("permission-reject")).toBeTruthy();
 

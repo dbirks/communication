@@ -288,7 +288,10 @@ function PermissionCard({
   const state = stateOf(PERMISSION_STATE[item.status]);
 
   return (
-    <li data-testid="transcript-item">
+    // The row carries the request id so a reader (test or human) can pin THIS
+    // card across the pending→decided transition instead of matching on title
+    // text, which two turns of the same prompt can share.
+    <li data-testid="transcript-item" data-permission-request-id={item.requestId}>
       {/* Handoff rule 05: a title bar is the state's strong color only while the
           panel needs action, i.e. only for an open request. A decided, expired
           or cancelled prompt is a closed record — gray bar, state as a chip. */}
