@@ -16067,10 +16067,27 @@ def w_approval_verdicts(approver, decided, nodes, roles="", deadline=True, artif
 
 def w4_short(digest):
     """The 12 hex chars the inspector prints for a digest — mirrors
-    ui/src/pages/ProjectRuns.tsx shortDigest() so the DOM comparison is against
-    what the page can actually render, not against the full sha256."""
+    ui/src/lib/pipeline/yamlPointer.ts shortDigest(), the one spelling every digest on
+    screen uses (the runs list, the newer-revision notice, the diagnostics pin, and —
+    since the W4 fix — the workbench header's pin, which used to print a silent
+    6-char prefix of it). The DOM comparison is against what the page can actually
+    render, not against the full sha256."""
     d = str(digest or "")
     return d[7:19] if d.startswith("sha256:") else d[:12]
+
+
+def w4_pin_label(number, digest):
+    """The pinned-revision label as the CURRENT run page writes it. The graph-first
+    workbench header (`ui/src/components/workbench/RunHeader.tsx`, ADR-0043) spells the
+    meta line `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age>`,
+    and the aria snapshot carries the pin link's own accessible name — `r<N> <12 hex>`.
+    The pre-workbench inspector (`RunInspector.tsx`, today the Diagnostics tab) spelled
+    the same fact `pinned r<N> · <digest>`; the WORD ORDER moved, the fact (the page
+    names the run's pin by number and digest, and marks it pinned) did not — so this is
+    the shape the arm reads, and `"(pinned)"` is asserted with it so a page that printed
+    a bare revision link without saying the run is pinned still fails."""
+    n = number if isinstance(number, int) else (int(number) if str(number or "").isdigit() else None)
+    return "" if n is None else f"r{n} {w4_short(digest)}".lower()
 
 
 def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_number,
@@ -16081,6 +16098,7 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
     revision NUMBER the page names is still N. before_text is the page as it looked
     before the publish (the baseline the row's 'still' compares against)."""
     want, got = w4_short(pinned_digest), w4_short(newest_digest)
+    pin, moved_pin = w4_pin_label(pinned_number, pinned_digest), w4_pin_label(newest_number, newest_digest)
     out = []
     for name, text in (("before", before_text), ("after", after_text)):
         body = text or ""
@@ -16088,18 +16106,27 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
                     bool(want) and want in body,
                     f'pinned {want!r} (r{pinned_number}) rendered={bool(want) and want in body} '
                     f'in the {name}-publish snapshot'))
-    body = after_text or ""
+    body = w_norm(after_text or "")
     out.append(('W4 the reload did not move the run onto the new revision',
                 bool(got) and got not in body,
                 f'newly published r{newest_number} digest {got!r} appears in the reloaded '
                 f'run page={bool(got) and got in body} — row W4: the page shows the PINNED '
                 f'digests, not the library newest'))
-    if pinned_number is not None and newest_number is not None:
-        moved = f"pinned r{newest_number}" in body or f"pinned r{newest_number} " in body
+    if pin and moved_pin:
+        # Today's DOM: the header's pin link is `r<N> <digest>` and the meta line marks
+        # it "(pinned)"; the arm asks for the pinned number WITH its digest, so a page
+        # that had silently re-pinned to the newest revision cannot pass it by printing
+        # its own number next to the wrong digest (and the notice's "revision N+1"
+        # half, which row W4 also wants, cannot trip this check by accident).
+        named, moved = pin in body, moved_pin in body
+        marked = "(pinned)" in body
         out.append((f'W4 the page still names the run pin as r{pinned_number}',
-                    f"pinned r{pinned_number}" in body and not moved,
-                    f'"pinned r{pinned_number}" rendered={f"pinned r{pinned_number}" in body}; '
-                    f'"pinned r{newest_number}" rendered={moved}'))
+                    named and marked and not moved,
+                    f'the header pin label {pin!r} rendered={named}; the meta line marks it '
+                    f'"(pinned)"={marked}; the newly published pin {moved_pin!r} rendered={moved} '
+                    f'— row W4: the reloaded page still names N as the run\'s pin '
+                    f'(the pre-workbench inspector spelled this "pinned r<N> · <digest>"; '
+                    f'ADR-0043 moved the words, not the fact)'))
     else:
         out.append(("W4 the page still names the run pin as r<N>", None,
                     "the gate could not read the pinned/newest revision numbers, so which "
@@ -16111,9 +16138,11 @@ def w4_notice_verdict(after_text, pinned_number, newest_number):
     """Row W4's second half: a 'revision N+1 published since this run started —
     this run is pinned to N' notice ('12 case 11 made visible rather than
     invisible'). The copy is asserted on its two halves — it says the newer
-    revision exists, and it says the run stays on N. No such banner exists in
-    ui/src (RunInspector renders the pin only), so the honest answer is a FAIL
-    naming the missing UI, never a silent skip."""
+    revision exists, and it says the run stays on N. The banner does exist on
+    today's page (`NewRevisionNotice` in `ui/src/components/workbench/RunHeader.tsx`,
+    drawn by the workbench when its own revision read finds a newer digest; the
+    Diagnostics tab's `RunInspector` repeats the sentence), so a missing half is a
+    FAIL naming which half the page did not say — never a silent skip."""
     label = (f'W4 the notice "revision {newest_number} published since this run started '
              f'— this run is pinned to {pinned_number}" renders')
     body = " ".join((after_text or "").split()).lower()
@@ -16129,10 +16158,13 @@ def w4_notice_verdict(after_text, pinned_number, newest_number):
         return (label, True, "both halves of the row's copy observed on the reloaded page")
     return (label, False,
             f'says a newer revision exists={says_newer}, says the run is pinned to '
-            f'r{pinned_number}={says_pinned}: the UI named by § 7.2 row W4 does not exist — '
-            f'ui/src/pages/RunInspector.tsx renders the pinned digest only ("pinned r<N> · '
-            f'<digest>"), there is no newer-revision banner anywhere in ui/src to read '
-            f'(grep "since this run started" ui/src: no match)')
+            f'r{pinned_number}={says_pinned}: § 7.2 row W4 asks for both halves on the '
+            f'reloaded page and one is missing. The banner is drawn by '
+            f'`NewRevisionNotice` (ui/src/components/workbench/RunHeader.tsx, mounted by '
+            f'RunWorkbench when the pipeline revision read shows a digest newer than the '
+            f'run\'s pin; the Diagnostics tab\'s RunInspector repeats the same sentence), '
+            f'so either the notice was never drawn for this run or its copy no longer '
+            f'carries the half the row names')
 
 
 # ---- W8: "each error renders with instance_location ... source ... hint" ----
@@ -16794,17 +16826,29 @@ def w10_event_requests(requests_text, run_id):
     return out
 
 
-def w10_resume_verdicts(attempts, roll_done=True, rolled=()):
+def w10_resume_verdicts(attempts, roll_done=True, rolled=(), stream_replica=""):
     """Row W10: "reload the app mid-run and reconnect the stream with
     `Last-Event-ID`" + "then roll an API replica (C14a)".
 
     `attempts` = [{"tag": "reload"|"roll", "url":…, "headers":…}] — every run-stream
-    request the browser logged, each with its request headers read back from the CLI.
-    `Last-Event-ID` is what `EventSource` sets on ITS OWN reconnect; a reloaded page
-    opens a fresh stream with no cursor and replays from the head of the journal, so
-    the two phases are judged apart: the reload on the render (the arms below), the
-    roll on the cursor. A `headers` blob that never came back is a GAP — an
-    unreadable header is not an absent one."""
+    request the browser logged AFTER the phase marker it is tagged for, each with its
+    request headers read back from the CLI. `Last-Event-ID` is what `EventSource`
+    sets on ITS OWN reconnect; a reloaded page opens a fresh stream with no cursor and
+    replays from the head of the journal, so the two phases are judged apart: the
+    reload on the render (the arms below), the roll on the cursor. A `headers` blob
+    that never came back is a GAP — an unreadable header is not an absent one.
+
+    `rolled` names the services the leg rolled, `stream_replica` the replica the
+    stream's own RESPONSE header said held the socket ("" when it did not read
+    back, in which case the leg rolled `api-a` as a guess). They matter when the
+    roll produced NO new request: if the serving replica was readable the leg
+    rolled IT, the drop was forced, and a client that never re-opened gets the
+    product FAIL it always deserved; when it was NOT readable the drop itself is
+    unproven and the arm GAPs. The `stream_replica`-outside-`rolled` shape can no
+    longer be produced by the leg — it stays a guard, because crediting a roll of
+    a bystander replica with the client's dead socket would be the driver's lie.
+    What the arm must never do again is push the PRE-roll open into the roll
+    phase: a fresh reload open carries no cursor by design."""
     by_tag = {}
     for a in attempts or []:
         by_tag.setdefault(str(a.get("tag") or "?"), []).append(a)
@@ -16817,13 +16861,27 @@ def w10_resume_verdicts(attempts, roll_done=True, rolled=()):
             if tag == "roll" and not roll_done:
                 out.append((label, None, "no replica was rolled — the stream never dropped, "
                                          "so a Last-Event-ID resume was never exercised"))
-            elif tag == "roll" and rolled:
-                # The replica died and the client never asked again: that is the UI's
-                # reconnect failing, not a measurement hole — C14a's own GAP is only
-                # fair when NOTHING was rolled.
+            elif tag == "roll" and rolled and stream_replica and \
+                    not any(stream_replica in r or r in stream_replica for r in rolled):
+                out.append((label, None, f"the page's log shows no run-stream request after "
+                                         f"rolling {'/'.join(rolled)} because this stream never "
+                                         f"dropped — its socket was served by {stream_replica}, "
+                                         "which the roll did not touch; the resume cursor was "
+                                         "never exercised"))
+            elif tag == "roll" and rolled and stream_replica:
+                # The rolled replica held the socket and the client never asked again:
+                # that is the UI's reconnect failing, not a measurement hole.
                 out.append((label, False, f"the page's log shows no run-stream request after "
                                           f"rolling {'/'.join(rolled)} — the client never "
-                                          "re-opened the feed, so nothing resumed it"))
+                                          f"re-opened the feed (its socket was served by "
+                                          f"{stream_replica}, the replica that went down), so "
+                                          "nothing resumed it"))
+            elif tag == "roll" and rolled:
+                out.append((label, None, f"the page's log shows no run-stream request after "
+                                         f"rolling {'/'.join(rolled)} and the stream's serving "
+                                         "replica (X-Communication-Replica) did not read back — "
+                                         "whether the roll dropped this socket at all is "
+                                         "unmeasured"))
             else:
                 out.append((label, None, f"the page's request log names no run-stream request "
                                          f"for the {tag} phase — what the client opened is "
@@ -17629,13 +17687,22 @@ def w4():
         return
     try:
         pw_goto(f"/projects/{project_id}/runs/{run_id}", session="m4w4")
-        landed, nodes = pw_poll(lambda ns: "pinned" in w8_dom_text(ns).lower(),
-                               session="m4w4", tries=10, delay=2)
+        # The pin row W4 asks for is the NUMBER and the DIGEST together. The digest
+        # rides the run row and paints with the header; the number arrives with the
+        # page's own revision read, so the poll waits for the LABEL — not for the word
+        # "pinned", which the meta line prints before either half is on screen (the
+        # race that read as "the page shows no pin" in the 2026-10-25 pass).
+        want = w4_short(pinned_digest)
+        pin = w4_pin_label(pinned_number, pinned_digest)
+        landed, nodes = pw_poll(lambda ns: bool(pin) and pin in w_norm(w8_dom_text(ns)),
+                                session="m4w4", tries=10, delay=2)
         rc, raw_before = pw_snapshot(session="m4w4")
         before = w8_dom_text(nodes, raw_before)
         shot_before = pw_shot("w4-before-republish", session="m4w4")
         check("W4 the run page renders its pin before the new revision exists", landed,
-              f"run {run_id} status={live} 'pinned' copy seen={landed} [{shot_before}]")
+              f"run {run_id} status={live}: pinned digest {want!r} on screen"
+              f"={want in w_norm(before)}, the header names the pin {pin!r} (the number rides "
+              f"the page's own revision read) [{shot_before}]")
         # "publish a new revision through the API" — C12c's proven path: the pinned
         # bytes with one prompt word changed, published by the library role while the
         # page stays open. The word carries this run's id, because revisions are
@@ -17685,15 +17752,17 @@ def w4():
                                       "'revision N+1' for the page to be tested against")
                 return
         # "then reload the run page" — the same tab, reloaded, exactly as the row words it
+        pin = w4_pin_label(pinned_number, pinned_digest)   # the number the ledger re-read
         pw("reload", session="m4w4")
         time.sleep(3)
-        again, nodes_after = pw_poll(lambda ns: "pinned" in w8_dom_text(ns).lower(),
-                                    session="m4w4", tries=10, delay=2)
+        again, nodes_after = pw_poll(lambda ns: bool(pin) and pin in w_norm(w8_dom_text(ns)),
+                                     session="m4w4", tries=10, delay=2)
         rc2, raw_after = pw_snapshot(session="m4w4")
         after = w8_dom_text(nodes_after, raw_after)
         shot_after = pw_shot("w4-after-republish", session="m4w4")
         check("W4 the run page reloads and re-renders its pin", again,
-              f"run {run_id} status={run_status(run_id)} [{shot_after}]")
+              f"run {run_id} status={run_status(run_id)}: the reloaded page names the pin "
+              f"{pin!r}={pin in w_norm(after)} [{shot_after}]")
         for label, ok, detail in w4_pinned_verdicts(pinned_digest, pinned_number,
                                                    newer_digest, newer_number, before, after):
             check(label, ok, f"{detail} [{shot_after}]")
@@ -18196,6 +18265,18 @@ def w_node_execution_id(attempt_id):
                     f"'{attempt_id}'").strip()
     except RuntimeError as e:
         show("W5 the killed attempt's node_execution_id (psql)", str(e)[:200])
+        return ""
+
+
+def w_attempt_number(attempt_id):
+    """The attempt NUMBER the ledger holds for an attempt id — the `?attempt=` the
+    attempt pane reads (ADR-0043's URL state) when the arm has to look at the try that
+    died rather than the one the factory armed after it. '' on an unreadable ledger."""
+    try:
+        return psql(f"SELECT attempt_number::text FROM attempts WHERE id = "
+                    f"'{attempt_id}'").strip()
+    except RuntimeError as e:
+        show("W5 the killed attempt's attempt_number (psql)", str(e)[:200])
         return ""
 
 
@@ -19434,8 +19515,12 @@ def w10():
     (`requests`, then `request-headers <n>`), the only witness that the reloaded page
     re-opened the feed at all. A reloaded page opens a FRESH EventSource with no cursor
     and replays the journal from its head, so the reload is judged on the RENDER and the
-    cursor on the ROLL — neither is credited to the other. Only `api-a` is rolled, only
-    inside compose project communication-m4.
+    cursor on the ROLL — neither is credited to the other. The replica that HOLDS
+    the page's stream is the one rolled (the SSE response's X-Communication-Replica
+    names it; the socket pins to a single replica, so rolling any other never drops
+    anything), always inside compose project communication-m4; api-a only as the
+    fallback when that header cannot be read back — and then a missing reconnect is
+    a GAP, not a FAIL, because the drop itself was unproven.
 
     A SECOND run of the same pipeline runs alongside it: that is the stimulated half of
     "no cross-project event", because two runs of one pipeline share every node
@@ -19511,15 +19596,34 @@ def w10():
             attempts.append({"tag": "reload", "url": url, "headers": hdrs if rc_h == 0 else None})
         show(f"W10 the page's own stream requests after the reload ({len(reload_lines)})",
              "\n".join(f"{i} {u[:120]}" for i, u in reload_lines) or "(none in the log)")
-        # "then roll an API replica (C14a)" — ONE service, and only ever this project's.
+        # "then roll an API replica (C14a)" — ONE service, and only ever this
+        # project's. WHICH one is not the LB's choice: the EventSource socket pins
+        # to the replica it first reached and heartbeats keep it alive forever, so
+        # rolling a fixed api-a left the drop — and with it the whole cursor claim —
+        # to the coin flip of where the socket happened to land. The stream's own
+        # RESPONSE header names the holder; roll THAT one and the drop is forced.
+        stream_replica = ""
+        if reload_lines:
+            rc_rep0, rep_h0 = pw("response-headers", reload_lines[-1][0],
+                                 session="m4w10", timeout=60)
+            if rc_rep0 == 0:
+                m_rep0 = re.search(r"(?im)^\s*x-communication-replica\s*:\s*(\S+)",
+                                   rep_h0 or "")
+                stream_replica = m_rep0.group(1).strip() if m_rep0 else ""
+        roll_service = stream_replica if stream_replica in ("api-a", "api-b") else "api-a"
+        show(f"W10 the replica holding the page's run stream -> {stream_replica or '?'} "
+             f"(rolling {roll_service})",
+             "serving replica unreadable from the stream response — rolling api-a and "
+             "letting the verdict GAP rather than FAIL on an unproven drop"
+             if not stream_replica else "the roll targets the socket's own replica")
         parked = run_status(run_id)
         terminal_before_roll = parked in C14_TERMINAL
-        rc_roll, roll_out = run(COMPOSE + ["restart", "api-a"])
-        show(f"docker compose -p communication-m4 restart api-a (rc={rc_roll})",
+        rc_roll, roll_out = run(COMPOSE + ["restart", roll_service])
+        show(f"docker compose -p communication-m4 restart {roll_service} (rc={rc_roll})",
              roll_out[-240:])
         back = wait_ready(timeout=120, hard=False)
         check("W10 both api replicas answer again after the roll", back,
-              f"/system/readiness on {A} and {B} after `restart api-a`")
+              f"/system/readiness on {A} and {B} after `restart {roll_service}`")
         time.sleep(3)
         rolled = w_run_sample(run_id, candidates, "m4w10", "W10 after the roll")
         seen = {i for i, _u in reload_lines}
@@ -19535,7 +19639,14 @@ def w10():
                 break
             time.sleep(4)
             waited += 4
-        new_lines = [(i, u) for i, u in all_lines if i not in seen] or all_lines[-1:]
+        new_lines = [(i, u) for i, u in all_lines if i not in seen]
+        # The roll targeted the socket's own replica whenever that replica was
+        # readable, so a missing request here is the client failing to re-open
+        # (the verdict's FAIL) — EXCEPT when the serving replica was unreadable and
+        # the roll was the api-a guess: then the drop never was proven and the
+        # verdict GAPs. What must never happen is the old fallback that pushed the
+        # PRE-roll open into the roll phase — a fresh reload open lacking a cursor
+        # is by design, not a reconnect that restarted from the journal head.
         for idx, url in new_lines[-3:]:
             rc_h, hdrs = pw("request-headers", idx, session="m4w10", timeout=60)
             attempts.append({"tag": "roll", "url": url, "headers": hdrs if rc_h == 0 else None})
@@ -19564,7 +19675,9 @@ def w10():
              "runs of one pipeline apart)", str(tails))
         forbidden = [("other project's name or slug", b_needles),
                      ("other run's attempt id", [f"att {t}" for t in (tails or [])])]
-        c5_emit(w10_resume_verdicts(attempts, roll_done=rc_roll == 0))
+        c5_emit(w10_resume_verdicts(attempts, roll_done=rc_roll == 0,
+                                    rolled=(roll_service,) if rc_roll == 0 else (),
+                                    stream_replica=stream_replica))
         c5_emit(w10_continuity_verdicts([before, after, rolled, settled],
                                         terminal_before_roll))
         c5_emit(w10_new_type_verdicts(settled["types"], journal))

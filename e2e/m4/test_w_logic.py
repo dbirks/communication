@@ -700,6 +700,31 @@ def test_w10_resume_cursor_is_read_from_the_browser_log():
     no_roll = w10_resume_verdicts([], roll_done=False)
     assert one(no_roll, "reconnects with Last-Event-ID") is None
     assert "never exercised" in one(no_roll, "reconnects with Last-Event-ID", detail=True)
+    # A roll with NO new stream request: the leg now reads X-Communication-Replica
+    # off the stream response BEFORE rolling and rolls THAT replica, so the drop is
+    # forced and a client that never re-opened is the product FAIL again — for
+    # either replica's name (the LB coin flip is gone). Only when the serving
+    # replica never read back (the leg rolled api-a as a guess) is the drop itself
+    # unproven and the verdict a GAP. The bystander shape stays guarded; the
+    # pre-roll open is never fed to the verdict as if it were a reconnect.
+    dead = w10_resume_verdicts([], roll_done=True, rolled=("api-a",),
+                               stream_replica="api-a")
+    assert one(dead, "reconnects with Last-Event-ID") is False, \
+        "the rolled replica held the socket and the client never re-opened it"
+    assert "never" in one(dead, "reconnects with Last-Event-ID", detail=True)
+    dead_b = w10_resume_verdicts([], roll_done=True, rolled=("api-b",),
+                                 stream_replica="api-b")
+    assert one(dead_b, "reconnects with Last-Event-ID") is False, \
+        "a socket on api-b is forced the same way now the leg rolls the holder"
+    blind_roll = w10_resume_verdicts([], roll_done=True, rolled=("api-a",))
+    assert one(blind_roll, "reconnects with Last-Event-ID") is None, \
+        "no new request AND no serving replica read back is unmeasured, not a FAIL"
+    assert "unmeasured" in one(blind_roll, "reconnects with Last-Event-ID", detail=True)
+    bystander = w10_resume_verdicts([], roll_done=True, rolled=("api-a",),
+                                    stream_replica="api-b")
+    assert one(bystander, "reconnects with Last-Event-ID") is None, \
+        "a roll of a bystander replica never dropped this stream — no cursor owed"
+    assert "api-b" in one(bystander, "reconnects with Last-Event-ID", detail=True)
     assert one(w10_resume_verdicts([{"tag": "reload", "url": "http://x/events",
                                      "headers": HDRS_FRESH}]),
                "reloads mid-run") is True, "the client re-opened the feed"

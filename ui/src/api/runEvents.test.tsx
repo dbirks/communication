@@ -7,7 +7,7 @@
  */
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { useRunEvents } from "./runEvents";
 import { queryKeys } from "./queries";
@@ -74,6 +74,47 @@ describe("useRunEvents (GET /runs/{runId}/events)", () => {
       "/runs/01987b11-0000-7000-8000-000000000000/events",
     );
     expect(result.current.events).toHaveLength(0);
+  });
+
+  it("reconnects a dropped run stream with the ?after= cursor, not from the journal head (W10)", async () => {
+    // Row W10 (§ 7.2): "reconnect the stream with `Last-Event-ID`" — this client
+    // resumes with the documented `?after=<global_seq>` cursor (api/openapi.yaml
+    // `components.parameters.After`, honoured by internal/api's evtResumeCursor),
+    // which the run route answers with only the events past it. A reconnect that
+    // re-opens the plain url restarts the replay from the journal head.
+    mockFetch([]);
+    vi.useFakeTimers();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useRunEvents(WIRE_RUN_ID), {
+      wrapper: wrapperFor(queryClient),
+    });
+    const first = FakeEventSource.last();
+    expect(first.url).toBe(`/api/v1/runs/${WIRE_RUN_ID}/events`);
+    const started = wireRunEvent(
+      "node.attempt.started",
+      { node_instance_key: "/plan", attempt_number: 1 },
+      { node_execution_id: WIRE_NODE_IMPLEMENT, attempt_id: WIRE_ATTEMPT_1, global_seq: 4711 },
+    );
+    act(() => {
+      first.open();
+      first.emit(started);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.events.map((event) => event.global_seq)).toEqual([4711]);
+
+    // The api replica the socket was pinned to rolls over (C14a).
+    act(() => first.fail());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    const second = FakeEventSource.last();
+    expect(second).not.toBe(first);
+    expect(first.readyState).toBe(FakeEventSource.CLOSED);
+    expect(second.url).toBe(`/api/v1/runs/${WIRE_RUN_ID}/events?after=4711`);
+    // The frames already on screen survive the reconnect untouched.
+    expect(result.current.events.map((event) => event.global_seq)).toEqual([4711]);
   });
 });
 
