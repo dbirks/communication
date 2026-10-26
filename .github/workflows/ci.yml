@@ -73,7 +73,12 @@ jobs:
           POSTGRES_DB: ci
         ports:
           - 5432:5432
-        options: --health-cmd "pg_isready -U ci" --health-interval 2s --health-timeout 5s --health-retries 20
+        # Probe over TCP, never the UNIX socket: on a fresh volume the official
+        # image first runs a temporary initdb server (listen_addresses='',
+        # socket only), so a socket probe can go healthy while the job's TCP
+        # connect to localhost:5432 is still refused. TCP only accepts once the
+        # real server is up.
+        options: --health-cmd "pg_isready -h 127.0.0.1 -p 5432 -U ci -d ci" --health-interval 2s --health-timeout 5s --health-retries 20
       oidc:
         # ADR-0012: real OIDC (discovery, JWKS, signed ID tokens), interactive
         # login only — no credentials exist to commit.

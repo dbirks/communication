@@ -47,7 +47,13 @@ services:
       # the entrypoint refuses to start with "unused mount/volume".
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U communication"]
+      # MUST probe over TCP, never the UNIX socket. On a fresh volume the
+      # official image first runs a temporary initdb server with
+      # listen_addresses='' (socket only); a socket probe can go Healthy
+      # against that temp server, so dependents (migrate) start, reach for
+      # postgres:5432 over TCP and get "connection refused". TCP only accepts
+      # once the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U communication -d communication"]
       interval: 5s
       timeout: 3s
       retries: 20
