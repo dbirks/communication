@@ -61,12 +61,19 @@ func VolumeID(stDev, stIno uint64, rootPath string) string {
 // MeasureVolume stats one storage root and returns its identity. The root must
 // exist: a missing root is a configuration or mount failure, and reporting it
 // as "volume unknown" (the zero Volume) would let a workspace be created
-// against nothing.
+// against nothing. A root inside the temp tree is refused before it is ever
+// stat-ed (ADR-0017 D5, probe C-TMP1): whether the path exists is not allowed
+// to be the only thing standing between a misconfiguration and a workspace on
+// a world-writable path, and NewManager is not the only way to reach this
+// function.
 func MeasureVolume(rootKind, rootPath string) (Volume, error) {
 	if rootKind != RootKindWorkspaces && rootKind != RootKindRepos {
 		return Volume{}, fmt.Errorf("workspace: unknown storage root kind %q", rootKind)
 	}
 	if err := checkAbsoluteNoDotDot(rootPath); err != nil {
+		return Volume{}, fmt.Errorf("workspace: %s root: %w", rootKind, err)
+	}
+	if err := RefuseTempPath(rootPath); err != nil {
 		return Volume{}, fmt.Errorf("workspace: %s root: %w", rootKind, err)
 	}
 	st, err := os.Stat(rootPath)

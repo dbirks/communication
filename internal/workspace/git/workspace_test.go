@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -649,8 +650,39 @@ func TestVolumeIdentityRules(t *testing.T) {
 	if _, err := MeasureVolume("nonsense", root); err == nil {
 		t.Error("want an error for an unknown root kind")
 	}
-	if _, err := MeasureVolume(RootKindWorkspaces, "/tmp/x"); err == nil {
-		t.Error("want an error for a temp-tree storage root")
+	// ADR-0017 D5 / probe C-TMP1: the temp-tree refusal must fire whether or
+	// not the path exists, so the load-bearing assertion uses a *real*
+	// directory — one that would measure happily if the only guard were the
+	// existence check.
+	tempRoot, err := os.MkdirTemp("/tmp", t.Name()+"-temp-root-")
+	if err != nil {
+		t.Fatalf("create a real temp-tree root for the refusal test: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempRoot) })
+	for _, bad := range []string{tempRoot, "/tmp/x", "/var/tmp/x", "/dev/shm/x"} {
+		_, err := MeasureVolume(RootKindWorkspaces, bad)
+		if err == nil {
+			t.Errorf("want an error for a temp-tree storage root %q, got none", bad)
+			continue
+		}
+		// The refusal must be the configuration error, never an accident of
+		// os.Stat (a missing path, an unreadable one, a dev/ino of zero).
+		if !strings.Contains(err.Error(), "temp tree") || !strings.Contains(err.Error(), "C-TMP1") {
+			t.Errorf("MeasureVolume(%q) refused for the wrong reason: %v", bad, err)
+		}
+		if !strings.Contains(err.Error(), "is under ") {
+			t.Errorf("MeasureVolume(%q) error does not name the temp tree: %v", bad, err)
+		}
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			t.Errorf("MeasureVolume(%q) failed with a stat error instead of the temp-tree refusal: %v", bad, err)
+		}
+		if !strings.Contains(err.Error(), RootKindWorkspaces+" root") {
+			t.Errorf("MeasureVolume(%q) error does not name the root kind: %v", bad, err)
+		}
+	}
+	// The same rule applies to the repos root.
+	if _, err := MeasureVolume(RootKindRepos, tempRoot); err == nil || !strings.Contains(err.Error(), "temp tree") {
+		t.Errorf("want a temp-tree refusal for a repos root, got %v", err)
 	}
 }
 
