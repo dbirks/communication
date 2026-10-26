@@ -2,7 +2,7 @@
  * The Run Workbench header (ADR-0043, design §6; gap U1/U5): project
  * breadcrumb, the run's goal (the run's own `inputs` when the API serves
  * them, else the pipeline's slug and short id), the status chip, the meta
- * line `<workflow> #<short run id> · <repo> · revision r<n> <digest6>
+ * line `<workflow> #<short run id> · <repo> · revision r<n> <digest>
  * (pinned) · started <age>[ by <name>]`, the header verbs (Open pinned
  * workflow / Fix the workflow…) and the reused Pause/Resume/Cancel/Retry
  * actions. The "a newer revision was published" notice rides right under it,
@@ -13,6 +13,14 @@
  * ambiguous, so the segment is omitted); `by <name>` appears only when a
  * `run.created` / `run.started` frame in the journal buffer names the actor
  * (never a worker name — ADR-0016 § 8).
+ *
+ * The digest in that line is `shortDigest`'s full 12 hex chars — the same
+ * spelling the runs list, the newer-revision notice and the diagnostics pin
+ * all print. `docs/m4-contract.md` § 7.2 row W4 is the reason: the run page
+ * owes the reader *the pinned digest it started with*, and a 6-char prefix
+ * printed with no ellipsis is a truncated fact presented as a whole one — the
+ * reader cannot compare it against the library's digests, which is exactly
+ * what case 11 ("a library edit cannot reach the run") asks them to do.
  */
 import { useState } from "react";
 import { Alert } from "../ds/Alert";
@@ -124,8 +132,8 @@ export function RunHeader({
             className="underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             {revision
-              ? `r${revision.revision_number} ${shortDigest(revision.revision_digest).slice(0, 6)}`
-              : shortDigest(run.revision_digest).slice(0, 6)}
+              ? `r${revision.revision_number} ${shortDigest(revision.revision_digest)}`
+              : shortDigest(run.revision_digest)}
           </Link>{" "}
           (pinned) · started {formatAge(run.started_at ?? run.created_at)}
           {startedBy ? <> by {startedBy}</> : null}

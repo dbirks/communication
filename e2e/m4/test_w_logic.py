@@ -20,6 +20,7 @@ from e2e_m4_exit import (  # noqa: E402  (import the driver under test)
     _SNAP_SPILL,
     w_approval_verdicts,
     w4_notice_verdict,
+    w4_pin_label,
     w4_pinned_verdicts,
     w4_short,
     w8_dom_text,
@@ -272,20 +273,45 @@ def one(verdicts, needle, detail=False):
 def test_w4_pinned_and_notice():
     pinned, newer = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     assert w4_short(pinned) == "a" * 12 and w4_short("deadbeef" * 8) == "deadbeefdead"
-    page = (f'feature-development · pinned r1 · {w4_short(pinned)} · 12 frames '
-            f'pinned r1 · {w4_short(pinned)}')
+    # Today's run page is the graph-first workbench: its header meta line reads
+    # `<slug> #<id> · <repo> · revision r<N> <digest> (pinned) · started <age> …` and the
+    # pin link's accessible name is `r<N> <12 hex>` — the FULL short digest, the same
+    # spelling the runs list and the newer-revision notice use. (The pre-workbench
+    # inspector spelled it `pinned r<N> · <digest>`; that spelling still lives on the
+    # Diagnostics tab, which is why the canned page below carries both.)
+    pin = w4_pin_label(1, pinned)
+    assert pin == f"r1 {'a' * 12}", pin
+    header = lambda label, marked=True: (f"feature-development #9661b1b8 · app · revision {label}"
+                                         f"{' (pinned) · started 2m by alice' if marked else ''}")
+    page = (f'{header(pin)} · pinned r1 · {w4_short(pinned)} · 12 frames')
     v = _vmap(w4_pinned_verdicts(pinned, 1, newer, 2, page, page))
     assert all(ok is True for ok, _ in v.values()), v
-    moved = page.replace(w4_short(pinned), w4_short(newer)).replace("pinned r1", "pinned r2")
+    moved = page.replace(pin, w4_pin_label(2, newer)).replace(w4_short(pinned), w4_short(newer))
     v = _vmap(w4_pinned_verdicts(pinned, 1, newer, 2, page, moved))
     assert any(ok is False for ok, _ in v.values()), v
     assert one(w4_pinned_verdicts(pinned, 1, newer, 2, page, page), 'shows the pinned digest') is True
+    # no loosening: the pin must name N WITH the pinned digest, and the page must say
+    # the word "pinned". A 6-char prefix (what the header printed before the W4 fix) is
+    # not the pinned digest; a revision link with no "(pinned)" marks nothing; a page
+    # that prints the newest number is not naming this run's pin.
+    short_only = header(f"r1 {'a' * 6}")
+    assert one(w4_pinned_verdicts(pinned, 1, newer, 2, short_only, short_only),
+               'shows the pinned digest') is False, "a 6-char prefix is not the digest"
+    unmarked = header(pin, marked=False)
+    assert one(w4_pinned_verdicts(pinned, 1, newer, 2, unmarked, unmarked),
+               'names the run pin') is False, "a bare revision link does not name a pin"
+    renumbered = header(f"r2 {'a' * 12}")
+    assert one(w4_pinned_verdicts(pinned, 1, newer, 2, renumbered, renumbered),
+               'names the run pin') is False, "the page must name N, not the library newest"
+    assert one(w4_pinned_verdicts(pinned, None, newer, 2, page, page), 'names the run pin') is None
     # the notice: PASS only when both halves of the row's copy are on the page
     assert w4_notice_verdict("revision 2 published since this run started — this run is "
                              "pinned to 1", 1, 2)[1] is True
     assert w4_notice_verdict("revision 2 published since this run started", 1, 2)[1] is False
     assert w4_notice_verdict(page, 1, 2)[1] is False, "no banner is a FAIL naming the UI"
     assert "RunInspector" in w4_notice_verdict(page, 1, 2)[2], w4_notice_verdict(page, 1, 2)[2]
+    assert "NewRevisionNotice" in w4_notice_verdict(page, 1, 2)[2], \
+        "the FAIL must name the banner today's page actually draws"
     assert w4_notice_verdict("", 1, 2)[1] is None, "an empty page is a GAP, not a verdict"
 
 
@@ -1126,6 +1152,26 @@ W6_CHIP_ONLY = """
 - button "Retry" [ref=e74]
 """
 
+# The graph-first dock (ADR-0043 decision 5): attempt tabs for retries, ONE attempt's
+# facts drawn at a time, newest first — the shape the W5 arm navigates.
+W5_DOCK_ATTEMPT2 = """
+- tablist "Attempts":
+  - tab "attempt 1 · interrupted" [ref=e50]
+  - tab "attempt 2 · succeeded" [selected, ref=e51]
+- heading "ATTEMPT 2" [level=3] [ref=e52]
+- text: attempt 2 of 2
+"""
+
+W5_DOCK_ATTEMPT1 = """
+- tablist "Attempts":
+  - tab "attempt 1 · interrupted" [selected, ref=e50]
+  - tab "attempt 2 · succeeded" [ref=e51]
+- heading "ATTEMPT 1" [level=3] [ref=e52]
+- alert "OUTCOME UNKNOWN" [ref=e53]: interrupted — the worker disappeared mid-node. Nothing
+  was finished on its side, and anything after the last completed boundary may be repeated
+- paragraph: ↻ next attempt scheduled 2026-10-16 11:02:15 UTC · backoff 60s
+"""
+
 
 def test_w5_wording_and_forbidden_scan():
     """W5's three wording arms plus 10 J7's honesty rule. The forbidden scan is the
@@ -1142,6 +1188,19 @@ def test_w5_wording_and_forbidden_scan():
     # 'interrupted' alone has not said the row's sentence.
     assert w5_interrupted_verdict("- text: interrupted")[1] is False
     assert "the page says" in w5_interrupted_verdict("- text: interrupted")[2]
+    # ADR-0043 moved attempts into the workbench dock, which draws ONE attempt at a time
+    # and leads with the newest: the row's sentence lives in the DEAD attempt's pane, so
+    # the arm opens it with `?attempt=<n>` and a FAIL names the attempt it actually read.
+    dock_on_retry = w8_dom_text(pw_snapshot_nodes(W5_DOCK_ATTEMPT2), W5_DOCK_ATTEMPT2)
+    miss = w5_interrupted_verdict(dock_on_retry, " (the pane of attempt 2, the retry)")
+    assert miss[1] is False, "the retry's pane does not get to speak for the dead try"
+    assert "(the pane of attempt 2, the retry)" in miss[2], miss[2]
+    assert "attempt 1 · interrupted" in dock_on_retry, \
+        "the strip still names the dead try while the retry is on screen"
+    dock_on_dead = w8_dom_text(pw_snapshot_nodes(W5_DOCK_ATTEMPT1), W5_DOCK_ATTEMPT1)
+    hit = w5_interrupted_verdict(dock_on_dead, " (attempt 1)")
+    assert hit[1] is True, hit
+    assert "(attempt 1)" in hit[2], hit[2]
     # countdown: the row names the CONTENT (the promised scheduled_at), so the time the
     # ledger promised must be on screen — as the countdown line or as the retried
     # attempt's own `scheduled` fact, which carries the identical value

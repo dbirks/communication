@@ -14,16 +14,18 @@ import {
   type RouteStub,
 } from "../test/fakes";
 import RunWorkbench from "./RunWorkbench";
-import type { NodeExecution } from "../api/types";
+import type { Attempt, NodeExecution } from "../api/types";
 import {
   WIRE_NODE_IMPLEMENT,
   WIRE_NODE_LOOP,
   WIRE_NODE_PLAN,
+  WIRE_ATTEMPT_1,
   WIRE_PIPELINE_ID,
   WIRE_REVISION_ID,
   WIRE_RUN_ID,
   wireApproval,
   wireApprovalList,
+  wireAttempt,
   wireNodeDetail,
   wireNodeList,
   wirePipeline,
@@ -450,10 +452,34 @@ describe("the run header's meta line", () => {
     // `feature-development #<short> · revision r<n> <digest> (pinned) · started <age>`.
     expect(meta.textContent).toContain("feature-development #");
     expect(meta.textContent).toContain("(pinned) · started ");
+    // § 7.2 W4: the page names the pin with its number AND the pinned digest — the
+    // full 12 hex chars `shortDigest` prints everywhere else in the app (the runs
+    // list, the newer-revision notice, the diagnostics pin). Six chars printed
+    // without an ellipsis is a truncated fact wearing a whole one: the reader
+    // cannot compare it against the library's digests, which is the point of 12
+    // case 11 made visible.
+    const pin = screen.getByTestId("run-pinned-revision");
+    // The digest is on the run row and paints with the header; the NUMBER rides the
+    // separate revision read, so the pin line is awaited rather than asserted blind.
+    await waitFor(() => expect(pin.textContent).toBe("r7 3f2f3f2f3f2f"));
+    expect(screen.getByTestId("run-header-meta").textContent).toContain(
+      "revision r7 3f2f3f2f3f2f (pinned)",
+    );
     // No actor frame in the journal buffer yet — the "by" half is absent,
     // not invented. The header keeps no worker name anywhere (ADR-0016 § 8).
     expect(meta.textContent).not.toContain(" by ");
     expect(meta.textContent).not.toContain("worker");
+  });
+
+  it("still prints the pinned digest when the revision read cannot name its number", async () => {
+    // The run row always carries the pinned digest; the NUMBER arrives with the
+    // separate revision read. When that read fails the honest header is the
+    // digest alone — never a guessed `r1`, never nothing.
+    mount("", [{ path: `/api/v1/revisions/${WIRE_REVISION_ID}`, status: 500, body: {} }]);
+
+    const pin = await screen.findByTestId("run-pinned-revision");
+    expect(pin.textContent).toBe("3f2f3f2f3f2f");
+    expect(pin.textContent).not.toMatch(/\br\d/);
   });
 
   it("adds the started-by actor only when a run.created frame names it", async () => {
@@ -565,5 +591,72 @@ describe("the run header follows the stream", () => {
       expect(screen.getByTestId("run-header-status").textContent).toContain("running"),
     );
     expect(screen.getByTestId("run-header-status").textContent).not.toContain("queued");
+  });
+});
+
+/* ------------------------------- the attempt pane the § 7.2 W5 arm navigates */
+
+describe("the dock draws the attempt the URL names", () => {
+  /** Attempt 1 died mid-node; attempt 2 is the retry that answered it. */
+  const died: Attempt = {
+    ...wireAttempt,
+    id: WIRE_ATTEMPT_1,
+    attempt_number: 1,
+    status: "interrupted",
+    error_class: "interrupted",
+    outputs: null,
+    outputs_digest: null,
+  };
+  const retry: Attempt = {
+    ...wireAttempt,
+    id: "01987b25-0002-7000-8000-abcdef012345",
+    attempt_number: 2,
+    status: "succeeded",
+    outputs: { summary: "Implemented the approved plan" },
+    outputs_digest: `sha256:${"9c1f".repeat(16)}`,
+  };
+  const attemptsRoute = (): RouteStub => ({
+    path: `${RUN_PATH}/nodes/${WIRE_NODE_IMPLEMENT}`,
+    body: { ...wireNodeDetail, attempts: [died, retry], checkpoint: null },
+  });
+
+  it("opens the dead attempt by ?attempt= and says the worker disappeared mid-node", async () => {
+    // § 7.2 W5: the exit arm reads the pane of the attempt the kill took, not the
+    // retry that answered it. The dock draws ONE attempt at a time and leads with
+    // the newest (ADR-0043 decision 5), so `?attempt=` is what makes the row's
+    // sentence reachable — and the tab strip names each try's own state so the
+    // death is never hidden while the newest attempt is on screen (`10` J7).
+    mount(`?node=${WIRE_NODE_IMPLEMENT}&attempt=1`, [attemptsRoute()]);
+
+    const note = await screen.findByTestId("attempt-interrupted-note");
+    expect(note.textContent).toContain("interrupted — the worker disappeared mid-node");
+    expect((await screen.findByTestId("dock-attempt-1")).textContent).toContain(
+      "attempt 1 · interrupted",
+    );
+    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · succeeded");
+
+    // Drop the param and the page leads with the retry: the sentence is gone from
+    // the pane, which is exactly why the arm aims at the dead attempt — and why the
+    // strip has to carry the word `interrupted` regardless.
+    cleanup();
+    mount(`?node=${WIRE_NODE_IMPLEMENT}`, [attemptsRoute()]);
+    expect((await screen.findByTestId("dock-attempt-2")).textContent).toContain(
+      "attempt 2 · succeeded",
+    );
+    expect(screen.queryByTestId("attempt-interrupted-note")).toBeNull();
+  });
+
+  it("answers the W5 arm's own link: ?tab=execution&node=<execution>&attempt=<the dead try>", async () => {
+    // The leg still writes the pre-workbench link (the § 7.2 arm navigates it), so
+    // the remap has to carry `attempt=` through the `?tab=execution` → tree rewrite
+    // rather than reset it to the newest attempt.
+    mount(`?tab=execution&node=${WIRE_NODE_IMPLEMENT}&attempt=1`, [attemptsRoute()]);
+
+    expect((await screen.findByTestId("attempt-interrupted-note")).textContent).toContain(
+      "interrupted — the worker disappeared mid-node",
+    );
+    expect((await screen.findByTestId("workbench-tab-tree")).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
   });
 });

@@ -16098,7 +16098,8 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
     revision NUMBER the page names is still N. before_text is the page as it looked
     before the publish (the baseline the row's 'still' compares against)."""
     want, got = w4_short(pinned_digest), w4_short(newest_digest)
-    pin, moved_pin = w4_pin_label(pinned_number, pinned_digest), w4_pin_label(newest_number, newest_digest)
+    pin = w4_pin_label(pinned_number, pinned_digest)
+    moved_pin = w4_pin_label(newest_number, newest_digest)
     out = []
     for name, text in (("before", before_text), ("after", after_text)):
         body = text or ""
@@ -16107,10 +16108,11 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
                     f'pinned {want!r} (r{pinned_number}) rendered={bool(want) and want in body} '
                     f'in the {name}-publish snapshot'))
     body = w_norm(after_text or "")
+    got_n, pin_n, moved_n = w_norm(got), w_norm(pin), w_norm(moved_pin)
     out.append(('W4 the reload did not move the run onto the new revision',
-                bool(got) and got not in body,
+                bool(got) and got_n not in body,
                 f'newly published r{newest_number} digest {got!r} appears in the reloaded '
-                f'run page={bool(got) and got in body} — row W4: the page shows the PINNED '
+                f'run page={bool(got) and got_n in body} — row W4: the page shows the PINNED '
                 f'digests, not the library newest'))
     if pin and moved_pin:
         # Today's DOM: the header's pin link is `r<N> <digest>` and the meta line marks
@@ -16118,7 +16120,7 @@ def w4_pinned_verdicts(pinned_digest, pinned_number, newest_digest, newest_numbe
         # that had silently re-pinned to the newest revision cannot pass it by printing
         # its own number next to the wrong digest (and the notice's "revision N+1"
         # half, which row W4 also wants, cannot trip this check by accident).
-        named, moved = pin in body, moved_pin in body
+        named, moved = pin_n in body, moved_n in body
         marked = "(pinned)" in body
         out.append((f'W4 the page still names the run pin as r{pinned_number}',
                     named and marked and not moved,
@@ -17916,14 +17918,16 @@ def w5_console_verdict(text, rc=0, benign=()):
     return (label.replace("W9 ", "W5 ", 1), ok, detail)
 
 
-def w5_interrupted_verdict(dom):
+def w5_interrupted_verdict(dom, where=""):
     """The row's first wording arm, quoted exactly: the interrupted attempt must say
     *interrupted — the worker disappeared mid-node*. Missing copy is a FAIL naming what
-    the page does say, never a GAP — the page was rendered and read."""
+    the page does say, never a GAP — the page was rendered and read. `where` says which
+    attempt the read pane was showing, so a FAIL names the surface that was looked at."""
     label = f"W5 node.attempt.interrupted renders as '{W5_INTERRUPTED_COPY}'"
     if w_norm(W5_INTERRUPTED_COPY) in w_norm(dom):
-        return (label, True, f"on screen: {w_quotes(dom, 'interrupted', limit=1)}")
-    return (label, False, f"the row's copy is absent; the page says {w_quotes(dom, 'interrupt')}")
+        return (label, True, f"on screen{where}: {w_quotes(dom, 'interrupted', limit=1)}")
+    return (label, False, f"the row's copy is absent{where}; the page says "
+                          f"{w_quotes(dom, 'interrupt')}")
 
 
 def w5_countdown_verdict(dom, scheduled):
@@ -18467,6 +18471,12 @@ def w5():
     freeze, while frozen, at the kill, through the reconciler window and after the
     terminal state), so the wording below is judged against the DOM the operator saw
     while the worker was dying, not against a page opened afterwards.
+
+    The pane read for the row's sentence is taken with the DEAD attempt selected
+    (`?attempt=<n>`, numbered from the ledger): the graph-first dock draws one attempt
+    at a time and leads with the newest, so the retry's pane never says the try before
+    it died. The countdown and attempt 2 are then read on the dock's default selection,
+    the way the operator sees them once the factory has re-armed the node.
     """
     facts = CTX.get("manifest") or load_manifest_facts()
     if not facts:
@@ -18553,19 +18563,42 @@ def w5():
                 "nothing honest to say, so its wording is unmeasurable"
                 + (f"; {kill['why']}" if kill.get("why") else ""))
             return
-        # the attempt pane of the node that died: the row's copy lives there
-        if kill["ne_id"]:
+        # the attempt pane of the node that died: the row's copy lives there.
+        # The graph-first dock draws ONE attempt at a time and leads with the newest
+        # (ADR-0043 decision 5, "attempt tabs for retries"), so the arm opens the pane
+        # on the attempt the LEDGER says died — through the workbench's own `attempt=`
+        # URL field — instead of judging the row's copy on the retry that answered it.
+        # (The 2026-10-25 pass read attempt 2's pane and called the sentence missing;
+        # the tabs now name their own state, but the sentence itself only lives in the
+        # dead attempt's pane, so the arm still has to open that attempt.)
+        pane_where = ""
+        dead = w_attempt_number(kill["attempt_id"]) if kill.get("attempt_id") else ""
+        if kill["ne_id"] and dead:
+            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution"
+                    f"&node={kill['ne_id']}&attempt={dead}", session=session)
+            pw_poll(lambda ns: w_norm(W5_INTERRUPTED_COPY) in w_norm(w8_dom_text(ns)),
+                    session=session, tries=15, delay=2)
+            pane_where = (f" (the pane of attempt {dead}, the try the kill took, opened with "
+                          f"?attempt={dead})")
+        elif kill["ne_id"]:
             pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution"
                     f"&node={kill['ne_id']}", session=session)
             pw_poll(lambda ns: w_norm(W5_INTERRUPTED_COPY) in w_norm(w8_dom_text(ns)),
                     session=session, tries=15, delay=2)
+            pane_where = (" (the pane's default attempt — the ledger would not name the "
+                          "dying try's number, so the arm could not aim at it)")
         pane = sample("attempt-pane")
         shot_int = pw_shot("w5-interrupted", session=session)
-        c5_emit([w5_interrupted_verdict(pane["dom"])])
+        c5_emit([w5_interrupted_verdict(pane["dom"], pane_where)])
         sched = w_scheduled_times(run_id, kill["key"])
         show(f"W5 the retry promise the ledger holds for {kill['key']}",
              f"scheduled_at candidates={sched[:3]} (the page draws formatTime()'s "
              "`YYYY-MM-DD HH:MM:SS UTC`)")
+        # the countdown and attempt 2 are read the way the operator sees them once the
+        # retry is armed: the dock back on its DEFAULT (newest) attempt, attempt 2
+        if kill["ne_id"]:
+            pw_goto(f"/projects/{project_id}/runs/{run_id}?tab=execution"
+                    f"&node={kill['ne_id']}", session=session)
         pw_poll(lambda ns: w_norm(W5_COUNTDOWN_COPY) in w_norm(w8_dom_text(ns))
                 or "attempt 2" in w_norm(w8_dom_text(ns)), session=session, tries=20, delay=4)
         sched = sched or w_scheduled_times(run_id, kill["key"])

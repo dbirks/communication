@@ -4,7 +4,10 @@
  * the shared `AgentConversationPanel` (dock variant — one chat surface, not
  * a fork); `human.approval` leads with the gate card and its decide verbs;
  * everything else reads the attempt's facts through `AttemptDetail`'s own
- * sections (exec facts, outputs, evidence, checkpoint). A failed or
+ * sections (exec facts, outputs, evidence, checkpoint). Retries draw one
+ * attempt at a time, so every attempt tab names its own state (`attempt 1 ·
+ * interrupted`) — the pane can only show one, but the strip must never hide
+ * that a try died. A failed or
  * interrupted node adds the honest failure block: error class, the engine's
  * cause, the attempt count, the retry verdict and the checkpoint
  * consequence — the inspector's words, never a paraphrase.
@@ -28,7 +31,7 @@ import { viewApproval, viewAttempt, viewRunCheckpoint } from "../../api/m4view";
 import { problemOf } from "../../api/client";
 import { AgentConversationPanel } from "../conversation/AgentConversationPanel";
 import { ApprovalCard } from "../m4/ApprovalCard";
-import { AttemptDetail, CheckpointBlock } from "../m4/AttemptDetail";
+import { AttemptDetail, attemptWord, CheckpointBlock } from "../m4/AttemptDetail";
 import { NodePaneHeader } from "../m4/NodePaneHeader";
 import { ProblemBanner } from "../Feedback";
 import { kindWord } from "../../lib/pipeline/definition";
@@ -256,6 +259,18 @@ export function WorkbenchDock({
               } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
             >
               attempt {attempt.attempt_number}
+              {/* The tab carries its own state in the attempt chip's own words. The
+               * dock draws ONE attempt at a time and defaults to the newest, so
+               * without this the dead attempt's `interrupted` quietly vanishes the
+               * moment the retry is drawn — and a run whose worker disappeared
+               * mid-node reads like a clean single-attempt run (§ 7.2 W5, 10 J7's
+               * honesty rule). */}
+              <span
+                className="ml-[2px] opacity-80"
+                data-testid={`dock-attempt-${attempt.attempt_number}-state`}
+              >
+                {` · ${attemptWord(attempt)}`}
+              </span>
             </button>
           ))}
         </div>

@@ -392,6 +392,12 @@ describe("WorkbenchDock", () => {
 
     await screen.findByTestId("dock-attempt-2");
     expect(screen.getByTestId("dock-attempt-1")).toBeTruthy();
+    // The strip names every attempt's own state. The pane draws one attempt at a
+    // time and leads with the newest, so without the word on the tab a run whose
+    // worker died mid-node reads like a clean single-attempt run the moment the
+    // retry is drawn (§ 7.2 W5, `10` J7's honesty rule).
+    expect(screen.getByTestId("dock-attempt-1").textContent).toContain("attempt 1 · interrupted");
+    expect(screen.getByTestId("dock-attempt-2").textContent).toContain("attempt 2 · succeeded");
     // The newest attempt leads: attempt 2's succeeded chip is what shows.
     expect(screen.getByTestId("attempt-status").textContent).toBe("succeeded");
 
@@ -408,6 +414,11 @@ describe("WorkbenchDock", () => {
     );
     await screen.findByTestId("dock-attempt-1");
     expect(screen.getByTestId("attempt-status").textContent).toBe("interrupted");
+    // And the pane of the attempt that died says so in the contract's own words —
+    // the sentence the § 7.2 W5 exit arm reads off the run page.
+    expect((await screen.findByTestId("attempt-interrupted-note")).textContent).toContain(
+      "interrupted — the worker disappeared mid-node",
+    );
     expect(secondClick).not.toHaveBeenCalled();
   });
 
