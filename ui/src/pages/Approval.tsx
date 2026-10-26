@@ -15,10 +15,12 @@
  *
  * Honesty rules (gaps/inbox-ops.md § 5): a 503 `assistant_not_configured`
  * names the cause and falls back to the gate's own summary plus static
- * buttons; the file list is never invented.
+ * buttons; the file list is never invented; and a `404` — a gate the reader
+ * cannot see or that does not exist (M4 contract § 7.2 W9) — renders the
+ * honest not-found state, never a scaffold, never a project name.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useApproval,
@@ -31,7 +33,7 @@ import {
 } from "../api/approvals";
 import type { ApprovalSummary, ApprovalInterpretation } from "../api/approvals";
 import { assistantNotConfigured } from "../api/assistant";
-import { assistantTransientErrorLine } from "../api/client";
+import { assistantTransientErrorLine, problemOf } from "../api/client";
 import { useArtifacts, useProjects, useMe } from "../api/queries";
 import { Button } from "../components/ds/Button";
 import { Alert } from "../components/ds/Alert";
@@ -39,6 +41,7 @@ import { Panel } from "../components/ds/Panel";
 import { Field, Textarea } from "../components/ds/Field";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { attentionTitle } from "../lib/attention";
+import { routes } from "../lib/routes";
 import {
   formatAge,
   formatBytes,
@@ -74,6 +77,24 @@ export default function ApprovalPage() {
     );
   }
   if (gate.isError) {
+    // The outsider's deep link (contract § 7.2 W9): the control plane answered
+    // 404 for a gate they cannot see — say so in plain words, name no project,
+    // show no scaffold, and offer the way back to their own Inbox.
+    if (problemOf(gate.error).status === 404) {
+      return (
+        <section className="space-y-2 py-2" role="status" data-testid="approval-not-found">
+          <h1 className="text-title-l font-bold">Approval not found</h1>
+          <p className="text-[13.5px] text-muted">
+            This approval doesn't exist, or you don't have access to it.
+          </p>
+          <p className="text-[13.5px]">
+            <Link to={routes.inbox()} className="text-accent-text hover:text-ink">
+              Back to Inbox
+            </Link>
+          </p>
+        </section>
+      );
+    }
     return <ProblemBanner error={gate.error} fallback="The gate could not be read." />;
   }
   return <GateView approval={gate.data} />;

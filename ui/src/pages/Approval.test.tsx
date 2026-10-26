@@ -9,7 +9,10 @@
  * - the suggested actions are colored by risk and the plan artifact renders
  *   inline from `/artifacts/{id}/content`;
  * - "OR IN YOUR WORDS" → interpret → the proposal is shown, and only its
- *   confirmed confirm calls decide, with the proposed note.
+ *   confirmed confirm calls decide, with the proposed note;
+ * - a `404` (M4 contract § 7.2 W9: an outsider deep-links a gate they cannot
+ *   see) renders an honest not-found state in plain words — no scaffold, no
+ *   project name — and links back to the Inbox.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -84,8 +87,8 @@ const BASE_STUBS: RouteStub[] = [
   { path: DECIDE_PATH, method: "POST", body: decidedApproval },
 ];
 
-function renderApprovalPage(extra: RouteStub[]) {
-  const { requests } = mockFetch([...BASE_STUBS, ...extra]);
+function renderApprovalPage(extra: RouteStub[], prepend: RouteStub[] = []) {
+  const { requests } = mockFetch([...prepend, ...BASE_STUBS, ...extra]);
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -293,5 +296,62 @@ describe("approval detail (4g)", () => {
     expect(textOf(then)).toContain("rejecting records the decision as a business outcome");
     expect(textOf(then)).toContain("steps that need approval won't run");
     expect(textOf(then)).not.toMatch(/rejection\s+fails|fails it/);
+  });
+
+  // M4 contract § 7.2 W9: an outsider (a member of no project that owns the
+  // gate) deep-links /approvals/{id}. The control plane answers 404; the page
+  // must render an honest not-found state — never a blank page, never a
+  // spinner, never a "could not be read" shrug, and never a project name.
+  it("renders an honest not-found state when the gate answers 404 (W9 outsider deep link)", async () => {
+    const NOT_FOUND = {
+      type: "https://communication.dev/errors/not-found",
+      title: "Not found",
+      status: 404,
+      detail: "No such approval.",
+    };
+    // First stub wins, so the 404 must precede BASE_STUBS' 200 for the path.
+    const { requests } = renderApprovalPage(
+      [],
+      [{ path: APPROVAL_PATH, method: "GET", status: 404, body: NOT_FOUND }],
+    );
+
+    const notFound = await screen.findByTestId("approval-not-found");
+    const copy = textOf(notFound);
+    // Plain user words (orchestrator review), and the arm-facing ones: the M4
+    // exit driver (w9_not_found) reads the outsider's page by looking for
+    // "not found" / "does not exist" / "not visible" / "no such" / "404" —
+    // "not found" here is what keeps that contract arm measurable, so this
+    // copy pins both phrasings.
+    expect(copy).toContain("Approval not found");
+    expect(copy.toLowerCase()).toContain("not found");
+    expect(copy).toContain("This approval doesn't exist, or you don't have access to it.");
+    // The way back is the reader's own Inbox, not a scaffold for the gate.
+    const back = within(notFound).getByRole("link", { name: "Back to Inbox" });
+    expect(back.getAttribute("href")).toBe("/inbox");
+    // The gate's own scaffold is gone: no strip, no summary, no decide rail.
+    expect(screen.queryByTestId(`approval-detail-strip-${T}`)).toBeNull();
+    expect(screen.queryByTestId(`approval-detail-loading`)).toBeNull();
+    // Nothing that could identify the gate's project appears anywhere.
+    expect(document.body.textContent).not.toContain(projectFixture.name);
+    // Only the gate read itself was asked for — no member-side follow-ups.
+    expect(requestsTo(requests, DECIDE_PATH, "POST")).toHaveLength(0);
+    expect(requestsTo(requests, SUMMARY_PATH, "POST")).toHaveLength(0);
+  });
+
+  it("keeps the problem banner for a non-404 failure — the 404 state is for 404s only", async () => {
+    renderApprovalPage(
+      [],
+      [
+        {
+          path: APPROVAL_PATH,
+          method: "GET",
+          status: 500,
+          body: { type: "x", title: "Boom", status: 500, detail: "internal" },
+        },
+      ],
+    );
+    const banner = await screen.findByRole("alert");
+    expect(textOf(banner)).toContain("Boom");
+    expect(screen.queryByTestId("approval-not-found")).toBeNull();
   });
 });
