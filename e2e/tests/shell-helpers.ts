@@ -134,10 +134,163 @@ export interface RunRow {
   project_id: string;
   project_name?: string;
   pipeline_slug?: string;
+  /** The row's own timestamps — `finished_at ?? created_at` is the board's
+   * DONE TODAY predicate (ui/src/components/board/columns.ts:runUpdatedAt). */
+  created_at: string;
+  finished_at?: string | null;
+  /** ADR-0056 part 1: how the run was started (the board's trigger chips). */
+  trigger?: { kind?: string | null; ref?: string | null } | null;
   steps?: { node_id: string; kind: string; state: string }[];
 }
 export const apiRuns = (request: APIRequestContext) =>
   apiAll<RunRow>(request, "/api/v1/runs?limit=100");
+
+/* ------------------------------------------- the board's own read and clock.
+ *
+ * The Board (artboard 2d) is NOT "every run the API returns": it is one page
+ * of `GET /api/v1/runs` — every status, `limit=200`, no `updated_since`
+ * (`ui/src/api/board.ts`: BOARD_RUN_STATUSES / BOARD_RUN_LIMIT / boardRunQuery)
+ * — and the DONE TODAY column is a client-side clock on top of that page
+ * (`ui/src/components/board/columns.ts`: isDoneToday / columnRuns). A
+ * `completed` run is a card only while `finished_at ?? created_at` is at or
+ * after the BROWSER's local midnight, so a test that counts every completed
+ * row the API returns over-counts on any lab with a finished run older than
+ * midnight — and a lab whose journey crosses midnight drifts mid-test.
+ *
+ * These mirrors are the board's rule, and `pinBrowserClock` fixes the
+ * browser's clock to the same instant the expectation is computed from, so
+ * midnight cannot pass between the API read and the page read.
+ */
+
+/** The board's status filter (ui/src/api/board.ts: BOARD_RUN_STATUSES). */
+export const BOARD_RUN_STATUSES = [
+  "queued",
+  "preparing",
+  "running",
+  "waiting_human",
+  "paused",
+  "failed",
+  "interrupted",
+  "cancelled",
+  "completed",
+] as const;
+
+/** The board's page size (ui/src/api/board.ts: BOARD_RUN_LIMIT) — one page only. */
+export const BOARD_RUN_LIMIT = 200;
+
+/** The board's status → column map (ui/src/components/board/columns.ts: STATUS_COLUMN). */
+export const BOARD_STATUS_COLUMN: Record<string, string> = {
+  queued: "queued",
+  preparing: "queued",
+  running: "running",
+  waiting_human: "needs-you",
+  paused: "needs-you",
+  failed: "failed",
+  interrupted: "failed",
+  cancelled: "failed",
+  completed: "done",
+};
+
+export const BOARD_COLUMNS = ["queued", "running", "needs-you", "failed", "done"] as const;
+
+export interface BoardRunFilter {
+  /** Keep one project's runs; absent = every project the caller belongs to. */
+  projectId?: string;
+  /** `mine=true` — runs the caller started. */
+  mine?: boolean;
+  /** ADR-0056: only runs started by this trigger kind. */
+  trigger?: string;
+}
+
+/** The board's query string (ui/src/api/board.ts: boardRunQuery), same order. */
+export function boardRunQuery(filter: BoardRunFilter = {}): string {
+  const params = new URLSearchParams();
+  params.set("status", BOARD_RUN_STATUSES.join(","));
+  params.set("limit", String(BOARD_RUN_LIMIT));
+  if (filter.projectId) params.set("project_id", filter.projectId);
+  if (filter.mine) params.set("mine", "true");
+  if (filter.trigger) params.set("trigger", filter.trigger);
+  return params.toString();
+}
+
+/**
+ * One page of `GET /api/v1/runs` on the board's own query — deliberately NOT
+ * `apiAll`: the board never follows `next_cursor`, so rows past its page are
+ * not on the board and must not be counted against it.
+ */
+export async function apiBoardRuns(
+  request: APIRequestContext,
+  filter: BoardRunFilter = {},
+): Promise<RunRow[]> {
+  const query = boardRunQuery(filter);
+  const res = await request.get(BASE_URL + `/api/v1/runs?${query}`);
+  if (!res.ok()) throw new Error(`GET /api/v1/runs?${query} -> ${res.status()}`);
+  const body = (await res.json()) as { runs?: RunRow[] };
+  return body.runs ?? [];
+}
+
+/** Local midnight of `now` (ui/src/components/board/columns.ts: localMidnight). */
+export function localMidnight(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+/** `COALESCE(finished_at, created_at)` (columns.ts: runUpdatedAt). */
+export function runUpdatedAt(run: RunRow): number {
+  const value = run.finished_at ?? run.created_at;
+  const ms = new Date(value).getTime();
+  if (Number.isNaN(ms)) throw new Error(`run ${run.id} has no readable timestamp`);
+  return ms;
+}
+
+/** The board's DONE TODAY clock (columns.ts: isDoneToday). */
+export function isDoneToday(run: RunRow, now: Date): boolean {
+  return (
+    BOARD_STATUS_COLUMN[run.status] === "done" && runUpdatedAt(run) >= localMidnight(now).getTime()
+  );
+}
+
+/**
+ * The runs the board renders as cards in its default "by state" view: every
+ * row of the board's page except a `completed` run finished before local
+ * midnight (columns.ts: columnRuns drops exactly those). The "by repo" /
+ * "by workflow" groupings do NOT apply the clock (groupByRepo/groupByWorkflow
+ * take the whole page), so only this list matches the state columns.
+ */
+export function boardCardRuns(runs: readonly RunRow[], now: Date): RunRow[] {
+  return runs.filter((run) => BOARD_STATUS_COLUMN[run.status] !== "done" || isDoneToday(run, now));
+}
+
+/** Per-column card counts for the state view (columns.ts: columnRuns). */
+export function boardColumnCounts(
+  runs: readonly RunRow[],
+  now: Date,
+): Record<(typeof BOARD_COLUMNS)[number], number> {
+  const counts: Record<(typeof BOARD_COLUMNS)[number], number> = {
+    queued: 0,
+    running: 0,
+    "needs-you": 0,
+    failed: 0,
+    done: 0,
+  };
+  for (const run of boardCardRuns(runs, now)) {
+    counts[(BOARD_STATUS_COLUMN[run.status] ?? "queued") as (typeof BOARD_COLUMNS)[number]] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Pin the browser's clock to `now` — call it BEFORE the first navigation, the
+ * way Playwright documents it. `clock.setFixedTime` freezes `Date` (and
+ * `performance.now`) at that instant while real timers keep firing, so SSE,
+ * react-query invalidation and Playwright's own waits are unaffected; only
+ * "what time is it on the page" becomes deterministic. Returns the pinned
+ * instant so the test computes its midnight from the very clock the page
+ * reads — no race when a journey crosses midnight.
+ */
+export async function pinBrowserClock(page: Page, now: Date = new Date()): Promise<Date> {
+  await page.clock.setFixedTime(now);
+  return now;
+}
 
 export interface ApprovalRow {
   id: string;

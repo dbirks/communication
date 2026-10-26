@@ -20,19 +20,23 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { BASE_URL } from "./env.js";
 import { signIn, testidOf } from "./helpers.js";
 import {
+  BOARD_COLUMNS,
   SHELL_ENABLED,
   SHELL_GATE,
+  apiBoardRuns,
   apiCsrf,
   apiPendingApprovals,
   apiPublishPipeline,
   apiRuns,
   apiScratchProject,
   apiStartRun,
+  boardCardRuns,
+  boardColumnCounts,
   checkShellScreen,
   evidence,
+  pinBrowserClock,
   signInNarrow,
   watchPageErrors,
-  type RunRow,
 } from "./shell-helpers.js";
 
 /** The briefing's callout cap (ui/src/components/home/DecisionCallout.tsx:
@@ -130,32 +134,6 @@ async function ensureMoreGatesThanCap(request: APIRequestContext): Promise<void>
     .toBeGreaterThan(CALLOUT_MAX);
 }
 
-/** The board's status → column mapping (ui/src/components/board/columns.ts). */
-const STATUS_COLUMN: Record<string, string> = {
-  queued: "queued",
-  preparing: "queued",
-  running: "running",
-  waiting_human: "needs-you",
-  paused: "needs-you",
-  failed: "failed",
-  interrupted: "failed",
-  cancelled: "failed",
-  completed: "done",
-};
-const COLUMNS = ["queued", "running", "needs-you", "failed", "done"] as const;
-
-function perColumn(runs: RunRow[]): Record<string, number> {
-  const counts: Record<string, number> = {
-    queued: 0,
-    running: 0,
-    "needs-you": 0,
-    failed: 0,
-    done: 0,
-  };
-  for (const run of runs) counts[STATUS_COLUMN[run.status] ?? "queued"] += 1;
-  return counts;
-}
-
 /** The card ROOT only — the inner testids (open/step/actions/retry) share the
     `board-card-` prefix, so a bare `[data-testid^="board-card-"]` counts children too. */
 const CARD_ROOT =
@@ -190,8 +168,12 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
     await ensureMoreGatesThanCap(page.request);
     await page.goto(BASE_URL + "/", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-count-line")).toBeVisible({ timeout: 20_000 });
-    const runs = await apiRuns(page.request);
-    const counts = perColumn(runs);
+    // The briefing reuses the BOARD's read (ui/src/api/home.ts — “the run list
+    // itself reuses the board's useBoardRuns”), so compare against that one
+    // page, not a paginated walk of every run. The count line has no DONE
+    // TODAY segment, so no clock is needed here.
+    const runs = await apiBoardRuns(page.request);
+    const counts = boardColumnCounts(runs, new Date());
 
     // Count line: every segment printed must equal the API's column count;
     // zero-count segments are omitted entirely (the page's own rule).
@@ -282,20 +264,32 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
   });
 
   test("Board: column counts equal the API; repo and workflow groupings", async ({ page }) => {
+    // Pin the browser clock BEFORE the first navigation: DONE TODAY is a
+    // client-side clock (ui/src/components/board/columns.ts isDoneToday), so
+    // the page's local midnight and the test's must be the same instant —
+    // otherwise a journey that crosses midnight drifts between the API read
+    // and the page read. `setFixedTime` freezes Date only; timers keep
+    // running, so SSE and the board's coalesced invalidations are unaffected.
+    const now = await pinBrowserClock(page);
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    const runs = await apiRuns(page.request);
-    const counts = perColumn(runs);
-    for (const column of COLUMNS) {
+    // The board's own read — one page of GET /runs?status=<all nine>&limit=200,
+    // no updated_since (ui/src/api/board.ts) — filtered by the board's own
+    // rule: a completed run is a card only while it finished at/after local
+    // midnight, so a run from yesterday is off the board entirely.
+    const runs = await apiBoardRuns(page.request);
+    const cards = boardCardRuns(runs, now);
+    const counts = boardColumnCounts(runs, now);
+    for (const column of BOARD_COLUMNS) {
       expect(await columnCount(page, column), `column ${column}`).toBe(counts[column]);
     }
     await checkShellScreen(page, "board (state columns)", stopWatching);
     await evidence(
       page,
       "shell-p2-board-columns",
-      `board column counts equal the API's per-status counts (${COLUMNS.map((c) => `${c}=${counts[c]}`).join(", ")} of ${runs.length} runs)`,
+      `board column counts equal the board's own read under its DONE TODAY clock (${BOARD_COLUMNS.map((c) => `${c}=${counts[c]}`).join(", ")} of ${cards.length} cards; ${runs.length - cards.length} of the ${runs.length} API rows finished before local midnight and are off the board)`,
     );
 
     // Group by repo: one group row per distinct repo label, each labelled
@@ -314,14 +308,14 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
     await evidence(
       page,
       "shell-p2-board-group-repo",
-      `grouping by repo re-groups the same ${runs.length} cards into ${groupCount} group row(s), each labelled with its count`,
+      `grouping by repo re-groups the same ${runs.length} rows into ${groupCount} group row(s), each labelled with its count (the repo/workflow groupings group the whole page — the DONE TODAY clock belongs to the state columns only)`,
     );
     await page.getByTestId("board-group-by-workflow").check();
     const workflowGroups = page.locator('section[aria-label$=")"]');
     const workflowCount = await workflowGroups.count();
     expect(workflowCount, "workflow grouping renders groups").toBeGreaterThan(0);
     const total = await page.locator(`section[aria-label$=")"] ${CARD_ROOT}`).count();
-    expect(total, "workflow grouping keeps every card").toBe(runs.length);
+    expect(total, "workflow grouping keeps every row of the board's page").toBe(runs.length);
     stopWatching();
     await evidence(
       page,
@@ -333,9 +327,15 @@ test.describe("shell p2 — Home briefing + cross-project board", () => {
   test("card click opens the drawer on ?run=; focus stays in the drawer; esc closes", async ({
     page,
   }) => {
+    // A card to click must be a card the board RENDERS: a completed run that
+    // finished before local midnight has none (ui/src/components/board/
+    // columns.ts isDoneToday), so the newest API row is not automatically the
+    // newest card. The clock is pinned before any navigation so the page's and
+    // the test's midnight are the same instant.
+    const now = await pinBrowserClock(page);
     await signIn(page, "admin");
     const stopWatching = watchPageErrors(page);
-    const runs = await apiRuns(page.request);
+    const runs = boardCardRuns(await apiBoardRuns(page.request), now);
     expect(runs.length).toBeGreaterThan(0);
     await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
     const card = page.getByTestId(`board-card-open-${runs[0].id}`);

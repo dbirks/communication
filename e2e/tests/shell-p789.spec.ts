@@ -27,12 +27,14 @@ import {
   SHELL_ENABLED,
   SHELL_GATE,
   apiAgentProfiles,
+  apiBoardRuns,
   apiLaunchers,
   apiPendingApprovals,
-  apiRuns,
   apiScratchProject,
+  boardCardRuns,
   checkShellScreen,
   evidence,
+  pinBrowserClock,
   type ApprovalRow,
   type ProjectRow,
   watchPageErrors,
@@ -561,21 +563,31 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
   test("2. board: the 'mine' count equals GET /runs?mine=true; the from-issues/scheduled chips filter by trigger", async ({
     page,
   }) => {
+    // Pin the browser clock before the first navigation: the board's state
+    // columns hide every `completed` run that finished before the BROWSER's
+    // local midnight (ui/src/components/board/columns.ts isDoneToday), so the
+    // page's midnight and the test's must be one instant. `setFixedTime`
+    // freezes Date only — timers, SSE and react-query keep running.
+    const now = await pinBrowserClock(page);
     await signIn(page, "admin");
     const request = page.request;
     const stopWatching = watchPageErrors(page);
     await page.goto(BASE_URL + "/board", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("board-page")).toBeVisible();
     await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    const allRuns = await apiRuns(request);
+    // The board's own read: one page of GET /runs?status=<all nine>&limit=200,
+    // no pagination (ui/src/api/board.ts). Every run on that page is a card
+    // EXCEPT a completed one from before local midnight — yesterday's work is
+    // off the board by design, so the old "every row is a card" claim was the
+    // test's, not the product's.
+    const allRuns = await apiBoardRuns(request);
     const allCards = await page.locator(CARD_ROOT).count();
-    expect(allCards, "every cross-project run the caller can see becomes one card").toBe(
-      allRuns.length,
-    );
-    const mineRuns = await request.get(BASE_URL + "/api/v1/runs?mine=true&limit=100");
-    expect(mineRuns.status(), "GET /api/v1/runs?mine=true -> 200").toBe(200);
-    const mineBody = (await mineRuns.json()) as { runs?: { id: string }[] };
-    const mineCount = mineBody.runs?.length ?? 0;
+    expect(
+      allCards,
+      "every run the board shows becomes one card (completed runs only while they finished today)",
+    ).toBe(boardCardRuns(allRuns, now).length);
+    const mineRuns = await apiBoardRuns(request, { mine: true });
+    const mineCount = boardCardRuns(mineRuns, now).length;
     const mineChip = page.getByTestId("board-filter-mine");
     await expect(mineChip).toBeVisible();
     await mineChip.click();
@@ -593,7 +605,7 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     await evidence(
       page,
       "shell-p789-board-mine",
-      `board cards without the filter equal GET /api/v1/runs (${allCards} of ${allRuns.length}), with 'mine' pressed the ${mineCount} cards equal GET /api/v1/runs?mine=true, and the from issues / scheduled chips are enabled and idle (ADR-0056)`,
+      `board cards without the filter equal the board's own page of GET /api/v1/runs under its DONE TODAY clock (${allCards} of ${allRuns.length} rows, ${allRuns.length - allCards} of them completed before local midnight), with 'mine' pressed the ${mineCount} cards equal the same read of GET /api/v1/runs?mine=true, and the from issues / scheduled chips are enabled and idle (ADR-0056)`,
     );
 
     // The scheduled chip now filters the board list by the run's trigger.
@@ -605,17 +617,11 @@ test.describe("shell p789 — live flags, board filters, reusable steps, mic, tr
     expect(scheduledRequest.url()).toContain("trigger=schedule");
     await expect(scheduledChip).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByTestId("board-loading")).toBeHidden({ timeout: 30_000 });
-    const scheduledResponse = await request.get(
-      BASE_URL + "/api/v1/runs?limit=100&trigger=schedule",
-    );
-    expect(scheduledResponse.status(), "GET /api/v1/runs?trigger=schedule -> 200").toBe(200);
-    const scheduledBody = (await scheduledResponse.json()) as {
-      runs?: { id: string; trigger?: { kind: string } }[];
-    };
+    // The board's own page for the same filter (status list + limit=200), so a
+    // scheduled run past row 100 cannot make a rendered card look unknown.
+    const scheduledRows = await apiBoardRuns(request, { trigger: "schedule" });
     const scheduledIds = new Set(
-      (scheduledBody.runs ?? [])
-        .filter((row) => row.trigger?.kind === "schedule")
-        .map((row) => row.id),
+      scheduledRows.filter((row) => row.trigger?.kind === "schedule").map((row) => row.id),
     );
     const cards = page.locator(CARD_ROOT);
     const cardCount = await cards.count();
