@@ -24,9 +24,11 @@ const BodyLimit = 4 << 20
 
 // MaxAttempts caps one completion across transient upstream failures: the
 // first attempt plus at most MaxAttempts-1 retries, so a single rate limit, a
-// gateway hiccup or a model reload cannot kill a whole turn (the lab's llm-
-// collective failures: 429 rate-limit, http 502, http 503, reload-404). Mirrors
-// ADR-0023 § 7's retry.maxAttempts.
+// gateway hiccup or a model reload cannot kill a whole turn. Retried
+// conditions: any HTTP 5xx, 429, the model loading/unavailable error envelope
+// (reload-404 or the gateway-style envelope on a 200) and transport failures
+// (the lab's llm-collective failures: 429 rate-limit, http 500/502/503,
+// reload-404). Mirrors ADR-0023 § 7's retry.maxAttempts.
 const MaxAttempts = 3
 
 // RetryBackoff is the assistant client's egress retry policy constants (the

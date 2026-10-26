@@ -96,14 +96,18 @@ type modelAnswer struct {
 	Finished  bool
 }
 
-// complete issues ONE POST, retried on transient upstream conditions — HTTP
-// 429, a 502/503 gateway or upstream failure, and a 404 whose body says the
-// model is not currently available/loading (the lab's "the model was
-// reloading" turn-killer) — plus connection errors: up to MaxAttempts attempts
-// with exponential backoff and jitter (Retry-After honoured), never past the
-// per-call deadline or the caller's context. The user-facing error after the
-// last attempt is the one a single attempt would have produced, and answers
-// that are not transient (other 4xx, malformed envelopes) are never retried.
+// complete issues ONE POST, retried on transient upstream conditions — any
+// HTTP 5xx (gateway/upstream failure: 500, 502, 503, 504 …), HTTP 429, the
+// model loading/unavailable error envelope (the 404 "the model was reloading"
+// turn-killer and the gateway-style error envelope some endpoints answer even
+// on a 200) — plus connection errors: up to MaxAttempts attempts with
+// exponential backoff and jitter (Retry-After honoured, capped by
+// RetryBackoffMaxSeconds), never past the per-call deadline or the caller's
+// context. The user-facing error after the last attempt is the one a single
+// attempt would have produced, and answers that are not transient (other 4xx,
+// malformed envelopes) are never retried. Every assistant egress path — the
+// ask loop, the conversation runner, draft proposals and their re-ask, the
+// approval summaries and interpretations — goes through this one loop.
 func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *Failure) {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout())
 	defer cancel()
@@ -115,7 +119,7 @@ func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *F
 		retry      bool
 	)
 	for attempt := 1; ; attempt++ {
-		ans, bad, retryAfter, retry = b.completeOnce(ctx, req)
+		ans, bad, retryAfter, retry = b.completeOnce(ctx, req, attempt)
 		if !retry || attempt >= MaxAttempts {
 			return ans, bad
 		}
@@ -131,11 +135,12 @@ func (b *Broker) complete(ctx context.Context, req chatRequest) (modelAnswer, *F
 	}
 }
 
-// completeOnce is ONE completion attempt: build the request, send it, map the
+// completeOnce is ONE completion attempt (1-based `attempt` numbers the backoff
+// when the condition is transient): build the request, send it, map the
 // outcome to a *Failure, and report whether the condition was transient and how
 // long to wait before the next attempt. Transient answers come back with a
 // retry verdict; the retry budget lives in complete.
-func (b *Broker) completeOnce(ctx context.Context, req chatRequest) (modelAnswer, *Failure, time.Duration, bool) {
+func (b *Broker) completeOnce(ctx context.Context, req chatRequest, attempt int) (modelAnswer, *Failure, time.Duration, bool) {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout())
 	defer cancel()
 
@@ -168,7 +173,7 @@ func (b *Broker) completeOnce(ctx context.Context, req chatRequest) (modelAnswer
 		}
 		// Transport-level failure (connection refused/reset mid-flight, TLS
 		// reset): transient from the turn's point of view, back off and retry.
-		return modelAnswer{}, failure(FailModelUnreachable, "request to "+b.EndpointHost()+" failed", http.StatusServiceUnavailable), retryBackoff(1), true
+		return modelAnswer{}, failure(FailModelUnreachable, "request to "+b.EndpointHost()+" failed", http.StatusServiceUnavailable), retryBackoff(attempt), true
 	}
 	defer resp.Body.Close()
 
@@ -183,12 +188,12 @@ func (b *Broker) completeOnce(ctx context.Context, req chatRequest) (modelAnswer
 			return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable), 0, false
 		}
 		// The connection dropped mid-response: transient, back off and retry.
-		return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable), retryBackoff(1), true
+		return modelAnswer{}, failure(FailModelUnreachable, "reading the response from "+b.EndpointHost(), http.StatusServiceUnavailable), retryBackoff(attempt), true
 	}
 	if len(raw) > BodyLimit {
 		return modelAnswer{}, failure(FailBadModelResponse, fmt.Sprintf("%s sent a response over %d bytes", b.EndpointHost(), BodyLimit), http.StatusBadGateway), 0, false
 	}
-	retryAfter, retry := transientRetry(resp.StatusCode, raw, resp.Header.Get("Retry-After"))
+	retryAfter, retry := transientRetry(resp.StatusCode, raw, resp.Header.Get("Retry-After"), attempt)
 	if retry {
 		_, bad := parseCompletion(resp.StatusCode, raw, b.EndpointHost())
 		return modelAnswer{}, bad, retryAfter, true
@@ -199,26 +204,38 @@ func (b *Broker) completeOnce(ctx context.Context, req chatRequest) (modelAnswer
 
 // transientRetry reports whether a completion answered with a transient
 // upstream condition should be attempted again, and how long to wait before the
-// next attempt. Retriable: 429 (rate limited), 502/503 (gateway/upstream
-// failure), and a 404 whose body says the model is not currently available or
-// loading (the "model was reloading" turn-killer); transport-level failures
+// next attempt (1-based `attempt` numbers the backoff). Retriable: any 5xx
+// (gateway/upstream failure — a plain 500 and a 504 are the same outage as a
+// 502/503), 429 (rate limited), and the model loading/unavailable error
+// envelope: the 404 "model was reloading" turn-killer, and the gateway-style
+// error envelope some endpoints answer even on a 200. Transport-level failures
 // are retried by the caller. Any other 4xx is a rejected request, not a
-// transient condition, and never retried.
-func transientRetry(status int, raw []byte, retryAfter string) (time.Duration, bool) {
-	switch status {
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
-		return retryAfterOrBackoff(retryAfter, 1), true
+// transient condition, and never retried; neither is a malformed completion.
+func transientRetry(status int, raw []byte, retryAfter string, attempt int) (time.Duration, bool) {
+	switch {
+	case status >= http.StatusInternalServerError, status == http.StatusTooManyRequests:
+		return retryAfterOrBackoff(retryAfter, attempt), true
+	case status >= 400:
+		if status == http.StatusNotFound && modelUnavailable(string(raw)) {
+			return retryAfterOrBackoff(retryAfter, attempt), true
+		}
+		return 0, false
 	}
-	if status == http.StatusNotFound && modelUnavailable(string(raw)) {
-		return retryAfterOrBackoff(retryAfter, 1), true
+	if modelUnavailable(string(raw)) {
+		return retryAfterOrBackoff(retryAfter, attempt), true
 	}
 	return 0, false
 }
 
-// retryAfterOrBackoff honours the endpoint's Retry-After when it offered one and
-// otherwise computes the exponential backoff for the next retry.
+// retryAfterOrBackoff honours the endpoint's Retry-After when it offered one —
+// capped by RetryBackoffMaxSeconds, because the retry policy's own ceiling
+// bounds the wait an endpoint may impose — and otherwise computes the
+// exponential backoff for the next retry.
 func retryAfterOrBackoff(retryAfter string, attempt int) time.Duration {
 	if d, ok := retryAfterDelay(retryAfter); ok && d > 0 {
+		if limit := time.Duration(RetryBackoffMaxSeconds) * time.Second; d > limit {
+			d = limit
+		}
 		return d
 	}
 	return retryBackoff(attempt)
@@ -228,14 +245,14 @@ func retryAfterOrBackoff(retryAfter string, attempt int) time.Duration {
 // failed attempt): baseSeconds * multiplier^(attempt-1), clamped to maxSeconds,
 // ±20% jitter — the ADR-0023 § 7 retry backoff formula.
 func retryBackoff(attempt int) time.Duration {
-	d := time.Duration(RetryBackoffBaseSeconds)
+	d := time.Duration(RetryBackoffBaseSeconds) * time.Second
 	for i := 1; i < attempt; i++ {
 		d *= time.Duration(RetryBackoffMultiplier)
 	}
 	if d > time.Duration(RetryBackoffMaxSeconds)*time.Second {
 		d = time.Duration(RetryBackoffMaxSeconds) * time.Second
 	}
-	return d * time.Duration(0.8+rand.Float64()*0.4)
+	return time.Duration(float64(d) * (0.8 + rand.Float64()*0.4))
 }
 
 // retryAfterDelay reads a Retry-After header: delay-seconds or an HTTP-date.
