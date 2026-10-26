@@ -84,7 +84,9 @@ both backends, so the API surface never has to know which one is configured.
   Indexes: `(project_id, created_at DESC, id DESC)` (listing), partial
   `(state) WHERE state='uploading'` (sweep), partial `(id) WHERE state='ready' AND expires_at IS NOT NULL`
   (retention), `(sha256)` (dedupe lookup), and a UNIQUE `(project_id, kind, sha256)` so a retry cannot
-  double-count bytes.
+  double-count bytes. *(The UNIQUE sentence is superseded by the 2026-10-27 amendment at the end of
+  this ADR: dedupe is owner-scoped, because the cross-owner fold this sentence allowed re-attributed
+  one run's artifact row to another run.)*
 - **State machine, and why `uploading` exists:** bytes land first, the row is inserted in one fenced
   transaction with `artifact.created`, and `state` flips to `ready` in that same transaction. A row
   stuck at `uploading` (worker died between Put and the transaction) is swept to `orphan` by the
@@ -304,3 +306,66 @@ re-derivation. Rollback of the preview origin (e.g. it turns out `preview.localh
 in a target deployment) is a config change to the LB and one env var
 (`COMMUNICATION_PREVIEW_BASE_URL`) — the token format and the app origin's refusal to render HTML do
 not change, and neither is a wire change.
+
+## Amendment (2026-10-27) — dedupe is owner-scoped; bytes stay shared
+
+D2's `UNIQUE (project_id, kind, sha256)` is dropped (migration `00019`) and replaced by two
+owner-scoped partial unique indexes. D2's intent — *a retry cannot double-count bytes* — is
+preserved; what was wrong was the scope: the constraint deduped across **owners**, and because
+both writers upsert on it, a second owner's publish did not merely share a row, it
+**re-attributed** it.
+
+The defect as observed on the M4 lab (C1f): the deterministic replay run publishes
+`review-evidence.md` byte-identical to the seed run, so the seed run's row (e.g. `01a1760e-e75d…`)
+was rewritten with the replay's `run_id` — the seed run's artifact list became empty, its
+`artifact.created` journal event named an artifact belonging to another run, and its run page lost
+its evidence. Cross-run (and cross-turn) re-attribution was never intended by D2; the
+`(project_id, kind, sha256)` key was wider than the retry rule it was meant to enforce.
+
+The new contract:
+
+* **Run side — `artifacts_run_dedupe_idx UNIQUE (run_id, node_execution_id, kind, sha256)
+  NULLS NOT DISTINCT WHERE attempt_id IS NOT NULL`.** A retried *attempt* of the same node folds
+  into the same row (`attempt_id` is deliberately not in the key — D2's retry rule, verbatim); a
+  different node of the same run, or the same bytes in another run, gets its own row. The predicate
+  is `attempt_id IS NOT NULL`, not `run_id IS NOT NULL`, because the ADR-0053 run-from-thread
+  attach writes `run_id` onto *turn-owned* rows: an attempt-published row always carries
+  `attempt_id`, a capture never does, so `attempt_id` is the provenance that keeps the two writer
+  families in their own dedupe scopes and keeps an attach UPDATE from ever colliding with the run
+  key. `node_execution_id` is nullable and Postgres 18.6 is the pinned server (00015 already uses
+  the flag), so `NULLS NOT DISTINCT` makes two node-less attempt publishes of one run's identical
+  bytes fold like the retry they are instead of escaping the index through DISTINCT NULLs; the
+  writers' `ON CONFLICT` arbiters name the index by column list + predicate (the arbiter grammar
+  has no slot for the flag — the index itself decides equality).
+* **Turn side — `artifacts_turn_dedupe_idx UNIQUE (turn_id, kind, sha256) WHERE turn_id IS NOT
+  NULL`.** `turn_id` is the narrowest key that still dedupes a RETRY of the same capture:
+  `PublishArtifact` fences by reading `worker_id`/`fencing_token` from the turn row, a lease
+  re-claim rotates the token on the **same** turn row, and a capture retry therefore replays with
+  the same `turn_id`; a re-run never reuses a closed turn (each attempt owns a new turn on the
+  conversation — proven by `attempt_turn_close`/`agentturn_seams`), and a distinct turn is by
+  definition a distinct capture event, which is exactly the case the old key wrongly folded.
+  `conversation_id` is functionally determined by `turn_id` (a globally unique PK), so naming it
+  in the key would restate the same owner with no added reach. Two turns or conversations with
+  identical bytes are now two rows that each keep their own `turn_id`/`conversation_id`.
+* **On conflict, owner columns are never rewritten.** The attempt writer updates `name`,
+  `attempt_id`, `worker_id` and the folded `redaction_count` only — not `run_id`/`node_execution_id`
+  (and the turn writer no longer re-points `conversation_id`/`turn_id`). Correlation may move to
+  the latest retry *inside* the same owner; ownership itself never moves.
+* **Bytes stay content-addressed and shared.** Both rows name the SAME `storage_key`; that is the
+  point of content addressing, and nothing double-counts storage. The consequence for retention is
+  now explicit: **bytes are deletable exactly when no non-deleted `artifacts` row still names their
+  storage key.** Marking one row `deleted`/`orphan` (expiry, sweep, project teardown) must never
+  call `Store.Delete` on bytes another live row references. No reconciler pass deletes artifact
+  bytes today (`Store.Delete` has no production caller), so this is a rule declared before the code
+  that will need it: `postgres.BytesStillReferenced` / `postgres.ArtifactsReferencingBytes` are the
+  guard any such sweep must consult, and a backend-wide object sweep must build its live-key set
+  from the latter rather than from the single row it just expired.
+
+Tests (`internal/store/postgres`): `TestArtifactOwnerDedupeCrossRunKeepsOwnRow` (two runs, one
+project, identical bytes → two rows, each listed under its own run), `
+TestArtifactOwnerDedupeRetriedAttemptFolds` (real attempt-2 retry of one node → one row, counts
+folded), `TestArtifactOwnerDedupeTurnRetryVsDistinctTurns` (same-turn retry folds; second turn and
+second conversation keep their own rows), `TestArtifactSharedBytesSurviveOneRowDeletion` (real
+local-backend bytes; guard refuses while any row lives, sanctions deletion after the last one
+goes), and the rewritten `TestMigrate0004ArtifactsShape` / `
+TestArtifactDedupeConstraintMatchesTheKeyLayout` for the schema half.

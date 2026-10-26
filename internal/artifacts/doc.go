@@ -24,8 +24,11 @@
 //
 // Content addressing is the property everything else here leans on: the key
 // contains the SHA-256 of the bytes, so a second Put of the same content is a
-// no-op, a retry cannot double-count bytes (the table's UNIQUE
-// (project_id, kind, sha256) mirrors it), and Stat can detect a file changed
+// no-op, a retry cannot double-count bytes (the table's owner-scoped dedupe
+// indexes from migration 00019 mirror it per run/turn — and since identical
+// bytes owned by different runs are different rows over ONE key, a byte
+// delete must first prove no non-deleted row still references it, which is
+// postgres.BytesStillReferenced's job), and Stat can detect a file changed
 // under its own key — the check that makes "immutable" an observable fact
 // instead of a claim.
 //

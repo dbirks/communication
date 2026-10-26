@@ -131,7 +131,9 @@ func rsConversation(t *testing.T, f *m4Fixture, projectID string) string {
 }
 
 // rsArtifact inserts a ready conversation artifact; label keeps the
-// content-address sha distinct (artifacts_project_id_kind_sha256_key).
+// content-address sha distinct (the 00019 owner-scoped dedupe indexes make
+// collision depend on the row's turn owner, and these fixture rows carry no
+// turn — distinct shas keep every other assumption about them true).
 func rsArtifact(t *testing.T, f *m4Fixture, conversationID, label string) string {
 	t.Helper()
 	var id string

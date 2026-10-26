@@ -29,9 +29,12 @@ import (
 //   - A stale triple lands NOTHING and answers with worker.ErrLeaseLost, the
 //     same typed error the rest of the attempt loop branches on, so the
 //     executor reads it as "I am dead" and does not retry (§ 4 step 10).
-//   - Dedupe is the UNIQUE(project_id, kind, sha256) constraint: a retried
-//     publish folds its redaction count into the row the first writer created
-//     rather than double-counting storage (ADR-0020 D2).
+//   - Dedupe is the owner-scoped artifacts_run_dedupe_idx (migration 00019,
+//     ADR-0020 D2's 2026-10-27 amendment): a retried publish of the same node
+//     folds its redaction count into the row the first writer created rather
+//     than double-counting storage, while identical bytes in ANOTHER run (or
+//     at another node) get their own row — a run's evidence is never
+//     re-attributed away from it.
 //
 // redaction_count is carried through untouched: 0 means "the scanner ran and
 // saw nothing", which must stay distinguishable from "the scanner is broken"
@@ -78,10 +81,9 @@ func (a *AttemptArtifacts) PublishAttemptArtifact(ctx context.Context, in worker
 			VALUES ($1::uuid, $2::uuid, $3::uuid, NULLIF($4,'')::uuid, $5::uuid, $6::uuid,
 			        $7, $8, $9, $10, $11,
 			        $12, $13, $14, 'ready', $15, $16, now())
-			ON CONFLICT (project_id, kind, sha256) DO UPDATE SET
+			ON CONFLICT (run_id, node_execution_id, kind, sha256)
+			    WHERE attempt_id IS NOT NULL DO UPDATE SET
 			    name = EXCLUDED.name,
-			    run_id = EXCLUDED.run_id,
-			    node_execution_id = EXCLUDED.node_execution_id,
 			    attempt_id = EXCLUDED.attempt_id,
 			    worker_id = EXCLUDED.worker_id,
 			    redaction_count = artifacts.redaction_count + EXCLUDED.redaction_count

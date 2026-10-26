@@ -195,9 +195,11 @@ func TestPutLimitNeverExceedsHardLimit(t *testing.T) {
 	}
 }
 
-// TestLocalConcurrentPutOfSameContentIsANoop is the property the table's UNIQUE
-// (project_id, kind, sha256) mirrors: two writers of identical bytes produce
-// one object.
+// TestLocalConcurrentPutOfSameContentIsANoop is the property the table's
+// owner-scoped dedupe indexes (migration 00019) sit on top of: two writers of
+// identical bytes produce one object — even when the database gives them one
+// row each, because the rows share this key (ADR-0020 D2's 2026-10-27
+// amendment).
 func TestLocalConcurrentPutOfSameContentIsANoop(t *testing.T) {
 	l := newLocalForTest(t)
 	body := bytes.Repeat([]byte("same"), 4096)

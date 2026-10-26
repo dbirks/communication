@@ -224,14 +224,21 @@ CREATE TABLE artifacts (                     -- ADR-0020 D2; bytes never in a ro
     redaction_count int NOT NULL DEFAULT 0,
     created_by     text NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT now(),
-    ready_at       timestamptz, expires_at timestamptz, deleted_at timestamptz,
-    UNIQUE (project_id, kind, sha256)
+    ready_at       timestamptz, expires_at timestamptz, deleted_at timestamptz
+    -- No table-wide UNIQUE here any more: 00019 (ADR-0020 D2 amendment,
+    -- 2026-10-27) replaced the original UNIQUE (project_id, kind, sha256)
+    -- with the owner-scoped dedupe indexes created below; the bytes stay
+    -- shared (several rows may name one storage_key).
 );
 CREATE INDEX artifacts_project_created_idx ON artifacts (project_id, created_at DESC, id DESC);
 CREATE INDEX artifacts_sweep_idx ON artifacts (id) WHERE state = 'uploading';
 CREATE INDEX artifacts_expiry_idx ON artifacts (expires_at, id)
     WHERE state = 'ready' AND expires_at IS NOT NULL;
 CREATE INDEX artifacts_sha256_idx ON artifacts (sha256);   -- ADR-0020 D2's dedupe lookup
+CREATE UNIQUE INDEX artifacts_run_dedupe_idx ON artifacts (run_id, node_execution_id, kind, sha256)
+    NULLS NOT DISTINCT WHERE attempt_id IS NOT NULL;       -- ADR-0020 D2's 00019 amendment (run side)
+CREATE UNIQUE INDEX artifacts_turn_dedupe_idx ON artifacts (turn_id, kind, sha256)
+    WHERE turn_id IS NOT NULL;                             -- ADR-0020 D2's 00019 amendment (turn side)
 
 -- ADR-0008/0016: agent_profiles gains the revision-ish fields M3 needs (no revisions table yet).
 ALTER TABLE agent_profiles ADD COLUMN workspace_mode text NOT NULL DEFAULT 'worktree'
@@ -259,7 +266,10 @@ different inodes at the same path (the identity that case 20 compares), `workspa
 `secrets_scope_pointer`
 (org-with-project and project-without-org both `23514`), `secret_versions_not_empty`,
 `mounts_shape` (`env` with a path and `env_file` without a repository both `23514`),
-`artifacts.sha256` pattern, `artifacts` UNIQUE per `(project_id, kind, sha256)`, and
+`artifacts.sha256` pattern, the 00019 owner-scoped artifact dedupe (`artifacts_run_dedupe_idx`: a
+second row for the same `(run_id, node_execution_id, kind, sha256)` among attempt-owned rows is
+refused — `23505` — while the same bytes under another run or another node are their own rows;
+`artifacts_turn_dedupe_idx`: same for `(turn_id, kind, sha256)` among turn captures), and
 `agent_profiles.apm_lock_digest` pattern. There is deliberately **no** column anywhere that could hold
 a plaintext secret, and `secret_versions.ciphertext` is unreadable from the API layer by construction
 (no store method exposes it to `internal/api`).

@@ -592,10 +592,13 @@ func TestArtifactDenialsLandInTheAuditTable(t *testing.T) {
 }
 
 // TestArtifactDedupeConstraintMatchesTheKeyLayout is the store-side half of
-// content addressing: the table refuses a second row for the same
-// (project, kind, sha256), so a retried publish is one artifact, not two.
-// (migrate_test.go asserts the constraint exists; this asserts the code's key
-// shape agrees with it.)
+// content addressing under 00019's owner-scoped dedupe (ADR-0020 D2's
+// 2026-10-27 amendment): the table refuses a second row for the same
+// run-side owner key — a retried publish is one artifact, not two — while a
+// DIFFERENT run publishing the same bytes gets its own row over the SAME
+// content-addressed key. (migrate_test.go asserts the indexes exist; this
+// asserts the code's key shape agrees with them: identical bytes → identical
+// key, shared by the rows that now coexist.)
 func TestArtifactDedupeConstraintMatchesTheKeyLayout(t *testing.T) {
 	_, projects, orgID, pool := artFixture(t)
 	ctx := testCtx(t)
@@ -603,21 +606,48 @@ func TestArtifactDedupeConstraintMatchesTheKeyLayout(t *testing.T) {
 	projectA := artProject(t, projects, owner, orgID, "Dedupe A", "dedupe-a")
 	projectB := artProject(t, projects, owner, orgID, "Dedupe B", "dedupe-b")
 	digest := artDigest("same-bytes")
+	key := artKey(t, projectA, "json", digest, "application/json")
 
-	artInsert(t, pool, orgID, projectA, "one.json", "json", "application/json", digest, "ready", "internal")
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO artifacts (organization_id, project_id, name, kind, media_type, sha256,
-			size_bytes, storage_backend, storage_key, sensitivity, state, created_by)
-		VALUES ($1::uuid, $2::uuid, 'two.json', 'json', 'application/json', $3, 12, 'local', $4,
-			'internal', 'ready', 'worker')`,
-		orgID, projectA, digest, artKey(t, projectA, "json", digest, "application/json")); err == nil {
-		t.Error("a duplicate (project, kind, sha256) row was accepted")
-	} else {
-		// Same bytes, different project: allowed, and the row is what carries
-		// the project scope, not the object key.
-		if !strings.Contains(err.Error(), "duplicate key") {
-			t.Errorf("expected a unique violation, got %v", err)
+	own := `
+		INSERT INTO artifacts (organization_id, project_id, run_id, attempt_id,
+			name, kind, media_type, sha256, size_bytes, storage_backend,
+			storage_key, sensitivity, state, created_by, ready_at)
+		VALUES ($1, $2::uuid, $3::uuid, $4::uuid, 'one.json', 'json', 'application/json', $5,
+			12, 'local', $6, 'internal', 'ready', 'worker', now())
+		RETURNING id::text`
+	var runA, runB, attemptA, attemptB string
+	for _, v := range []*string{&runA, &runB, &attemptA, &attemptB} {
+		if err := pool.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(v); err != nil {
+			t.Fatalf("gen uuid: %v", err)
 		}
 	}
+	var idA string
+	if err := pool.QueryRow(ctx, own, orgID, projectA, runA, attemptA, digest, key).Scan(&idA); err != nil {
+		t.Fatalf("first owned artifact rejected: %v", err)
+	}
+	if _, err := pool.Exec(ctx, own, orgID, projectA, runA, attemptB, digest, key); err == nil {
+		t.Error("a duplicate (run_id, node_execution_id, kind, sha256) row was accepted")
+	} else if !strings.Contains(err.Error(), "duplicate key") {
+		t.Errorf("expected a unique violation, got %v", err)
+	}
+	// Another run, same project, same bytes: its OWN row, over the same
+	// content-addressed key. The old UNIQUE (project_id, kind, sha256) refused
+	// this at best and (via the writers' upsert) stole run A's row at worst.
+	var idB string
+	if err := pool.QueryRow(ctx, own, orgID, projectA, runB, attemptB, digest, key).Scan(&idB); err != nil {
+		t.Fatalf("cross-run duplicate rejected: %v", err)
+	}
+	if idB == idA {
+		t.Fatal("cross-run publish returned the other run's row id")
+	}
+	var sharedKey string
+	if err := pool.QueryRow(ctx, `SELECT storage_key FROM artifacts WHERE id = $1::uuid`, idB).Scan(&sharedKey); err != nil {
+		t.Fatal(err)
+	}
+	if sharedKey != key {
+		t.Errorf("run B's row stores bytes at %q, want the shared key %q", sharedKey, key)
+	}
+	// Same bytes, different project: always allowed, and the row is what
+	// carries the project scope, not the object key.
 	artInsert(t, pool, orgID, projectB, "three.json", "json", "application/json", digest, "ready", "internal")
 }

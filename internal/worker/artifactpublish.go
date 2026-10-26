@@ -360,8 +360,10 @@ func (p *ArtifactPublish) materialize(ctx context.Context, spec artifactPublishS
 // marshalCanonicalJSON is the kind=json payload: indented, and canonical in the
 // sense Go's encoder guarantees — map keys sorted — so the digest of the same
 // upstream outputs is stable across attempts and across workers (a retry that
-// republishes identical bytes hits the UNIQUE(project_id, kind, sha256) dedupe
-// instead of a second row, ADR-0020 D2).
+// republishes identical bytes hits the owner-scoped run dedupe index
+// (artifacts_run_dedupe_idx, migration 00019; ADR-0020 D2's 2026-10-27
+// amendment) instead of a second row, while the same bytes in another run get
+// their own row).
 func marshalCanonicalJSON(v any) ([]byte, error) {
 	body, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

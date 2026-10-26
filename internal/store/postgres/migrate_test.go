@@ -198,7 +198,11 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // A migration is only believed once it has been applied. ExpectedSchemaVersion
 // reads the embedded filesystem, so the constant here is what makes a migration
 // file appearing "by accident" a test failure rather than a silently higher
-// version every replica demands. Current head: 00018 (ADR-0056 amendment: the
+// version every replica demands. Current head: 00019 (ADR-0020 amendment:
+// owner-scoped artifact dedupe — the global UNIQUE (project_id, kind, sha256)
+// becomes the partial unique indexes artifacts_run_dedupe_idx and
+// artifacts_turn_dedupe_idx) on top of
+// 00018 (ADR-0056 amendment: the
 // issue_triggers.github_created_at GitHub-clock baseline) on top of
 // 00017 (ADR-0062 unattended
 // agent turns: runs.trigger_id + the kind CHECK and the trigger-ledger
@@ -227,7 +231,7 @@ func TestMigrateIdempotentAndVersion(t *testing.T) {
 // workspace/secret/artifact model, docs/m3-contract.md § 1, ADR-0017..0020),
 // 00003 (M2 conversations/control/turns, ADR-0016), 00002 (the event-stream
 // ordering column, ADR-0014 §9) and 00001 (M1 core).
-const migHeadVersion = 18
+const migHeadVersion = 19
 
 // TestMigration0002EventOrdering proves the gap-safety column exists with the
 // default the reader relies on, rather than merely that goose reported 2.
@@ -2477,7 +2481,9 @@ func TestMigrate0004MaterializationCleanupShape(t *testing.T) {
 
 // TestMigrate0004ArtifactsShape pins the artifact row that makes case 16 and
 // case 12 answerable: a sha256 that is a sha256, no bytes without a state, and
-// one row per (project, kind, digest) so a retried Put cannot double-count.
+// owner-scoped dedupe so a retried Put cannot double-count while another
+// owner's identical bytes keep their own row (00019's amendment replaces the
+// (project, kind, digest) UNIQUE this test originally pinned).
 func TestMigrate0004ArtifactsShape(t *testing.T) {
 	ctx := testCtx(t)
 	pool, err := Open(ctx, mustMigrate(t))
@@ -2497,18 +2503,78 @@ func TestMigrate0004ArtifactsShape(t *testing.T) {
 		"text/html", digest, key); err != nil {
 		t.Fatalf("legal artifact rejected: %v", err)
 	}
-	// Same bytes again = same row: the retry path ADR-0020 D2 depends on.
-	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "report.html", "html",
-		"text/html", digest, key); err == nil {
-		t.Error("duplicate (project_id, kind, sha256) accepted")
+	// Owner-scoped dedupe (migration 00019, ADR-0020 D2's 2026-10-27
+	// amendment): the same bytes under the SAME run-side owner are one row — a
+	// retried publish cannot double-count storage — while the same bytes under
+	// ANOTHER run are that run's own row. Cross-run re-attribution (one run
+	// stealing another's artifact row through a shared digest) is the defect
+	// the old UNIQUE (project_id, kind, sha256) allowed and this replaces.
+	own := `
+		INSERT INTO artifacts (organization_id, project_id, run_id, node_execution_id, attempt_id,
+		                       name, kind, media_type, sha256, size_bytes, storage_backend,
+		                       storage_key, created_by)
+		VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9, 12, 'local', $10, 'worker')`
+	var runA, runB, nodeA, attemptA, attemptB string
+	for _, v := range []*string{&runA, &runB, &nodeA, &attemptA, &attemptB} {
+		if err := pool.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(v); err != nil {
+			t.Fatalf("gen uuid: %v", err)
+		}
+	}
+	ownedDigest := strings.Repeat("b", 64)
+	if _, err := pool.Exec(ctx, own, f.orgID, f.projectID, runA, nodeA, attemptA,
+		"evidence.json", "json", "application/json", ownedDigest, "projects/x/json/bb/evidence.json"); err != nil {
+		t.Fatalf("first owned artifact rejected: %v", err)
+	}
+	// Same owner tuple again = same row: the retry path ADR-0020 D2 still
+	// depends on (the retried attempt re-publishes; attempt_id differs, the
+	// run-side dedupe key does not).
+	if _, err := pool.Exec(ctx, own, f.orgID, f.projectID, runA, nodeA, attemptB,
+		"evidence.json", "json", "application/json", ownedDigest, "projects/x/json/bb/evidence.json"); err == nil {
+		t.Error("duplicate (run_id, node_execution_id, kind, sha256) accepted")
 	} else if code := migPgCode(t, err); code != "23505" {
-		t.Errorf("duplicate artifact code = %s, want 23505", code)
+		t.Errorf("duplicate owned artifact code = %s, want 23505", code)
+	}
+	// The same bytes under another run are another owner: its own row, never a
+	// steal of run A's.
+	if _, err := pool.Exec(ctx, own, f.orgID, f.projectID, runB, nodeA, runB,
+		"evidence.json", "json", "application/json", ownedDigest, "projects/y/json/bb/evidence.json"); err != nil {
+		t.Errorf("same bytes under another run rejected: %v", err)
 	}
 	// Another kind is another artifact of the same bytes (a checkpoint companion
-	// object and its manifest), so the UNIQUE is not (project, digest).
-	if _, err := pool.Exec(ctx, insert, f.orgID, f.projectID, "manifest.json", "json",
-		"application/json", digest, "projects/x/json/aa/manifest.json"); err != nil {
+	// object and its manifest), even under one owner, so dedupe is not (owner,
+	// digest).
+	if _, err := pool.Exec(ctx, own, f.orgID, f.projectID, runA, nodeA, attemptA,
+		"evidence.md", "markdown", "text/markdown", ownedDigest, "projects/x/markdown/bb/evidence.md"); err != nil {
 		t.Errorf("same digest under another kind rejected: %v", err)
+	}
+	// The 00019 shape itself: the global constraint is gone and the two
+	// owner-scoped partial indexes exist with their predicates (the inserts
+	// above proved behavior; this proves nobody re-added the old key).
+	var dropped bool
+	if err := pool.QueryRow(ctx, `
+		SELECT NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conrelid = 'artifacts'::regclass
+			  AND conname = 'artifacts_project_id_kind_sha256_key')`).Scan(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if !dropped {
+		t.Error("UNIQUE (project_id, kind, sha256) survived 00019")
+	}
+	for _, idx := range []struct{ name, want string }{
+		{"artifacts_run_dedupe_idx", "WHERE (attempt_id IS NOT NULL)"},
+		{"artifacts_turn_dedupe_idx", "WHERE (turn_id IS NOT NULL)"},
+	} {
+		var def string
+		if err := pool.QueryRow(ctx, `
+			SELECT indexdef FROM pg_indexes WHERE tablename = 'artifacts' AND indexname = $1`,
+			idx.name).Scan(&def); err != nil {
+			t.Errorf("%s missing: %v", idx.name, err)
+			continue
+		}
+		if !strings.Contains(def, idx.want) {
+			t.Errorf("%s = %s, want it to carry %s", idx.name, def, idx.want)
+		}
 	}
 
 	for _, bad := range []struct{ name, sha string }{

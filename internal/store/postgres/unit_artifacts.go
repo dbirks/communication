@@ -144,10 +144,12 @@ type artifactJSON struct {
 // handler). The transaction locks the turn row FOR UPDATE, verifies the
 // triple, inserts the artifact row `ready`, and appends artifact.created —
 // "a row exists without its event" is the split ADR-0016 § 9 exists to make
-// unrepresentable. Dedupe is the UNIQUE(project_id, kind, sha256) constraint:
-// a retried capture updates the correlation columns of the row the first
-// writer created and folds its redaction count in, never a second copy
-// (ADR-0020 D2).
+// unrepresentable. Dedupe is the owner-scoped artifacts_turn_dedupe_idx
+// (migration 00019, ADR-0020 D2's 2026-10-27 amendment): a retried capture of
+// the SAME turn updates the correlation columns of the row the first writer
+// created and folds its redaction count in, never a second copy — while a
+// different turn (or conversation) capturing identical bytes gets its own
+// row, because a turn's capture must never be re-attributed away from it.
 func (a *UnitArtifacts) PublishArtifact(ctx context.Context, in PublishArtifactInput) (string, error) {
 	if a == nil || a.Pool == nil {
 		return "", errors.New("postgres: artifact capturer has no pool")
@@ -189,10 +191,9 @@ func (a *UnitArtifacts) PublishArtifact(ctx context.Context, in PublishArtifactI
 		VALUES ($1::uuid, $2::uuid, NULLIF($3,'')::uuid, $4::uuid, $5::uuid,
 		        $6, $7, $8, $9, $10,
 		        $11, $12, $13, 'ready', $14, $15, now())
-		ON CONFLICT (project_id, kind, sha256) DO UPDATE SET
+		ON CONFLICT (turn_id, kind, sha256)
+		    WHERE turn_id IS NOT NULL DO UPDATE SET
 		    name = EXCLUDED.name,
-		    conversation_id = EXCLUDED.conversation_id,
-		    turn_id = EXCLUDED.turn_id,
 		    worker_id = EXCLUDED.worker_id,
 		    redaction_count = artifacts.redaction_count + EXCLUDED.redaction_count
 		RETURNING id::text`,
