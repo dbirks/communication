@@ -131,6 +131,19 @@ e2e/emulator/out/<passId>/
   + repo over the API first — project-wide pins cover every repo of a
   project, ADR-0060); 1e not-found for a random UUID (the 404 is declared
   via `emu.expectFailure`).
+- `server-error` (`server-error.spec.ts`): every reviewed screen's SERVER-
+  ERROR state — 1b, 1c, 1e, 1g, 2a, 2c, 2d, 2e, project-1b, repo-1e,
+  threads-1g. `page.route` answers the one GET the page cannot render
+  without (the reads listed in the file header) with `500` +
+  `application/problem+json` ("Internal Server Error: emulated failure");
+  the failure is declared via `emu.expectFailure(re, 500)` and each screen
+  must show its honest error state (a ProblemBanner/alert quoting the
+  problem, a Retry where the design offers one — never a blank page, a
+  stuck spinner or invented rows; the empty-state line must not stand in
+  for a failed read). The 1g/2a/2c/2d legs stand on one pass-stamped
+  scratch workflow (`Emu srvfail <passId>`, created + published over the
+  API by admin; alice pins it to M4 Exit / app for 2c) — left behind like
+  every other pass-stamped scratch, with no triggers and no runs.
 - `projects` (alice — every screen here is project-scoped and the org admin
   holds no project membership; `projects.spec.ts`): the Projects Review
   badges, paired with `docs/design/handoff-projects/png/<badge>.png`.
