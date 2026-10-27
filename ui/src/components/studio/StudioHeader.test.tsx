@@ -113,25 +113,31 @@ describe("StudioHeader", () => {
 
   it("gives every phone action button a 44px tap target", () => {
     renderHeader();
-    // Pass 2 #6: at phone width the header is two tight rows — the 44px
-    // targets are the mobile undo/redo pair and the text buttons keep
+    // Pass 2 #6: at phone width the header wraps — the text buttons keep
     // `min-h-[44px] md:min-h-[26px]`.
-    for (const testid of [
-      "studio-undo-mobile",
-      "studio-redo-mobile",
-      "studio-save",
-      "studio-validate",
-      "studio-publish",
-    ]) {
+    for (const testid of ["studio-save", "studio-validate", "studio-publish"]) {
       expect((screen.getByTestId(testid) as HTMLElement).classList.contains("min-h-[44px]")).toBe(
         true,
       );
     }
-    // The desktop undo/redo pair (visible from md up) is the 26px design size.
+    // The 390 reflow: undo/redo is ONE pair at every width — the utility
+    // span is never display:none on the phone, and the button keeps the
+    // design's 26px desktop size.
     expect((screen.getByTestId("studio-undo").parentElement as HTMLElement).className).toContain(
-      "md:flex",
+      "flex shrink-0",
     );
     expect((screen.getByTestId("studio-undo") as HTMLElement).className).toContain("h-[26px]");
+    // The phone-only duplicates are gone (retired-testids.json).
+    expect(screen.queryByTestId("studio-undo-mobile")).toBeNull();
+    expect(screen.queryByTestId("studio-redo-mobile")).toBeNull();
+  });
+
+  it("reflows the breadcrumb and the unsaved mark into the phone header", () => {
+    // The 390 reflow rule: the header hides no desktop content — the
+    // breadcrumb and the dirty mark are never `hidden`/`md:inline`.
+    renderHeader();
+    expect(screen.getByTestId("studio-breadcrumb").className).not.toContain("hidden");
+    expect(screen.getByTestId("studio-dirty").className).not.toContain("hidden");
   });
 
   it("offers the Steps/Inspect drawer toggles only on phone (design 1g)", () => {

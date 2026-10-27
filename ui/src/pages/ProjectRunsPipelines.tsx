@@ -167,10 +167,13 @@ export default function ProjectPipelines() {
 
   return (
     <div
-      className="grid min-h-full grid-cols-[minmax(14rem,17rem)_minmax(0,1fr)]"
+      className="grid min-h-full grid-cols-1 md:grid-cols-[minmax(14rem,17rem)_minmax(0,1fr)]"
       data-testid="project-pipelines"
     >
-      <aside className="border-r border-line px-3 py-2">
+      {/* 390 reflow: one column below `md` — the rail rides above the
+          content (two squeezed columns at 390 collapsed the panel titles to
+          zero width). Desktop keeps the rail beside it. */}
+      <aside className="border-b border-line px-3 py-2 md:border-b-0 md:border-r">
         <ProjectSectionNav projectId={projectId} active="pipelines" />
       </aside>
       <div className="min-w-0 space-y-4 px-4 py-4">

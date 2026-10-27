@@ -13,8 +13,11 @@ import {
   computeFitViewport,
   computeTopFitViewport,
   evaluateConnect,
+  fitMinZoom,
   mirrorOwnedChanges,
   parseViewportTransform,
+  PHONE_VIEWPORT_PX,
+  FIT_TOP_PAD_PX,
   StudioCanvas,
   type StudioCanvasProps,
 } from "./StudioCanvas";
@@ -454,6 +457,39 @@ describe("computeTopFitViewport (design 1g: top-aligned, never magnified)", () =
   it("refuses degenerate panes and boxes like the centred fit does", () => {
     expect(computeTopFitViewport(boxes, 0, 400)).toBeNull();
     expect(computeTopFitViewport([{ x: 0, y: 0, width: 0, height: 0 }], 700, 400)).toBeNull();
+  });
+
+  it("keeps the phone fit at 1:1 — the 44px touch floor is CSS px, scaled by the transform", () => {
+    // The 390 Studio: a chain TALLER than the 46vh pane. Desktop would shrink
+    // it to fit (the observed ~0.86 — the exact scale that rendered the edge
+    // “+”s at 38px); the phone fit takes `fitMinZoom(390)` = 1 and overflows
+    // downward instead, which the 1g top-aligned fit is built to do.
+    const phone = computeTopFitViewport(boxes, 374, 260, FIT_TOP_PAD_PX, fitMinZoom(390))!;
+    expect(phone.zoom).toBe(1);
+    expect(phone.y).toBe(FIT_TOP_PAD_PX); // still top-aligned, never centred
+    // …and the same pane at desk width still shrinks to fit (1280 unchanged).
+    const desk = computeTopFitViewport(boxes, 374, 260, FIT_TOP_PAD_PX, fitMinZoom(1280))!;
+    expect(desk.zoom).toBeCloseTo(0.78, 2);
+  });
+});
+
+describe("fitMinZoom (APP-SHELL-PHONE 44px floor under the fit transform)", () => {
+  it("is 1 below the phone breakpoint, 0.4 at and above it", () => {
+    expect(fitMinZoom(390)).toBe(1);
+    expect(fitMinZoom(559)).toBe(1);
+    expect(fitMinZoom(560)).toBe(0.4); // tokens.css is `width < 560px`
+    expect(fitMinZoom(1280)).toBe(0.4);
+  });
+
+  it("is not the phone floor for a non-finite viewport (no window)", () => {
+    expect(fitMinZoom(Number.NaN)).toBe(0.4);
+    expect(fitMinZoom(Number.POSITIVE_INFINITY)).toBe(0.4);
+  });
+
+  it("is keyed to the VIEWPORT, not the pane — the 1280 canvas pane is ~530px wide", () => {
+    // A pane-width test would have clamped the desktop canvas too and changed
+    // 1280; `PHONE_VIEWPORT_PX` is the same split the CSS media query uses.
+    expect(PHONE_VIEWPORT_PX).toBe(560);
   });
 });
 

@@ -96,7 +96,10 @@ export function YamlView({
       state={validation && !validation.valid ? "failed" : undefined}
       meta={
         label ? (
-          <span className="font-mono text-[10.5px]" data-testid="yaml-view-label">
+          <span
+            className="inline-block max-w-[46vw] truncate font-mono text-[10.5px] align-bottom md:max-w-none"
+            data-testid="yaml-view-label"
+          >
             {label}
           </span>
         ) : undefined

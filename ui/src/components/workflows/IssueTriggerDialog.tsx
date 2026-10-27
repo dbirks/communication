@@ -473,7 +473,10 @@ function IssueTriggerInputField({
 
   if (field.kind === "boolean") {
     return (
-      <div className="flex items-center gap-2" data-testid={`${id}-row`}>
+      // The input lives INSIDE the label: at phone width the 44px touch rule
+      // (APP-SHELL-PHONE in styles/tokens.css) grows the label box, and the
+      // association no longer needs htmlFor.
+      <label className="flex items-center gap-2" data-testid={`${id}-row`}>
         <input
           id={id}
           type="checkbox"
@@ -483,15 +486,13 @@ function IssueTriggerInputField({
           aria-describedby={field.description ? `${id}-hint` : undefined}
           className="size-3 accent-accent"
         />
-        <label htmlFor={id} className="font-mono text-[12px] text-ink">
-          {label}
-        </label>
+        <span className="font-mono text-[12px] text-ink">{label}</span>
         {field.description ? (
           <span className="font-mono text-[10.5px] text-faint" data-testid={`${id}-hint`}>
             {field.description}
           </span>
         ) : null}
-      </div>
+      </label>
     );
   }
 

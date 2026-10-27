@@ -11,6 +11,12 @@
  * drawer toggles (`Steps` / `Inspect`) that open the palette/inspector over
  * the canvas.
  *
+ * At 390px the header reflows the SAME content into wrapped rows (the 390
+ * reflow rule: the 1280 content and hierarchy in one column): the breadcrumb
+ * stays (its folder truncates), undo/redo is ONE pair visible at every width,
+ * and the `unsaved` mark is never display:none — the phone header hides no
+ * desktop content.
+ *
  * Presentation only — every state the header renders comes in as props; the
  * publish gate (saved + server-valid) is computed by the page and handed
  * down.
@@ -132,6 +138,8 @@ export function StudioHeader({
   // shrink the phone row.
   const iconToggle =
     "inline-flex h-[26px] w-[30px] min-h-[44px] shrink-0 items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0";
+  const iconAction =
+    "inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40";
   return (
     <header
       className="flex shrink-0 flex-row flex-wrap items-center gap-x-[8px] gap-y-[8px] border-b border-line bg-surface px-4 py-2 md:h-[52px] md:flex-nowrap md:items-center md:gap-[10px] md:overflow-x-auto md:py-0"
@@ -139,7 +147,7 @@ export function StudioHeader({
     >
       <nav
         aria-label="Breadcrumb"
-        className="hidden min-w-0 items-center gap-[6px] md:flex"
+        className="flex min-w-0 max-w-full items-center gap-[6px]"
         data-testid="studio-breadcrumb"
       >
         <Link
@@ -153,7 +161,7 @@ export function StudioHeader({
           /
         </span>
         <span
-          className="shrink-0 font-mono text-[12px] text-muted"
+          className="min-w-0 truncate font-mono text-[12px] text-muted"
           data-testid="studio-breadcrumb-folder"
         >
           {folderLabel(pipelineFolder)}
@@ -180,37 +188,15 @@ export function StudioHeader({
           {chipText}
         </span>
         {dirty ? (
-          <span
-            className="hidden font-mono text-[10px] text-muted md:inline"
-            data-testid="studio-dirty"
-          >
+          <span className="font-mono text-[10px] text-muted" data-testid="studio-dirty">
             unsaved
           </span>
         ) : null}
       </div>
-      {/* Row-1 tail (phone): undo/redo + the drawer toggles; the desktop
-          utility row sits right before Validate instead. */}
+      {/* Row-1 tail (phone): the Steps/Inspect pane toggles only — undo/redo
+          is one pair for every width (the 390 reflow: no duplicated desktop
+          affordance, no hidden phone-only substitute). */}
       <div className="flex shrink-0 items-center gap-[4px] md:hidden">
-        <button
-          type="button"
-          aria-label="Undo"
-          data-testid="studio-undo-mobile"
-          disabled={!canUndo}
-          onClick={onUndo}
-          className={iconToggle}
-        >
-          ↶
-        </button>
-        <button
-          type="button"
-          aria-label="Redo"
-          data-testid="studio-redo-mobile"
-          disabled={!canRedo}
-          onClick={onRedo}
-          className={iconToggle}
-        >
-          ↷
-        </button>
         {phoneToggles ? (
           <>
             <button
@@ -242,14 +228,14 @@ export function StudioHeader({
         className="ml-auto flex flex-nowrap items-center gap-[4px] md:ml-0 md:min-w-0 md:gap-[8px]"
         data-testid="studio-header-actions"
       >
-        <span className="hidden shrink-0 items-center gap-[4px] md:flex">
+        <span className="flex shrink-0 items-center gap-[4px]">
           <button
             type="button"
             aria-label="Undo"
             data-testid="studio-undo"
             disabled={!canUndo}
             onClick={onUndo}
-            className="inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40"
+            className={iconAction}
           >
             ↶
           </button>
@@ -259,7 +245,7 @@ export function StudioHeader({
             data-testid="studio-redo"
             disabled={!canRedo}
             onClick={onRedo}
-            className="inline-flex h-[26px] w-[30px] items-center justify-center rounded-[4px] border border-line-strong bg-surface text-[14px] text-ink shadow-[2px_2px_0_var(--color-fill-edge)] hover:bg-fill focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-ring disabled:cursor-not-allowed disabled:opacity-40"
+            className={iconAction}
           >
             ↷
           </button>

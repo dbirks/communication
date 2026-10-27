@@ -254,15 +254,32 @@ export function BoolField({
   const checked = value === true;
   return (
     <Field id={id} label={label} hint={hint}>
-      <input
-        id={id}
-        type="checkbox"
-        className="h-[14px] w-[14px]"
-        checked={checked}
-        disabled={readOnly}
-        data-testid={`insp-${id}`}
-        onChange={(e) => onCommit(e.target.checked)}
-      />
+      {/* The input lives INSIDE a label box — the way
+          components/workflows/IssueTriggerDialog.tsx now does it: a bare 14px
+          checkbox is operated through its label, and the label box is what the
+          phone touch rule measures (APP-SHELL-PHONE in styles/tokens.css grows
+          `main label:has(input[type=checkbox])` to 44px and centres the glyph;
+          it has to be a flex box for that min-height to apply at all). BELOW
+          560px this label is that flex row; ABOVE it the label is
+          `display: contents` — it generates no box, so the checkbox is laid out
+          by Field's own container exactly where it always was and 1280 is
+          pixel-for-pixel unchanged. Field's `<label htmlFor>` above stays the
+          input's accessible name: this row label carries no text (asserted in
+          fields.test.tsx). */}
+      <label
+        className="contents max-[560px]:flex max-[560px]:items-center"
+        data-testid={`insp-${id}-row`}
+      >
+        <input
+          id={id}
+          type="checkbox"
+          className="h-[14px] w-[14px]"
+          checked={checked}
+          disabled={readOnly}
+          data-testid={`insp-${id}`}
+          onChange={(e) => onCommit(e.target.checked)}
+        />
+      </label>
     </Field>
   );
 }

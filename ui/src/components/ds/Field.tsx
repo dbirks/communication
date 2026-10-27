@@ -15,9 +15,11 @@ import {
  * as designed.
  */
 
-/** Shared input styling: visible focus ring, label always associated. */
+/** Shared input styling: visible focus ring, label always associated. At
+ * phone width (<560px) the app-shell touch rule takes over: every control is
+ * ≥ 44px tall (see APP-SHELL-PHONE in `styles/tokens.css`). */
 export const fieldClass =
-  "w-full rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[12.5px] text-ink placeholder:text-faint " +
+  "w-full rounded-[3px] border border-line-strong bg-surface px-[10px] py-1 font-mono text-[12.5px] text-ink placeholder:text-faint max-[560px]:min-h-[44px] " +
   "focus-visible:border-ink focus-visible:outline-none focus-visible:[box-shadow:0_0_0_2px_var(--color-accent-ring)]";
 
 export const fieldErrorClass = "border-st-failed-strong";

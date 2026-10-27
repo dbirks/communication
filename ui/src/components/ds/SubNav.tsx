@@ -50,7 +50,7 @@ export function SubNav({
               document.getElementById(item.href.slice(1))?.focus?.({ preventScroll: true });
             }}
             aria-current={isActive ? "true" : undefined}
-            className={`flex items-center rounded-[3px] px-2 ${
+            className={`flex items-center rounded-[3px] px-2 max-[560px]:min-h-[44px] ${
               isActive
                 ? "ds-texture-accent border border-ink bg-surface py-[5px] font-semibold text-ink"
                 : "border border-transparent py-1.5 text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"

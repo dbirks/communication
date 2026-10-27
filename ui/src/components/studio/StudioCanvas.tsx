@@ -237,6 +237,41 @@ export function computeFitViewport(
  * rides top-aligned, it is NOT vertically centred). */
 export const FIT_TOP_PAD_PX = 50;
 
+/** The app-shell phone breakpoint — the same `width < 560px` split the
+ * APP-SHELL-PHONE rule in styles/tokens.css uses to give every control in
+ * `main` `min-height: 44px`. */
+export const PHONE_VIEWPORT_PX = 560;
+
+/**
+ * The zoom floor the canvas' own fit may use for this VIEWPORT width.
+ *
+ * The 44px phone floor is declared in CSS px and the fit transform SCALES it:
+ * a 0.86 fit renders those boxes at 38px — the exact defect the 390 reflow
+ * check caught on the edge “+”s (`edge-add-*`) and the terminal “Add a step
+ * after …”. Inside the phone band the fit therefore never shrinks below 1:1:
+ * the graph keeps its designed size and the reader pans it, which is already
+ * the 1g rule for a tall chain (top-aligned, overflows downward, never
+ * magnified) and keeps EVERY canvas control — both “+”s, the node menu, the
+ * step picker — at its 44px touch size rather than just the two measured.
+ *
+ * It keys off the viewport, not the pane, for exactly one reason: that is what
+ * the CSS media query measures. The 1280 Studio pane is only ~530px wide, so a
+ * pane-width test would have shrunk the desktop graph too.
+ *
+ * The reader's own gestures stay free (pinch, browser zoom, the “−” control):
+ * those are deliberate, they are the reader's call, and the same is true of
+ * every other page. This bound applies only to what the canvas does by itself.
+ */
+export function fitMinZoom(viewportWidth: number): number {
+  return Number.isFinite(viewportWidth) && viewportWidth < PHONE_VIEWPORT_PX ? 1 : 0.4;
+}
+
+/** The viewport width the phone rule sees (no window during server render /
+ * jsdom: never the phone band). */
+function currentViewportWidth(): number {
+  return typeof window === "undefined" ? Number.POSITIVE_INFINITY : window.innerWidth;
+}
+
 /**
  * The design-1g fit: same guards and zoom as `computeFitViewport` (whose
  * cap is 1.0 here — never magnify), but the result is TOP-aligned
@@ -967,7 +1002,13 @@ function CanvasInner({
       const h = mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : box.height;
       return { x: box.x, y: box.y, width: w, height: h };
     });
-    const vp = computeTopFitViewport(boxes, rect.width, rect.height);
+    const vp = computeTopFitViewport(
+      boxes,
+      rect.width,
+      rect.height,
+      FIT_TOP_PAD_PX,
+      fitMinZoom(currentViewportWidth()),
+    );
     if (vp === null) return false;
     setViewport(vp, { duration: 0 });
     lastGoodRef.current = vp;

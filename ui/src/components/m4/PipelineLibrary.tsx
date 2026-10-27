@@ -109,8 +109,10 @@ export function PipelineLibrary({
           ) : (
             // Org member: the button is absent *and* the reason is present, so
             // the missing control reads as a decision rather than a bug.
+            // 390 reflow: the reason WRAPS on the phone instead of squeezing
+            // the panel title to zero width (the bar owns no fixed height).
             <span
-              className="font-mono text-[10px] font-normal"
+              className="max-w-[36vw] font-mono text-[10px] font-normal whitespace-normal text-right md:max-w-none md:whitespace-nowrap md:text-left"
               data-testid="pipeline-library-readonly"
             >
               definitions are visible to you; publishing needs the owner role

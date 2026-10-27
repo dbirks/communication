@@ -38,12 +38,12 @@ export function StudioStatusBar({
       <span className="shrink-0 truncate" data-testid="studio-status-bar-summary">
         {stepCount} {stepCount === 1 ? "step" : "steps"} · {dirty ? "unsaved changes" : "saved"}
       </span>
-      {/* Pass 3 #1: below md the strip carries ONLY the count/state left and
-          the short reason right — one line, never wrapped or clipped. The
-          validation verdict and the diff link stay on md+ (e2e clicks
-          `studio-diff` at desktop widths). */}
+      {/* The strip carries count/state left, the validation verdict, the
+          diff link and the short reason right at EVERY width (390 reflow:
+          nothing is display:none on the phone) — the long reason is the one
+          that truncates. e2e clicks `studio-diff` at desktop widths. */}
       <span
-        className="hidden shrink-0 md:inline"
+        className="shrink-0 truncate"
         data-testid="studio-validation-chip"
         title={validation ?? ""}
       >
@@ -53,7 +53,8 @@ export function StudioStatusBar({
         type="button"
         onClick={onDiff}
         data-testid="studio-diff"
-        className="hidden shrink-0 text-muted underline decoration-line underline-offset-2 hover:text-ink md:inline"
+        title={diffLabel ?? "diff"}
+        className="shrink-0 truncate text-muted underline decoration-line underline-offset-2 hover:text-ink"
       >
         {diffLabel ?? "diff"}
       </button>

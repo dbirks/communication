@@ -87,7 +87,7 @@ export function YamlView({ text, filename, title = "YAML", testId = "yaml-view" 
             type="button"
             onClick={handleDownload}
             data-testid={`${testId}-download`}
-            className="h-[26px] px-[10px] font-mono text-[11px]"
+            className="h-[26px] max-w-[42vw] truncate px-[10px] font-mono text-[11px] md:max-w-none"
           >
             {filename}
           </Button>

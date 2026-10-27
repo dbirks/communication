@@ -30,7 +30,11 @@ export interface ThreadsViewProps {
  *  full height: the 320px list scrolls itself, the open thread (or this
  *  page's prompt) fills the rest, and the document never scrolls. Below `lg`
  *  the list takes the screen; opening a thread swaps to the thread with a
- *  back link. */
+ *  back link. On this page (`/threads`, nothing open) the thread column —
+ *  the no-selection prompt or the list read's refusal — reflows BELOW the
+ *  list at 390 (the 390 reflow rule: no desktop content hidden with no phone
+ *  path).
+ */
 export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
   // The pane reads the same query key, so this is a second pair of eyes on
   // one round trip — the right column needs only the read's state.
@@ -44,7 +48,7 @@ export function ThreadsView({ projectId = "" }: ThreadsViewProps) {
         <ThreadListPane projectId={projectId} />
       </div>
       <div
-        className="hidden min-w-0 flex-1 flex-col bg-paper lg:flex"
+        className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper"
         data-testid="threads-detail-column"
       >
         {list.isError ? (

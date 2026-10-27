@@ -170,11 +170,15 @@ export function StudioPage() {
   } | null>(null);
   const narrow = useIsNarrow();
   // Design 1g phone rule: below 768px the canvas runs full width and the
-  // palette / inspector open as drawers over it (`Steps` / `Inspect` in the
-  // header). 768–1023 keeps the outline fallback below.
+  // palette / inspector reflow UNDER it in one scrolling column (the 390
+  // reflow rule: the phone shows the 1280 content, never a drawer that is
+  // closed by default). The header's `Steps` / `Inspect` toggles jump to
+  // those panes.
   const phone = useIsNarrow("(max-width: 767px)");
   const [phonePaletteOpen, setPhonePaletteOpen] = useState(false);
   const [phoneInspectorOpen, setPhoneInspectorOpen] = useState(false);
+  const phonePaletteRef = useRef<HTMLDivElement | null>(null);
+  const phoneInspectorRef = useRef<HTMLDivElement | null>(null);
 
   const canAuthor = hasLibraryRole(me.data);
   const status = draft.data?.status ?? "draft";
@@ -613,10 +617,12 @@ export function StudioPage() {
                 onTogglePalette: () => {
                   setPhonePaletteOpen((open) => !open);
                   setPhoneInspectorOpen(false);
+                  phonePaletteRef.current?.scrollIntoView({ block: "start" });
                 },
                 onToggleInspector: () => {
                   setPhoneInspectorOpen((open) => !open);
                   setPhonePaletteOpen(false);
+                  phoneInspectorRef.current?.scrollIntoView({ block: "start" });
                 },
               }
             : null
@@ -704,39 +710,44 @@ export function StudioPage() {
       ) : null}
 
       {phone ? (
-        /* Design 1g phone: the canvas runs full width, no side scroll; the
-           palette and the inspector open as drawers OVER the canvas. */
-        <div className="relative min-h-0 flex-1 overflow-hidden">
-          <div className="flex h-full min-h-0 flex-col">
-            <SelectionToolbar
-              variant="toolbar"
-              selectedIds={selectedIds}
-              model={model}
-              readOnly={readOnly}
-              onWrap={handleWrap}
-              onUnwrap={handleUnwrap}
-            />
-            <div className="relative min-h-0 flex-1 overflow-hidden">
-              {view === "yaml" ? yaml : <div className="h-full min-h-0">{canvas}</div>}
-              {drawers}
-            </div>
+        /* Design 1g phone (390 reflow): the canvas runs full width, no side
+           scroll, and NOTHING is hidden behind a closed drawer — the
+           palette (Steps) and the inspector reflow below the canvas in one
+           scrolling column, so an open node's inspector is simply there. The
+           header's Steps / Inspect toggles jump to those panes. */
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SelectionToolbar
+            variant="toolbar"
+            selectedIds={selectedIds}
+            model={model}
+            readOnly={readOnly}
+            onWrap={handleWrap}
+            onUnwrap={handleUnwrap}
+          />
+          <div className="relative h-[46vh] min-h-[320px] overflow-hidden border-b border-line">
+            {view === "yaml" ? yaml : canvas}
+            {drawers}
           </div>
-          {phonePaletteOpen ? (
-            <div className="absolute inset-y-0 left-0 z-20 w-[200px] border-r border-line bg-surface">
-              <StudioPalette
-                selectedId={selectedId}
-                selectedKind={selectedKind}
-                readOnly={readOnly}
-                stale={!parseOk}
-                onAddAfter={readOnly ? undefined : handleAddAfter}
-              />
-            </div>
-          ) : null}
-          {phoneInspectorOpen ? (
-            <div className="absolute inset-y-0 right-0 z-20 w-[320px] overflow-auto border-l border-line bg-surface">
-              {inspector}
-            </div>
-          ) : null}
+          <div
+            ref={phonePaletteRef}
+            className="border-b border-line bg-surface"
+            data-testid="studio-phone-palette-pane"
+          >
+            <StudioPalette
+              selectedId={selectedId}
+              selectedKind={selectedKind}
+              readOnly={readOnly}
+              stale={!parseOk}
+              onAddAfter={readOnly ? undefined : handleAddAfter}
+            />
+          </div>
+          <div
+            ref={phoneInspectorRef}
+            className="bg-surface"
+            data-testid="studio-phone-inspector-pane"
+          >
+            {inspector}
+          </div>
         </div>
       ) : narrow ? (
         <div className="grid flex-1 grid-cols-1 grid-rows-2 gap-3 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1">

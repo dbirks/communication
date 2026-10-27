@@ -149,7 +149,13 @@ export function DefinitionGraph({
       title="DEFINITION GRAPH"
       headingId={headingId}
       headingLevel={2}
-      meta={label ? <span className="font-mono text-[10.5px] text-muted">{label}</span> : undefined}
+      meta={
+        label ? (
+          <span className="inline-block max-w-[46vw] truncate align-bottom font-mono text-[10.5px] text-muted md:max-w-none">
+            {label}
+          </span>
+        ) : undefined
+      }
       className={className}
     >
       <div className="grid items-start gap-[10px] p-[10px] 2xl:grid-cols-[minmax(0,1fr)_21rem]">

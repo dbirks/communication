@@ -43,7 +43,7 @@ export function StatusChip({ state, label, className = "", labelProps }: StatusC
  */
 
 const rowBase =
-  "flex h-[34px] w-full items-center gap-[9px] rounded-[3px] border bg-surface px-[10px] text-left text-ink";
+  "flex h-[34px] w-full items-center gap-[9px] rounded-[3px] border bg-surface px-[10px] text-left text-ink max-[560px]:min-h-[44px]";
 const rowIdle = "border-line hover:border-line-strong";
 const rowSelected = "border-ink shadow-(--shadow-raised)";
 
