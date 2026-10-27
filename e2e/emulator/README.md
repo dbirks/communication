@@ -131,6 +131,21 @@ e2e/emulator/out/<passId>/
   + repo over the API first — project-wide pins cover every repo of a
   project, ADR-0060); 1e not-found for a random UUID (the 404 is declared
   via `emu.expectFailure`).
+- `projects` (alice — every screen here is project-scoped and the org admin
+  holds no project membership; `projects.spec.ts`): the Projects Review
+  badges, paired with `docs/design/handoff-projects/png/<badge>.png`.
+  **project-1b** — the overview of the seeded M4 Exit project, its Runs /
+  Threads / Workflows tabs each opening their own route, a pass-stamped
+  project with no runs and no workflows (the empty state), and a random-UUID
+  `/p/<uuid>` (the not-found; its single 404 is declared the way
+  empty-error.spec.ts declares 1e's, `$`-anchored so a fan-out 404 still
+  counts). **repo-1e** — M4 Exit's `app` repository: workflows on this repo,
+  the honest "Issue triggers need a GitHub repository" line (the lab's remote
+  is `file://`, so that line IS the expected state), work in this repo and
+  recent runs; then `/p/<id>/no-such-repo`, which needs no declaration — the
+  repository list answers 200 and the absence is the client's own read.
+  **threads-1g** — `/threads` with nothing selected (the existing thread
+  journeys keep the open-thread screens).
 
 Journeys share the pass's lab serially (`workers: 1`); names are
 pass-stamped (`EMU_PASS_ID`) so passes never collide. Cleanup is only for

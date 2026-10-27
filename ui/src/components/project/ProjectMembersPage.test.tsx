@@ -8,6 +8,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest";
 import { renderApp } from "../../test/render";
 import { FRAME_BATCH_MS } from "../../api/events";
+import { PROJECT_PAGE_PAD } from "./ProjectPageShell";
 import {
   FakeEventSource,
   claudeProfile,
@@ -184,5 +185,12 @@ describe("/p/:projectId/members", () => {
       "Project not found or you do not have access",
     );
     expect(screen.queryByTestId("member-list")).toBeNull();
+    // This route is full-bleed too (`App.tsx`), so the refusal — which mounts no
+    // header band — carries the band's padding itself instead of sitting flush
+    // against the sidebar.
+    const column = screen.getByTestId("project-members-not-found").firstElementChild as HTMLElement;
+    for (const pad of PROJECT_PAGE_PAD.split(/\s+/)) {
+      expect(column.className.split(/\s+/), `the padded column carries ${pad}`).toContain(pad);
+    }
   });
 });

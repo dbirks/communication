@@ -17,49 +17,67 @@ import ActivityFeed from "../ActivityFeed";
 import { ProblemBanner, Spinner } from "../Feedback";
 import { ProjectUnavailable, projectAccessRefused } from "../ProjectUnavailable";
 import { MembersPanel } from "./MembersPanel";
+import { ProjectPageShell, PROJECT_PAGE_PAD } from "./ProjectPageShell";
 import { ProjectTabs } from "./ProjectTabs";
 
 export default function ProjectMembersPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const project = useProject(projectId);
 
-  if (project.isPending) return <Spinner label="Loading project" />;
+  // `/p/:projectId/members` is full-bleed like the overview, so the unusable
+  // branches — which mount no header band of their own — need the page column
+  // that carries the band's padding (`ProjectPageShell`).
+  if (project.isPending) {
+    return (
+      <ProjectPageShell testid="project-members-loading">
+        <Spinner label="Loading project" />
+      </ProjectPageShell>
+    );
+  }
   // The same refusal every screen under the project gives: 404/403 is one
   // sentence (`ProjectUnavailable`), never a shell that confirms the project
   // exists; any other failure quotes the server.
   if (project.error) {
     if (projectAccessRefused(project.error)) {
       return (
+        <ProjectPageShell testid="project-members-not-found">
+          <ProjectUnavailable
+            heading="Project"
+            headingId="project-members-heading"
+            testid="project-not-found"
+          />
+        </ProjectPageShell>
+      );
+    }
+    return (
+      <ProjectPageShell testid="project-members-error">
+        <section aria-labelledby="project-members-error-heading">
+          <h1 id="project-members-error-heading" className="text-title-l font-bold">
+            Members
+          </h1>
+          <ProblemBanner error={project.error} fallback="The project could not be loaded." />
+        </section>
+      </ProjectPageShell>
+    );
+  }
+  if (!project.data) {
+    return (
+      <ProjectPageShell testid="project-members-not-found">
         <ProjectUnavailable
           heading="Project"
           headingId="project-members-heading"
           testid="project-not-found"
         />
-      );
-    }
-    return (
-      <section aria-labelledby="project-members-error-heading">
-        <h1 id="project-members-error-heading" className="text-title-l font-bold">
-          Members
-        </h1>
-        <ProblemBanner error={project.error} fallback="The project could not be loaded." />
-      </section>
-    );
-  }
-  if (!project.data) {
-    return (
-      <ProjectUnavailable
-        heading="Project"
-        headingId="project-members-heading"
-        testid="project-not-found"
-      />
+      </ProjectPageShell>
     );
   }
 
   const data = project.data;
   return (
     <div className="flex min-h-full flex-col bg-paper" data-testid="project-members-page">
-      <header className="flex flex-col gap-[14px] border-b border-line-strong bg-surface px-[22px] pt-[20px] md:px-[28px]">
+      <header
+        className={`flex flex-col gap-[14px] border-b border-line-strong bg-surface ${PROJECT_PAGE_PAD}`}
+      >
         <div className="flex flex-col gap-[4px]">
           <nav aria-label="Breadcrumb" className="font-mono text-[11px] text-muted">
             <Link

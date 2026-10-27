@@ -17,6 +17,7 @@ import type { Project } from "../../api/types";
 import { routes } from "../../lib/routes";
 import { Button, VARIANT_CLASS } from "../ds/Button";
 import { ProjectTabs, type ProjectTabFlags, type ProjectTabKey } from "./ProjectTabs";
+import { PROJECT_PAGE_PAD } from "./ProjectPageShell";
 
 export interface ProjectHeaderProps {
   project: Project;
@@ -43,7 +44,7 @@ export function ProjectHeader({ project, active, onNewThread }: ProjectHeaderPro
   };
   return (
     <header
-      className="flex flex-col gap-[14px] border-b border-line-strong bg-surface px-[22px] pt-[20px] md:px-[28px]"
+      className={`flex flex-col gap-[14px] border-b border-line-strong bg-surface ${PROJECT_PAGE_PAD}`}
       data-testid="project-header"
     >
       <div className="flex flex-col gap-[12px] md:flex-row md:items-start md:gap-[16px]">

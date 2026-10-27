@@ -32,7 +32,7 @@ import { Alert } from "../components/ds/Alert";
 import { Panel } from "../components/ds/Panel";
 import { Button } from "../components/ds/Button";
 import { StatusChip } from "../components/ds/Row";
-import { RUN_STATE, STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
+import { RUN_STATE, STATES, STREAM_STATE, TURN_STATE, stateOf } from "../components/ds/states";
 import { routes } from "../lib/routes";
 
 /**
@@ -455,9 +455,34 @@ export default function ConversationPage({
 
   // ------------------------------------------------------------- pane mode
   if (paneMode) {
+    // Design 1g header: the title owns one full-width line with the mono
+    // `repo · branch · agent` line under it, and the right holds only the
+    // control pill and the control acts (Stop while a turn runs, else
+    // Return / Take control). The stream state is a glyph — the word shows
+    // only when the stream is not live — and the turn reads as one quiet
+    // mono word, so no pile of chips squeezes the title any more. The
+    // "One-off thread" chip is gone with the one-off-only default (the
+    // legacy `/p/:id/conversations/:id` page keeps its full meta line).
+    const turnSpec = STATES[stateOf(TURN_STATE[described.status])];
+    const streamSpec = STATES[stateOf(STREAM_STATE[status])];
+    // The shared controls stack their badge over their buttons (rail
+    // styling); the pane header wears them as one pill-then-buttons row,
+    // restyled from here because the component itself is shared.
+    const pillRow =
+      "[&>div:first-child]:flex [&>div:first-child]:flex-wrap [&>div:first-child]:items-center " +
+      "[&>div:first-child]:justify-end [&>div:first-child]:gap-2 [&>div:first-child]:space-y-0! " +
+      "[&>div:not(:first-child)]:basis-full";
+    const pillSkin = session.isController
+      ? "[&>div:first-child>span:first-child]:h-[24px] " +
+        "[&>div:first-child>span:first-child]:border-accent-edge " +
+        "[&>div:first-child>span:first-child]:bg-accent-wash " +
+        "[&>div:first-child>span:first-child]:text-accent-text " +
+        "[&>div:first-child>span:first-child]:before:mr-[6px] " +
+        "[&>div:first-child>span:first-child]:before:content-['●']"
+      : "";
     return (
       <div
-        className="-mx-4 flex min-w-0 flex-col lg:-my-6 lg:flex-row lg:min-h-[calc(100vh-48px)]"
+        className="flex h-[calc(100vh-44px)] min-w-0 flex-col overflow-hidden bg-paper md:h-screen lg:flex-row"
         data-testid="thread-pane-page"
       >
         <div
@@ -466,8 +491,8 @@ export default function ConversationPage({
         >
           <ThreadListPane selectedId={conversationId} />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="border-b border-line-strong bg-surface px-5 py-[14px] lg:px-6">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="shrink-0 border-b border-line-strong bg-surface px-5 pt-[10px] pb-[12px] lg:px-6">
             <Link
               to={routes.threads()}
               className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink lg:hidden"
@@ -475,76 +500,24 @@ export default function ConversationPage({
             >
               ← Threads
             </Link>
-            <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-              <div className="min-w-0 flex-1">
-                <h1
-                  data-testid="conversation-title"
-                  className="truncate text-title-m font-semibold"
-                >
-                  {data.title}
-                </h1>
-                <p
-                  className="mt-[2px] font-mono text-[10.5px] text-muted"
-                  data-testid="conversation-meta"
-                >
-                  <span>{repoLabel}</span>
-                  <span className="px-2" aria-hidden="true">
-                    ·
-                  </span>
-                  <span data-testid="thread-branch">
-                    {threadBranch ? `branch ${threadBranch}` : "no branch recorded"}
-                  </span>
-                  <span className="px-2" aria-hidden="true">
-                    ·
-                  </span>
-                  <span>{data.agent_profile_name ?? "agent"}</span>
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="font-mono text-[10.5px] text-faint">
-                  <span data-testid="thread-age">{formatAge(data.created_at)}</span>
-                </span>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
-                  stream:
-                  <StatusChip
-                    state={stateOf(STREAM_STATE[status])}
-                    label={status}
-                    labelProps={{ "data-testid": "stream-status", role: "status" }}
-                  />
-                </span>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
-                  turn:
-                  <StatusChip
-                    state={stateOf(TURN_STATE[described.status])}
-                    label={turnStatus}
-                    labelProps={{ "data-testid": "turn-status" }}
-                  />
-                </span>
-                {turnOrigin ? (
-                  <span className="font-mono text-[10.5px] text-faint" data-testid="turn-origin">
-                    {turnOrigin}
-                  </span>
-                ) : null}
-                {data.origin === "manual" ? (
-                  <span
-                    className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
-                    data-testid="conversation-manual-label"
-                  >
-                    One-off thread
-                  </span>
-                ) : null}
-                {data.agent_session ? (
-                  <span className="font-mono text-[10.5px] text-faint" data-testid="agent-session">
-                    agent: {data.agent_session.launcher_id} (
-                    {data.agent_session.session_origin === "resumed"
-                      ? "resumed session"
-                      : "new session"}
-                    )
-                  </span>
-                ) : null}
-                {/* 4f/1g: the control line lives with the title — the
-                    "You are in control" pill and the control acts (take /
-                    return / stop) wear the page's historical testids. */}
+            {/* Below the pane's `lg` stack breakpoint the header is a
+                column: title (full width, wrapping rather than truncating to
+                a word), then the pill and the acts on their own row. At
+                `lg+` they share one row again — the design's shape. */}
+            <div className="flex flex-col gap-x-4 lg:flex-row lg:items-center">
+              <h1
+                data-testid="conversation-title"
+                className="line-clamp-2 text-title-m font-semibold lg:min-w-0 lg:flex-1 lg:line-clamp-none lg:truncate"
+              >
+                {data.title}
+              </h1>
+              {/* The control line (1g): only the pill and the acts ride the
+                  title row — `You are in control` keeps its exact wording for
+                  the journey suites, and Stop (danger) appears only while a
+                  turn runs. */}
+              <div
+                className={`${pillRow} ${pillSkin} mt-[6px] flex max-w-full flex-wrap items-center justify-end gap-2 lg:mt-0 lg:shrink-0`}
+              >
                 <AgentConversationControls
                   session={session}
                   ids={{
@@ -556,9 +529,81 @@ export default function ConversationPage({
                 />
               </div>
             </div>
+            {/* The meta line is full width; the quiet state readout shares its
+                flow below `lg` (one line after the other, never a floated
+                narrow column) and sits at the line's right at `lg+`. */}
+            <div className="mt-[2px] lg:flex lg:flex-wrap lg:items-baseline lg:justify-between lg:gap-x-4">
+              <p
+                className="font-mono text-[10.5px] leading-[1.6] text-muted lg:min-w-0 lg:flex-1"
+                data-testid="conversation-meta"
+              >
+                <span>{repoLabel}</span>
+                <span className="px-2" aria-hidden="true">
+                  ·
+                </span>
+                <span data-testid="thread-branch">
+                  {threadBranch ? `branch ${threadBranch}` : "no branch recorded"}
+                </span>
+                <span className="px-2" aria-hidden="true">
+                  ·
+                </span>
+                <span>{data.agent_profile_name ?? "agent"}</span>
+                <span className="px-2" aria-hidden="true">
+                  ·
+                </span>
+                <span data-testid="thread-age">{formatAge(data.created_at)}</span>
+                {turnOrigin ? (
+                  <>
+                    <span className="px-2" aria-hidden="true">
+                      ·
+                    </span>
+                    <span data-testid="turn-origin">{turnOrigin}</span>
+                  </>
+                ) : null}
+                {data.agent_session ? (
+                  <>
+                    <span className="px-2" aria-hidden="true">
+                      ·
+                    </span>
+                    <span data-testid="agent-session">
+                      agent: {data.agent_session.launcher_id} (
+                      {data.agent_session.session_origin === "resumed"
+                        ? "resumed session"
+                        : "new session"}
+                      )
+                    </span>
+                  </>
+                ) : null}
+              </p>
+              {/* The quiet state readout (1g): the turn is one short mono word
+                  with its glyph, and the stream is a glyph whose word appears
+                  only when the connection is not live — never a chip row. */}
+              <span className="mt-[3px] inline-flex items-center gap-[6px] font-mono text-[10.5px] lg:mt-0 lg:shrink-0">
+                <span aria-hidden="true" className={turnSpec.tagFg}>
+                  {turnSpec.glyph}
+                </span>
+                <span data-testid="turn-status" className="text-faint">
+                  {turnStatus}
+                </span>
+                <span aria-hidden="true" className="px-1 text-faint">
+                  ·
+                </span>
+                <span data-testid="stream-status" role="status" className={streamSpec.tagFg}>
+                  <span aria-hidden="true">{streamSpec.glyph}</span>
+                  {status === "live" ? (
+                    <span className="sr-only">live</span>
+                  ) : (
+                    <span> {status}</span>
+                  )}
+                </span>
+              </span>
+            </div>
           </header>
-          <div className="flex min-w-0 flex-1 flex-col px-5 pt-5 lg:px-6">
-            {/* The reading column, capped at the design's 720px. */}
+          {/* The transcript column (max 720px) is the pane's only scroller;
+              the thread context (workspace, artifacts, next) rides at the
+              column's end, so it stays reachable without ever pushing the
+              composer off the bottom of the pane. */}
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-6 lg:px-6">
             <div className="w-full min-w-0 max-w-[720px] space-y-3" data-testid="conversation-main">
               {interrupted ? (
                 <Alert
@@ -586,34 +631,31 @@ export default function ConversationPage({
                 }
               />
             </div>
-            {/* The composer pins to the bottom of the pane (1g): the ink box
-                with the hard shadow rides above the scrolling transcript.
-                The styling lives on this wrapper so the shared composer
-                component stays untouched. */}
-            <div
-              className="sticky bottom-0 z-10 -mx-5 mt-4 bg-paper px-5 pt-2 pb-4 lg:-mx-6 lg:px-6 [&_form]:flex [&_form]:flex-wrap [&_form]:items-center [&_form]:gap-2 [&_form]:rounded-[3px] [&_form]:border [&_form]:border-ink [&_form]:bg-surface [&_form]:p-2 [&_form]:shadow-(--shadow-raised) [&_textarea]:min-w-[180px] [&_textarea]:flex-1 [&_textarea]:resize-none [&_textarea]:border-0 [&_textarea]:bg-transparent [&_textarea]:px-1"
-              data-testid="thread-composer-pin"
-            >
-              <div className="w-full max-w-[720px]">
-                <AgentConversationComposer
-                  session={session}
-                  ids={{
-                    composerInput: "composer-input",
-                    composerSend: "composer-send",
-                    composerExplainer: "composer-explainer",
-                  }}
-                  inputId="conversation-prompt"
-                  rows={1}
-                  nonControllerPlaceholder="Only the controller can prompt."
-                />
-              </div>
+            <div className="mt-4 min-w-0 max-w-[720px]" data-testid="thread-context-block">
+              {rail}
             </div>
           </div>
-          {/* The context rail rides below the thread column: the design's pane
-              shows only the conversation, but the workspace, sandbox verdict,
-              artifacts and follow-ups stay one scroll away — dropping them
-              would drop information the thread journey is required to show. */}
-          <div className="px-5 pt-2 pb-6 lg:px-6">{rail}</div>
+          {/* The composer pins to the bottom of the pane (1g): the last thing
+              on the column, visible without scrolling at any width, the ink
+              box with the hard shadow riding above the transcript. */}
+          <div
+            className="shrink-0 bg-paper px-5 pt-2 pb-4 lg:px-6 [&_form]:flex [&_form]:flex-wrap [&_form]:items-center [&_form]:gap-2 [&_form]:rounded-[3px] [&_form]:border [&_form]:border-ink [&_form]:bg-surface [&_form]:p-2 [&_form]:shadow-(--shadow-raised) [&_textarea]:min-w-[180px] [&_textarea]:flex-1 [&_textarea]:resize-none [&_textarea]:border-0 [&_textarea]:bg-transparent [&_textarea]:px-1"
+            data-testid="thread-composer-pin"
+          >
+            <div className="w-full max-w-[720px]">
+              <AgentConversationComposer
+                session={session}
+                ids={{
+                  composerInput: "composer-input",
+                  composerSend: "composer-send",
+                  composerExplainer: "composer-explainer",
+                }}
+                inputId="conversation-prompt"
+                rows={1}
+                nonControllerPlaceholder="Only the controller can prompt."
+              />
+            </div>
+          </div>
         </div>
       </div>
     );

@@ -65,15 +65,25 @@ const MAX_ISSUE_TRIGGER_LABELS = 20;
 
 /** lucide's `github` glyph (lucide-static `icons/github.svg`): lucide-react
  * 1.x removed the brand icons from the package, so the mark is rebuilt from
- * the library's own path data and rendered by the same Lucide machinery. */
+ * the library's own path data and rendered by the same Lucide machinery.
+ *
+ * Every node carries the `key` lucide's own generated icons carry (`tonef` /
+ * `9comsn`, the keys lucide shipped with `github` while the brand glyphs were
+ * still in the package). `Icon` renders its nodes through an array, so a node
+ * without a key is a keyed-array child without a key and React dev logs
+ * “Each child in a list should have a unique ‘key’ prop … Check the render
+ * method of `ForwardRef`” on every screen that shows the mark (the
+ * pass-1-20261027044149 dev-server defect on 2e repo and 2c
+ * schedule-trigger-saved). `GithubIcon.test.tsx` guards the keys. */
 export const GithubIcon = createLucideIcon("Github", [
   [
     "path",
     {
       d: "M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4",
+      key: "tonef",
     },
   ],
-  ["path", { d: "M9 18c-4.51 2-5-2-7-2" }],
+  ["path", { d: "M9 18c-4.51 2-5-2-7-2", key: "9comsn" }],
 ]);
 
 /** The fire-time placeholders the ADR-0056 poller fills, in words — the

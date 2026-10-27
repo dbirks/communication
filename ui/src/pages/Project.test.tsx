@@ -766,6 +766,77 @@ describe("/p/:projectId — the project itself cannot be read", () => {
     expect(screen.queryByTestId("repo-list")).toBeNull();
   });
 
+  // `/p/:projectId` is a full-bleed route (App.tsx): the shell gives the page the
+  // whole content column with NO padding of its own, so a branch that mounts no
+  // header band must carry the band's padding itself. Without it the refusal sat
+  // flush against the sidebar at x=240, y=0 — reported by the verification loop.
+  const PAGE_PAD = ["px-[22px]", "pt-[20px]", "md:px-[28px]"];
+
+  /** The padded column inside one of the page's unusable branches. */
+  function paddedColumn(shellTestId: string): HTMLElement {
+    const shell = screen.getByTestId(shellTestId);
+    const column = shell.firstElementChild;
+    expect(column, `${shellTestId} wraps its content in a padded column`).not.toBeNull();
+    const classes = (column as HTMLElement).className.split(/\s+/);
+    for (const pad of PAGE_PAD) {
+      expect(classes, `${shellTestId} carries the header band's ${pad}`).toContain(pad);
+    }
+    return shell;
+  }
+
+  it("pads the not-found branch with the header band's own page padding", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: [
+        me,
+        {
+          path: projectPath,
+          status: 404,
+          body: {
+            type: "https://communication.dev/errors/not-found",
+            title: "Not found",
+            status: 404,
+            detail: "No such project.",
+          },
+        },
+      ],
+    });
+    await screen.findByTestId("project-not-found");
+    paddedColumn("project-page-not-found");
+  });
+
+  it("pads the broken-read branch with the header band's own page padding", async () => {
+    renderApp({
+      path: `/p/${projectId}`,
+      routes: [
+        me,
+        {
+          path: projectPath,
+          status: 503,
+          body: {
+            type: "https://communication.dev/errors/unavailable",
+            title: "Service unavailable",
+            status: 503,
+            detail: "The control plane is still migrating.",
+          },
+        },
+      ],
+    });
+    await screen.findByRole("alert");
+    paddedColumn("project-page-error");
+  });
+
+  it("pads the loading branch the same way the header band is padded", async () => {
+    // The same classes the usable page draws: one inset for the whole route,
+    // so the page never shifts sideways when the project arrives.
+    mounted();
+    const header = await screen.findByTestId("project-header");
+    const classes = header.className.split(/\s+/);
+    for (const pad of PAGE_PAD) {
+      expect(classes, `the header band carries ${pad}`).toContain(pad);
+    }
+  });
+
   it("quotes the server when the read fails for another reason", async () => {
     renderApp({
       path: `/p/${projectId}`,

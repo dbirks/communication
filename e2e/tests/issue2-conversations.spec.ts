@@ -164,14 +164,16 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
       `conversation "${TITLE}" landed on its page and the m4-implementer turn completed with an agent reply containing "pong"`,
     );
 
-    // The manual conversation says it is manual and links to no run or node.
-    await expect(page.getByTestId("conversation-manual-label")).toBeVisible();
+    // Design 1g: the pane header shows only the title, the mono meta line and
+    // the control pill — the "One-off thread" chip is gone with the "one-off
+    // only" default. What stays honest: a manual thread links to no run.
+    expect(await page.getByTestId("conversation-manual-label").count()).toBe(0);
     expect(await page.getByTestId("part-of-run-link").count()).toBe(0);
     await checkA11y(page, "conversation page (A7)");
     await evidence(
       page,
       "conv-a7-manual-label",
-      `the conversation page shows the "Manual conversation" label and has no part-of-run-link or node reference`,
+      `the /threads page header carries no "One-off thread" chip (design 1g drops it) and has no part-of-run-link or node reference`,
     );
 
     // --- Entry 2: the global New menu opens the SAME dialog with a picker. ---

@@ -117,7 +117,13 @@ export default function App() {
     // and the members/activity page that left with it: every other project tab
     // keeps the shell's column until it is rebuilt to the same pattern.
     /^\/p\/[^/]+$/.test(pathname) ||
-    /^\/p\/[^/]+\/members$/.test(pathname);
+    /^\/p\/[^/]+\/members$/.test(pathname) ||
+    // Threads (Projects Review design 1g) is the same shared page pattern:
+    // the 320px list pane plus the open thread own the whole content column
+    // at full height — a centred 64rem column would squeeze the pane header
+    // and float the composer mid-page.
+    pathname === "/threads" ||
+    /^\/threads\/[^/]+$/.test(pathname);
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not

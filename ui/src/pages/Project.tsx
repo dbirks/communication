@@ -24,6 +24,7 @@ import NewConversationDialog from "../components/NewConversationDialog";
 import { ProblemBanner, Spinner } from "../components/Feedback";
 import { ProjectUnavailable, projectAccessRefused } from "../components/ProjectUnavailable";
 import { ProjectHeader } from "../components/project/ProjectHeader";
+import { ProjectPageShell } from "../components/project/ProjectPageShell";
 import { NeedsYou } from "../components/project/NeedsYou";
 import { RecentThreads } from "../components/project/RecentThreads";
 import { Repositories } from "../components/project/Repositories";
@@ -51,7 +52,16 @@ export default function Project() {
   // a reload. The feed's list is what left; the subscription did not.
   useProjectEvents(project.data?.id ?? "");
 
-  if (project.isPending) return <Spinner label="Loading project" />;
+  // The three unusable branches carry no header band, so each is wrapped in the
+  // page column that gives them the band's padding (`ProjectPageShell`): on this
+  // full-bleed route an unwrapped line sits flush against the sidebar.
+  if (project.isPending) {
+    return (
+      <ProjectPageShell testid="project-page-loading">
+        <Spinner label="Loading project" />
+      </ProjectPageShell>
+    );
+  }
 
   // A project the reader cannot open is not a page that renders its name:
   // `GET /projects/{id}` answers 404 to hide existence (ADR-0014 § 3), and every
@@ -59,20 +69,24 @@ export default function Project() {
   if (projectAccessRefused(project.error) || !project.data) {
     if (project.error && !projectAccessRefused(project.error)) {
       return (
-        <section aria-labelledby="project-error-heading">
-          <h1 id="project-error-heading" className="text-title-l font-bold">
-            Project
-          </h1>
-          <ProblemBanner error={project.error} fallback="The project could not be loaded." />
-        </section>
+        <ProjectPageShell testid="project-page-error">
+          <section aria-labelledby="project-error-heading">
+            <h1 id="project-error-heading" className="text-title-l font-bold">
+              Project
+            </h1>
+            <ProblemBanner error={project.error} fallback="The project could not be loaded." />
+          </section>
+        </ProjectPageShell>
       );
     }
     return (
-      <ProjectUnavailable
-        heading="Project"
-        headingId="project-heading"
-        testid="project-not-found"
-      />
+      <ProjectPageShell testid="project-page-not-found">
+        <ProjectUnavailable
+          heading="Project"
+          headingId="project-heading"
+          testid="project-not-found"
+        />
+      </ProjectPageShell>
     );
   }
 

@@ -152,6 +152,16 @@ describe("/threads (design 1g: list pane beside the thread)", () => {
     expect(screen.getByTestId("threads-list-empty").textContent).toContain("No threads yet");
   });
 
+  it("runs the threads routes full-bleed: no max-w-5xl column around the panes", async () => {
+    // Design 1g: the list pane is 320px and the thread fills the rest of the
+    // content column at full height — the shell's centred 64rem column would
+    // squeeze the header and unpin the composer (App.tsx's bleed predicate).
+    renderApp({ path: "/threads", routes: routes([liveManual]) });
+    await screen.findByTestId("threads-page");
+    expect(document.querySelector("main")?.className).not.toContain("max-w-5xl");
+    expect(document.querySelector("main")?.className).toContain("w-full");
+  });
+
   it("says honestly what a server without the endpoint can not list", async () => {
     const { requests } = renderApp({
       path: "/threads",
@@ -240,5 +250,94 @@ describe("/threads/:id (the thread renders inside the pane)", () => {
     expect(await screen.findByTestId("composer-input")).toBeTruthy();
     expect(screen.getByTestId("conversation-meta").textContent).toContain("Claude Code");
     expect(screen.getByTestId("thread-branch").textContent).toContain("no branch recorded");
+  });
+
+  it("pins the composer as the last thing on the pane, below the transcript and its context", async () => {
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    await screen.findByTestId("conversation-title");
+
+    // The composer rides its own pin at the column's end: the transcript
+    // column and the thread context both precede it in the pane.
+    const pin = screen.getByTestId("thread-composer-pin");
+    expect(within(pin).getByTestId("composer-input")).toBeTruthy();
+    const main = screen.getByTestId("conversation-main");
+    const context = screen.getByTestId("thread-context-block");
+    expect(main.contains(screen.getByTestId("transcript-empty"))).toBe(true);
+    expect(main.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(context.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The context (workspace, artifacts, next) stays reachable in the pane —
+    // it just no longer sits under the composer.
+    expect(within(context).getByTestId("artifacts-rail")).toBeTruthy();
+    expect(within(context).getByTestId("hand-to-workflow")).toBeTruthy();
+  });
+
+  it("wears the 1g header: title, mono meta, and only the pill and the acts on the right", async () => {
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const title = await screen.findByTestId("conversation-title");
+    const header = title.closest("header");
+    expect(header).toBeTruthy();
+    // Full-bleed like the list route (App.tsx's bleed predicate covers both).
+    expect(document.querySelector("main")?.className).not.toContain("max-w-5xl");
+
+    // The control pill and the acts belong to the header; the manual chip is
+    // gone with design 1g (the "one-off only" default is dropped), and the
+    // stream/turn state is the quiet readout, not a pile of chips.
+    expect(within(header as HTMLElement).getByTestId("controller-badge").textContent).toBe(
+      "You are in control",
+    );
+    expect(within(header as HTMLElement).getByTestId("return-control")).toBeTruthy();
+    expect(within(header as HTMLElement).getByTestId("turn-status").textContent).toContain("idle");
+    expect(within(header as HTMLElement).getByTestId("stream-status")).toBeTruthy();
+    expect(within(header as HTMLElement).queryByTestId("conversation-manual-label")).toBeNull();
+    // The old inline chip labels are gone (the readout carries no "stream:" /
+    // "turn:" prefixes any more).
+    expect(header?.textContent).not.toContain("stream:");
+    expect(header?.textContent).not.toContain("turn:");
+    // The meta line is the design's `repo · branch · agent` — the repo half
+    // lands with the workspace read (the stub serves none: the honest label).
+    await screen.findByText("no workspace yet");
+    expect(within(header as HTMLElement).getByTestId("conversation-meta").textContent).toContain(
+      "no workspace yet",
+    );
+  });
+
+  it("stacks the header below the pane breakpoint: full-width title and meta, the acts on their own row", async () => {
+    // The phone shape (390x844): the title owns a full-width row and wraps
+    // (two lines at most) instead of truncating to a word under the pill;
+    // the meta line runs the full width with the quiet readout in its flow,
+    // and only `lg+` pulls the pill back onto the title row and the readout
+    // to the line's right (the 1280 design shape must not change).
+    renderApp({ path: `/threads/${conversationId}`, routes: paneRoutes() });
+    const title = await screen.findByTestId("conversation-title");
+    const titleRow = (title.parentElement as HTMLElement).className.split(/\s+/);
+    expect(titleRow).toContain("flex-col");
+    expect(titleRow).toContain("lg:flex-row");
+
+    const titleTokens = title.className.split(/\s+/);
+    expect(titleTokens).toContain("line-clamp-2");
+    expect(titleTokens).not.toContain("truncate"); // clamps only from lg up
+    expect(titleTokens).toContain("lg:truncate");
+
+    // The pill and the acts share their own row below `lg` (a sibling of the
+    // title in the stacked row container).
+    const controls = screen.getByTestId("controller-badge").parentElement?.parentElement;
+    expect(controls?.parentElement).toBe(title.parentElement);
+    expect(controls).not.toBe(title);
+
+    // The meta line is plain block flow below `lg` — no floated flex row
+    // squeezing the text into a narrow column; `lg:` restores the design.
+    const meta = screen.getByTestId("conversation-meta");
+    const metaRow = (meta.parentElement as HTMLElement).className.split(/\s+/);
+    expect(metaRow).not.toContain("flex");
+    expect(metaRow).toContain("lg:flex");
+    expect(metaRow).not.toContain("justify-between");
+    expect(metaRow).toContain("lg:justify-between");
+    expect(meta.className.split(/\s+/)).not.toContain("flex-1");
+    // The readout flows after the meta line as one inline group, carrying
+    // the turn word and the stream glyph.
+    const readout = screen.getByTestId("turn-status").parentElement as HTMLElement;
+    expect(readout.tagName).toBe("SPAN");
+    expect(readout.parentElement).toBe(meta.parentElement);
+    expect(readout.contains(screen.getByTestId("stream-status"))).toBe(true);
   });
 });
