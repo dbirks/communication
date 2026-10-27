@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useLocation, useParams } from "react-router";
 import { ApiError } from "../api/client";
-import { useProject, useTurnSandbox } from "../api/queries";
+import { useProject, useTurnSandbox, useWorkspaces } from "../api/queries";
 import {
   automationViaWords,
   interruptedCopy,
@@ -18,8 +18,11 @@ import type { components } from "../api/schema";
 import HandToWorkflowDialog from "../components/threads/HandToWorkflowDialog";
 import {
   AgentConversationPanel,
+  AgentConversationComposer,
   AgentConversationControls,
 } from "../components/conversation/AgentConversationPanel";
+import Transcript from "../components/Transcript";
+import { ThreadListPane } from "../components/threads/ThreadListPane";
 import { useConversationSession } from "../components/conversation/useConversationSession";
 import { WorkspaceWidget } from "../components/Workspaces";
 import { TurnSandboxPanel } from "../components/Sandbox";
@@ -71,9 +74,16 @@ export default function ConversationPage({
     conversationId: string;
   }>();
   // The project-less deep link (`/threads/:id`) resolves the project from the
-  // conversation itself and passes it here; the legacy path reads it from the URL.
+  // conversation itself and passes it here; the legacy path reads it from the
+  // URL.
   const projectId = projectIdProp ?? params.projectId ?? "";
   const conversationId = params.conversationId ?? "";
+  // Design 1g: `/threads/:id` is the canonical thread address, and there the
+  // page renders inside the list pane (the 320px thread list on the left, the
+  // thread on the right). The legacy `/p/:id/conversations/:id` page keeps its
+  // own standalone two-column shape.
+  const location = useLocation();
+  const paneMode = location.pathname.startsWith("/threads/");
   // One session for the whole page: the transcript/composer surface below and
   // the controller line in the rail read the same hooks, and the SSE stream is
   // opened exactly once.
@@ -100,6 +110,10 @@ export default function ConversationPage({
   // The same cached read the rail's panel makes: the page asks it only to tell
   // an honest "nothing was recorded" apart from an unverified launch.
   const turnSandbox = useTurnSandbox(latestTurnId);
+  // The pane header's `repo · branch · agent` line reads the conversation's own
+  // workspace — the same cached list the rail's WorkspaceWidget already makes,
+  // so this is one query with a second pair of eyes, never an invented ref.
+  const workspaces = useWorkspaces(projectId);
   // The handoff dialog, the run it just started and the draft-PR confirmation
   // are page-local: the durable reads are the conversation refetch (whose
   // `linked_runs` is the run list) and the transcript, where the agent's reply
@@ -173,6 +187,437 @@ export default function ConversationPage({
         activeVia,
       )
     : null;
+
+  // The pane header's `repo · branch · agent` line, from the reads only: the
+  // workspace row the worker wrote for this thread, never a guess. An absent
+  // read says so ("workspace…", "no workspace yet") — the design's invented
+  // `storefront · branch thread/fix-flaky-checkout-test` is what the wire can
+  // serve when the thread has one.
+  const threadWorkspace = (workspaces.data?.workspaces ?? []).find(
+    (workspace) => workspace.conversation_id === conversationId,
+  );
+  const workspaceRepos = threadWorkspace?.repos ?? [];
+  const repoLabel = workspaces.error
+    ? "workspace unavailable"
+    : !workspaces.data
+      ? "workspace…"
+      : !threadWorkspace
+        ? "no workspace yet"
+        : workspaceRepos.length === 0
+          ? "no repository attached"
+          : workspaceRepos.length === 1
+            ? workspaceRepos[0].name
+            : `${workspaceRepos[0].name} +${workspaceRepos.length - 1}`;
+  const threadBranch = workspaceRepos[0]?.run_ref ?? "";
+
+  const rail = (
+    <aside className="min-w-0 space-y-3" aria-label="Thread context">
+      {/* Where this transcript was opened (ADR-0043): a manual conversation
+          never carries a run or graph link, and a run conversation deep-links
+          into the Run Workbench — the API's run_link first, the journal's
+          own correlation columns as the fallback the older rows rely on. */}
+      {data.origin !== "manual" && apiRunLink ? (
+        <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
+          <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
+            <Link
+              to={conversationRunHref(apiRunLink)}
+              className="text-accent-text hover:text-ink"
+              data-testid="part-of-run-link"
+            >
+              run {apiRunLink.run_title || shortId(apiRunLink.run_id)}
+            </Link>
+            <span className="block text-faint" data-testid="part-of-node">
+              node {apiRunLink.node_id || instanceLeaf(apiRunLink.node_instance_key)} · execution{" "}
+              {shortId(apiRunLink.node_execution_id)} · attempt {apiRunLink.attempt_number}
+            </span>
+          </div>
+        </Panel>
+      ) : data.origin !== "manual" && runLink ? (
+        <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
+          <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
+            <Link
+              to={routes.run(runLink.runId)}
+              className="text-accent-text hover:text-ink"
+              data-testid="part-of-run-link"
+            >
+              run {shortId(runLink.runId)}
+            </Link>
+            {runLink.nodeExecutionId ? (
+              <span className="block text-faint" data-testid="part-of-node">
+                node execution {shortId(runLink.nodeExecutionId)}
+                {runLink.attemptId ? " · attempt " : ""}
+                {runLink.attemptId ? (
+                  // The attempt is a row inside the run the panel already
+                  // links, so its id is a link to that run, not a bare hex.
+                  <Link
+                    to={routes.run(runLink.runId)}
+                    className="text-accent-text hover:text-ink"
+                    data-testid="part-of-attempt-link"
+                  >
+                    {shortId(runLink.attemptId)}
+                  </Link>
+                ) : null}
+              </span>
+            ) : null}
+            <span className="block text-faint">
+              ids the journal carried — no run here was inferred
+            </span>
+          </div>
+        </Panel>
+      ) : null}
+      {/* M3 context rail: what the agent is editing, and what it actually ran
+          under. Both read server state — neither is inferred from the stream. */}
+      <section aria-labelledby="workspace-rail-heading" className="space-y-2">
+        <h2
+          id="workspace-rail-heading"
+          className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+        >
+          Workspace
+        </h2>
+        <div data-testid="workspace-widget">
+          <WorkspaceWidget projectId={projectId} conversationId={conversationId} />
+        </div>
+        {/* 4f: the sandbox verdict reads with the workspace — it is the
+            enforcement the workspace ran under, so it stays in one place. */}
+        <div aria-labelledby="sandbox-rail-heading">
+          {latestTurnId ? (
+            turnSandbox.data && !sandboxVerdictRecorded(turnSandbox.data) ? (
+              // Pending and unreadable answers stay with the panel, which words
+              // them honestly; only the recorded-nothing 200 is rewritten here.
+              <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
+                No sandbox verdict recorded for this conversation — its journal holds no sandbox
+                event, so this page cannot say what the agent ran under.
+              </p>
+            ) : (
+              <TurnSandboxPanel turnId={latestTurnId} />
+            )
+          ) : (
+            <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
+              No turn yet, so nothing has launched and there is no enforcement to report.
+            </p>
+          )}
+        </div>
+      </section>
+      {/* 4f ARTIFACTS: the thread's own artifacts, up to a rail page of five —
+          the project's artifact list filtered by conversation
+          (`?conversation_id=`, which resolves the thread before filtering), via
+          the shared ThreadArtifacts rail section. */}
+      <section aria-labelledby="artifacts-rail-heading" className="space-y-2">
+        <h2
+          id="artifacts-rail-heading"
+          className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+        >
+          Artifacts
+        </h2>
+        <ThreadArtifacts projectId={projectId} conversationId={conversationId} />
+        <Link
+          to={routes.projectTab(projectId, "artifacts")}
+          className="inline-block font-mono text-[11px] text-accent-text hover:text-ink"
+          data-testid="artifacts-project-link"
+        >
+          See the project's artifacts →
+        </Link>
+      </section>
+      {/* 4f NEXT: the follow-ups a thread offers — handing it to a workflow
+          (ADR-0053), the runs it already started, and (for the controller)
+          asking the agent to open a draft PR (ADR-0045). */}
+      <section aria-labelledby="next-rail-heading" className="space-y-2">
+        <h2
+          id="next-rail-heading"
+          className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
+        >
+          Next
+        </h2>
+        <div className="space-y-2" data-testid="thread-next-handoff">
+          <Button
+            variant="primary"
+            onClick={() => setHandoffOpen(true)}
+            data-testid="hand-to-workflow"
+          >
+            Hand to a workflow…
+          </Button>
+          <p className="font-mono text-[10.5px] text-faint" data-testid="hand-to-workflow-note">
+            Starts a run from this thread's branch, fresh agent sessions — the thread stays open and
+            links to the run.
+          </p>
+          {startedRunId ? (
+            <p className="text-[12.5px] text-ink" role="status">
+              <Link
+                to={routes.run(startedRunId)}
+                className="text-accent-text hover:text-ink"
+                data-testid="thread-handoff-started"
+              >
+                Run #{shortId(startedRunId)} started
+              </Link>
+            </p>
+          ) : null}
+        </div>
+        {/* The runs this thread started, straight from the API's own list
+            (ADR-0053 `linked_runs`); the thread stays open, so this list
+            grows without the transcript changing. Hidden while empty — and
+            for an image of the API that predates the field, missing. */}
+        {(data.linked_runs ?? []).length > 0 ? (
+          <div className="space-y-1.5" data-testid="thread-linked-runs">
+            <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
+              Linked runs
+            </span>
+            {(data.linked_runs ?? []).map((linked, index) => (
+              <LinkedRunRow key={linked.run_id} index={index} run={linked} />
+            ))}
+          </div>
+        ) : null}
+        {/* ADR-0045: the platform has no push code — this only sends the
+            agent a prompt to push and open a draft PR with the token on its
+            profile. Only the controller may ask; a reply with a URL in the
+            transcript is the only proof a PR exists. */}
+        {session.isController ? (
+          <div className="space-y-2" data-testid="thread-draft-pr">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setDraftPrConfirm(true);
+                setDraftPrError(null);
+                setDraftPrSent(false);
+              }}
+              data-testid="thread-draft-pr-open"
+            >
+              Open a draft PR from this branch
+            </Button>
+            {draftPrConfirm ? (
+              <div
+                className="space-y-2 rounded-[3px] border border-line p-3"
+                data-testid="thread-draft-pr-confirm"
+                aria-label="Confirm the draft-PR prompt"
+              >
+                <p className="text-[12.5px] text-ink">
+                  This asks the agent to push its branch and open a draft PR with the GitHub token
+                  on its profile (ADR-0045). It only works if the profile's account holds a token
+                  and the worker's egress allows github.com.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setDraftPrConfirm(false)}
+                    data-testid="thread-draft-pr-cancel"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={sendDraftPrPrompt}
+                    disabled={session.sendMessage.isPending}
+                    data-testid="thread-draft-pr-send"
+                  >
+                    {session.sendMessage.isPending ? "Sending…" : "Send"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {draftPrSent ? (
+              <p
+                className="text-[12.5px] text-muted"
+                role="status"
+                data-testid="thread-draft-pr-sent"
+              >
+                Prompt sent — the agent's reply appears in the transcript. A draft PR exists only if
+                its URL shows up there.
+              </p>
+            ) : null}
+            {draftPrError ? (
+              <p
+                className="text-[12.5px] text-st-failed-tag-fg"
+                role="alert"
+                data-testid="thread-draft-pr-error"
+              >
+                The prompt was not sent: {draftPrError}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-[12.5px] text-muted" data-testid="thread-draft-pr">
+            Open a draft PR from this branch — Take control to ask the agent.
+          </p>
+        )}
+      </section>
+      <HandToWorkflowDialog
+        open={handoffOpen}
+        onClose={() => setHandoffOpen(false)}
+        conversation={{ id: conversationId, project_id: projectId, title: data.title }}
+        onStarted={(runId) => {
+          setStartedRunId(runId);
+          // The thread stays open; the refetch is where its `linked_runs`
+          // grows (ADR-0053), which is where the rail's list reads from.
+          void session.conversation.refetch();
+        }}
+      />
+    </aside>
+  );
+
+  // ------------------------------------------------------------- pane mode
+  if (paneMode) {
+    return (
+      <div
+        className="-mx-4 flex min-w-0 flex-col lg:-my-6 lg:flex-row lg:min-h-[calc(100vh-48px)]"
+        data-testid="thread-pane-page"
+      >
+        <div
+          className="hidden w-[320px] shrink-0 border-r border-line-strong lg:block"
+          data-testid="thread-list-pane"
+        >
+          <ThreadListPane selectedId={conversationId} />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="border-b border-line-strong bg-surface px-5 py-[14px] lg:px-6">
+            <Link
+              to={routes.threads()}
+              className="mb-2 inline-block font-mono text-[11px] text-accent-text hover:text-ink lg:hidden"
+              data-testid="threads-back"
+            >
+              ← Threads
+            </Link>
+            <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+              <div className="min-w-0 flex-1">
+                <h1
+                  data-testid="conversation-title"
+                  className="truncate text-title-m font-semibold"
+                >
+                  {data.title}
+                </h1>
+                <p
+                  className="mt-[2px] font-mono text-[10.5px] text-muted"
+                  data-testid="conversation-meta"
+                >
+                  <span>{repoLabel}</span>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span data-testid="thread-branch">
+                    {threadBranch ? `branch ${threadBranch}` : "no branch recorded"}
+                  </span>
+                  <span className="px-2" aria-hidden="true">
+                    ·
+                  </span>
+                  <span>{data.agent_profile_name ?? "agent"}</span>
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span className="font-mono text-[10.5px] text-faint">
+                  <span data-testid="thread-age">{formatAge(data.created_at)}</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
+                  stream:
+                  <StatusChip
+                    state={stateOf(STREAM_STATE[status])}
+                    label={status}
+                    labelProps={{ "data-testid": "stream-status", role: "status" }}
+                  />
+                </span>
+                <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] text-faint">
+                  turn:
+                  <StatusChip
+                    state={stateOf(TURN_STATE[described.status])}
+                    label={turnStatus}
+                    labelProps={{ "data-testid": "turn-status" }}
+                  />
+                </span>
+                {turnOrigin ? (
+                  <span className="font-mono text-[10.5px] text-faint" data-testid="turn-origin">
+                    {turnOrigin}
+                  </span>
+                ) : null}
+                {data.origin === "manual" ? (
+                  <span
+                    className="rounded-[2px] border border-line bg-surface px-[6px] py-[1px] font-mono text-[10.5px] text-muted"
+                    data-testid="conversation-manual-label"
+                  >
+                    One-off thread
+                  </span>
+                ) : null}
+                {data.agent_session ? (
+                  <span className="font-mono text-[10.5px] text-faint" data-testid="agent-session">
+                    agent: {data.agent_session.launcher_id} (
+                    {data.agent_session.session_origin === "resumed"
+                      ? "resumed session"
+                      : "new session"}
+                    )
+                  </span>
+                ) : null}
+                {/* 4f/1g: the control line lives with the title — the
+                    "You are in control" pill and the control acts (take /
+                    return / stop) wear the page's historical testids. */}
+                <AgentConversationControls
+                  session={session}
+                  ids={{
+                    badge: "controller-badge",
+                    takeControl: "take-control",
+                    returnControl: "return-control",
+                    stopTurn: "stop-turn",
+                  }}
+                />
+              </div>
+            </div>
+          </header>
+          <div className="flex min-w-0 flex-1 flex-col px-5 pt-5 lg:px-6">
+            {/* The reading column, capped at the design's 720px. */}
+            <div className="w-full min-w-0 max-w-[720px] space-y-3" data-testid="conversation-main">
+              {interrupted ? (
+                <Alert
+                  state="interrupted"
+                  testid="interrupted-notice"
+                  meta="you can send a new prompt"
+                >
+                  {interruptedCopy(described.record?.interruptReason ?? null)}
+                </Alert>
+              ) : null}
+              <Transcript
+                items={session.transcript.items}
+                agentName={data.agent_profile_name ?? "agent"}
+                canDecide={session.isController}
+                controllerName={
+                  data.control.display_name ??
+                  (data.control.user_id ? session.nameOf(data.control.user_id) : null)
+                }
+                nameOf={session.nameOf}
+                onDecide={session.onDecide}
+                decidingRequestId={session.decidingRequestId}
+                decisionError={session.decide.error}
+                decisionErrorRequestId={
+                  session.decide.isError ? (session.decide.variables?.requestId ?? null) : null
+                }
+              />
+            </div>
+            {/* The composer pins to the bottom of the pane (1g): the ink box
+                with the hard shadow rides above the scrolling transcript.
+                The styling lives on this wrapper so the shared composer
+                component stays untouched. */}
+            <div
+              className="sticky bottom-0 z-10 -mx-5 mt-4 bg-paper px-5 pt-2 pb-4 lg:-mx-6 lg:px-6 [&_form]:flex [&_form]:flex-wrap [&_form]:items-center [&_form]:gap-2 [&_form]:rounded-[3px] [&_form]:border [&_form]:border-ink [&_form]:bg-surface [&_form]:p-2 [&_form]:shadow-(--shadow-raised) [&_textarea]:min-w-[180px] [&_textarea]:flex-1 [&_textarea]:resize-none [&_textarea]:border-0 [&_textarea]:bg-transparent [&_textarea]:px-1"
+              data-testid="thread-composer-pin"
+            >
+              <div className="w-full max-w-[720px]">
+                <AgentConversationComposer
+                  session={session}
+                  ids={{
+                    composerInput: "composer-input",
+                    composerSend: "composer-send",
+                    composerExplainer: "composer-explainer",
+                  }}
+                  inputId="conversation-prompt"
+                  rows={1}
+                  nonControllerPlaceholder="Only the controller can prompt."
+                />
+              </div>
+            </div>
+          </div>
+          {/* The context rail rides below the thread column: the design's pane
+              shows only the conversation, but the workspace, sandbox verdict,
+              artifacts and follow-ups stay one scroll away — dropping them
+              would drop information the thread journey is required to show. */}
+          <div className="px-5 pt-2 pb-6 lg:px-6">{rail}</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="grid min-w-0 gap-x-6 gap-y-4 xl:grid-cols-[minmax(0,1fr)_300px]">
@@ -300,246 +745,7 @@ export default function ConversationPage({
         />
       </div>
 
-      <aside className="min-w-0 space-y-3" aria-label="Thread context">
-        {/* Where this transcript was opened (ADR-0043): a manual conversation
-            never carries a run or graph link, and a run conversation deep-links
-            into the Run Workbench — the API's run_link first, the journal's
-            own correlation columns as the fallback the older rows rely on. */}
-        {data.origin !== "manual" && apiRunLink ? (
-          <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
-            <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
-              <Link
-                to={conversationRunHref(apiRunLink)}
-                className="text-accent-text hover:text-ink"
-                data-testid="part-of-run-link"
-              >
-                run {apiRunLink.run_title || shortId(apiRunLink.run_id)}
-              </Link>
-              <span className="block text-faint" data-testid="part-of-node">
-                node {apiRunLink.node_id || instanceLeaf(apiRunLink.node_instance_key)} · execution{" "}
-                {shortId(apiRunLink.node_execution_id)} · attempt {apiRunLink.attempt_number}
-              </span>
-            </div>
-          </Panel>
-        ) : data.origin !== "manual" && runLink ? (
-          <Panel title="PART OF" headingId="part-of-heading" headingLevel={2}>
-            <div className="space-y-[4px] p-[10px] font-mono text-[11px] text-ink">
-              <Link
-                to={routes.run(runLink.runId)}
-                className="text-accent-text hover:text-ink"
-                data-testid="part-of-run-link"
-              >
-                run {shortId(runLink.runId)}
-              </Link>
-              {runLink.nodeExecutionId ? (
-                <span className="block text-faint" data-testid="part-of-node">
-                  node execution {shortId(runLink.nodeExecutionId)}
-                  {runLink.attemptId ? " · attempt " : ""}
-                  {runLink.attemptId ? (
-                    // The attempt is a row inside the run the panel already
-                    // links, so its id is a link to that run, not a bare hex.
-                    <Link
-                      to={routes.run(runLink.runId)}
-                      className="text-accent-text hover:text-ink"
-                      data-testid="part-of-attempt-link"
-                    >
-                      {shortId(runLink.attemptId)}
-                    </Link>
-                  ) : null}
-                </span>
-              ) : null}
-              <span className="block text-faint">
-                ids the journal carried — no run here was inferred
-              </span>
-            </div>
-          </Panel>
-        ) : null}
-        {/* M3 context rail: what the agent is editing, and what it actually ran
-            under. Both read server state — neither is inferred from the stream. */}
-        <section aria-labelledby="workspace-rail-heading" className="space-y-2">
-          <h2
-            id="workspace-rail-heading"
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-          >
-            Workspace
-          </h2>
-          <div data-testid="workspace-widget">
-            <WorkspaceWidget projectId={projectId} conversationId={conversationId} />
-          </div>
-          {/* 4f: the sandbox verdict reads with the workspace — it is the
-              enforcement the workspace ran under, so it stays in one place. */}
-          <div aria-labelledby="sandbox-rail-heading">
-            {latestTurnId ? (
-              turnSandbox.data && !sandboxVerdictRecorded(turnSandbox.data) ? (
-                // Pending and unreadable answers stay with the panel, which words
-                // them honestly; only the recorded-nothing 200 is rewritten here.
-                <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
-                  No sandbox verdict recorded for this conversation — its journal holds no sandbox
-                  event, so this page cannot say what the agent ran under.
-                </p>
-              ) : (
-                <TurnSandboxPanel turnId={latestTurnId} />
-              )
-            ) : (
-              <p className="text-[12.5px] text-muted" data-testid="sandbox-verdict">
-                No turn yet, so nothing has launched and there is no enforcement to report.
-              </p>
-            )}
-          </div>
-        </section>
-        {/* 4f ARTIFACTS: the thread's own artifacts, up to a rail page of five —
-            the project's artifact list filtered by conversation
-            (`?conversation_id=`, which resolves the thread before filtering), via
-            the shared ThreadArtifacts rail section. */}
-        <section aria-labelledby="artifacts-rail-heading" className="space-y-2">
-          <h2
-            id="artifacts-rail-heading"
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-          >
-            Artifacts
-          </h2>
-          <ThreadArtifacts projectId={projectId} conversationId={conversationId} />
-          <Link
-            to={routes.projectTab(projectId, "artifacts")}
-            className="inline-block font-mono text-[11px] text-accent-text hover:text-ink"
-            data-testid="artifacts-project-link"
-          >
-            See the project's artifacts →
-          </Link>
-        </section>
-        {/* 4f NEXT: the follow-ups a thread offers — handing it to a workflow
-            (ADR-0053), the runs it already started, and (for the controller)
-            asking the agent to open a draft PR (ADR-0045). */}
-        <section aria-labelledby="next-rail-heading" className="space-y-2">
-          <h2
-            id="next-rail-heading"
-            className="font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted"
-          >
-            Next
-          </h2>
-          <div className="space-y-2" data-testid="thread-next-handoff">
-            <Button
-              variant="primary"
-              onClick={() => setHandoffOpen(true)}
-              data-testid="hand-to-workflow"
-            >
-              Hand to a workflow…
-            </Button>
-            <p className="font-mono text-[10.5px] text-faint" data-testid="hand-to-workflow-note">
-              Starts a run from this thread's branch, fresh agent sessions — the thread stays open
-              and links to the run.
-            </p>
-            {startedRunId ? (
-              <p className="text-[12.5px] text-ink" role="status">
-                <Link
-                  to={routes.run(startedRunId)}
-                  className="text-accent-text hover:text-ink"
-                  data-testid="thread-handoff-started"
-                >
-                  Run #{shortId(startedRunId)} started
-                </Link>
-              </p>
-            ) : null}
-          </div>
-          {/* The runs this thread started, straight from the API's own list
-              (ADR-0053 `linked_runs`); the thread stays open, so this list
-              grows without the transcript changing. Hidden while empty — and
-              for an image of the API that predates the field, missing. */}
-          {(data.linked_runs ?? []).length > 0 ? (
-            <div className="space-y-1.5" data-testid="thread-linked-runs">
-              <span className="block font-mono text-[10.5px] font-semibold uppercase tracking-[.04em] text-muted">
-                Linked runs
-              </span>
-              {(data.linked_runs ?? []).map((linked, index) => (
-                <LinkedRunRow key={linked.run_id} index={index} run={linked} />
-              ))}
-            </div>
-          ) : null}
-          {/* ADR-0045: the platform has no push code — this only sends the
-              agent a prompt to push and open a draft PR with the token on its
-              profile. Only the controller may ask; a reply with a URL in the
-              transcript is the only proof a PR exists. */}
-          {session.isController ? (
-            <div className="space-y-2" data-testid="thread-draft-pr">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setDraftPrConfirm(true);
-                  setDraftPrError(null);
-                  setDraftPrSent(false);
-                }}
-                data-testid="thread-draft-pr-open"
-              >
-                Open a draft PR from this branch
-              </Button>
-              {draftPrConfirm ? (
-                <div
-                  className="space-y-2 rounded-[3px] border border-line p-3"
-                  data-testid="thread-draft-pr-confirm"
-                  aria-label="Confirm the draft-PR prompt"
-                >
-                  <p className="text-[12.5px] text-ink">
-                    This asks the agent to push its branch and open a draft PR with the GitHub token
-                    on its profile (ADR-0045). It only works if the profile's account holds a token
-                    and the worker's egress allows github.com.
-                  </p>
-                  <div className="flex items-center justify-end gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={() => setDraftPrConfirm(false)}
-                      data-testid="thread-draft-pr-cancel"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      onClick={sendDraftPrPrompt}
-                      disabled={session.sendMessage.isPending}
-                      data-testid="thread-draft-pr-send"
-                    >
-                      {session.sendMessage.isPending ? "Sending…" : "Send"}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-              {draftPrSent ? (
-                <p
-                  className="text-[12.5px] text-muted"
-                  role="status"
-                  data-testid="thread-draft-pr-sent"
-                >
-                  Prompt sent — the agent's reply appears in the transcript. A draft PR exists only
-                  if its URL shows up there.
-                </p>
-              ) : null}
-              {draftPrError ? (
-                <p
-                  className="text-[12.5px] text-st-failed-tag-fg"
-                  role="alert"
-                  data-testid="thread-draft-pr-error"
-                >
-                  The prompt was not sent: {draftPrError}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-[12.5px] text-muted" data-testid="thread-draft-pr">
-              Open a draft PR from this branch — Take control to ask the agent.
-            </p>
-          )}
-        </section>
-        <HandToWorkflowDialog
-          open={handoffOpen}
-          onClose={() => setHandoffOpen(false)}
-          conversation={{ id: conversationId, project_id: projectId, title: data.title }}
-          onStarted={(runId) => {
-            setStartedRunId(runId);
-            // The thread stays open; the refetch is where its `linked_runs`
-            // grows (ADR-0053), which is where the rail's list reads from.
-            void session.conversation.refetch();
-          }}
-        />
-      </aside>
+      {rail}
     </div>
   );
 }

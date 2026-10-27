@@ -58,9 +58,15 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   ];
 }
 
+/**
+ * The workspace panel (`components/Workspaces.tsx`) is mounted by the project's
+ * Settings page, and its artifact index by the Artifacts tab: Projects Review
+ * design 1b took both off the overview ("Members, workspaces and the event feed
+ * move to Settings and to each run"), so these mount the pages that own them.
+ */
 describe("project workspaces", () => {
   it("shows refs, volume identity and dirt — and no git action at all", async () => {
-    renderApp({ path: `/projects/${projectId}`, routes: routes() });
+    renderApp({ path: `/p/${projectId}/settings`, routes: routes() });
 
     const row = await screen.findByTestId(`workspace-row-${workspaceFixture.id}`);
     expect(row.textContent).toContain("conversation · worktree");
@@ -75,7 +81,7 @@ describe("project workspaces", () => {
 
   it("reads the worker's recorded status for one repository on demand", async () => {
     renderApp({
-      path: `/projects/${projectId}`,
+      path: `/p/${projectId}/settings`,
       routes: routes([
         {
           path: statusPath,
@@ -108,7 +114,7 @@ describe("project workspaces", () => {
 
   it("treats a quarantine as a finding and refuses to imply auto-cleanup", async () => {
     renderApp({
-      path: `/projects/${projectId}`,
+      path: `/p/${projectId}/settings`,
       routes: routes([
         { path: workspacesPath, method: "GET", body: { workspaces: [quarantined] } },
       ]),
@@ -123,7 +129,7 @@ describe("project workspaces", () => {
 
   it("says a lost workspace lost its edits, never that it resumed", async () => {
     renderApp({
-      path: `/projects/${projectId}`,
+      path: `/p/${projectId}/settings`,
       routes: routes([{ path: workspacesPath, method: "GET", body: { workspaces: [lost] } }]),
     });
     const alert = await screen.findByTestId(`workspace-lost-${lost.id}`);
@@ -133,7 +139,7 @@ describe("project workspaces", () => {
 
   it("reads an unreadable workspace list as unknown state, not as an empty list", async () => {
     renderApp({
-      path: `/projects/${projectId}`,
+      path: `/p/${projectId}/settings`,
       routes: routes([
         {
           path: workspacesPath,
@@ -155,7 +161,7 @@ describe("project workspaces", () => {
 
   it("shows an empty workspace list as a checkout that has not been prepared", async () => {
     renderApp({
-      path: `/projects/${projectId}`,
+      path: `/p/${projectId}/settings`,
       routes: routes([{ path: workspacesPath, method: "GET", body: { workspaces: [] } }]),
     });
     expect((await screen.findByTestId("workspace-list-empty")).textContent).toContain(
@@ -163,8 +169,10 @@ describe("project workspaces", () => {
     );
   });
 
-  it("lists the recent artifacts of the project on the same screen", async () => {
-    renderApp({ path: `/projects/${projectId}`, routes: routes() });
+  it("lists the project's artifacts on the Artifacts tab", async () => {
+    // Design 1b moved the artifact index off the overview: the tab owns it, and
+    // the overview no longer reads it at all.
+    renderApp({ path: `/p/${projectId}/artifacts`, routes: routes() });
     const row = await screen.findByTestId(`artifact-row-${artifactFixture.name}`);
     expect(row.textContent).toContain(artifactFixture.name);
   });

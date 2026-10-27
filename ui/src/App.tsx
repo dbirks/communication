@@ -21,6 +21,7 @@ import Inbox from "./pages/Inbox";
 import LibraryPage, { PipelinePage } from "./pages/Library";
 import NotFound from "./pages/NotFound";
 import Project from "./pages/Project";
+import ProjectMembersPage from "./components/project/ProjectMembersPage";
 import ProjectPipelines from "./pages/ProjectRunsPipelines";
 import ProjectRuns from "./pages/ProjectRuns";
 import Repository from "./pages/Repository";
@@ -108,7 +109,15 @@ export default function App() {
     /^\/(workflows|library)$/.test(pathname) ||
     // The workflow page and its tabs own the viewport too (design 1e): the
     // shell's `py-6` would band the header with 24px of empty paper.
-    /^\/(workflows|library)\/[^/]+(\/(yaml|used-in|history))?$/.test(pathname);
+    /^\/(workflows|library)\/[^/]+(\/(yaml|used-in|history))?$/.test(pathname) ||
+    // The project overview (Projects Review design 1b) is the shared page
+    // pattern: a header band across the whole content column, `20px 28px` of
+    // padding and tabs sitting on the band's bottom border — none of which
+    // survives inside a centred 64rem reading column. Only the overview page
+    // and the members/activity page that left with it: every other project tab
+    // keeps the shell's column until it is rebuilt to the same pattern.
+    /^\/p\/[^/]+$/.test(pathname) ||
+    /^\/p\/[^/]+\/members$/.test(pathname);
 
   // The preview renders *outside* Shell, deliberately: Shell checks the session,
   // and a fixture page that needs a signed-in backend to render cleanly is not
@@ -250,6 +259,20 @@ export default function App() {
           element={
             <RequireAuth>
               <ProjectConversations />
+            </RequireAuth>
+          }
+        />
+        {/* Where the overview's Members panel and event feed went (Projects
+            Review design 1b). The handoff names Settings as their home, and
+            `pages/ProjectSettings.tsx` is outside that brief, so the two panels
+            sit on their own project route — a static segment, so it wins over
+            the `/p/:projectId/:repo` repository catch-all the same way `runs`
+            and `settings` already do. */}
+        <Route
+          path="/p/:projectId/members"
+          element={
+            <RequireAuth>
+              <ProjectMembersPage />
             </RequireAuth>
           }
         />

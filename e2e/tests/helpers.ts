@@ -92,6 +92,15 @@ async function revealAddForm(page: Page, toggleTestid: string, firstField: Locat
   await expect(firstField).toBeVisible();
 }
 
+/**
+ * The members page of a project, from the project's own URL (the overview).
+ * Design 1b: the members panel and the event feed moved off `/p/<id>`; the form
+ * they contain lives at `/p/<id>/members`, linked from the overview's footnote.
+ */
+export function projectMembersUrl(projectUrl: string): string {
+  return `${projectUrl.replace(/\/+$/, "")}/members`;
+}
+
 /** The repo table row for a given repository name. */
 export function rowFor(page: Page, name: string) {
   return page.getByTestId(`repo-row-${name}`);
@@ -106,14 +115,20 @@ export async function selectByOptionText(page: Page, testid: string, text: strin
   await select.selectOption(value ?? "");
 }
 
-/** Add `displayName` to the project as a member with `role`. */
+/**
+ * Add `displayName` to the project as a member with `role`.
+ *
+ * The members panel is not on the overview any more (Projects Review design 1b
+ * put the tabs across the header and moved members off it), so the member form
+ * is driven on the page that hosts it: `/p/<id>/members`.
+ */
 export async function addMember(
   page: Page,
   projectUrl: string,
   displayName: string,
   role: string,
 ): Promise<void> {
-  await page.goto(projectUrl);
+  await page.goto(projectMembersUrl(projectUrl));
   await revealAddForm(page, "member-add-toggle", page.getByTestId("member-user"));
   await selectByOptionText(page, "member-user", displayName);
   await page.getByTestId("member-role").selectOption(role);
@@ -157,7 +172,7 @@ export async function addMemberRetrying(
   displayName: string,
   role: string,
 ): Promise<void> {
-  await page.goto(projectUrl);
+  await page.goto(projectMembersUrl(projectUrl));
   await revealAddFormRetrying(page, "member-add-toggle", page.getByTestId("member-user"));
   await selectByOptionText(page, "member-user", displayName);
   await page.getByTestId("member-role").selectOption(role);
@@ -181,7 +196,7 @@ export async function setMember(
   displayName: string,
   role: string,
 ): Promise<void> {
-  await page.goto(projectUrl);
+  await page.goto(projectMembersUrl(projectUrl));
   const row = page.getByTestId(`member-row-${displayName}`);
   if ((await row.count()) > 0 && ((await row.textContent()) ?? "").includes(`role: ${role}`)) {
     return;
@@ -208,8 +223,11 @@ export async function startConversation(
   options: { title: string; profile: string; prompt: string },
 ): Promise<string> {
   await page.goto(projectUrl);
-  // The create form lives in a dialog; open it before the fields exist.
-  await page.getByTestId("conversations-new-open").click();
+  // Design 1b: the thread-list panel (and its `New thread` button) moved to the
+  // Threads tab; the overview's own header verb opens the same dialog, with the
+  // project fixed. The create form lives in a dialog; open it before the fields
+  // exist.
+  await page.getByTestId("project-new-conversation").click();
   await page.getByTestId("new-conversation-dialog").waitFor();
   await page.getByTestId("conversation-new-title").fill(options.title);
   await selectByOptionText(page, "conversation-new-profile", options.profile);

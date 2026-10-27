@@ -1,19 +1,26 @@
 /**
- * `/p/:projectId/:repo` — the repository page.
+ * `/p/:projectId/:repo` — the repository page (Projects Review design 1e).
  *
- * The design's repository page (Six Directions, sidebar tree → repo): a header
- * naming the repository, its default branch and its git URL, then the sections
- * the owner asked for — STATUS (the workspaces touching this repository),
- * ISSUES (the open GitHub issues, each with a run-from-issue action) and
- * RECENT RUNS.
+ * Header (breadcrumb · H1 · mono `remote · branch` · `New thread here` /
+ * `Start run`), then two columns — `minmax(0,1fr) 320px`, stacking below
+ * 1024px. Left: WORKFLOWS ON THIS REPO (the 2e triggers panel, kept intact)
+ * and OPEN ISSUES (GitHub remotes only): "Start a workflow with an issue as
+ * its goal" — each row expands inline into the RUN strip. Right: WORK IN THIS
+ * REPO (the workspaces touching this repository, in words) and RECENT RUNS.
  *
  * Honest data only:
  * - the GitHub access line says what the repository row says: no credential is
  *   `public · no credential`, a credential is named by the secret's own slug
  *   (ADR-0061), and an id the project does not list says so;
- * - the run list is project-scoped and the `RunSummary` row carries no
- *   repository, so the recent-runs section shows this project's runs and says
- *   so — it never claims a run belongs to this repository;
+ * - RECENT RUNS are attributed through the run's `assignment_id` → the
+ *   assignment's repository. When the assignments read fails the section says
+ *   plainly that it is showing the project's runs instead of this repo's;
+ * - an issue "already has a run" only when a run carries `trigger.kind =
+ *   issue` and `trigger.ref = owner/repo#<number>` — the ref an issue-trigger
+ *   start really records. A hand-started run records `manual` with no ref, so
+ *   the inline start cannot mark its own issue (gap: `POST /runs` has no way
+ *   to attach an issue to a manual start; the run also links back only via
+ *   the inputs it was filled from);
  * - the issue list is GitHub's, read anonymously; a refused or spent read
  *   renders the upstream's own answer, never an invented list.
  */
@@ -27,23 +34,22 @@ import {
   useWorkspaceRepoStatus,
   useConversation,
 } from "../api/queries";
-import { useProjectRuns } from "../api/runs";
-import { usePipelines } from "../api/pipelines";
+import { useProjectRuns, useRun } from "../api/runs";
+import { useAssignments, usePipelines } from "../api/pipelines";
 import {
   isGitHubRepository,
   isNotGitHubRepository,
   useRepoIssues,
   type GitHubIssue,
 } from "../api/issues";
-import type { Repository, Workspace } from "../api/types";
-import { StatusChip, Row } from "../components/ds/Row";
+import type { Assignment, Repository, RunSummary, Workspace } from "../api/types";
 import { Button } from "../components/ds/Button";
 import { Panel } from "../components/ds/Panel";
 import { Spinner, ProblemBanner } from "../components/Feedback";
-import { WORKSPACE_STATE } from "../components/ds/states";
-import { shortCommit, shortId, testidOf } from "../lib/format";
+import { RUN_STATE, SHORT_WORD, STATES, WORKSPACE_STATE } from "../components/ds/states";
+import { formatAge, shortId, testidOf } from "../lib/format";
 import { routes } from "../lib/routes";
-import { elapsed, RunStatusChip } from "./ProjectRuns";
+import { elapsed } from "./ProjectRuns";
 import { NewRunForm } from "../components/m4/NewRunForm";
 import NewConversationDialog from "../components/NewConversationDialog";
 import {
@@ -51,9 +57,14 @@ import {
   hasCredential,
   type GitHubAccessHandle,
 } from "../components/repo/GitHubAccess";
+import { IssueLabels, IssueRunExpansion } from "../components/repo/IssueRunExpansion";
 import { RepoWorkflows } from "../components/workflows/RepoWorkflows";
 
-/** The honest one-line answer for a spent anonymous GitHub budget: the upstream
+/** The statuses after which a run is no longer "in progress" (the terminal
+ * arms of `RunStatus`; `interrupted` stopped with the outcome unknown). */
+const TERMINAL_RUN_STATUSES = new Set<string>(["completed", "failed", "cancelled", "interrupted"]);
+
+/** The one-line answer for a spent anonymous GitHub budget: the upstream
  * refused the read (`502 github_rate_limited`). Say so, and stop there. */
 function githubRateLimited(error: unknown): boolean {
   if (!(error instanceof ApiError) || error.status !== 502) return false;
@@ -62,12 +73,18 @@ function githubRateLimited(error: unknown): boolean {
   return code === "github_rate_limited" || error.type.endsWith("/github_rate_limited");
 }
 
-/** Pipeline id → slug, the only name the wire gives a run. */
-function useSlugMap(): ReadonlyMap<string, string> {
+/** Pipeline id → the workflow's own name (display name, else slug) — the only
+ * names the wire gives a run or an assignment select. */
+function useNameMap(): ReadonlyMap<string, string> {
   const pipelines = usePipelines();
   return useMemo(
     () =>
-      new Map((pipelines.data?.pipelines ?? []).map((pipeline) => [pipeline.id, pipeline.slug])),
+      new Map(
+        (pipelines.data?.pipelines ?? []).map((pipeline) => [
+          pipeline.id,
+          pipeline.display_name || pipeline.slug,
+        ]),
+      ),
     [pipelines.data],
   );
 }
@@ -92,7 +109,9 @@ export default function Repository() {
 
   const project = useProject(id);
   const repos = useRepositories(id);
-  const slugs = useSlugMap();
+  const names = useNameMap();
+  const assignments = useAssignments(id);
+  const runs = useProjectRuns(id);
 
   const repository = useMemo(
     () => findRepository(repos.data?.items ?? [], name),
@@ -107,9 +126,10 @@ export default function Repository() {
   // ADR-0061 § 6: the ISSUES refusal line opens the GitHub-access picker
   // rendered up in the header — one dialog, opened from where the refusal is.
   const ghAccess = useRef<GitHubAccessHandle | null>(null);
-  const [issueRunOpen, setIssueRunOpen] = useState(false);
+  // The OPEN ISSUES row that is expanded inline (design 1e) — one at a time.
+  const [expandedIssue, setExpandedIssue] = useState<number | null>(null);
   // The header's two ways in (design 1e): the shared new-thread dialog with
-  // this project fixed, and the same new-run form the issue section opens.
+  // this project fixed, and the same new-run form the page has always used.
   const [threadOpen, setThreadOpen] = useState(false);
   const [startRunOpen, setStartRunOpen] = useState(false);
 
@@ -146,6 +166,18 @@ export default function Repository() {
   }
 
   const repositoryData = repository;
+
+  // ADR-0060: the assignments that cover this repository — this repo's own
+  // pins plus the whole-project ones (`repository_id` null). They decide both
+  // which workflows are startable from an issue and which runs are "this
+  // repository's runs". Computed plain (no hook): the early returns above
+  // would otherwise split the hook list between renders.
+  const usableAssignments = (assignments.data?.assignments ?? []).filter(
+    (assignment) =>
+      assignment.repository_id === repository.id ||
+      assignment.repository_id == null ||
+      assignment.repository_id === undefined,
+  );
 
   return (
     <div className="min-w-0 space-y-4" data-testid="repo-page">
@@ -217,7 +249,36 @@ export default function Repository() {
         </Panel>
       ) : null}
 
-      <RepoWorkflows projectId={id} project={projectData} repository={repositoryData} />
+      {/* The design's two columns: workflows + issues left, work + runs right;
+          they stack below 1024px so a 390px viewport never scrolls sideways. */}
+      <div className="grid grid-cols-1 items-start gap-5 min-[1024px]:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-4">
+          <RepoWorkflows projectId={id} project={projectData} repository={repositoryData} />
+          <RepoIssues
+            repository={repositoryData}
+            projectId={id}
+            issues={issues}
+            githubHosted={githubHosted}
+            assignments={usableAssignments}
+            names={names}
+            activeRunsByIssue={activeIssueRuns(runs.data, issues.data)}
+            expandedIssue={expandedIssue}
+            onExpand={setExpandedIssue}
+            canManageGitHub={projectData.my_role === "maintainer"}
+            onAddGitHubAccess={() => ghAccess.current?.open()}
+          />
+        </div>
+        <div className="min-w-0 space-y-4">
+          <RepoWork repository={repositoryData} projectId={id} />
+          <RepoRuns
+            projectId={id}
+            names={names}
+            runs={runs}
+            assignments={assignments}
+            usableAssignments={usableAssignments}
+          />
+        </div>
+      </div>
 
       <NewConversationDialog
         open={threadOpen}
@@ -225,121 +286,167 @@ export default function Repository() {
         projectId={id}
         project={projectData}
       />
-
-      <div className="max-w-[900px] space-y-4">
-        <RepoStatus repository={repositoryData} projectId={id} />
-        <RepoIssues
-          repository={repositoryData}
-          projectId={id}
-          issues={issues}
-          githubHosted={githubHosted}
-          issueRunOpen={issueRunOpen}
-          onRun={() => setIssueRunOpen(true)}
-          onClose={() => setIssueRunOpen(false)}
-          canManageGitHub={projectData.my_role === "maintainer"}
-          onAddGitHubAccess={() => ghAccess.current?.open()}
-        />
-        <RepoRuns projectId={id} slugs={slugs} />
-      </div>
     </div>
   );
 }
 
-/** STATUS — the workspaces that touch this repository, from the project
- * workspace list filtered by repository id (the status route is per
- * workspace + repository, so each touching workspace reads its own row). */
-function RepoStatus({ repository, projectId }: { repository: Repository; projectId: string }) {
-  const workspaces = useWorkspaces(projectId);
-  const touching = useMemo(
-    () =>
-      (workspaces.data?.workspaces ?? []).filter((workspace) =>
-        workspace.repos.some((repo) => repo.repository_id === repository.id),
-      ),
-    [workspaces.data, repository.id],
-  );
-
-  return (
-    <Panel id="repo-workspaces" title="STATUS" headingId="repo-workspaces-heading" headingLevel={2}>
-      <div data-testid="repo-workspaces" className="space-y-[6px] p-[10px]">
-        {workspaces.isPending ? <Spinner label="Loading workspaces" /> : null}
-        {workspaces.error ? (
-          <ProblemBanner error={workspaces.error} fallback="Workspaces could not be loaded." />
-        ) : null}
-        {workspaces.data && touching.length === 0 ? (
-          <p className="text-[12.5px] text-muted" data-testid="repo-workspaces-empty">
-            No workspaces have touched this repository yet.
-          </p>
-        ) : null}
-        {touching.map((workspace) => (
-          <RepoWorkspaceRow key={workspace.id} workspace={workspace} repository={repository} />
-        ))}
-      </div>
-    </Panel>
-  );
+/** Issue number → the newest run that was started FROM that issue and has not
+ * finished. The proof is the ADR-0056 pair the runs list really carries:
+ * `trigger.kind = issue` plus `trigger.ref = owner/repo#<number>`, matched
+ * against the `owner/repo` the issue list itself echoed. Nothing else counts:
+ * a manual run — including one started from this very row — records no ref. */
+function activeIssueRuns(
+  runsData: { runs: RunSummary[] } | undefined,
+  issuesData: { repository: string } | undefined,
+): ReadonlyMap<number, RunSummary> {
+  const map = new Map<number, RunSummary>();
+  if (!runsData || !issuesData) return map;
+  const prefix = `${issuesData.repository}#`;
+  for (const run of runsData.runs) {
+    const trigger = run.trigger;
+    if (!trigger || trigger.kind !== "issue" || !trigger.ref) continue;
+    if (!trigger.ref.startsWith(prefix)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) continue;
+    const number = Number(trigger.ref.slice(prefix.length));
+    if (!Number.isInteger(number) || number <= 0) continue;
+    // The project list is newest-first: the first match is the newest run.
+    if (!map.has(number)) map.set(number, run);
+  }
+  return map;
 }
 
-function RepoWorkspaceRow({
-  workspace,
+/** OPEN ISSUES (design 1e) — the open GitHub issues of this repository, each
+ * one click from starting a workflow with the issue as its goal. */
+function RepoIssues({
   repository,
+  projectId,
+  issues,
+  githubHosted,
+  assignments,
+  names,
+  activeRunsByIssue,
+  expandedIssue,
+  onExpand,
+  canManageGitHub,
+  onAddGitHubAccess,
 }: {
-  workspace: Workspace;
   repository: Repository;
+  projectId: string;
+  issues: ReturnType<typeof useRepoIssues>;
+  /** The `git_url` mirror of the server's parse: false means the request was
+   * never made and the refusal line is shown up front. */
+  githubHosted: boolean;
+  assignments: readonly Assignment[];
+  names: ReadonlyMap<string, string>;
+  activeRunsByIssue: ReadonlyMap<number, RunSummary>;
+  expandedIssue: number | null;
+  onExpand: (number: number | null) => void;
+  /** ADR-0061 § 6: a Maintainer may open the GitHub-access picker from the
+   * refusal line; others are pointed at a maintainer instead. */
+  canManageGitHub: boolean;
+  onAddGitHubAccess: () => void;
 }) {
-  const status = useWorkspaceRepoStatus(workspace.id, repository.id);
-  const state = WORKSPACE_STATE[workspace.state];
-
-  const entry =
-    workspace.repos.find((repo) => repo.repository_id === repository.id) ?? workspace.repos[0];
-  const branch = entry?.run_ref ?? "";
-  const dirty = status.data?.dirty ?? false;
-
-  // What the workspace belongs to: a run it was created for, or the thread it
-  // was opened in. The owning id stays a `title` attribute only — the row
-  // names the run or the thread, never the bare uuid.
-  const runId = workspace.scope_kind === "run" ? (workspace.run_id ?? null) : null;
-  const conversationId =
-    workspace.scope_kind === "conversation" ? (workspace.conversation_id ?? null) : null;
-  const conversation = useConversation(conversationId ?? "");
-  const threadTitle = conversation.data?.title ?? null;
-
+  const list = issues.data;
+  const notGitHub = !githubHosted || isNotGitHubRepository(issues.error);
+  const title = list ? `OPEN ISSUES · ${list.items.length}` : "OPEN ISSUES";
   return (
-    <Row data-testid={`repo-workspace-${workspace.id}`}>
-      <StatusChip state={state} label={workspace.state} />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-[11px] text-ink-2" title={branch}>
-          {branch || "—"}
-        </span>
-        <span className="block font-mono text-[10.5px] text-muted">
-          {status.isPending ? (
-            <span>checking…</span>
-          ) : (
-            <>
-              {dirty ? "dirty" : "clean"}
-              {status.data?.head_commit ? ` · head ${shortCommit(status.data.head_commit)}` : ""}
-            </>
-          )}
-        </span>
-      </span>
-      {runId ? (
-        <Link
-          to={routes.run(runId)}
-          title={workspace.id}
-          className="font-mono text-[11px] text-accent underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          data-testid={`repo-workspace-run-${workspace.id}`}
-        >
-          run #{shortId(runId)}
-        </Link>
-      ) : conversationId ? (
-        <Link
-          to={routes.thread(conversationId)}
-          title={workspace.id}
-          className="font-mono text-[11px] text-accent underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          data-testid={`repo-workspace-thread-${workspace.id}`}
-        >
-          thread {threadTitle ?? shortId(conversationId)}
-        </Link>
-      ) : null}
-    </Row>
+    <Panel
+      id="repo-issues"
+      title={title}
+      headingId="repo-issues-heading"
+      headingLevel={2}
+      meta={
+        notGitHub ? undefined : (
+          <span className="font-mono text-[10.5px] font-normal text-faint">from GitHub</span>
+        )
+      }
+    >
+      <div data-testid="repo-issues">
+        {!notGitHub && (list?.items.length ?? 0) > 0 ? (
+          <p
+            className="px-3 pb-1 pt-[10px] text-[12.5px] text-muted"
+            data-testid="repo-issues-intro"
+          >
+            Start a workflow with an issue as its goal. The run links back to the issue.
+          </p>
+        ) : null}
+        <div className="pb-[6px]">
+          {issues.isPending && !notGitHub ? (
+            <div className="px-3 py-[10px]">
+              <Spinner label="Reading GitHub" />
+            </div>
+          ) : null}
+          {notGitHub ? (
+            <p
+              className="px-3 py-[10px] text-[12.5px] text-muted"
+              data-testid="repo-issues-not-github"
+            >
+              Issue triggers need a GitHub repository — {repository.name}'s remote is not one, so
+              there is no issue to start a run from.
+            </p>
+          ) : issues.error ? (
+            githubRateLimited(issues.error) ? (
+              <p
+                className="px-3 py-[10px] font-mono text-[11px] text-st-failed-tag-fg"
+                role="alert"
+                data-testid="repo-issues-rate-limited"
+              >
+                GitHub is rate-limiting anonymous requests — try again later.
+              </p>
+            ) : !hasCredential(repository) && privateRepoRefusal(issues.error) ? (
+              <p
+                className="px-3 py-[10px] text-[12.5px] text-muted"
+                data-testid="repo-issues-private"
+              >
+                {canManageGitHub ? (
+                  // ADR-0061 § 6: the 404-without-credential answer is the
+                  // private-repo hint, one click into the access picker — not
+                  // the generic not-found.
+                  <button
+                    type="button"
+                    onClick={onAddGitHubAccess}
+                    className="text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    data-testid="repo-issues-add-github-access"
+                  >
+                    private repo? add GitHub access
+                  </button>
+                ) : (
+                  <span data-testid="repo-issues-private-maintainer">
+                    private repo — a project maintainer can add GitHub access.
+                  </span>
+                )}
+              </p>
+            ) : (
+              <div className="px-3 py-[10px]">
+                <ProblemBanner error={issues.error} fallback="GitHub issues could not be read." />
+              </div>
+            )
+          ) : null}
+          {list && list.items.length === 0 ? (
+            <p className="px-3 py-[10px] text-[12.5px] text-muted" data-testid="repo-issues-empty">
+              GitHub answered {list.repository} with no open issues.
+            </p>
+          ) : null}
+          {list && !issues.isPending && !issues.isError && list.items.length > 0 ? (
+            <ul data-testid="repo-issues-list">
+              {list.items.map((issue) => (
+                <IssueRow
+                  key={issue.number}
+                  issue={issue}
+                  projectId={projectId}
+                  assignments={assignments}
+                  names={names}
+                  activeRun={activeRunsByIssue.get(issue.number) ?? null}
+                  expanded={expandedIssue === issue.number}
+                  onExpand={() => onExpand(expandedIssue === issue.number ? null : issue.number)}
+                  onClose={() => onExpand(null)}
+                />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -357,145 +464,274 @@ function privateRepoRefusal(error: unknown): boolean {
   return error.status === 404 || error.status === 401;
 }
 
-/** ISSUES — the open GitHub issues of this repository, read through the
- * anonymous upstream proxy. */
-function RepoIssues({
-  repository,
-  projectId,
-  issues,
-  githubHosted,
-  issueRunOpen,
-  onRun,
-  onClose,
-  canManageGitHub,
-  onAddGitHubAccess,
-}: {
-  repository: Repository;
+interface IssueRowProps {
+  issue: GitHubIssue;
   projectId: string;
-  issues: ReturnType<typeof useRepoIssues>;
-  /** The `git_url` mirror of the server's parse: false means the request was
-   * never made and the refusal line is shown up front. */
-  githubHosted: boolean;
-  issueRunOpen: boolean;
-  onRun: () => void;
+  assignments: readonly Assignment[];
+  names: ReadonlyMap<string, string>;
+  /** A run started from this issue that has not finished (trigger-proven). */
+  activeRun: RunSummary | null;
+  expanded: boolean;
+  onExpand: () => void;
   onClose: () => void;
-  /** ADR-0061 § 6: a Maintainer may open the GitHub-access picker from the
-   * refusal line; others are pointed at a maintainer instead. */
-  canManageGitHub: boolean;
-  onAddGitHubAccess: () => void;
-}) {
-  const list = issues.data;
-  const notGitHub = !githubHosted || isNotGitHubRepository(issues.error);
+}
+
+function IssueRow({
+  issue,
+  projectId,
+  assignments,
+  names,
+  activeRun,
+  expanded,
+  onExpand,
+  onClose,
+}: IssueRowProps) {
+  if (expanded) {
+    return (
+      <li data-testid={`repo-issue-${issue.number}`}>
+        <IssueRunExpansion
+          projectId={projectId}
+          issue={issue}
+          assignments={assignments}
+          nameFor={(pipelineId) => names.get(pipelineId) ?? shortId(pipelineId)}
+          onClose={onClose}
+        />
+      </li>
+    );
+  }
+  const state = activeRun ? (RUN_STATE[activeRun.status] ?? "queued") : null;
   return (
-    <Panel id="repo-issues" title="ISSUES" headingId="repo-issues-heading" headingLevel={2}>
-      <div data-testid="repo-issues" className="space-y-[6px] p-[10px]">
-        {issues.isPending && !notGitHub ? <Spinner label="Reading GitHub" /> : null}
-        {notGitHub ? (
-          <p className="text-[12.5px] text-muted" data-testid="repo-issues-not-github">
-            Issue triggers need a GitHub repository — {repository.name}'s remote is not one, so
-            there is no issue to start a run from.
+    <li
+      className="flex items-center gap-3 border-t border-line-soft px-3 py-[10px] first:border-t-0"
+      data-testid={`repo-issue-${issue.number}`}
+    >
+      <span className="min-w-0 flex-1">
+        <a
+          href={issue.html_url}
+          target="_blank"
+          rel="noreferrer"
+          data-testid={`repo-issue-title-${issue.number}`}
+          className="block text-[13px] font-semibold text-ink hover:underline"
+        >
+          #{issue.number} {issue.title}
+        </a>
+        <IssueLabels issue={issue} />
+      </span>
+      {activeRun && state ? (
+        // The issue already has a run that has not finished — the design's
+        // `● run #a7f3 in progress`, spelled with the run's own short word.
+        <Link
+          to={routes.run(activeRun.id)}
+          className={`shrink-0 font-mono text-[10.5px] ${STATES[state].tagFg} hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent`}
+          data-testid={`repo-issue-active-run-${issue.number}`}
+        >
+          <span aria-hidden="true">{STATES[state].glyph} </span>
+          run #{shortId(activeRun.id)} {SHORT_WORD[state]}
+        </Link>
+      ) : (
+        <Button
+          variant="secondary"
+          compact
+          data-testid={`repo-issue-run-${issue.number}`}
+          onClick={onExpand}
+        >
+          Start a run…
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** WORK IN THIS REPO — the workspaces touching this repository, in words: what
+ * the work IS (the workflow or thread behind it), what the worker last saw,
+ * and the branch ref. No worker ids, no volume ids, no bare uuids. */
+function RepoWork({ repository, projectId }: { repository: Repository; projectId: string }) {
+  const workspaces = useWorkspaces(projectId);
+  const touching = useMemo(
+    () =>
+      (workspaces.data?.workspaces ?? []).filter((workspace) =>
+        workspace.repos.some((repo) => repo.repository_id === repository.id),
+      ),
+    [workspaces.data, repository.id],
+  );
+
+  return (
+    <Panel id="repo-work" title="WORK IN THIS REPO" headingId="repo-work-heading" headingLevel={2}>
+      <div data-testid="repo-workspaces">
+        {workspaces.isPending ? (
+          <div className="p-[10px]">
+            <Spinner label="Loading workspaces" />
+          </div>
+        ) : null}
+        {workspaces.error ? (
+          <div className="p-[10px]">
+            <ProblemBanner error={workspaces.error} fallback="Workspaces could not be loaded." />
+          </div>
+        ) : null}
+        {workspaces.data && touching.length === 0 ? (
+          <p className="p-[10px] text-[12.5px] text-muted" data-testid="repo-workspaces-empty">
+            Nothing is happening in this repository right now — no workspace has touched it.
           </p>
-        ) : issues.error ? (
-          githubRateLimited(issues.error) ? (
-            <p
-              className="font-mono text-[11px] text-st-failed-tag-fg"
-              role="alert"
-              data-testid="repo-issues-rate-limited"
-            >
-              GitHub is rate-limiting anonymous requests — try again later.
-            </p>
-          ) : !hasCredential(repository) && privateRepoRefusal(issues.error) ? (
-            <p className="text-[12.5px] text-muted" data-testid="repo-issues-private">
-              {canManageGitHub ? (
-                // ADR-0061 § 6: the 404-without-credential answer is the
-                // private-repo hint, one click into the access picker — not
-                // the generic not-found.
-                <button
-                  type="button"
-                  onClick={onAddGitHubAccess}
-                  className="text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                  data-testid="repo-issues-add-github-access"
-                >
-                  private repo? add GitHub access
-                </button>
-              ) : (
-                <span data-testid="repo-issues-private-maintainer">
-                  private repo — a project maintainer can add GitHub access.
-                </span>
-              )}
-            </p>
-          ) : (
-            <ProblemBanner error={issues.error} fallback="GitHub issues could not be read." />
-          )
         ) : null}
-        {list && list.items.length === 0 ? (
-          <p className="text-[12.5px] text-muted" data-testid="repo-issues-empty">
-            GitHub answered {list.repository} with no open issues.
-          </p>
-        ) : null}
-        {list && !issues.isPending && !issues.isError && list.items.length > 0 ? (
-          <ul className="space-y-[6px]" data-testid="repo-issues-list">
-            {list.items.map((issue) => (
-              <IssueRow key={issue.number} issue={issue} onRun={onRun} />
-            ))}
-          </ul>
-        ) : null}
-        {issueRunOpen ? (
-          <Panel title="NEW RUN" headingId="repo-issue-run-heading" headingLevel={3}>
-            <div className="p-[10px]">
-              <NewRunForm projectId={projectId} onCancel={onClose} />
-            </div>
-          </Panel>
-        ) : null}
+        {touching.map((workspace) => (
+          <RepoWorkRow key={workspace.id} workspace={workspace} repository={repository} />
+        ))}
       </div>
     </Panel>
   );
 }
 
-function IssueRow({ issue, onRun }: { issue: GitHubIssue; onRun: () => void }) {
+function RepoWorkRow({ workspace, repository }: { workspace: Workspace; repository: Repository }) {
+  const status = useWorkspaceRepoStatus(workspace.id, repository.id);
+  const workspaceState = WORKSPACE_STATE[workspace.state];
+
+  const entry =
+    workspace.repos.find((repo) => repo.repository_id === repository.id) ?? workspace.repos[0];
+  const branch = entry?.run_ref ?? "";
+
+  // What the workspace belongs to: a run it was created for, or the thread it
+  // was opened in. The owning id stays a `title` attribute only — the row
+  // names the workflow run or the thread, never the bare uuid.
+  const runId = workspace.scope_kind === "run" ? (workspace.run_id ?? null) : null;
+  const conversationId =
+    workspace.scope_kind === "conversation" ? (workspace.conversation_id ?? null) : null;
+  const conversation = useConversation(conversationId ?? "");
+  const run = useRunSummary(runId);
+
+  // The row's state: the run's own status when it is run work, the workspace
+  // state otherwise (the workspace's health is all a thread row can speak to).
+  const state = run ? (RUN_STATE[run.status] ?? workspaceState) : workspaceState;
+  const spec = STATES[state];
+
+  const changes = status.data
+    ? status.data.modified_paths.length > 0
+      ? `${status.data.modified_paths.length} ${status.data.modified_paths.length === 1 ? "file" : "files"} changed`
+      : status.data.dirty
+        ? "changes recorded, paths not listed"
+        : "no changes yet"
+    : status.isPending
+      ? "checking…"
+      : "changes unknown";
+
+  const owner = runId
+    ? `Run #${shortId(runId)}${run ? ` · ${SHORT_WORD[RUN_STATE[run.status] ?? "queued"]}` : ""}`
+    : conversationId
+      ? "Thread"
+      : "Workspace";
+  const title = runId
+    ? (run?.name ?? `Run #${shortId(runId)}`)
+    : conversationId
+      ? (conversation.data?.title ?? "Thread")
+      : "Workspace";
+
+  // The branch ref, with the honest age of the worker's last recorded view.
+  const refText = status.data
+    ? `${branch} · seen ${formatAge(status.data.recorded_at)} ago`
+    : branch;
+
   return (
-    <li data-testid={`repo-issue-${issue.number}`}>
-      <Row>
-        <span className="min-w-0 flex-1">
-          <a
-            href={issue.html_url}
-            target="_blank"
-            rel="noreferrer"
-            data-testid={`repo-issue-title-${issue.number}`}
-            className="block truncate text-[12.5px] font-semibold text-ink hover:underline"
-          >
-            #{issue.number} {issue.title}
-          </a>
-          <span className="block font-mono text-[10.5px] text-muted truncate">
-            {issue.labels.length > 0 ? issue.labels.join(", ") : "no labels"}
-          </span>
+    <div
+      className="flex flex-col gap-[3px] border-t border-line-soft p-[10px] first:border-t-0"
+      data-testid={`repo-workspace-${workspace.id}`}
+    >
+      <span className="flex items-center gap-[6px] text-[12.5px] font-semibold text-ink">
+        <span aria-hidden="true" className={`font-mono ${spec.tagFg}`}>
+          {spec.glyph}
         </span>
-        <Button
-          variant="secondary"
-          compact
-          data-testid={`repo-issue-run-${issue.number}`}
-          onClick={onRun}
-        >
-          Run from issue
-        </Button>
-      </Row>
-    </li>
+        <span className="min-w-0 truncate">{title}</span>
+      </span>
+      <span className="text-[12px] text-ink-2" data-testid={`repo-workspace-state-${workspace.id}`}>
+        <span className="sr-only">{`${spec.word}: `}</span>
+        {owner} · {changes}
+        {workspace.state === "lost" ? " · prior edits lost, rerun required" : ""}
+      </span>
+      {branch ? (
+        runId ? (
+          <Link
+            to={routes.run(runId)}
+            title={workspace.id}
+            className={WORKSPACE_REF_CLASS}
+            data-testid={`repo-workspace-run-${workspace.id}`}
+          >
+            {refText}
+          </Link>
+        ) : conversationId ? (
+          <Link
+            to={routes.thread(conversationId)}
+            title={workspace.id}
+            className={WORKSPACE_REF_CLASS}
+            data-testid={`repo-workspace-thread-${workspace.id}`}
+          >
+            {refText}
+          </Link>
+        ) : (
+          <Link
+            to={routes.project(workspace.project_id)}
+            title={workspace.id}
+            className={WORKSPACE_REF_CLASS}
+            data-testid={`repo-workspace-branch-${workspace.id}`}
+          >
+            {refText}
+          </Link>
+        )
+      ) : null}
+    </div>
   );
 }
 
-/** RECENT RUNS — the project's newest runs; the run rows carry no repository,
- * so the section never claims a run here belongs to this one. */
-function RepoRuns({ projectId, slugs }: { projectId: string; slugs: ReadonlyMap<string, string> }) {
-  const runs = useProjectRuns(projectId);
-  const rows = useMemo(
-    () =>
-      (runs.data?.runs ?? [])
-        .filter((run) => run.depth === 0)
-        .slice()
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))
-        .slice(0, 5),
-    [runs.data],
+/** The mono ref link styling, shared by the three owner branches above (each
+ * keeps its own literal `data-testid` — the test-id guard reads literals). */
+const WORKSPACE_REF_CLASS =
+  "break-all font-mono text-[10.5px] text-accent-text underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+
+/** The run behind a workspace, from `GET /runs/{id}` — only `status` and the
+ * workflow name are read; null while the run read is open or there is no run. */
+function useRunSummary(runId: string | null): { status: string; name: string | null } | null {
+  const run = useRun(runId ?? "");
+  const pipelines = usePipelines();
+  if (!runId || !run.data) return null;
+  const slug = (pipelines.data?.pipelines ?? []).find(
+    (pipeline) => pipeline.id === run.data.pipeline_id,
   );
+  return {
+    status: run.data.status,
+    name: slug ? slug.display_name || slug.slug : null,
+  };
+}
+
+/** RECENT RUNS — the runs of THIS repository, attributed through
+ * `run.assignment_id` → the assignment's repository (ADR-0060's pins, whole-
+ * project pins included). When the assignments read fails the section says so
+ * and shows the project's runs instead — never an unclaimed "this repo". */
+function RepoRuns({
+  projectId,
+  names,
+  runs,
+  assignments,
+  usableAssignments,
+}: {
+  projectId: string;
+  names: ReadonlyMap<string, string>;
+  runs: ReturnType<typeof useProjectRuns>;
+  assignments: ReturnType<typeof useAssignments>;
+  usableAssignments: readonly Assignment[];
+}) {
+  const attributable = !assignments.isError && !!assignments.data;
+  const assignmentIds = useMemo(
+    () => new Set(usableAssignments.map((assignment) => assignment.id)),
+    [usableAssignments],
+  );
+  const rows = useMemo(() => {
+    const all = (runs.data?.runs ?? [])
+      .filter((run) => run.depth === 0)
+      .slice()
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return (
+      attributable
+        ? all.filter((run) => run.assignment_id && assignmentIds.has(run.assignment_id))
+        : all
+    ).slice(0, 5);
+  }, [runs.data, attributable, assignmentIds]);
 
   return (
     <Panel
@@ -506,33 +742,69 @@ function RepoRuns({ projectId, slugs }: { projectId: string; slugs: ReadonlyMap<
       meta={
         <Link
           to={routes.projectTab(projectId, "runs")}
-          className="font-mono text-[10.5px] normal-case"
+          className="font-mono text-[10.5px] font-normal normal-case"
           data-testid="repo-runs-all"
         >
-          all runs →
+          all ›
         </Link>
       }
     >
-      <div className="space-y-[6px] p-[10px]" data-testid="repo-runs">
-        {runs.isPending ? <Spinner label="Loading runs" /> : null}
+      <div data-testid="repo-runs">
+        {runs.isPending ? (
+          <div className="p-[10px]">
+            <Spinner label="Loading runs" />
+          </div>
+        ) : null}
         {runs.error ? (
-          <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+          <div className="p-[10px]">
+            <ProblemBanner error={runs.error} fallback="Runs could not be loaded." />
+          </div>
         ) : null}
         {runs.data && rows.length === 0 ? (
-          <p className="text-[12.5px] text-muted" data-testid="repo-runs-empty">
-            No runs yet in this project.
+          <p className="p-[10px] text-[12.5px] text-muted" data-testid="repo-runs-empty">
+            {attributable
+              ? "No runs through this repository's workflows yet."
+              : "No runs yet in this project."}
           </p>
         ) : null}
         {rows.map((run) => (
-          <Row key={run.id} to={routes.run(run.id)} data-testid={`repo-run-${testidOf(run.id)}`}>
-            <RunStatusChip status={run.status} testid={`repo-run-status-${testidOf(run.id)}`} />
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
-              #{shortId(run.id)} {slugs.get(run.pipeline_id) ?? run.pipeline_id}
-            </span>
-            <span className="font-mono text-[10.5px] text-faint">{elapsed(run)}</span>
-          </Row>
+          <RunRow key={run.id} run={run} name={names.get(run.pipeline_id) ?? null} />
         ))}
+        {runs.data && rows.length > 0 && !attributable ? (
+          <p
+            className="border-t border-line-soft px-3 py-[8px] font-mono text-[10.5px] text-st-waiting-tag-fg"
+            data-testid="repo-runs-project-note"
+          >
+            these are the project's runs — this repository's own runs could not be told apart
+          </p>
+        ) : null}
       </div>
     </Panel>
+  );
+}
+
+/** One RECENT RUNS row (design 1e): state glyph, workflow name, age. The word
+ * is there for screen readers (never color alone) without becoming a chip. */
+function RunRow({ run, name }: { run: RunSummary; name: string | null }) {
+  const state = RUN_STATE[run.status] ?? "queued";
+  const spec = STATES[state];
+  return (
+    <Link
+      to={routes.run(run.id)}
+      title={run.id}
+      className="flex items-center gap-2 border-t border-line-soft px-3 py-[8px] first:border-t-0 hover:bg-paper"
+      data-testid={`repo-run-${testidOf(run.id)}`}
+    >
+      <span aria-hidden="true" className={`font-mono text-[11px] ${spec.tagFg}`}>
+        {spec.glyph}
+      </span>
+      <span className="sr-only" data-testid={`repo-run-status-${testidOf(run.id)}`}>
+        {SHORT_WORD[state]}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+        {name ?? `run #${shortId(run.id)}`}
+      </span>
+      <span className="shrink-0 font-mono text-[10.5px] text-faint">{elapsed(run)}</span>
+    </Link>
   );
 }

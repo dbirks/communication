@@ -193,8 +193,11 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
 
-    // --- The Conversations list: searched, badged Manual, hidden by "From runs". ---
-    await page.goto(projectUrl);
+    // --- The thread list: searched, badged Manual, hidden by "From runs". ---
+    // Design 1b moved the list off the project overview onto its Threads tab, so
+    // the list is opened at its own route (the overview now shows three recent
+    // threads and a link here).
+    await page.goto(`${projectUrl}/conversations`);
     await page.getByTestId("conversation-search").fill("issue2 one-off");
     const row = page.getByTestId(ROW_TESTID);
     await expect(row).toBeVisible({ timeout: 15_000 });
@@ -228,7 +231,9 @@ test.describe("issue2 conversations (A7 + run link-backs)", () => {
   test("run-linked conversation: the badge deep-links into the Run Workbench", async ({ page }) => {
     test.setTimeout(300_000); // the workbench deep-link waits are WORKBENCH_TIMEOUT_MS each
     await signIn(page, "alice");
-    await openProjectBySlug(page, PROJECT_SLUG);
+    const listUrl = await openProjectBySlug(page, PROJECT_SLUG);
+    // The list is the Threads tab, not a section of the overview (design 1b).
+    await page.goto(`${listUrl}/conversations`);
 
     // Find a run-linked conversation: the list filtered to "From runs". The
     // M4 seed's exit runs and the workbench journeys create agent

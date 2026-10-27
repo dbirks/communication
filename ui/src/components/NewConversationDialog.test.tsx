@@ -172,14 +172,16 @@ describe("NewConversationDialog (project page opener)", () => {
       path: `/projects/${projectId}`,
       routes: routes([{ path: projectPath, method: "GET", body: viewer }]),
     });
-    // The Conversations section says only contributors/maintainers can start
-    // conversations; the header actions agree.
-    expect(
-      await screen.findByText("Only project contributors and maintainers can start conversations."),
-    ).not.toBeNull();
+    // Design 1b took the thread list off the overview — its "only contributors
+    // and maintainers can start conversations" line is asserted on the Threads
+    // page (`pages/ProjectConversations.test.tsx`). The overview's own header
+    // actions agree with it: neither verb is offered to a viewer.
+    expect(await screen.findByTestId("project-name")).toBeTruthy();
+    expect(screen.getByTestId("project-role-hint").textContent).toContain("read-only");
     expect(screen.queryByTestId("project-new-conversation")).toBeNull();
     expect(screen.queryByTestId("project-start-run")).toBeNull();
-    // No dialog mount, no conversations read.
+    // No dialog mount, and no extra reads: the project once, and the single
+    // conversations read the tab count and the RECENT THREADS panel share.
     expect(requestsTo(requests, projectPath, "GET")).toHaveLength(1);
     expect(requestsTo(requests, conversationsPath, "GET")).toHaveLength(1);
   });

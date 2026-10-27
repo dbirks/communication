@@ -80,7 +80,8 @@ function AgentMessageBody({ text }: { text: string }) {
   const plan = useMemo(() => planDocumentOf(text), [text]);
 
   if (!plan) {
-    return <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-ink">{text}</p>;
+    // 1g: the agent's prose reads at 13.5/21 — a person talking, not a table.
+    return <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-[21px] text-ink">{text}</p>;
   }
   return (
     <div className="mt-1" data-testid="agent-plan">
@@ -418,8 +419,9 @@ export default function Transcript({
       {items.map((item) => {
         switch (item.kind) {
           case "user": {
-            // 4f: the user's own prompt reads as a bubble in the accent
-            // tint — the agent's prose stays plain text beside it.
+            // 4f/1g: the user's own prompt reads as a bubble on the right in
+            // the accent tint, capped at 80% of the column — the agent's prose
+            // stays plain text beside it.
             // ADR-0062: it is only ever the *author's* line when the turn row
             // says a human submitted it. For an automation the bubble names who
             // authorised it on a meta line, because this prompt is not
@@ -429,7 +431,7 @@ export default function Transcript({
               <li
                 key={item.id}
                 data-testid="transcript-item"
-                className="rounded-[3px] border border-accent-edge bg-accent-tint px-[10px] py-2 text-[12.5px]"
+                className="ml-auto w-fit max-w-[80%] rounded-[3px] border border-accent-edge bg-accent-tint px-[10px] py-2 text-[12.5px]"
               >
                 {automation ? (
                   <>

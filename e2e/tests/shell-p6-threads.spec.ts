@@ -1,12 +1,15 @@
 // Phase 6 acceptance: Threads — the cross-project thread list and the
-// thread page itself.
+// thread page itself (design 1g: the list is a 320px pane beside the open
+// thread; opening a thread no longer leaves the page).
 //
 // /threads lists exactly the cross-project conversation summaries
-// (contract C3: GET /api/v1/conversations); the thread page carries its
-// header and its rail (the honest "not available yet" artifacts note, the
-// "Hand to a workflow…" follow-up — shown, or disabled with its reason);
-// and the ADR-0045 "Open a draft PR" NEXT entry is controller-only: clicking
-// it shows the confirm card, and cancelling the card sends nothing.
+// (contract C3: GET /api/v1/conversations) grouped LIVE / EARLIER with no
+// filter applied by default; the thread pane carries its header (title, the
+// mono repo/branch/agent line, the shared control line) and its rail (the
+// honest "not available yet" artifacts note, the "Hand to a workflow…"
+// follow-up — shown, or disabled with its reason); and the ADR-0045 "Open a
+// draft PR" NEXT entry is controller-only: clicking it shows the confirm
+// card, and cancelling the card sends nothing.
 //
 // Runs ONLY when COMMUNICATION_E2E_SHELL=1. evidence() per step;
 // checkShellScreen on each page.
@@ -62,18 +65,12 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
     const stopWatching = watchPageErrors(page);
     const conversations = await apiConversationsWithManual(page.request);
     expect(conversations.length).toBeGreaterThan(0);
-    const manual = conversations.filter((c) => c.origin === "manual");
     await page.goto(BASE_URL + "/threads", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("threads-page")).toBeVisible({ timeout: 30_000 });
     const rows = page.locator('[data-testid^="thread-row-"]');
-    // Default view is "one-off only" (manual origin), filtered client-side.
+    // Design 1g drops the "one-off only" default: the page lists every
+    // cross-project summary the endpoint served, newest first.
     await expect(rows.first()).toBeVisible({ timeout: 30_000 });
-    expect(await rows.count(), "one row per one-off conversation").toBe(manual.length);
-    for (const conversation of manual) {
-      await expect(page.getByTestId(`thread-row-${conversation.id}`)).toBeVisible();
-    }
-    // Lifting the one-off filter shows the full cross-project list.
-    await page.getByTestId("threads-one-off-filter").click();
     expect(await rows.count(), "one row per conversation summary").toBe(conversations.length);
     for (const conversation of conversations) {
       await expect(page.getByTestId(`thread-row-${conversation.id}`)).toBeVisible();
@@ -82,7 +79,7 @@ test.describe("shell p6 — threads: cross-project list and thread page", () => 
     await evidence(
       page,
       "shell-p6-threads-list",
-      `/threads shows the ${manual.length} one-off threads by default and, with the one-off filter lifted, exactly the ${conversations.length} cross-project summaries from GET /api/v1/conversations`,
+      `/threads shows exactly the ${conversations.length} cross-project summaries from GET /api/v1/conversations in the 320px pane (design 1g: no default filter; LIVE / EARLIER grouping)`,
     );
   });
 

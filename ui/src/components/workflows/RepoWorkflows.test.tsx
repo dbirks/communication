@@ -270,6 +270,17 @@ describe("RepoWorkflows — the collapsed row (2e)", () => {
     expect(screen.queryByTestId(`repo-workflow-add-${assignmentKey}`)).toBeNull();
     // Run stays: starting a run is the contributor route, not a maintainer one.
     expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`)).toBeTruthy();
+    // 1e: `Edit` goes to the library workflow page; `Run` starts this use.
+    const edit = screen.getByTestId(`repo-workflow-edit-${assignmentKey}`);
+    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+  });
+
+  it("pairs the 1e `Edit` link with the pinned `Run`", async () => {
+    mount();
+    const edit = await screen.findByTestId(`repo-workflow-edit-${assignmentKey}`);
+    expect(edit.getAttribute("href")).toBe(`/workflows/${WIRE_PIPELINE_ID}`);
+    expect(edit.textContent).toBe("Edit");
+    expect(screen.getByTestId(`repo-workflow-run-${assignmentKey}`).textContent).toBe("Run");
   });
 });
 

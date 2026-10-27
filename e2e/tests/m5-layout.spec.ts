@@ -141,7 +141,7 @@ const screens: Screen[] = [
     viewer: "alice",
     path: (lab) => lab.projectPath,
     anchor: "project-name",
-    why: "attention, recent runs, repos, members and conversations on one page",
+    why: "design 1b: header tabs, the callouts that ask something of you, running work, recent threads, repos and workflows",
   },
   {
     label: "runs list",
@@ -585,7 +585,9 @@ async function firstConversationPath(page: Page, projectPath: string): Promise<s
   );
   const profileId = await apiProfileId(page.request);
   await apiCreateConversation(page.request, csrf, projectId, profileId, title);
-  await gotoApp(page, projectPath);
+  // Design 1b: the overview shows three recent threads and a `Threads` tab; the
+  // list itself — every row, with its search and filters — is the tab's page.
+  await gotoApp(page, `${projectPath.replace(/\/+$/, "")}/conversations`);
   const row = page.getByTestId(rowTestid);
   await expect(row, `the created thread "${title}" must list its own row`).toBeVisible({
     timeout: LOADED_TIMEOUT_MS,

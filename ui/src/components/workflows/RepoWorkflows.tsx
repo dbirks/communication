@@ -11,7 +11,8 @@
  * Each row is collapsible (the handoff's SVG chevron `M3 4.5l3 3 3-3`):
  * - collapsed: name · pinned-revision chip (`✓ r3`, the number the server's
  *   own revision summary carries) · trigger summary ("started by hand", or a
- *   Lucide icon + sentence per trigger) · `+ Add trigger` · `Run`, over the
+ *   Lucide icon + sentence per trigger) · 1e's `Edit` (the library workflow
+ *   page) · `+ Add trigger` · `Run`, over the
  *   mono step chain of the PINNED revision (loop scopes shaded);
  * - expanded: the `STARTS WHEN` box (indented 34px, `bg-accent-wash` header
  *   strip in accent mono caps with `+ Add trigger` on the right), one grid row
@@ -39,7 +40,7 @@ import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { Clock, Play } from "lucide-react";
 import { Panel } from "../ds/Panel";
-import { Button } from "../ds/Button";
+import { Button, VARIANT_CLASS } from "../ds/Button";
 import { StatusChip } from "../ds/Row";
 import { Field, Input } from "../ds/Field";
 import { FormError, ProblemBanner, Spinner } from "../Feedback";
@@ -431,6 +432,15 @@ function RepoWorkflowRow({
               + Add trigger
             </button>
           ) : null}
+          {/* 1e: `Edit` opens the library workflow page (where it is used,
+              its revisions, its YAML); `Run` starts this repo's pinned use. */}
+          <Link
+            to={routes.workflow(assignment.pipeline_id)}
+            className={`ds-btn ${VARIANT_CLASS.secondaryPlain} ds-btn--compact`}
+            data-testid={`repo-workflow-edit-${key}`}
+          >
+            Edit
+          </Link>
           <Button
             variant="secondary"
             compact

@@ -55,11 +55,17 @@ function routes(extra: RouteStub[] = []): RouteStub[] {
   ];
 }
 
-describe("/projects/:projectId conversations", () => {
+/**
+ * The project's thread list. Design 1b took the list off the overview — the
+ * overview now shows three recent threads and a `Threads` tab — so these mount
+ * the route that owns the list (`/p/:id/conversations`), which is the same
+ * `components/Conversations.tsx` panel the overview used to carry.
+ */
+describe("/p/:projectId/conversations — the project's thread list", () => {
   it(
     "lists conversations with title, profile, status, controller and updated",
     async () => {
-      renderApp({ path: `/projects/${projectFixture.id}`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
 
       // The row arrives when `GET .../conversations` answers — awaited inside
       // that boundary's budget, not raced against it.
@@ -83,7 +89,7 @@ describe("/projects/:projectId conversations", () => {
     "starts a conversation with a profile from the directory and opens it",
     async () => {
       const { requests } = renderApp({
-        path: `/projects/${projectFixture.id}`,
+        path: `/p/${projectFixture.id}/conversations`,
         routes: routes([
           {
             path: conversationsPath,
@@ -142,7 +148,7 @@ describe("/projects/:projectId conversations", () => {
     "creates a conversation without a first prompt when the box is empty",
     async () => {
       const { requests } = renderApp({
-        path: `/projects/${projectFixture.id}`,
+        path: `/p/${projectFixture.id}/conversations`,
         routes: routes([
           { path: conversationsPath, method: "POST", status: 201, body: conversationFixture },
         ]),
@@ -181,7 +187,7 @@ describe("/projects/:projectId conversations", () => {
     "explains why a viewer cannot start a conversation",
     async () => {
       renderApp({
-        path: `/projects/${projectFixture.id}`,
+        path: `/p/${projectFixture.id}/conversations`,
         routes: routes([
           {
             path: projectPath,
@@ -206,7 +212,7 @@ describe("/projects/:projectId conversations", () => {
     "says there are no conversations yet",
     async () => {
       renderApp({
-        path: `/projects/${projectFixture.id}`,
+        path: `/p/${projectFixture.id}/conversations`,
         routes: routes([{ path: conversationsPath, method: "GET", body: { items: [] } }]),
       });
 
@@ -217,17 +223,18 @@ describe("/projects/:projectId conversations", () => {
   );
 
   it(
-    "still renders the section for a bookmarked #conversations fragment",
+    "still renders the list when the route is reached directly",
     async () => {
-      renderApp({ path: `/projects/${projectFixture.id}#conversations`, routes: routes() });
+      renderApp({ path: `/p/${projectFixture.id}/conversations`, routes: routes() });
 
       await screen.findByTestId("conversation-row-refactor-billing", undefined, {
         timeout: READ_MS,
       });
-      // The overview answers the fragment; its rail points at the route.
+      // The rail on the list page names the same route the tab does, in the
+      // canonical `/p/…` form (no legacy `/projects/…` href is emitted).
       const nav = screen.getByRole("navigation", { name: "Project sections" });
-      expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
-        `/projects/${projectFixture.id}/conversations`,
+      expect(within(nav).getByText("Threads").getAttribute("href")).toBe(
+        `/p/${projectFixture.id}/conversations`,
       );
     },
     TEST_TIMEOUT,
@@ -256,10 +263,10 @@ describe("/projects/:projectId/conversations", () => {
       // Not the app's "Not found" page any more, and the rail knows where it is.
       expect(screen.queryByText("That page does not exist.")).toBeNull();
       const nav = screen.getByRole("navigation", { name: "Project sections" });
-      expect(within(nav).getByText("Conversations").getAttribute("aria-current")).toBe("true");
-      // One canonical form: the rail's Conversations item is the route itself.
-      expect(within(nav).getByText("Conversations").getAttribute("href")).toBe(
-        `/projects/${projectFixture.id}/conversations`,
+      expect(within(nav).getByText("Threads").getAttribute("aria-current")).toBe("true");
+      // One canonical form: the rail's Threads item is the route itself.
+      expect(within(nav).getByText("Threads").getAttribute("href")).toBe(
+        `/p/${projectFixture.id}/conversations`,
       );
     },
     TEST_TIMEOUT,
