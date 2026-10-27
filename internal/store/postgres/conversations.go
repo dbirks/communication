@@ -792,7 +792,8 @@ const cnvLastAgentSubquery = `
 // cnvListSummaryExtraColumns are the SELECT arms the two list READS (project
 // and cross-project) share for the ADR-0065 fields, and cnvListSummaryExtraJoins
 // the LATERALs that feed them. COALESCE + value scan, the same sentinel
-// convention as the run-link columns: '' means the lateral matched nothing.
+// convention as the run-link columns: an empty string means the lateral
+// matched nothing.
 const cnvListSummaryExtraColumns = `,
 		       COALESCE(repo.repository_id, ''), COALESCE(repo.repository_name, ''),
 		       COALESCE(lastmsg.text, '')`
