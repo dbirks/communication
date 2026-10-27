@@ -93,16 +93,16 @@ type interpretModelAnswer struct {
 func ParseInterpretation(raw string) (Interpretation, error) {
 	s, err := stripModelProse(raw)
 	if err != nil {
-		return Interpretation{}, err
+		return Interpretation{}, malformedAnswerError(raw, err)
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	var a interpretModelAnswer
 	if err := dec.Decode(&a); err != nil {
-		return Interpretation{}, errors.New("the answer is not a JSON object")
+		return Interpretation{}, malformedAnswerError(raw, errors.New("the answer is not a JSON object"))
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
-		return Interpretation{}, errors.New("the answer is not exactly one JSON object")
+		return Interpretation{}, malformedAnswerError(raw, errors.New("the answer is not exactly one JSON object"))
 	}
 
 	restated := bounded(strings.TrimSpace(a.Interpretation), InterpretationMaxRunes)

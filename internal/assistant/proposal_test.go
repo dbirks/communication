@@ -259,8 +259,15 @@ func TestExtractProposal(t *testing.T) {
 		{"surrounding whitespace", "  \n" + valid + "\n", false},
 		{"json fence", "```json\n" + valid + "\n```", false},
 		{"bare fence", "```\n" + valid + "\n```", false},
-		{"think prefix", "<think>\nlet me look at the graph...\n" + thinkClose + valid, false},
-		{"think then fence", "<think>hmm" + thinkClose + "\n```json\n" + valid + "\n```", false},
+		{"think prefix", openTag + "\nlet me look at the graph...\n" + thinkClose + valid, false},
+		{"think then fence", openTag + "hmm" + thinkClose + "\n```json\n" + valid + "\n```", false},
+		{"bare close tag and no opening tag (the lab's cc1acd1 A8 shape)", "I should split that edge." + thinkClose + valid, false},
+		{"bare close tag then fence", "I should split that edge." + thinkClose + "\n```json\n" + valid + "\n```", false},
+		{"leading BOM", "\ufeff" + valid, false},
+		{"BOM before a bare close tag", "\ufeff" + thinkClose + valid, false},
+		{"two reasoning blocks", openTag + "one" + thinkClose + openTag + "two" + thinkClose + valid, false},
+		{"reasoning block then a bare close tag", openTag + "one" + thinkClose + "two" + thinkClose + valid, false},
+		{"close tag inside a string member", `{"op":"insert_on_edge","from":"approve","to":"build","kind":"model.chat","id":"check","config":{"prompt":"ends ` + thinkClose + ` now"},"summary":"keeps the tag"}`, false},
 		{"malformed json", "```json\n{op: insert_after\n```", true},
 		{"a second op", valid + `{"op":"update_prompt","node":"plan","prompt":"x"}`, true},
 		{"trailing prose", valid + " let me know if that works", true},
@@ -273,7 +280,7 @@ func TestExtractProposal(t *testing.T) {
 		{"array of a string", `["look again"]`, true},
 		{"nested array", "[[" + valid + "]]", true},
 		{"array then trailing object", "[" + valid + "] " + valid, true},
-		{"open think only", "<think>still reasoning", true},
+		{"open think only", openTag + "still reasoning", true},
 		{"empty answer", "", true},
 	}
 	for _, tc := range cases {
@@ -661,5 +668,121 @@ func TestProposalStructuralAnswerRepair(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// scriptedProposalServer stands in for the lab's OpenAI-compatible gateway: it
+// answers every proposal turn with one canned completion and records how many
+// turns the broker spent.
+func scriptedProposalServer(t *testing.T, answer string) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message":       map[string]any{"role": "assistant", "content": answer},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// TestCompleteTextLabReasoningShapeNeedsNoReAsk reproduces the live issue2 A8
+// failure deterministically (acceptance cc1acd1, 2026-10-27, the only failure
+// of that full acceptance and the only run where A8 had ever failed): the lab's
+// assistant runs a Qwen3-class thinking model
+// (COMMUNICATION_LLM_MODEL=david-birks/qwen3-8-flash-next on
+// llm-collective.e-gineering.com), whose chat template opens the reasoning
+// block inside the PROMPT. When a gateway serves that turn anyway — the
+// api-a log of that run shows the re-ask firing at 13:42:37 and the route
+// answering 422 twelve hundred milliseconds later, and the raw reply is
+// recorded nowhere, which is why the refusal now carries an excerpt — the
+// completion begins with reasoning text closed by a BARE close tag, with no
+// opening tag to match. The old ExtractProposal only recognized a block that
+// opens with the tag, so it handed the close tag itself to the JSON decoder:
+// ` + '`invalid character ' + "”" + `<' looking for beginning of value'` + '. The same
+// answer now extracts on the first turn, with no re-ask spent.
+func TestCompleteTextLabReasoningShapeNeedsNoReAsk(t *testing.T) {
+	for _, shape := range []struct {
+		name   string
+		answer string
+	}{
+		{"bare close tag then the object", "I need to split the edge, so insert_on_edge." + thinkClose + labAnswer},
+		{"BOM then a bare close tag", "\ufeff" + thinkClose + labAnswer},
+		{"opened block, then a bare close tag, then a fence", openTag + "planning" + thinkClose + "still planning" + thinkClose + "\n```json\n" + labAnswer + "\n```"},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			srv, calls := scriptedProposalServer(t, shape.answer)
+			broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+			if err != nil {
+				t.Fatalf("broker: %v", err)
+			}
+			d := probeDoc(t)
+			summaries, err := json.Marshal(d.Summaries())
+			if err != nil {
+				t.Fatalf("summaries: %v", err)
+			}
+			system, user := ProposalPrompt(summaries, []string{"m4-planner"}, "insert a code reviewer after the approval gate")
+			raw, fail := broker.CompleteText(t.Context(), system, user)
+			if fail != nil {
+				t.Fatalf("completion: %v", fail)
+			}
+			if *calls != 1 {
+				t.Fatalf("turns spent = %d, want 1 (the answer must extract without a re-ask)", *calls)
+			}
+			p, err := ExtractProposal(raw)
+			if err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+			if verr := ValidateProposal(d, p); verr != nil {
+				t.Fatalf("validate: %v", verr)
+			}
+			if p.Op != "insert_on_edge" || p.From != "approve" || p.To != "build_until_verified" || p.ID != "check_plan" {
+				t.Fatalf("validated op %+v", p)
+			}
+		})
+	}
+}
+
+// TestCompleteTextProseAnswerIsStillRefusedWithTheReplyPrefix pins the other
+// half: an answer that is genuinely not the object it was asked for is still
+// refused (one corrective re-ask, then the original failure stands) — and its
+// refusal names the reply, because nothing else records what the model sent.
+func TestCompleteTextProseAnswerIsStillRefusedWithTheReplyPrefix(t *testing.T) {
+	const answer = "Sure! Inserting a reviewer means adding an agent step between the tests and the review node, so the graph stays ordered."
+	srv, calls := scriptedProposalServer(t, answer)
+	broker, err := New(Config{BaseURL: srv.URL, HTTPClient: srv.Client()}, storeForProposals(t))
+	if err != nil {
+		t.Fatalf("broker: %v", err)
+	}
+	d := probeDoc(t)
+	summaries, _ := json.Marshal(d.Summaries())
+	system, user := ProposalPrompt(summaries, []string{"m4-planner"}, "insert a code reviewer after the approval gate")
+	raw, fail := broker.CompleteText(t.Context(), system, user)
+	if fail != nil {
+		t.Fatalf("completion: %v", fail)
+	}
+	if raw != answer {
+		t.Fatalf("raw = %q, want the first answer unchanged", raw)
+	}
+	if *calls != 2 {
+		t.Fatalf("turns spent = %d, want 2 (exactly one corrective re-ask)", *calls)
+	}
+	_, err = ExtractProposal(raw)
+	if err == nil || !strings.Contains(err.Error(), "the answer is not a JSON object") ||
+		!strings.Contains(err.Error(), "Sure! Inserting a reviewer") {
+		t.Fatalf("refusal = %v", err)
 	}
 }

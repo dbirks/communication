@@ -135,16 +135,16 @@ type summaryModelAnswer struct {
 func ParseApprovalSummary(raw string) (ApprovalSummary, error) {
 	s, err := stripModelProse(raw)
 	if err != nil {
-		return ApprovalSummary{}, err
+		return ApprovalSummary{}, malformedAnswerError(raw, err)
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	var a summaryModelAnswer
 	if err := dec.Decode(&a); err != nil {
-		return ApprovalSummary{}, errors.New("the answer is not a JSON object")
+		return ApprovalSummary{}, malformedAnswerError(raw, errors.New("the answer is not a JSON object"))
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
-		return ApprovalSummary{}, errors.New("the answer is not exactly one JSON object")
+		return ApprovalSummary{}, malformedAnswerError(raw, errors.New("the answer is not exactly one JSON object"))
 	}
 
 	summary := firstTwoSentences(a.Summary)
@@ -216,37 +216,6 @@ func truncateRune(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n])
-}
-
-// thinkClose ends a reasoning model's think block; it is assembled so the
-// literal tag never appears in source (some models stop generating on it).
-const thinkClose = "<" + "/think>"
-
-// stripModelProse removes a leading <think>... think-close block (reasoning models)
-// and an optional ``` / ```json fence, returning the trimmed body the JSON
-// decoder must read. A malformed fence or an unclosed think block is a refusal.
-func stripModelProse(raw string) (string, error) {
-	s := strings.TrimSpace(raw)
-	if strings.HasPrefix(s, "<think") {
-		i := strings.Index(s, thinkClose)
-		if i < 0 {
-			return "", errors.New("the answer's think block never closes")
-		}
-		s = strings.TrimSpace(s[i+len(thinkClose):])
-	}
-	if strings.HasPrefix(s, "```") {
-		end := strings.IndexByte(s, '\n')
-		if end < 0 {
-			return "", errors.New("the fenced answer has no body")
-		}
-		body := s[end+1:]
-		closeIdx := strings.LastIndex(body, "```")
-		if closeIdx < 0 {
-			return "", errors.New("the fenced answer is not closed")
-		}
-		s = strings.TrimSpace(body[:closeIdx])
-	}
-	return s, nil
 }
 
 // firstTwoSentences clips s to its first two sentences (the design's "≤ 2

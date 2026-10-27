@@ -487,42 +487,34 @@ func hasEdge(deps []string, id string) bool {
 }
 
 // ExtractProposal pulls the ONE JSON object out of the model's answer. It
-// tolerates a ```json fence, a reasoning think-block prefix and a
+// reads the answer through the shared stripModelProse (prose.go), so it
+// tolerates a ```json fence, reasoning think blocks with or without their
+// opening tag (a chat template may have emitted that tag into the prompt),
+// repeated think blocks and leading whitespace or a BOM, plus a
 // single-element JSON array wrapping the object (the lab's smaller models
 // sometimes answer [{...}] when asked for {...}) and nothing else: an array
 // of two or more values, a second object, trailing prose or malformed JSON
 // is a refusal the route turns into 422 — after CompleteText's single
-// corrective re-ask, whose failure leaves THIS error standing. Proposal
-// contents are validated by ValidateProposal; nothing here loosens that.
+// corrective re-ask, whose failure leaves THIS error standing. Every refusal
+// here names a bounded, secret-checked prefix of the reply
+// (modelAnswerExcerpt), because the proposal turn stores nothing else.
+// Proposal contents are validated by ValidateProposal; nothing here loosens
+// that.
 func ExtractProposal(raw string) (Proposal, error) {
-	s := strings.TrimSpace(raw)
-	if strings.HasPrefix(s, "<think") {
-		i := strings.Index(s, thinkClose)
-		if i < 0 {
-			return Proposal{}, errors.New("the answer's think block never closes")
-		}
-		s = strings.TrimSpace(s[i+len(thinkClose):])
-	}
-	if strings.HasPrefix(s, "```") {
-		end := strings.IndexByte(s, '\n')
-		if end < 0 {
-			return Proposal{}, errors.New("the fenced answer has no body")
-		}
-		body := s[end+1:]
-		closeIdx := strings.LastIndex(body, "```")
-		if closeIdx < 0 {
-			return Proposal{}, errors.New("the fenced answer is not closed")
-		}
-		s = strings.TrimSpace(body[:closeIdx])
+	// One shared stripper for every text-only answer (prose.go): think blocks
+	// with or without their opening tag, fences, whitespace and BOMs.
+	s, err := stripModelProse(raw)
+	if err != nil {
+		return Proposal{}, malformedAnswerError(raw, err)
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	var first json.RawMessage
 	if err := dec.Decode(&first); err != nil {
-		return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
+		return Proposal{}, malformedAnswerError(raw, fmt.Errorf("the answer is not a JSON object: %v", err))
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); err != io.EOF {
-		return Proposal{}, errors.New("the answer is not exactly one JSON object")
+		return Proposal{}, malformedAnswerError(raw, errors.New("the answer is not exactly one JSON object"))
 	}
 	// A one-element array around an object is the same answer wearing a
 	// wrapper; anything wider (two proposals, an array of strings, a nested
@@ -531,19 +523,19 @@ func ExtractProposal(raw string) (Proposal, error) {
 	if trimmed := bytes.TrimLeft(first, " \t\r\n"); len(trimmed) > 0 && trimmed[0] == '[' {
 		var elems []json.RawMessage
 		if err := json.Unmarshal(first, &elems); err != nil {
-			return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
+			return Proposal{}, malformedAnswerError(raw, fmt.Errorf("the answer is not a JSON object: %v", err))
 		}
 		if len(elems) != 1 {
-			return Proposal{}, fmt.Errorf("the answer is a JSON array of %d values, not a single JSON object", len(elems))
+			return Proposal{}, malformedAnswerError(raw, fmt.Errorf("the answer is a JSON array of %d values, not a single JSON object", len(elems)))
 		}
 		first = elems[0]
 	}
 	var p Proposal
 	if err := json.Unmarshal(first, &p); err != nil {
-		return Proposal{}, fmt.Errorf("the answer is not a JSON object: %v", err)
+		return Proposal{}, malformedAnswerError(raw, fmt.Errorf("the answer is not a JSON object: %v", err))
 	}
 	if p.Op == "" {
-		return Proposal{}, errors.New("the answer object has no op")
+		return Proposal{}, malformedAnswerError(raw, errors.New("the answer object has no op"))
 	}
 	return p, nil
 }
@@ -761,8 +753,12 @@ func (b *Broker) CompleteText(ctx context.Context, system, user string) (string,
 	if !firstDefect.present {
 		return first, nil
 	}
+	// The excerpt is the diagnosis for any shape prose.go does not already
+	// handle: this line and the 422 the browser shows are the only record of
+	// what the model sent, because the proposal turn stores nothing.
 	b.logger().Info("assistant proposal re-asking once after a malformed or refused answer",
-		slog.String("endpoint", b.EndpointHost()))
+		slog.String("endpoint", b.EndpointHost()),
+		slog.String("answer_excerpt", modelAnswerExcerpt(first)))
 	reask := append(append([]chatMessage(nil), messages...),
 		chatMessage{Role: "assistant", Content: text(bounded(first, MaxResultBytes))},
 		chatMessage{Role: "user", Content: text(firstDefect.repair)})
