@@ -408,9 +408,18 @@ export function StudioPage() {
   // Design 1g (pass 3 #3): the inspector column is a flex column at least as
   // tall as the aside — the form fills it and the assistant row is PINNED to
   // the bottom behind a top border, exactly where 1g draws it.
+  //
+  // The form area scrolls INSIDE its own box (`overflow-y-auto`): `min-h-0`
+  // already lets the flex child shrink below its content, so on a step whose
+  // form is taller than the aside (the model step's message textarea) the form
+  // painted straight OVER the pinned `Ask to change this draft…` row — the
+  // pass-6 overlap defect (`insp-*-content × assistant-proposal-footer`). With
+  // its own scroll box the column stays exactly the aside's tall, the pin
+  // stays pinned, and no field can bleed into it. On the phone the pane has
+  // no fixed height, so this is the same one-column page scroll as before.
   const inspector = (
     <div className="flex min-h-full flex-col">
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {selectedIds.length > 1 ? (
           <div
             className="rounded-[3px] border border-line bg-paper p-[8px]"

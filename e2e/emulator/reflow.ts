@@ -4,7 +4,9 @@
 // reflowed into one column, with (a) no sideways scroll, (b) content parity
 // with 1280, (c) no clipped text without an ellipsis, and (d) touch targets
 // ≥ 44px tall (docs/design/handoff-app-shell/README.md: "Heights 26 / 30 /
-// 36; mobile 44–48"). Every violation is a RECORDED defect, never a throw.
+// 36; mobile 44–48"), and (e) no leaf text or control paints over another
+// (see `findOverlaps`; that one runs at both widths). Every violation is a
+// RECORDED defect, never a throw.
 //
 // The collectors run INSIDE the page via page.evaluate, so each function is
 // serialized to source and must be fully self-contained (DOM only, no
@@ -17,6 +19,18 @@ export interface EmuChecks {
   parity: boolean;
   clip: boolean;
   target: boolean;
+  overlap: boolean;
+}
+
+/** Two MAIN elements that paint over one another. */
+export interface OverlapHit {
+  /** The first element's label (testid, else `tag.class "text"`). */
+  a: string;
+  /** The second element's label. */
+  b: string;
+  /** The intersection on each axis in CSS px (both are > the 4px floor). */
+  dx: number;
+  dy: number;
 }
 
 /** One item of the content-parity inventory (headings, tabs, testids). */
@@ -169,11 +183,7 @@ export function collectReflowItems(): ReflowItem[] {
     const testid = el.getAttribute("data-testid");
     if (testid) {
       const text = norm(el.textContent);
-      add(
-        "testid:" + testid,
-        text ? `${testid} "${text.slice(0, 40)}"` : testid,
-        containers,
-      );
+      add("testid:" + testid, text ? `${testid} "${text.slice(0, 40)}"` : testid, containers);
     }
   }
   return items;
@@ -230,6 +240,212 @@ export function findClippedText(): ClipHit[] {
     const cls = el.classList.length > 0 ? `.${String(el.classList[0])}` : "";
     const label = el.getAttribute("data-testid") ?? `${el.tagName.toLowerCase()}${cls}`;
     hits.push({ label, text: own.slice(0, 40) });
+  }
+  return hits;
+}
+
+/**
+ * Overlapping content in MAIN (design pass 6: the canvas caption printed over
+ * the last step card and under the zoom/fit group at 390 while the
+ * screenshots were the only thing that caught it). Runs in the page.
+ *
+ * The rule, and the reason for every clause:
+ *
+ * • candidates are the things a person actually reads or presses — a leaf
+ *   element carrying its OWN text, or a control (button/link/input/…). Layout
+ *   wrappers are never candidates: they legitimately stack on each other, and
+ *   a wrapper collision is reported by the text/controls inside it;
+ * • a pair is a defect when the two rendered boxes intersect by MORE THAN 4px
+ *   on BOTH axes — under that it is antialiasing, a hairline border or an
+ *   intentional 1–2px optical overlap, not two things printed over each other;
+ * • unless one box contains the other (±1px): a label inside its field, a
+ *   heading inside its card and a badge inside its tile are the design;
+ * • both must be PAINTED: a zero box, display:none/visibility:hidden/opacity:0,
+ *   `.sr-only`/clip-path'd text, and anything an `overflow: hidden|clip|auto|
+ *   scroll` ancestor clips away are not visible, so they cannot collide. The
+ *   clip walk is what keeps a React Flow node parked outside its pane — which
+ *   has a real, large box — from pairing with another off-pane node;
+ * • a text candidate's box is the box that gets INKED: its layout rect unioned
+ *   with the Range rects of its direct text nodes, then cropped by its own
+ *   overflow. `getBoundingClientRect` alone is the box LAYOUT gave the element
+ *   and misses a `whitespace-nowrap` line that paints past it (how the canvas
+ *   caption ran under the − + fit group at 1280 with clean boxes), while
+ *   cropping by the element's own overflow keeps an honest ellipsis label —
+ *   the design's own truncation, owned by the clip check — from claiming to
+ *   collide with its neighbour;
+ * • SVG is ignored outright (React Flow's edges, its labels and every
+ *   decorative icon are SVG; the arrow layer legitimately crosses nodes);
+ * • an element inside a control is not a second candidate (the `−` glyph
+ *   inside the zoom button is not a collision with the button);
+ * • while a modal dialog is open the page behind it is inert background, so
+ *   only the dialog's own subtree is measured — otherwise every dialog screen
+ *   would report the backdrop crossing the rows underneath it;
+ * • the app shell is excluded, exactly as the other checks do.
+ *
+ * Nothing is allowlisted: a reported pair is a real overlap and gets fixed.
+ */
+export function findOverlaps(): OverlapHit[] {
+  const main = document.querySelector("main") ?? document.body;
+  /** Both axes must intersect by more than this many CSS px. */
+  const MIN_OVERLAP_PX = 4;
+  /** Slack when asking whether one box holds the other. */
+  const CONTAIN_SLACK_PX = 1;
+  const CONTROL =
+    'a[href], button, input, select, textarea, summary, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"], [role="menuitem"], [role="option"], [role="slider"], [contenteditable="true"]';
+  const norm = (value: string | null | undefined): string =>
+    (value ?? "").replace(/\s+/g, " ").trim();
+  const inShell = (el: Element): boolean =>
+    el.closest(
+      'aside[aria-label="Primary"], [data-testid="sidebar"], [data-testid^="sidebar-"], [data-testid^="project-switcher"], [data-testid="ask-float"], [data-testid="ask-sidebar"]',
+    ) !== null;
+  const isSvg = (el: Element): boolean =>
+    el.tagName.toLowerCase() === "svg" || el.closest("svg") !== null;
+  // Layered overlays (an open menu, picker, listbox, tooltip or dialog): the
+  // ARIA contract says these FLOAT above the page, so a menu crossing the
+  // cards under it is the design, not a collision — its own contents are still
+  // measured against each other. Two candidates are comparable only when they
+  // sit in the same overlay (or both outside every overlay).
+  const OVERLAY =
+    '[role="dialog"], [role="alertdialog"], [role="menu"], [role="menuitem"], [role="listbox"], [role="tooltip"], [role="grid"], dialog[open]';
+  const overlayRoot = (el: Element): Element | null => {
+    let root: Element | null = null;
+    for (let node: Element | null = el.parentElement; node !== null; node = node.parentElement) {
+      if (node === main) break;
+      if (node.matches(OVERLAY)) root = node;
+    }
+    return root;
+  };
+  // The open modal (if any): everything outside it is background right now.
+  const modal = document.querySelector('[role="dialog"], [role="alertdialog"], dialog[open]');
+  const painted = (el: Element): DOMRect | null => {
+    const cs = window.getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") return null;
+    if (parseFloat(cs.opacity || "1") === 0) return null;
+    if (el.closest('[aria-hidden="true"]') !== null) return null;
+    // The `.sr-only` convention and any clip-path box: screen-reader copy.
+    if (el.closest(".sr-only") !== null || cs.clipPath !== "none") return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return rect;
+  };
+  type Box = { l: number; t: number; r: number; b: number };
+  type Candidate = Box & { el: Element; label: string; layer: Element | null };
+  const union = (a: Box, b: Box): Box => ({
+    l: Math.min(a.l, b.l),
+    t: Math.min(a.t, b.t),
+    r: Math.max(a.r, b.r),
+    b: Math.max(a.b, b.b),
+  });
+  // The painted box of an element's OWN text. `getBoundingClientRect` is the
+  // box LAYOUT gave the element; nowrap / absolutely-positioned text PAINTS
+  // past it — that is how the canvas caption's single line ran under the
+  // − + fit group at 1280 while its own box stopped short of it. A Range
+  // reports the glyphs' real line boxes.
+  const textInk = (el: Element): Box | null => {
+    const range = document.createRange();
+    let ink: Box | null = null;
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType !== 3 || !(node.textContent ?? "").trim()) continue;
+      range.selectNode(node);
+      for (const r of Array.from(range.getClientRects())) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        ink =
+          ink === null
+            ? { l: r.left, t: r.top, r: r.right, b: r.bottom }
+            : {
+                l: Math.min(ink.l, r.left),
+                t: Math.min(ink.t, r.top),
+                r: Math.max(ink.r, r.right),
+                b: Math.max(ink.b, r.bottom),
+              };
+      }
+    }
+    return ink;
+  };
+  // The part of `box` the browser actually paints: the element's own overflow
+  // and every clipping/clipping-or-scrolling ancestor crops it, React Flow's
+  // pane included. Cropping the element itself is what keeps an honest
+  // `text-overflow: ellipsis` label (the design's own truncation, reported by
+  // the clip check) from claiming to collide with its neighbour.
+  const clipped = (el: Element, box: Box): Box => {
+    let { l, t, r, b } = box;
+    for (let node: Element | null = el; node !== null; node = node.parentElement) {
+      const cs = window.getComputedStyle(node);
+      // Only `visible` lets content paint past the box; `hidden`, `clip` and
+      // the scrollable axes all crop what they cover.
+      const crops = (axis: string): boolean => axis !== "visible";
+      if (crops(cs.overflowX) || crops(cs.overflowY)) {
+        const edge = node.getBoundingClientRect();
+        if (crops(cs.overflowX)) {
+          l = Math.max(l, edge.left);
+          r = Math.min(r, edge.right);
+        }
+        if (crops(cs.overflowY)) {
+          t = Math.max(t, edge.top);
+          b = Math.min(b, edge.bottom);
+        }
+        if (l >= r || t >= b) return { l: 0, t: 0, r: 0, b: 0 };
+      }
+      if (node === main) break;
+    }
+    return { l, t, r, b };
+  };
+  const ownText = (el: Element): string => {
+    let text = "";
+    for (const node of Array.from(el.childNodes))
+      if (node.nodeType === 3) text += node.textContent ?? "";
+    return norm(text);
+  };
+  const label = (el: Element, text: string): string => {
+    const testid = el.getAttribute("data-testid");
+    if (testid) return testid;
+    const cls = el.classList.length > 0 ? `.${String(el.classList[0])}` : "";
+    return `${el.tagName.toLowerCase()}${cls}${text ? ` "${text.slice(0, 28)}"` : ""}`;
+  };
+  const boxes: Candidate[] = [];
+  for (const el of Array.from(main.querySelectorAll("*"))) {
+    if (isSvg(el) || inShell(el)) continue;
+    if (modal !== null && el.closest('[role="dialog"], [role="alertdialog"], dialog') === null) {
+      continue;
+    }
+    const rect = painted(el);
+    if (rect === null) continue;
+    const control = el.matches(CONTROL);
+    // A LEAF that carries its own text: an element with element children is a
+    // wrapper (the meta line of the run header holds its own revision link, so
+    // its box legitimately spills around it), and the text inside it is the
+    // candidate instead. A control is always a candidate, wrapper or not.
+    const text = ownText(el);
+    if (!control && (text === "" || el.children.length > 0)) continue;
+    // A control's descendants are the control: the `fit` text inside its
+    // button is not a second element colliding with the button.
+    const owner = el.closest(CONTROL);
+    if (owner !== null && owner !== el) continue;
+    const layout = { l: rect.left, t: rect.top, r: rect.right, b: rect.bottom };
+    const ink = text === "" ? null : textInk(el);
+    const paintedBox = clipped(el, ink === null ? layout : union(layout, ink));
+    if (paintedBox.r - paintedBox.l <= 0 || paintedBox.b - paintedBox.t <= 0) continue;
+    boxes.push({ el, label: label(el, text), layer: overlayRoot(el), ...paintedBox });
+  }
+  const hits: OverlapHit[] = [];
+  const contains = (a: Box, b: Box): boolean =>
+    a.l <= b.l + CONTAIN_SLACK_PX &&
+    a.t <= b.t + CONTAIN_SLACK_PX &&
+    a.r >= b.r - CONTAIN_SLACK_PX &&
+    a.b >= b.b - CONTAIN_SLACK_PX;
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i]!;
+      const b = boxes[j]!;
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+      // A floating overlay only collides with itself.
+      if (a.layer !== b.layer) continue;
+      const dx = Math.min(a.r, b.r) - Math.max(a.l, b.l);
+      const dy = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+      if (dx <= MIN_OVERLAP_PX || dy <= MIN_OVERLAP_PX) continue;
+      if (contains(a, b) || contains(b, a)) continue;
+      hits.push({ a: a.label, b: b.label, dx: Math.round(dx), dy: Math.round(dy) });
+    }
   }
   return hits;
 }

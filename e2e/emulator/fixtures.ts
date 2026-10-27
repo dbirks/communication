@@ -14,7 +14,10 @@
 //     with its design render (docs/design/handoff-*/png/<badge>.png).
 //     At 390 it additionally runs the reflow checks (reflow.ts): content
 //     parity with the 1280 inventory, no clipped text without an ellipsis,
-//     and touch targets ≥ 44px — every violation is likewise RECORDED.
+//     and touch targets ≥ 44px — every violation is likewise RECORDED. At
+//     BOTH widths it runs the overlap check (`findOverlaps`): leaf text and
+//     controls whose boxes paint over one another by more than 4px on both
+//     axes is a defect on the desk as much as on the phone.
 //
 // At each test's end the fixture appends one JSON line per screen and per
 // defect to out/<passId>/results.json. A journey that FAILS records a
@@ -30,6 +33,7 @@ import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
 import {
   collectReflowItems,
   findClippedText,
+  findOverlaps,
   findSmallTargets,
   missingParityItems,
   type EmuChecks,
@@ -45,7 +49,8 @@ export type EmuDefectKind =
   | "assertion"
   | "reflow"
   | "clip"
-  | "target";
+  | "target"
+  | "overlap";
 
 export interface EmuDefect {
   kind: EmuDefectKind;
@@ -268,7 +273,10 @@ class EmuRecorder {
    * content-parity inventory; at 390 it re-collects it and records the
    * reflow/clip/target defects (reflow.ts) — one aggregated defect per kind
    * per screen, so fingerprints stay stable. 390-only checks trivially pass
-   * on the 1280 record (they are defined against the phone reflow).
+   * on the 1280 record (they are defined against the phone reflow). The
+   * overlap check (reflow.ts `findOverlaps`) is NOT 390-only: content painting
+   * over content is a defect at either width, so it runs on every screen at
+   * 1280 and 390.
    */
   async screen(badge: string, name: string): Promise<void> {
     this.currentScreen = `${badge} ${name}`;
@@ -287,7 +295,13 @@ class EmuRecorder {
         innerWidth: window.innerWidth,
         href: location.href,
       }));
-      const checks: EmuChecks = { sidescroll: true, parity: true, clip: true, target: true };
+      const checks: EmuChecks = {
+        sidescroll: true,
+        parity: true,
+        clip: true,
+        target: true,
+        overlap: true,
+      };
       const shot = `${badge}-${name}-${width}.png`;
       await this.page.screenshot({
         path: path.join(EMU_OUT_DIR, shot),
@@ -303,6 +317,20 @@ class EmuRecorder {
         );
       }
       const items = await this.page.evaluate(collectReflowItems);
+      // (e) overlap: runs at BOTH widths — two things painting over each other
+      // is a defect on the desk too, and this is the check that would have
+      // caught the canvas caption over the last step card.
+      const overlaps = await this.page.evaluate(findOverlaps);
+      checks.overlap = overlaps.length === 0;
+      if (!checks.overlap) {
+        const pair = (hit: (typeof overlaps)[number]): string =>
+          `${hit.a} × ${hit.b} (${hit.dx}×${hit.dy}px)`;
+        const extra = overlaps.length > 3 ? ` (+${overlaps.length - 3} more)` : "";
+        this.record(
+          "overlap",
+          `${overlaps.length} overlapping pair(s): ${overlaps.slice(0, 3).map(pair).join("; ")}${extra}`,
+        );
+      }
       if (width === 1280) {
         desktopItems = items;
       } else {

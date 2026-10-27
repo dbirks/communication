@@ -26,6 +26,9 @@ journeys are added as screens land.
    - a **sideways scroll** at either viewport — `document.documentElement.scrollWidth <= innerWidth`
      is asserted, but a violation is *recorded* (the screenshot still
      proves the screen), not thrown;
+   - **overlapping content** at either viewport — leaf text and controls whose
+     boxes paint over one another (`reflow.ts` `findOverlaps`), recorded as
+     `kind: overlap`;
    - a failing journey's own error, as `kind: assertion` — a journey that
      hits a missing design element is a real defect, recorded, and the
      journey FAILS with a clear message. Journeys are written against the
@@ -89,7 +92,7 @@ e2e/emulator/out/<passId>/
 ## Defect rules
 
 - A defect is anything the fixture records: `pageerror`, `console`,
-  `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`. A pass is
+  `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`, `overlap`. A pass is
   clean when results.json holds zero defect lines.
 - Deliberate failures a journey exercises inline are *declared*:
   `emu.expectFailure(/\/api\/v1\/pipelines$/, 409)`. Anything undeclared
@@ -123,14 +126,46 @@ its **1280 content and hierarchy, reflowed into one column**, checked by
   their label box) / textareas under 44px tall, per the app-shell handoff
   ("Heights 26 / 30 / 36; mobile 44–48"), are recorded as `kind: target`.
   Bare `<a>` links are inline text, not targets.
+- **(e) no overlapping content** — NOT 390-only: `findOverlaps` runs on every
+  screen at **1280 and 390** and is recorded as `kind: overlap`. Within MAIN
+  (shell excluded) the candidates are the things a person reads or presses:
+  a **leaf text-bearing element** (it carries its own text and has no element
+  children — a wrapper's box legitimately spills around the label inside it)
+  and a **control** (button / `[role=button]` / `[role=tab]` / link / input /
+  select / textarea / summary / slider / contenteditable — wrapper or not).
+  A pair is a defect when the two boxes intersect by **more than 4px on BOTH
+  axes** and **neither box contains the other** (±1px slack: a label inside
+  its field, a heading inside its card, a badge inside its tile are the
+  design). Each box is the box that gets PAINTED: an element's own
+  `getBoundingClientRect` unioned with the Range rects of its direct text
+  (a `whitespace-nowrap` line paints past its layout box — that is exactly
+  how the caption ran under the zoom group at 1280 while its box stopped
+  short of it), then cropped by its own and every ancestor's
+  `overflow: hidden|clip|auto|scroll`, because a collision the browser clips
+  away is not visible (this is also what stops a React Flow node parked
+  off-pane pairing with another one).
+  Filters beyond that, each because the alternative is a false positive:
+  `aria-hidden` and `.sr-only` / `clip-path` copy (it renders no visible
+  text); `opacity: 0` and zero-box elements; **SVG** (React Flow's edges and
+  edge labels are SVG and legitimately cross node cards, as does every
+  decorative glyph); and elements **inside the same control** (the `fit` text
+  inside its button is not a second element colliding with that button).
+  While a modal dialog is open only the dialog's own subtree is measured —
+  the page behind it is inert background and the backdrop legitimately covers
+  it. There is **no allowlist**: a reported pair is a real overlap and gets
+  fixed. The first things it caught (2026-10-27) were the canvas caption
+  printing over the last step card and under the − + fit group at 390, the
+  floating fit group sitting on the step cards, and the Studio inspector's
+  model-prompt textarea bleeding over the pinned `Ask to change this
+  draft…` row at 1280.
 
 Like sidescroll today, every violation is a RECORDED defect (one aggregated
 defect per kind per screen, so fingerprints stay stable) — never a throw —
 so the screenshot still lands and the loop files it. Each screen record in
-`results.json` carries `checks: {sidescroll, parity, clip, target}` per
-width (true = pass; the 390-only checks trivially pass on the 1280 record),
-and `report.mjs` renders them as the **Per-screen results** table on top of
-the report.
+`results.json` carries `checks: {sidescroll, parity, clip, target, overlap}`
+per width (true = pass; the 390-only checks trivially pass on the 1280 record,
+while `overlap` is evaluated at both), and `report.mjs` renders them as the
+**Per-screen results** table on top of the report.
 
 ## Current journeys
 

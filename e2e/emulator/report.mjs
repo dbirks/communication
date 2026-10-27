@@ -5,7 +5,8 @@
 //
 // Reads out/<passId>/results.json (one JSON object per line: screens and
 // defects, written by the emu fixture), writes out/<passId>/index.html —
-// a per-screen PASS/FAIL table (sidescroll/parity/clip/target per width) up
+// a per-screen PASS/FAIL table (sidescroll/parity/clip/target/overlap per
+// width) up
 // top, then the defects, then one row per screen with the app screenshot
 // beside its design render (both scaled to 50%) — and prints the summary
 // line `PASS <id>: <n> screens, <m> defects`.
@@ -48,7 +49,7 @@ const escape = (value) =>
     .replaceAll('"', "&quot;");
 
 /** The per-width checks on a screen record (reflow.ts); old passes lack them. */
-const CHECK_NAMES = ["sidescroll", "parity", "clip", "target"];
+const CHECK_NAMES = ["sidescroll", "parity", "clip", "target", "overlap"];
 
 // Rows of the per-screen table: one per badge+name, a column per width.
 const resultOrder = [];

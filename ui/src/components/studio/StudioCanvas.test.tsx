@@ -10,6 +10,7 @@ import { parse } from "yaml";
 import { parseGraph } from "../../lib/pipeline/graphDoc";
 import {
   centerOnBox,
+  clampViewportToGraph,
   computeFitViewport,
   computeTopFitViewport,
   evaluateConnect,
@@ -17,6 +18,7 @@ import {
   mirrorOwnedChanges,
   parseViewportTransform,
   PHONE_VIEWPORT_PX,
+  FIT_EDGE_PAD_PX,
   FIT_TOP_PAD_PX,
   StudioCanvas,
   type StudioCanvasProps,
@@ -167,6 +169,26 @@ describe("StudioCanvas", () => {
     renderCanvas({ readOnly: true });
     expect(screen.queryByTestId("add-after-check")).toBeNull();
     expect(screen.queryByTestId("edge-add-plan-check")).toBeNull();
+  });
+
+  it("keeps the caption and the zoom/fit group in one flow band below the pane", () => {
+    const { container } = renderCanvas();
+    const caption = screen.getByTestId("canvas-caption");
+    const controls = screen.getByTestId("canvas-controls");
+    const pane = container.querySelector<HTMLElement>("[data-testid='studio-canvas'] > div");
+    expect(pane).toBeTruthy();
+    // React Flow clips its own viewport to the pane, so anything rendered in
+    // there can be painted over by a node — the pass-6 defect was the bottom-
+    // pinned caption across `publish_plan` and the floating − + fit group on
+    // top of it. Both now live in a flow row AFTER the pane.
+    expect(caption.closest(".react-flow")).toBeNull();
+    expect(controls.closest(".react-flow")).toBeNull();
+    expect(caption.parentElement).toBe(controls.parentElement);
+    expect(caption.parentElement?.parentElement).toBe(pane?.parentElement);
+    expect(pane!.compareDocumentPosition(caption) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The caption is never `absolute`/`fixed` over the canvas any more.
+    expect(caption.className).not.toMatch(/absolute|fixed/);
+    expect(controls.className).not.toMatch(/absolute|fixed/);
   });
 
   it("renders the greyed banner when the YAML is stale", () => {
@@ -470,6 +492,62 @@ describe("computeTopFitViewport (design 1g: top-aligned, never magnified)", () =
     // …and the same pane at desk width still shrinks to fit (1280 unchanged).
     const desk = computeTopFitViewport(boxes, 374, 260, FIT_TOP_PAD_PX, fitMinZoom(1280))!;
     expect(desk.zoom).toBeCloseTo(0.78, 2);
+  });
+});
+
+describe("clampViewportToGraph (a resize never strands the graph)", () => {
+  // The 1g chain: one 200×52 column, 376px tall.
+  const chain = [
+    { x: 0, y: 0, width: 200, height: 52 },
+    { x: 0, y: 324, width: 200, height: 52 },
+  ];
+
+  it("pulls a graph that hangs past the pane back inside it", () => {
+    // The Run Workbench at 390: the 1280 fit (x=204) applied to a pane that is
+    // now 354 wide — the cards ran 50px past the pane's right edge.
+    const out = clampViewportToGraph({ x: 204, y: 41, zoom: 1 }, chain, 354, 439)!;
+    expect(out).not.toBeNull();
+    expect(out.zoom).toBe(1); // the reader's zoom is never touched
+    // The column's right edge is back inside the pane with the pad clear.
+    expect(out.x + 200 * out.zoom).toBe(354 - FIT_EDGE_PAD_PX);
+    expect(out.y).toBe(41); // already inside on Y: not moved
+  });
+
+  it("holds a graph LARGER than the pane so it still covers the pane", () => {
+    const wide = [{ x: 0, y: 0, width: 900, height: 52 }];
+    // Panned too far right: an empty gutter at the left edge.
+    const out = clampViewportToGraph({ x: 400, y: 0, zoom: 1 }, wide, 354, 439)!;
+    expect(out.x).toBe(FIT_EDGE_PAD_PX - 0); // left edge back at the pad
+    // Panned too far left: an empty gutter at the right edge.
+    const back = clampViewportToGraph({ x: -800, y: 0, zoom: 1 }, wide, 354, 439)!;
+    expect(back.x).toBe(354 - FIT_EDGE_PAD_PX - 900);
+  });
+
+  it("leaves a fitted graph exactly where it is", () => {
+    // A chain taller than the pane (the 1g phone fit overflows and pans): the
+    // clamp has nothing to do — the top-aligned fit is the design.
+    const tall = [
+      { x: 0, y: 0, width: 200, height: 52 },
+      { x: 0, y: 424, width: 200, height: 52 },
+    ];
+    const fitted = computeTopFitViewport(tall, 354, 439, FIT_TOP_PAD_PX, fitMinZoom(390))!;
+    expect(clampViewportToGraph(fitted, tall, 354, 439)).toEqual(fitted);
+  });
+
+  it("refuses a missing viewport, an empty box list and a degenerate pane", () => {
+    expect(clampViewportToGraph(null, chain, 354, 439)).toBeNull();
+    expect(clampViewportToGraph({ x: 0, y: 0, zoom: NaN }, chain, 354, 439)).toBeNull();
+    expect(clampViewportToGraph({ x: 0, y: 0, zoom: 1 }, [], 354, 439)).toBeNull();
+    expect(
+      clampViewportToGraph(
+        { x: 0, y: 0, zoom: 1 },
+        [{ x: 0, y: 0, width: 0, height: 0 }],
+        354,
+        439,
+      ),
+    ).toBeNull();
+    expect(clampViewportToGraph({ x: 0, y: 0, zoom: 1 }, chain, 0, 439)).toBeNull();
+    expect(clampViewportToGraph({ x: 0, y: 0, zoom: 1 }, chain, 354, 24)).toBeNull();
   });
 });
 

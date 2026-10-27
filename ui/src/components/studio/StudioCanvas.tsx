@@ -312,6 +312,76 @@ export function computeTopFitViewport(
   return { x, y, zoom };
 }
 
+/** CSS px of clear pane the clamps keep around the drawing on every edge
+ * (the pane's own padding when the canvas cannot re-fit). */
+export const FIT_EDGE_PAD_PX = 16;
+
+/**
+ * Move an EXISTING viewport as little as possible so the drawing is never
+ * stranded outside the pane. The zoom is never touched — this is the clamp
+ * for a view the READER owns, where re-fitting would throw their pan/zoom away.
+ *
+ * X is held hard: a graph narrower than the pane is kept fully inside it with
+ * `pad` clear on each side (that is the “cards never clipped by the pane”
+ * rule), a wider one is kept covering the pane so the reader never sees an
+ * empty gutter at an edge. Both are the same interval: `t` between
+ * `pane - pad - max*z` and `pad - min*z`, in whichever order they come.
+ *
+ * Y is only held REACHABLE. `computeTopFitViewport` rides the chain
+ * top-aligned under `FIT_TOP_PAD_PX` and lets it overflow downward — the 1g
+ * rule, and the phone's 1:1 fit depends on it — so applying X's both-edges
+ * rule vertically would fight the design (it dragged a chain taller than the
+ * pane up from its 50px pad to 16px). The Y clamp only stops the drawing
+ * being resized or panned out of the pane altogether.
+ */
+export function clampViewportToGraph(
+  vp: { x: number; y: number; zoom: number } | null,
+  boxes: { x: number; y: number; width: number; height: number }[],
+  paneWidth: number,
+  paneHeight: number,
+  pad = FIT_EDGE_PAD_PX,
+): { x: number; y: number; zoom: number } | null {
+  if (vp === null || !isPositiveFinite(vp.zoom)) return null;
+  if (!isPositiveFinite(paneWidth) || !isPositiveFinite(paneHeight)) return null;
+  if (paneWidth < MIN_FIT_PANE_PX || paneHeight < MIN_FIT_PANE_PX) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const box of boxes) {
+    if (
+      !Number.isFinite(box.x) ||
+      !Number.isFinite(box.y) ||
+      !isPositiveFinite(box.width) ||
+      !isPositiveFinite(box.height)
+    ) {
+      return null;
+    }
+    minX = Math.min(minX, box.x);
+    minY = Math.min(minY, box.y);
+    maxX = Math.max(maxX, box.x + box.width);
+    maxY = Math.max(maxY, box.y + box.height);
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
+  const clampX = (t: number, min: number, max: number, pane: number): number => {
+    const a = pane - pad - max * vp.zoom;
+    const b = pad - min * vp.zoom;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    return Math.min(Math.max(t, lo), hi);
+  };
+  // Y: at least `pad` of the drawing stays on screen, in either direction.
+  const clampY = (t: number, min: number, max: number, pane: number): number => {
+    const lo = pad - max * vp.zoom;
+    const hi = pane - pad - min * vp.zoom;
+    return Math.min(Math.max(t, Math.min(lo, hi)), Math.max(lo, hi));
+  };
+  const x = clampX(vp.x, minX, maxX, paneWidth);
+  const y = clampY(vp.y, minY, maxY, paneHeight);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y, zoom: vp.zoom };
+}
+
 /** Centre `box` in the pane at `zoom` (the user's current zoom, clamped
  * into the 0.4→1.25 band). Null when inputs are degenerate. */
 export function centerOnBox(
@@ -906,6 +976,8 @@ function CanvasInner({
   const nodeSetKey = useMemo(() => base.nodes.map((n) => n.id).join("\u0000"), [base]);
   const baseRef = useRef(base);
   baseRef.current = base;
+  const nodeSetKeyRef = useRef(nodeSetKey);
+  nodeSetKeyRef.current = nodeSetKey;
   const nodeBoxesRef = useRef(nodeBoxes);
   nodeBoxesRef.current = nodeBoxes;
   const nodesRef = useRef(nodes);
@@ -984,6 +1056,28 @@ function CanvasInner({
     return () => globalThis.document.removeEventListener("pointerdown", onPointerDown, true);
   }, [menu]);
 
+  /** The graph's boxes with React Flow's MEASURED sizes when known (the same
+   * inputs React Flow's own fit uses), falling back to the layout's estimates.
+   * Both `nodeBoxes` and the local `nodes` state are keyed by the same flow
+   * id. Empty (or a missing box) when nothing is on the canvas yet. */
+  const graphBoxes = useCallback(() => {
+    const measuredById = new Map(nodesRef.current.map((n) => [n.id, n.measured]));
+    return Object.entries(nodeBoxesRef.current).map(([id, box]) => {
+      const mw = measuredById.get(id)?.width;
+      const mh = measuredById.get(id)?.height;
+      const w = mw !== undefined && Number.isFinite(mw) && mw > 0 ? mw : box.width;
+      const h = mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : box.height;
+      return { x: box.x, y: box.y, width: w, height: h };
+    });
+  }, []);
+
+  /** The viewport as rendered right now (React Flow writes the transform on
+   * the viewport element; a corrupt/absent one reads back as null). */
+  const currentViewport = useCallback(
+    () => parseViewportTransform(viewportEl()?.style.transform ?? null),
+    [viewportEl],
+  );
+
   /** Fit the graph into the pane. Returns false when the guard refused
    * (zero-size pane, unmeasured boxes) — the caller retries on the next
    * trigger; a non-finite viewport is never applied. */
@@ -991,17 +1085,7 @@ function CanvasInner({
     const pane = paneRef.current;
     if (!pane) return false;
     const rect = pane.getBoundingClientRect();
-    // Fit with the MEASURED sizes when known (React Flow's own fit uses the
-    // same inputs), falling back to the layout's estimates. Both `nodeBoxes`
-    // and the local `nodes` state are keyed by the same flow id.
-    const measuredById = new Map(nodesRef.current.map((n) => [n.id, n.measured]));
-    const boxes = Object.entries(nodeBoxesRef.current).map(([id, box]) => {
-      const mw = measuredById.get(id)?.width;
-      const mh = measuredById.get(id)?.height;
-      const w = mw !== undefined && Number.isFinite(mw) && mw > 0 ? mw : box.width;
-      const h = mh !== undefined && Number.isFinite(mh) && mh > 0 ? mh : box.height;
-      return { x: box.x, y: box.y, width: w, height: h };
-    });
+    const boxes = graphBoxes();
     const vp = computeTopFitViewport(
       boxes,
       rect.width,
@@ -1013,7 +1097,7 @@ function CanvasInner({
     setViewport(vp, { duration: 0 });
     lastGoodRef.current = vp;
     return true;
-  }, [setViewport]);
+  }, [graphBoxes, setViewport]);
   const safeFitRef = useRef(safeFit);
   safeFitRef.current = safeFit;
 
@@ -1028,20 +1112,59 @@ function CanvasInner({
     if (safeFit()) lastFittedSetRef.current = nodeSetKey;
   }, [nodeSetKey, allMeasured, paneReal, base.nodes.length, safeFit]);
 
-  // The pane's size: detect the zero→real transition only (ordinary
-  // resizes keep the reader's current zoom/pan).
+  /** The pane changed size while nobody was looking at a hand-built view:
+   * re-fit the graph into the new pane. When the reader HAS taken the view,
+   * keep their zoom/pan and only clamp it back into the pane. Either way the
+   * drawing stays inside; nothing is ever applied unless it is finite. */
+  const refitAfterResize = useCallback(
+    (next: { w: number; h: number }) => {
+      if (!allMeasuredRef.current || baseRef.current.nodes.length === 0) return;
+      if (userMovedRef.current) {
+        const vp = currentViewport();
+        if (vp === null) return;
+        const clamped = clampViewportToGraph(vp, graphBoxes(), next.w, next.h, FIT_EDGE_PAD_PX);
+        if (clamped === null) return;
+        setViewport(clamped, { duration: 0 });
+        lastGoodRef.current = clamped;
+        return;
+      }
+      // Only re-fit a graph the canvas actually fitted once — an unmeasured or
+      // transiently degenerate pane is still refused inside `safeFit`.
+      if (lastFittedSetRef.current !== nodeSetKeyRef.current) return;
+      safeFitRef.current();
+    },
+    [currentViewport, graphBoxes, setViewport],
+  );
+  const refitAfterResizeRef = useRef(refitAfterResize);
+  refitAfterResizeRef.current = refitAfterResize;
+
+  // The pane's size: the zero→real transition triggers the structural fit,
+  // and an ordinary resize re-fits (or clamps) the graph into the new pane.
+  //
+  // Not re-fitting on resize was the Run Workbench's 390 defect (pass 6): the
+  // 1280 fit's transform stayed applied to a pane that had become ~354px
+  // wide, so the node column started 102px right of centre and its cards ran
+  // 25px past the pane's right edge. Crossing the 560px phone band also
+  // changes the fit's own zoom floor (`fitMinZoom(window.innerWidth)`), so a
+  // resize that is not the reader's pan/zoom has to re-run the fit. When they
+  // do own the view, `clampViewportToGraph` keeps the zoom they chose and
+  // just stops the drawing being stranded off-pane.
   useEffect(() => {
     const pane = paneRef.current;
     if (!pane || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       const r = pane.getBoundingClientRect();
-      const wasZero =
-        paneSizeRef.current.w < MIN_FIT_PANE_PX || paneSizeRef.current.h < MIN_FIT_PANE_PX;
+      const prev = paneSizeRef.current;
+      const wasZero = prev.w < MIN_FIT_PANE_PX || prev.h < MIN_FIT_PANE_PX;
       paneSizeRef.current = { w: r.width, h: r.height };
       if (wasZero && r.width >= MIN_FIT_PANE_PX && r.height >= MIN_FIT_PANE_PX) {
         pendingRealSizeRef.current = true;
         setPaneReal((tick) => tick + 1);
+        return;
       }
+      if (wasZero) return;
+      if (Math.abs(prev.w - r.width) < 2 && Math.abs(prev.h - r.height) < 2) return;
+      refitAfterResizeRef.current({ w: r.width, h: r.height });
     });
     observer.observe(pane);
     return () => {
@@ -1194,8 +1317,14 @@ function CanvasInner({
           onEdgesChange={onEdgesChange}
           onNodeDragStop={onNodeDragStop}
           onConnect={handleConnect}
-          onMoveStart={() => {
-            userMovedRef.current = true;
+          onMoveStart={(event) => {
+            // Only a GESTURE makes the view reader-owned. React Flow also
+            // fires this for the canvas' own `setViewport` (the fit, the
+            // focus centring, the −/+ controls) with a null source event, and
+            // taking that as “the reader moved it” is what left the 1280 fit
+            // applied to the 390 pane: the graph off-centre and its cards
+            // clipped. The −/+ buttons mark it themselves.
+            if (event) userMovedRef.current = true;
           }}
           // Multi-selection: Shift+click adds a step to the selection (the
           // store's default multiSelectionKeyCode is Control — without this a
@@ -1213,53 +1342,6 @@ function CanvasInner({
           nodesConnectable={!readOnly && !stale}
         >
           <Background />
-          {/* Design 1g canvas chrome: the React Flow default Controls (and
-              the "Map" minimap toggle / lock) are replaced by one compact
-              bottom-right group: − + fit (mono, ink border). `fit` runs the
-              canvas' own guarded fit, never React Flow's unguarded one. The
-              "React Flow" attribution stays: hiding it needs a Pro licence
-              we do not hold. */}
-          <div
-            className="absolute bottom-[10px] right-[10px] z-10 flex overflow-hidden rounded-[3px] border border-line-strong bg-surface"
-            data-testid="canvas-controls"
-          >
-            <button
-              type="button"
-              aria-label="Zoom out"
-              data-testid="canvas-zoom-out"
-              onClick={() => zoomOut({ duration: 200 })}
-              className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
-            >
-              −
-            </button>
-            <button
-              type="button"
-              aria-label="Zoom in"
-              data-testid="canvas-zoom-in"
-              onClick={() => zoomIn({ duration: 200 })}
-              className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
-            >
-              +
-            </button>
-            <button
-              type="button"
-              aria-label="Fit the graph to the pane"
-              data-testid="canvas-fit"
-              onClick={() => {
-                userMovedRef.current = false;
-                safeFit();
-              }}
-              className="h-[26px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
-            >
-              fit
-            </button>
-          </div>
-          <span
-            className="pointer-events-none absolute bottom-[14px] left-[16px] z-10 font-mono text-[10.5px] text-faint"
-            data-testid="canvas-caption"
-          >
-            always top to bottom · lines leave the bottom and enter the top
-          </span>
         </ReactFlow>
         {stale && (
           <div
@@ -1314,6 +1396,78 @@ function CanvasInner({
             onClose={closeMenu}
           />
         )}
+      </div>
+
+      {/* One reserved band under the canvas holds the design's bottom row: the
+          caption (1g, bottom-left) and the − + fit group (1g canvas chrome,
+          bottom-right). Nothing of it is pinned OVER the pane any more: the
+          390 pane is barely taller than a four-step chain, so the bottom-pinned
+          caption printed straight across `publish_plan` and the floating
+          controls sat on top of that card too (pass 6, both canvases). As a
+          FLOW band they take their own height and React Flow clips its own
+          viewport at the pane's edge — so no node, “+” or edge can reach them
+          at any width. `fit` still runs the canvas' own guarded fit, never
+          React Flow's unguarded one.
+
+          The caption never uses `whitespace-nowrap`: nowrap text PAINTS past
+          its own box, which is exactly how it ran under the − + group at 1280
+          while its box looked clean. It wraps instead, and the band is a
+          column at desk width (one caption line under the controls, the
+          design's row) and a wrapping row on the phone (the caption beside the
+          44px controls) so the short canvas keeps its height. The
+          "React Flow" attribution stays in the pane — hiding it needs a Pro
+          licence we do not hold. */}
+      <div
+        className="flex shrink-0 flex-col-reverse items-stretch gap-y-[2px] px-[10px] pb-[6px] pt-[2px] max-[560px]:flex-row max-[560px]:flex-wrap max-[560px]:items-end max-[560px]:justify-between max-[560px]:gap-x-1"
+        data-testid="canvas-chrome"
+      >
+        <span
+          className="min-w-0 font-mono text-[10.5px] leading-[14px] text-faint max-[560px]:flex-1"
+          data-testid="canvas-caption"
+        >
+          always top to bottom · lines leave the bottom and enter the top
+        </span>
+        <div
+          className="flex shrink-0 self-end overflow-hidden rounded-[3px] border border-line-strong bg-surface max-[560px]:self-auto"
+          data-testid="canvas-controls"
+        >
+          <button
+            type="button"
+            aria-label="Zoom out"
+            data-testid="canvas-zoom-out"
+            onClick={() => {
+              userMovedRef.current = true;
+              zoomOut({ duration: 200 });
+            }}
+            className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom in"
+            data-testid="canvas-zoom-in"
+            onClick={() => {
+              userMovedRef.current = true;
+              zoomIn({ duration: 200 });
+            }}
+            className="h-[26px] w-[28px] border-r border-line text-[13px] leading-none text-ink hover:bg-fill"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            aria-label="Fit the graph to the pane"
+            data-testid="canvas-fit"
+            onClick={() => {
+              userMovedRef.current = false;
+              safeFit();
+            }}
+            className="h-[26px] px-[8px] font-mono text-[10.5px] leading-none text-ink hover:bg-fill"
+          >
+            fit
+          </button>
+        </div>
       </div>
 
       {/* Design 1g: the accessible steps list is a collapsed one-line mono
