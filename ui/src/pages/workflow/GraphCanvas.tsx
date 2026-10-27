@@ -7,10 +7,15 @@
  * the caption, bottom-left: `read-only · r1 · Edit workflow opens the canvas
  * on your draft`.
  *
- * Positions come from the one layout the app already trusts
- * (`lib/pipeline/layout`, dagre TB), so a branching or looped definition
- * lays out honestly; a linear chain centers on one vertical axis, as the
- * design draws it. The node list the m4 graph keeps visible here exists as a
+ * Positions and edge routing are the STUDIO's, reused verbatim where the
+ * read-only canvas can (`components/studio/flowModel`: `canvasLayout` for the
+ * dagre TB layout, `stepCardBox` to re-centre every card on its rank's axis,
+ * `edgeAxis` + `routeEdge` for the orthogonal bottom-centre → top-centre
+ * lines). That is what makes 1e and 1g agree: one 200×52 axis per chain, and
+ * strictly vertical connectors between centred steps — no diagonal bends,
+ * because the router draws from the RENDERED card boxes, not dagre's own
+ * per-label box (the middle points dagre emitted for its own boxes are what
+ * drew the "<" zig-zags). The node list the m4 graph keeps visible here exists as a
  * visually-hidden sibling — the canvas is never the only way in.
  *
  * The second line mirrors the Studio's rule (1g): kind glyph + kind word +
@@ -18,7 +23,14 @@
  * approver, artifact — never an invention.
  */
 import { useMemo } from "react";
-import { layoutDefinition, type DefinitionGraphLayout } from "../../lib/pipeline/layout";
+import type { DefinitionGraphLayout } from "../../lib/pipeline/layout";
+import {
+  canvasLayout,
+  edgeAxis,
+  routeEdge,
+  stepCardBox,
+  type EdgeBox,
+} from "../../components/studio/flowModel";
 import {
   kindGlyph,
   scopeBody,
@@ -77,15 +89,34 @@ function nodesByKey(document: DefinitionDocument): Map<string, DefinitionNode> {
   return map;
 }
 
-/** A document with a cycle would make dagre throw; nothing is drawn rather
- * than a guess, and the caller says so. */
-function safeLayout(document: DefinitionDocument | null): DefinitionGraphLayout | null {
+/** The Studio's own canvas layout (dense TB); a document with a cycle would
+ * make dagre throw — nothing is drawn rather than a guess, and the caller
+ * says so. */
+function safeLayout(
+  document: DefinitionDocument | null,
+): { laid: DefinitionGraphLayout; direction: "TB" } | null {
   if (!document) return null;
   try {
-    return layoutDefinition(document, { rankdir: "TB", subgraphRankdir: "same" });
+    return canvasLayout(document);
   } catch {
     return null;
   }
+}
+
+/** A group's box grown (left/right/bottom — its top edge stays where the
+ * header bar lives) until it contains `box` plus the same 8px pad the Studio
+ * gives re-centred children: a 200-wide card can outgrow the dagre cluster
+ * its id was measured into, and a scope border slicing through a step is
+ * the bug this rule exists to prevent in both canvases. */
+const GROUP_PAD = 8;
+function growTo(box: EdgeBox, group: { x: number; y: number; width: number; height: number }) {
+  const overLeft = group.x - (box.x - GROUP_PAD);
+  if (overLeft > 0) {
+    group.x -= overLeft;
+    group.width += overLeft;
+  }
+  group.width = Math.max(group.width, box.x + box.width + GROUP_PAD - group.x);
+  group.height = Math.max(group.height, box.y + box.height + GROUP_PAD - group.y);
 }
 
 export interface GraphCanvasProps {
@@ -95,144 +126,160 @@ export interface GraphCanvasProps {
 }
 
 export function GraphCanvas({ document, label }: GraphCanvasProps) {
-  const shown = useMemo(() => safeLayout(document), [document]);
+  const canvas = useMemo(() => safeLayout(document), [document]);
   const rawNodes = useMemo(
     () => (document ? nodesByKey(document) : new Map<string, DefinitionNode>()),
     [document],
   );
-  if (!shown) return null;
+  if (!canvas) return null;
+  const { laid: shown, direction } = canvas;
 
-  const byKey = new Map(shown.nodes.map((node) => [node.key, node]));
-  // The design's card measure; dagre's own box only ever grows past it to fit
-  // a long id, and the card follows the box so nothing clips. The SAME box
-  // feeds the edge endpoints below — one geometry for card and line (pass-4:
-  // dagre routed to its own box, not to the card that renders, and trusting
-  // those points put the line off the card's centre).
-  const CARD_MIN = { width: 200, height: 52 };
-  const cardSize = (node: { width: number; height: number }) => ({
-    width: Math.max(CARD_MIN.width, node.width),
-    height: Math.max(CARD_MIN.height, node.height),
-  });
-  const cardBox = (node: { x: number; y: number; width: number; height: number }) => {
-    const size = cardSize(node);
-    return { cx: node.x + size.width / 2, top: node.y, bottom: node.y + size.height };
-  };
+  // The rendered card for every node: dagre's box re-centred on its own
+  // centre and grown to the 200×52 floor (the Studio's `stepCardBox` rule).
+  // The SAME box feeds the edge router below — one geometry for card and
+  // line, so the line can never leave a card's bottom centre off-centre.
+  const cards = new Map<string, EdgeBox>();
+  for (const node of shown.nodes) cards.set(node.key, stepCardBox(node));
+  const groupBoxes = shown.groups.map((group) => ({ ...group }));
+  // Deepest scopes first, so an inner group is final before its parent
+  // measures against it (the Studio's `toFlow` rule for re-centred bodies).
+  for (const group of [...groupBoxes].sort((a, b) => b.depth - a.depth)) {
+    const path = group.key.replace(/^#/, "");
+    for (const [key, box] of cards) if (key.startsWith(`${path}/`)) growTo(box, group);
+    for (const inner of groupBoxes) {
+      if (inner === group) continue;
+      if (inner.key.replace(/^#/, "").startsWith(`${path}/`)) growTo(inner, group);
+    }
+  }
+  // A card centred on a narrow dagre box reaches past where the layout put
+  // it; slide the whole drawing back inside the canvas margins rather than
+  // clip it (the layout does the same for its own group padding).
+  const allBoxes: EdgeBox[] = [...cards.values(), ...groupBoxes];
+  const offsetX = Math.max(0, 8 - Math.min(0, ...allBoxes.map((box) => box.x)));
+  const offsetY = Math.max(0, 8 - Math.min(0, ...allBoxes.map((box) => box.y)));
+  for (const box of allBoxes) {
+    box.x += offsetX;
+    box.y += offsetY;
+  }
+  const width = Math.max(shown.width + offsetX, ...allBoxes.map((box) => box.x + box.width)) + 8;
+  const height = Math.max(shown.height + offsetY, ...allBoxes.map((box) => box.y + box.height)) + 8;
 
   return (
-    <div className="relative h-full min-h-full" data-testid="workflow-graph">
-      <div
-        className="relative mx-auto"
-        style={{ width: shown.width, height: shown.height }}
-        data-testid="workflow-graph-canvas"
-      >
-        {/* No arrowheads: the design's lines are plain (pass-4). */}
-        <svg
-          className="absolute inset-0 pointer-events-none"
-          width={shown.width}
-          height={shown.height}
-          aria-hidden
-          data-testid="workflow-graph-edges"
-        >
-          {shown.groups.map((group) => (
-            <rect
-              key={group.key}
-              data-testid={`workflow-graph-scope-${group.ownerId}`}
-              x={group.x}
-              y={group.y}
-              width={group.width}
-              height={group.height}
-              rx={8}
-              fill="var(--color-node-scope-fill)"
-              stroke="var(--color-node-border)"
-              strokeWidth={1}
-              strokeDasharray="4 3"
-            />
-          ))}
-          {shown.edges.map((edge) => {
-            const from = byKey.get(edge.from);
-            const to = byKey.get(edge.to);
-            if (!from || !to) return null;
-            // Bottom-centre of the source card to top-centre of the target
-            // card (the design's rule); dagre's middle bends stay, so a
-            // branch still steers around its siblings.
-            const source = cardBox(from);
-            const target = cardBox(to);
-            const mid = edge.points.length > 2 ? edge.points.slice(1, -1) : [];
-            const points = [
-              { x: source.cx, y: source.bottom },
-              ...mid,
-              { x: target.cx, y: target.top },
-            ];
-            return (
-              <polyline
-                key={`${edge.from} ${edge.to}`}
-                data-testid={`workflow-graph-edge-${edge.from.split("/").pop()}-to-${edge.to.split("/").pop()}`}
-                data-from={edge.from}
-                data-to={edge.to}
-                points={points.map((point) => `${point.x},${point.y}`).join(" ")}
-                fill="none"
-                stroke={
-                  edge.kind === "error" ? "var(--color-node-error-route)" : "var(--color-ink-2)"
-                }
-                strokeWidth={1.5}
-                strokeDasharray={edge.kind === "error" ? "3 3" : undefined}
-              />
-            );
-          })}
-        </svg>
-        {shown.groups.map((group) => (
-          <span
-            key={group.key}
-            data-testid={`workflow-graph-scope-label-${group.ownerId}`}
-            className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
-            style={{
-              left: group.x + 10,
-              top: group.y + 5,
-              width: group.headerWidth,
-              lineHeight: "18px",
-            }}
+    <div className="relative flex min-h-full flex-col" data-testid="workflow-graph">
+      <div className="flex flex-1 justify-center">
+        <div className="relative" style={{ width, height }} data-testid="workflow-graph-canvas">
+          {/* No arrowheads: the design's lines are plain (pass-4). */}
+          <svg
+            className="absolute inset-0 pointer-events-none"
+            width={width}
+            height={height}
+            aria-hidden
+            data-testid="workflow-graph-edges"
           >
-            {group.headerText}
-          </span>
-        ))}
-        {shown.nodes.map((node) => {
-          const raw = rawNodes.get(node.key.replace(/^\//, ""));
-          const fact = keyFactFor(node.kind, raw?.config as Record<string, unknown> | undefined);
-          return (
-            <div
-              key={node.key}
-              data-testid={`workflow-graph-node-${keySlug(node.key)}`}
-              data-node-key={node.key}
-              data-gate={node.gate ? "true" : undefined}
-              className="absolute flex flex-col justify-center gap-[4px] overflow-hidden rounded-[6px] border border-line bg-surface px-[10px] py-[8px]"
+            {groupBoxes.map((group) => (
+              <rect
+                key={group.key}
+                data-testid={`workflow-graph-scope-${group.ownerId}`}
+                x={group.x}
+                y={group.y}
+                width={group.width}
+                height={group.height}
+                rx={8}
+                fill="var(--color-node-scope-fill)"
+                stroke="var(--color-node-border)"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+              />
+            ))}
+            {shown.edges.map((edge) => {
+              const source = cards.get(edge.from);
+              const target = cards.get(edge.to);
+              if (!source || !target) return null;
+              // The Studio's router on the rendered card boxes: orthogonal,
+              // bottom-centre → top-centre for a vertical hop (straight down
+              // when the cards share the axis a centred chain does), the short
+              // single-bend connector for side-by-side siblings.
+              const { path } = routeEdge(
+                source,
+                target,
+                edgeAxis(source, target, false, direction),
+              );
+              return (
+                <path
+                  key={`${edge.from} ${edge.to}`}
+                  data-testid={`workflow-graph-edge-${edge.from.split("/").pop()}-to-${edge.to.split("/").pop()}`}
+                  data-from={edge.from}
+                  data-to={edge.to}
+                  d={path}
+                  fill="none"
+                  stroke={
+                    edge.kind === "error" ? "var(--color-node-error-route)" : "var(--color-ink-2)"
+                  }
+                  strokeWidth={1.5}
+                  strokeDasharray={edge.kind === "error" ? "3 3" : undefined}
+                />
+              );
+            })}
+          </svg>
+          {groupBoxes.map((group) => (
+            <span
+              key={group.key}
+              data-testid={`workflow-graph-scope-label-${group.ownerId}`}
+              className="absolute font-mono text-[11px] font-semibold tracking-[0.04em] text-ink-2"
               style={{
-                left: node.x,
-                top: node.y,
-                width: cardSize(node).width,
-                height: cardSize(node).height,
+                left: group.x + 10,
+                top: group.y + 5,
+                width: group.headerWidth,
+                lineHeight: "18px",
               }}
             >
-              <span
-                className="min-w-0 break-words text-[13.5px] leading-[17px] font-semibold text-ink"
-                data-testid={`workflow-graph-node-id-${keySlug(node.key)}`}
+              {group.headerText}
+            </span>
+          ))}
+          {shown.nodes.map((node) => {
+            const raw = rawNodes.get(node.key.replace(/^\//, ""));
+            const fact = keyFactFor(node.kind, raw?.config as Record<string, unknown> | undefined);
+            const card = cards.get(node.key) as EdgeBox;
+            return (
+              <div
+                key={node.key}
+                data-testid={`workflow-graph-node-${keySlug(node.key)}`}
+                data-node-key={node.key}
+                data-gate={node.gate ? "true" : undefined}
+                className="absolute flex flex-col justify-center gap-[4px] overflow-hidden rounded-[6px] border border-line bg-surface px-[10px] py-[8px]"
+                style={{
+                  left: card.x,
+                  top: card.y,
+                  width: card.width,
+                  height: card.height,
+                }}
               >
-                {node.id}
-              </span>
-              {/* glyph + kind word + the ONE key fact the config carries — the
+                <span
+                  className="min-w-0 break-words text-[13.5px] leading-[17px] font-semibold text-ink"
+                  data-testid={`workflow-graph-node-id-${keySlug(node.key)}`}
+                >
+                  {node.id}
+                </span>
+                {/* glyph + kind word + the ONE key fact the config carries — the
                   Studio's rule (1g); nothing is invented when it holds none. */}
-              <span className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted">
-                <span aria-hidden>{kindGlyph(node.kind)}</span>
-                {` ${node.word}${fact ? ` · ${fact}` : ""}`}
-              </span>
-            </div>
-          );
-        })}
+                <span className="min-w-0 truncate font-mono text-[11px] leading-[14px] text-muted">
+                  <span aria-hidden>{kindGlyph(node.kind)}</span>
+                  {` ${node.word}${fact ? ` · ${fact}` : ""}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
       {/* The caption is part of the canvas (design 1e, bottom-left): one line
           from `lg` up, and free to wrap below `lg` rather than run off a
-          390px canvas (pass-4). */}
+          390px canvas (pass-4). It sits in the FLOW under the graph, not
+          pinned over it: the 390px canvas is barely taller than a four-step
+          chain, and a bottom-pinned caption printed over `publish_plan`
+          (pass-5). `flex-1` on the canvas area keeps it on the canvas
+          field's bottom while the graph is shorter than the pane. */}
       <span
-        className="absolute bottom-[14px] left-[16px] font-mono text-[10.5px] text-faint lg:whitespace-nowrap"
+        className="block px-[16px] pb-[14px] pt-[8px] font-mono text-[10.5px] text-faint lg:whitespace-nowrap"
         data-testid="workflow-graph-caption"
       >
         {label}

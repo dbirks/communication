@@ -52,7 +52,12 @@ export function Panel({
             : "border-line-strong bg-fill text-ink-2"
         }`}
       >
-        <Title id={headingId}>
+        {/* One line at any width (390px design check, 2e/repo-1e): a long
+            title ELLIPSISES (`truncate` = nowrap + overflow-hidden) and the
+            right slot never shrinks or wraps — the alternative was
+            “WORKFLOWS ON THIS REPO” with its `· 4` alone on a second bar
+            row, and a two-line `+ use a library workflow` link. */}
+        <Title id={headingId} className="min-w-0 truncate">
           {spec ? (
             <span aria-hidden="true" className="mr-1.5">
               {spec.glyph}{" "}
@@ -61,7 +66,11 @@ export function Panel({
           {title}
         </Title>
         {meta !== undefined ? (
-          <span className={`ml-auto font-normal ${spec ? "" : "text-faint"}`}>{meta}</span>
+          <span
+            className={`ml-auto shrink-0 whitespace-nowrap font-normal ${spec ? "" : "text-faint"}`}
+          >
+            {meta}
+          </span>
         ) : null}
       </div>
       {children}

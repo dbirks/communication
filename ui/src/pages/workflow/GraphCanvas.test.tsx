@@ -1,10 +1,14 @@
 /**
- * GraphCanvas geometry (design 1e, pass-4): the line leaves the BOTTOM CENTRE
- * of the source card and enters the TOP CENTRE of the target card — the
- * rendered box (200×52 floor), not dagre's own box — and the lines carry no
- * arrowheads. jsdom does no layout, but every coordinate here is inline
- * (style attributes and the polyline's `points`), so the contract is fully
- * assertable without a browser.
+ * GraphCanvas geometry (design 1e, pass-4 + the side-by-side fix): the line
+ * leaves the BOTTOM CENTRE of the source card and enters the TOP CENTRE of
+ * the target card — the rendered box (the Studio's 200×52 card re-centred on
+ * dagre's axis via `stepCardBox`), not dagre's own box — drawn with the
+ * Studio's orthogonal `routeEdge` as an SVG `<path>`, with no arrowheads.
+ * For a linear chain every card shares ONE axis and every connector is
+ * straight up that axis: no diagonal segment, no drift.
+ * jsdom does no layout, but every coordinate here is inline (style
+ * attributes and the path's `d`), so the contract is fully assertable
+ * without a browser.
  */
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,19 +34,105 @@ function cardBox(testid: string) {
   return { cx: left + width / 2, top, bottom: top + height };
 }
 
-function edgePoints(testid: string): { x: number; y: number }[] {
+/** The rendered edge: the SVG `d` and the vertices its M/L commands name. */
+function edgePath(testid: string): { d: string; points: { x: number; y: number }[] } {
   const el = screen.getByTestId(testid) as unknown as SVGElement;
-  return (el.getAttribute("points") ?? "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((pair) => {
-      const [x, y] = pair.split(",").map(Number);
-      return { x, y };
-    });
+  const d = el.getAttribute("d") ?? "";
+  const points = [...d.matchAll(/(-?\d+(?:\.\d+)?)[ ,]+(-?\d+(?:\.\d+)?)/g)].map((m) => ({
+    x: Number(m[1]),
+    y: Number(m[2]),
+  }));
+  return { d, points };
 }
 
+const edgePoints = (testid: string) => edgePath(testid).points;
+
+/** A linear chain in the design's own shape (survey → plan → approve →
+ * publish_plan) — the document 1e's built screen renders. */
+const linearDoc = {
+  apiVersion: "communication.dev/v1alpha1",
+  kind: "Pipeline",
+  metadata: { name: "linear" },
+  spec: {
+    nodes: [
+      { id: "survey", kind: "process.exec", config: { executable: "sh" } },
+      { id: "plan", kind: "model.chat", dependsOn: ["survey"], config: { model: "org/model" } },
+      {
+        id: "approve",
+        kind: "human.approval",
+        dependsOn: ["plan"],
+        config: { approverRoles: ["maintainer"] },
+      },
+      {
+        id: "publish_plan",
+        kind: "artifact.publish",
+        dependsOn: ["approve"],
+        config: { name: "publish · plan.md" },
+      },
+    ],
+  },
+} as unknown as DefinitionDocument;
+
+const LINEAR_IDS = ["survey", "plan", "approve", "publish_plan"];
+
 describe("GraphCanvas", () => {
+  it("lays a linear chain on ONE centred axis with straight vertical connectors (design 1e / 1g)", () => {
+    render(<GraphCanvas document={linearDoc} label="read-only · r1 · caption" />);
+    // Every card sits exactly on the design's 200×52 measure, and every
+    // card's x-CENTRE is the same number — no publish_plan drifting left of
+    // the column because its id made the dagre box wider.
+    const centres = LINEAR_IDS.map((id) => cardBox(`workflow-graph-node-${id}`).cx);
+    for (const [index, card] of LINEAR_IDS.map((id) =>
+      screen.getByTestId(`workflow-graph-node-${id}`),
+    ).entries()) {
+      expect(parseFloat(card.style.width)).toBe(200);
+      expect(parseFloat(card.style.height)).toBeGreaterThanOrEqual(52);
+      expect(centres[index]).toBeCloseTo(centres[0], 6);
+    }
+    // Each connector is straight DOWN the shared axis: the path is pure
+    // M/L (no curve commands), every vertex sits on the column's x-centre,
+    // and consecutive vertices differ only in y — no diagonal segment.
+    for (const [from, to] of [
+      ["survey", "plan"],
+      ["plan", "approve"],
+      ["approve", "publish_plan"],
+    ] as const) {
+      const { d, points } = edgePath(`workflow-graph-edge-${from}-to-${to}`);
+      expect(d).toMatch(/^(M|L)/);
+      expect(d).not.toMatch(/[AaCcQqSsTt]/); // no curves
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      // Every vertex on the shared axis ⇒ every segment moves only in y — a
+      // diagonal bend (the "<" zig-zag the mismatch drew) is impossible here.
+      for (const point of points) {
+        expect(point.x).toBeCloseTo(centres[0], 6);
+      }
+      const source = cardBox(`workflow-graph-node-${from}`);
+      const target = cardBox(`workflow-graph-node-${to}`);
+      expect(points[0].x).toBeCloseTo(source.cx, 6);
+      expect(points[0].y).toBeCloseTo(source.bottom, 6);
+      expect(points[points.length - 1].x).toBeCloseTo(target.cx, 6);
+      expect(points[points.length - 1].y).toBeCloseTo(target.top, 6);
+      expect(points[1].y).toBeGreaterThan(points[0].y); // downward, not zig-zag
+    }
+  });
+
+  it("keeps the caption BELOW the graph, never printed over a card (390px 1e)", () => {
+    render(<GraphCanvas document={linearDoc} label="read-only · r1 · caption" />);
+    const caption = screen.getByTestId("workflow-graph-caption");
+    // In-flow (a `block` in the column), not `absolute` pinned to the pane's
+    // bottom — the pin is what put the text over `publish_plan` at 390.
+    expect(caption.className).toContain("block");
+    expect(caption.className).not.toContain("absolute");
+    expect(caption.className).not.toMatch(/\bbottom-/);
+    // The canvas is the caption's column sibling: the caption is the graph
+    // root's next sibling after the canvas area, so the field grows past the
+    // last card instead of overlapping it.
+    const root = screen.getByTestId("workflow-graph");
+    const canvasArea = root.firstElementChild as HTMLElement;
+    expect(canvasArea.contains(screen.getByTestId("workflow-graph-canvas"))).toBe(true);
+    expect(canvasArea.nextElementSibling).toBe(caption);
+  });
+
   it("draws plain lines: no arrowheads anywhere", () => {
     renderCanvas();
     const edges = screen.getByTestId("workflow-graph-edges");
@@ -52,9 +142,8 @@ describe("GraphCanvas", () => {
 
   it("joins the bottom-centre of each source card to the top-centre of its target", () => {
     renderCanvas();
-    // The sample's `plan` follows `approve`… use an edge that exists in the
-    // frozen sample: every `plan → approve` style link is one polyline keyed
-    // by its endpoints; check the plan→approve one.
+    // The sample's `plan` → `approve` link is one path keyed by its
+    // endpoints; check that one.
     const points = edgePoints("workflow-graph-edge-plan-to-approve");
     expect(points.length).toBeGreaterThanOrEqual(2);
     const source = cardBox("workflow-graph-node-plan");

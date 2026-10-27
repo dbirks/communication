@@ -26,6 +26,7 @@ import {
   templateById,
   templateChain,
   withMetadataName,
+  type PipelineTemplate,
   type TemplateId,
 } from "../../lib/pipeline/templates";
 
@@ -56,6 +57,23 @@ export interface NewWorkflowDialogProps {
   presetTemplateId?: TemplateId | null;
   /** The index's distinct existing folder names (the dialog adds "No folder"). */
   folders?: readonly string[];
+}
+
+/**
+ * A START FROM tile's second line (design 1c). Template tiles show the
+ * document's own step chain — the ids the canvas draws, never a hand-written
+ * caption. The Blank tile has no chain worth reading: its skeleton's single
+ * node id (`first`) is a placeholder the author is meant to rename, not a
+ * feature, so the tile says what the starter IS — derived honestly from the
+ * skeleton's own parse (one step → “One agent step”, matching the starter
+ * card's words on the index; nothing shown when the skeleton does not
+ * parse).
+ */
+export function tileSubtitle(template: PipelineTemplate): string {
+  if (template.id !== "blank") return templateChain(template);
+  if (template.stepCount === 1) return "One agent step";
+  if (template.stepCount === null) return "";
+  return `${template.stepCount} steps`;
 }
 
 export function NewWorkflowDialog({
@@ -326,12 +344,15 @@ function DialogBody({ onClose, canCreate, presetTemplateId, folders }: DialogBod
                       onChange={() => setTemplateId(option.id)}
                     />
                     <span className="text-[12.5px] font-semibold">{option.label}</span>
-                    {/* Second line: the template document's own step chain —
-                        the ids the canvas will draw, never a hand-written
-                        caption. No chain when the document does not parse. */}
-                    {templateChain(option) ? (
-                      <span className="font-mono text-[11px] text-muted">
-                        {templateChain(option)}
+                    {/* Second line (design 1c): the template tiles show the
+                        document's own step chain; the Blank tile names what
+                        it is, derived from the skeleton's own parse — see
+                        `tileSubtitle`. */}
+                    {tileSubtitle(option) ? (
+                      <span
+                        className={`text-[11px] text-muted ${option.id === "blank" ? "" : "font-mono"}`}
+                      >
+                        {tileSubtitle(option)}
                       </span>
                     ) : null}
                   </label>

@@ -243,6 +243,25 @@ function recenter(box: { x: number; y: number; width: number; height: number }) 
   };
 }
 
+/**
+ * The read-only Overview card (design 1e) shares the Studio's rule — the box
+ * re-centred on the dagre box's own centre, so every step of a chain keeps
+ * the axis dagre gave the rank no matter how wide its id made the dagre box
+ * (drift-free) — but never shrinks a box dagre sized larger than the card
+ * floor, because the Overview card grows to fit a long id rather than
+ * ellipsize. Exported so the Overview reuses ONE re-centring rule.
+ */
+export function stepCardBox(box: { x: number; y: number; width: number; height: number }): EdgeBox {
+  const width = Math.max(STEP_BOX.width, box.width);
+  const height = Math.max(STEP_BOX.height, box.height);
+  return {
+    x: box.x + (box.width - width) / 2,
+    y: box.y + (box.height - height) / 2,
+    width,
+    height,
+  };
+}
+
 /** The pill the edge label draws: 10px mono text, `px-1.5` each side, one row.
  * Over-estimated on purpose — the anchor clears more room than the pill needs,
  * and an under-clearance is exactly the overlap the check exists to forbid. */

@@ -195,9 +195,13 @@ describe("RepoWorkflows — the collapsed row (2e)", () => {
     expect(screen.getByRole("heading", { name: /WORKFLOWS ON THIS REPO/ }).textContent).toContain(
       "WORKFLOWS ON THIS REPO · 1",
     );
-    expect(screen.getByTestId("repo-workflow-library").textContent).toBe(
-      "+ use a library workflow",
-    );
+    // One honest label per width (390px design check): the full
+    // `+ use a library workflow` from 560px up, `+ use workflow` below it —
+    // both live in the DOM and CSS media rules pick which renders (jsdom
+    // applies no stylesheet, so it sees both texts).
+    const libraryAction = screen.getByTestId("repo-workflow-library");
+    expect(libraryAction.textContent).toContain("+ use a library workflow");
+    expect(libraryAction.textContent).toContain("+ use workflow");
   });
 
   it("keeps another repository's pin off this page and shows the whole-project one", async () => {

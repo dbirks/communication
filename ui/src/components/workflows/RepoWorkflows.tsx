@@ -183,7 +183,12 @@ export function RepoWorkflows({ projectId, project, repository }: RepoWorkflowsP
             className="font-mono text-[10.5px] normal-case text-accent-text hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             data-testid="repo-workflow-library"
           >
-            + use a library workflow
+            {/* One line at any width (390px design check, 2e): the full
+                honest label from 560px up, a shorter — still honest, it
+                opens the same library picker — one below it. Both texts
+                exist in the DOM; only one renders per width. */}
+            <span className="hidden min-[560px]:inline">+ use a library workflow</span>
+            <span className="min-[560px]:hidden">+ use workflow</span>
           </button>
         ) : undefined
       }

@@ -608,7 +608,13 @@ describe("/workflows — the index (3a)", () => {
       expect(
         within(dialog).getByTestId("new-workflow-template-security-review").textContent,
       ).toContain("scan › summarize › publish_report");
+      // The Blank tile has no chain to show: its subtitle names what the
+      // starter IS (design 1c), derived from the skeleton's own parse — the
+      // placeholder node id is not a feature to advertise.
       expect(within(dialog).getByTestId("new-workflow-template-blank").textContent).toContain(
+        "One agent step",
+      );
+      expect(within(dialog).getByTestId("new-workflow-template-blank").textContent).not.toContain(
         "first",
       );
       // The selected starter's description line is the metadata's own words.

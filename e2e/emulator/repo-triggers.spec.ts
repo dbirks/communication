@@ -299,6 +299,11 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
       await scheduleGoal.fill(
         `emu schedule ${EMU_PASS_ID}: prove the schedule trigger fires a run`,
       );
+      // The OPEN dialog is design 2c's subject (the schedule arm): recorded
+      // before the save closes it, so the report pairs the dialog itself
+      // with 2c.png, not the repo page that follows. The saved-state shots
+      // below stay — they prove the row the write produced.
+      await emu.screen("2c", "dialog-schedule");
       // A save closes the dialog; only a refusal keeps it open, and then with
       // the server's own words in it.
       const error = await submitTrigger(dialog);
@@ -430,6 +435,9 @@ test.describe("repo-triggers (alice drives the repo page)", () => {
           .getByTestId("new-run-input-goal")
           .fill("emu goal from the trigger dialog", { timeout: 10_000 });
       }
+      // The OPEN dialog with the label chip filled is design 2c's issue arm —
+      // recorded before the save closes it (see the schedule arm above).
+      await emu.screen("2c", "dialog-issue");
       const error = await submitTrigger(dialog);
       expect(
         error,

@@ -113,9 +113,12 @@ e2e/emulator/out/<passId>/
   block style: no inline `{ … }` maps) → Used in tab (2a, honest empty
   state) → `Use in a repo…` → the repo lists under Used in.
 - `repo-triggers` (alice): pin "Emu sched <passId>" to M4 Exit / app → repo
-  page (2e) → `+ Add trigger` (2c): a labeled issue trigger with label
-  `emu-<passId>`, then a schedule trigger on `* * * * *` (the server ticks
-  every 30 s — `defaultScheduleTick`, ADR-0032) → wait ≤ 4 min for the
+  page (2e) → `+ Add trigger` (2c): the OPEN dialog is recorded as the 2c
+  screen itself — `2c-dialog-schedule` (cron + goal filled) and
+  `2c-dialog-issue` (labeled, label `emu-<passId>` chip filled, recorded on
+  the GitHub-remote repo's page) — then each arm is saved and its saved-state
+  row shot follows; a schedule trigger on `* * * * *` (the server ticks every
+  30 s — `defaultScheduleTick`, ADR-0032) → wait ≤ 4 min for the
   schedule-fired run and open it → pause the schedule trigger so later
   passes stay quiet.
 - `run-gate-artifacts` (alice): start the pass's pinned plan-with-approval
