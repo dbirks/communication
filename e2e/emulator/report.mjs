@@ -5,7 +5,8 @@
 //
 // Reads out/<passId>/results.json (one JSON object per line: screens and
 // defects, written by the emu fixture), writes out/<passId>/index.html —
-// the defects up top, then one row per screen with the app screenshot
+// a per-screen PASS/FAIL table (sidescroll/parity/clip/target per width) up
+// top, then the defects, then one row per screen with the app screenshot
 // beside its design render (both scaled to 50%) — and prints the summary
 // line `PASS <id>: <n> screens, <m> defects`.
 //
@@ -45,6 +46,41 @@ const escape = (value) =>
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+
+/** The per-width checks on a screen record (reflow.ts); old passes lack them. */
+const CHECK_NAMES = ["sidescroll", "parity", "clip", "target"];
+
+// Rows of the per-screen table: one per badge+name, a column per width.
+const resultOrder = [];
+const widthsByScreen = new Map();
+for (const screen of screens) {
+  const key = `${screen.badge}|${screen.name}`;
+  if (!widthsByScreen.has(key)) {
+    resultOrder.push(key);
+    widthsByScreen.set(key, {});
+  }
+  widthsByScreen.get(key)[screen.width] = screen;
+}
+
+const checkCell = (screen) => {
+  if (!screen) return '<span class="muted">not captured</span>';
+  const failed = CHECK_NAMES.filter((check) => screen.checks?.[check] === false);
+  return failed.length === 0
+    ? '<span class="ok">PASS</span>'
+    : `<span class="bad">FAIL</span> <span class="muted">${escape(failed.join(", "))}</span>`;
+};
+
+const resultRows = resultOrder
+  .map((key) => {
+    const [badge, name] = key.split("|");
+    const widths = widthsByScreen.get(key);
+    return `    <tr>
+      <td>${escape(badge)}<br /><span class="muted">${escape(name)}</span></td>
+      <td>${checkCell(widths[1280])}</td>
+      <td>${checkCell(widths[390])}</td>
+    </tr>`;
+  })
+  .join("\n");
 
 const defectRows = defects
   .map(
@@ -100,6 +136,15 @@ const html = `<!doctype html>
 <body>
   <p class="summary">${escape(summary)}</p>
   <p class="summary">${verdict}</p>
+  <h2>Per-screen results</h2>
+  <table>
+    <thead>
+      <tr><th>screen</th><th>1280</th><th>390</th></tr>
+    </thead>
+    <tbody>
+${resultRows.length > 0 ? resultRows : '    <tr><td colspan="3" class="muted">no screens recorded</td></tr>'}
+    </tbody>
+  </table>
   <h2>Defects</h2>
   <table>
     <thead>

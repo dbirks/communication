@@ -89,8 +89,8 @@ e2e/emulator/out/<passId>/
 ## Defect rules
 
 - A defect is anything the fixture records: `pageerror`, `console`,
-  `api`, `sidescroll`, `assertion`. A pass is clean when results.json
-  holds zero defect lines.
+  `api`, `sidescroll`, `assertion`, `reflow`, `clip`, `target`. A pass is
+  clean when results.json holds zero defect lines.
 - Deliberate failures a journey exercises inline are *declared*:
   `emu.expectFailure(/\/api\/v1\/pipelines$/, 409)`. Anything undeclared
   with status ≥ 400 is a defect.
@@ -98,6 +98,39 @@ e2e/emulator/out/<passId>/
   fixed-then-returned defect files a new issue, a recurring one does not.
 - Do not run the loop yourself and do not skip/modify journeys to make a
   pass clean — a red journey is the signal.
+
+## The 390 definition (no phone designs exist)
+
+Per the product owner there are **no 390px design renders** — Workflows
+Review and Projects Review are 1280 boards only. A screen's 390 match is
+its **1280 content and hierarchy, reflowed into one column**, checked by
+`emu.screen()` (page-side collectors in `reflow.ts`) at each capture:
+
+- **(a) no sideways scroll** at either width — as before;
+- **(b) content parity** — the 1280 inventory (visible headings h1–h3 /
+  `[role=heading]`, `[role=tab]` names, visible `data-testid` elements,
+  MAIN content only — the app shell's sidebar/phone strip is excluded) must
+  all be rendered at 390 too, or sit behind an explicit, per-testid
+  `REFLOW_ALLOWLIST` entry with a one-line reason (must stay empty unless a
+  real phone-only collapse forces one — every entry gets reported). Missing
+  items are recorded as `kind: reflow`;
+- **(c) no clipped text** — main content overflowing an
+  `overflow-x: hidden|clip` box without `text-overflow: ellipsis` (an
+  ellipsis is the design's intended truncation) is recorded as `kind: clip`;
+  visually-hidden (`.sr-only`) copy is skipped — it renders no visible text
+- **(d) touch targets ≥ 44px** — rendered, enabled buttons / `[role=button]`
+  / `[role=tab]` / selects / inputs (hidden/checkbox/radio measured via
+  their label box) / textareas under 44px tall, per the app-shell handoff
+  ("Heights 26 / 30 / 36; mobile 44–48"), are recorded as `kind: target`.
+  Bare `<a>` links are inline text, not targets.
+
+Like sidescroll today, every violation is a RECORDED defect (one aggregated
+defect per kind per screen, so fingerprints stay stable) — never a throw —
+so the screenshot still lands and the loop files it. Each screen record in
+`results.json` carries `checks: {sidescroll, parity, clip, target}` per
+width (true = pass; the 390-only checks trivially pass on the 1280 record),
+and `report.mjs` renders them as the **Per-screen results** table on top of
+the report.
 
 ## Current journeys
 

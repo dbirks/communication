@@ -12,6 +12,9 @@
 //     thrown — the screenshot still proves the screen), takes a full-page
 //     screenshot into e2e/emulator/out/<passId>/ and records the screen
 //     with its design render (docs/design/handoff-*/png/<badge>.png).
+//     At 390 it additionally runs the reflow checks (reflow.ts): content
+//     parity with the 1280 inventory, no clipped text without an ellipsis,
+//     and touch targets ≥ 44px — every violation is likewise RECORDED.
 //
 // At each test's end the fixture appends one JSON line per screen and per
 // defect to out/<passId>/results.json. A journey that FAILS records a
@@ -24,9 +27,25 @@ import path from "node:path";
 import { test as base } from "@playwright/test";
 import type { APIResponse, Page, Request } from "@playwright/test";
 import { EMU_DESIGN_DIRS, EMU_OUT_DIR, EMU_PASS_ID } from "./env.js";
+import {
+  collectReflowItems,
+  findClippedText,
+  findSmallTargets,
+  missingParityItems,
+  type EmuChecks,
+  type ReflowItem,
+} from "./reflow.js";
 
 /** A defect kind, as reported in results.json and the issue title. */
-export type EmuDefectKind = "pageerror" | "console" | "api" | "sidescroll" | "assertion";
+export type EmuDefectKind =
+  | "pageerror"
+  | "console"
+  | "api"
+  | "sidescroll"
+  | "assertion"
+  | "reflow"
+  | "clip"
+  | "target";
 
 export interface EmuDefect {
   kind: EmuDefectKind;
@@ -50,6 +69,8 @@ export interface EmuScreen {
   designPng: string | null;
   /** The design render, relative to the pass output directory (for HTML). */
   designRel: string | null;
+  /** Per-width check outcomes (true = pass); see reflow.ts. */
+  checks: EmuChecks;
 }
 
 /** The recording handle the fixture hands to a journey. */
@@ -78,8 +99,7 @@ export async function apiMutate(
   data?: unknown,
 ): Promise<APIResponse> {
   const me = await page.request.fetch(new URL("/api/v1/me", url).toString());
-  const token =
-    ((await me.json().catch(() => ({}))) as { csrf_token?: string }).csrf_token ?? "";
+  const token = ((await me.json().catch(() => ({}))) as { csrf_token?: string }).csrf_token ?? "";
   return page.request.fetch(url, {
     method,
     data: data as never,
@@ -244,10 +264,15 @@ class EmuRecorder {
    * the app's SSE stream keeps a connection open, so an idle wait is capped;
    * fonts are awaited) and proves the screen renders sideways-free — a
    * sideways-scrolling screen is a RECORDED defect, the screenshot is taken
-   * anyway because the report is where it is seen.
+   * anyway because the report is where it is seen. At 1280 it collects the
+   * content-parity inventory; at 390 it re-collects it and records the
+   * reflow/clip/target defects (reflow.ts) — one aggregated defect per kind
+   * per screen, so fingerprints stay stable. 390-only checks trivially pass
+   * on the 1280 record (they are defined against the phone reflow).
    */
   async screen(badge: string, name: string): Promise<void> {
     this.currentScreen = `${badge} ${name}`;
+    let desktopItems: ReflowItem[] | null = null;
     for (const [width, height] of [
       [1280, 900],
       [390, 844],
@@ -262,19 +287,56 @@ class EmuRecorder {
         innerWidth: window.innerWidth,
         href: location.href,
       }));
-      if (geometry.scrollWidth > geometry.innerWidth) {
-        this.record(
-          "sidescroll",
-          `sideways scroll on ${new URL(geometry.href).pathname}: scrollWidth ` +
-            `${geometry.scrollWidth}px > innerWidth ${geometry.innerWidth}px`,
-        );
-      }
+      const checks: EmuChecks = { sidescroll: true, parity: true, clip: true, target: true };
       const shot = `${badge}-${name}-${width}.png`;
       await this.page.screenshot({
         path: path.join(EMU_OUT_DIR, shot),
         fullPage: true,
       });
       this.lastShot = shot;
+      if (geometry.scrollWidth > geometry.innerWidth) {
+        checks.sidescroll = false;
+        this.record(
+          "sidescroll",
+          `sideways scroll on ${new URL(geometry.href).pathname}: scrollWidth ` +
+            `${geometry.scrollWidth}px > innerWidth ${geometry.innerWidth}px`,
+        );
+      }
+      const items = await this.page.evaluate(collectReflowItems);
+      if (width === 1280) {
+        desktopItems = items;
+      } else {
+        const missing = missingParityItems(desktopItems ?? [], items);
+        checks.parity = missing.length === 0;
+        if (!checks.parity) {
+          this.record(
+            "reflow",
+            `390 lost ${missing.length} of the 1280 items: ` +
+              `${missing
+                .slice(0, 5)
+                .map((item) => item.label)
+                .join("; ")}`,
+          );
+        }
+        const clips = await this.page.evaluate(findClippedText);
+        checks.clip = clips.length === 0;
+        if (!checks.clip) {
+          const extra = clips.length > 1 ? ` (+${clips.length - 1} more)` : "";
+          this.record("clip", `clipped text: ${clips[0].label} "${clips[0].text}"${extra}`);
+        }
+        const targets = await this.page.evaluate(findSmallTargets);
+        checks.target = targets.length === 0;
+        if (!checks.target) {
+          this.record(
+            "target",
+            `${targets.length} touch targets under 44px: ` +
+              `${targets
+                .slice(0, 5)
+                .map((hit) => `${hit.name}:${hit.height}px`)
+                .join(", ")}`,
+          );
+        }
+      }
       const design = designPngFor(badge);
       this.screens.push({
         badge,
@@ -284,6 +346,7 @@ class EmuRecorder {
         shot,
         designPng: design,
         designRel: design ? path.relative(EMU_OUT_DIR, design) : null,
+        checks,
       });
     }
     // Restore the desktop viewport: journeys act at 1280×900; the 390×844
@@ -330,11 +393,7 @@ class EmuRecorder {
             : error != null && typeof (error as { message?: unknown }).message === "string"
               ? (error as { message: string }).message
               : String(error ?? status);
-      const message = raw
-        .split("\n")
-        .slice(0, 3)
-        .join(" ")
-        .trim();
+      const message = raw.split("\n").slice(0, 3).join(" ").trim();
       this.record("assertion", `assertion: ${message}`);
     }
     // Decide the held event-stream aborts now: dropped when a navigation or
