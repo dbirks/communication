@@ -263,6 +263,10 @@ func TestArtifactListByConversation(t *testing.T) {
 	}
 	threadA, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Fix the flaky spec", "please")
 	threadB, err := cnv.CreateConversation(ctx, artCallOf(t, pool, member, orgID, false), project, profileID, "Add retry logging", "please")
+	// Both prompts above enqueued a live 'please' turn. This test never
+	// claims them, and ClaimTurn is a global FIFO — leaving them queued
+	// would hand them to whichever turn test claims next. Settle them here.
+	settleQueuedTurns(t, pool, threadA.ID, threadB.ID)
 
 	artInsertForConversation(t, pool, orgID, project, threadA.ID, "report.md", "markdown", "text/markdown", artDigest("a"), "ready", "standard")
 	artInsertForConversation(t, pool, orgID, project, threadA.ID, "notes.md", "markdown", "text/markdown", artDigest("b"), "ready", "standard")
@@ -307,6 +311,7 @@ func TestArtifactListByConversation(t *testing.T) {
 	// A conversation in another project is not this project's thread either.
 	projectB := artProject(t, projects, owner, orgID, "Other threads", "other-threads")
 	threadElsewhere, err := cnv.CreateConversation(ctx, artCallOf(t, pool, owner, orgID, false), projectB, profileID, "Elsewhere", "please")
+	settleQueuedTurns(t, pool, threadElsewhere.ID)
 	if _, err := store.ListArtifacts(ctx, artCallOf(t, pool, member, orgID, false), project, threadElsewhere.ID); !errors.Is(err, ErrArtifactNotFound) {
 		t.Errorf("foreign-project conversation = %v, want ErrArtifactNotFound", err)
 	}

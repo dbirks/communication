@@ -132,7 +132,11 @@ func TestExpiredUnstartedLeaseReclaimedAfterWedgedHolder(t *testing.T) {
 		t.Fatalf("release the fence lock: %v", err)
 	}
 
-	// (3) One pass reclaims it.
+	// (3) One pass reclaims it. Step (2)'s 300 ms proved a pass is BOUNDED;
+	// this step proves the reclaim is CORRECT, so it runs on the store's
+	// default pass timeout — a healthy pass under -race plus package load can
+	// legitimately need more than 300 ms.
+	rs.PassTimeout = 0
 	if err := rs.ReconcileLeases(ctx, runID); err != nil {
 		t.Fatalf("ReconcileLeases after the holder let go: %v", err)
 	}

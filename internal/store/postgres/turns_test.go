@@ -108,7 +108,11 @@ func TestTurnsClaimContention(t *testing.T) {
 			if ok {
 				wins.Add(1)
 				owners <- workerID
-				if claim.TurnID != turnID || claim.Prompt != "contended prompt" || claim.FencingToken <= 0 {
+				if claim.TurnID != turnID {
+					t.Errorf("ClaimTurn(%s) claimed the stray %s instead of this test's turn %s; "+
+						"a test that queues a turn must claim it or settle it in cleanup",
+						workerID, trnTurnSummary(ctx, pool, claim.TurnID), turnID)
+				} else if claim.Prompt != "contended prompt" || claim.FencingToken <= 0 {
 					t.Errorf("claim = %+v", claim)
 				}
 			}
@@ -147,10 +151,7 @@ func TestTurnsStaleFenceRejected(t *testing.T) {
 	ctx := testCtx(t)
 	turnID := f.queueTurn(t, "fenced prompt")
 
-	stale, ok, err := f.Store.ClaimTurn(ctx, f.WorkerA)
-	if err != nil || !ok {
-		t.Fatalf("first claim: ok=%v err=%v", ok, err)
-	}
+	stale := claimOwnTurn(t, f, f.WorkerA, turnID)
 	if err := f.Store.BeginTurn(ctx, stale, "b-1", trnSession("new")); err != nil {
 		t.Fatalf("BeginTurn: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestTurnsStaleFenceRejected(t *testing.T) {
 	if _, _, err := f.Store.CancelRequested(ctx, stale); !errors.Is(err, worker.ErrLeaseLost) {
 		t.Errorf("stale CancelRequested err = %v, want ErrLeaseLost", err)
 	}
-	err = f.Store.AppendTurnEvent(ctx, stale, worker.TurnEvent{
+	err := f.Store.AppendTurnEvent(ctx, stale, worker.TurnEvent{
 		Type: events.TypeConversationMessageAgent, ActorKind: events.ActorKindWorker, ActorID: f.WorkerA,
 		Payload: events.MessageAgentPayload{ConversationID: f.ConvID, TurnID: turnID, ChunkSeq: 1, Text: "ghost"},
 	})
@@ -260,10 +261,7 @@ func TestTurnsTranscriptAndBindingsRoundtrip(t *testing.T) {
 	ctx := testCtx(t)
 	turnID := f.queueTurn(t, "tell me about repo x")
 
-	claim, ok, err := f.Store.ClaimTurn(ctx, f.WorkerA)
-	if err != nil || !ok {
-		t.Fatalf("claim: %v %v", ok, err)
-	}
+	claim := claimOwnTurn(t, f, f.WorkerA, turnID)
 	if claim.LauncherID != "claude" || claim.PermissionMode != "ask" || claim.SubmittedBy != f.UserID {
 		t.Fatalf("claim detail = %+v", claim)
 	}
@@ -483,11 +481,8 @@ func TestTurnsSessionEventsCarryConversationScope(t *testing.T) {
 func TestDecidePermissionByPolicy(t *testing.T) {
 	pool, f := trnSetup(t)
 	ctx := testCtx(t)
-	f.queueTurn(t, "policy prompt")
-	claim, ok, err := f.Store.ClaimTurn(ctx, f.WorkerA)
-	if err != nil || !ok {
-		t.Fatalf("claim: ok=%v err=%v", ok, err)
-	}
+	turnID := f.queueTurn(t, "policy prompt")
+	claim := claimOwnTurn(t, f, f.WorkerA, turnID)
 	if err := f.Store.BeginTurn(ctx, claim, "b-p", trnSession("new")); err != nil {
 		t.Fatalf("BeginTurn: %v", err)
 	}

@@ -109,6 +109,20 @@ async function draftVersion(page: Page, draftId: string): Promise<number> {
   return body.version;
 }
 
+/** The saved draft document — `GET /api/v1/drafts/{id}` → `document_yaml`. */
+async function draftDocument(page: Page, draftId: string): Promise<string> {
+  const res = await page.request.get(`/api/v1/drafts/${draftId}`);
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { document_yaml: string };
+  return body.document_yaml;
+}
+
+/** How many nodes of the draft have `kind: <kind>` (one per line, node kinds only). */
+function countKind(document: string, kind: string): number {
+  const want = `kind: ${kind}`;
+  return document.split("\n").filter((line) => line.trim() === want).length;
+}
+
 /** The Studio's own YAML textarea (the draft text exactly as the Studio holds it). */
 async function readYaml(page: Page): Promise<string> {
   await page.getByTestId("studio-view-yaml").click();
@@ -682,8 +696,36 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await openNewDraft(page, state.pipelineId);
     const draft2Id = new URL(page.url()).pathname.split("/").pop() as string;
 
+    // This draft is a clone of A2's PUBLISHED revision, so its graph already
+    // carries A1's `code_review` agent step (test → code_review → review,
+    // inside the seeded until scope) and A2's three tail steps wrapped in
+    // their own until scope. The old ask — "insert a code reviewer agent step
+    // after the tests" — describes a step that already exists: the model then
+    // sometimes answers in prose, the server's single corrective re-ask
+    // proposes the long-gone test → review edge, and the route correctly
+    // answers 422 no_edge (observed 1 of 8 back-to-back runs). The product is
+    // right; the instruction was ambiguous. Ask instead for a role the draft
+    // has NO node for, anchored to the one root node with no dependents at
+    // all — `publish_verified`, the verified publish branch (A2 anchored its
+    // tail steps on `publish_needs_attention`, so that one is taken). Every
+    // other root anchor is an edge the server refuses to split: `plan` →
+    // approve and `emit_items` → `fan_out` are output-bound/`when`-guarded,
+    // `verdict` is a condition with two dependents, and the reviewer
+    // candidates (implement/test/review/code_review) all live inside the
+    // seeded until scope. Name the id and the kind so the model never has to
+    // invent either.
+    const NEW_NODE_ID = "security_scan";
+    const ANCHOR_ID = "publish_verified";
+
     const versionBefore = await draftVersion(page, draft2Id);
+    const documentBefore = await draftDocument(page, draft2Id);
     const pipelineBefore = await pipelineInfo(page, PIPELINE_SLUG);
+    // The anchor really is a leaf in this clone (insert_after's precondition),
+    // so the post-Apply dependsOn check below can only be about the new node.
+    expect(
+      yamlDependsOn(documentBefore, ANCHOR_ID),
+      `${ANCHOR_ID} must start with no dependents for the ask to be unambiguous`,
+    ).toBe(false);
 
     // Design 1g: the Studio's assistant row is a pinned footer that starts
     // collapsed behind its "Ask to change this draft… ⌘K" strip — wait for
@@ -693,7 +735,9 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
     await expect(footer.or(assistantInput).first()).toBeVisible({ timeout: 30_000 });
     if (await footer.isVisible().catch(() => false)) await footer.click();
     await expect(assistantInput).toBeVisible({ timeout: 30_000 });
-    await assistantInput.fill("Insert a code reviewer agent step after the tests");
+    await assistantInput.fill(
+      `Add a new agent.acp step named ${NEW_NODE_ID} that runs right after ${ANCHOR_ID} — nothing depends on ${ANCHOR_ID} yet, so ${NEW_NODE_ID} must depend on ${ANCHOR_ID}`,
+    );
     await page.getByTestId("assistant-proposal-submit").click();
 
     const caption = page.getByTestId("assistant-proposal-caption");
@@ -744,6 +788,30 @@ test.describe.serial("issue2 studio (A0 A1 A2 A3 A8 + narrow)", () => {
       page,
       "studio-a8-applied",
       `Apply saved the assistant's edit: draft version ${versionBefore} → ${versionAfter}, while the pipeline's revision count stayed at ${pipelineAfter.revision_count} (no publish)`,
+    );
+
+    // The saved draft really carries the node that was asked for. The
+    // instruction names the id, the kind and the anchor explicitly (the
+    // server only enforces the id PATTERN and uniqueness, but the ask is
+    // explicit, so the id itself is what we assert) — and the anchor edge:
+    // nothing else in the graph depends on `publish_verified`, so a dependsOn
+    // naming it can only be the new node's.
+    const documentAfter = await draftDocument(page, draft2Id);
+    expect(documentAfter, `Apply must save the proposed node ${NEW_NODE_ID}`).toContain(
+      `id: ${NEW_NODE_ID}`,
+    );
+    expect(
+      countKind(documentAfter, "agent.acp"),
+      `Apply must add exactly one agent.acp step (${NEW_NODE_ID})`,
+    ).toBe(countKind(documentBefore, "agent.acp") + 1);
+    expect(
+      yamlDependsOn(documentAfter, ANCHOR_ID),
+      `the saved draft must carry ${NEW_NODE_ID} depending on ${ANCHOR_ID}`,
+    ).toBe(true);
+    await evidence(
+      page,
+      "studio-a8-saved",
+      `GET /api/v1/drafts/${draft2Id} after Apply: the document names id: ${NEW_NODE_ID} (agent.acp count ${countKind(documentBefore, "agent.acp")} → ${countKind(documentAfter, "agent.acp")}) with a dependsOn on ${ANCHOR_ID}`,
     );
   });
 
