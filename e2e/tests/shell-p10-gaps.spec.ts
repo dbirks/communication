@@ -245,9 +245,12 @@ test.describe("shell p10 gaps — workflow triggers, repository page, usage, thr
     const repoName = reposBody.items?.[0]?.name ?? "";
     expect(repoName, "the lab project holds a repository").toBeTruthy();
 
-    const repoLink = page.getByTestId(`repo-row-${repoName}`);
-    await expect(repoLink).toBeVisible({ timeout: 30_000 });
-    await repoLink.click();
+    // Design 1b: `repo-row-<name>` is the <li> row and the only link inside it
+    // is the repository name, so the navigation click targets that link rather
+    // than the row's centre (which hits no anchor).
+    const repoRow = page.getByTestId(`repo-row-${repoName}`);
+    await expect(repoRow).toBeVisible({ timeout: 30_000 });
+    await repoRow.getByRole("link", { name: repoName }).click();
     await expect(page).toHaveURL(new RegExp(`/p/${projectId}/${repoName}$`));
     await expect(page.getByTestId("repo-page")).toBeVisible({ timeout: 30_000 });
     for (const testid of ["repo-header", "repo-workspaces", "repo-issues", "repo-runs"]) {
