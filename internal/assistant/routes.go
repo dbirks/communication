@@ -30,6 +30,10 @@ var allowedRoutes = []*regexp.Regexp{
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/pipelines$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/settings$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations$`),
+	// Members/activity page (Projects Review design 1b); a static segment, so
+	// it is listed explicitly like `runs` and `settings` rather than leaning on
+	// the repository catch-all below.
+	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/members$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/conversations/[A-Za-z0-9_-]{1,64}$`),
 	regexp.MustCompile(`^/p/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_-]{1,64}$`),
 	// Global pages.
