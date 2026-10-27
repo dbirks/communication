@@ -1606,12 +1606,21 @@ func (a *AgentTurn) journal(ctx context.Context, sink AttemptSink, c AttemptClai
 }
 
 // agentText coalesces the final agent message for structured-output
-// extraction. A tool_call (or update) RESETS the buffer: text before a tool
-// call is narration, and the final answer is what streamed after the last
-// one (sink.go's transcript ordering seen from the outputs side).
+// extraction. A NEW tool call (a tool_call row, or a tool_call_update that
+// announces a call id the stream never saw) RESETS the buffer: text before a
+// tool call is narration, and the final answer is what streamed after the last
+// one (sink.go's transcript ordering seen from the outputs side). A
+// tool_call_update for an id already under way is NOT a new tool window — it
+// is the adapter's bookkeeping closing an open call, and ACP lets that status
+// land after the model has begun its answer (observed live with
+// claude-agent-acp: a status-only update for an already-announced call landed
+// AFTER the agent streamed its final JSON object — twice on the acceptance
+// /implement, where invalid_output is not retriable and the node died, and
+// once witnessed healing on /review, where it is retriable).
 type agentText struct {
-	mu  sync.Mutex
-	buf strings.Builder
+	mu   sync.Mutex
+	buf  strings.Builder
+	open map[string]bool // tool-call ids the stream has seen announced
 }
 
 func (t *agentText) add(ev domain.ConversationEvent) {
@@ -1620,11 +1629,30 @@ func (t *agentText) add(ev domain.ConversationEvent) {
 	switch ev.Kind {
 	case "message_chunk":
 		t.buf.WriteString(ev.Text)
-	case "tool_call", "tool_call_update":
+	case "tool_call":
 		t.buf.Reset()
+		if ev.ToolCallID != "" {
+			if t.open == nil {
+				t.open = map[string]bool{}
+			}
+			t.open[ev.ToolCallID] = true
+		}
+	case "tool_call_update":
+		if ev.ToolCallID != "" && t.open[ev.ToolCallID] {
+			// Status bookkeeping for a call already in the window: the text
+			// around it stays candidate final answer.
+			return
+		}
+		t.buf.Reset()
+		if ev.ToolCallID != "" {
+			if t.open == nil {
+				t.open = map[string]bool{}
+			}
+			t.open[ev.ToolCallID] = true
+		}
 	default:
-		// permission_request is bridged durably by the Decider; thought,
-		// plan and unknown kinds are not message text (04).
+		// permission_request is bridged durably by the Decider; thought, plan
+		// and unknown kinds are not message text (04).
 	}
 }
 

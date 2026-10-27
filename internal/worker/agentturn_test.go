@@ -569,6 +569,103 @@ func TestAgentTurnOutcomeMapping(t *testing.T) {
 	})
 }
 
+// TestAgentTurnLateToolStatusKeepsFinalText is the C2 flake fix. The two
+// failing m4 acceptance legs (accept/20261025-204654 and 20261027-050010) end
+// their implement attempt with the SAME journal tail — conversation.message.agent
+// immediately followed by a conversation.tool.update, then the ordinary
+// process_exited teardown and node.attempt.failed with att=1 on a node that
+// allows one retry of [infra, interrupted, timeout, agent_error]. That order is
+// the transcript's flush-before-a-tool-row (sink.go), i.e. a status update for
+// an ALREADY-OPEN tool call landing after the model began its final answer —
+// legal ACP ordering: the adapter closes a call's status whenever it gets to
+// it, and claude-agent-acp does it late whenever the model's final answer
+// outruns that bookkeeping (live capture: the turn's FIRST call was closed
+// with status=failed after the agent had streamed its final JSON). agentText's reset-on-tool rule read
+// that status-only update as a new tool window and wiped the final answer, so
+// extraction saw silence and blamed the agent: invalid_output{no text} — a
+// non-retriable class, so the node died unretried, exactly as observed. Text
+// before a NEW tool call is narration; text before a late status update for a
+// call the stream already saw is the answer.
+func TestAgentTurnLateToolStatusKeepsFinalText(t *testing.T) {
+	t.Run("final answer followed by a late status update for an OLD call", func(t *testing.T) {
+		// Scripted from the live capture (attempt c2d26e7f, /review 1, the run
+		// that survived only because invalid_output IS in review's
+		// retriableErrors): call A pending, call B runs to completed, the agent
+		// answers with its final JSON, and only then does the adapter close A
+		// with a status update. The old rule wiped the answer on A's row.
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.eventsCh <- domain.ConversationEvent{Kind: "tool_call", ToolCallID: "tA", Text: "python3 -m pytest", ToolStatus: "pending"}
+			s.eventsCh <- domain.ConversationEvent{Kind: "tool_call", ToolCallID: "tB", Text: "read file", ToolStatus: "pending"}
+			s.eventsCh <- domain.ConversationEvent{Kind: "tool_call_update", ToolCallID: "tB", ToolStatus: "completed", Output: "ok"}
+			s.sendChunk("Tests pass. ")
+			s.sendChunk(`{"summary": "fixed add()", "files_changed": ["app/hello.py"]}`)
+			// The adapter's late bookkeeping for the FIRST call, after the answer.
+			s.eventsCh <- domain.ConversationEvent{Kind: "tool_call_update", ToolCallID: "tA", ToolStatus: "failed", Output: "exit 1"}
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("status = %q class=%q detail=%q: a late status update for an open tool call wiped the final answer",
+				res.Status, res.ErrorClass, res.Detail)
+		}
+		doc, ok := res.Outputs.(map[string]any)
+		if !ok || doc["summary"] != "fixed add()" {
+			t.Errorf("outputs = %#v, want the summary the stream carried", res.Outputs)
+		}
+	})
+	t.Run("a status update that ANNOUNCES an unseen call still ends the text", func(t *testing.T) {
+		// Adapters may create a tool call with an update alone; narration that
+		// precedes it is not the final answer (the reset rule's original case).
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.sendChunk(`{"stale": true} `)
+			s.eventsCh <- domain.ConversationEvent{Kind: "tool_call_update", ToolCallID: "t9", ToolStatus: "in_progress"}
+			s.sendChunk(`{"summary": "the real answer"}`)
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Status != AttemptStatusSucceeded {
+			t.Fatalf("status = %q (%s)", res.Status, res.Detail)
+		}
+		doc, ok := res.Outputs.(map[string]any)
+		if !ok || doc["summary"] != "the real answer" || doc["stale"] != nil {
+			t.Errorf("outputs = %#v, want only the post-tool JSON", res.Outputs)
+		}
+	})
+	t.Run("a new tool_call for an id the stream saw still ends the text", func(t *testing.T) {
+		// Re-announcing a tool call is a new tool window, not bookkeeping.
+		f := newAgentTurnFixture(t, domain.EnforceDisabled)
+		sess := newAgentSessionStub(domain.SessionInfo{})
+		sess.promptFn = func(_ context.Context, s *agentSessionStub, _ string) (domain.StopReason, error) {
+			s.sendToolCall()
+			s.sendChunk(`{"stale": true}`)
+			s.sendToolCall() // same id, a fresh tool_call row: the reset rule holds
+			s.sendChunk(`{"summary": "after"}`)
+			return domain.StopEndTurn, nil
+		}
+		f.spawn.queue(sess)
+		res, err := f.turn.Execute(context.Background(), f.claim(agentCfg("x")), f.sink)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		doc, ok := res.Outputs.(map[string]any)
+		if res.Status != AttemptStatusSucceeded || !ok || doc["summary"] != "after" || doc["stale"] != nil {
+			t.Errorf("status=%q outputs=%#v (%s), want only the post-tool JSON", res.Status, res.Outputs, res.Detail)
+		}
+	})
+}
+
 // TestAgentTurnMidTurnDisconnectIsNotInvalidOutput is the live15 C2 fix: a
 // harness whose ACP session died before the turn ended produced
 // invalid_output{“produced no text”}, which is not an agent verdict — the

@@ -1316,6 +1316,215 @@ def c1f_evidence_verdicts(rows, name=C1F_EVIDENCE_NAME):
              and ev[0]["media_type"] == C1F_EVIDENCE_MEDIA, detail)]
 
 
+# --- failed-attempt full evidence --------------------------------------------
+#
+# C2 failed 2 of 6 acceptance runs with the SAME journal signature (the attempt
+# went silent at agent.session.disconnected), and every report could read was
+# "failed - att=1": the failed attempt's error_class/detail/output_errors live on
+# the attempt row and the old dump never read them. Whenever a gate observes a
+# run that did not complete, the harness prints the attempt's full death
+# certificate — every failed/interrupted attempt via the API's node-detail route
+# (the frozen reader's view), the transport's last words (agent.session.
+# disconnected's reason/detail/stderr_tail) and the last agent message text.
+
+ATTEMPT_FAILURE_STATUSES = ("failed", "interrupted")
+ATTEMPT_EVIDENCE_FIELD_CHARS = 400
+AGENT_MESSAGE_TAIL_CHARS = 600
+
+
+def evidence_field(value):
+    """One evidence field rendered to a single bounded line: whitespace
+    collapsed (evidence never splits a report line), '-' for NULL/absent,
+    non-strings compact-JSONed so structure stays visible."""
+    if value is None:
+        return "-"
+    if isinstance(value, str):
+        s = value
+    else:
+        try:
+            s = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            s = str(value)
+    s = " ".join(str(s).split())
+    if len(s) > ATTEMPT_EVIDENCE_FIELD_CHARS:
+        s = s[:ATTEMPT_EVIDENCE_FIELD_CHARS] + "…"
+    return s
+
+
+def attempt_failure_lines(detail):
+    """GET /runs/{runId}/nodes/{nodeExecutionId} body -> one printable line per
+    FAILED or INTERRUPTED attempt in that execution's history (pure;
+    test_cdiag_logic.py). A succeeded/cancelled/queued attempt is not a death
+    certificate and yields nothing; an unreadable body yields nothing — the
+    caller prints the honest absence. The line carries the full attempt id, the
+    node instance key, the attempt number, the status, the error_class, the
+    bounded detail and the bounded output_errors — every column the
+    invalid_output-vs-infra question turns on."""
+    if not isinstance(detail, dict):
+        return []
+    key = str(detail.get("node_instance_key") or "?")
+    out = []
+    for a in detail.get("attempts") or []:
+        if not isinstance(a, dict) or a.get("status") not in ATTEMPT_FAILURE_STATUSES:
+            continue
+        out.append(
+            f"attempt {a.get('id') or '-'} [{key}] #{a.get('attempt_number')} "
+            f"status={a.get('status')} error_class={evidence_field(a.get('error_class'))} "
+            f"detail={evidence_field(a.get('detail'))} "
+            f"output_errors={evidence_field(a.get('output_errors'))}")
+    return out
+
+
+def ledger_attempt_failure_lines(text):
+    """Ledger fallback for the same death certificate. Input is `psql -tAqc`
+    output of one json_build_array per failed/interrupted attempt:
+    [node_instance_key, attempt_number, status, error_class, detail,
+    output_errors]. One line per row with the same fields as
+    attempt_failure_lines (the attempt id is not in the query, so the key+number
+    name the row); unparsable lines are reported, never dropped silently."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            key, number, status, eclass, detail, oerrs = json.loads(line)
+        except ValueError:
+            out.append(f"(unparsed attempt row: {line[:120]})")
+            continue
+        out.append(
+            f"[{key}] #{number} status={status} error_class={evidence_field(eclass)} "
+            f"detail={evidence_field(detail)} output_errors={evidence_field(oerrs)}")
+    return out
+
+
+def agent_death_lines(text):
+    """agent.session.disconnected journal rows -> one line each. Input is
+    `psql -tAqc` output of json_build_array(global_seq, payload->>'reason',
+    payload->>'detail', payload->>'stderr_tail', attempt_id) per row; fields may
+    be null. The reason vocabulary is the adapter's (disconnect.go) —
+    agent_process_exited vs acp_connection_closed vs the coarse
+    process_exited/shutdown is exactly the fact a truncated tree hides.
+    Unparsable lines are reported, never dropped."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            seq, reason = rec[0], rec[1] if len(rec) > 1 else None
+            detail = rec[2] if len(rec) > 2 else None
+            stderr = rec[3] if len(rec) > 3 else None
+            attempt = rec[4] if len(rec) > 4 else None
+        except (ValueError, IndexError):
+            out.append(f"(unparsed disconnect row: {line[:120]})")
+            continue
+        out.append(
+            f"seq={seq} attempt={attempt or '-'} reason={evidence_field(reason)} "
+            f"detail={evidence_field(detail)} stderr_tail={evidence_field(stderr)}")
+    return out
+
+
+def agent_message_tail_lines(text, limit=2, clip=AGENT_MESSAGE_TAIL_CHARS):
+    """conversation.message.agent journal rows (json_build_array(global_seq,
+    payload->>'text') per row, newest first) -> at most `limit` lines of
+    'seq=N text=…', each clipped to `clip` characters (with a visible '…' when
+    clipped). The last agent words tell a silence after a completed answer from
+    a death mid-answer. Unparsable lines are reported, never dropped."""
+    out = []
+    for line in (text or "").splitlines():
+        if len(out) >= limit:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            seq, body = json.loads(line)
+        except ValueError:
+            out.append(f"(unparsed message row: {line[:120]})")
+            continue
+        body = " ".join(str(body or "").split())
+        if len(body) > clip:
+            body = body[:clip] + "…"
+        out.append(f"seq={seq} text={body or '-'}")
+    return out
+
+
+def dump_failed_attempts(client, run_id):
+    """Every failed/interrupted attempt of the run, in full. API first (routes
+    GET /runs/{id}/nodes then /runs/{id}/nodes/{ne}); the ledger read answers for
+    whichever half the API could not (no client, non-200, exception) so a dead
+    route never hides the death certificate. Then the disconnect rows and the
+    last agent messages."""
+    api_lines, api_ok = [], False
+    if client is not None:
+        listed = None
+        try:
+            r = client.get(LB, f"/api/v1/runs/{run_id}/nodes")
+            listed = c12_nodes_rows(r.text) if r.status == 200 else None
+        except Exception as e:  # noqa: BLE001 — a dead route is reported, not fatal
+            listed = None
+            show(f"GET /runs/{run_id}/nodes (attempt dump)", f"{type(e).__name__}: {e}"[:200])
+        if listed:
+            api_ok = True
+            for key in sorted(listed):
+                row = listed[key] or {}
+                try:
+                    if int(row.get("attempt_count") or 0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                ne_id = str(row.get("id") or "")
+                if not ne_id:
+                    continue
+                try:
+                    d = client.get(LB, f"/api/v1/runs/{run_id}/nodes/{ne_id}")
+                    doc = d.json() if d.status == 200 else None
+                except Exception:  # noqa: BLE001
+                    doc = None
+                if doc is None:
+                    api_ok = False
+                    continue
+                api_lines += attempt_failure_lines(doc)
+            if api_ok:
+                show(f"failed/interrupted attempts of run {run_id} "
+                     "(full, GET /runs/../nodes/../detail)",
+                     "\n".join(api_lines) or "(none)")
+    if client is None or not api_ok:
+        try:
+            rows = psql(
+                "SELECT json_build_array(ne.node_instance_key, a.attempt_number, "
+                "a.status, a.error_class, a.detail, a.output_errors) "
+                "FROM attempts a JOIN node_executions ne ON ne.id = a.node_execution_id "
+                f"WHERE ne.run_id = '{run_id}' AND a.status IN "
+                "('failed','interrupted') ORDER BY a.created_at, a.attempt_number")
+            show(f"failed/interrupted attempts of run {run_id} (ledger fallback)",
+                 "\n".join(ledger_attempt_failure_lines(rows)) or "(none)")
+        except RuntimeError as e:
+            show("failed attempts (ledger fallback)", str(e)[:300])
+    try:
+        rows = psql(
+            "SELECT json_build_array(global_seq, payload->>'reason', "
+            "payload->>'detail', payload->>'stderr_tail', attempt_id::text) "
+            "FROM domain_events WHERE run_id = "
+            f"'{run_id}' AND type = 'agent.session.disconnected' ORDER BY global_seq DESC "
+            "LIMIT 6")
+        show("agent.session.disconnected rows (transport's last words)",
+             "\n".join(agent_death_lines(rows)) or "(none)")
+    except RuntimeError as e:
+        show("agent.session.disconnected rows", str(e)[:300])
+    try:
+        rows = psql(
+            "SELECT json_build_array(global_seq, payload->>'text') FROM domain_events "
+            f"WHERE run_id = '{run_id}' AND type = 'conversation.message.agent' "
+            "ORDER BY global_seq DESC LIMIT 3")
+        show("last agent message texts (bounded)",
+             "\n".join(agent_message_tail_lines(rows)) or "(none)")
+    except RuntimeError as e:
+        show("last agent message", str(e)[:300])
+
+
 def dump_run_evidence(client, run_id):
     """Failure honesty: dump the run row, the node tree and the last journal
     rows BEFORE the FAIL — an exit run that times out must arrive with its
@@ -1353,6 +1562,7 @@ def dump_run_evidence(client, run_id):
             f"FROM domain_events WHERE run_id = '{run_id}' ORDER BY global_seq DESC LIMIT 12"))
     except RuntimeError as e:
         show("last journal rows", str(e))
+    dump_failed_attempts(client, run_id)
     # ADR-0016 / docs/design/attempt-permissions.md: an unattended `ask` prompt is
     # journalled requested -> decided{cancelled, node_policy:ask_unattended} and that
     # cancelled tool call is what fails an agent.acp attempt. The 12-row window above
