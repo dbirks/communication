@@ -64,16 +64,36 @@ diverge between them):
   chunk; the transcript route stays the authority for the whole message.
   **Structured-output arm (seen on the lab):** a run node's agent ends *on its
   structured output*, so the newest chunk is `{"summary": "The repo already had a
-  full Node.js…", …}` and the row printed the braces. When the chunk is exactly
-  one JSON object (`cnvStructuredAgentText`), the line is taken from the object's
-  own top-level strings: `summary`, else `goal`, else the first top-level string
-  in the object's document order — still the agent's words, never a paraphrase,
-  and never a nested value's (a schema's inner strings are the shape, not the
-  line). Anything else — prose, a fenced block, an array, a chunk truncated by
-  the worker's chunking, an object with no top-level string — keeps today's rule
-  on the raw text, so a message that merely contains a brace is untouched. The
-  160-rune cap applies to the extracted line exactly as it applied to the raw
-  one.
+  full Node.js…", …}` and the row printed the braces. When the chunk is one JSON
+  object — pretty-printed, and/or wrapped in a ` ```json ` fence — the **whole
+  message** is parsed first (`cnvStructuredAgentText`: trim, lift the fence, then
+  decode exactly one object), and the line is chosen from the object's own values,
+  in this order:
+
+  1. a **headline key** — `summary`, `goal`, `title`, `notes`, `reason`, `message`,
+     tried in that order — with non-blank string content, looked for at depth 0
+     (the object's own members) before depth 1 (one nested object, the shape of a
+     schema that wraps its answer: `{"plan": {"goal": …}}`); within a depth, key
+     priority wins over document order, so a top-level `notes` beats a nested
+     `summary` and a nested `summary` beats a nested `goal`;
+  2. else the **first string value** found breadth-first in the object's document
+     order (arrays walked too: `"outputs": ["…"]` is the agent's own prose), at
+     most three containers deep — past that a string is a schema's field, not a
+     line, and the braces are more honest than a guess;
+  3. else, when the object holds **no string at any depth**, its top-level scalars
+     as `key: value` pairs joined by ` · ` — a reviewer's verdict reads
+     `approved: true`, not `{"approved": true,`.
+
+  Whatever that picks is then rendered by the plain rule above (first non-empty
+  line, trimmed, 160-rune cap), so a multi-line `summary` is still one preview
+  line. Parsing precedes line-taking: the old rule cut the first line *before*
+  asking whether the text was JSON, which is why a pretty-printed object printed
+  `{"approved": true,`. Anything that is not exactly one object — prose, a
+  ` ```go ` or unclosed fence or prose after the closing fence, an array, a chunk
+  the worker split mid-object, invalid JSON that merely starts with `{`, an object
+  whose only strings are deeper than the bound — keeps the plain rule on the raw
+  text, so a message that merely contains a brace is untouched and nothing is
+  invented.
 - Neither field gates anything: they ride the row's existing visibility predicate —
   a caller who may list a project's conversations may already read those
   conversations' transcripts on the detail and stream routes (same membership), so
@@ -151,11 +171,24 @@ project that already lists its repositories.
   a plain thread with neither stays null; and the cross-project read answers the
   same rows.
 - `TestCnvLastAgentLine` — the renderer alone: empty/whitespace → none, exactly
-  160 stays, 161 truncates, a cut never splits a rune, and the JSON arms: summary
-  wins over goal, goal over the first top-level string, nested strings never
-  count, a blank summary falls through, a pretty-printed object reads, and prose
-  / a fenced block / an array / a truncated chunk / an object with no strings all
-  keep the raw text.
+  160 stays, 161 truncates, a cut never splits a rune, and the JSON arms: a
+  headline key at depth 0 wins in key order (`summary` over `goal`, `title` over
+  `reason`), a nested `plan.goal` reads when the top level has no headline, depth
+  0 still beats depth 1, a blank `summary` falls through, a pretty-printed or
+  ` ```json `-fenced object reads, the first string is found breadth-first (an
+  `outputs` array included) but not four containers down, an object with no string
+  renders `count: 3 · ok: true`, and prose / a ` ```go ` fence / an unclosed fence
+  / an array / a truncated chunk / invalid JSON that starts with `{` / an object
+  with trailing prose all keep the raw text — while an extracted line is capped
+  exactly as a raw one was.
+- `TestConversationListStructuredLastAgentLine` and
+  `TestConversationListLastAgentLineNewestChunk` (real PostgreSQL): the four lab
+  shapes served on real rows by both list READS — a multi-line reviewer object
+  (`reason`), a fenced planner object with a nested `plan.goal`, a no-string
+  verdict (`approved: true · blocking: 0 · waived: null`) and a prose thread
+  beside them — and the preview following the **newest** chunk in each direction
+  (narration then output shows the summary; output then narration shows the
+  narration).
 - `TestConversationSummaryADR0065Fields` (`internal/api/conversations_test.go`):
   the route serves the three keys with values when the store has them and as
   literal `null`s (never omissions, never empty strings) when it does not.
@@ -177,3 +210,19 @@ nothing — well, the repository lateral still resolves from `workspaces`, which
 exists since 00004; only the *indexes* are new), and newer database plus older
 code ignores them. Roll back by reverting the view/scans; nothing stored changes
 shape.
+
+Amended (2026-10-27, after the same commit was seen on the lab at `a6e06bb`):
+
+1. **`last_agent_line` reads the whole structured reply, not its first line.**
+   The shipped rule cut the newest chunk to its first non-empty line and only
+   then asked whether the text was JSON, and only ever looked at *top-level*
+   strings. A run thread therefore still printed braces and a key path: a
+   reviewer's pretty-printed object read `{"approved": true,` and a planner's
+   wrapped answer read `{"plan": {"goal": "Add a docstring to add() in ap…`.
+   The Decision's structured-output arm is restated: fence first, parse the whole
+   message, headline keys at depth 0 then depth 1, first string breadth-first to
+   three containers, scalar pairs when there is no string — and only then the
+   first-line + 160-rune rule. `api/openapi.yaml`
+   (`ConversationSummary.last_agent_line`) and `ui/src/api/schema.d.ts` (generated)
+   carry the same text; the plain rule, the 160-rune cap, the null-means-silent
+   rule, the SQL, the indexes and the additive-ness of the members are unchanged.

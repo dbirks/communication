@@ -303,12 +303,18 @@ type ConversationSummaryView struct {
 	// neither says one.
 	RepositoryID   *string `json:"repository_id"`
 	RepositoryName *string `json:"repository_name"`
-	// LastAgentLine (ADR-0065): the newest agent transcript row rendered to
-	// one preview line (first non-empty line, trimmed, ≤ 160 chars with an
-	// ellipsis when cut); a row that is one JSON object — the structured
-	// output a run node's agent ends on — is read from its own `summary`/
-	// `goal`/first string instead of printing braces. Null when the agent has
-	// not spoken.
+	// LastAgentLine (ADR-0065, amended): the newest agent transcript row
+	// rendered to one preview line — first non-empty line, trimmed, ≤ 160 chars
+	// with an ellipsis when cut. A row that is one JSON object, pretty-printed
+	// and/or inside a ```json fence (the structured output a run node's agent
+	// ends on) is parsed whole and read as its own words instead of its braces:
+	// the first non-blank string under `summary`/`goal`/`title`/`notes`/
+	// `reason`/`message` at depth 0 then depth 1 (`plan.goal` included), else
+	// the first string breadth-first up to three containers deep, else — with no
+	// string anywhere — its top-level scalars as `key: value · key: value`
+	// (`approved: true`). Anything else, and whatever line was chosen, then takes
+	// the plain rule. Rendered by the store (cnvLastAgentLine); null when the
+	// agent has not spoken.
 	LastAgentLine *string `json:"last_agent_line"`
 }
 

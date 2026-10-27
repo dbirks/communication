@@ -294,92 +294,273 @@ type CnvSummary struct {
 // maxLength: 160; ADR-0065).
 const cnvLastAgentLineMax = 160
 
+// cnvAgentLineKeys are the keys an agent writes its headline under — the one
+// sentence of a review, the aim of a plan — in priority order. The search is
+// depth-0 (the object's own members) before depth-1 (one nested object, the
+// shape of a schema that wraps its answer: `{"plan": {"goal": …}}`), and each
+// depth is walked in this key order, so `plan.goal` beats an earlier `title`
+// and a top-level `notes` beats a nested `summary` (ADR-0065).
+var cnvAgentLineKeys = []string{"summary", "goal", "title", "notes", "reason", "message"}
+
+// cnvAgentLineMaxDepth bounds the breadth-first hunt for "the first string
+// anywhere": the answer may sit a container or two down, but a string three
+// containers deep is a schema's field, not the line the agent wrote for a
+// human, and the raw text is the honest answer (ADR-0065).
+const cnvAgentLineMaxDepth = 3
+
+// cnvAgentLineMaxNodes bounds one traversal of one chunk: the walk is a queue,
+// and the cap keeps a pathological payload from being paid for on every list
+// row. Running out of budget can only answer "no line found", which falls back
+// to the raw text — it never invents one.
+const cnvAgentLineMaxNodes = 512
+
+// cnvJSONField is one member of a JSON object in the object's own document
+// order: the pick below is order-sensitive, and decoding into a map would
+// shuffle it.
+type cnvJSONField struct {
+	key   string
+	value json.RawMessage
+}
+
+// cnvUnfenceAgentChunk trims a chunk and removes a surrounding ```json / ```
+// fence, the shape an agent wraps its structured output in when the model
+// talks in markdown. It strips only a fence that *surrounds* the message: a
+// ```lang fence, an unclosed fence, or prose after the closing fence is left
+// exactly as it arrived, so nothing past the wrapper is invented.
+func cnvUnfenceAgentChunk(chunk string) string {
+	text := strings.TrimSpace(chunk)
+	if !strings.HasPrefix(text, "```") {
+		return text
+	}
+	rest := text[3:]
+	newline := strings.IndexByte(rest, '\n')
+	if newline < 0 {
+		return text // one-line fence: not the wrapper this handles
+	}
+	if tag := strings.ToLower(strings.TrimSpace(rest[:newline])); tag != "" && tag != "json" && tag != "jsonc" {
+		return text // ```go, ```yaml: the body is not an object
+	}
+	body := strings.TrimSpace(rest[newline+1:])
+	if !strings.HasSuffix(body, "```") {
+		return text
+	}
+	return strings.TrimSpace(strings.TrimSuffix(body, "```"))
+}
+
+// cnvJSONFields decodes text as EXACTLY one JSON object and returns its members
+// in document order. It answers false for anything that is not one object:
+// prose, an array, a chunk the worker split mid-object, invalid JSON, `}{`, or
+// an object with trailing prose — for all of those the caller renders the raw
+// text as it always did.
+func cnvJSONFields(text string) ([]cnvJSONField, bool) {
+	dec := json.NewDecoder(strings.NewReader(text))
+	open, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	if delim, ok := open.(json.Delim); !ok || delim != '{' {
+		return nil, false
+	}
+	return cnvDecodeObject(dec)
+}
+
+func cnvDecodeObject(dec *json.Decoder) ([]cnvJSONField, bool) {
+	var out []cnvJSONField
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, false
+		}
+		out = append(out, cnvJSONField{key: key, value: value})
+	}
+	if _, err := dec.Token(); err != nil { // consume the closing '}'
+		return nil, false
+	}
+	if dec.More() {
+		return nil, false // `}{` or `… } trailing prose`: not one structured output
+	}
+	return out, true
+}
+
+// cnvJSONKind is a raw value's shape from its first non-space byte: 'o' object,
+// 'a' array, 's' string, 'b' bool, 'z' null, 'n' number, 0 when empty.
+func cnvJSONKind(raw json.RawMessage) byte {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return 'o'
+		case '[':
+			return 'a'
+		case '"':
+			return 's'
+		case 't', 'f':
+			return 'b'
+		case 'n':
+			return 'z'
+		default:
+			return 'n'
+		}
+	}
+	return 0
+}
+
+// cnvAgentLineString returns a raw value's text when it is a string with
+// something in it; blank and whitespace-only strings are not a line.
+func cnvAgentLineString(raw json.RawMessage) (string, bool) {
+	if cnvJSONKind(raw) != 's' {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil || strings.TrimSpace(s) == "" {
+		return "", false
+	}
+	return s, true
+}
+
+// cnvAgentLineKey finds one priority key's text at `depth` container levels
+// below the root (0 = this object, 1 = a nested object), in document order.
+func cnvAgentLineKey(fields []cnvJSONField, depth int, key string) (string, bool) {
+	for _, f := range fields {
+		if depth == 0 {
+			if f.key == key {
+				if s, ok := cnvAgentLineString(f.value); ok {
+					return s, true
+				}
+			}
+			continue
+		}
+		if nested, ok := cnvJSONFields(string(f.value)); ok {
+			if s, ok := cnvAgentLineKey(nested, 0, key); ok {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+// cnvAgentLineFirstString walks the object breadth-first in document order and
+// returns the first non-blank string, descending at most maxDepth container
+// levels (maxDepth <= 0 = every level, used only to ask "is there any string at
+// all?"). Arrays are walked too — an agent's `outputs: ["…"]` is its own prose.
+func cnvAgentLineFirstString(fields []cnvJSONField, maxDepth int) (string, bool) {
+	type node struct {
+		value json.RawMessage
+		depth int
+	}
+	queue := make([]node, 0, len(fields))
+	for _, f := range fields {
+		queue = append(queue, node{value: f.value, depth: 1})
+	}
+	for i := 0; i < len(queue) && i < cnvAgentLineMaxNodes; i++ {
+		cur := queue[i]
+		if s, ok := cnvAgentLineString(cur.value); ok {
+			return s, true
+		}
+		if maxDepth > 0 && cur.depth >= maxDepth {
+			continue
+		}
+		switch cnvJSONKind(cur.value) {
+		case 'o':
+			nested, ok := cnvJSONFields(string(cur.value))
+			if !ok {
+				continue
+			}
+			for _, f := range nested {
+				queue = append(queue, node{value: f.value, depth: cur.depth + 1})
+			}
+		case 'a':
+			var items []json.RawMessage
+			if err := json.Unmarshal(cur.value, &items); err != nil {
+				continue
+			}
+			for _, item := range items {
+				queue = append(queue, node{value: item, depth: cur.depth + 1})
+			}
+		}
+	}
+	return "", false
+}
+
+// cnvAgentLineScalars renders the top-level scalars of an object with no string
+// anywhere — a reviewer's verdict is `approved`, not a sentence — as
+// `key: value` pairs joined by ` · `, in document order.
+func cnvAgentLineScalars(fields []cnvJSONField) string {
+	parts := make([]string, 0, len(fields))
+	for _, f := range fields {
+		switch cnvJSONKind(f.value) {
+		case 'b', 'z', 'n':
+			parts = append(parts, f.key+": "+strings.TrimSpace(string(f.value)))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // cnvStructuredAgentText returns the words an agent actually chose when one
-// transcript chunk is a JSON object — the shape a run node ends on, because
-// the agent's last message IS its structured output (`{"summary": "…", …}`).
-// The answer is a top-level string of that object, in this precedence:
-// `summary`, else `goal`, else the first top-level string in the object's own
-// document order (never an alphabetical pick, and never a nested value's — a
-// schema's inner strings are the shape, not the agent's line).
+// transcript chunk is (or is fenced as) a JSON object — the shape a run node
+// ends on, because the agent's last message IS its structured output
+// (`{"summary": "…", …}`, `{"approved": true, …}`, `{"plan": {"goal": …}}`).
+// The answer is, in order:
+//
+//  1. the first non-blank text under a cnvAgentLineKeys key at depth 0, then at
+//     depth 1 (nested objects), each depth in key-priority order;
+//  2. else the first string value breadth-first, document order, at most
+//     cnvAgentLineMaxDepth containers deep;
+//  3. else, when the object holds no string at any depth, its top-level scalars
+//     as `key: value · key: value` — `approved: true`, not `{"approved": true,`.
 //
 // It returns "" — "no better line than the raw text" — when the chunk is not
-// one JSON object (prose, a fenced code block, a truncated multi-chunk tail,
-// an array), when it holds no top-level string at all, or when every candidate
-// is blank. The caller then renders the raw text as it always did, so a
-// message that merely happens to contain a brace is untouched and nothing is
-// invented.
+// one JSON object at all (prose, an unclosed or non-JSON fence, a truncated
+// multi-chunk tail, invalid JSON that merely starts with `{`, an array, an
+// object whose only strings are too deep to be a headline). The caller then
+// renders the raw text as it always did, so a message that merely happens to
+// contain a brace is untouched and nothing is invented. The whole message is
+// parsed before the first line is taken, so a pretty-printed object is read as
+// an object rather than as its opening brace.
 func cnvStructuredAgentText(chunk string) string {
-	text := strings.TrimSpace(chunk)
-	// Cheap gate first: only a brace-wrapped chunk can be an object, and this
+	text := cnvUnfenceAgentChunk(chunk)
+	// Cheap gate first: only a brace-wrapped body can be an object, and this
 	// keeps ordinary prose out of the decoder entirely.
 	if !strings.HasPrefix(text, "{") || !strings.HasSuffix(text, "}") {
 		return ""
 	}
-	dec := json.NewDecoder(strings.NewReader(text))
-	open, err := dec.Token()
-	if err != nil {
+	fields, ok := cnvJSONFields(text)
+	if !ok {
 		return ""
 	}
-	if delim, ok := open.(json.Delim); !ok || delim != '{' {
-		return "" // prose, an array, a bare word: today's rule reads it as text
-	}
-	var (
-		goal, first string
-		found       bool
-	)
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
-			break
-		}
-		key, _ := keyTok.(string)
-		var value json.RawMessage
-		if err := dec.Decode(&value); err != nil {
-			break
-		}
-		if len(value) == 0 || value[0] != '"' {
-			continue // number, bool, null, object or array: not the agent's line
-		}
-		var s string
-		if err := json.Unmarshal(value, &s); err != nil || strings.TrimSpace(s) == "" {
-			continue
-		}
-		if !found {
-			first, found = s, true
-		}
-		switch key {
-		case "summary":
-			return s // the schema's own headline wins, wherever it sits
-		case "goal":
-			if goal == "" {
-				goal = s
+	for depth := 0; depth <= 1; depth++ {
+		for _, key := range cnvAgentLineKeys {
+			if s, ok := cnvAgentLineKey(fields, depth, key); ok {
+				return s
 			}
 		}
 	}
-	// Close the object and demand the message stop there: `}{` or `… } trailing
-	// prose` is not one structured output, and guessing over it is worse than
-	// today's rule.
-	if _, err := dec.Token(); err != nil {
-		return ""
+	if s, ok := cnvAgentLineFirstString(fields, cnvAgentLineMaxDepth); ok {
+		return s
 	}
-	if dec.More() {
-		return ""
-	}
-	if goal != "" {
-		return goal
-	}
-	if found {
-		return first
+	if _, ok := cnvAgentLineFirstString(fields, -1); !ok {
+		return cnvAgentLineScalars(fields)
 	}
 	return ""
 }
 
 // cnvLastAgentLine renders one agent transcript chunk as the list row's
 // preview: the first non-empty line, trimmed, cut to cnvLastAgentLineMax runes
-// with a trailing ellipsis when longer. A chunk that is one JSON object (a run
-// node ending on its structured output) is read through
-// cnvStructuredAgentText first, so the row shows the agent's summary instead
-// of `{"summary": "…`. "" (rendered as JSON null by apiNullString) means no
+// with a trailing ellipsis when longer. A chunk that is one JSON object, or one
+// such object inside a ```json fence (a run node ending on its structured
+// output), is read through cnvStructuredAgentText FIRST — the whole message is
+// parsed before a line is taken — so the row shows the agent's summary, its
+// nested `plan.goal`, or its `approved: true` verdict instead of
+// `{"summary": "…` / `{"approved": true,`. "" (rendered as JSON null by apiNullString) means no
 // line: no chunk at all, or only whitespace.
 func cnvLastAgentLine(chunk string) string {
 	if structured := cnvStructuredAgentText(chunk); structured != "" {

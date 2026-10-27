@@ -421,7 +421,9 @@ func TestConversationListRunThreadRepository(t *testing.T) {
 // line, trimmed, ≤ cnvLastAgentLineMax runes with the ellipsis counted inside
 // the cap, cut on a rune boundary; "" = no line at all. The JSON arms are the
 // run-node shape: an agent whose last message IS its structured output reads
-// as its own summary, never as braces.
+// as its own words — a headline key at depth 0 or nested one object down, else
+// the first string found breadth-first, else its scalars as `key: value` —
+// never as braces, and never as a paraphrase.
 func TestCnvLastAgentLine(t *testing.T) {
 	cases := []struct {
 		name, chunk, want string
@@ -440,19 +442,43 @@ func TestCnvLastAgentLine(t *testing.T) {
 		{"summary wins", `{"summary": "Pushed branch feat/cards.", "files": ["a.ts"]}`, "Pushed branch feat/cards."},
 		{"summary beats goal", `{"goal": "the goal", "summary": "the summary"}`, "the summary"},
 		{"goal when no summary", `{"goal": "Add saved cards to checkout", "changed": 2}`, "Add saved cards to checkout"},
-		{"first string when neither", `{"count": 3, "notes": "two files touched", "other": "next"}`, "two files touched"},
-		{"nested strings do not count", `{"result": {"summary": "nested"}, "notes": "outer"}`, "outer"},
+		{"priority keys read in order", `{"count": 3, "notes": "two files touched", "other": "next"}`, "two files touched"},
+		{"title then reason when no summary", `{"title": "Review", "reason": "the patch is safe"}`, "Review"},
+		{"first string when no key matches", `{"count": 3, "outputs": ["built the image"]}`, "built the image"},
+		// a schema that wraps its answer one object down is still the agent's line…
+		{"nested goal (plan.goal)", `{"plan": {"goal": "Add a docstring to add() in app.py", "files": ["app.py"]}, "risk": "low"}`, "Add a docstring to add() in app.py"},
+		{"depth 0 beats depth 1", `{"notes": "outer note", "plan": {"summary": "nested summary"}}`, "outer note"},
+		{"depth 1 follows key priority", `{"meta": {"title": "meta title"}, "plan": {"goal": "the goal"}}`, "the goal"},
+		// …but a string three containers deep is the schema's shape, not a line.
+		{"too deep for a headline", `{"meta": {"a": {"b": {"c": "too deep"}}}}`, `{"meta": {"a": {"b": {"c": "too deep"}}}}`},
 		{"blank summary falls through", `{"summary": "   ", "goal": "real goal"}`, "real goal"},
 		{"pretty-printed object", "{\n  \"summary\": \"Multi line object.\",\n  \"ok\": true\n}", "Multi line object."},
+		{"multi-line verdict with a reason", "{\n  \"approved\": true,\n  \"reason\": \"The patch is safe.\"\n}", "The patch is safe."},
 		{"summary keeps its own lines", `{"summary": "first line\nsecond line"}`, "first line"},
-		{"no top-level string keeps the raw text", `{"count": 3, "ok": true}`, `{"count": 3, "ok": true}`},
+		// an object with no string anywhere says its verdict in scalars instead.
+		{"no-string object reads its scalars", `{"count": 3, "ok": true}`, "count: 3 · ok: true"},
+		{"reviewer verdict with no words", "{\n  \"approved\": true,\n  \"blocking\": 0,\n  \"waived\": null\n}", "approved: true · blocking: 0 · waived: null"},
+		{"string in a nested array is still found", `{"plan": {"files": ["a.go"]}}`, "a.go"},
+		{"no string and no scalar keeps the raw text", `{"plan": {"files": []}}`, `{"plan": {"files": []}}`},
 		{"prose with a brace inside", `he said {yes} to the plan`, "he said {yes} to the plan"},
-		{"fenced json is still prose", "```json\n{\"summary\": \"hidden\"}\n```", "```json"},
+		// the fenced shape: the wrapper comes off before the object is read.
+		{"fenced json reads as its summary", "```json\n{\"summary\": \"hidden\"}\n```", "hidden"},
+		{"fenced multi-line nested goal", "```json\n{\n  \"plan\": {\n    \"goal\": \"Add a docstring to add()\"\n  }\n}\n```", "Add a docstring to add()"},
+		{"fence with no language", "```\n{\"summary\": \"bare fence\"}\n```", "bare fence"},
+		{"fenced verdict with no words", "```json\n{\"approved\": true}\n```", "approved: true"},
+		{"other fences stay prose", "```go\nfunc main() {}\n```", "```go"},
+		{"prose after the closing fence stays prose", "```json\n{\"summary\": \"x\"}\n```\nthat is all", "```json"},
+		{"unclosed fence stays prose", "```json\n{\"summary\": \"x\"}", "```json"},
 		{"json array is not an object", `["one", "two"]`, `["one", "two"]`},
 		{"truncated chunk keeps the raw text", `{"summary": "cut off mid obj`, `{"summary": "cut off mid obj`},
+		{"invalid json that starts with a brace keeps the raw text", `{"approved": true, "reason": }`, `{"approved": true, "reason": }`},
+		{"invalid multi-line json degrades to its first line", "{\n  \"approved\": true,,\n}", "{"},
 		{"trailing prose after the object", `{"summary": "x"} done`, `{"summary": "x"} done`},
+		{"two objects are not one", `{"summary": "a"}{"summary": "b"}`, `{"summary": "a"}{"summary": "b"}`},
 		{"leading blank lines around the object", "\n {\"goal\": \"padded\"} ", "padded"},
 		{"empty object keeps the raw text", `{}`, `{}`},
+		{"a long extracted line is still capped", `{"summary": "` + strings.Repeat("s", cnvLastAgentLineMax+10) + `"}`, strings.Repeat("s", cnvLastAgentLineMax-1) + "…"},
+		{"a scalar verdict is still capped", `{"approved": ` + strings.Repeat("9", cnvLastAgentLineMax+10) + `}`, "approved: " + strings.Repeat("9", cnvLastAgentLineMax-11) + "…"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
